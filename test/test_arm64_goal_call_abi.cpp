@@ -331,6 +331,168 @@ TEST(Arm64GoalCallAbi, reads_live_load_state_symbol_values_through_a_signed_s7_o
   EXPECT_EQ(read_u32(arena.data(), second_slot), kSecondValue);
 }
 
+TEST(Arm64GoalCallAbi,
+     resolves_load_state_value_then_resets_the_same_load_state_object_in_one_data_arena) {
+  constexpr std::size_t kGuardSize = 16;
+  constexpr std::size_t kArenaSize = jak1::minimum_data_arena_header_size();
+  constexpr std::string_view kLoadStateName = "*load-state*";
+  constexpr std::size_t kLoadStateNameSize = 12;
+  constexpr std::uint32_t kLoadStateHash = 0x5c4a5241;
+  constexpr std::int32_t kLoadStateDisplacement = 0x9208;
+  constexpr std::size_t kSymbolValueCellOffset = 0x158f2c;
+  constexpr std::size_t kSymbolInfoOffset = 0x178f28;
+  constexpr std::size_t kStringRawOffset = 0x17fd20;
+  constexpr std::size_t kStringOffset = kStringRawOffset + BASIC_OFFSET;
+  constexpr std::size_t kStringDataOffset = kStringOffset + sizeof(std::uint32_t);
+  constexpr std::size_t kStringObjectSize =
+      BASIC_OFFSET + sizeof(std::uint32_t) + kLoadStateNameSize + 1;
+  constexpr std::size_t kObjectRawOffset = 0x17fd60;
+  constexpr std::size_t kObjectPointerOffset = kObjectRawOffset + BASIC_OFFSET;
+  constexpr std::size_t kPreObjectGuardOffset = kObjectRawOffset - kGuardSize;
+  constexpr std::size_t kLoadStateWriteSize = 0x828;
+  constexpr std::size_t kPostObjectGuardOffset = kObjectPointerOffset + kLoadStateWriteSize;
+  constexpr std::size_t kWantWordCount = 8;
+  constexpr std::size_t kVisNickOffset = 0x20;
+  constexpr std::size_t kCommandListOffset = 0x24;
+  constexpr std::size_t kObjectNameOffset = 0x28;
+  constexpr std::size_t kObjectStatusOffset = 0x428;
+  constexpr std::size_t kObjectCount = 256;
+  constexpr std::size_t kImmutableArenaValueCount = 7;
+  constexpr std::uint32_t kRawLoadStateTypeSentinel = 0x81234564;
+  constexpr std::uint32_t kVisNickSentinel = 0xf1234564;
+  constexpr std::byte kCanary = std::byte{0xa5};
+  constexpr std::byte kSeed = std::byte{0x5a};
+
+  static_assert(kLoadStateName.size() == kLoadStateNameSize);
+  static_assert(kSymbolValueCellOffset == 0x14fd24 + kLoadStateDisplacement);
+  static_assert(kSymbolInfoOffset == kSymbolValueCellOffset + jak1::SYM_INFO_OFFSET);
+  static_assert((kSymbolValueCellOffset & OFFSET_MASK) == BASIC_OFFSET);
+  static_assert((kSymbolInfoOffset & OFFSET_MASK) == 0);
+  static_assert((kStringOffset & OFFSET_MASK) == BASIC_OFFSET);
+  static_assert((kObjectPointerOffset & OFFSET_MASK) == BASIC_OFFSET);
+  static_assert(kStringRawOffset + kStringObjectSize <= kPreObjectGuardOffset);
+  static_assert(kPreObjectGuardOffset + kGuardSize == kObjectRawOffset);
+  static_assert(kObjectPointerOffset + kVisNickOffset == kObjectRawOffset + 0x24);
+  static_assert(kObjectPointerOffset + kCommandListOffset == kObjectRawOffset + 0x28);
+  static_assert(kObjectPointerOffset + kObjectNameOffset == kObjectRawOffset + 0x2c);
+  static_assert(kObjectPointerOffset + kObjectStatusOffset == kObjectRawOffset + 0x42c);
+  static_assert(kObjectPointerOffset + kLoadStateWriteSize == kObjectRawOffset + 0x82c);
+  static_assert(kPostObjectGuardOffset + kGuardSize <= kArenaSize);
+
+  std::vector<std::byte> backing(kGuardSize + kArenaSize + kGuardSize, kCanary);
+  auto* arena = backing.data() + kGuardSize;
+  const auto initialized = jak1::initialize_data_arena_header(arena, kArenaSize);
+  ASSERT_TRUE(initialized.ok());
+  ASSERT_EQ(initialized.header.s7, 0x14fd24);
+  ASSERT_EQ(initialized.header.global_heap_current, kStringRawOffset);
+  ASSERT_EQ(initialized.header.last_symbol, 0x15fc20);
+
+  ASSERT_EQ(kArm64GoalExports0[2].goal_name, "load-state-value");
+  ASSERT_NE(kArm64GoalExports0[2].entry, nullptr);
+  ASSERT_EQ(kArm64GoalExports1[3].goal_name, "reset!");
+  ASSERT_NE(kArm64GoalExports1[3].entry, nullptr);
+  ASSERT_EQ(kArm64GoalSymbolValueOffsets32[0].game_name, "jak1");
+  ASSERT_EQ(kArm64GoalSymbolValueOffsets32[0].goal_name, kLoadStateName);
+  ASSERT_EQ(kArm64GoalSymbolValueOffsets32[0].value_type, "load-state");
+  ASSERT_EQ(kArm64GoalSymbolValueOffsets32[0].offset, &goalpad_aot_jak1_load_state_symbol_offset);
+
+  write_u32(arena, kStringRawOffset, initialized.header.s7 + jak1_symbols::FIX_SYM_STRING_TYPE);
+  write_u32(arena, kStringOffset, kLoadStateNameSize);
+  std::memcpy(arena + kStringDataOffset, kLoadStateName.data(), kLoadStateName.size());
+  arena[kStringDataOffset + kLoadStateName.size()] = std::byte{0};
+
+  write_u32(arena, kSymbolValueCellOffset, kObjectPointerOffset);
+  write_u32(arena, kSymbolInfoOffset, kLoadStateHash);
+  write_u32(arena, kSymbolInfoOffset + sizeof(std::uint32_t), kStringOffset);
+
+  const auto resolved = jak1::find_data_arena_symbol_value_cell(arena, kArenaSize,
+                                                                initialized.header, kLoadStateName);
+  ASSERT_TRUE(resolved.found());
+  ASSERT_EQ(resolved.cell.goal_offset, kSymbolValueCellOffset);
+  ASSERT_EQ(resolved.cell.s7_relative_displacement, kLoadStateDisplacement);
+  ASSERT_EQ(read_u32(arena, resolved.cell.goal_offset), kObjectPointerOffset);
+
+  std::fill(arena + kObjectPointerOffset, arena + kPostObjectGuardOffset, kSeed);
+  write_u32(arena, kObjectRawOffset, kRawLoadStateTypeSentinel);
+  write_u32(arena, kObjectPointerOffset + kVisNickOffset, kVisNickSentinel);
+  std::fill(arena + kPreObjectGuardOffset, arena + kObjectRawOffset, kCanary);
+  std::fill(arena + kPostObjectGuardOffset, arena + kPostObjectGuardOffset + kGuardSize, kCanary);
+
+  std::array<std::byte, kStringObjectSize> string_snapshot{};
+  std::memcpy(string_snapshot.data(), arena + kStringRawOffset, string_snapshot.size());
+  const std::array<std::size_t, kImmutableArenaValueCount> immutable_arena_offsets{
+      static_cast<std::size_t>(GLOBAL_HEAP_INFO_ADDR + offsetof(kheapinfo, base)),
+      static_cast<std::size_t>(GLOBAL_HEAP_INFO_ADDR + offsetof(kheapinfo, top)),
+      static_cast<std::size_t>(GLOBAL_HEAP_INFO_ADDR + offsetof(kheapinfo, current)),
+      static_cast<std::size_t>(GLOBAL_HEAP_INFO_ADDR + offsetof(kheapinfo, top_base)),
+      static_cast<std::size_t>(initialized.header.s7 + jak1_symbols::FIX_SYM_EMPTY_CAR),
+      static_cast<std::size_t>(initialized.header.s7 + jak1_symbols::FIX_SYM_FALSE),
+      static_cast<std::size_t>(initialized.header.s7 + jak1_symbols::FIX_SYM_TRUE),
+  };
+  std::array<std::uint32_t, kImmutableArenaValueCount> immutable_arena_values{};
+  for (std::size_t index = 0; index < immutable_arena_offsets.size(); ++index) {
+    immutable_arena_values[index] = read_u32(arena, immutable_arena_offsets[index]);
+  }
+
+  struct RestoreSymbolOffset {
+    std::int32_t& offset;
+    std::int32_t original_offset;
+
+    ~RestoreSymbolOffset() { offset = original_offset; }
+  } restore_symbol_offset{goalpad_aot_jak1_load_state_symbol_offset,
+                          goalpad_aot_jak1_load_state_symbol_offset};
+  goalpad_aot_jak1_load_state_symbol_offset = resolved.cell.s7_relative_displacement;
+
+  const auto st = static_cast<std::uintptr_t>(initialized.header.s7);
+  const auto arena_address = reinterpret_cast<std::uintptr_t>(arena);
+  auto value_probe = make_probe(entry_address(kArm64GoalExports0[2].entry), st, arena_address);
+  arm64_goal_call_abi_outer(&value_probe);
+  expect_caller_registers_restored(value_probe);
+  ASSERT_EQ(value_probe.result, kObjectPointerOffset);
+  ASSERT_EQ(value_probe.result >> 32, 0u);
+
+  auto reset_probe = make_probe(entry_address(kArm64GoalExports1[3].entry), st, arena_address);
+  reset_probe.argument0 = value_probe.result;
+  arm64_goal_call_abi_outer(&reset_probe);
+  expect_caller_registers_restored(reset_probe);
+  EXPECT_EQ(reset_probe.result, value_probe.result);
+
+  EXPECT_EQ(read_u32(arena, kSymbolValueCellOffset), kObjectPointerOffset);
+  EXPECT_EQ(read_u32(arena, kSymbolInfoOffset), kLoadStateHash);
+  EXPECT_EQ(read_u32(arena, kSymbolInfoOffset + sizeof(std::uint32_t)), kStringOffset);
+  EXPECT_TRUE(std::equal(string_snapshot.begin(), string_snapshot.end(), arena + kStringRawOffset));
+  EXPECT_EQ(read_u32(arena, kObjectRawOffset), kRawLoadStateTypeSentinel);
+  EXPECT_EQ(read_u32(arena, kObjectPointerOffset + kVisNickOffset), kVisNickSentinel);
+  for (std::size_t index = 0; index < immutable_arena_offsets.size(); ++index) {
+    EXPECT_EQ(read_u32(arena, immutable_arena_offsets[index]), immutable_arena_values[index]);
+  }
+
+  for (std::size_t index = 0; index < kWantWordCount; ++index) {
+    EXPECT_EQ(read_u32(arena, kObjectPointerOffset + index * sizeof(std::uint32_t)),
+              initialized.header.false_value);
+  }
+  EXPECT_EQ(read_u32(arena, kObjectPointerOffset + kCommandListOffset),
+            initialized.header.empty_pair);
+  for (std::size_t index = 0; index < kObjectCount; ++index) {
+    EXPECT_EQ(
+        read_u32(arena, kObjectPointerOffset + kObjectNameOffset + index * sizeof(std::uint32_t)),
+        initialized.header.false_value);
+    EXPECT_EQ(
+        read_u32(arena, kObjectPointerOffset + kObjectStatusOffset + index * sizeof(std::uint32_t)),
+        0u);
+  }
+
+  EXPECT_TRUE(std::all_of(arena + kPreObjectGuardOffset, arena + kObjectRawOffset,
+                          [=](std::byte value) { return value == kCanary; }));
+  EXPECT_TRUE(std::all_of(arena + kPostObjectGuardOffset,
+                          arena + kPostObjectGuardOffset + kGuardSize,
+                          [=](std::byte value) { return value == kCanary; }));
+  EXPECT_TRUE(std::all_of(backing.begin(), backing.begin() + kGuardSize,
+                          [=](std::byte value) { return value == kCanary; }));
+  EXPECT_TRUE(std::all_of(backing.end() - kGuardSize, backing.end(),
+                          [=](std::byte value) { return value == kCanary; }));
+}
+
 TEST(Arm64GoalCallAbi, executes_generated_jak1_aot_artifacts_against_one_data_arena) {
   std::vector<std::byte> arena(jak1::minimum_data_arena_header_size());
   const auto initialized = jak1::initialize_data_arena_header(arena.data(), arena.size());
