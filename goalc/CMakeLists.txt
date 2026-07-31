@@ -126,3 +126,21 @@ add_test(
         -DC_COMPILER=${CMAKE_C_COMPILER}
         -DOUTPUT_DIR=${CMAKE_BINARY_DIR}/test-output/goalc-c-backend-gcommon
         -P ${CMAKE_SOURCE_DIR}/test/goalc/test_c_backend_cli.cmake)
+
+add_test(
+        NAME goalc-c-backend-process-register
+        COMMAND ${CMAKE_COMMAND}
+        -DGOALC_CBACKEND=$<TARGET_FILE:goalc-cbackend>
+        -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
+        -DC_COMPILER=${CMAKE_C_COMPILER}
+        -DOUTPUT_DIR=${CMAKE_BINARY_DIR}/test-output/goalc-c-backend-process-register
+        -P ${CMAKE_SOURCE_DIR}/test/goalc/test_c_backend_process_cli.cmake)
+
+add_test(
+        NAME goalc-c-backend-vector-ops
+        COMMAND ${CMAKE_COMMAND}
+        -DGOALC_CBACKEND=$<TARGET_FILE:goalc-cbackend>
+        -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
+        -DC_COMPILER=${CMAKE_C_COMPILER}
+        -DOUTPUT_DIR=${CMAKE_BINARY_DIR}/test-output/goalc-c-backend-vector-ops
+        -P ${CMAKE_SOURCE_DIR}/test/goalc/test_c_backend_vector_ops_cli.cmake)

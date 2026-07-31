@@ -128,10 +128,12 @@ class FileEmitter {
                             const std::string& c_name,
                             std::string* prototype);
   std::string emit_instruction(const FunctionEnv& func, IR* ir);
+  void find_machine_state_regs(const FunctionEnv& func);
+  bool is_machine_state(const RegVal* rv) const;
   std::string rlet_reset_expr(const RegVal* rv);
   int symbol_index(const std::string& name);
   std::string symbol_pointer_expr(const std::string& name);
-  static std::string reg(const RegVal* rv);
+  std::string reg(const RegVal* rv) const;
   std::string move(const RegVal* dst, const RegVal* src);
   std::string call(const IR_FunctionCall* ir);
   std::string static_addr_expr(const StaticObject* obj);
@@ -145,6 +147,7 @@ class FileEmitter {
   std::map<std::string, int> m_symbol_index;
   std::map<const StaticObject*, int> m_static_index;
   const IR* m_argument_reset = nullptr;
+  std::map<int, std::string> m_machine_state_regs;
 
   struct StaticSize {
     int align;
@@ -257,15 +260,50 @@ std::string FileEmitter::emit_statics() {
 }
 
 /*!
- * (rlet ((st :reg r14 :reset-here #t)) ...) binds a variable to whatever a fixed machine register
- * holds. Only the registers that carry part of the GOAL machine state have a C equivalent.
+ * Some of the GOAL machine state lives in fixed registers that the allocator never touches: the
+ * current process (r13), the symbol table (r14) and the memory base (r15). A variable bound to one
+ * of those - by (rlet ((pp :reg r13 ...)) ...) or by the implicit `self` of a behavior - is not
+ * storage of its own, it names that machine state. So these get no C local: every read and write
+ * of them is rewritten into the runtime location that holds the state, which is what makes a
+ * behavior's `self` and a callee's view of the current process the same thing.
+ *
+ * The register allocator is free to give one ireg to several RegVals, so this is keyed by ireg.
+ */
+void FileEmitter::find_machine_state_regs(const FunctionEnv& func) {
+  m_machine_state_regs.clear();
+  const auto& info = emitter::get_register_info(emitter::InstructionSet::X86);
+  for (const auto& rv : func.reg_vals()) {
+    if (!rv->rlet_constraint().has_value()) {
+      continue;
+    }
+    const auto constrained = rv->rlet_constraint().value();
+    if (constrained == info.get_process_reg()) {
+      m_machine_state_regs[rv->ireg().id] = "g_goal_current_process";
+    } else if (constrained == info.get_st_reg()) {
+      m_machine_state_regs[rv->ireg().id] = "g_goal_s7";
+    } else if (constrained == info.get_offset_reg()) {
+      // GOAL pointers are already offsets from the memory base in the C model, so the base is
+      // zero and an ordinary local holding it behaves identically. rlet_reset_expr sets it.
+      continue;
+    } else if (info.get_info(constrained).special) {
+      throw std::runtime_error(
+          fmt::format("rlet binds machine register {}, which has no C equivalent",
+                      constrained.print()));
+    }
+  }
+}
+
+bool FileEmitter::is_machine_state(const RegVal* rv) const {
+  return m_machine_state_regs.count(rv->ireg().id) != 0;
+}
+
+/*!
+ * (rlet ((off :reg r15 :reset-here #t)) ...) binds a variable to whatever a fixed machine register
+ * holds. Registers that name machine state directly never reach this; they are rewritten instead.
  */
 std::string FileEmitter::rlet_reset_expr(const RegVal* rv) {
   const auto& info = emitter::get_register_info(emitter::InstructionSet::X86);
   const auto constrained = rv->rlet_constraint().value();
-  if (constrained == info.get_st_reg()) {
-    return "g_goal_s7";
-  }
   if (constrained == info.get_offset_reg()) {
     return "GOAL_ADDR_OF(g_goal_mem)";
   }
@@ -273,7 +311,11 @@ std::string FileEmitter::rlet_reset_expr(const RegVal* rv) {
       "rlet :reset-here on machine register {}, which has no C equivalent", constrained.print()));
 }
 
-std::string FileEmitter::reg(const RegVal* rv) {
+std::string FileEmitter::reg(const RegVal* rv) const {
+  auto it = m_machine_state_regs.find(rv->ireg().id);
+  if (it != m_machine_state_regs.end()) {
+    return it->second;
+  }
   return fmt::format("r{}", rv->ireg().id);
 }
 
@@ -379,18 +421,25 @@ std::string FileEmitter::emit_instruction(const FunctionEnv& func, IR* ir) {
   if (auto* p = dynamic_cast<IR_ValueReset*>(ir)) {
     std::string out;
     if (p == m_argument_reset) {
-      for (size_t i = 0; i < p->args().size(); i++) {
-        const auto* arg = p->args().at(i);
+      // a behavior's `self` is in this list too, but no caller ever passes it: it names the
+      // current process, so it is not a C parameter and does not take up an argument slot.
+      int arg_index = 0;
+      for (const auto* arg : p->args()) {
+        if (is_machine_state(arg)) {
+          continue;
+        }
         if (arg->rlet_constraint().has_value()) {
           throw std::runtime_error(
-              "behavior functions pass self in a fixed machine register, which the C calling "
-              "convention cannot express yet");
+              fmt::format("argument bound to machine register {}, which the C calling convention "
+                          "cannot express",
+                          arg->rlet_constraint().value().print()));
         }
-        out += fmt::format("{} = a{}; ", reg(arg), i);
+        out += fmt::format("{} = a{}; ", reg(arg), arg_index++);
       }
     } else {
       for (const auto* arg : p->args()) {
-        if (arg->rlet_constraint().has_value()) {
+        // a machine-state binding already reads the state it names, so there is nothing to copy
+        if (arg->rlet_constraint().has_value() && !is_machine_state(arg)) {
           out += fmt::format("{} = {}; ", reg(arg), rlet_reset_expr(arg));
         }
       }
@@ -731,9 +780,42 @@ std::string FileEmitter::emit_instruction(const FunctionEnv& func, IR* ir) {
     const std::string t = c_type_for(p->destination()->ireg().reg_class);
     const std::string a = fmt::format("(goal_vi){}", reg(p->source1()));
     const std::string b = fmt::format("(goal_vi){}", reg(p->source2()));
+    const auto helper = [&](const char* name) {
+      return fmt::format("{} = ({}){}({}, {});", d, t, name, a, b);
+    };
     switch (p->get_kind()) {
       case IR_Int128Math3Asm::Kind::PCPYUD:
-        return fmt::format("{} = ({})goal_pcpyud({}, {});", d, t, a, b);
+        return helper("goal_pcpyud");
+      case IR_Int128Math3Asm::Kind::PCPYLD:
+        return helper("goal_pcpyld");
+      case IR_Int128Math3Asm::Kind::PEXTLB:
+        return helper("goal_pextlb");
+      case IR_Int128Math3Asm::Kind::PEXTLH:
+        return helper("goal_pextlh");
+      case IR_Int128Math3Asm::Kind::PEXTLW:
+        return helper("goal_pextlw");
+      case IR_Int128Math3Asm::Kind::PEXTUB:
+        return helper("goal_pextub");
+      case IR_Int128Math3Asm::Kind::PEXTUH:
+        return helper("goal_pextuh");
+      case IR_Int128Math3Asm::Kind::PEXTUW:
+        return helper("goal_pextuw");
+      case IR_Int128Math3Asm::Kind::PCEQB:
+        return helper("goal_pceqb");
+      case IR_Int128Math3Asm::Kind::PCEQH:
+        return helper("goal_pceqh");
+      case IR_Int128Math3Asm::Kind::PCEQW:
+        return helper("goal_pceqw");
+      case IR_Int128Math3Asm::Kind::PCGTB:
+        return helper("goal_pcgtb");
+      case IR_Int128Math3Asm::Kind::PCGTH:
+        return helper("goal_pcgth");
+      case IR_Int128Math3Asm::Kind::PCGTW:
+        return helper("goal_pcgtw");
+      case IR_Int128Math3Asm::Kind::PADDB:
+        return helper("goal_paddb");
+      case IR_Int128Math3Asm::Kind::PACKUSWB:
+        return helper("goal_packuswb");
       case IR_Int128Math3Asm::Kind::POR:
         return fmt::format("{} = ({})({} | {});", d, t, a, b);
       case IR_Int128Math3Asm::Kind::PXOR:
@@ -748,6 +830,72 @@ std::string FileEmitter::emit_instruction(const FunctionEnv& func, IR* ir) {
     }
   }
 
+  if (auto* p = dynamic_cast<IR_Int128Math2Asm*>(ir)) {
+    const std::string d = reg(p->destination());
+    const std::string t = c_type_for(p->destination()->ireg().reg_class);
+    const std::string s = fmt::format("(goal_vi){}", reg(p->source()));
+    if (!p->immediate().has_value()) {
+      throw std::runtime_error("128-bit integer shift without an immediate");
+    }
+    const int64_t imm = *p->immediate();
+
+    // A shift count that reaches the lane width means different things on the two machines this
+    // has to agree with: the PS2 keeps the low bits of the count, x86-64 produces zero (or all
+    // sign bits for an arithmetic shift). Jak 1 only ever shifts by 6, 10 or 16, so rather than
+    // pick a winner, refuse the ambiguous case and stay loud about it.
+    const auto lane_shift = [&](const char* name, int lane_bits) {
+      if (imm < 0 || imm >= lane_bits) {
+        throw std::runtime_error(fmt::format(
+            "shift of {} by {}, which the PS2 and x86-64 backends disagree about", name, imm));
+      }
+      return fmt::format("{} = ({}){}({}, {});", d, t, name, s, imm);
+    };
+
+    switch (p->get_kind()) {
+      case IR_Int128Math2Asm::Kind::PW_SLL:
+        return lane_shift("goal_pw_sll", 32);
+      case IR_Int128Math2Asm::Kind::PW_SRL:
+        return lane_shift("goal_pw_srl", 32);
+      case IR_Int128Math2Asm::Kind::PW_SRA:
+        return lane_shift("goal_pw_sra", 32);
+      case IR_Int128Math2Asm::Kind::PH_SLL:
+        return lane_shift("goal_ph_sll", 16);
+      case IR_Int128Math2Asm::Kind::PH_SRL:
+        return lane_shift("goal_ph_srl", 16);
+      case IR_Int128Math2Asm::Kind::VPSRLDQ:
+        return fmt::format("{} = ({})goal_vsrl_bytes({}, {});", d, t, s, imm);
+      case IR_Int128Math2Asm::Kind::VPSLLDQ:
+        return fmt::format("{} = ({})goal_vsll_bytes({}, {});", d, t, s, imm);
+      case IR_Int128Math2Asm::Kind::VPSHUFLW:
+        return fmt::format("{} = ({})goal_shuffle_low_halfwords({}, {});", d, t, s, imm);
+      case IR_Int128Math2Asm::Kind::VPSHUFHW:
+        return fmt::format("{} = ({})goal_shuffle_high_halfwords({}, {});", d, t, s, imm);
+      default:
+        throw std::runtime_error(
+            fmt::format("no C lowering for this PS2 128-bit integer operation: {}", ir->print()));
+    }
+  }
+
+  if (auto* p = dynamic_cast<IR_BlendVF*>(ir)) {
+    return fmt::format("{} = ({})goal_blend_vf((goal_vf){}, (goal_vf){}, {});",
+                       reg(p->destination()), c_type_for(p->destination()->ireg().reg_class),
+                       reg(p->source1()), reg(p->source2()), int(p->mask()));
+  }
+
+  if (auto* p = dynamic_cast<IR_SwizzleVF*>(ir)) {
+    return fmt::format("{} = ({})goal_vf_shuffle((goal_vf){}, {});", reg(p->destination()),
+                       c_type_for(p->destination()->ireg().reg_class), reg(p->source()),
+                       int(p->control_bytes()));
+  }
+
+  // .nop.vf and .wait.vf are VU0 macro-mode synchronisation: they make the main CPU wait for the
+  // vector unit before reading back a result. The C backend has no separate vector unit - every
+  // vector operation is an ordinary C statement in program order - so there is nothing to wait
+  // for, and the correct translation is no code at all. This is not an unimplemented case.
+  if (dynamic_cast<IR_AsmFNop*>(ir) || dynamic_cast<IR_AsmFWait*>(ir)) {
+    return ";";
+  }
+
   throw std::runtime_error(fmt::format("no C lowering for IR node: {}", ir->print()));
 }
 
@@ -755,6 +903,7 @@ std::string FileEmitter::emit_function(const FunctionEnv& func,
                                        const std::string& c_name,
                                        std::string* prototype) {
   const auto& code = func.code();
+  find_machine_state_regs(func);
 
   // arguments come from the IR_ValueReset the function prologue emits, which is always first.
   // Later IR_ValueResets come from (rlet ... :reset-here #t) and are not arguments.
@@ -764,7 +913,9 @@ std::string FileEmitter::emit_function(const FunctionEnv& func,
     if (auto* p = dynamic_cast<IR_ValueReset*>(code.at(0).get())) {
       m_argument_reset = p;
       for (const auto* a : p->args()) {
-        args.push_back(a);
+        if (!is_machine_state(a)) {
+          args.push_back(a);
+        }
       }
     }
   }
@@ -822,6 +973,9 @@ std::string FileEmitter::emit_function(const FunctionEnv& func,
   // rlet can bind a second RegVal to an existing ireg id, so declare each id exactly once
   std::map<int, RegClass> declared;
   for (const auto& rv : func.reg_vals()) {
+    if (is_machine_state(rv.get())) {
+      continue;
+    }
     const auto id = rv->ireg().id;
     const auto rc = rv->ireg().reg_class;
     auto it = declared.find(id);
@@ -846,7 +1000,7 @@ std::string FileEmitter::emit_function(const FunctionEnv& func,
   }
   out += body;
   if (return_reg) {
-    out += fmt::format("  return r{};\n", return_reg->ireg().id);
+    out += fmt::format("  return {};\n", reg(return_reg));
   } else {
     out += "  return 0;\n";
   }

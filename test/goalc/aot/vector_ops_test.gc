@@ -1,0 +1,167 @@
+;; Fixture for the AOT C backend's PS2 vector and 128-bit integer operations.
+;;
+;; These are lane-exact operations: a wrong lane order or the wrong signedness still compiles and
+;; still runs, and only shows up as corrupted geometry or physics. So every function here is
+;; called from process_c_backend_test's sibling, vector_ops_c_backend_test.c, with values chosen so
+;; that each lane, each byte and each sign is distinguishable in the result.
+
+(defun aot-test-pcpyld ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pcpyld vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pcpyud ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pcpyud vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pextlb ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pextlb vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pextub ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pextub vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pextlh ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pextlh vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pextuh ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pextuh vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pextlw ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pextlw vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pextuw ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pextuw vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pcgtw ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pcgtw vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pceqw ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.pceqw vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-psubw ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.psubw vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-ppach ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  "Built by goalc out of halfword shuffles, byte shifts and pcpyld, so it exercises all of them."
+  (local-vars (va uint128) (vb uint128) (vd uint128))
+  (set! va (-> a 0))
+  (set! vb (-> b 0))
+  (.ppach vd va vb)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pw-sll ((dst (pointer uint128)) (a (pointer uint128)))
+  (local-vars (va uint128) (vd uint128))
+  (set! va (-> a 0))
+  (.pw.sll vd va 16)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pw-sra ((dst (pointer uint128)) (a (pointer uint128)))
+  (local-vars (va uint128) (vd uint128))
+  (set! va (-> a 0))
+  (.pw.sra vd va 16)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-pw-srl ((dst (pointer uint128)) (a (pointer uint128)))
+  (local-vars (va uint128) (vd uint128))
+  (set! va (-> a 0))
+  (.pw.srl vd va 16)
+  (set! (-> dst 0) vd)
+  (none))
+
+(defun aot-test-blend ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)) (mask int))
+  "Blend with a run-time mask is not expressible, so branch over the four single-lane masks the
+   .blend.vf.x/y/z/w macros produce. Lane i of the result must come from b exactly when bit i is
+   set."
+  (rlet ((vf1 :class vf)
+         (vf2 :class vf))
+    (.lvf vf1 a)
+    (.lvf vf2 b)
+    (cond
+      ((= mask 1) (.blend.vf.x vf1 vf1 vf2))
+      ((= mask 2) (.blend.vf.y vf1 vf1 vf2))
+      ((= mask 4) (.blend.vf.z vf1 vf1 vf2))
+      (else (.blend.vf.w vf1 vf1 vf2)))
+    (.svf dst vf1))
+  (none))
+
+(defun aot-test-outer-product ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  "The cross product goalc builds out of .swizzle.vf and .blend.vf. A wrong swizzle control order
+   gives a wrong cross product, which is checkable against arithmetic the C side does itself."
+  (rlet ((vf1 :class vf)
+         (vf2 :class vf)
+         (vf3 :class vf))
+    (.lvf vf1 dst)
+    (.lvf vf2 a)
+    (.lvf vf3 b)
+    (.outer.product.vf vf1 vf2 vf3)
+    (.svf dst vf1))
+  (none))
+
+(defun aot-test-wait-nop ((dst (pointer uint128)) (a (pointer uint128)) (b (pointer uint128)))
+  "VU0 macro-mode sync around a real computation. The C backend emits nothing for the barriers, so
+   the sum still has to come out right."
+  (rlet ((vf1 :class vf)
+         (vf2 :class vf))
+    (.lvf vf1 a)
+    (.lvf vf2 b)
+    (.nop.vf)
+    (.add.vf vf1 vf1 vf2)
+    (.wait.vf)
+    (.nop.vf)
+    (.svf dst vf1))
+  (none))

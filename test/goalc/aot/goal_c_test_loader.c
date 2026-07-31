@@ -22,6 +22,7 @@
 
 uint8_t* g_goal_mem = 0;
 uint64_t g_goal_s7 = 0;
+uint64_t g_goal_current_process = 0;
 
 static char s_symbol_names[MAX_SYMBOLS][64];
 static int s_symbol_count = 0;
@@ -38,6 +39,7 @@ void goal_test_loader_init(void) {
     memset(g_goal_mem, 0, GOAL_MEM_SIZE);
   }
   g_goal_s7 = SYMBOL_TABLE_GOAL_ADDR;
+  g_goal_current_process = 0;
   s_symbol_count = 0;
   s_static_count = 0;
   s_function_count = 0;
