@@ -261,6 +261,42 @@ uint64_t goal_aot_call(uint32_t func, uint64_t a0, uint64_t a1, uint64_t a2) {
   return call_goal(Ptr<Function>(func), a0, a1, a2, s7.offset, g_ee_main_mem);
 }
 
+uint64_t goal_kernel_stack_top(void) {
+  // ARM64 requires a 16-byte aligned stack pointer, so this is the last aligned address rather
+  // than upstream's EE_MAIN_MEM_SIZE - 8. GOAL's own *stack-top* (#x07ffc000) is 16 kB below it
+  // and the debug heap ends 64 kB below it.
+  return (u64)(uintptr_t)g_ee_main_mem + EE_MAIN_MEM_SIZE - 16;
+}
+
+goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_result) {
+  if (!tag) {
+    set_error("goal_aot_run_top_level: bad argument");
+    return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
+  }
+  if (!goal_kernel_core_is_initialized()) {
+    set_error("goal_aot_run_top_level: the kernel is not initialized");
+    return GOAL_KERNEL_CORE_NOT_INITIALIZED;
+  }
+  const u32 top_level = goal_aot_top_level_object(tag);
+  if (!top_level) {
+    set_error(fmt::format("goal_aot_run_top_level: {} has no top-level", tag));
+    return GOAL_KERNEL_CORE_NOT_FOUND;
+  }
+
+  // A top-level's defmethod on a type whose subtypes already exist only reaches those subtypes
+  // while *enable-method-set* is raised (jak1::method_set). Upstream raises it around the kernel
+  // and engine DGO loads, which is the step this stands in for.
+  *EnableMethodSet = *EnableMethodSet + 1;
+  const u64 result = call_goal_on_stack(Ptr<Function>(top_level), goal_kernel_stack_top(),
+                                        s7.offset, g_ee_main_mem);
+  *EnableMethodSet = *EnableMethodSet - 1;
+
+  if (out_result) {
+    *out_result = result;
+  }
+  return GOAL_KERNEL_CORE_OK;
+}
+
 goal_kernel_core_status goal_aot_call_symbol(const char* name,
                                              uint64_t a0,
                                              uint64_t a1,

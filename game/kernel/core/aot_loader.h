@@ -72,6 +72,25 @@ uint32_t goal_aot_top_level_object(const char* tag);
 uint64_t goal_aot_call(uint32_t func, uint64_t a0, uint64_t a1, uint64_t a2);
 
 /*!
+ * Native address of the top of GOAL's own stack, at the top of EE main memory, 16-byte aligned for
+ * ARM64. This is where upstream's KernelCheckAndDispatch enters GOAL from.
+ */
+uint64_t goal_kernel_stack_top(void);
+
+/*!
+ * Run a loaded file's `top-level`, the way a DGO load's EXECUTE step runs an object file's.
+ *
+ * It runs on GOAL's own stack, because `(new 'stack ...)` gives a C local a GOAL address and
+ * GOAL stores some of those - a process spawn's catch-frame, for one - in 32-bit fields, where a
+ * native stack address would be truncated to nonsense. See docs/aot-stack-model.md.
+ *
+ * `*enable-method-set*` is raised around it, exactly as InitHeapAndSymbol raises it around the
+ * kernel DGO and InitMachineScheme around the engine DGO. A top-level's `defmethod` on a type
+ * whose subtypes already exist only reaches those subtypes while it is raised.
+ */
+goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_result);
+
+/*!
  * Look the symbol up in the real symbol table and call whatever function object it holds, through
  * `call_goal`. Returns GOAL_KERNEL_CORE_NOT_FOUND if the symbol does not exist or is empty.
  */

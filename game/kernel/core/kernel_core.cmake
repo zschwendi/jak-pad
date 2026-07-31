@@ -48,6 +48,9 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/desktop_seams.cpp"
     # loader for object files produced by the AOT C backend
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
+    # native implementations of the GOAL kernel routines that switch stacks
+    "${CMAKE_CURRENT_LIST_DIR}/goal_native_kernel.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/goal_thread_arm64.s"
     # the ARM64 GOAL calling-convention trampolines
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/asm_funcs_arm64.s")
 

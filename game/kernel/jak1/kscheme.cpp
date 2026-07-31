@@ -559,8 +559,8 @@ Ptr<Function> make_function_from_c(void* func, bool arg3_is_pp = false) {
 /*!
  * Create a GOAL function for a kernel C function whose 4th argument is the current process. The
  * x86 trampoline copies it out of the pp register; ARM64 has no pp register a C function can read,
- * and this kernel has no processes, so it calls a shim that supplies UNKNOWN_PP - which is what
- * the C kernel already passes at every other call site.
+ * so it calls a shim that reads g_goal_current_process, which the ARM64 call trampolines and
+ * ahead-of-time compiled GOAL keep up to date in its place.
  */
 Ptr<Function> make_function_from_c_pp(void* with_pp, void* without_pp) {
 #ifdef __aarch64__
@@ -1508,19 +1508,25 @@ s32 test_function(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
 }
 
 /*!
- * The three kernel functions that upstream reaches through a pp-injecting trampoline, called
- * without a process. See make_function_from_c_pp.
+ * The three kernel functions that upstream reaches through a pp-injecting trampoline, reached
+ * instead through the ambient current process. See make_function_from_c_pp.
+ *
+ * x86-64 pins the current process to r13 and the trampoline copies it into the fourth argument.
+ * ARM64 keeps it in g_goal_current_process instead, which the call trampolines and ahead-of-time
+ * compiled GOAL both maintain (goalc/aot/goal_c_runtime.h), so reading it here is the same value
+ * the trampoline would have injected - including inside a process, which is what makes
+ * (new 'process ...) work.
  */
-u64 copy_basic_no_pp(u32 obj, u32 heap, u32 unused) {
-  return copy_basic(obj, heap, unused, UNKNOWN_PP);
+u64 copy_basic_current_pp(u32 obj, u32 heap, u32 unused) {
+  return copy_basic(obj, heap, unused, (u32)g_goal_current_process);
 }
 
-u64 new_basic_no_pp(u32 heap, u32 type, u32 size) {
-  return new_basic(heap, type, size, UNKNOWN_PP);
+u64 new_basic_current_pp(u32 heap, u32 type, u32 size) {
+  return new_basic(heap, type, size, (u32)g_goal_current_process);
 }
 
-u64 alloc_heap_object_no_pp(u32 heap, u32 type, u32 size) {
-  return alloc_heap_object(heap, type, size, UNKNOWN_PP);
+u64 alloc_heap_object_current_pp(u32 heap, u32 type, u32 size) {
+  return alloc_heap_object(heap, type, size, (u32)g_goal_current_process);
 }
 
 #ifdef __aarch64__
@@ -1580,7 +1586,7 @@ s32 InitSymbolAndTypes() {
                    make_function_from_c((void*)asize_of_basic).offset);
   // NOTE: this is a typo in the game too.
   set_fixed_symbol(FIX_SYM_COPY_BASIC_FUNC, "asize-of-basic-func",
-                   make_function_from_c_pp((void*)copy_basic, (void*)copy_basic_no_pp).offset);
+                   make_function_from_c_pp((void*)copy_basic, (void*)copy_basic_current_pp).offset);
   set_fixed_symbol(FIX_SYM_DEL_BASIC_FUNC, "delete-basic",
                    make_function_from_c((void*)delete_basic).offset);
 
@@ -1635,7 +1641,7 @@ s32 InitSymbolAndTypes() {
   auto inspect_basic_function = make_function_from_c((void*)inspect_basic);
   set_fixed_type(FIX_SYM_BASIC_TYPE, "basic", (s7 + FIX_SYM_STRUCTURE_TYPE).cast<Symbol>(),
                  pack_type_flag(9, 0, 4), print_basic_func.offset, inspect_basic_function.offset);
-  auto new_basic_func = make_function_from_c_pp((void*)new_basic, (void*)new_basic_no_pp);
+  auto new_basic_func = make_function_from_c_pp((void*)new_basic, (void*)new_basic_current_pp);
   auto basicType = Ptr<Type>(*(s7 + FIX_SYM_BASIC_TYPE));
   basicType->new_method = new_basic_func;
   basicType->delete_method.offset = *(s7 + FIX_SYM_DEL_BASIC_FUNC);
@@ -1772,7 +1778,7 @@ s32 InitSymbolAndTypes() {
 
   // Object new macro
   auto goal_new_object_func =
-      make_function_from_c_pp((void*)alloc_heap_object, (void*)alloc_heap_object_no_pp);
+      make_function_from_c_pp((void*)alloc_heap_object, (void*)alloc_heap_object_current_pp);
   object_type->new_method = goal_new_object_func;
 
   // Stuff that isn't in a fixed spot:

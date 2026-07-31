@@ -450,39 +450,40 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         # and has to be updated together with the count.
         set(AOT_BOOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-boot")
         #
-        # The count is the boot frontier. File 208, engine/gfx/mood/time-of-day.gc, is the first
-        # whose top-level cannot run: it spawns a process, which reaches
-        # (method new catch-frame) - one of the GOAL routines that switches stacks and so has no
-        # C translation and no native implementation yet. See docs/aot-stack-model.md.
+        # The count is the boot frontier. File 214, engine/level/load-boundary-data.gc, is the
+        # first whose top-level cannot run: load-boundary-from-template takes the car of what
+        # should be a static list and gets GOAL #xf, so a static in that file is not being
+        # relocated the way the real linker would. That is a static-data problem, not a thread
+        # or stack one.
         set(AOT_BOOT_TAGS
-                gcommon gstring_h gkernel_h gkernel pskernel gstring dgo_h gstate types_h
-                vu1_macros math vector_h gravity_h bounding_box_h matrix_h quaternion_h euler_h
-                transform_h geometry_h trigonometry_h transformq_h bounding_box matrix transform
-                quaternion euler geometry trigonometry gsound_h timer_h timer vif_h dma_h video_h
-                vu1_user_h dma dma_buffer pckernel_h pc_cheats pckernel_impl pad dma_bucket
-                dma_disasm gs display_h vector file_io loader_h texture_h level_h math_camera_h
-                math_camera font_h decomp_h display connect text_h settings_h speedruns_h capture
-                memory_usage_h texture main_h mspace_h drawable_h drawable_group_h
-                drawable_inline_array_h draw_node_h drawable_tree_h drawable_actor_h
-                drawable_ambient_h game_task_h hint_control_h generic_h lights_h ocean_h
-                ocean_trans_tables ocean_tables ocean_frames sky_h mood_h time_of_day_h art_h
-                generic_vu1_h merc_h generic_merc_h generic_tie_h generic_work_h shadow_cpu_h
-                shadow_vu1_h memcard_h game_info_h wind_h prototype_h joint_h bones_h engines
-                res_h res lights dynamics_h surface_h pat_h fact_h aligner_h game_h generic_obs_h
-                pov_camera_h sync_info_h smush_control_h trajectory_h debug_h joint_mod_h
-                collide_func_h collide_mesh_h collide_shape_h collide_target_h collide_touch_h
-                collide_edge_grab_h process_drawable_h effect_control_h collide_frag_h
-                projectiles_h target_h pc_anim_util depth_cue_h stats_h bsp_h collide_cache_h
-                collide_h shrubbery_h tie_h tfrag_h background_h subdivide_h entity_h sprite_h
-                shadow_h eye_h sparticle_launcher_h sparticle_h actor_link_h camera_h cam_debug_h
-                cam_interface_h cam_update_h assert_h hud_h progress_h rpc_h path_h navigate_h
-                load_dgo ramdisk gsound transformq collide_func joint cylinder wind bsp subdivide
-                sprite sprite_distort debug_sphere debug merc_vu1 merc_blend_shape merc ripple
-                bones generic_vu0 generic generic_vu1 generic_effect generic_merc generic_tie
-                shadow_cpu shadow_vu1 depth_cue font decomp background draw_node shrubbery
-                shrub_work tfrag_near tfrag tfrag_methods tfrag_work tie tie_near tie_work
-                tie_methods sync_info trajectory sparticle_launcher sparticle entity_table loader
-                task_control_h game_info game_save settings mood_tables mood weather_part)
+                gcommon gstring_h gkernel_h gkernel pskernel gstring dgo_h gstate types_h vu1_macros
+                math vector_h gravity_h bounding_box_h matrix_h quaternion_h euler_h transform_h
+                geometry_h trigonometry_h transformq_h bounding_box matrix transform quaternion
+                euler geometry trigonometry gsound_h timer_h timer vif_h dma_h video_h vu1_user_h
+                dma dma_buffer pckernel_h pc_cheats pckernel_impl pad dma_bucket dma_disasm gs
+                display_h vector file_io loader_h texture_h level_h math_camera_h math_camera font_h
+                decomp_h display connect text_h settings_h speedruns_h capture memory_usage_h
+                texture main_h mspace_h drawable_h drawable_group_h drawable_inline_array_h
+                draw_node_h drawable_tree_h drawable_actor_h drawable_ambient_h game_task_h
+                hint_control_h generic_h lights_h ocean_h ocean_trans_tables ocean_tables
+                ocean_frames sky_h mood_h time_of_day_h art_h generic_vu1_h merc_h generic_merc_h
+                generic_tie_h generic_work_h shadow_cpu_h shadow_vu1_h memcard_h game_info_h wind_h
+                prototype_h joint_h bones_h engines res_h res lights dynamics_h surface_h pat_h
+                fact_h aligner_h game_h generic_obs_h pov_camera_h sync_info_h smush_control_h
+                trajectory_h debug_h joint_mod_h collide_func_h collide_mesh_h collide_shape_h
+                collide_target_h collide_touch_h collide_edge_grab_h process_drawable_h
+                effect_control_h collide_frag_h projectiles_h target_h pc_anim_util depth_cue_h
+                stats_h bsp_h collide_cache_h collide_h shrubbery_h tie_h tfrag_h background_h
+                subdivide_h entity_h sprite_h shadow_h eye_h sparticle_launcher_h sparticle_h
+                actor_link_h camera_h cam_debug_h cam_interface_h cam_update_h assert_h hud_h
+                progress_h rpc_h path_h navigate_h load_dgo ramdisk gsound transformq collide_func
+                joint cylinder wind bsp subdivide sprite sprite_distort debug_sphere debug merc_vu1
+                merc_blend_shape merc ripple bones generic_vu0 generic generic_vu1 generic_effect
+                generic_merc generic_tie shadow_cpu shadow_vu1 depth_cue font decomp background
+                draw_node shrubbery shrub_work tfrag_near tfrag tfrag_methods tfrag_work tie
+                tie_near tie_work tie_methods sync_info trajectory sparticle_launcher sparticle
+                entity_table loader task_control_h game_info game_save settings mood_tables mood
+                weather_part time_of_day sky_utils sky sky_tng load_boundary_h load_boundary)
         list(LENGTH AOT_BOOT_TAGS JAK1_AOT_BOOT_FILE_COUNT)
 
         set(AOT_BOOT_OUTPUTS "${AOT_BOOT_DIR}/aot_boot_manifest.c"

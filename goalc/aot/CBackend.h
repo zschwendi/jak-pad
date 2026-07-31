@@ -23,6 +23,12 @@ struct CBackendFunctionResult {
   std::string prototype;
   bool ok = false;
   std::string error;
+  /*!
+   * Set when the backend could not lower the function but the runtime supplies a hand-written
+   * native implementation for it, whose C symbol this is. `error` still says why C could not
+   * express it. See kNativeImplementations in CBackend.cpp.
+   */
+  std::string native_symbol;
 };
 
 struct CBackendResult {
@@ -34,6 +40,8 @@ struct CBackendResult {
 
   int emitted_count() const;
   int total_count() const;
+  /*! How many of the functions this backend could not lower are supplied natively instead. */
+  int native_count() const;
 };
 
 /*!

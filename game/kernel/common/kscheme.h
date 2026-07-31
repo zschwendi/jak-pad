@@ -11,6 +11,13 @@ extern Ptr<u32> LastSymbol;
 extern u32 FastLink;
 extern Ptr<u32> EnableMethodSet;
 
+/*!
+ * GOAL address of the process that is currently running. x86-64 pins this to r13; ARM64 keeps it
+ * here, and the call trampolines and ahead-of-time compiled GOAL both maintain it
+ * (goalc/aot/goal_c_runtime.h declares the same variable for emitted code).
+ */
+extern "C" uint64_t g_goal_current_process;
+
 void kscheme_init_globals_common();
 
 constexpr u32 CRC_POLY = 0x04c11db7;

@@ -113,8 +113,13 @@ int main(int argc, char** argv) {
     report += fmt::format("{}: {}/{} functions emitted\n", options.inputs.back(),
                           result.emitted_count(), result.total_count());
     for (const auto& f : result.functions) {
-      if (!f.ok) {
+      if (f.ok) {
+        continue;
+      }
+      if (f.native_symbol.empty()) {
         report += fmt::format("  FAILED {}: {}\n", f.goal_name, f.error);
+      } else {
+        report += fmt::format("  NATIVE {}: {} ({})\n", f.goal_name, f.error, f.native_symbol);
       }
     }
     std::fputs(report.c_str(), stdout);

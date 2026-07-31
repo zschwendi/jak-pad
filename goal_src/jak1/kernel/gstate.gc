@@ -279,6 +279,50 @@ It type checks the arguments for the entry function.
   (format '#t "#<~A ~A @ #x~X>" (-> this type) (-> this name) this)
   this)
 
+(defun enter-state-run-code ((code function) (arg0 object) (arg1 object) (arg2 object) (arg3 object))
+  "GOALPad: the machine-level tail of enter-state, moved into a function of its own.
+
+   Reset the current process's main thread stack back to its top and run a state's code function
+   there, with return-from-thread-dead as the return trampoline so the process is deactivated if
+   the code ever returns. Never returns.
+
+   This exists so the rest of enter-state stays ordinary GOAL that the AOT C backend can translate.
+   The body below is the block it was lifted out of, unchanged apart from the arguments now
+   arriving as arguments. The AOT build rejects it - it assigns to rsp - and uses the native ARM64
+   implementation in game/kernel/core/goal_native_kernel.cpp instead."
+  (declare (asm-func none))
+  (rlet ((pp :reg r13 :type process)
+         (temp)
+         (func)
+         (sp :reg rsp :type uint)
+         (off :reg r15 :type uint)
+         (carg0 :reg rdi)
+         (carg1 :reg rsi)
+         (carg2 :reg rdx)
+         (carg3 :reg rcx))
+    ;; prepare args
+    ;; compiler will likely have these on the stack, we need to get them in regs
+    ;; before messing with the stack.
+    (.mov carg0 arg0)
+    (.mov carg1 arg1)
+    (.mov carg2 arg2)
+    (.mov carg3 arg3)
+    ;; get the main code as an x86-64 pointer
+    (.mov func code)
+    (.add func off)
+    ;; reset the stack (scary)
+    (.mov sp (-> pp main-thread stack-top))
+    (.add sp off)
+    ;; push the return trampoline for when code returns.
+    (.mov temp return-from-thread-dead) ;; will deactivate
+    (.add temp off)
+    (.push temp)
+    ;; and call!
+    (.jr func)
+    ;; stupid hack so the compiler doesn't throw away these registers.
+    (.add carg0 carg1)
+    (.add carg2 carg3)))
+
 (define-extern enter-state (function object object object object object object object))
 
 (defun enter-state (arg0 arg1 arg2 arg3 arg4 arg5)
@@ -343,58 +387,18 @@ It type checks the arguments for the entry function.
          ;; we need to:
          ;; - make sure that when this code returns, we do a deactivate
          ;; - reset the stack to the top, so we can't just call the code.
-         (rlet ((temp)
-                (func)
-                (sp :reg rsp :type uint)
-                (off :reg r15 :type uint)
-                (carg0 :reg rdi)
-                (carg1 :reg rsi)
-                (carg2 :reg rdx)
-                (carg3 :reg rcx))
-           ;; prepare args
-           ;; compiler will likely have these on the stack, we need to get them in regs
-           ;; before messing with the stack.
-           (.mov carg0 arg0)
-           (.mov carg1 arg1)
-           (.mov carg2 arg2)
-           (.mov carg3 arg3)
-           ;; get the main code as an x86-64 pointer
-           (.mov func (-> new-state code))
-           (.add func off)
-           ;; reset the stack (scary)
-           (.mov sp (-> pp main-thread stack-top))
-           (.add sp off)
-           ;; push the return trampoline for when code returns.
-           (.mov temp return-from-thread-dead) ;; will deactivate
-           (.add temp off)
-           (.push temp)
-           ;; and call!
-           (.jr func)
-           ;; stupid hack so the compiler doesn't throw away these registers.
-           (.add carg0 carg1)
-           (.add carg2 carg3)
-           #f ;; can't get here
-           )))
+         (enter-state-run-code (the function (-> new-state code)) arg0 arg1 arg2 arg3)
+         #f ;; can't get here
+         ))
       (else
        ;; not in the main-thread.
        ;; so we set up the main thread to try again.
        (set! (-> pp trans-hook) #f)
        (set-to-run (-> pp main-thread) enter-state arg0 arg1 arg2 arg3 arg4 arg5)
        (when (!= (-> pp top-thread name) 'post)
-         ;; abandon this one too.
-         ;; NOTE - this is different from GOAL.
-         ;; GOAL installs this as the return address for this function and returns normally.
-         ;; but we don't because I don't have an easy way to find where to stick this.
-         ;; I can't see how this makes a difference, as all non-main threads seem
-         ;; temporary, but if this turns out to be false, we will need to change this.
-         (rlet ((temp)
-                (off :reg r15 :type uint :reset-here #t))
-           (.mov temp return-from-thread) ;; could probably just call this...
-           (.add temp off)
-           (.push temp)
-           (.ret)
-           #f ;; can't get here
-           ))))))
+         (abandon-thread)
+         #f ;; can't get here
+         )))))
 
 (defun send-event-function ((proc process-tree) (msg event-message-block))
   "Function to send an event to a process. Please use the send-event macros when possible"

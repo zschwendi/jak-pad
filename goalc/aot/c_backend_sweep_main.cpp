@@ -193,6 +193,7 @@ int main(int argc, char** argv) {
   std::vector<ManifestEntry> manifest;
   int total_functions = 0;
   int total_emitted = 0;
+  int total_native = 0;
   int failed_files = 0;
 
   for (size_t i = 0; i < sources.size(); i++) {
@@ -207,10 +208,19 @@ int main(int argc, char** argv) {
       total_emitted += result.emitted_count();
       report += fmt::format("FILE\t{}\t{}\t{}\n", source, result.emitted_count(),
                             result.total_count());
+      total_native += result.native_count();
       for (const auto& f : result.functions) {
-        if (!f.ok) {
+        if (f.ok) {
+          continue;
+        }
+        if (f.native_symbol.empty()) {
           report += fmt::format("FAIL\t{}\t{}\t{}\n", source, escape_field(f.goal_name),
                                 escape_field(f.error));
+        } else {
+          // C cannot express it, but the runtime has a hand-written implementation, so the file's
+          // function table points at real code instead of a hole.
+          report += fmt::format("NATIVE\t{}\t{}\t{}\n", source, escape_field(f.goal_name),
+                                escape_field(f.native_symbol));
         }
       }
       if (!options.c_output_dir.empty()) {
@@ -232,10 +242,14 @@ int main(int argc, char** argv) {
   }
 
   report += fmt::format("TOTAL\t{}\t{}\t{}\n", sources.size(), total_emitted, total_functions);
+  report += fmt::format("TOTALNATIVE\t{}\t-\t-\n", total_native);
   report += fmt::format("FILEERRORS\t{}\t-\t-\n", failed_files);
-  std::fprintf(stderr, "%d/%d functions emitted (%.2f%%), %d files failed to compile\n",
+  std::fprintf(stderr,
+               "%d/%d functions emitted (%.2f%%), %d supplied natively, %d files failed to "
+               "compile\n",
                total_emitted, total_functions,
-               total_functions ? 100.0 * total_emitted / total_functions : 0.0, failed_files);
+               total_functions ? 100.0 * total_emitted / total_functions : 0.0, total_native,
+               failed_files);
 
   if (!options.report_path.empty()) {
     file_util::write_text_file(options.report_path, report);

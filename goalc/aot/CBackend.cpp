@@ -31,7 +31,57 @@ int CBackendResult::total_count() const {
   return int(functions.size());
 }
 
+int CBackendResult::native_count() const {
+  int count = 0;
+  for (const auto& f : functions) {
+    if (!f.ok && !f.native_symbol.empty()) {
+      count++;
+    }
+  }
+  return count;
+}
+
 namespace {
+
+/*!
+ * GOAL functions that manipulate the machine stack directly and so cannot be lowered to C, paired
+ * with the native implementation the runtime provides for each
+ * (game/kernel/core/goal_native_kernel.cpp).
+ *
+ * The backend still refuses to lower these: the guards that reject an rlet assigning to rsp stay
+ * exactly as they are, because a lowering that wrote to a local instead would compile and be
+ * silently wrong. This table only says where the real code is, so the emitted function table can
+ * point at it and the loader can build a normal GOAL function object for it. That is what makes
+ * the symbol definitions, the method tables and the static relocations all resolve to something
+ * callable without any of them having to know this happened.
+ *
+ * The file tag is matched too, so a function elsewhere in the game that happens to share a name
+ * with one of these cannot silently pick up the wrong implementation.
+ */
+struct NativeImplementation {
+  const char* file_tag;
+  const char* goal_name;
+  const char* c_symbol;
+};
+
+constexpr NativeImplementation kNativeImplementations[] = {
+    {"gkernel", "return-from-thread", "goal_native_return_from_thread"},
+    {"gkernel", "reset-and-call", "goal_native_reset_and_call"},
+    {"gkernel", "(method thread-suspend cpu-thread)", "goal_native_thread_suspend"},
+    {"gkernel", "(method thread-resume cpu-thread)", "goal_native_thread_resume"},
+    {"gkernel", "(method new catch-frame)", "goal_native_catch_frame_new"},
+    {"gkernel", "throw-dispatch", "goal_native_throw_dispatch"},
+    {"gstate", "enter-state-run-code", "goal_native_enter_state_run_code"},
+};
+
+const char* native_implementation_for(const std::string& file_tag, const std::string& goal_name) {
+  for (const auto& entry : kNativeImplementations) {
+    if (file_tag == entry.file_tag && goal_name == entry.goal_name) {
+      return entry.c_symbol;
+    }
+  }
+  return nullptr;
+}
 
 std::string mangle(const std::string& name) {
   std::string out;
@@ -1077,7 +1127,16 @@ CBackendResult FileEmitter::run() {
     } catch (const std::exception& e) {
       entry.ok = false;
       entry.error = e.what();
-      functions_source += fmt::format("/* skipped {}: {} */\n\n", func.name(), e.what());
+      if (const char* native = native_implementation_for(m_tag, entry.goal_name)) {
+        entry.native_symbol = native;
+        functions_source +=
+            fmt::format("/* {}: {}. Supplied natively by {}. */\n"
+                        "extern uint64_t {}(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,\n"
+                        "                   uint64_t, uint64_t, uint64_t);\n\n",
+                        func.name(), e.what(), native, native);
+      } else {
+        functions_source += fmt::format("/* skipped {}: {} */\n\n", func.name(), e.what());
+      }
     }
     result.functions.push_back(entry);
   }
@@ -1113,6 +1172,8 @@ CBackendResult FileEmitter::run() {
   for (const auto& f : result.functions) {
     if (f.ok) {
       function_table += fmt::format("    (const void*)&{},\n", f.c_name);
+    } else if (!f.native_symbol.empty()) {
+      function_table += fmt::format("    (const void*)&{},\n", f.native_symbol);
     } else {
       function_table += "    0,\n";
     }

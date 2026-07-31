@@ -265,8 +265,14 @@ int main() {
   if (symbol_value("identity")) {
     fail("'identity' already had a value before the top-level ran");
   }
-  goal_aot_call(goal_aot_top_level_object("gcommon"), 0, 0, 0);
-  goal_aot_call(goal_aot_top_level_object("gstring"), 0, 0, 0);
+  // goal_aot_run_top_level stands in for a DGO load's EXECUTE step: GOAL's own stack, and
+  // *enable-method-set* raised the way InitHeapAndSymbol raises it around the kernel DGO.
+  if (goal_aot_run_top_level("gcommon", nullptr) != GOAL_KERNEL_CORE_OK) {
+    fail("goal_aot_run_top_level(gcommon)");
+  }
+  if (goal_aot_run_top_level("gstring", nullptr) != GOAL_KERNEL_CORE_OK) {
+    fail("goal_aot_run_top_level(gstring)");
+  }
   print_state("after top-level");
 
   {

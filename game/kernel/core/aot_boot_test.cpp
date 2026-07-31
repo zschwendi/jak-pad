@@ -129,7 +129,11 @@ int main() {
       break;
     }
     say("  running top-level #x%x\n", top_level);
-    goal_aot_call(top_level, 0, 0, 0);
+    if (goal_aot_run_top_level(entry.tag, nullptr) != GOAL_KERNEL_CORE_OK) {
+      say("  TOP-LEVEL FAILED: %s\n", goal_kernel_core_last_error());
+      stopped_by = "top-level";
+      break;
+    }
     ran++;
     drain_goal_print_buffer();
     report_heaps();

@@ -450,33 +450,14 @@
 
 (defun return-from-thread-dead ()
   "Like return from thread, but we clean up our process with deactivate first.
-  The return register is not preserved here, instead we return the value of deactivate"
-  (declare (asm-func none)
-           ;(print-asm)
-           )
-  (rlet ((pp :reg r13 :type process)
-         (sp :reg rsp :type uint)
-         (off :reg r15 :type uint)
-         (s0 :reg rbx :type uint)
-         (s1 :reg rbp :type uint)
-         (s2 :reg r10 :type uint)
-         (s3 :reg r11 :type uint)
-         (s4 :reg r12 :type uint))
-    ;; first call the deactivate method.
-    (deactivate pp)
-    ;; get the kernel stack pointer as a GOAL pointer
-    (.load-sym :sext #f sp *kernel-sp*)
-    ;; convert it back to a real pointer
-    (.add sp off)
-    ;; restore saved registers...
-    ;; without coloring system because this is "cheating".
-    (.pop :color #f s4)
-    (.pop :color #f s3)
-    (.pop :color #f s2)
-    (.pop :color #f s1)
-    (.pop :color #f s0)
-    ;; return to the kernel function that called the user code
-    (.ret)))
+  GOALPad: this used to inline return-from-thread's body after the deactivate call. Calling
+  return-from-thread does the same thing - it never returns, it sets the stack pointer from
+  *kernel-sp* and returns from there, so the return address this call pushes is thrown away - and
+  it keeps this function out of the set that has to be written in machine code. deactivate returns
+  none, so nothing is lost by not preserving the return register."
+  (with-pp
+    (deactivate pp))
+  (return-from-thread))
 
 (defmacro abandon-thread ()
   ;; abandon this one too.
@@ -485,12 +466,11 @@
   ;; but we don't because I don't have an easy way to find where to stick this.
   ;; I can't see how this makes a difference, as all non-main threads seem
   ;; temporary, but if this turns out to be false, we will need to change this.
-  `(rlet ((temp)
-         (off :reg r15 :type uint :reset-here #t))
-    (.mov temp return-from-thread) ;; could probably just call this...
-    (.add temp off)
-    (.push temp)
-    (.ret)))
+  ;;
+  ;; GOALPad: this was a forged return address (push return-from-thread, then ret). An ordinary
+  ;; call has the same effect for the same reason as above, and it is expressible in C, so the
+  ;; functions that abandon a thread do not all have to be hand-written machine code.
+  `(return-from-thread))
 
 (defun reset-and-call ((this thread) (func function))
   "Make the given thread the top thread, reset the stack, and call the function.
@@ -1827,37 +1807,25 @@
   "This function is a clever hack.
    To reset a thread to running a new function, we stash the arguments as saved registers.
    These are then restored by thread-resume on the next run of the kernel.
-   This stub remaps these saved registers to argument registers.
    It also creates a return trampoline to return-from-thread-dead, so if the main thread returns, the
-   process is properly cleaned up by deactivate."
-  (declare (asm-func none)
-           ;;(print-asm)
-           )
-  (rlet ((s0 :reg rbx :type uint)
-         (s1 :reg rbp :type uint)
-         (s2 :reg r10 :type uint)
-         (s3 :reg r11 :type uint)
-         (s4 :reg r12 :type uint)
-         (a0 :reg rdi :type uint) ; ok
-         (a1 :reg rsi :type uint) ; ok
-         (a2 :reg rdx :type uint) ; ok
-         (a3 :reg rcx :type uint) ; ok
-         (off :reg r15 :type uint)
-         (a4 :reg r8 :type uint)
-         (a5 :reg r9 :type uint)
-         (temp :reg rax))
-    (.mov temp return-from-thread-dead)
-    (.add temp off)
-    (.push temp)
-    ;; stack is 16 + 8 aligned now
-    (.mov :color #f a0 s1)
-    (.mov :color #f a1 s2)
-    (.mov :color #f a2 s3)
-    (.mov :color #f a3 s4)
-    (.add :color #f s0 off)
-    (.jr :color #f s0)
-    (.add a4 a4)
-    (.add a5 a5)))
+   process is properly cleaned up by deactivate.
+
+   GOALPad: this used to read those saved registers directly and jump, which no C translation can
+   express. It reads them out of the thread they came from instead - set-to-run put them there and
+   thread-resume only copies them into registers on the way here - and calls, which is the same
+   values reaching the same function. thread-resume makes this thread the top thread before it
+   comes here, so that is where they are."
+  (with-pp
+    (let ((this (the-as cpu-thread (-> pp top-thread))))
+      ((the-as (function uint uint uint uint uint uint object) (-> this rreg 0))
+       (-> this rreg 1)
+       (-> this rreg 2)
+       (-> this rreg 3)
+       (-> this rreg 4)
+       (-> this rreg 5)
+       (-> this rreg 6))))
+  ;; the function returned, so the process is done.
+  (return-from-thread-dead))
 
 (defun set-to-run ((thread cpu-thread) (func function) a0 a1 a2 a3 a4 a5)
   "Set the given thread to call the given function with the given arguments next time it resumes.
@@ -1951,8 +1919,7 @@
        ;; go straight to dead.
        (set! (-> this status) 'dead)
        ;; and return (with no deactivate)
-       ;; TODO: replace with abandon.
-       (let ((temp (the uint return-from-thread))) (rlet ((off :reg r15 :type uint)) (+! temp off) (.push temp) (.ret))))
+       (abandon-thread))
       ;; second case - we deactivated while initializing.
       ((eq? (-> this status) 'initialize)
        (set! (-> this status) 'dead)
