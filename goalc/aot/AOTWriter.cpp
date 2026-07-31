@@ -60,10 +60,13 @@ void validate(const NativeExport1& native_export) {
       native_export.goal_name == "lognot" && native_export.c_symbol == "goalpad_aot_lognot";
   const bool is_glst_node_name = native_export.goal_name == "glst-node-name" &&
                                  native_export.c_symbol == "goalpad_aot_glst_node_name";
-  if (!is_identity && !is_lognot && !is_glst_node_name) {
+  const bool is_load_state_reset = native_export.goal_name == "reset!" &&
+                                   native_export.c_symbol == "goalpad_aot_load_state_reset";
+  if (!is_identity && !is_lognot && !is_glst_node_name && !is_load_state_reset) {
     throw std::invalid_argument(
         "AOT native export proof only supports identity as goalpad_aot_identity or lognot as "
-        "goalpad_aot_lognot or glst-node-name as goalpad_aot_glst_node_name");
+        "goalpad_aot_lognot or glst-node-name as goalpad_aot_glst_node_name or reset! as "
+        "goalpad_aot_load_state_reset");
   }
 }
 

@@ -123,7 +123,7 @@ int main(int argc, char** argv) {
                                              {options.symbol, code},
                                              aot::NativeExport0{*options.function_name, options.symbol});
       } else if (*options.function_name == "identity" || *options.function_name == "lognot" ||
-                 *options.function_name == "glst-node-name") {
+                 *options.function_name == "glst-node-name" || *options.function_name == "reset!") {
         aot::write_apple_arm64_artifact_pair(
             options.output_path, *options.exports_output_path, {options.symbol, code},
             aot::NativeExport1{*options.function_name, options.symbol});
@@ -139,8 +139,8 @@ int main(int argc, char** argv) {
       } else {
         throw std::invalid_argument(
             "AOT native export proof only supports false-func, true-func, identity, lognot, or "
-            "glst-node-name, level-group-load-commands-set!, want-vis, or want-levels function "
-            "artifacts");
+            "glst-node-name, reset!, level-group-load-commands-set!, want-vis, or want-levels "
+            "function artifacts");
       }
     } else {
       aot::write_apple_arm64_assembly(options.output_path, {options.symbol, code});

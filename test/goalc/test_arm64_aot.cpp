@@ -591,6 +591,16 @@ TEST(Arm64Aot, renders_glst_node_name_one_argument_native_export_metadata) {
             "OPENGOAL_AOT_EXPORT1(\"glst-node-name\", goalpad_aot_glst_node_name)\n");
 }
 
+TEST(Arm64Aot, renders_load_state_reset_one_argument_native_export_metadata) {
+  const aot::NativeExport1 native_export{"reset!", "goalpad_aot_load_state_reset"};
+
+  EXPECT_EQ(aot::render_cpp_xmacro_export1(native_export),
+            "#ifndef OPENGOAL_AOT_EXPORT1\n"
+            "#error \"Define OPENGOAL_AOT_EXPORT1 before including this file.\"\n"
+            "#endif\n"
+            "OPENGOAL_AOT_EXPORT1(\"reset!\", goalpad_aot_load_state_reset)\n");
+}
+
 TEST(Arm64Aot, renders_level_group_load_commands_set_two_argument_native_export_metadata) {
   const aot::NativeExport2 native_export{"level-group-load-commands-set!",
                                          "goalpad_aot_level_group_load_commands_set"};
@@ -668,6 +678,21 @@ TEST(Arm64Aot, rejects_native_exports_outside_the_one_argument_proof) {
                std::invalid_argument);
   EXPECT_THROW(aot::render_cpp_xmacro_export1({"glst-node-name", "goalpad_aot_false_func"}),
                std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"reset!", "goalpad_aot_identity"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"reset!", "goalpad_aot_lognot"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"reset!", "goalpad_aot_glst_node_name"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"reset!", "invalid-symbol"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"identity", "goalpad_aot_load_state_reset"}),
+               std::invalid_argument);
+  EXPECT_THROW(
+      aot::render_cpp_xmacro_export1({"load-state::reset!", "goalpad_aot_load_state_reset"}),
+      std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"reset!", "goalpad_aot_load_state_want_levels"}),
+               std::invalid_argument);
 }
 
 TEST(Arm64Aot, rejects_native_exports_outside_the_two_argument_proof) {
@@ -718,6 +743,18 @@ TEST(Arm64Aot, rejects_want_levels_native_export_symbols_at_other_arities) {
       std::invalid_argument);
   EXPECT_THROW(
       aot::render_cpp_xmacro_export2({"want-levels", "goalpad_aot_load_state_want_levels"}),
+      std::invalid_argument);
+}
+
+TEST(Arm64Aot, rejects_load_state_reset_native_export_symbols_at_other_arities) {
+  EXPECT_THROW(
+      aot::render_cpp_xmacro_export0({"reset!", "goalpad_aot_load_state_reset"}),
+      std::invalid_argument);
+  EXPECT_THROW(
+      aot::render_cpp_xmacro_export2({"reset!", "goalpad_aot_load_state_reset"}),
+      std::invalid_argument);
+  EXPECT_THROW(
+      aot::render_cpp_xmacro_export3({"reset!", "goalpad_aot_load_state_reset"}),
       std::invalid_argument);
 }
 

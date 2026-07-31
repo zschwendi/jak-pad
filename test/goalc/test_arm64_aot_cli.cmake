@@ -50,6 +50,8 @@ set(LOAD_STATE_RESET_INPUT
 set(LOAD_STATE_RESET_GOLDEN
     "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-load-state-reset-from-jak1-load-boundary.s")
 set(LOAD_STATE_RESET_ASSEMBLY_ONLY "${OUTPUT_DIR}/load-state-reset-assembly-only.s")
+set(LOAD_STATE_RESET_PAIRED_ASSEMBLY "${OUTPUT_DIR}/load-state-reset-paired.s")
+set(LOAD_STATE_RESET_EXPORTS "${OUTPUT_DIR}/load-state-reset-paired.exports.inc")
 
 execute_process(
   COMMAND "${GOALC_AOT}"
@@ -859,6 +861,85 @@ file(READ "${LOAD_STATE_RESET_GOLDEN}" EXPECTED_LOAD_STATE_RESET_ASSEMBLY)
 file(READ "${LOAD_STATE_RESET_ASSEMBLY_ONLY}" ACTUAL_LOAD_STATE_RESET_ASSEMBLY)
 if(NOT ACTUAL_LOAD_STATE_RESET_ASSEMBLY STREQUAL EXPECTED_LOAD_STATE_RESET_ASSEMBLY)
   message(FATAL_ERROR "Assembly-only load-state reset artifact did not match the committed ARM64 golden")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOAD_STATE_RESET_INPUT}"
+          --function reset!
+          --output "${LOAD_STATE_RESET_PAIRED_ASSEMBLY}"
+          --exports-output "${LOAD_STATE_RESET_EXPORTS}"
+          --symbol goalpad_aot_load_state_reset
+  RESULT_VARIABLE LOAD_STATE_RESET_PAIRED_RESULT)
+if(NOT LOAD_STATE_RESET_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "Paired load-state reset goalc-aot invocation failed")
+endif()
+
+file(SHA256 "${LOAD_STATE_RESET_ASSEMBLY_ONLY}" LOAD_STATE_RESET_ASSEMBLY_ONLY_SHA256)
+file(SHA256 "${LOAD_STATE_RESET_PAIRED_ASSEMBLY}" LOAD_STATE_RESET_PAIRED_ASSEMBLY_SHA256)
+if(NOT LOAD_STATE_RESET_ASSEMBLY_ONLY_SHA256 STREQUAL LOAD_STATE_RESET_PAIRED_ASSEMBLY_SHA256)
+  message(FATAL_ERROR "Adding load-state reset export metadata changed the ARM64 assembly")
+endif()
+
+file(READ "${LOAD_STATE_RESET_PAIRED_ASSEMBLY}" ACTUAL_LOAD_STATE_RESET_PAIRED_ASSEMBLY)
+file(READ "${LOAD_STATE_RESET_EXPORTS}" ACTUAL_LOAD_STATE_RESET_EXPORTS)
+if(NOT ACTUAL_LOAD_STATE_RESET_PAIRED_ASSEMBLY STREQUAL EXPECTED_LOAD_STATE_RESET_ASSEMBLY)
+  message(FATAL_ERROR "Paired load-state reset artifact did not match the committed ARM64 golden")
+endif()
+
+set(EXPECTED_LOAD_STATE_RESET_EXPORTS
+    "#ifndef OPENGOAL_AOT_EXPORT1\n#error \"Define OPENGOAL_AOT_EXPORT1 before including this file.\"\n#endif\nOPENGOAL_AOT_EXPORT1(\"reset!\", goalpad_aot_load_state_reset)\n")
+if(NOT ACTUAL_LOAD_STATE_RESET_EXPORTS STREQUAL EXPECTED_LOAD_STATE_RESET_EXPORTS)
+  message(FATAL_ERROR "Generated load-state reset export metadata did not match the expected record")
+endif()
+
+set(LOAD_STATE_RESET_WRONG_ASSEMBLY "${OUTPUT_DIR}/load-state-reset-wrong.s")
+set(LOAD_STATE_RESET_WRONG_EXPORTS "${OUTPUT_DIR}/load-state-reset-wrong.exports.inc")
+file(WRITE "${LOAD_STATE_RESET_WRONG_ASSEMBLY}" "old load-state reset wrong assembly\n")
+file(WRITE "${LOAD_STATE_RESET_WRONG_EXPORTS}" "old load-state reset wrong exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOAD_STATE_RESET_INPUT}"
+          --function reset!
+          --output "${LOAD_STATE_RESET_WRONG_ASSEMBLY}"
+          --exports-output "${LOAD_STATE_RESET_WRONG_EXPORTS}"
+          --symbol goalpad_aot_identity
+  RESULT_VARIABLE LOAD_STATE_RESET_WRONG_SYMBOL_RESULT)
+if(LOAD_STATE_RESET_WRONG_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted load-state reset with the identity symbol")
+endif()
+
+file(READ "${LOAD_STATE_RESET_WRONG_ASSEMBLY}" ACTUAL_LOAD_STATE_RESET_WRONG_ASSEMBLY)
+file(READ "${LOAD_STATE_RESET_WRONG_EXPORTS}" ACTUAL_LOAD_STATE_RESET_WRONG_EXPORTS)
+if(NOT ACTUAL_LOAD_STATE_RESET_WRONG_ASSEMBLY STREQUAL "old load-state reset wrong assembly\n" OR
+   NOT ACTUAL_LOAD_STATE_RESET_WRONG_EXPORTS STREQUAL "old load-state reset wrong exports\n")
+  message(FATAL_ERROR "Failed load-state reset export validation modified an existing artifact")
+endif()
+
+set(LOAD_STATE_RESET_CROSS_ASSEMBLY "${OUTPUT_DIR}/load-state-reset-cross.s")
+set(LOAD_STATE_RESET_CROSS_EXPORTS "${OUTPUT_DIR}/load-state-reset-cross.exports.inc")
+file(WRITE "${LOAD_STATE_RESET_CROSS_ASSEMBLY}" "old load-state reset cross assembly\n")
+file(WRITE "${LOAD_STATE_RESET_CROSS_EXPORTS}" "old load-state reset cross exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOAD_STATE_RESET_INPUT}"
+          --function reset!
+          --output "${LOAD_STATE_RESET_CROSS_ASSEMBLY}"
+          --exports-output "${LOAD_STATE_RESET_CROSS_EXPORTS}"
+          --symbol goalpad_aot_load_state_want_levels
+  RESULT_VARIABLE LOAD_STATE_RESET_CROSS_ARITY_RESULT)
+if(LOAD_STATE_RESET_CROSS_ARITY_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted load-state reset with the Export3 symbol")
+endif()
+
+file(READ "${LOAD_STATE_RESET_CROSS_ASSEMBLY}" ACTUAL_LOAD_STATE_RESET_CROSS_ASSEMBLY)
+file(READ "${LOAD_STATE_RESET_CROSS_EXPORTS}" ACTUAL_LOAD_STATE_RESET_CROSS_EXPORTS)
+if(NOT ACTUAL_LOAD_STATE_RESET_CROSS_ASSEMBLY STREQUAL "old load-state reset cross assembly\n" OR
+   NOT ACTUAL_LOAD_STATE_RESET_CROSS_EXPORTS STREQUAL "old load-state reset cross exports\n")
+  message(FATAL_ERROR "Failed load-state reset cross-arity validation modified an existing artifact")
 endif()
 
 execute_process(
