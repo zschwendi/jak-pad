@@ -38,6 +38,11 @@ static_assert(offsetof(Symbol, value) == 0);
 static_assert(sizeof(SymInfo) == 2 * sizeof(std::uint32_t));
 static_assert(offsetof(SymInfo, hash) == 0);
 static_assert(offsetof(SymInfo, str) == sizeof(std::uint32_t));
+static_assert(offsetof(Type, symbol) == 0);
+static_assert(offsetof(Type, allocated_size) == 0x8);
+static_assert(offsetof(Type, padded_size) == 0xa);
+static_assert(offsetof(Type, num_methods) == 0xe);
+static_assert(offsetof(Type, new_method) == 0x10);
 static_assert(kGlobalHeapEnd == minimum_data_arena_header_size());
 static_assert(kSymbolTableEnd <= kGlobalHeapEnd);
 static_assert(kSymbolTableOffset >= GLOBAL_HEAP_INFO_ADDR + sizeof(kheapinfo));
@@ -53,6 +58,12 @@ std::uint32_t read_u32(const std::byte* storage, std::uint32_t offset) {
   return value;
 }
 
+std::uint16_t read_u16(const std::byte* storage, std::uint32_t offset) {
+  std::uint16_t value = 0;
+  std::memcpy(&value, storage + offset, sizeof(value));
+  return value;
+}
+
 bool has_bytes(std::size_t storage_size, std::uint32_t offset, std::size_t size) {
   const auto storage_offset = static_cast<std::size_t>(offset);
   return storage_offset <= storage_size && size <= storage_size - storage_offset;
@@ -61,6 +72,15 @@ bool has_bytes(std::size_t storage_size, std::uint32_t offset, std::size_t size)
 bool has_aligned_word(std::size_t storage_size, std::uint32_t offset) {
   return (offset % alignof(std::uint32_t)) == 0 &&
          has_bytes(storage_size, offset, sizeof(std::uint32_t));
+}
+
+bool is_readable_basic_pointer(std::size_t storage_size, std::uint32_t value) {
+  if (value < BASIC_OFFSET || (value & OFFSET_MASK) != BASIC_OFFSET) {
+    return false;
+  }
+
+  const auto raw_offset = value - BASIC_OFFSET;
+  return has_aligned_word(storage_size, raw_offset) && has_aligned_word(storage_size, value);
 }
 
 bool checked_add(std::uint32_t base, std::uint32_t delta, std::uint32_t* result) {
@@ -81,6 +101,20 @@ bool checked_add_signed(std::uint32_t base, std::int32_t delta, std::uint32_t* r
     return false;
   }
   *result = base - magnitude;
+  return true;
+}
+
+bool read_fixed_symbol_value(const std::byte* storage,
+                             std::size_t storage_size,
+                             const DataArenaHeader& header,
+                             std::int32_t displacement,
+                             std::uint32_t* value) {
+  std::uint32_t symbol_offset = 0;
+  if (!checked_add_signed(header.s7, displacement, &symbol_offset) ||
+      !has_aligned_word(storage_size, symbol_offset)) {
+    return false;
+  }
+  *value = read_u32(storage, symbol_offset);
   return true;
 }
 
@@ -420,6 +454,90 @@ DataArenaSymbolValueLookupResult find_data_arena_symbol_value_cell(const std::by
   }
 
   return lookup_fixed_symbols(storage, storage_size, header, hash, name);
+}
+
+DataArenaBasicMethodValueLookupResult read_data_arena_basic_method_value(
+    const std::byte* storage,
+    std::size_t storage_size,
+    const DataArenaHeader& header,
+    std::uint32_t object,
+    std::uint32_t method_id) {
+  if (!storage) {
+    return {.error = DataArenaBasicMethodValueLookupError::NullStorage};
+  }
+  if (storage_size > std::numeric_limits<std::uint32_t>::max()) {
+    return {.error = DataArenaBasicMethodValueLookupError::StorageTooLarge};
+  }
+  if (!is_valid_header(header, storage_size)) {
+    return {.error = DataArenaBasicMethodValueLookupError::InvalidHeader};
+  }
+  if (!is_readable_basic_pointer(storage_size, object)) {
+    return {.error = DataArenaBasicMethodValueLookupError::InvalidObject};
+  }
+
+  const auto object_raw_offset = object - BASIC_OFFSET;
+  const auto object_type = read_u32(storage, object_raw_offset);
+  if (!is_readable_basic_pointer(storage_size, object_type)) {
+    return {.error = DataArenaBasicMethodValueLookupError::InvalidObjectType};
+  }
+
+  std::uint32_t type_type = 0;
+  if (!read_fixed_symbol_value(storage, storage_size, header, jak1_symbols::FIX_SYM_TYPE_TYPE,
+                               &type_type) ||
+      !is_readable_basic_pointer(storage_size, type_type) ||
+      read_u32(storage, type_type - BASIC_OFFSET) != type_type) {
+    return {.error = DataArenaBasicMethodValueLookupError::InvalidTypeType};
+  }
+  if (read_u32(storage, object_type - BASIC_OFFSET) != type_type) {
+    return {.error = DataArenaBasicMethodValueLookupError::InvalidTypeTag};
+  }
+
+  std::uint32_t allocated_size_offset = 0;
+  std::uint32_t padded_size_offset = 0;
+  std::uint32_t method_count_offset = 0;
+  if (!checked_add(object_type, offsetof(Type, allocated_size), &allocated_size_offset) ||
+      !checked_add(object_type, offsetof(Type, padded_size), &padded_size_offset) ||
+      !checked_add(object_type, offsetof(Type, num_methods), &method_count_offset) ||
+      !has_bytes(storage_size, allocated_size_offset, sizeof(std::uint16_t)) ||
+      !has_bytes(storage_size, padded_size_offset, sizeof(std::uint16_t)) ||
+      !has_bytes(storage_size, method_count_offset, sizeof(std::uint16_t))) {
+    return {.error = DataArenaBasicMethodValueLookupError::InvalidObjectType};
+  }
+
+  const auto allocated_size = read_u16(storage, allocated_size_offset);
+  const auto padded_size = read_u16(storage, padded_size_offset);
+  const auto expected_padded_size =
+      (static_cast<std::uint32_t>(allocated_size) + 0xfU) & ~std::uint32_t{0xfU};
+  if (allocated_size < BASIC_OFFSET || allocated_size > 0xfff0 ||
+      static_cast<std::uint32_t>(padded_size) != expected_padded_size ||
+      !has_bytes(storage_size, object_raw_offset, padded_size)) {
+    return {.error = DataArenaBasicMethodValueLookupError::InvalidObjectSize};
+  }
+
+  const auto num_methods = read_u16(storage, method_count_offset);
+  if (method_id >= num_methods) {
+    return {.error = DataArenaBasicMethodValueLookupError::MethodOutOfRange};
+  }
+
+  std::uint32_t method_table_offset = 0;
+  std::uint32_t method_offset = 0;
+  if (method_id > std::numeric_limits<std::uint32_t>::max() / sizeof(std::uint32_t) ||
+      !checked_add(object_type, offsetof(Type, new_method), &method_table_offset) ||
+      !checked_add(method_table_offset, method_id * sizeof(std::uint32_t), &method_offset) ||
+      !has_aligned_word(storage_size, method_offset)) {
+    return {.error = DataArenaBasicMethodValueLookupError::InvalidMethodSlot};
+  }
+
+  return {
+      .value =
+          {
+              .object_type = object_type,
+              .allocated_size = allocated_size,
+              .padded_size = padded_size,
+              .method_value = read_u32(storage, method_offset),
+          },
+      .error = DataArenaBasicMethodValueLookupError::None,
+  };
 }
 
 }  // namespace jak1

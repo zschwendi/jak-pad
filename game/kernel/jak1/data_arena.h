@@ -65,6 +65,34 @@ struct DataArenaSymbolValueLookupResult {
   [[nodiscard]] bool found() const { return error == DataArenaSymbolValueLookupError::None; }
 };
 
+enum class DataArenaBasicMethodValueLookupError {
+  None,
+  NullStorage,
+  StorageTooLarge,
+  InvalidHeader,
+  InvalidObject,
+  InvalidObjectType,
+  InvalidTypeType,
+  InvalidTypeTag,
+  InvalidObjectSize,
+  MethodOutOfRange,
+  InvalidMethodSlot,
+};
+
+struct DataArenaBasicMethodValue {
+  std::uint32_t object_type = 0;
+  std::uint16_t allocated_size = 0;
+  std::uint16_t padded_size = 0;
+  std::uint32_t method_value = 0;
+};
+
+struct DataArenaBasicMethodValueLookupResult {
+  DataArenaBasicMethodValue value{};
+  DataArenaBasicMethodValueLookupError error = DataArenaBasicMethodValueLookupError::InvalidObject;
+
+  [[nodiscard]] bool found() const { return error == DataArenaBasicMethodValueLookupError::None; }
+};
+
 [[nodiscard]] constexpr std::size_t minimum_data_arena_header_size() {
   return static_cast<std::size_t>(GLOBAL_HEAP_END);
 }
@@ -100,5 +128,20 @@ struct DataArenaSymbolValueLookupResult {
     std::size_t storage_size,
     const DataArenaHeader& header,
     std::string_view name);
+
+/*!
+ * Read a BASIC object's virtual method-table value from caller-owned Jak 1 GOAL memory.
+ *
+ * This is a read-only layout check. It validates the data-only header, the object's BASIC
+ * representation, the fixed Type-Type root, the object's runtime Type, and the Type's size and
+ * method-table bounds. The returned method value remains a raw 32-bit GOAL word: this helper
+ * does not cast it to native code, inspect a function object, mutate storage, or invoke GOAL.
+ */
+[[nodiscard]] DataArenaBasicMethodValueLookupResult read_data_arena_basic_method_value(
+    const std::byte* storage,
+    std::size_t storage_size,
+    const DataArenaHeader& header,
+    std::uint32_t object,
+    std::uint32_t method_id);
 
 }  // namespace jak1

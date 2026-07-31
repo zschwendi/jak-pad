@@ -29,6 +29,10 @@ void write_u32(std::byte* storage, std::size_t offset, std::uint32_t value) {
   std::memcpy(storage + offset, &value, sizeof(value));
 }
 
+void write_u16(std::byte* storage, std::size_t offset, std::uint16_t value) {
+  std::memcpy(storage + offset, &value, sizeof(value));
+}
+
 bool is_zero(std::byte value) {
   return value == std::byte{0};
 }
@@ -41,6 +45,14 @@ constexpr std::uint32_t kSyntheticS7 =
 constexpr std::uint32_t kSyntheticLastSymbol =
     kSyntheticSymbolTable + jak1::SYM_TABLE_END * kSymbolTableEntrySize;
 constexpr std::uint32_t kSyntheticArenaSize = kSyntheticSymbolTableEnd + 0x2000;
+constexpr std::uint32_t kResetMethodId = 9;
+
+static_assert(offsetof(jak1::Type, symbol) == 0);
+static_assert(offsetof(jak1::Type, allocated_size) == 0x8);
+static_assert(offsetof(jak1::Type, padded_size) == 0xa);
+static_assert(offsetof(jak1::Type, num_methods) == 0xe);
+static_assert(offsetof(jak1::Type, new_method) == 0x10);
+static_assert(offsetof(jak1::Type, new_method) + kResetMethodId * sizeof(std::uint32_t) == 0x34);
 
 std::uint32_t stateless_goal_crc32(std::string_view name) {
   std::uint32_t crc = 0;
@@ -125,6 +137,44 @@ void fill_mismatching_hashes(SyntheticDataArena* arena,
     write_u32(arena->storage.data(), symbol_offset + jak1::SYM_INFO_OFFSET, requested_hash ^ 1U);
   }
 }
+
+struct BasicMethodFixture {
+  static constexpr std::uint32_t kTypeType = 0x42004;
+  static constexpr std::uint32_t kFunctionType = 0x42044;
+  static constexpr std::uint32_t kObjectType = 0x42084;
+  static constexpr std::uint32_t kObject = 0x42104;
+  static constexpr std::uint32_t kFunction = 0x42a04;
+  static constexpr std::uint32_t kDerivedType = 0x42944;
+  static constexpr std::uint32_t kDerivedFunction = 0x42a44;
+  static constexpr std::uint16_t kAllocatedSize = 0x82c;
+  static constexpr std::uint16_t kPaddedSize = 0x830;
+  static constexpr std::uint16_t kMethodCount = 21;
+
+  SyntheticDataArena arena;
+
+  BasicMethodFixture() {
+    write_u32(arena.storage.data(), arena.header.s7 + jak1_symbols::FIX_SYM_TYPE_TYPE, kTypeType);
+    write_u32(arena.storage.data(), kTypeType - BASIC_OFFSET, kTypeType);
+
+    write_u32(arena.storage.data(), arena.header.s7 + jak1_symbols::FIX_SYM_FUNCTION_TYPE,
+              kFunctionType);
+    write_u32(arena.storage.data(), kFunctionType - BASIC_OFFSET, kTypeType);
+
+    write_u32(arena.storage.data(), kObjectType - BASIC_OFFSET, kTypeType);
+    write_u16(arena.storage.data(), kObjectType + offsetof(jak1::Type, allocated_size),
+              kAllocatedSize);
+    write_u16(arena.storage.data(), kObjectType + offsetof(jak1::Type, padded_size), kPaddedSize);
+    write_u16(arena.storage.data(), kObjectType + offsetof(jak1::Type, num_methods), kMethodCount);
+    write_u32(arena.storage.data(), method_slot(kObjectType, kResetMethodId), kFunction);
+
+    write_u32(arena.storage.data(), kObject - BASIC_OFFSET, kObjectType);
+    write_u32(arena.storage.data(), kFunction - BASIC_OFFSET, kFunctionType);
+  }
+
+  static constexpr std::uint32_t method_slot(std::uint32_t type, std::uint32_t method_id) {
+    return type + offsetof(jak1::Type, new_method) + method_id * sizeof(std::uint32_t);
+  }
+};
 
 }  // namespace
 
@@ -583,4 +633,270 @@ TEST(Jak1DataArena, RejectsEarlyLookupInputsWithoutMutation) {
   }
 
   EXPECT_EQ(arena.storage, before);
+}
+
+TEST(Jak1DataArena, ReadsBasicMethodValuesWithoutMutatingStorage) {
+  auto fixture = BasicMethodFixture{};
+  const auto before = fixture.arena.storage;
+
+  const auto result = jak1::read_data_arena_basic_method_value(
+      fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+      BasicMethodFixture::kObject, kResetMethodId);
+
+  ASSERT_TRUE(result.found());
+  EXPECT_EQ(result.value.object_type, BasicMethodFixture::kObjectType);
+  EXPECT_EQ(result.value.allocated_size, BasicMethodFixture::kAllocatedSize);
+  EXPECT_EQ(result.value.padded_size, BasicMethodFixture::kPaddedSize);
+  EXPECT_EQ(result.value.method_value, BasicMethodFixture::kFunction);
+  EXPECT_EQ(fixture.arena.storage, before);
+}
+
+TEST(Jak1DataArena, RejectsInvalidMethodLookupHeadersWithoutMutation) {
+  auto fixture = BasicMethodFixture{};
+  auto header = fixture.arena.header;
+  header.symbol_table += 4;
+  const auto before = fixture.arena.storage;
+
+  const auto result = jak1::read_data_arena_basic_method_value(
+      fixture.arena.storage.data(), fixture.arena.storage.size(), header,
+      BasicMethodFixture::kObject, kResetMethodId);
+
+  EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidHeader);
+  EXPECT_EQ(fixture.arena.storage, before);
+}
+
+TEST(Jak1DataArena, RejectsEarlyBasicMethodLookupInputsWithoutMutation) {
+  auto fixture = BasicMethodFixture{};
+  const auto before = fixture.arena.storage;
+
+  const auto null_storage = jak1::read_data_arena_basic_method_value(
+      nullptr, fixture.arena.storage.size(), fixture.arena.header, BasicMethodFixture::kObject,
+      kResetMethodId);
+  EXPECT_EQ(null_storage.error, jak1::DataArenaBasicMethodValueLookupError::NullStorage);
+
+  if constexpr (std::numeric_limits<std::size_t>::max() >
+                std::numeric_limits<std::uint32_t>::max()) {
+    const auto oversized_storage = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(),
+        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) + 1,
+        fixture.arena.header, BasicMethodFixture::kObject, kResetMethodId);
+    EXPECT_EQ(oversized_storage.error, jak1::DataArenaBasicMethodValueLookupError::StorageTooLarge);
+  }
+
+  EXPECT_EQ(fixture.arena.storage, before);
+}
+
+TEST(Jak1DataArena, ReadsDerivedBasicMethodOverridesWithoutMutation) {
+  auto fixture = BasicMethodFixture{};
+  write_u32(fixture.arena.storage.data(), BasicMethodFixture::kDerivedType - BASIC_OFFSET,
+            BasicMethodFixture::kTypeType);
+  write_u32(fixture.arena.storage.data(),
+            BasicMethodFixture::kDerivedType + offsetof(jak1::Type, parent),
+            BasicMethodFixture::kObjectType);
+  write_u16(fixture.arena.storage.data(),
+            BasicMethodFixture::kDerivedType + offsetof(jak1::Type, allocated_size),
+            BasicMethodFixture::kAllocatedSize);
+  write_u16(fixture.arena.storage.data(),
+            BasicMethodFixture::kDerivedType + offsetof(jak1::Type, padded_size),
+            BasicMethodFixture::kPaddedSize);
+  write_u16(fixture.arena.storage.data(),
+            BasicMethodFixture::kDerivedType + offsetof(jak1::Type, num_methods),
+            BasicMethodFixture::kMethodCount);
+  write_u32(fixture.arena.storage.data(),
+            BasicMethodFixture::method_slot(BasicMethodFixture::kDerivedType, kResetMethodId),
+            BasicMethodFixture::kDerivedFunction);
+  write_u32(fixture.arena.storage.data(), BasicMethodFixture::kDerivedFunction - BASIC_OFFSET,
+            BasicMethodFixture::kFunctionType);
+  write_u32(fixture.arena.storage.data(), BasicMethodFixture::kObject - BASIC_OFFSET,
+            BasicMethodFixture::kDerivedType);
+  const auto before = fixture.arena.storage;
+
+  const auto result = jak1::read_data_arena_basic_method_value(
+      fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+      BasicMethodFixture::kObject, kResetMethodId);
+
+  ASSERT_TRUE(result.found());
+  EXPECT_EQ(result.value.object_type, BasicMethodFixture::kDerivedType);
+  EXPECT_EQ(result.value.method_value, BasicMethodFixture::kDerivedFunction);
+  EXPECT_EQ(fixture.arena.storage, before);
+}
+
+TEST(Jak1DataArena, ReturnsRawBasicMethodValuesWithoutFunctionValidation) {
+  auto fixture = BasicMethodFixture{};
+  write_u32(fixture.arena.storage.data(),
+            BasicMethodFixture::method_slot(BasicMethodFixture::kObjectType, kResetMethodId), 0);
+  const auto zero_before = fixture.arena.storage;
+
+  const auto zero = jak1::read_data_arena_basic_method_value(
+      fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+      BasicMethodFixture::kObject, kResetMethodId);
+
+  ASSERT_TRUE(zero.found());
+  EXPECT_EQ(zero.value.method_value, 0U);
+  EXPECT_EQ(fixture.arena.storage, zero_before);
+
+  constexpr std::uint32_t kNonBasicMethodValue = 2;
+  write_u32(fixture.arena.storage.data(),
+            BasicMethodFixture::method_slot(BasicMethodFixture::kObjectType, kResetMethodId),
+            kNonBasicMethodValue);
+  const auto non_basic_before = fixture.arena.storage;
+
+  const auto non_basic = jak1::read_data_arena_basic_method_value(
+      fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+      BasicMethodFixture::kObject, kResetMethodId);
+
+  ASSERT_TRUE(non_basic.found());
+  EXPECT_EQ(non_basic.value.method_value, kNonBasicMethodValue);
+  EXPECT_EQ(fixture.arena.storage, non_basic_before);
+}
+
+TEST(Jak1DataArena, RejectsMalformedBasicObjectsAndTypesWithoutMutation) {
+  {
+    auto fixture = BasicMethodFixture{};
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header, 0,
+        kResetMethodId);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidObject);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u32(fixture.arena.storage.data(), BasicMethodFixture::kObject - BASIC_OFFSET, 2);
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidObjectType);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u32(fixture.arena.storage.data(),
+              fixture.arena.header.s7 + jak1_symbols::FIX_SYM_TYPE_TYPE, 0);
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidTypeType);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u32(fixture.arena.storage.data(), BasicMethodFixture::kTypeType - BASIC_OFFSET, 0);
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidTypeType);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u32(fixture.arena.storage.data(), BasicMethodFixture::kObjectType - BASIC_OFFSET,
+              BasicMethodFixture::kFunctionType);
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidTypeTag);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+}
+
+TEST(Jak1DataArena, RejectsIncoherentAndUnreadableBasicObjectSizesWithoutMutation) {
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u16(fixture.arena.storage.data(),
+              BasicMethodFixture::kObjectType + offsetof(jak1::Type, padded_size), 0x820);
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidObjectSize);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u16(fixture.arena.storage.data(),
+              BasicMethodFixture::kObjectType + offsetof(jak1::Type, allocated_size), 0);
+    write_u16(fixture.arena.storage.data(),
+              BasicMethodFixture::kObjectType + offsetof(jak1::Type, padded_size), 0);
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidObjectSize);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u16(fixture.arena.storage.data(),
+              BasicMethodFixture::kObjectType + offsetof(jak1::Type, allocated_size), 0xfff1);
+    write_u16(fixture.arena.storage.data(),
+              BasicMethodFixture::kObjectType + offsetof(jak1::Type, padded_size), 0);
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidObjectSize);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    constexpr std::uint32_t kNearEndObject = kSyntheticArenaSize - 0x800 + BASIC_OFFSET;
+    static_assert((kNearEndObject & OFFSET_MASK) == BASIC_OFFSET);
+    write_u32(fixture.arena.storage.data(), kNearEndObject - BASIC_OFFSET,
+              BasicMethodFixture::kObjectType);
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        kNearEndObject, kResetMethodId);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidObjectSize);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+}
+
+TEST(Jak1DataArena, RejectsOutOfRangeAndOutOfBoundsMethodSlotsWithoutMutation) {
+  {
+    auto fixture = BasicMethodFixture{};
+    const auto before = fixture.arena.storage;
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, BasicMethodFixture::kMethodCount);
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::MethodOutOfRange);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    constexpr std::uint32_t kLogicalStorageSize = kSyntheticArenaSize - 4;
+    constexpr std::uint32_t kNearEndType = kLogicalStorageSize - 0x10;
+    static_assert((kNearEndType & OFFSET_MASK) == BASIC_OFFSET);
+    write_u32(fixture.arena.storage.data(), BasicMethodFixture::kObject - BASIC_OFFSET,
+              kNearEndType);
+    write_u32(fixture.arena.storage.data(), kNearEndType - BASIC_OFFSET,
+              BasicMethodFixture::kTypeType);
+    write_u16(fixture.arena.storage.data(), kNearEndType + offsetof(jak1::Type, allocated_size),
+              BasicMethodFixture::kAllocatedSize);
+    write_u16(fixture.arena.storage.data(), kNearEndType + offsetof(jak1::Type, padded_size),
+              BasicMethodFixture::kPaddedSize);
+    write_u16(fixture.arena.storage.data(), kNearEndType + offsetof(jak1::Type, num_methods), 1);
+    auto header = fixture.arena.header;
+    header.global_heap_end = kLogicalStorageSize;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::read_data_arena_basic_method_value(
+        fixture.arena.storage.data(), kLogicalStorageSize, header, BasicMethodFixture::kObject, 0);
+
+    EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidMethodSlot);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
 }
