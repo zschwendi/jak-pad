@@ -381,6 +381,11 @@ std::vector<std::string> MakeSystem::get_dependencies(const std::string& target)
   return result;
 }
 
+const MakeStep* MakeSystem::find_step(const std::string& output) const {
+  const auto it = m_output_to_step.find(output);
+  return it == m_output_to_step.end() ? nullptr : it->second.get();
+}
+
 void MakeSystem::add_tool(std::shared_ptr<Tool> tool) {
   auto& name = tool->name();
   ASSERT(m_tools.find(name) == m_tools.end());
