@@ -39,6 +39,7 @@ class IR_Return : public IR {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
   const RegVal* value() const { return m_value; }
+  const RegVal* return_register() const { return m_return_reg; }
 
  protected:
   const RegVal* m_return_reg = nullptr;
@@ -328,6 +329,8 @@ class IR_GotoLabel : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const Label* destination() const { return m_dest; }
+  bool is_resolved() const { return m_resolved; }
 
  protected:
   const Label* m_dest = nullptr;
@@ -346,6 +349,7 @@ class IR_ConditionalBranch : public IR {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
   void mark_as_resolved() { m_resolved = true; }
+  bool is_resolved() const { return m_resolved; }
 
   Condition condition;
   Label label;

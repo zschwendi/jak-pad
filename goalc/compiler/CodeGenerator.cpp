@@ -115,6 +115,313 @@ void record_local_variables(const FunctionEnv* func, FunctionDebugInfo* debug) {
             });
 }
 
+bool is_supported_want_levels_function(const FunctionEnv* env,
+                                       const AllocationResult& allocations) {
+  const auto& code = env->code();
+  if (env->name() != "want-levels" || code.size() != 160) {
+    return false;
+  }
+  const TypeSpec int_type("int");
+  const TypeSpec symbol_type("symbol");
+  const TypeSpec load_state_type("load-state");
+  const TypeSpec level_buffer_state_type("level-buffer-state");
+  const TypeSpec inline_want_type("inline-array", {level_buffer_state_type});
+  const TypeSpec none_type("none");
+  const auto ir_at = [&code](int index) -> const IR* {
+    return index >= 0 && index < int(code.size()) ? code.at(index).get() : nullptr;
+  };
+  const auto is_gpr = [](const RegVal* value) {
+    return value && value->ireg().reg_class == RegClass::GPR_64;
+  };
+  const auto is_type = [&is_gpr](const RegVal* value, const TypeSpec& type) {
+    return is_gpr(value) && value->type() == type;
+  };
+  const auto is_allocated_to = [&allocations](const RegVal* value, int instruction,
+                                              emitter::Register expected) {
+    if (!value) {
+      return false;
+    }
+    const auto ireg_id = value->ireg().id;
+    if (ireg_id < 0 || ireg_id >= int(allocations.ass_as_ranges.size())) {
+      return false;
+    }
+    const auto& assignments = allocations.ass_as_ranges.at(ireg_id);
+    if (!assignments.is_live_at_instr(instruction)) {
+      return false;
+    }
+    const auto& assignment = assignments.get(instruction);
+    return assignment.kind == Assignment::Kind::REGISTER && assignment.reg == expected;
+  };
+  const auto reg_set_destination = [&](int index, const RegVal* source) -> const RegVal* {
+    const auto* set = dynamic_cast<const IR_RegSet*>(ir_at(index));
+    return set && set->source() == source && is_gpr(set->destination()) ? set->destination()
+                                                                        : nullptr;
+  };
+  const auto constant_destination = [&](int index, u64 value) -> const RegVal* {
+    const auto* constant = dynamic_cast<const IR_LoadConstant64*>(ir_at(index));
+    return constant && constant->value() == value &&
+                   is_type(constant->destination(), TypeSpec("int"))
+               ? constant->destination()
+               : nullptr;
+  };
+  const auto false_destination = [&](int index) -> const RegVal* {
+    const auto* symbol = dynamic_cast<const IR_LoadSymbolPointer*>(ir_at(index));
+    return symbol && symbol->name() == "#f" && is_type(symbol->destination(), symbol_type)
+               ? symbol->destination()
+               : nullptr;
+  };
+  const auto int_false_destination = [&](int index) -> const RegVal* {
+    const auto* symbol = dynamic_cast<const IR_LoadSymbolPointer*>(ir_at(index));
+    return symbol && symbol->name() == "#f" && is_type(symbol->destination(), int_type)
+               ? symbol->destination()
+               : nullptr;
+  };
+  const auto dynamic_want_address = [&](int index, const RegVal* counter,
+                                        const RegVal* this_value) -> const RegVal* {
+    const auto* shifted = reg_set_destination(index, counter);
+    const auto* shift = dynamic_cast<const IR_IntegerMath*>(ir_at(index + 1));
+    const auto* address = reg_set_destination(index + 2, shifted);
+    const auto* base = reg_set_destination(index + 3, this_value);
+    const auto* add = dynamic_cast<const IR_IntegerMath*>(ir_at(index + 4));
+    return shifted && shift && address && base && add &&
+                   shift->get_kind() == IntegerMathKind::SHL_64 && is_type(counter, int_type) &&
+                   is_type(shifted, int_type) && is_type(address, level_buffer_state_type) &&
+                   is_type(base, inline_want_type) && shift->destination() == shifted &&
+                   shift->argument() == nullptr && shift->shift_amount() == 4 &&
+                   add->get_kind() == IntegerMathKind::ADD_64 && add->destination() == address &&
+                   add->argument() == base
+               ? address
+               : nullptr;
+  };
+  const auto load_want_name = [&](int index, const RegVal* base) -> const RegVal* {
+    const auto* load = dynamic_cast<const IR_LoadConstOffset*>(ir_at(index));
+    return load && load->base() == base && load->offset() == 0 &&
+                   is_type(load->destination(), TypeSpec("symbol")) &&
+                   load->info().reg == RegClass::GPR_64 && load->info().size == 4 &&
+                   !load->info().sign_extend
+               ? load->destination()
+               : nullptr;
+  };
+  const auto matches_want_store = [&](int index, const RegVal* value, const RegVal* base,
+                                      int offset) {
+    const auto* store = dynamic_cast<const IR_StoreConstOffset*>(ir_at(index));
+    return store && store->value() == value && store->base() == base && store->offset() == offset &&
+           store->size() == 4 && is_gpr(value) && is_gpr(base);
+  };
+  const auto matches_add = [&](int index, const RegVal* destination, const RegVal* argument) {
+    const auto* add = dynamic_cast<const IR_IntegerMath*>(ir_at(index));
+    return add && is_type(destination, int_type) && is_type(argument, int_type) &&
+           add->get_kind() == IntegerMathKind::ADD_64 && add->destination() == destination &&
+           add->argument() == argument;
+  };
+  const auto matches_goto = [&](int index, int destination_index) {
+    const auto* jump = dynamic_cast<const IR_GotoLabel*>(ir_at(index));
+    const auto* destination = jump ? jump->destination() : nullptr;
+    return jump && jump->is_resolved() && destination && destination->func == env &&
+           destination->idx == destination_index;
+  };
+  const auto matches_branch = [&](int index, ConditionKind kind, const RegVal* left,
+                                  const RegVal* right, bool is_signed, int destination_index) {
+    const auto* branch = dynamic_cast<const IR_ConditionalBranch*>(ir_at(index));
+    return branch && branch->is_resolved() &&
+           (branch->label.func == nullptr || branch->label.func == env) && branch->label.idx >= 0 &&
+           branch->label.idx < int(code.size()) && branch->label.idx == destination_index &&
+           branch->condition.kind == kind && branch->condition.a == left &&
+           branch->condition.b == right && branch->condition.is_signed == is_signed &&
+           !branch->condition.is_float && is_gpr(left) && is_gpr(right);
+  };
+  const auto matches_null = [&](int index) { return dynamic_cast<const IR_Null*>(ir_at(index)); };
+
+  const auto* value_reset = dynamic_cast<const IR_ValueReset*>(ir_at(0));
+  if (!value_reset || value_reset->args().size() != 3)
+    return false;
+  const auto* this_argument = value_reset->args().at(0);
+  const auto* arg0_argument = value_reset->args().at(1);
+  const auto* arg1_argument = value_reset->args().at(2);
+  if (!is_type(this_argument, load_state_type) || !is_type(arg0_argument, symbol_type) ||
+      !is_type(arg1_argument, symbol_type))
+    return false;
+
+  const auto& register_info = emitter::get_register_info(emitter::InstructionSet::ARM64);
+  const auto first_argument_register = register_info.get_gpr_arg_reg(0);
+  const auto second_argument_register = register_info.get_gpr_arg_reg(1);
+  const auto third_argument_register = register_info.get_gpr_arg_reg(2);
+  const auto abi_return_register = register_info.get_gpr_ret_reg();
+  if (!is_allocated_to(this_argument, 0, first_argument_register) ||
+      !is_allocated_to(arg0_argument, 0, second_argument_register) ||
+      !is_allocated_to(arg1_argument, 0, third_argument_register))
+    return false;
+
+  const auto* this_value = reg_set_destination(1, this_argument);
+  const auto* arg0_value = reg_set_destination(2, arg0_argument);
+  const auto* arg1_value = reg_set_destination(3, arg1_argument);
+  if (!is_type(this_value, load_state_type) || !is_type(arg0_value, symbol_type) ||
+      !is_type(arg1_value, symbol_type) ||
+      !is_allocated_to(this_value, 1, first_argument_register) ||
+      !is_allocated_to(arg0_value, 2, second_argument_register) ||
+      !is_allocated_to(arg1_value, 3, third_argument_register) ||
+      !is_allocated_to(this_argument, 1, first_argument_register) ||
+      !is_allocated_to(arg0_argument, 2, second_argument_register) ||
+      !is_allocated_to(arg1_argument, 3, third_argument_register))
+    return false;
+
+  const auto* initial_zero = constant_destination(4, 0);
+  const auto* initial_counter = reg_set_destination(5, initial_zero);
+  if (!initial_zero || !initial_counter || !matches_goto(6, 41))
+    return false;
+  const auto* initial_name0_address = dynamic_want_address(7, initial_counter, this_value);
+  const auto* initial_name0 = load_want_name(12, initial_name0_address);
+  const auto* initial_false0 = false_destination(14);
+  const auto* initial_result = reg_set_destination(16, initial_false0);
+  if (!initial_name0_address || !initial_name0 ||
+      !matches_branch(13, ConditionKind::NOT_EQUAL, initial_name0, arg0_value, false, 18) ||
+      !initial_false0 || reg_set_destination(15, initial_false0) != arg0_value ||
+      !is_type(initial_result, symbol_type) || !matches_goto(17, 37))
+    return false;
+
+  const auto* initial_name1_address = dynamic_want_address(18, initial_counter, this_value);
+  const auto* initial_name1 = load_want_name(23, initial_name1_address);
+  const auto* initial_false1 = false_destination(25);
+  if (!initial_name1_address || !initial_name1 ||
+      !matches_branch(24, ConditionKind::NOT_EQUAL, initial_name1, arg1_value, false, 29) ||
+      !initial_false1 || reg_set_destination(26, initial_false1) != arg1_value ||
+      reg_set_destination(27, initial_false1) != initial_result || !matches_goto(28, 37))
+    return false;
+
+  const auto* initial_else_false = false_destination(29);
+  const auto* initial_else_address = dynamic_want_address(30, initial_counter, this_value);
+  const auto* initial_increment = reg_set_destination(37, initial_counter);
+  const auto* initial_one = constant_destination(38, 1);
+  const auto* initial_bound = constant_destination(41, 2);
+  if (!initial_else_false || !initial_else_address ||
+      !matches_want_store(35, initial_else_false, initial_else_address, 0) ||
+      reg_set_destination(36, initial_else_false) != initial_result || !initial_increment ||
+      !initial_one || !matches_add(39, initial_increment, initial_one) ||
+      reg_set_destination(40, initial_increment) != initial_counter || !initial_bound ||
+      !matches_branch(42, ConditionKind::LT, initial_counter, initial_bound, true, 7) ||
+      !false_destination(43) || !matches_null(44))
+    return false;
+
+  const auto* first_when_false = false_destination(45);
+  const auto* first_when_zero = constant_destination(47, 0);
+  const auto* first_when_counter = reg_set_destination(48, first_when_zero);
+  if (!first_when_false ||
+      !matches_branch(46, ConditionKind::EQUAL, arg0_value, first_when_false, false, 100) ||
+      !first_when_zero || !first_when_counter || !matches_goto(49, 94))
+    return false;
+
+  const auto* first_when_name_address = dynamic_want_address(50, first_when_counter, this_value);
+  const auto* first_when_name = load_want_name(55, first_when_name_address);
+  const auto* first_when_empty = false_destination(56);
+  if (!first_when_name_address || !first_when_name || !first_when_empty ||
+      !matches_branch(57, ConditionKind::NOT_EQUAL, first_when_name, first_when_empty, false, 89))
+    return false;
+
+  const auto* first_when_name_store_address =
+      dynamic_want_address(58, first_when_counter, this_value);
+  const auto* first_when_display_false = false_destination(64);
+  const auto* first_when_display_address = dynamic_want_address(65, first_when_counter, this_value);
+  const auto* first_when_force_vis_false = false_destination(71);
+  const auto* first_when_force_vis_address =
+      dynamic_want_address(72, first_when_counter, this_value);
+  const auto* first_when_force_inside_false = false_destination(78);
+  const auto* first_when_force_inside_address =
+      dynamic_want_address(79, first_when_counter, this_value);
+  const auto* first_when_break = constant_destination(85, 2);
+  const auto* first_when_merge_false = int_false_destination(89);
+  if (!first_when_name_store_address || !first_when_display_false || !first_when_display_address ||
+      !first_when_force_vis_false || !first_when_force_vis_address ||
+      !first_when_force_inside_false || !first_when_force_inside_address || !first_when_break ||
+      !matches_want_store(63, arg0_value, first_when_name_store_address, 0) ||
+      !matches_want_store(70, first_when_display_false, first_when_display_address, 4) ||
+      !matches_want_store(77, first_when_force_vis_false, first_when_force_vis_address, 8) ||
+      !matches_want_store(84, first_when_force_inside_false, first_when_force_inside_address, 12) ||
+      reg_set_destination(86, first_when_break) != first_when_counter ||
+      reg_set_destination(87, first_when_break) != first_when_merge_false ||
+      !matches_goto(88, 90) || !first_when_merge_false)
+    return false;
+
+  const auto* first_when_increment = reg_set_destination(90, first_when_counter);
+  const auto* first_when_one = constant_destination(91, 1);
+  const auto* first_when_bound = constant_destination(94, 2);
+  const auto* first_when_result_false = false_destination(96);
+  const auto* first_when_result_merge = false_destination(100);
+  if (!first_when_increment || !first_when_one ||
+      !matches_add(92, first_when_increment, first_when_one) ||
+      reg_set_destination(93, first_when_increment) != first_when_counter || !first_when_bound ||
+      !matches_branch(95, ConditionKind::LT, first_when_counter, first_when_bound, true, 50) ||
+      !first_when_result_false || !matches_null(97) ||
+      reg_set_destination(98, first_when_result_false) != first_when_result_merge ||
+      !matches_goto(99, 101) || !first_when_result_merge)
+    return false;
+
+  const auto* second_when_false = false_destination(101);
+  const auto* second_when_zero = constant_destination(103, 0);
+  const auto* second_when_counter = reg_set_destination(104, second_when_zero);
+  if (!second_when_false ||
+      !matches_branch(102, ConditionKind::EQUAL, arg1_value, second_when_false, false, 156) ||
+      !second_when_zero || !second_when_counter || !matches_goto(105, 150))
+    return false;
+
+  const auto* second_when_name_address = dynamic_want_address(106, second_when_counter, this_value);
+  const auto* second_when_name = load_want_name(111, second_when_name_address);
+  const auto* second_when_empty = false_destination(112);
+  if (!second_when_name_address || !second_when_name || !second_when_empty ||
+      !matches_branch(113, ConditionKind::NOT_EQUAL, second_when_name, second_when_empty, false,
+                      145))
+    return false;
+
+  const auto* second_when_name_store_address =
+      dynamic_want_address(114, second_when_counter, this_value);
+  const auto* second_when_display_false = false_destination(120);
+  const auto* second_when_display_address =
+      dynamic_want_address(121, second_when_counter, this_value);
+  const auto* second_when_force_vis_false = false_destination(127);
+  const auto* second_when_force_vis_address =
+      dynamic_want_address(128, second_when_counter, this_value);
+  const auto* second_when_force_inside_false = false_destination(134);
+  const auto* second_when_force_inside_address =
+      dynamic_want_address(135, second_when_counter, this_value);
+  const auto* second_when_break = constant_destination(141, 2);
+  const auto* second_when_merge_false = int_false_destination(145);
+  if (!second_when_name_store_address || !second_when_display_false ||
+      !second_when_display_address || !second_when_force_vis_false ||
+      !second_when_force_vis_address || !second_when_force_inside_false ||
+      !second_when_force_inside_address || !second_when_break ||
+      !matches_want_store(119, arg1_value, second_when_name_store_address, 0) ||
+      !matches_want_store(126, second_when_display_false, second_when_display_address, 4) ||
+      !matches_want_store(133, second_when_force_vis_false, second_when_force_vis_address, 8) ||
+      !matches_want_store(140, second_when_force_inside_false, second_when_force_inside_address,
+                          12) ||
+      reg_set_destination(142, second_when_break) != second_when_counter ||
+      reg_set_destination(143, second_when_break) != second_when_merge_false ||
+      !matches_goto(144, 146) || !second_when_merge_false)
+    return false;
+
+  const auto* second_when_increment = reg_set_destination(146, second_when_counter);
+  const auto* second_when_one = constant_destination(147, 1);
+  const auto* second_when_bound = constant_destination(150, 2);
+  const auto* second_when_result_false = false_destination(152);
+  const auto* second_when_result_merge = false_destination(156);
+  const auto* final_zero = constant_destination(157, 0);
+  const auto* result_return = dynamic_cast<const IR_Return*>(ir_at(158));
+  if (!second_when_increment || !second_when_one ||
+      !matches_add(148, second_when_increment, second_when_one) ||
+      reg_set_destination(149, second_when_increment) != second_when_counter ||
+      !second_when_bound ||
+      !matches_branch(151, ConditionKind::LT, second_when_counter, second_when_bound, true, 106) ||
+      !second_when_result_false || !matches_null(153) ||
+      reg_set_destination(154, second_when_result_false) != second_when_result_merge ||
+      !matches_goto(155, 157) || !second_when_result_merge || !final_zero || !result_return ||
+      result_return->value() != final_zero ||
+      !is_type(result_return->return_register(), none_type) ||
+      !is_allocated_to(result_return->return_register(), 158, abi_return_register) ||
+      !is_allocated_to(final_zero, 158, abi_return_register) || !matches_null(159))
+    return false;
+
+  return true;
+}
+
 }  // namespace
 
 CodeGenerator::CodeGenerator(FileEnv* env,
@@ -753,16 +1060,17 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       want_vis_store->offset() == 0x20 && want_vis_store->size() == 4 &&
       want_vis_zero->value() == 0 && want_vis_return->value() == want_vis_zero->destination() &&
       want_vis_uses_apple_abi && dynamic_cast<IR_Null*>(code.at(6).get());
+  const bool supported_want_levels_function = is_supported_want_levels_function(env, allocs);
   if (!supported_top_level && !supported_false_function && !supported_true_function &&
       !supported_lognot_function && !supported_identity_function &&
       !supported_glst_node_name_function && !supported_level_group_load_commands_set_function &&
-      !supported_want_vis_function) {
+      !supported_want_vis_function && !supported_want_levels_function) {
     throw std::runtime_error(
         "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "
         "Jak 1 false or true function, one-argument identity function, or one-argument int lognot "
-        "function, the one-argument Jak 1 glst-node-name function, or the direct two-argument "
-        "Jak 1 level-group load-commands-set! body, or the direct two-argument Jak 1 want-vis "
-        "body.");
+        "function, the one-argument Jak 1 glst-node-name function, the direct two-argument Jak "
+        "1 level-group load-commands-set! body, the direct two-argument Jak 1 want-vis body, or "
+        "the direct three-argument Jak 1 want-levels body.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());

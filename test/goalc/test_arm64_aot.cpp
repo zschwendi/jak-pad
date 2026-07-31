@@ -64,6 +64,26 @@ void expect_arm64_live_across_call_uses_saved_register(RegClass reg_class, bool 
   EXPECT_EQ(assignment.reg.instruction_set(), emitter::InstructionSet::ARM64);
 }
 
+std::string read_want_levels_source() {
+  return file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-want-levels-from-jak1-load-boundary.gc"}));
+}
+
+void replace_once(std::string& source,
+                  const std::string& expected,
+                  const std::string& replacement) {
+  const auto position = source.find(expected);
+  ASSERT_NE(position, std::string::npos);
+  source.replace(position, expected.size(), replacement);
+}
+
+void expect_want_levels_rejected(const std::string& source, const std::string& object_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, object_name,
+                                                 std::optional<std::string>{"want-levels"}),
+               std::runtime_error);
+}
+
 }  // namespace
 
 TEST(Arm64Aot, compiles_top_level_literal_and_renders_apple_text) {
@@ -256,6 +276,196 @@ TEST(Arm64Aot, compiles_direct_jak1_want_vis_and_renders_apple_text) {
             "  .long 0xca000000\n"
             "  .long 0xd65f03c0\n"
             ".subsections_via_symbols\n");
+}
+
+TEST(Arm64Aot, compiles_full_jak1_want_levels_and_renders_apple_text) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = read_want_levels_source();
+  const auto code =
+      compiler.compile_arm64_aot_source(source, "full-want-levels-from-jak1-load-boundary",
+                                        std::optional<std::string>{"want-levels"});
+
+  ASSERT_EQ(code.size(), 568);
+  const aot::AppleArm64Function function{"goalpad_aot_want_levels", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            file_util::read_text_file(
+                file_util::get_file_path({"test/goalc/source_templates/arm64-aot/"
+                                          "full-want-levels-from-jak1-load-boundary.s"})));
+}
+
+TEST(Arm64Aot, exposes_arm64_aot_control_flow_and_return_metadata) {
+  Label label{nullptr, 7};
+  IR_GotoLabel jump;
+  EXPECT_FALSE(jump.is_resolved());
+  EXPECT_EQ(jump.destination(), nullptr);
+  jump.resolve(&label);
+  EXPECT_TRUE(jump.is_resolved());
+  EXPECT_EQ(jump.destination(), &label);
+
+  RegVal left{{RegClass::GPR_64, 0}, TypeSpec("int")};
+  RegVal right{{RegClass::GPR_64, 1}, TypeSpec("int")};
+  Condition condition;
+  condition.kind = ConditionKind::LT;
+  condition.a = &left;
+  condition.b = &right;
+  condition.is_signed = true;
+  IR_ConditionalBranch branch(condition, Label{nullptr, 9});
+  EXPECT_FALSE(branch.is_resolved());
+  branch.mark_as_resolved();
+  EXPECT_TRUE(branch.is_resolved());
+
+  RegVal return_register{{RegClass::GPR_64, 2}, TypeSpec("none")};
+  IR_Return result(&return_register, &left, emitter::X0);
+  EXPECT_EQ(result.return_register(), &return_register);
+  EXPECT_EQ(result.value(), &left);
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_a_different_name) {
+  auto source = read_want_levels_source();
+  replace_once(source, "(defun want-levels", "(defun other-want-levels");
+
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "other-want-levels",
+                                                 std::optional<std::string>{"other-want-levels"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_an_extra_argument) {
+  auto source = read_want_levels_source();
+  replace_once(source, "((this load-state) (arg0 symbol) (arg1 symbol))",
+               "((this load-state) (arg0 symbol) (arg1 symbol) (arg2 symbol))");
+
+  expect_want_levels_rejected(source, "want-levels-with-extra-argument");
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_different_false_dataflow) {
+  auto source = read_want_levels_source();
+  replace_once(source, "(else (set! (-> this want v1-0 name) #f))",
+               "(else (set! (-> this want v1-0 name) arg0))");
+
+  expect_want_levels_rejected(source, "want-levels-with-different-false-dataflow");
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_different_compare_dataflow) {
+  auto source = read_want_levels_source();
+  replace_once(source, "((= (-> this want v1-0 name) arg0) (set! arg0 #f))",
+               "((= (-> this want v1-0 name) arg1) (set! arg0 #f))");
+
+  expect_want_levels_rejected(source, "want-levels-with-different-compare-dataflow");
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_a_different_loop_bound) {
+  auto source = read_want_levels_source();
+  replace_once(source, "(dotimes (v1-0 2)", "(dotimes (v1-0 3)");
+
+  expect_want_levels_rejected(source, "want-levels-with-different-loop-bound");
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_a_different_early_exit) {
+  auto source = read_want_levels_source();
+  replace_once(source, "(set! v1-4 2)", "(set! v1-4 1)");
+
+  expect_want_levels_rejected(source, "want-levels-with-different-early-exit");
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_a_different_flag_offset) {
+  auto source = read_want_levels_source();
+  replace_once(source, "(set! (-> this want v1-4 display?) #f)",
+               "(set! (-> this want v1-4 name) #f)");
+
+  expect_want_levels_rejected(source, "want-levels-with-different-flag-offset");
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_an_eight_byte_want_record) {
+  auto source = read_want_levels_source();
+  replace_once(source,
+               "((name symbol)\n"
+               "   (display? symbol)\n"
+               "   (force-vis? symbol)\n"
+               "   (force-inside? symbol))\n"
+               "  :pack-me\n"
+               "  :size-assert #x10",
+               "((name symbol)\n"
+               "   (padding uint8 4))\n"
+               "  :pack-me\n"
+               "  :size-assert #x8");
+  replace_once(source,
+               "(vis-nick symbol :offset-assert #x24)\n"
+               "   (command-list pair :offset-assert #x28)\n"
+               "   (object-name symbol 256 :offset-assert #x2c)\n"
+               "   (object-status basic 256 :offset-assert #x42c))\n"
+               "  :size-assert #x82c",
+               "(vis-nick symbol :offset-assert #x14)\n"
+               "   (command-list pair :offset-assert #x18)\n"
+               "   (object-name symbol 256 :offset-assert #x1c)\n"
+               "   (object-status basic 256 :offset-assert #x41c))\n"
+               "  :size-assert #x81c");
+  replace_once(source,
+               "        (set! (-> this want v1-4 display?) #f)\n"
+               "        (set! (-> this want v1-4 force-vis?) #f)\n"
+               "        (set! (-> this want v1-4 force-inside?) #f)\n",
+               "");
+  replace_once(source,
+               "        (set! (-> this want v1-10 display?) #f)\n"
+               "        (set! (-> this want v1-10 force-vis?) #f)\n"
+               "        (set! (-> this want v1-10 force-inside?) #f)\n",
+               "");
+
+  expect_want_levels_rejected(source, "want-levels-with-eight-byte-want-record");
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_a_thirty_two_byte_want_record) {
+  auto source = read_want_levels_source();
+  replace_once(source,
+               "((name symbol)\n"
+               "   (display? symbol)\n"
+               "   (force-vis? symbol)\n"
+               "   (force-inside? symbol))\n"
+               "  :pack-me\n"
+               "  :size-assert #x10",
+               "((name symbol)\n"
+               "   (padding uint8 28))\n"
+               "  :pack-me\n"
+               "  :size-assert #x20");
+  replace_once(source,
+               "(vis-nick symbol :offset-assert #x24)\n"
+               "   (command-list pair :offset-assert #x28)\n"
+               "   (object-name symbol 256 :offset-assert #x2c)\n"
+               "   (object-status basic 256 :offset-assert #x42c))\n"
+               "  :size-assert #x82c",
+               "(vis-nick symbol :offset-assert #x44)\n"
+               "   (command-list pair :offset-assert #x48)\n"
+               "   (object-name symbol 256 :offset-assert #x4c)\n"
+               "   (object-status basic 256 :offset-assert #x44c))\n"
+               "  :size-assert #x84c");
+  replace_once(source,
+               "        (set! (-> this want v1-4 display?) #f)\n"
+               "        (set! (-> this want v1-4 force-vis?) #f)\n"
+               "        (set! (-> this want v1-4 force-inside?) #f)\n",
+               "");
+  replace_once(source,
+               "        (set! (-> this want v1-10 display?) #f)\n"
+               "        (set! (-> this want v1-10 force-vis?) #f)\n"
+               "        (set! (-> this want v1-10 force-inside?) #f)\n",
+               "");
+
+  expect_want_levels_rejected(source, "want-levels-with-thirty-two-byte-want-record");
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_a_different_final_return) {
+  auto source = read_want_levels_source();
+  const auto return_position = source.rfind("  0)");
+  ASSERT_NE(return_position, std::string::npos);
+  source.replace(return_position, 4, "  arg0)");
+
+  expect_want_levels_rejected(source, "want-levels-with-different-final-return");
+}
+
+TEST(Arm64Aot, rejects_want_levels_with_trailing_top_level_code) {
+  auto source = read_want_levels_source();
+  source += "\n0\n";
+
+  expect_want_levels_rejected(source, "want-levels-with-trailing-top-level-code");
 }
 
 TEST(Arm64Aot, renders_zero_argument_native_export_metadata) {
