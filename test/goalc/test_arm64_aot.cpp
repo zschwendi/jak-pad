@@ -141,6 +141,28 @@ TEST(Arm64Aot, compiles_full_jak1_identity_and_renders_apple_text) {
             ".subsections_via_symbols\n");
 }
 
+TEST(Arm64Aot, compiles_full_jak1_true_func_and_renders_apple_text) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-true-func-from-jak1-gcommon.gc"}));
+  const auto code = compiler.compile_arm64_aot_source(source, "full-true-func-from-jak1-gcommon",
+                                                      std::optional<std::string>{"true-func"});
+
+  EXPECT_EQ(code, (std::vector<u8>{0xe0, 0x03, 0x15, 0xaa, 0x00, 0x20,
+                                   0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6}));
+
+  const aot::AppleArm64Function function{"goalpad_aot_true_func", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            ".section __TEXT,__text,regular,pure_instructions\n"
+            ".p2align 2\n"
+            ".globl _goalpad_aot_true_func\n"
+            "_goalpad_aot_true_func:\n"
+            "  .long 0xaa1503e0\n"
+            "  .long 0x91002000\n"
+            "  .long 0xd65f03c0\n"
+            ".subsections_via_symbols\n");
+}
+
 TEST(Arm64Aot, renders_zero_argument_native_export_metadata) {
   const aot::NativeExport0 native_export{"false-func", "goalpad_aot_false_func"};
 
@@ -172,6 +194,8 @@ TEST(Arm64Aot, rejects_native_exports_outside_the_false_func_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "_Reserved"}), std::invalid_argument);
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "class"}), std::invalid_argument);
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "main"}), std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"true-func", "goalpad_aot_true_func"}),
+               std::invalid_argument);
 }
 
 TEST(Arm64Aot, rejects_native_exports_outside_the_identity_proof) {
@@ -261,6 +285,31 @@ TEST(Arm64Aot, rejects_identity_shaped_function_with_a_different_name) {
   EXPECT_THROW(compiler.compile_arm64_aot_source("(defun not-identity ((x object)) x)",
                                                  "not-identity",
                                                  std::optional<std::string>{"not-identity"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_true_func_with_a_false_body) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun true-func () '#f)", "true-with-false-body",
+                                                 std::optional<std::string>{"true-func"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_true_body_under_a_different_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun other () '#t)", "other-true",
+                                                 std::optional<std::string>{"other"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_true_func_with_an_argument) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun true-func ((x object)) '#t)",
+                                                 "true-with-argument",
+                                                 std::optional<std::string>{"true-func"}),
                std::runtime_error);
 }
 

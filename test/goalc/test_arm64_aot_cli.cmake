@@ -10,6 +10,11 @@ set(IDENTITY_INPUT
 set(IDENTITY_ASSEMBLY_ONLY "${OUTPUT_DIR}/identity-assembly-only.s")
 set(IDENTITY_PAIRED_ASSEMBLY "${OUTPUT_DIR}/identity-paired.s")
 set(IDENTITY_EXPORTS "${OUTPUT_DIR}/identity-paired.exports.inc")
+set(TRUE_INPUT
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-true-func-from-jak1-gcommon.gc")
+set(TRUE_ASSEMBLY_ONLY "${OUTPUT_DIR}/true-assembly-only.s")
+set(TRUE_PAIRED_ASSEMBLY "${OUTPUT_DIR}/true-paired.s")
+set(TRUE_EXPORTS "${OUTPUT_DIR}/true-paired.exports.inc")
 
 execute_process(
   COMMAND "${GOALC_AOT}"
@@ -85,6 +90,47 @@ set(EXPECTED_IDENTITY_EXPORTS
     "#ifndef OPENGOAL_AOT_EXPORT1\n#error \"Define OPENGOAL_AOT_EXPORT1 before including this file.\"\n#endif\nOPENGOAL_AOT_EXPORT1(\"identity\", goalpad_aot_identity)\n")
 if(NOT ACTUAL_IDENTITY_EXPORTS STREQUAL EXPECTED_IDENTITY_EXPORTS)
   message(FATAL_ERROR "Generated identity export metadata did not match the expected record")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${TRUE_INPUT}"
+          --function true-func
+          --output "${TRUE_ASSEMBLY_ONLY}"
+          --symbol goalpad_aot_true_func
+  RESULT_VARIABLE TRUE_ASSEMBLY_ONLY_RESULT)
+if(NOT TRUE_ASSEMBLY_ONLY_RESULT EQUAL 0)
+  message(FATAL_ERROR "Assembly-only true-func goalc-aot invocation failed")
+endif()
+
+file(READ "${TRUE_ASSEMBLY_ONLY}" ACTUAL_TRUE_ASSEMBLY)
+set(EXPECTED_TRUE_ASSEMBLY
+    ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n.globl _goalpad_aot_true_func\n_goalpad_aot_true_func:\n  .long 0xaa1503e0\n  .long 0x91002000\n  .long 0xd65f03c0\n.subsections_via_symbols\n")
+if(NOT ACTUAL_TRUE_ASSEMBLY STREQUAL EXPECTED_TRUE_ASSEMBLY)
+  message(FATAL_ERROR "Assembly-only true-func artifact did not match the expected ARM64 code")
+endif()
+
+file(WRITE "${TRUE_PAIRED_ASSEMBLY}" "old true assembly\n")
+file(WRITE "${TRUE_EXPORTS}" "old true exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${TRUE_INPUT}"
+          --function true-func
+          --output "${TRUE_PAIRED_ASSEMBLY}"
+          --exports-output "${TRUE_EXPORTS}"
+          --symbol goalpad_aot_true_func
+  RESULT_VARIABLE TRUE_PAIRED_RESULT)
+if(TRUE_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted true-func native export metadata")
+endif()
+
+file(READ "${TRUE_PAIRED_ASSEMBLY}" ACTUAL_TRUE_PAIRED_ASSEMBLY)
+file(READ "${TRUE_EXPORTS}" ACTUAL_TRUE_EXPORTS)
+if(NOT ACTUAL_TRUE_PAIRED_ASSEMBLY STREQUAL "old true assembly\n" OR
+   NOT ACTUAL_TRUE_EXPORTS STREQUAL "old true exports\n")
+  message(FATAL_ERROR "Rejected true-func native export modified an existing artifact")
 endif()
 
 execute_process(

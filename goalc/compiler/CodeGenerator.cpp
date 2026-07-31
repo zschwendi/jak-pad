@@ -535,6 +535,15 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       env->name() == "false-func" && value_reset && value_reset->has_no_args() && false_value &&
       false_value->name() == "#f" && dynamic_cast<IR_Return*>(code.at(2).get()) &&
       dynamic_cast<IR_Null*>(code.at(3).get());
+  const auto* true_value =
+      code.size() == 4 ? dynamic_cast<IR_LoadSymbolPointer*>(code.at(1).get()) : nullptr;
+  const auto* true_return =
+      code.size() == 4 ? dynamic_cast<IR_Return*>(code.at(2).get()) : nullptr;
+  const bool supported_true_function =
+      env->name() == "true-func" && value_reset && value_reset->has_no_args() && true_value &&
+      true_value->name() == "#t" && true_return &&
+      true_return->value() == true_value->destination() &&
+      dynamic_cast<IR_Null*>(code.at(3).get());
   const auto* identity_value_reset =
       code.size() == 4 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
   const auto* identity_move =
@@ -560,10 +569,11 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       identity_return->value() == identity_move->destination() &&
       identity_argument_uses_apple_abi &&
       dynamic_cast<IR_Null*>(code.at(3).get());
-  if (!supported_top_level && !supported_false_function && !supported_identity_function) {
+  if (!supported_top_level && !supported_false_function && !supported_true_function &&
+      !supported_identity_function) {
     throw std::runtime_error(
         "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "
-        "Jak 1 false function or one-argument identity function.");
+        "Jak 1 false or true function or one-argument identity function.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());

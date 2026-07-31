@@ -305,10 +305,6 @@ void IR_LoadSymbolPointer::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_LoadSymbolPointer::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                             const AllocationResult& allocs,
                                             emitter::IR_Record irec) {
-  if (m_name != "#f") {
-    throw std::runtime_error("ARM64 AOT proof only supports the #f symbol pointer.");
-  }
-  static_assert(false_symbol_offset() == 0, "false symbol location");
   if (m_dest->ireg().reg_class != RegClass::GPR_64) {
     throw std::runtime_error("ARM64 AOT proof only supports GPR symbol pointers.");
   }
@@ -318,7 +314,20 @@ void IR_LoadSymbolPointer::do_codegen_arm64(emitter::ObjectGenerator* gen,
     throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR symbol destination.");
   }
   const auto st_reg = get_register_info(gen->instr_set()).get_st_reg();
-  gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, st_reg), irec);
+  if (m_name == "#f") {
+    static_assert(false_symbol_offset() == 0, "false symbol location");
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, st_reg), irec);
+  } else if (m_name == "#t") {
+    if (gen->version() != GameVersion::Jak1) {
+      throw std::runtime_error("ARM64 AOT proof only supports the Jak 1 #t symbol pointer.");
+    }
+    static_assert(true_symbol_offset(GameVersion::Jak1) == 0x8, "Jak 1 true symbol location");
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, st_reg), irec);
+    gen->add_instr(IGen::add_gpr64_imm8s(*gen, dest_reg, true_symbol_offset(GameVersion::Jak1)),
+                   irec);
+  } else {
+    throw std::runtime_error("ARM64 AOT proof only supports the #f or #t symbol pointer.");
+  }
 }
 
 /////////////////////
