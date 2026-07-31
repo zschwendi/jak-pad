@@ -20,13 +20,15 @@ struct Options {
   std::string symbol = "goalpad_aot_entry";
   std::optional<std::string> function_name;
   std::optional<std::string> exports_output_path;
+  std::optional<std::string> symbol_value_offset_output_path;
 };
 
 void print_usage() {
   std::fprintf(stderr,
                "Usage: goalc-aot --input SOURCE.gc --output BUILD_OUTPUT.s "
                "[--project-path OPENGOAL_ROOT] [--symbol C_SYMBOL] "
-               "[--function GOAL_FUNCTION] [--exports-output BUILD_OUTPUT.inc]\n");
+               "[--function GOAL_FUNCTION] [--exports-output BUILD_OUTPUT.inc] "
+               "[--symbol-value-offset-output BUILD_OUTPUT.inc]\n");
 }
 
 bool parse_options(int argc, char** argv, Options* options) {
@@ -37,7 +39,8 @@ bool parse_options(int argc, char** argv, Options* options) {
       return false;
     }
     if (argument == "--input" || argument == "--output" || argument == "--project-path" ||
-        argument == "--symbol" || argument == "--function" || argument == "--exports-output") {
+        argument == "--symbol" || argument == "--function" || argument == "--exports-output" ||
+        argument == "--symbol-value-offset-output") {
       if (++i == argc) {
         std::fprintf(stderr, "Missing value for %s\n", argument.c_str());
         return false;
@@ -52,8 +55,10 @@ bool parse_options(int argc, char** argv, Options* options) {
         options->symbol = argv[i];
       } else if (argument == "--function") {
         options->function_name = argv[i];
-      } else {
+      } else if (argument == "--exports-output") {
         options->exports_output_path = argv[i];
+      } else {
+        options->symbol_value_offset_output_path = argv[i];
       }
       continue;
     }
@@ -68,6 +73,14 @@ bool parse_options(int argc, char** argv, Options* options) {
   }
   if (options->exports_output_path && !options->function_name) {
     std::fprintf(stderr, "--exports-output requires --function.\n");
+    return false;
+  }
+  if (options->symbol_value_offset_output_path && !options->function_name) {
+    std::fprintf(stderr, "--symbol-value-offset-output requires --function.\n");
+    return false;
+  }
+  if (options->symbol_value_offset_output_path && !options->exports_output_path) {
+    std::fprintf(stderr, "--symbol-value-offset-output requires --exports-output.\n");
     return false;
   }
   return true;
@@ -112,38 +125,68 @@ int main(int argc, char** argv) {
         output_paths_alias(options.output_path, *options.exports_output_path)) {
       throw std::invalid_argument("--exports-output must differ from --output");
     }
+    if (options.symbol_value_offset_output_path &&
+        output_paths_alias(options.output_path, *options.symbol_value_offset_output_path)) {
+      throw std::invalid_argument("--symbol-value-offset-output must differ from --output");
+    }
+    if (options.exports_output_path && options.symbol_value_offset_output_path &&
+        output_paths_alias(*options.exports_output_path,
+                           *options.symbol_value_offset_output_path)) {
+      throw std::invalid_argument(
+          "--symbol-value-offset-output must differ from --exports-output");
+    }
 
     Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
     const auto source = file_util::read_text_file(options.input_path);
-    const auto code =
-        compiler.compile_arm64_aot_source(source, options.input_path, options.function_name);
-    if (options.exports_output_path) {
-      if (*options.function_name == "false-func" || *options.function_name == "true-func") {
-        aot::write_apple_arm64_artifact_pair(options.output_path, *options.exports_output_path,
-                                             {options.symbol, code},
-                                             aot::NativeExport0{*options.function_name, options.symbol});
-      } else if (*options.function_name == "identity" || *options.function_name == "lognot" ||
-                 *options.function_name == "glst-node-name" || *options.function_name == "reset!") {
-        aot::write_apple_arm64_artifact_pair(
-            options.output_path, *options.exports_output_path, {options.symbol, code},
-            aot::NativeExport1{*options.function_name, options.symbol});
-      } else if (*options.function_name == "level-group-load-commands-set!" ||
-                 *options.function_name == "want-vis") {
-        aot::write_apple_arm64_artifact_pair(
-            options.output_path, *options.exports_output_path, {options.symbol, code},
-            aot::NativeExport2{*options.function_name, options.symbol});
-      } else if (*options.function_name == "want-levels") {
-        aot::write_apple_arm64_artifact_pair(
-            options.output_path, *options.exports_output_path, {options.symbol, code},
-            aot::NativeExport3{*options.function_name, options.symbol});
-      } else {
+    if (options.function_name && *options.function_name == "load-state-value") {
+      if (!options.exports_output_path || !options.symbol_value_offset_output_path) {
         throw std::invalid_argument(
-            "AOT native export proof only supports false-func, true-func, identity, lognot, or "
-            "glst-node-name, reset!, level-group-load-commands-set!, want-vis, or want-levels "
-            "function artifacts");
+            "load-state-value requires --exports-output and --symbol-value-offset-output");
       }
+      compiler.validate_arm64_aot_load_state_value_source(source, options.input_path,
+                                                           options.function_name);
+      aot::write_apple_arm64_load_state_value_artifact(
+          options.output_path, *options.exports_output_path,
+          *options.symbol_value_offset_output_path, {options.symbol},
+          aot::NativeExport0{*options.function_name, options.symbol},
+          aot::SymbolValueOffset32{"jak1", "*load-state*", "load-state",
+                                   "goalpad_aot_jak1_load_state_symbol_offset"});
     } else {
-      aot::write_apple_arm64_assembly(options.output_path, {options.symbol, code});
+      if (options.symbol_value_offset_output_path) {
+        throw std::invalid_argument(
+            "--symbol-value-offset-output only supports the load-state-value artifact");
+      }
+      const auto code =
+          compiler.compile_arm64_aot_source(source, options.input_path, options.function_name);
+      if (options.exports_output_path) {
+        if (*options.function_name == "false-func" || *options.function_name == "true-func") {
+          aot::write_apple_arm64_artifact_pair(
+              options.output_path, *options.exports_output_path, {options.symbol, code},
+              aot::NativeExport0{*options.function_name, options.symbol});
+        } else if (*options.function_name == "identity" || *options.function_name == "lognot" ||
+                   *options.function_name == "glst-node-name" ||
+                   *options.function_name == "reset!") {
+          aot::write_apple_arm64_artifact_pair(
+              options.output_path, *options.exports_output_path, {options.symbol, code},
+              aot::NativeExport1{*options.function_name, options.symbol});
+        } else if (*options.function_name == "level-group-load-commands-set!" ||
+                   *options.function_name == "want-vis") {
+          aot::write_apple_arm64_artifact_pair(
+              options.output_path, *options.exports_output_path, {options.symbol, code},
+              aot::NativeExport2{*options.function_name, options.symbol});
+        } else if (*options.function_name == "want-levels") {
+          aot::write_apple_arm64_artifact_pair(
+              options.output_path, *options.exports_output_path, {options.symbol, code},
+              aot::NativeExport3{*options.function_name, options.symbol});
+        } else {
+          throw std::invalid_argument(
+              "AOT native export proof only supports false-func, true-func, identity, lognot, or "
+              "glst-node-name, reset!, level-group-load-commands-set!, want-vis, or want-levels "
+              "function artifacts");
+        }
+      } else {
+        aot::write_apple_arm64_assembly(options.output_path, {options.symbol, code});
+      }
     }
   } catch (const std::exception& error) {
     std::fprintf(stderr, "goalc-aot: %s\n", error.what());

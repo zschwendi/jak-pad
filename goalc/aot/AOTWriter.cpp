@@ -42,14 +42,24 @@ void validate(const AppleArm64Function& function) {
   }
 }
 
+void validate(const AppleArm64LoadStateValueFunction& function) {
+  if (function.c_symbol != "goalpad_aot_load_state_value") {
+    throw std::invalid_argument(
+        "AOT load-state value proof requires goalpad_aot_load_state_value");
+  }
+}
+
 void validate(const NativeExport0& native_export) {
   const bool is_false_func = native_export.goal_name == "false-func" &&
                              native_export.c_symbol == "goalpad_aot_false_func";
   const bool is_true_func = native_export.goal_name == "true-func" &&
                             native_export.c_symbol == "goalpad_aot_true_func";
-  if (!is_false_func && !is_true_func) {
+  const bool is_load_state_value = native_export.goal_name == "load-state-value" &&
+                                   native_export.c_symbol == "goalpad_aot_load_state_value";
+  if (!is_false_func && !is_true_func && !is_load_state_value) {
     throw std::invalid_argument(
-        "AOT native export proof only supports false-func or true-func zero-argument artifacts");
+        "AOT native export proof only supports false-func, true-func, or load-state-value "
+        "zero-argument artifacts");
   }
 }
 
@@ -91,6 +101,16 @@ void validate(const NativeExport3& native_export) {
     throw std::invalid_argument(
         "AOT native export proof only supports want-levels as "
         "goalpad_aot_load_state_want_levels three-argument artifacts");
+  }
+}
+
+void validate(const SymbolValueOffset32& offset) {
+  if (offset.game_name != "jak1" || offset.goal_name != "*load-state*" ||
+      offset.value_type != "load-state" ||
+      offset.c_symbol != "goalpad_aot_jak1_load_state_symbol_offset") {
+    throw std::invalid_argument(
+        "AOT symbol-value-offset proof only supports Jak 1 *load-state* load-state values as "
+        "goalpad_aot_jak1_load_state_symbol_offset");
   }
 }
 
@@ -201,6 +221,102 @@ void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
   }
 }
 
+void write_apple_arm64_artifact_triplet(const std::string& assembly_output_path,
+                                        const std::string& export_output_path,
+                                        const std::string& data_output_path,
+                                        const std::string& assembly,
+                                        const std::string& native_export_source,
+                                        const std::string& data_source) {
+  if (normalized_path(assembly_output_path) == normalized_path(export_output_path) ||
+      normalized_path(assembly_output_path) == normalized_path(data_output_path) ||
+      normalized_path(export_output_path) == normalized_path(data_output_path)) {
+    throw std::invalid_argument("AOT assembly, export, and data output paths must differ");
+  }
+  validate_output_destination(assembly_output_path);
+  validate_output_destination(export_output_path);
+  validate_output_destination(data_output_path);
+  std::vector<std::filesystem::path> reserved_paths = {
+      assembly_output_path, export_output_path, data_output_path};
+  const auto assembly_staging_path =
+      make_auxiliary_path(assembly_output_path, "new", reserved_paths);
+  reserved_paths.push_back(assembly_staging_path);
+  const auto export_staging_path = make_auxiliary_path(export_output_path, "new", reserved_paths);
+  reserved_paths.push_back(export_staging_path);
+  const auto data_staging_path = make_auxiliary_path(data_output_path, "new", reserved_paths);
+  reserved_paths.push_back(data_staging_path);
+  const auto assembly_backup_path =
+      make_auxiliary_path(assembly_output_path, "backup", reserved_paths);
+  reserved_paths.push_back(assembly_backup_path);
+  const auto export_backup_path = make_auxiliary_path(export_output_path, "backup", reserved_paths);
+  reserved_paths.push_back(export_backup_path);
+  const auto data_backup_path = make_auxiliary_path(data_output_path, "backup", reserved_paths);
+  bool assembly_backup_created = false;
+  bool export_backup_created = false;
+  bool data_backup_created = false;
+  bool assembly_published = false;
+  bool export_published = false;
+  bool data_published = false;
+
+  try {
+    write_text_output(assembly_staging_path, assembly);
+    write_text_output(export_staging_path, native_export_source);
+    write_text_output(data_staging_path, data_source);
+    if (std::filesystem::exists(assembly_output_path)) {
+      std::filesystem::rename(assembly_output_path, assembly_backup_path);
+      assembly_backup_created = true;
+    }
+    if (std::filesystem::exists(export_output_path)) {
+      std::filesystem::rename(export_output_path, export_backup_path);
+      export_backup_created = true;
+    }
+    if (std::filesystem::exists(data_output_path)) {
+      std::filesystem::rename(data_output_path, data_backup_path);
+      data_backup_created = true;
+    }
+    std::filesystem::rename(assembly_staging_path, assembly_output_path);
+    assembly_published = true;
+    std::filesystem::rename(export_staging_path, export_output_path);
+    export_published = true;
+    std::filesystem::rename(data_staging_path, data_output_path);
+    data_published = true;
+  } catch (...) {
+    std::error_code ignored_error;
+    if (assembly_published) {
+      std::filesystem::remove(assembly_output_path, ignored_error);
+    }
+    if (export_published) {
+      std::filesystem::remove(export_output_path, ignored_error);
+    }
+    if (data_published) {
+      std::filesystem::remove(data_output_path, ignored_error);
+    }
+    if (assembly_backup_created) {
+      std::filesystem::rename(assembly_backup_path, assembly_output_path, ignored_error);
+    }
+    if (export_backup_created) {
+      std::filesystem::rename(export_backup_path, export_output_path, ignored_error);
+    }
+    if (data_backup_created) {
+      std::filesystem::rename(data_backup_path, data_output_path, ignored_error);
+    }
+    std::filesystem::remove(assembly_staging_path, ignored_error);
+    std::filesystem::remove(export_staging_path, ignored_error);
+    std::filesystem::remove(data_staging_path, ignored_error);
+    throw;
+  }
+
+  std::error_code ignored_error;
+  if (assembly_backup_created) {
+    std::filesystem::remove(assembly_backup_path, ignored_error);
+  }
+  if (export_backup_created) {
+    std::filesystem::remove(export_backup_path, ignored_error);
+  }
+  if (data_backup_created) {
+    std::filesystem::remove(data_backup_path, ignored_error);
+  }
+}
+
 }  // namespace
 
 std::string render_apple_arm64_assembly(const AppleArm64Function& function) {
@@ -219,6 +335,23 @@ std::string render_apple_arm64_assembly(const AppleArm64Function& function) {
 
   output << ".subsections_via_symbols\n";
   return output.str();
+}
+
+std::string render_apple_arm64_load_state_value_assembly(
+    const AppleArm64LoadStateValueFunction& function) {
+  validate(function);
+
+  return ".section __TEXT,__text,regular,pure_instructions\n"
+         ".p2align 2\n"
+         ".globl _goalpad_aot_load_state_value\n"
+         ".extern _goalpad_aot_jak1_load_state_symbol_offset\n"
+         "_goalpad_aot_load_state_value:\n"
+         "  adrp x16, _goalpad_aot_jak1_load_state_symbol_offset@PAGE\n"
+         "  ldrsw x16, [x16, _goalpad_aot_jak1_load_state_symbol_offset@PAGEOFF]\n"
+         "  add x16, x21, x16\n"
+         "  ldr w0, [x16, x22]\n"
+         "  ret\n"
+         ".subsections_via_symbols\n";
 }
 
 void write_apple_arm64_assembly(const std::string& output_path,
@@ -283,6 +416,18 @@ std::string render_cpp_xmacro_export3(const NativeExport3& native_export) {
   return output.str();
 }
 
+std::string render_cpp_xmacro_symbol_value_offset32(const SymbolValueOffset32& offset) {
+  validate(offset);
+  std::ostringstream output;
+  output << "#ifndef OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32\n"
+         << "#error \"Define OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32 before including this file.\"\n"
+         << "#endif\n"
+         << "OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32(\"" << offset.game_name << "\", \""
+         << offset.goal_name << "\", \"" << offset.value_type << "\", " << offset.c_symbol
+         << ")\n";
+  return output.str();
+}
+
 void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
                                      const std::string& export_output_path,
                                      const AppleArm64Function& function,
@@ -291,6 +436,20 @@ void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
   const auto native_export_source = render_cpp_xmacro_export0(native_export);
   write_apple_arm64_artifact_pair(assembly_output_path, export_output_path, assembly,
                                   native_export_source);
+}
+
+void write_apple_arm64_load_state_value_artifact(
+    const std::string& assembly_output_path,
+    const std::string& export_output_path,
+    const std::string& data_output_path,
+    const AppleArm64LoadStateValueFunction& function,
+    const NativeExport0& native_export,
+    const SymbolValueOffset32& offset) {
+  const auto assembly = render_apple_arm64_load_state_value_assembly(function);
+  const auto native_export_source = render_cpp_xmacro_export0(native_export);
+  const auto data_source = render_cpp_xmacro_symbol_value_offset32(offset);
+  write_apple_arm64_artifact_triplet(assembly_output_path, export_output_path, data_output_path,
+                                     assembly, native_export_source, data_source);
 }
 
 void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,

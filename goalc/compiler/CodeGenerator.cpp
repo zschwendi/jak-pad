@@ -586,6 +586,68 @@ CodeGenerator::CodeGenerator(FileEnv* env,
                              InstructionSet instruction_set)
     : m_gen(version, instruction_set), m_fe(env), m_debug_info(debug_info) {}
 
+FunctionEnv* CodeGenerator::select_arm64_aot_function(
+    const std::optional<std::string>& function_name) {
+  if (m_gen.instr_set() != InstructionSet::ARM64) {
+    throw std::runtime_error("ARM64 AOT proof requires the ARM64 instruction set.");
+  }
+  if (!m_fe->statics().empty()) {
+    throw std::runtime_error("ARM64 AOT proof does not support static data or relocations.");
+  }
+
+  FunctionEnv* function = nullptr;
+  if (function_name) {
+    size_t matching_functions = 0;
+    for (const auto& candidate : m_fe->functions()) {
+      if (candidate->name() == *function_name) {
+        function = candidate.get();
+        matching_functions++;
+      }
+    }
+    if (!function) {
+      throw std::runtime_error(
+          fmt::format("ARM64 AOT function '{}' was not found in the compiled source.", *function_name));
+    }
+    if (matching_functions != 1) {
+      throw std::runtime_error(
+          fmt::format("ARM64 AOT function '{}' is defined more than once.", *function_name));
+    }
+    if (m_fe->functions().size() != 2) {
+      throw std::runtime_error(
+          "Named ARM64 AOT proof requires exactly one function and its top-level installer.");
+    }
+
+    const auto& installer = m_fe->top_level_function().code();
+    const auto* function_address =
+        installer.size() == 4 ? dynamic_cast<IR_FunctionAddr*>(installer.at(0).get()) : nullptr;
+    const auto* symbol_value =
+        installer.size() == 4 ? dynamic_cast<IR_SetSymbolValue*>(installer.at(1).get()) : nullptr;
+    const bool supported_installer =
+        function_address && symbol_value && dynamic_cast<IR_Return*>(installer.at(2).get()) &&
+        dynamic_cast<IR_Null*>(installer.at(3).get()) && function_address->function() == function &&
+        symbol_value->source() == function_address->destination() &&
+        symbol_value->destination()->name() == *function_name;
+    if (!supported_installer) {
+      throw std::runtime_error(
+          "Named ARM64 AOT proof only supports an unmodified top-level defun installer.");
+    }
+  } else {
+    if (m_fe->functions().size() != 1) {
+      throw std::runtime_error("ARM64 AOT proof only supports one top-level function.");
+    }
+    const auto* top_level = &m_fe->top_level_function();
+    for (const auto& candidate : m_fe->functions()) {
+      if (candidate.get() == top_level) {
+        function = candidate.get();
+        break;
+      }
+    }
+    ASSERT(function);
+  }
+
+  return function;
+}
+
 /*!
  * Generate an object file.
  */
@@ -628,62 +690,7 @@ std::vector<u8> CodeGenerator::run(const TypeSystem* ts) {
 
 std::vector<u8> CodeGenerator::run_arm64_aot_function(
     const std::optional<std::string>& function_name) {
-  if (m_gen.instr_set() != InstructionSet::ARM64) {
-    throw std::runtime_error("ARM64 AOT proof requires the ARM64 instruction set.");
-  }
-  if (!m_fe->statics().empty()) {
-    throw std::runtime_error("ARM64 AOT proof does not support static data or relocations.");
-  }
-
-  FunctionEnv* function = nullptr;
-  if (function_name) {
-    size_t matching_functions = 0;
-    for (const auto& candidate : m_fe->functions()) {
-      if (candidate->name() == *function_name) {
-        function = candidate.get();
-        matching_functions++;
-      }
-    }
-    if (!function) {
-      throw std::runtime_error(fmt::format(
-          "ARM64 AOT function '{}' was not found in the compiled source.", *function_name));
-    }
-    if (matching_functions != 1) {
-      throw std::runtime_error(
-          fmt::format("ARM64 AOT function '{}' is defined more than once.", *function_name));
-    }
-    if (m_fe->functions().size() != 2) {
-      throw std::runtime_error(
-          "Named ARM64 AOT proof requires exactly one function and its top-level installer.");
-    }
-
-    const auto& installer = m_fe->top_level_function().code();
-    const auto* function_address =
-        installer.size() == 4 ? dynamic_cast<IR_FunctionAddr*>(installer.at(0).get()) : nullptr;
-    const auto* symbol_value =
-        installer.size() == 4 ? dynamic_cast<IR_SetSymbolValue*>(installer.at(1).get()) : nullptr;
-    const bool supported_installer =
-        function_address && symbol_value && dynamic_cast<IR_Return*>(installer.at(2).get()) &&
-        dynamic_cast<IR_Null*>(installer.at(3).get()) && function_address->function() == function &&
-        symbol_value->source() == function_address->destination() &&
-        symbol_value->destination()->name() == *function_name;
-    if (!supported_installer) {
-      throw std::runtime_error(
-          "Named ARM64 AOT proof only supports an unmodified top-level defun installer.");
-    }
-  } else {
-    if (m_fe->functions().size() != 1) {
-      throw std::runtime_error("ARM64 AOT proof only supports one top-level function.");
-    }
-    const auto* top_level = &m_fe->top_level_function();
-    for (const auto& candidate : m_fe->functions()) {
-      if (candidate.get() == top_level) {
-        function = candidate.get();
-        break;
-      }
-    }
-    ASSERT(function);
-  }
+  auto* function = select_arm64_aot_function(function_name);
 
   auto rec = m_gen.add_function_to_seg(function->segment,
                                        &m_debug_info->add_function(function->name(), m_fe->name()));
@@ -697,6 +704,66 @@ std::vector<u8> CodeGenerator::run_arm64_aot_function(
 
   do_goal_function_arm64(function, 0);
   return m_gen.materialize_arm64_function(rec);
+}
+
+void CodeGenerator::validate_arm64_aot_load_state_value_function(
+    const std::optional<std::string>& function_name) {
+  if (!function_name || *function_name != "load-state-value") {
+    throw std::runtime_error("ARM64 AOT load-state value proof requires load-state-value.");
+  }
+
+  const auto* function = select_arm64_aot_function(function_name);
+  const auto& code = function->code();
+  const auto* reset = code.size() == 4 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
+  const auto* symbol_value =
+      code.size() == 4 ? dynamic_cast<IR_GetSymbolValue*>(code.at(1).get()) : nullptr;
+  const auto* function_return =
+      code.size() == 4 ? dynamic_cast<IR_Return*>(code.at(2).get()) : nullptr;
+  const auto& allocations = function->allocations();
+  const auto is_allocated_to = [&allocations](const RegVal* value,
+                                              int instruction,
+                                              emitter::Register expected) {
+    if (!value) {
+      return false;
+    }
+    const auto ireg_id = value->ireg().id;
+    if (ireg_id < 0 || ireg_id >= int(allocations.ass_as_ranges.size())) {
+      return false;
+    }
+    const auto& assignments = allocations.ass_as_ranges.at(ireg_id);
+    if (!assignments.is_live_at_instr(instruction)) {
+      return false;
+    }
+    const auto& assignment = assignments.get(instruction);
+    return assignment.kind == Assignment::Kind::REGISTER && assignment.reg == expected;
+  };
+  const auto abi_return_register = get_register_info(InstructionSet::ARM64).get_gpr_ret_reg();
+  const bool has_no_spill_ops = std::all_of(
+      allocations.stack_ops.begin(), allocations.stack_ops.end(),
+      [](const auto& operations) { return operations.ops.empty(); });
+  const bool has_no_frame_state = allocations.ok && allocations.used_saved_regs.empty() &&
+                                  allocations.stack_slots_for_spills == 0 &&
+                                  allocations.stack_slots_for_vars == 0 &&
+                                  has_no_spill_ops &&
+                                  !allocations.needs_aligned_stack_for_spills &&
+                                  !function->needs_aligned_stack() &&
+                                  function->stack_slots_used_for_stack_vars() == 0;
+  const bool supported =
+      reset && reset->has_no_args() && symbol_value && function_return &&
+      dynamic_cast<IR_Null*>(code.at(3).get()) && function->name() == "load-state-value" &&
+      function->params.empty() && function->code_source().size() == 4 && has_no_frame_state &&
+      symbol_value->source()->name() == "*load-state*" &&
+      symbol_value->destination()->type() == TypeSpec("load-state") && !symbol_value->sign_extend() &&
+      function_return->value() == symbol_value->destination() &&
+      function_return->return_register()->type() == TypeSpec("none") &&
+      is_allocated_to(symbol_value->destination(), 1, abi_return_register) &&
+      is_allocated_to(symbol_value->destination(), 2, abi_return_register) &&
+      is_allocated_to(function_return->return_register(), 2, abi_return_register);
+  if (!supported) {
+    throw std::runtime_error(
+        "ARM64 AOT load-state value proof only supports an unsigned *load-state* read with no "
+        "arguments, method lookup, or function call.");
+  }
 }
 
 void CodeGenerator::do_function(FunctionEnv* env, int f_idx) {

@@ -89,6 +89,12 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
       "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1LoadStateReset.s")
   set(ARM64_GOAL_CALL_AOT_LOAD_STATE_RESET_EXPORTS
       "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1LoadStateReset.exports.h")
+  set(ARM64_GOAL_CALL_AOT_LOAD_STATE_VALUE_ASSEMBLY
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1LoadStateValue.s")
+  set(ARM64_GOAL_CALL_AOT_LOAD_STATE_VALUE_EXPORTS
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1LoadStateValue.exports.h")
+  set(ARM64_GOAL_CALL_AOT_LOAD_STATE_VALUE_SYMBOL_VALUE_OFFSET
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1LoadStateValue.symbol-value-offset.h")
   set(ARM64_GOAL_CALL_AOT_ASSEMBLIES
       ${ARM64_GOAL_CALL_AOT_FALSE_ASSEMBLY}
       ${ARM64_GOAL_CALL_AOT_TRUE_ASSEMBLY}
@@ -98,8 +104,9 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
       ${ARM64_GOAL_CALL_AOT_LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY}
       ${ARM64_GOAL_CALL_AOT_WANT_VIS_ASSEMBLY}
       ${ARM64_GOAL_CALL_AOT_WANT_LEVELS_ASSEMBLY}
-      ${ARM64_GOAL_CALL_AOT_LOAD_STATE_RESET_ASSEMBLY})
-  set(ARM64_GOAL_CALL_AOT_EXPORTS
+      ${ARM64_GOAL_CALL_AOT_LOAD_STATE_RESET_ASSEMBLY}
+      ${ARM64_GOAL_CALL_AOT_LOAD_STATE_VALUE_ASSEMBLY})
+  set(ARM64_GOAL_CALL_AOT_METADATA
       ${ARM64_GOAL_CALL_AOT_FALSE_EXPORTS}
       ${ARM64_GOAL_CALL_AOT_TRUE_EXPORTS}
       ${ARM64_GOAL_CALL_AOT_IDENTITY_EXPORTS}
@@ -108,10 +115,12 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
       ${ARM64_GOAL_CALL_AOT_LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS}
       ${ARM64_GOAL_CALL_AOT_WANT_VIS_EXPORTS}
       ${ARM64_GOAL_CALL_AOT_WANT_LEVELS_EXPORTS}
-      ${ARM64_GOAL_CALL_AOT_LOAD_STATE_RESET_EXPORTS})
+      ${ARM64_GOAL_CALL_AOT_LOAD_STATE_RESET_EXPORTS}
+      ${ARM64_GOAL_CALL_AOT_LOAD_STATE_VALUE_EXPORTS}
+      ${ARM64_GOAL_CALL_AOT_LOAD_STATE_VALUE_SYMBOL_VALUE_OFFSET})
 
   add_custom_command(
-      OUTPUT ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_EXPORTS}
+      OUTPUT ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_METADATA}
       COMMAND ${CMAKE_COMMAND} -E make_directory "${ARM64_GOAL_CALL_AOT_DIR}"
       COMMAND $<TARGET_FILE:goalc-aot>
               --project-path "${CMAKE_SOURCE_DIR}"
@@ -185,6 +194,16 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
               --output "${ARM64_GOAL_CALL_AOT_LOAD_STATE_RESET_ASSEMBLY}"
               --exports-output "${ARM64_GOAL_CALL_AOT_LOAD_STATE_RESET_EXPORTS}"
               --symbol goalpad_aot_load_state_reset
+      COMMAND $<TARGET_FILE:goalc-aot>
+              --project-path "${CMAKE_SOURCE_DIR}"
+              --input
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-load-state-value-from-jak1-load-boundary.gc"
+              --function load-state-value
+              --output "${ARM64_GOAL_CALL_AOT_LOAD_STATE_VALUE_ASSEMBLY}"
+              --exports-output "${ARM64_GOAL_CALL_AOT_LOAD_STATE_VALUE_EXPORTS}"
+              --symbol-value-offset-output
+              "${ARM64_GOAL_CALL_AOT_LOAD_STATE_VALUE_SYMBOL_VALUE_OFFSET}"
+              --symbol goalpad_aot_load_state_value
       DEPENDS
               goalc-aot
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-false-func-from-jak1-gcommon.gc"
@@ -196,17 +215,18 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-want-vis-from-jak1-load-boundary.gc"
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-want-levels-from-jak1-load-boundary.gc"
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-load-state-reset-from-jak1-load-boundary.gc"
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-load-state-value-from-jak1-load-boundary.gc"
       COMMENT "Generating Jak 1 ARM64 AOT call artifacts"
       VERBATIM)
 
   add_custom_target(
       arm64-goal-call-aot-artifacts
-      DEPENDS ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_EXPORTS})
+      DEPENDS ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_METADATA})
   set_source_files_properties(
-      ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_EXPORTS}
+      ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_METADATA}
       PROPERTIES GENERATED TRUE)
   set_source_files_properties(
-      ${ARM64_GOAL_CALL_AOT_EXPORTS}
+      ${ARM64_GOAL_CALL_AOT_METADATA}
       PROPERTIES HEADER_FILE_ONLY TRUE)
 
   add_executable(arm64-goal-call-abi-test
@@ -214,7 +234,7 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
                  ${CMAKE_CURRENT_LIST_DIR}/test_arm64_goal_call_abi.s
                  ${CMAKE_SOURCE_DIR}/game/kernel/asm_funcs_arm64.s
                  ${ARM64_GOAL_CALL_AOT_ASSEMBLIES}
-                 ${ARM64_GOAL_CALL_AOT_EXPORTS})
+                 ${ARM64_GOAL_CALL_AOT_METADATA})
   add_dependencies(arm64-goal-call-abi-test arm64-goal-call-aot-artifacts)
   target_include_directories(arm64-goal-call-abi-test
                              PRIVATE "${ARM64_GOAL_CALL_AOT_DIR}")

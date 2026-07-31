@@ -74,6 +74,11 @@ std::string read_load_state_reset_source() {
       {"test/goalc/source_templates/arm64-aot/full-load-state-reset-from-jak1-load-boundary.gc"}));
 }
 
+std::string read_load_state_value_source() {
+  return file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-load-state-value-from-jak1-load-boundary.gc"}));
+}
+
 void replace_once(std::string& source,
                   const std::string& expected,
                   const std::string& replacement) {
@@ -93,6 +98,13 @@ void expect_load_state_reset_rejected(const std::string& source, const std::stri
   Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
   EXPECT_THROW(compiler.compile_arm64_aot_source(source, object_name,
                                                  std::optional<std::string>{"reset!"}),
+               std::runtime_error);
+}
+
+void expect_load_state_value_rejected(const std::string& source, const std::string& object_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  EXPECT_THROW(compiler.validate_arm64_aot_load_state_value_source(
+                   source, object_name, std::optional<std::string>{"load-state-value"}),
                std::runtime_error);
 }
 
@@ -325,6 +337,95 @@ TEST(Arm64Aot, compiles_full_jak1_load_state_reset_without_name_gating) {
                 renamed_source, "renamed-load-state-reset",
                 std::optional<std::string>{"reset-candidate"}),
             code);
+}
+
+TEST(Arm64Aot, validates_load_state_value_and_renders_signed_symbol_offset_metadata) {
+  const auto source = read_load_state_value_source();
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  EXPECT_NO_THROW(compiler.validate_arm64_aot_load_state_value_source(
+      source, "full-load-state-value-from-jak1-load-boundary",
+      std::optional<std::string>{"load-state-value"}));
+
+  EXPECT_EQ(aot::render_apple_arm64_load_state_value_assembly(
+                {"goalpad_aot_load_state_value"}),
+            ".section __TEXT,__text,regular,pure_instructions\n"
+            ".p2align 2\n"
+            ".globl _goalpad_aot_load_state_value\n"
+            ".extern _goalpad_aot_jak1_load_state_symbol_offset\n"
+            "_goalpad_aot_load_state_value:\n"
+            "  adrp x16, _goalpad_aot_jak1_load_state_symbol_offset@PAGE\n"
+            "  ldrsw x16, [x16, _goalpad_aot_jak1_load_state_symbol_offset@PAGEOFF]\n"
+            "  add x16, x21, x16\n"
+            "  ldr w0, [x16, x22]\n"
+            "  ret\n"
+            ".subsections_via_symbols\n");
+  EXPECT_EQ(aot::render_cpp_xmacro_export0(
+                {"load-state-value", "goalpad_aot_load_state_value"}),
+            "#ifndef OPENGOAL_AOT_EXPORT0\n"
+            "#error \"Define OPENGOAL_AOT_EXPORT0 before including this file.\"\n"
+            "#endif\n"
+            "OPENGOAL_AOT_EXPORT0(\"load-state-value\", goalpad_aot_load_state_value)\n");
+  EXPECT_EQ(aot::render_cpp_xmacro_symbol_value_offset32(
+                {"jak1", "*load-state*", "load-state",
+                 "goalpad_aot_jak1_load_state_symbol_offset"}),
+            "#ifndef OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32\n"
+            "#error \"Define OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32 before including this file.\"\n"
+            "#endif\n"
+            "OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32(\"jak1\", \"*load-state*\", \"load-state\", "
+            "goalpad_aot_jak1_load_state_symbol_offset)\n");
+}
+
+TEST(Arm64Aot, rejects_load_state_value_mutations) {
+  auto source = read_load_state_value_source();
+  replace_once(source, "(defun load-state-value ()", "(defun load-state-value ((arg object))");
+  expect_load_state_value_rejected(source, "load-state-value-with-argument");
+
+  source = read_load_state_value_source();
+  const auto value_position = source.rfind("*load-state*");
+  ASSERT_NE(value_position, std::string::npos);
+  source.replace(value_position, std::string("*load-state*").size(), "#f");
+  expect_load_state_value_rejected(source, "load-state-value-with-false-body");
+
+  source = read_load_state_value_source();
+  replace_once(source, "(define-extern *load-state* load-state)",
+               "(define-extern *load-state* object)");
+  expect_load_state_value_rejected(source, "load-state-value-with-object-global");
+
+  source = read_load_state_value_source();
+  source += "\n0\n";
+  expect_load_state_value_rejected(source, "load-state-value-with-extra-top-level-effect");
+
+  source = read_load_state_value_source();
+  source += "\n(defun another-load-state-value () *load-state*)\n";
+  expect_load_state_value_rejected(source, "load-state-value-with-extra-function");
+
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  EXPECT_THROW(compiler.validate_arm64_aot_load_state_value_source(
+                   read_load_state_value_source(), "load-state-value-under-other-name",
+                   std::optional<std::string>{"other"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_load_state_value_symbol_offset_metadata_mutations) {
+  EXPECT_THROW(aot::render_apple_arm64_load_state_value_assembly({"other-symbol"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"load-state-value", "goalpad_aot_false_func"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_symbol_value_offset32(
+                   {"jak2", "*load-state*", "load-state",
+                    "goalpad_aot_jak1_load_state_symbol_offset"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_symbol_value_offset32(
+                   {"jak1", "*other-state*", "load-state",
+                    "goalpad_aot_jak1_load_state_symbol_offset"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_symbol_value_offset32(
+                   {"jak1", "*load-state*", "object",
+                    "goalpad_aot_jak1_load_state_symbol_offset"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_symbol_value_offset32(
+                   {"jak1", "*load-state*", "load-state", "goalpad_aot_jak1_other_offset"}),
+               std::invalid_argument);
 }
 
 TEST(Arm64Aot, rejects_load_state_reset_with_different_required_body_data) {

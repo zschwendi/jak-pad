@@ -344,6 +344,29 @@ std::vector<u8> Compiler::compile_arm64_aot_source(
   return {};
 }
 
+void Compiler::validate_arm64_aot_load_state_value_source(
+    const std::string& source,
+    const std::string& object_name,
+    const std::optional<std::string>& function_name) {
+  if (m_instr_set != emitter::InstructionSet::ARM64) {
+    throw std::runtime_error("ARM64 AOT load-state value proof requires the ARM64 instruction set.");
+  }
+
+  auto code = m_goos.reader.read_from_string(source, true);
+  auto* object_file = compile_object_file(object_name, std::move(code), true);
+  color_object_file(object_file);
+
+  try {
+    auto debug_info = &m_debugger.get_debug_info_for_object(object_file->name());
+    debug_info->clear();
+    CodeGenerator gen(object_file, debug_info, m_version, m_instr_set);
+    gen.validate_arm64_aot_load_state_value_function(function_name);
+    object_file->cleanup_after_codegen();
+  } catch (std::exception& e) {
+    throw_compiler_error_no_code("Error during ARM64 AOT load-state value validation: {}", e.what());
+  }
+}
+
 std::vector<u8> Compiler::codegen_object_file(FileEnv* env) {
   try {
     auto debug_info = &m_debugger.get_debug_info_for_object(env->name());

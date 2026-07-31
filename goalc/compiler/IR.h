@@ -115,6 +115,9 @@ class IR_GetSymbolValue : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const RegVal* destination() const { return m_dest; }
+  const SymbolVal* source() const { return m_src; }
+  bool sign_extend() const { return m_sext; }
 
  protected:
   const RegVal* m_dest = nullptr;

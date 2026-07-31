@@ -28,9 +28,12 @@ class CodeGenerator {
   std::vector<u8> run(const TypeSystem* ts);
   std::vector<u8> run_arm64_aot_function(
       const std::optional<std::string>& function_name = std::nullopt);
+  void validate_arm64_aot_load_state_value_function(
+      const std::optional<std::string>& function_name);
   emitter::ObjectGeneratorStats get_obj_stats() const { return m_gen.get_stats(); }
 
  private:
+  FunctionEnv* select_arm64_aot_function(const std::optional<std::string>& function_name);
   void do_function(FunctionEnv* env, int f_idx);
   void do_goal_function_x86(FunctionEnv* env, int f_idx);
   void do_goal_function_arm64(FunctionEnv* env, int f_idx);

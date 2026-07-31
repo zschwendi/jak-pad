@@ -83,7 +83,17 @@ extern "C" std::uint64_t arm64_goal_call_false_like_entry(std::uint64_t,
   extern "C" std::uint64_t c_symbol();
 #include "OpenGOALJak1FalseFunc.exports.h"
 #include "OpenGOALJak1TrueFunc.exports.h"
+#include "OpenGOALJak1LoadStateValue.exports.h"
 #undef OPENGOAL_AOT_EXPORT0
+
+#define OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32(game_name, goal_name, value_type, c_symbol) \
+  extern "C" std::int32_t c_symbol;
+#include "OpenGOALJak1LoadStateValue.symbol-value-offset.h"
+#undef OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32
+
+extern "C" {
+std::int32_t goalpad_aot_jak1_load_state_symbol_offset = 0;
+}
 
 #define OPENGOAL_AOT_EXPORT1(goal_name, c_symbol) \
   extern "C" std::uint64_t c_symbol(std::uint64_t);
@@ -126,11 +136,26 @@ struct Arm64GoalExport3 {
   Arm64GoalExport3Entry entry;
 };
 
+struct Arm64GoalSymbolValueOffset32 {
+  std::string_view game_name;
+  std::string_view goal_name;
+  std::string_view value_type;
+  std::int32_t* offset;
+};
+
 constexpr Arm64GoalExport0 kArm64GoalExports0[] = {
 #define OPENGOAL_AOT_EXPORT0(goal_name, c_symbol) {goal_name, &c_symbol},
 #include "OpenGOALJak1FalseFunc.exports.h"
 #include "OpenGOALJak1TrueFunc.exports.h"
+#include "OpenGOALJak1LoadStateValue.exports.h"
 #undef OPENGOAL_AOT_EXPORT0
+};
+
+constexpr Arm64GoalSymbolValueOffset32 kArm64GoalSymbolValueOffsets32[] = {
+#define OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32(game_name, goal_name, value_type, c_symbol) \
+  {game_name, goal_name, value_type, &c_symbol},
+#include "OpenGOALJak1LoadStateValue.symbol-value-offset.h"
+#undef OPENGOAL_AOT_SYMBOL_VALUE_OFFSET32
 };
 
 constexpr Arm64GoalExport1 kArm64GoalExports1[] = {
@@ -157,10 +182,11 @@ constexpr Arm64GoalExport3 kArm64GoalExports3[] = {
 #undef OPENGOAL_AOT_EXPORT3
 };
 
-static_assert(sizeof(kArm64GoalExports0) == 2 * sizeof(Arm64GoalExport0));
+static_assert(sizeof(kArm64GoalExports0) == 3 * sizeof(Arm64GoalExport0));
 static_assert(sizeof(kArm64GoalExports1) == 4 * sizeof(Arm64GoalExport1));
 static_assert(sizeof(kArm64GoalExports2) == 2 * sizeof(Arm64GoalExport2));
 static_assert(sizeof(kArm64GoalExports3) == sizeof(Arm64GoalExport3));
+static_assert(sizeof(kArm64GoalSymbolValueOffsets32) == sizeof(Arm64GoalSymbolValueOffset32));
 
 template <typename Entry>
 std::uintptr_t entry_address(Entry entry) {
@@ -249,6 +275,60 @@ TEST(Arm64GoalCallAbi, calls_a_static_false_like_entry_with_the_symbol_table_reg
 
   EXPECT_EQ(probe.result, kSt);
   expect_caller_registers_restored(probe);
+}
+
+TEST(Arm64GoalCallAbi, reads_live_load_state_symbol_values_through_a_signed_s7_offset_binding) {
+  std::vector<std::byte> arena(jak1::minimum_data_arena_header_size());
+  const auto initialized = jak1::initialize_data_arena_header(arena.data(), arena.size());
+  ASSERT_TRUE(initialized.ok());
+
+  ASSERT_EQ(kArm64GoalExports0[2].goal_name, "load-state-value");
+  ASSERT_NE(kArm64GoalExports0[2].entry, nullptr);
+  ASSERT_EQ(kArm64GoalSymbolValueOffsets32[0].game_name, "jak1");
+  ASSERT_EQ(kArm64GoalSymbolValueOffsets32[0].goal_name, "*load-state*");
+  ASSERT_EQ(kArm64GoalSymbolValueOffsets32[0].value_type, "load-state");
+  ASSERT_EQ(kArm64GoalSymbolValueOffsets32[0].offset,
+            &goalpad_aot_jak1_load_state_symbol_offset);
+
+  const auto st = static_cast<std::uintptr_t>(initialized.header.s7);
+  const auto arena_address = reinterpret_cast<std::uintptr_t>(arena.data());
+  constexpr std::int32_t kFirstSymbolOffset = 0x400;
+  constexpr std::int32_t kSecondSymbolOffset = -0x400;
+  static_assert(kFirstSymbolOffset >= jak1_symbols::FIX_FIXED_SYM_END_OFFSET);
+  static_assert(-kSecondSymbolOffset >= jak1_symbols::FIX_FIXED_SYM_END_OFFSET);
+  ASSERT_GE(st, static_cast<std::uintptr_t>(-kSecondSymbolOffset));
+  ASSERT_LE(st + static_cast<std::uintptr_t>(kFirstSymbolOffset) + sizeof(std::uint32_t),
+            arena.size());
+  const auto first_slot = st + static_cast<std::uintptr_t>(kFirstSymbolOffset);
+  const auto second_slot = st - static_cast<std::uintptr_t>(-kSecondSymbolOffset);
+  ASSERT_EQ(read_u32(arena.data(), first_slot), 0u);
+  ASSERT_EQ(read_u32(arena.data(), second_slot), 0u);
+
+  const auto invoke = [&](std::int32_t symbol_offset) {
+    goalpad_aot_jak1_load_state_symbol_offset = symbol_offset;
+    auto probe = make_probe(entry_address(kArm64GoalExports0[2].entry), st, arena_address);
+    arm64_goal_call_abi_outer(&probe);
+    expect_caller_registers_restored(probe);
+    return probe;
+  };
+
+  write_u32(arena.data(), first_slot, 0u);
+  const auto zero_value = invoke(kFirstSymbolOffset);
+  EXPECT_EQ(zero_value.result, 0u);
+
+  constexpr std::uint32_t kReboundFirstValue = 0x00012345;
+  write_u32(arena.data(), first_slot, kReboundFirstValue);
+  const auto rebound_first_value = invoke(kFirstSymbolOffset);
+  EXPECT_EQ(rebound_first_value.result, kReboundFirstValue);
+  EXPECT_EQ(rebound_first_value.result >> 32, 0u);
+
+  constexpr std::uint32_t kSecondValue = 0x81234567;
+  write_u32(arena.data(), second_slot, kSecondValue);
+  const auto rebound_second_slot = invoke(kSecondSymbolOffset);
+  EXPECT_EQ(rebound_second_slot.result, UINT64_C(0x0000000081234567));
+  EXPECT_EQ(rebound_second_slot.result >> 32, 0u);
+  EXPECT_EQ(read_u32(arena.data(), first_slot), kReboundFirstValue);
+  EXPECT_EQ(read_u32(arena.data(), second_slot), kSecondValue);
 }
 
 TEST(Arm64GoalCallAbi, executes_generated_jak1_aot_artifacts_against_one_data_arena) {

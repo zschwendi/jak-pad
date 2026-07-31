@@ -83,6 +83,10 @@ class Compiler {
   std::vector<u8> compile_arm64_aot_source(const std::string& source,
                                            const std::string& object_name,
                                            const std::optional<std::string>& function_name);
+  void validate_arm64_aot_load_state_value_source(
+      const std::string& source,
+      const std::string& object_name,
+      const std::optional<std::string>& function_name);
   void shutdown_target();
   void enable_throw_on_redefines() { m_throw_on_define_extern_redefinition = true; }
   void add_ignored_define_extern_symbol(const std::string& name) {

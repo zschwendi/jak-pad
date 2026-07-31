@@ -1020,3 +1020,116 @@ if(NOT ACTUAL_WANT_LEVELS_CROSS_ASSEMBLY STREQUAL "old want-levels cross assembl
    NOT ACTUAL_WANT_LEVELS_CROSS_EXPORTS STREQUAL "old want-levels cross exports\n")
   message(FATAL_ERROR "Failed want-levels cross-arity validation modified an existing artifact")
 endif()
+
+set(LOAD_STATE_VALUE_INPUT
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-load-state-value-from-jak1-load-boundary.gc")
+set(LOAD_STATE_VALUE_GOLDEN
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-load-state-value-from-jak1-load-boundary.s")
+set(LOAD_STATE_VALUE_EXPORTS_GOLDEN
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-load-state-value-from-jak1-load-boundary.exports.h")
+set(LOAD_STATE_VALUE_OFFSET_GOLDEN
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-load-state-value-from-jak1-load-boundary.symbol-value-offset.h")
+set(LOAD_STATE_VALUE_ASSEMBLY "${OUTPUT_DIR}/load-state-value.s")
+set(LOAD_STATE_VALUE_EXPORTS "${OUTPUT_DIR}/load-state-value.exports.inc")
+set(LOAD_STATE_VALUE_OFFSET "${OUTPUT_DIR}/load-state-value.symbol-value-offset.inc")
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOAD_STATE_VALUE_INPUT}"
+          --function load-state-value
+          --output "${LOAD_STATE_VALUE_ASSEMBLY}"
+          --exports-output "${LOAD_STATE_VALUE_EXPORTS}"
+          --symbol-value-offset-output "${LOAD_STATE_VALUE_OFFSET}"
+          --symbol goalpad_aot_load_state_value
+  RESULT_VARIABLE LOAD_STATE_VALUE_RESULT)
+if(NOT LOAD_STATE_VALUE_RESULT EQUAL 0)
+  message(FATAL_ERROR "Signed load-state-value goalc-aot invocation failed")
+endif()
+
+file(READ "${LOAD_STATE_VALUE_GOLDEN}" EXPECTED_LOAD_STATE_VALUE_ASSEMBLY)
+file(READ "${LOAD_STATE_VALUE_EXPORTS_GOLDEN}" EXPECTED_LOAD_STATE_VALUE_EXPORTS)
+file(READ "${LOAD_STATE_VALUE_OFFSET_GOLDEN}" EXPECTED_LOAD_STATE_VALUE_OFFSET)
+file(READ "${LOAD_STATE_VALUE_ASSEMBLY}" ACTUAL_LOAD_STATE_VALUE_ASSEMBLY)
+file(READ "${LOAD_STATE_VALUE_EXPORTS}" ACTUAL_LOAD_STATE_VALUE_EXPORTS)
+file(READ "${LOAD_STATE_VALUE_OFFSET}" ACTUAL_LOAD_STATE_VALUE_OFFSET)
+if(NOT ACTUAL_LOAD_STATE_VALUE_ASSEMBLY STREQUAL EXPECTED_LOAD_STATE_VALUE_ASSEMBLY OR
+   NOT ACTUAL_LOAD_STATE_VALUE_EXPORTS STREQUAL EXPECTED_LOAD_STATE_VALUE_EXPORTS OR
+   NOT ACTUAL_LOAD_STATE_VALUE_OFFSET STREQUAL EXPECTED_LOAD_STATE_VALUE_OFFSET)
+  message(FATAL_ERROR "Signed load-state-value artifacts did not match their committed goldens")
+endif()
+
+set(LOAD_STATE_VALUE_MISSING_OFFSET_ASSEMBLY "${OUTPUT_DIR}/load-state-value-missing-offset.s")
+set(LOAD_STATE_VALUE_MISSING_OFFSET_EXPORTS "${OUTPUT_DIR}/load-state-value-missing-offset.exports.inc")
+set(LOAD_STATE_VALUE_MISSING_OFFSET_DATA "${OUTPUT_DIR}/load-state-value-missing-offset.data.inc")
+file(WRITE "${LOAD_STATE_VALUE_MISSING_OFFSET_ASSEMBLY}" "old missing offset assembly\n")
+file(WRITE "${LOAD_STATE_VALUE_MISSING_OFFSET_EXPORTS}" "old missing offset exports\n")
+file(WRITE "${LOAD_STATE_VALUE_MISSING_OFFSET_DATA}" "old missing offset data\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOAD_STATE_VALUE_INPUT}"
+          --function load-state-value
+          --output "${LOAD_STATE_VALUE_MISSING_OFFSET_ASSEMBLY}"
+          --exports-output "${LOAD_STATE_VALUE_MISSING_OFFSET_EXPORTS}"
+          --symbol goalpad_aot_load_state_value
+  RESULT_VARIABLE LOAD_STATE_VALUE_MISSING_OFFSET_RESULT)
+if(LOAD_STATE_VALUE_MISSING_OFFSET_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted load-state-value without its signed offset manifest")
+endif()
+file(READ "${LOAD_STATE_VALUE_MISSING_OFFSET_ASSEMBLY}" ACTUAL_LOAD_STATE_VALUE_MISSING_OFFSET_ASSEMBLY)
+file(READ "${LOAD_STATE_VALUE_MISSING_OFFSET_EXPORTS}" ACTUAL_LOAD_STATE_VALUE_MISSING_OFFSET_EXPORTS)
+file(READ "${LOAD_STATE_VALUE_MISSING_OFFSET_DATA}" ACTUAL_LOAD_STATE_VALUE_MISSING_OFFSET_DATA)
+if(NOT ACTUAL_LOAD_STATE_VALUE_MISSING_OFFSET_ASSEMBLY STREQUAL "old missing offset assembly\n" OR
+   NOT ACTUAL_LOAD_STATE_VALUE_MISSING_OFFSET_EXPORTS STREQUAL "old missing offset exports\n" OR
+   NOT ACTUAL_LOAD_STATE_VALUE_MISSING_OFFSET_DATA STREQUAL "old missing offset data\n")
+  message(FATAL_ERROR "Failed missing-offset validation modified existing load-state-value artifacts")
+endif()
+
+set(LOAD_STATE_VALUE_WRONG_ASSEMBLY "${OUTPUT_DIR}/load-state-value-wrong.s")
+set(LOAD_STATE_VALUE_WRONG_EXPORTS "${OUTPUT_DIR}/load-state-value-wrong.exports.inc")
+set(LOAD_STATE_VALUE_WRONG_OFFSET "${OUTPUT_DIR}/load-state-value-wrong.symbol-value-offset.inc")
+file(WRITE "${LOAD_STATE_VALUE_WRONG_ASSEMBLY}" "old wrong assembly\n")
+file(WRITE "${LOAD_STATE_VALUE_WRONG_EXPORTS}" "old wrong exports\n")
+file(WRITE "${LOAD_STATE_VALUE_WRONG_OFFSET}" "old wrong offset\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOAD_STATE_VALUE_INPUT}"
+          --function load-state-value
+          --output "${LOAD_STATE_VALUE_WRONG_ASSEMBLY}"
+          --exports-output "${LOAD_STATE_VALUE_WRONG_EXPORTS}"
+          --symbol-value-offset-output "${LOAD_STATE_VALUE_WRONG_OFFSET}"
+          --symbol goalpad_aot_false_func
+  RESULT_VARIABLE LOAD_STATE_VALUE_WRONG_SYMBOL_RESULT)
+if(LOAD_STATE_VALUE_WRONG_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted load-state-value with a non-load-state symbol")
+endif()
+file(READ "${LOAD_STATE_VALUE_WRONG_ASSEMBLY}" ACTUAL_LOAD_STATE_VALUE_WRONG_ASSEMBLY)
+file(READ "${LOAD_STATE_VALUE_WRONG_EXPORTS}" ACTUAL_LOAD_STATE_VALUE_WRONG_EXPORTS)
+file(READ "${LOAD_STATE_VALUE_WRONG_OFFSET}" ACTUAL_LOAD_STATE_VALUE_WRONG_OFFSET)
+if(NOT ACTUAL_LOAD_STATE_VALUE_WRONG_ASSEMBLY STREQUAL "old wrong assembly\n" OR
+   NOT ACTUAL_LOAD_STATE_VALUE_WRONG_EXPORTS STREQUAL "old wrong exports\n" OR
+   NOT ACTUAL_LOAD_STATE_VALUE_WRONG_OFFSET STREQUAL "old wrong offset\n")
+  message(FATAL_ERROR "Failed load-state-value validation modified an existing artifact triplet")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOAD_STATE_VALUE_INPUT}"
+          --function load-state-value
+          --output "${LOAD_STATE_VALUE_WRONG_ASSEMBLY}"
+          --exports-output "${LOAD_STATE_VALUE_WRONG_EXPORTS}"
+          --symbol-value-offset-output "${LOAD_STATE_VALUE_WRONG_EXPORTS}"
+          --symbol goalpad_aot_load_state_value
+  RESULT_VARIABLE LOAD_STATE_VALUE_ALIAS_RESULT)
+if(LOAD_STATE_VALUE_ALIAS_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted aliased load-state-value metadata outputs")
+endif()
+file(READ "${LOAD_STATE_VALUE_WRONG_ASSEMBLY}" ACTUAL_LOAD_STATE_VALUE_ALIAS_ASSEMBLY)
+file(READ "${LOAD_STATE_VALUE_WRONG_EXPORTS}" ACTUAL_LOAD_STATE_VALUE_ALIAS_EXPORTS)
+if(NOT ACTUAL_LOAD_STATE_VALUE_ALIAS_ASSEMBLY STREQUAL "old wrong assembly\n" OR
+   NOT ACTUAL_LOAD_STATE_VALUE_ALIAS_EXPORTS STREQUAL "old wrong exports\n")
+  message(FATAL_ERROR "Aliased load-state-value metadata paths modified existing artifacts")
+endif()
