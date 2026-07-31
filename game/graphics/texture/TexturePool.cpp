@@ -7,7 +7,6 @@
 #include "common/util/Assert.h"
 #include "common/util/Timer.h"
 
-#include "game/graphics/pipelines/opengl.h"
 #include "game/graphics/texture/jak1_tpage_dir.h"
 #include "game/graphics/texture/jak2_tpage_dir.h"
 #include "game/graphics/texture/jak3_tpage_dir.h"
@@ -30,27 +29,6 @@ std::string GoalTexturePage::print() const {
   return fmt::format("Tpage id {} textures {} seg0 {} {} seg1 {} {} seg2 {} {}\n", id, length,
                      segment[0].size, segment[0].dest, segment[1].size, segment[1].dest,
                      segment[2].size, segment[2].dest);
-}
-
-u64 upload_to_gpu(const u8* data, u16 w, u16 h) {
-  GLuint tex_id;
-  glGenTextures(1, &tex_id);
-  GLint old_tex;
-  glGetIntegerv(GL_ACTIVE_TEXTURE, &old_tex);
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, tex_id);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, data);
-  glGenerateMipmap(GL_TEXTURE_2D);
-  float aniso = 0.0f;
-  glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &aniso);
-  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, aniso);
-
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glActiveTexture(old_tex);
-  return tex_id;
 }
 
 GpuTexture* TexturePool::give_texture(const TextureInput& in) {
@@ -114,7 +92,7 @@ void TexturePool::move_existing_to_vram(GpuTexture* tex, u32 slot_addr) {
 void TexturePool::update_gl_texture(GpuTexture* gpu_texture,
                                     u32 new_w,
                                     u32 new_h,
-                                    GLuint new_gl_texture) {
+                                    u64 new_gl_texture) {
   ASSERT(gpu_texture->gpu_textures.size() == 1);
   gpu_texture->gpu_textures[0].gl = new_gl_texture;
   gpu_texture->w = new_w;
@@ -246,11 +224,11 @@ void TexturePool::handle_upload_now(const u8* tpage,
             } else {
               slot.source->remove_slot(tex.dest[mip_idx]);
               slot.source = get_gpu_texture_for_slot(current_id, tex.dest[mip_idx]);
-              ASSERT(slot.gpu_texture != (GLuint)-1);
+              ASSERT(slot.gpu_texture != (u64)-1);
             }
           } else {
             slot.source = get_gpu_texture_for_slot(current_id, tex.dest[mip_idx]);
-            ASSERT(slot.gpu_texture != (GLuint)-1);
+            ASSERT(slot.gpu_texture != (u64)-1);
           }
         }
       }
@@ -334,7 +312,7 @@ TexturePool::TexturePool(GameVersion version)
       m_placeholder_data[i * 16 + j] = (((i / 4) & 1) ^ ((j / 4) & 1)) ? c1 : c0;
     }
   }
-  m_placeholder_texture_id = upload_to_gpu((const u8*)(m_placeholder_data.data()), 16, 16);
+  // the graphics backend uploads placeholder_data() and calls set_placeholder().
 }
 
 void TexturePool::draw_debug_window() {
