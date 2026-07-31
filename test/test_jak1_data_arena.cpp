@@ -514,6 +514,29 @@ TEST(Jak1DataArena, RejectsWrappedSymbolTableBoundsWithoutMutation) {
   EXPECT_EQ(arena.storage, before);
 }
 
+TEST(Jak1DataArena, RejectsSelfConsistentShiftedSymbolTableTagsWithoutMutation) {
+  auto arena = SyntheticDataArena{};
+  auto shifted_header = arena.header;
+  constexpr std::uint32_t kShift = 4;
+  shifted_header.global_heap_base += kShift;
+  shifted_header.global_heap_current += kShift;
+  shifted_header.symbol_table += kShift;
+  shifted_header.symbol_table_end += kShift;
+  shifted_header.symbol_table2 += kShift;
+  shifted_header.last_symbol += kShift;
+  shifted_header.s7 += kShift;
+  shifted_header.empty_pair += kShift;
+  shifted_header.false_value += kShift;
+  shifted_header.true_value += kShift;
+  const auto before = arena.storage;
+
+  const auto result = jak1::find_data_arena_symbol_value_cell(
+      arena.storage.data(), arena.storage.size(), shifted_header, "*load-state*");
+
+  EXPECT_EQ(result.error, jak1::DataArenaSymbolValueLookupError::InvalidHeader);
+  EXPECT_EQ(arena.storage, before);
+}
+
 TEST(Jak1DataArena, RejectsShortStorageAndMalformedStringPointerWithoutMutation) {
   constexpr std::string_view kName = "*load-state*";
   auto short_storage = SyntheticDataArena{};

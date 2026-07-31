@@ -93,6 +93,12 @@ bool is_valid_header(const DataArenaHeader& header, std::size_t storage_size) {
     return false;
   }
 
+  if ((header.symbol_table & OFFSET_MASK) != 0 || (header.symbol_table_end & OFFSET_MASK) != 0 ||
+      (header.symbol_table2 & OFFSET_MASK) != BASIC_OFFSET ||
+      (header.s7 & OFFSET_MASK) != BASIC_OFFSET || (header.last_symbol & OFFSET_MASK) != 0) {
+    return false;
+  }
+
   std::uint32_t expected_symbol_table_end = 0;
   std::uint32_t expected_symbol_table2 = 0;
   std::uint32_t expected_s7 = 0;
