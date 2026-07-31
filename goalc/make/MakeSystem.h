@@ -58,6 +58,11 @@ class MakeSystem {
   std::vector<std::string> get_dependencies(const std::string& target) const;
   std::vector<std::string> filter_dependencies(const std::vector<std::string>& all_deps);
 
+  /*!
+   * The step that produces the given output, or nullptr if the project has no rule for it.
+   */
+  const MakeStep* find_step(const std::string& output) const;
+
   bool make(const std::string& target, bool force, bool verbose, bool gen_report);
 
   void add_tool(std::shared_ptr<Tool> tool);

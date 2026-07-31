@@ -160,6 +160,9 @@ class IR_FunctionCall : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const RegVal* function() const { return m_func; }
+  const RegVal* ret() const { return m_ret; }
+  const std::vector<RegVal*>& args() const { return m_args; }
   void add_constraints(std::vector<IRegConstraint>* constraints, int my_id) override;
 
  protected:
@@ -183,6 +186,9 @@ class IR_RegValAddr : public IR {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dest; }
+  const RegVal* source() const { return m_src; }
+
  protected:
   const RegVal* m_dest = nullptr;
   const RegVal* m_src = nullptr;
@@ -200,6 +206,9 @@ class IR_StaticVarAddr : public IR {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dest; }
+  const StaticObject* source() const { return m_src; }
+
  protected:
   const RegVal* m_dest = nullptr;
   const StaticObject* m_src = nullptr;
@@ -216,6 +225,9 @@ class IR_StaticVarLoad : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+
+  const RegVal* destination() const { return m_dest; }
+  const StaticObject* source() const { return m_src; }
 
  protected:
   const RegVal* m_dest = nullptr;
@@ -299,6 +311,8 @@ class IR_FloatMath : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const RegVal* destination() const { return m_dest; }
+  const RegVal* argument() const { return m_arg; }
   FloatMathKind get_kind() const { return m_kind; }
 
  protected:
@@ -404,6 +418,9 @@ class IR_FloatToInt : public IR {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dest; }
+  const RegVal* source() const { return m_src; }
+
  private:
   const RegVal* m_dest = nullptr;
   const RegVal* m_src = nullptr;
@@ -421,6 +438,9 @@ class IR_IntToFloat : public IR {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dest; }
+  const RegVal* source() const { return m_src; }
+
  private:
   const RegVal* m_dest = nullptr;
   const RegVal* m_src = nullptr;
@@ -437,6 +457,9 @@ class IR_GetStackAddr : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+
+  const RegVal* destination() const { return m_dest; }
+  int slot() const { return m_slot; }
 
  private:
   const RegVal* m_dest = nullptr;
@@ -576,6 +599,9 @@ class IR_AsmSub : public IR_Asm {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source() const { return m_src; }
+
  private:
   const RegVal* m_dst = nullptr;
   const RegVal* m_src = nullptr;
@@ -592,6 +618,9 @@ class IR_AsmAdd : public IR_Asm {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source() const { return m_src; }
 
  private:
   const RegVal* m_dst = nullptr;
@@ -636,6 +665,10 @@ class IR_GetSymbolValueAsm : public IR_Asm {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dest; }
+  const std::string& name() const { return m_sym_name; }
+  bool sign_extend() const { return m_sext; }
+
  protected:
   const RegVal* m_dest = nullptr;
   std::string m_sym_name;
@@ -654,6 +687,8 @@ class IR_JumpReg : public IR_Asm {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* source() const { return m_src; }
+
  protected:
   const RegVal* m_src = nullptr;
 };
@@ -669,6 +704,9 @@ class IR_RegSetAsm : public IR_Asm {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source() const { return m_src; }
 
  protected:
   const RegVal* m_dst = nullptr;
@@ -691,6 +729,11 @@ class IR_VFMath3Asm : public IR_Asm {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source1() const { return m_src1; }
+  const RegVal* source2() const { return m_src2; }
+  Kind get_kind() const { return m_kind; }
 
  protected:
   const RegVal* m_dst = nullptr;
@@ -738,6 +781,11 @@ class IR_Int128Math3Asm : public IR_Asm {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source1() const { return m_src1; }
+  const RegVal* source2() const { return m_src2; }
+  Kind get_kind() const { return m_kind; }
+
  protected:
   const RegVal* m_dst = nullptr;
   const RegVal* m_src1 = nullptr;
@@ -762,6 +810,11 @@ class IR_Int128Math2Asm : public IR_Asm {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source() const { return m_src; }
+  Kind get_kind() const { return m_kind; }
+  const std::optional<int64_t>& immediate() const { return m_imm; }
+
  protected:
   const RegVal* m_dst = nullptr;
   const RegVal* m_src = nullptr;
@@ -782,6 +835,10 @@ class IR_VFMath2Asm : public IR_Asm {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source() const { return m_src; }
+  Kind get_kind() const { return m_kind; }
+
  protected:
   const RegVal* m_dst = nullptr;
   const RegVal* m_src = nullptr;
@@ -799,6 +856,11 @@ class IR_BlendVF : public IR_Asm {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source1() const { return m_src1; }
+  const RegVal* source2() const { return m_src2; }
+  u8 mask() const { return m_mask; }
 
  protected:
   const RegVal* m_dst = nullptr;
@@ -822,6 +884,10 @@ class IR_SplatVF : public IR_Asm {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source() const { return m_src; }
+  emitter::Register::VF_ELEMENT element() const { return m_element; }
+
  protected:
   const RegVal* m_dst = nullptr;
   const RegVal* m_src = nullptr;
@@ -840,6 +906,10 @@ class IR_SwizzleVF : public IR_Asm {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
 
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source() const { return m_src; }
+  u8 control_bytes() const { return m_controlBytes; }
+
  protected:
   const RegVal* m_dst = nullptr;
   const RegVal* m_src = nullptr;
@@ -857,6 +927,9 @@ class IR_SqrtVF : public IR_Asm {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* source() const { return m_src; }
 
  protected:
   const RegVal* m_dst = nullptr;

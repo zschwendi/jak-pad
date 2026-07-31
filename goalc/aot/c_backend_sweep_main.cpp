@@ -1,0 +1,174 @@
+/*!
+ * @file c_backend_sweep_main.cpp
+ * Measure AOT C backend coverage across a whole game.
+ *
+ * The ordered source list comes from the project's own build definition (game.gp): every
+ * `goalc` step reachable from a make target, in the order the make system would build it. Each
+ * source is compiled into one shared compiler instance, exactly like the make system does, and C
+ * is emitted for every file instead of only the last one.
+ */
+
+#include <cstdio>
+#include <exception>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "common/log/log.h"
+#include "common/util/FileUtil.h"
+#include "common/util/string_util.h"
+
+#include "goalc/aot/CBackend.h"
+#include "goalc/compiler/Compiler.h"
+
+namespace {
+
+struct Options {
+  std::string project_file = "goal_src/jak1/game.gp";
+  std::string target = "GROUP:all-code";
+  std::string report_path;
+  std::string c_output_dir;
+  std::string project_path;
+};
+
+void print_usage() {
+  std::fprintf(stderr,
+               "Usage: goalc-cbackend-sweep [--project-file goal_src/jak1/game.gp]\n"
+               "                            [--target GROUP:all-code]\n"
+               "                            [--c-output-dir DIR] [--report OUT.tsv]\n"
+               "                            [--project-path OPENGOAL_ROOT]\n");
+}
+
+bool parse_options(int argc, char** argv, Options* options) {
+  for (int i = 1; i < argc; i++) {
+    const std::string argument = argv[i];
+    if (argument == "--help" || argument == "-h") {
+      print_usage();
+      return false;
+    }
+    if (++i == argc) {
+      std::fprintf(stderr, "Missing value for %s\n", argument.c_str());
+      return false;
+    }
+    if (argument == "--project-file") {
+      options->project_file = argv[i];
+    } else if (argument == "--target") {
+      options->target = argv[i];
+    } else if (argument == "--report") {
+      options->report_path = argv[i];
+    } else if (argument == "--c-output-dir") {
+      options->c_output_dir = argv[i];
+    } else if (argument == "--project-path") {
+      options->project_path = argv[i];
+    } else {
+      std::fprintf(stderr, "Unknown option %s\n", argument.c_str());
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<std::string> ordered_goal_sources(const MakeSystem& make, const std::string& target) {
+  std::vector<std::string> sources;
+  for (const auto& output : make.get_dependencies(target)) {
+    const auto* step = make.find_step(output);
+    if (step && step->tool == "goalc" && !step->input.empty()) {
+      sources.push_back(step->input.at(0));
+    }
+  }
+  return sources;
+}
+
+std::string escape_field(const std::string& text) {
+  std::string out;
+  for (char c : text) {
+    out += (c == '\t' || c == '\n' || c == '\r') ? ' ' : c;
+  }
+  return out;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  Options options;
+  if (!parse_options(argc, argv, &options)) {
+    return 2;
+  }
+
+  lg::set_stdout_level(lg::level::warn);
+  lg::set_flush_level(lg::level::warn);
+  lg::initialize();
+
+  std::optional<fs::path> project_path;
+  if (!options.project_path.empty()) {
+    project_path = fs::path(options.project_path);
+  }
+  if (!file_util::setup_project_path(project_path, true)) {
+    std::fprintf(stderr, "Could not locate the OpenGOAL project root.\n");
+    return 1;
+  }
+
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::X86);
+  std::vector<std::string> sources;
+  try {
+    compiler.make_system().load_project_file(file_util::get_file_path({options.project_file}));
+    sources = ordered_goal_sources(compiler.make_system(), options.target);
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "goalc-cbackend-sweep: could not read the build definition: %s\n",
+                 error.what());
+    return 1;
+  }
+  std::fprintf(stderr, "%zu GOAL sources reachable from %s\n", sources.size(),
+               options.target.c_str());
+
+  if (!options.c_output_dir.empty()) {
+    fs::create_directories(options.c_output_dir);
+  }
+
+  std::string report = "#kind\tfile\tfunction\tdetail\n";
+  int total_functions = 0;
+  int total_emitted = 0;
+  int failed_files = 0;
+
+  for (size_t i = 0; i < sources.size(); i++) {
+    const auto& source = sources.at(i);
+    const auto tag = fs::path(source).stem().string();
+    std::fprintf(stderr, "[%4zu/%4zu] %s\n", i + 1, sources.size(), source.c_str());
+    try {
+      auto code = compiler.get_goos().reader.read_from_file({source});
+      auto* file = compiler.compile_object_file(tag, std::move(code), true);
+      auto result = aot::emit_c_file(*file, tag, GameVersion::Jak1, compiler.type_system());
+      total_functions += result.total_count();
+      total_emitted += result.emitted_count();
+      report += fmt::format("FILE\t{}\t{}\t{}\n", source, result.emitted_count(),
+                            result.total_count());
+      for (const auto& f : result.functions) {
+        if (!f.ok) {
+          report += fmt::format("FAIL\t{}\t{}\t{}\n", source, escape_field(f.goal_name),
+                                escape_field(f.error));
+        }
+      }
+      if (!options.c_output_dir.empty()) {
+        file_util::write_text_file(fmt::format("{}/{}.c", options.c_output_dir, tag),
+                                   result.source);
+      }
+    } catch (const std::exception& error) {
+      failed_files++;
+      report += fmt::format("FILEERROR\t{}\t-\t{}\n", source, escape_field(error.what()));
+      std::fprintf(stderr, "  front-end failure: %s\n", error.what());
+    }
+  }
+
+  report += fmt::format("TOTAL\t{}\t{}\t{}\n", sources.size(), total_emitted, total_functions);
+  report += fmt::format("FILEERRORS\t{}\t-\t-\n", failed_files);
+  std::fprintf(stderr, "%d/%d functions emitted (%.2f%%), %d files failed to compile\n",
+               total_emitted, total_functions,
+               total_functions ? 100.0 * total_emitted / total_functions : 0.0, failed_files);
+
+  if (!options.report_path.empty()) {
+    file_util::write_text_file(options.report_path, report);
+  } else {
+    std::fputs(report.c_str(), stdout);
+  }
+  return 0;
+}
