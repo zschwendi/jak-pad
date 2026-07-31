@@ -1,0 +1,75 @@
+;; Fixture for the AOT C backend's process-register support.
+;;
+;; The process a thread is running lives in a fixed machine register (x86-64 r13). A behavior's
+;; `self` is that register rather than a passed argument, and (rlet ((pp :reg r13 ...)) ...) in an
+;; ordinary function names the same state. So `self` here and the current process seen by a callee
+;; two frames down must always be the same object, and nothing along the way may cache it.
+
+(deftype aot-process-test (structure)
+  ((tag    int32)
+   (visits int32)))
+
+(defun aot-test-init ((p aot-process-test) (tag int))
+  "Fill in a test process, so the C side never has to know the layout."
+  (set! (-> p tag) tag)
+  (set! (-> p visits) 0)
+  p)
+
+(defun aot-test-visits ((p aot-process-test))
+  (-> p visits))
+
+(defun aot-test-leaf ()
+  "An ordinary function that reads and writes the current process, the way engine code does."
+  (rlet ((pp :reg r13 :type aot-process-test :reset-here #t))
+    (set! (-> pp visits) (+ (-> pp visits) 1))
+    (-> pp tag)))
+
+(defun aot-test-middle ()
+  "One more frame between a behavior and the leaf. A plain call must leave the process alone."
+  (aot-test-leaf))
+
+(define aot-test-self-tag
+  (lambda :name aot-test-self-tag :behavior aot-process-test () (-> self tag)))
+
+(define aot-test-self-and-callee
+  (lambda :name aot-test-self-and-callee :behavior aot-process-test ()
+    ;; self and the leaf's view of the current process are the same process
+    (+ (* 1000 (-> self tag)) (aot-test-middle))))
+
+(define aot-test-args
+  (lambda :name aot-test-args :behavior aot-process-test ((a int) (b int) (c int))
+    ;; self is not passed by the caller, so it must not consume an argument slot
+    (+ (* 1000000 (-> self tag)) (+ (* 10000 a) (+ (* 100 b) c)))))
+
+(defun aot-test-switch ((p aot-process-test))
+  "What the kernel does to dispatch a process: assign the current process and run. r13 is never
+   restored on return, so p stays current afterwards."
+  (rlet ((pp :reg r13 :type aot-process-test :reset-here #t))
+    (set! pp p)
+    (aot-test-middle)))
+
+(defun aot-test-call-with ((p aot-process-test))
+  "What enter-state does: save the current process, switch, call, put it back."
+  (rlet ((pp :reg r13 :type aot-process-test :reset-here #t))
+    (let ((old pp))
+      (let ((result (aot-test-switch p)))
+        (set! pp old)
+        result))))
+
+(defun aot-test-nested ((p aot-process-test) (q aot-process-test))
+  "Nested switches must unwind in order: after the inner call returns, p is current again."
+  (rlet ((pp :reg r13 :type aot-process-test :reset-here #t))
+    (let ((outer pp))
+      (set! pp p)
+      (let ((inner (aot-test-call-with q)))
+        (let ((mine (aot-test-leaf)))
+          (set! pp outer)
+          (+ (* 100 inner) mine))))))
+
+(define aot-test-self-after-callee-switch
+  (lambda :name aot-test-self-after-callee-switch :behavior aot-process-test ((p aot-process-test))
+    ;; self *is* the process register, so a callee that assigns the current process changes what
+    ;; self means here too. Reading self must be a load, not a value cached at entry.
+    (let ((before (-> self tag)))
+      (aot-test-switch p)
+      (+ (* 1000 before) (-> self tag)))))
