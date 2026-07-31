@@ -544,6 +544,19 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       true_value->name() == "#t" && true_return &&
       true_return->value() == true_value->destination() &&
       dynamic_cast<IR_Null*>(code.at(3).get());
+  const auto* lognot_value_reset =
+      code.size() == 6 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
+  const auto* lognot_parameter_move =
+      code.size() == 6 ? dynamic_cast<IR_RegSet*>(code.at(1).get()) : nullptr;
+  const auto* lognot_value_move =
+      code.size() == 6 ? dynamic_cast<IR_RegSet*>(code.at(2).get()) : nullptr;
+  const auto* lognot_operation =
+      code.size() == 6 ? dynamic_cast<IR_IntegerMath*>(code.at(3).get()) : nullptr;
+  const auto* lognot_return =
+      code.size() == 6 ? dynamic_cast<IR_Return*>(code.at(4).get()) : nullptr;
+  const auto* lognot_argument = lognot_value_reset && lognot_value_reset->args().size() == 1
+                                    ? lognot_value_reset->args().front()
+                                    : nullptr;
   const auto* identity_value_reset =
       code.size() == 4 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
   const auto* identity_move =
@@ -556,10 +569,33 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
           : nullptr;
   const auto& register_info = get_register_info(m_gen.instr_set());
   const auto first_argument_register = register_info.get_gpr_arg_reg(0);
+  const auto return_register = register_info.get_gpr_ret_reg();
+  const bool lognot_uses_apple_abi =
+      lognot_argument && lognot_parameter_move && lognot_value_move && lognot_operation &&
+      lognot_return && is_allocated_to(lognot_argument, 0, first_argument_register) &&
+      is_allocated_to(lognot_parameter_move->source(), 1, first_argument_register) &&
+      is_allocated_to(lognot_parameter_move->destination(), 1, return_register) &&
+      is_allocated_to(lognot_value_move->source(), 2, return_register) &&
+      is_allocated_to(lognot_value_move->destination(), 2, return_register) &&
+      is_allocated_to(lognot_operation->destination(), 3, return_register) &&
+      is_allocated_to(lognot_return->value(), 4, return_register);
+  const bool supported_lognot_function =
+      env->name() == "lognot" && lognot_argument && lognot_parameter_move && lognot_value_move &&
+      lognot_operation && lognot_return && lognot_argument->type() == TypeSpec("int") &&
+      lognot_argument->ireg().reg_class == RegClass::GPR_64 &&
+      lognot_parameter_move->source() == lognot_argument &&
+      lognot_parameter_move->destination()->ireg().reg_class == RegClass::GPR_64 &&
+      lognot_value_move->source() == lognot_parameter_move->destination() &&
+      lognot_value_move->destination()->ireg().reg_class == RegClass::GPR_64 &&
+      lognot_operation->get_kind() == IntegerMathKind::NOT_64 &&
+      lognot_operation->destination() == lognot_value_move->destination() &&
+      lognot_operation->argument() == nullptr &&
+      lognot_return->value() == lognot_operation->destination() && lognot_uses_apple_abi &&
+      dynamic_cast<IR_Null*>(code.at(5).get());
   const bool identity_argument_uses_apple_abi =
       identity_argument && is_allocated_to(identity_argument, 0, first_argument_register) &&
       identity_move && is_allocated_to(identity_move->source(), 1, first_argument_register) &&
-      is_allocated_to(identity_move->destination(), 1, register_info.get_gpr_ret_reg());
+      is_allocated_to(identity_move->destination(), 1, return_register);
   const bool supported_identity_function =
       env->name() == "identity" && identity_argument && identity_move && identity_return &&
       identity_argument->type() == TypeSpec("object") &&
@@ -570,10 +606,11 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       identity_argument_uses_apple_abi &&
       dynamic_cast<IR_Null*>(code.at(3).get());
   if (!supported_top_level && !supported_false_function && !supported_true_function &&
-      !supported_identity_function) {
+      !supported_lognot_function && !supported_identity_function) {
     throw std::runtime_error(
         "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "
-        "Jak 1 false or true function or one-argument identity function.");
+        "Jak 1 false or true function, one-argument identity function, or one-argument int lognot "
+        "function.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());

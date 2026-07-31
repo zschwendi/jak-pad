@@ -15,6 +15,11 @@ set(TRUE_INPUT
 set(TRUE_ASSEMBLY_ONLY "${OUTPUT_DIR}/true-assembly-only.s")
 set(TRUE_PAIRED_ASSEMBLY "${OUTPUT_DIR}/true-paired.s")
 set(TRUE_EXPORTS "${OUTPUT_DIR}/true-paired.exports.inc")
+set(LOGNOT_INPUT
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-lognot-from-jak1-gcommon.gc")
+set(LOGNOT_ASSEMBLY_ONLY "${OUTPUT_DIR}/lognot-assembly-only.s")
+set(LOGNOT_PAIRED_ASSEMBLY "${OUTPUT_DIR}/lognot-paired.s")
+set(LOGNOT_EXPORTS "${OUTPUT_DIR}/lognot-paired.exports.inc")
 
 execute_process(
   COMMAND "${GOALC_AOT}"
@@ -109,6 +114,47 @@ set(EXPECTED_TRUE_ASSEMBLY
     ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n.globl _goalpad_aot_true_func\n_goalpad_aot_true_func:\n  .long 0xaa1503e0\n  .long 0x91002000\n  .long 0xd65f03c0\n.subsections_via_symbols\n")
 if(NOT ACTUAL_TRUE_ASSEMBLY STREQUAL EXPECTED_TRUE_ASSEMBLY)
   message(FATAL_ERROR "Assembly-only true-func artifact did not match the expected ARM64 code")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOGNOT_INPUT}"
+          --function lognot
+          --output "${LOGNOT_ASSEMBLY_ONLY}"
+          --symbol goalpad_aot_lognot
+  RESULT_VARIABLE LOGNOT_ASSEMBLY_ONLY_RESULT)
+if(NOT LOGNOT_ASSEMBLY_ONLY_RESULT EQUAL 0)
+  message(FATAL_ERROR "Assembly-only lognot goalc-aot invocation failed")
+endif()
+
+file(READ "${LOGNOT_ASSEMBLY_ONLY}" ACTUAL_LOGNOT_ASSEMBLY)
+set(EXPECTED_LOGNOT_ASSEMBLY
+    ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n.globl _goalpad_aot_lognot\n_goalpad_aot_lognot:\n  .long 0xaa2003e0\n  .long 0xd65f03c0\n.subsections_via_symbols\n")
+if(NOT ACTUAL_LOGNOT_ASSEMBLY STREQUAL EXPECTED_LOGNOT_ASSEMBLY)
+  message(FATAL_ERROR "Assembly-only lognot artifact did not match the expected ARM64 code")
+endif()
+
+file(WRITE "${LOGNOT_PAIRED_ASSEMBLY}" "old lognot assembly\n")
+file(WRITE "${LOGNOT_EXPORTS}" "old lognot exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOGNOT_INPUT}"
+          --function lognot
+          --output "${LOGNOT_PAIRED_ASSEMBLY}"
+          --exports-output "${LOGNOT_EXPORTS}"
+          --symbol goalpad_aot_lognot
+  RESULT_VARIABLE LOGNOT_PAIRED_RESULT)
+if(LOGNOT_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted lognot native export metadata")
+endif()
+
+file(READ "${LOGNOT_PAIRED_ASSEMBLY}" ACTUAL_LOGNOT_PAIRED_ASSEMBLY)
+file(READ "${LOGNOT_EXPORTS}" ACTUAL_LOGNOT_EXPORTS)
+if(NOT ACTUAL_LOGNOT_PAIRED_ASSEMBLY STREQUAL "old lognot assembly\n" OR
+   NOT ACTUAL_LOGNOT_EXPORTS STREQUAL "old lognot exports\n")
+  message(FATAL_ERROR "Rejected lognot native export modified an existing artifact")
 endif()
 
 execute_process(

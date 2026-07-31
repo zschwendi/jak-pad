@@ -846,7 +846,19 @@ void IR_IntegerMath::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_IntegerMath::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                       const AllocationResult& allocs,
                                       emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_IntegerMath::do_codegen_arm64");
+  if (m_dest->ireg().reg_class != RegClass::GPR_64) {
+    throw std::runtime_error("ARM64 AOT proof only supports GPR integer math destinations.");
+  }
+
+  const auto destination = get_reg(m_dest, allocs, irec);
+  if (!destination.is_gpr(gen->instr_set()) || destination == ARM64_REG::SP) {
+    throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR integer math destination.");
+  }
+
+  if (m_kind != IntegerMathKind::NOT_64 || m_arg != nullptr) {
+    throw std::runtime_error("ARM64 AOT proof only supports unary 64-bit integer NOT.");
+  }
+  gen->add_instr(IGen::not_gpr64(*gen, destination), irec);
 }
 
 /////////////////////

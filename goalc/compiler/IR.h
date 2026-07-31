@@ -270,6 +270,8 @@ class IR_IntegerMath : public IR {
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
   IntegerMathKind get_kind() const { return m_kind; }
+  const RegVal* destination() const { return m_dest; }
+  const RegVal* argument() const { return m_arg; }
 
  protected:
   IntegerMathKind m_kind;

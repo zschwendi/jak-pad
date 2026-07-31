@@ -163,6 +163,26 @@ TEST(Arm64Aot, compiles_full_jak1_true_func_and_renders_apple_text) {
             ".subsections_via_symbols\n");
 }
 
+TEST(Arm64Aot, compiles_full_jak1_lognot_and_renders_apple_text) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-lognot-from-jak1-gcommon.gc"}));
+  const auto code = compiler.compile_arm64_aot_source(source, "full-lognot-from-jak1-gcommon",
+                                                      std::optional<std::string>{"lognot"});
+
+  EXPECT_EQ(code, (std::vector<u8>{0xe0, 0x03, 0x20, 0xaa, 0xc0, 0x03, 0x5f, 0xd6}));
+
+  const aot::AppleArm64Function function{"goalpad_aot_lognot", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            ".section __TEXT,__text,regular,pure_instructions\n"
+            ".p2align 2\n"
+            ".globl _goalpad_aot_lognot\n"
+            "_goalpad_aot_lognot:\n"
+            "  .long 0xaa2003e0\n"
+            "  .long 0xd65f03c0\n"
+            ".subsections_via_symbols\n");
+}
+
 TEST(Arm64Aot, renders_zero_argument_native_export_metadata) {
   const aot::NativeExport0 native_export{"false-func", "goalpad_aot_false_func"};
 
@@ -326,6 +346,78 @@ TEST(Arm64Aot, rejects_true_func_with_an_argument) {
   EXPECT_THROW(compiler.compile_arm64_aot_source("(defun true-func ((x object)) '#t)",
                                                  "true-with-argument",
                                                  std::optional<std::string>{"true-func"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_lognot_with_a_different_body) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(
+      compiler.compile_arm64_aot_source("(defun lognot ((a int)) a)", "lognot-with-identity-body",
+                                        std::optional<std::string>{"lognot"}),
+      std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_lognot_body_under_a_different_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(
+      compiler.compile_arm64_aot_source("(defun other ((a int)) (lognot a))", "other-lognot",
+                                        std::optional<std::string>{"other"}),
+      std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_lognot_with_multiple_parameters) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun lognot ((a int) (b int)) (lognot a))",
+                                                 "lognot-with-two-parameters",
+                                                 std::optional<std::string>{"lognot"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, emits_unary_gpr_integer_not) {
+  RegVal value{{RegClass::GPR_64, 0}, TypeSpec("int")};
+  IR_IntegerMath integer_not(IntegerMathKind::NOT_64, &value, nullptr);
+
+  Assignment assignment;
+  assignment.kind = Assignment::Kind::REGISTER;
+  assignment.reg = emitter::X0;
+  AllocationResult allocations;
+  allocations.ass_as_ranges = {AssignmentRange(0, {true}, {assignment})};
+
+  FunctionDebugInfo debug{};
+  emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+  integer_not.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
+  generator.add_instr_no_ir(function, emitter::IGen::ret(generator),
+                            InstructionInfo::Kind::EPILOGUE);
+
+  EXPECT_EQ(generator.materialize_arm64_function(function),
+            (std::vector<u8>{0xe0, 0x03, 0x20, 0xaa, 0xc0, 0x03, 0x5f, 0xd6}));
+}
+
+TEST(Arm64Aot, rejects_unsupported_arm64_integer_math) {
+  RegVal destination{{RegClass::GPR_64, 0}, TypeSpec("int")};
+  RegVal source{{RegClass::GPR_64, 1}, TypeSpec("int")};
+  IR_IntegerMath integer_add(IntegerMathKind::ADD_64, &destination, &source);
+
+  Assignment destination_assignment;
+  destination_assignment.kind = Assignment::Kind::REGISTER;
+  destination_assignment.reg = emitter::X0;
+  Assignment source_assignment;
+  source_assignment.kind = Assignment::Kind::REGISTER;
+  source_assignment.reg = emitter::X1;
+  AllocationResult allocations;
+  allocations.ass_as_ranges = {
+      AssignmentRange(0, {true}, {destination_assignment}),
+      AssignmentRange(0, {true}, {source_assignment}),
+  };
+
+  FunctionDebugInfo debug{};
+  emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+  EXPECT_THROW(integer_add.do_codegen_arm64(&generator, allocations, generator.add_ir(function)),
                std::runtime_error);
 }
 
