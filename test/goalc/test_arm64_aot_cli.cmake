@@ -20,6 +20,11 @@ set(LOGNOT_INPUT
 set(LOGNOT_ASSEMBLY_ONLY "${OUTPUT_DIR}/lognot-assembly-only.s")
 set(LOGNOT_PAIRED_ASSEMBLY "${OUTPUT_DIR}/lognot-paired.s")
 set(LOGNOT_EXPORTS "${OUTPUT_DIR}/lognot-paired.exports.inc")
+set(GLST_NODE_NAME_INPUT
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-glst-node-name-from-jak1-glist-h.gc")
+set(GLST_NODE_NAME_ASSEMBLY_ONLY "${OUTPUT_DIR}/glst-node-name-assembly-only.s")
+set(GLST_NODE_NAME_PAIRED_ASSEMBLY "${OUTPUT_DIR}/glst-node-name-paired.s")
+set(GLST_NODE_NAME_EXPORTS "${OUTPUT_DIR}/glst-node-name-paired.exports.inc")
 
 execute_process(
   COMMAND "${GOALC_AOT}"
@@ -540,4 +545,104 @@ file(READ "${COLLISION_EXPORTS}" COLLISION_EXPORTS_CONTENT)
 if(NOT COLLISION_ASSEMBLY_SHA256 STREQUAL ASSEMBLY_ONLY_SHA256 OR
    NOT COLLISION_EXPORTS_CONTENT STREQUAL EXPECTED_EXPORTS)
   message(FATAL_ERROR "Auxiliary-path collision corrupted a final artifact")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${GLST_NODE_NAME_INPUT}"
+          --function glst-node-name
+          --output "${GLST_NODE_NAME_ASSEMBLY_ONLY}"
+          --symbol goalpad_aot_glst_node_name
+  RESULT_VARIABLE GLST_NODE_NAME_ASSEMBLY_ONLY_RESULT)
+if(NOT GLST_NODE_NAME_ASSEMBLY_ONLY_RESULT EQUAL 0)
+  message(FATAL_ERROR "Assembly-only glst-node-name goalc-aot invocation failed")
+endif()
+
+file(READ "${GLST_NODE_NAME_ASSEMBLY_ONLY}" ACTUAL_GLST_NODE_NAME_ASSEMBLY)
+set(EXPECTED_GLST_NODE_NAME_ASSEMBLY
+    ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n.globl _goalpad_aot_glst_node_name\n_goalpad_aot_glst_node_name:\n  .long 0x8b36e010\n  .long 0xb8408200\n  .long 0xd65f03c0\n.subsections_via_symbols\n")
+if(NOT ACTUAL_GLST_NODE_NAME_ASSEMBLY STREQUAL EXPECTED_GLST_NODE_NAME_ASSEMBLY)
+  message(FATAL_ERROR "Assembly-only glst-node-name artifact did not match the expected ARM64 code")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${GLST_NODE_NAME_INPUT}"
+          --function glst-node-name
+          --output "${GLST_NODE_NAME_PAIRED_ASSEMBLY}"
+          --exports-output "${GLST_NODE_NAME_EXPORTS}"
+          --symbol goalpad_aot_glst_node_name
+  RESULT_VARIABLE GLST_NODE_NAME_PAIRED_RESULT)
+if(NOT GLST_NODE_NAME_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "Paired glst-node-name goalc-aot invocation failed")
+endif()
+
+file(SHA256 "${GLST_NODE_NAME_ASSEMBLY_ONLY}" GLST_NODE_NAME_ASSEMBLY_ONLY_SHA256)
+file(SHA256 "${GLST_NODE_NAME_PAIRED_ASSEMBLY}" GLST_NODE_NAME_PAIRED_ASSEMBLY_SHA256)
+if(NOT GLST_NODE_NAME_ASSEMBLY_ONLY_SHA256 STREQUAL GLST_NODE_NAME_PAIRED_ASSEMBLY_SHA256)
+  message(FATAL_ERROR "Adding glst-node-name export metadata changed the ARM64 assembly")
+endif()
+
+file(READ "${GLST_NODE_NAME_PAIRED_ASSEMBLY}" ACTUAL_GLST_NODE_NAME_PAIRED_ASSEMBLY)
+file(READ "${GLST_NODE_NAME_EXPORTS}" ACTUAL_GLST_NODE_NAME_EXPORTS)
+if(NOT ACTUAL_GLST_NODE_NAME_PAIRED_ASSEMBLY STREQUAL EXPECTED_GLST_NODE_NAME_ASSEMBLY)
+  message(FATAL_ERROR "Paired glst-node-name artifact did not match the expected ARM64 code")
+endif()
+
+set(EXPECTED_GLST_NODE_NAME_EXPORTS
+    "#ifndef OPENGOAL_AOT_EXPORT1\n#error \"Define OPENGOAL_AOT_EXPORT1 before including this file.\"\n#endif\nOPENGOAL_AOT_EXPORT1(\"glst-node-name\", goalpad_aot_glst_node_name)\n")
+if(NOT ACTUAL_GLST_NODE_NAME_EXPORTS STREQUAL EXPECTED_GLST_NODE_NAME_EXPORTS)
+  message(FATAL_ERROR "Generated glst-node-name export metadata did not match the expected record")
+endif()
+
+set(GLST_NODE_NAME_WRONG_ASSEMBLY "${OUTPUT_DIR}/glst-node-name-wrong.s")
+set(GLST_NODE_NAME_WRONG_EXPORTS "${OUTPUT_DIR}/glst-node-name-wrong.exports.inc")
+file(WRITE "${GLST_NODE_NAME_WRONG_ASSEMBLY}" "old glst-node-name wrong assembly\n")
+file(WRITE "${GLST_NODE_NAME_WRONG_EXPORTS}" "old glst-node-name wrong exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${GLST_NODE_NAME_INPUT}"
+          --function glst-node-name
+          --output "${GLST_NODE_NAME_WRONG_ASSEMBLY}"
+          --exports-output "${GLST_NODE_NAME_WRONG_EXPORTS}"
+          --symbol goalpad_aot_lognot
+  RESULT_VARIABLE GLST_NODE_NAME_WRONG_SYMBOL_RESULT)
+if(GLST_NODE_NAME_WRONG_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted glst-node-name with the lognot symbol")
+endif()
+
+file(READ "${GLST_NODE_NAME_WRONG_ASSEMBLY}" ACTUAL_GLST_NODE_NAME_WRONG_ASSEMBLY)
+file(READ "${GLST_NODE_NAME_WRONG_EXPORTS}" ACTUAL_GLST_NODE_NAME_WRONG_EXPORTS)
+if(NOT ACTUAL_GLST_NODE_NAME_WRONG_ASSEMBLY STREQUAL
+       "old glst-node-name wrong assembly\n" OR
+   NOT ACTUAL_GLST_NODE_NAME_WRONG_EXPORTS STREQUAL "old glst-node-name wrong exports\n")
+  message(FATAL_ERROR "Failed glst-node-name symbol validation modified an existing artifact")
+endif()
+
+set(GLST_NODE_NAME_CROSS_ASSEMBLY "${OUTPUT_DIR}/glst-node-name-cross.s")
+set(GLST_NODE_NAME_CROSS_EXPORTS "${OUTPUT_DIR}/glst-node-name-cross.exports.inc")
+file(WRITE "${GLST_NODE_NAME_CROSS_ASSEMBLY}" "old glst-node-name cross assembly\n")
+file(WRITE "${GLST_NODE_NAME_CROSS_EXPORTS}" "old glst-node-name cross exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${GLST_NODE_NAME_INPUT}"
+          --function glst-node-name
+          --output "${GLST_NODE_NAME_CROSS_ASSEMBLY}"
+          --exports-output "${GLST_NODE_NAME_CROSS_EXPORTS}"
+          --symbol goalpad_aot_false_func
+  RESULT_VARIABLE GLST_NODE_NAME_CROSS_ABI_RESULT)
+if(GLST_NODE_NAME_CROSS_ABI_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted glst-node-name with the Export0 symbol")
+endif()
+
+file(READ "${GLST_NODE_NAME_CROSS_ASSEMBLY}" ACTUAL_GLST_NODE_NAME_CROSS_ASSEMBLY)
+file(READ "${GLST_NODE_NAME_CROSS_EXPORTS}" ACTUAL_GLST_NODE_NAME_CROSS_EXPORTS)
+if(NOT ACTUAL_GLST_NODE_NAME_CROSS_ASSEMBLY STREQUAL
+       "old glst-node-name cross assembly\n" OR
+   NOT ACTUAL_GLST_NODE_NAME_CROSS_EXPORTS STREQUAL "old glst-node-name cross exports\n")
+  message(FATAL_ERROR "Failed glst-node-name cross-ABI generation modified an existing artifact")
 endif()

@@ -1158,7 +1158,19 @@ void IR_LoadConstOffset::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                           const AllocationResult& allocs,
                                           emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_LoadConstOffset::do_codegen_arm64");
+  const auto destination =
+      m_use_coloring ? get_reg(m_dest, allocs, irec) : get_no_color_reg(m_dest);
+  const auto base = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
+
+  if (m_dest->ireg().reg_class != RegClass::GPR_64 ||
+      m_base->ireg().reg_class != RegClass::GPR_64 || m_info.reg != RegClass::GPR_64) {
+    throw std::runtime_error("IR_LoadConstOffset::do_codegen_arm64 only supports GPR loads");
+  }
+
+  const auto offset = get_register_info(gen->instr_set()).get_offset_reg();
+  gen->add_instr(IGen::load_goal_gpr(*gen, destination, base, offset, m_offset, m_info.size,
+                                     m_info.sign_extend),
+                 irec);
 }
 
 ///////////////////////

@@ -567,6 +567,18 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       identity_value_reset && identity_value_reset->args().size() == 1
           ? identity_value_reset->args().front()
           : nullptr;
+  const auto* glst_node_name_value_reset =
+      code.size() == 5 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
+  const auto* glst_node_name_parameter_move =
+      code.size() == 5 ? dynamic_cast<IR_RegSet*>(code.at(1).get()) : nullptr;
+  const auto* glst_node_name_load =
+      code.size() == 5 ? dynamic_cast<IR_LoadConstOffset*>(code.at(2).get()) : nullptr;
+  const auto* glst_node_name_return =
+      code.size() == 5 ? dynamic_cast<IR_Return*>(code.at(3).get()) : nullptr;
+  const auto* glst_node_name_argument =
+      glst_node_name_value_reset && glst_node_name_value_reset->args().size() == 1
+          ? glst_node_name_value_reset->args().front()
+          : nullptr;
   const auto& register_info = get_register_info(m_gen.instr_set());
   const auto first_argument_register = register_info.get_gpr_arg_reg(0);
   const auto return_register = register_info.get_gpr_ret_reg();
@@ -605,12 +617,37 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       identity_return->value() == identity_move->destination() &&
       identity_argument_uses_apple_abi &&
       dynamic_cast<IR_Null*>(code.at(3).get());
+  const bool glst_node_name_uses_apple_abi =
+      glst_node_name_argument && glst_node_name_parameter_move && glst_node_name_load &&
+      glst_node_name_return &&
+      is_allocated_to(glst_node_name_argument, 0, first_argument_register) &&
+      is_allocated_to(glst_node_name_parameter_move->source(), 1, first_argument_register) &&
+      is_allocated_to(glst_node_name_parameter_move->destination(), 1, return_register) &&
+      is_allocated_to(glst_node_name_load->base(), 2, return_register) &&
+      is_allocated_to(glst_node_name_load->destination(), 2, return_register) &&
+      is_allocated_to(glst_node_name_return->value(), 3, return_register);
+  const bool supported_glst_node_name_function =
+      env->name() == "glst-node-name" && glst_node_name_argument && glst_node_name_parameter_move &&
+      glst_node_name_load && glst_node_name_return &&
+      glst_node_name_argument->type() == TypeSpec("glst-named-node") &&
+      glst_node_name_argument->ireg().reg_class == RegClass::GPR_64 &&
+      glst_node_name_parameter_move->source() == glst_node_name_argument &&
+      glst_node_name_parameter_move->destination()->type() == TypeSpec("glst-named-node") &&
+      glst_node_name_parameter_move->destination()->ireg().reg_class == RegClass::GPR_64 &&
+      glst_node_name_load->base() == glst_node_name_parameter_move->destination() &&
+      glst_node_name_load->destination()->type() == TypeSpec("string") &&
+      glst_node_name_load->destination()->ireg().reg_class == RegClass::GPR_64 &&
+      glst_node_name_load->offset() == 8 && glst_node_name_load->info().reg == RegClass::GPR_64 &&
+      glst_node_name_load->info().size == 4 && !glst_node_name_load->info().sign_extend &&
+      glst_node_name_return->value() == glst_node_name_load->destination() &&
+      glst_node_name_uses_apple_abi && dynamic_cast<IR_Null*>(code.at(4).get());
   if (!supported_top_level && !supported_false_function && !supported_true_function &&
-      !supported_lognot_function && !supported_identity_function) {
+      !supported_lognot_function && !supported_identity_function &&
+      !supported_glst_node_name_function) {
     throw std::runtime_error(
         "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "
         "Jak 1 false or true function, one-argument identity function, or one-argument int lognot "
-        "function.");
+        "function, or the one-argument Jak 1 glst-node-name function.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());

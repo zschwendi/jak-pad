@@ -183,6 +183,29 @@ TEST(Arm64Aot, compiles_full_jak1_lognot_and_renders_apple_text) {
             ".subsections_via_symbols\n");
 }
 
+TEST(Arm64Aot, compiles_full_jak1_glst_node_name_and_renders_apple_text) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-glst-node-name-from-jak1-glist-h.gc"}));
+  const auto code =
+      compiler.compile_arm64_aot_source(source, "full-glst-node-name-from-jak1-glist-h",
+                                        std::optional<std::string>{"glst-node-name"});
+
+  EXPECT_EQ(code, (std::vector<u8>{0x10, 0xe0, 0x36, 0x8b, 0x00, 0x82, 0x40, 0xb8, 0xc0, 0x03, 0x5f,
+                                   0xd6}));
+
+  const aot::AppleArm64Function function{"goalpad_aot_glst_node_name", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            ".section __TEXT,__text,regular,pure_instructions\n"
+            ".p2align 2\n"
+            ".globl _goalpad_aot_glst_node_name\n"
+            "_goalpad_aot_glst_node_name:\n"
+            "  .long 0x8b36e010\n"
+            "  .long 0xb8408200\n"
+            "  .long 0xd65f03c0\n"
+            ".subsections_via_symbols\n");
+}
+
 TEST(Arm64Aot, renders_zero_argument_native_export_metadata) {
   const aot::NativeExport0 native_export{"false-func", "goalpad_aot_false_func"};
 
@@ -223,6 +246,16 @@ TEST(Arm64Aot, renders_lognot_one_argument_native_export_metadata) {
             "OPENGOAL_AOT_EXPORT1(\"lognot\", goalpad_aot_lognot)\n");
 }
 
+TEST(Arm64Aot, renders_glst_node_name_one_argument_native_export_metadata) {
+  const aot::NativeExport1 native_export{"glst-node-name", "goalpad_aot_glst_node_name"};
+
+  EXPECT_EQ(aot::render_cpp_xmacro_export1(native_export),
+            "#ifndef OPENGOAL_AOT_EXPORT1\n"
+            "#error \"Define OPENGOAL_AOT_EXPORT1 before including this file.\"\n"
+            "#endif\n"
+            "OPENGOAL_AOT_EXPORT1(\"glst-node-name\", goalpad_aot_glst_node_name)\n");
+}
+
 TEST(Arm64Aot, rejects_native_exports_outside_the_zero_argument_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"", "goalpad_aot_false_func"}),
                std::invalid_argument);
@@ -242,6 +275,8 @@ TEST(Arm64Aot, rejects_native_exports_outside_the_zero_argument_proof) {
                std::invalid_argument);
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"identity", "goalpad_aot_identity"}),
                std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"glst-node-name", "goalpad_aot_glst_node_name"}),
+               std::invalid_argument);
 }
 
 TEST(Arm64Aot, rejects_native_exports_outside_the_one_argument_proof) {
@@ -255,6 +290,16 @@ TEST(Arm64Aot, rejects_native_exports_outside_the_one_argument_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export1({"lognot", "goalpad_aot_identity"}),
                std::invalid_argument);
   EXPECT_THROW(aot::render_cpp_xmacro_export1({"lognot", "goalpad_aot_false_func"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"glst-node-name", "goalpad_aot_lognot"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"glst-node-name", "goalpad_aot_identity"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"lognot", "goalpad_aot_glst_node_name"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"identity", "goalpad_aot_glst_node_name"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"glst-node-name", "goalpad_aot_false_func"}),
                std::invalid_argument);
 }
 
@@ -388,6 +433,84 @@ TEST(Arm64Aot, rejects_lognot_with_multiple_parameters) {
   EXPECT_THROW(compiler.compile_arm64_aot_source("(defun lognot ((a int) (b int)) (lognot a))",
                                                  "lognot-with-two-parameters",
                                                  std::optional<std::string>{"lognot"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_glst_node_name_with_a_different_body) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-glst-node-name-from-jak1-glist-h.gc"}));
+  const std::string expected_body = "(-> arg0 privname)";
+  const auto body_position = source.find(expected_body);
+  ASSERT_NE(body_position, std::string::npos);
+  source.replace(body_position, expected_body.size(), "arg0");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "glst-node-name-with-identity-body",
+                                                 std::optional<std::string>{"glst-node-name"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_glst_node_name_body_under_a_different_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-glst-node-name-from-jak1-glist-h.gc"}));
+  const std::string expected_definition = "(defun glst-node-name";
+  const auto definition_position = source.find(expected_definition);
+  ASSERT_NE(definition_position, std::string::npos);
+  source.replace(definition_position, expected_definition.size(), "(defun other-node-name");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "other-glst-node-name",
+                                                 std::optional<std::string>{"other-node-name"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_glst_node_name_with_a_different_field_offset) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-glst-node-name-from-jak1-glist-h.gc"}));
+  const std::string expected_fields = "((privname string :offset-assert 8))";
+  const std::string shifted_fields =
+      "((reserved uint32 :offset-assert 8)\n"
+      "   (privname string :offset-assert 12))";
+  const auto fields_position = source.find(expected_fields);
+  ASSERT_NE(fields_position, std::string::npos);
+  source.replace(fields_position, expected_fields.size(), shifted_fields);
+  const std::string expected_size = ":size-assert #xc";
+  const auto size_position = source.find(expected_size);
+  ASSERT_NE(size_position, std::string::npos);
+  source.replace(size_position, expected_size.size(), ":size-assert #x10");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "glst-node-name-with-shifted-field",
+                                                 std::optional<std::string>{"glst-node-name"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_glst_node_name_with_a_non_string_field) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-glst-node-name-from-jak1-glist-h.gc"}));
+  const std::string expected_field = "(privname string :offset-assert 8)";
+  const auto field_position = source.find(expected_field);
+  ASSERT_NE(field_position, std::string::npos);
+  source.replace(field_position, expected_field.size(), "(privname uint32 :offset-assert 8)");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "glst-node-name-with-uint32-field",
+                                                 std::optional<std::string>{"glst-node-name"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_glst_node_name_with_multiple_parameters) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-glst-node-name-from-jak1-glist-h.gc"}));
+  const std::string expected_parameters = "((arg0 glst-named-node))";
+  const auto parameters_position = source.find(expected_parameters);
+  ASSERT_NE(parameters_position, std::string::npos);
+  source.replace(parameters_position, expected_parameters.size(),
+                 "((arg0 glst-named-node) (arg1 object))");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "glst-node-name-with-two-parameters",
+                                                 std::optional<std::string>{"glst-node-name"}),
                std::runtime_error);
 }
 

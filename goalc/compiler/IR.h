@@ -471,6 +471,10 @@ class IR_LoadConstOffset : public IR_Asm {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const RegVal* destination() const { return m_dest; }
+  int offset() const { return m_offset; }
+  const RegVal* base() const { return m_base; }
+  const MemLoadInfo& info() const { return m_info; }
 
  private:
   const RegVal* m_dest = nullptr;
