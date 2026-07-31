@@ -422,7 +422,24 @@ void IR_RegSet::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_RegSet::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                  const AllocationResult& allocs,
                                  emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_RegSet::do_codegen_arm64");
+  if (m_dest->ireg().reg_class != RegClass::GPR_64 ||
+      m_src->ireg().reg_class != RegClass::GPR_64) {
+    throw std::runtime_error("ARM64 AOT proof only supports GPR register moves.");
+  }
+
+  const auto destination = get_reg(m_dest, allocs, irec);
+  const auto source = get_reg(m_src, allocs, irec);
+  if (!destination.is_gpr(gen->instr_set()) || !source.is_gpr(gen->instr_set()) ||
+      destination == ARM64_REG::SP || source == ARM64_REG::SP) {
+    throw std::runtime_error("ARM64 AOT proof requires non-stack GPR register moves.");
+  }
+
+  if (destination == source) {
+    gen->count_eliminated_move();
+    gen->add_instr(IGen::null(*gen), irec);
+  } else {
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, destination, source), irec);
+  }
 }
 
 std::string IR_RegSet::print() {

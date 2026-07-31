@@ -9,7 +9,10 @@
 #include "goalc/compiler/Compiler.h"
 #include "goalc/compiler/IR.h"
 #include "goalc/compiler/Val.h"
+#include "goalc/debugger/DebugInfo.h"
+#include "goalc/emitter/IGen.h"
 #include "goalc/emitter/InstructionSet.h"
+#include "goalc/emitter/ObjectGenerator.h"
 #include "goalc/emitter/Register.h"
 #include "goalc/regalloc/Allocator.h"
 #include "goalc/regalloc/Allocator_v2.h"
@@ -119,6 +122,25 @@ TEST(Arm64Aot, compiles_full_jak1_false_func_and_renders_apple_text) {
             ".subsections_via_symbols\n");
 }
 
+TEST(Arm64Aot, compiles_full_jak1_identity_and_renders_apple_text) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-identity-from-jak1-gcommon.gc"}));
+  const auto code = compiler.compile_arm64_aot_source(
+      source, "full-identity-from-jak1-gcommon", std::optional<std::string>{"identity"});
+
+  EXPECT_EQ(code, (std::vector<u8>{0xc0, 0x03, 0x5f, 0xd6}));
+
+  const aot::AppleArm64Function function{"goalpad_aot_identity", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            ".section __TEXT,__text,regular,pure_instructions\n"
+            ".p2align 2\n"
+            ".globl _goalpad_aot_identity\n"
+            "_goalpad_aot_identity:\n"
+            "  .long 0xd65f03c0\n"
+            ".subsections_via_symbols\n");
+}
+
 TEST(Arm64Aot, renders_zero_argument_native_export_metadata) {
   const aot::NativeExport0 native_export{"false-func", "goalpad_aot_false_func"};
 
@@ -196,14 +218,59 @@ TEST(Arm64Aot, rejects_named_function_with_extra_top_level_effects) {
                std::runtime_error);
 }
 
-TEST(Arm64Aot, rejects_full_jak1_identity_until_parameter_moves_are_supported) {
+TEST(Arm64Aot, rejects_identity_with_a_different_body) {
   Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
-  const auto source = file_util::read_text_file(file_util::get_file_path(
-      {"test/goalc/source_templates/arm64-aot/full-identity-from-jak1-gcommon.gc"}));
 
-  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "full-identity-from-jak1-gcommon",
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun identity ((x object)) '#f)",
+                                                 "identity-with-false-body",
                                                  std::optional<std::string>{"identity"}),
                std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_identity_with_multiple_parameters) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun identity ((x object) (y object)) x)",
+                                                 "identity-with-two-parameters",
+                                                 std::optional<std::string>{"identity"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_identity_shaped_function_with_a_different_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun not-identity ((x object)) x)",
+                                                 "not-identity",
+                                                 std::optional<std::string>{"not-identity"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, emits_non_coalesced_gpr_register_move) {
+  const RegVal destination{{RegClass::GPR_64, 0}, TypeSpec("object")};
+  const RegVal source{{RegClass::GPR_64, 1}, TypeSpec("object")};
+  IR_RegSet move(&destination, &source);
+
+  Assignment destination_assignment;
+  destination_assignment.kind = Assignment::Kind::REGISTER;
+  destination_assignment.reg = emitter::X0;
+  Assignment source_assignment;
+  source_assignment.kind = Assignment::Kind::REGISTER;
+  source_assignment.reg = emitter::X1;
+  AllocationResult allocations;
+  allocations.ass_as_ranges = {
+      AssignmentRange(0, {true}, {destination_assignment}),
+      AssignmentRange(0, {true}, {source_assignment}),
+  };
+
+  FunctionDebugInfo debug{};
+  emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+  move.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
+  generator.add_instr_no_ir(function, emitter::IGen::ret(generator),
+                            InstructionInfo::Kind::EPILOGUE);
+
+  EXPECT_EQ(generator.materialize_arm64_function(function),
+            (std::vector<u8>{0xe0, 0x03, 0x01, 0xaa, 0xc0, 0x03, 0x5f, 0xd6}));
 }
 
 TEST(Arm64Aot, rejects_source_outside_the_supported_aot_proof) {

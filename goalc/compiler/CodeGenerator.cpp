@@ -501,6 +501,20 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
   }
 
   const auto& code = env->code();
+  const auto is_allocated_to = [&allocs](const RegVal* value,
+                                         int instruction,
+                                         emitter::Register expected) {
+    const auto ireg_id = value->ireg().id;
+    if (ireg_id < 0 || ireg_id >= int(allocs.ass_as_ranges.size())) {
+      return false;
+    }
+    const auto& assignments = allocs.ass_as_ranges.at(ireg_id);
+    if (!assignments.has_info_at(instruction)) {
+      return false;
+    }
+    const auto& assignment = assignments.get(instruction);
+    return assignment.kind == Assignment::Kind::REGISTER && assignment.reg == expected;
+  };
   const auto is_supported_top_level_result = [](IR* ir) {
     if (const auto* constant = dynamic_cast<IR_LoadConstant64*>(ir)) {
       return constant->value() == 42;
@@ -521,10 +535,35 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       env->name() == "false-func" && value_reset && value_reset->has_no_args() && false_value &&
       false_value->name() == "#f" && dynamic_cast<IR_Return*>(code.at(2).get()) &&
       dynamic_cast<IR_Null*>(code.at(3).get());
-  if (!supported_top_level && !supported_false_function) {
+  const auto* identity_value_reset =
+      code.size() == 4 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
+  const auto* identity_move =
+      code.size() == 4 ? dynamic_cast<IR_RegSet*>(code.at(1).get()) : nullptr;
+  const auto* identity_return =
+      code.size() == 4 ? dynamic_cast<IR_Return*>(code.at(2).get()) : nullptr;
+  const auto* identity_argument =
+      identity_value_reset && identity_value_reset->args().size() == 1
+          ? identity_value_reset->args().front()
+          : nullptr;
+  const auto& register_info = get_register_info(m_gen.instr_set());
+  const auto first_argument_register = register_info.get_gpr_arg_reg(0);
+  const bool identity_argument_uses_apple_abi =
+      identity_argument && is_allocated_to(identity_argument, 0, first_argument_register) &&
+      identity_move && is_allocated_to(identity_move->source(), 1, first_argument_register) &&
+      is_allocated_to(identity_move->destination(), 1, register_info.get_gpr_ret_reg());
+  const bool supported_identity_function =
+      env->name() == "identity" && identity_argument && identity_move && identity_return &&
+      identity_argument->type() == TypeSpec("object") &&
+      identity_argument->ireg().reg_class == RegClass::GPR_64 &&
+      identity_move->source() == identity_argument &&
+      identity_move->destination()->ireg().reg_class == RegClass::GPR_64 &&
+      identity_return->value() == identity_move->destination() &&
+      identity_argument_uses_apple_abi &&
+      dynamic_cast<IR_Null*>(code.at(3).get());
+  if (!supported_top_level && !supported_false_function && !supported_identity_function) {
     throw std::runtime_error(
         "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "
-        "Jak 1 false function.");
+        "Jak 1 false function or one-argument identity function.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());

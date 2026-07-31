@@ -38,7 +38,7 @@ class IR_Return : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
-  const RegVal* value() { return m_value; }
+  const RegVal* value() const { return m_value; }
 
  protected:
   const RegVal* m_return_reg = nullptr;
@@ -130,6 +130,8 @@ class IR_RegSet : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const RegVal* destination() const { return m_dest; }
+  const RegVal* source() const { return m_src; }
 
  protected:
   const RegVal* m_dest = nullptr;
@@ -364,6 +366,7 @@ class IR_ValueReset : public IR {
  public:
   IR_ValueReset(std::vector<RegVal*> args);
   bool has_no_args() const { return m_args.empty(); }
+  const std::vector<RegVal*>& args() const { return m_args; }
   std::string print() override;
   RegAllocInstr to_rai() override;
   void do_codegen_x86(emitter::ObjectGenerator* gen,
