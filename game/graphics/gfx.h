@@ -25,7 +25,7 @@ struct GfxGlobalSettings;
 class GfxDisplay;
 
 // enum for rendering pipeline
-enum class GfxPipeline { Invalid = 0, OpenGL };
+enum class GfxPipeline { Invalid = 0, OpenGL, Metal };
 
 // module for the different rendering pipelines
 struct GfxRendererModule {
@@ -117,6 +117,8 @@ namespace Gfx {
 extern GfxGlobalSettings g_global_settings;
 extern game_settings::DebugSettings g_debug_settings;
 
+const GfxRendererModule* GetRenderer(GfxPipeline pipeline);
+void SetRenderer(GfxPipeline pipeline);
 const GfxRendererModule* GetCurrentRenderer();
 
 u32 Init(GameVersion version);

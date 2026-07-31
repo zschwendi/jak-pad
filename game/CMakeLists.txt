@@ -352,6 +352,13 @@ set(RUNTIME_SOURCE
         tools/subtitle_editor/subtitle_editor.cpp
         )
 
+if(APPLE)
+    # experimental Metal graphics pipeline (see game/graphics/pipelines/metal/)
+    list(APPEND RUNTIME_SOURCE graphics/pipelines/metal/metal_pipeline.mm)
+    set_source_files_properties(graphics/pipelines/metal/metal_pipeline.mm
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
+
 add_subdirectory(sound)
 
 include(kernel/jak1/data_arena.cmake)
@@ -377,4 +384,13 @@ add_executable(gk main.cpp)
 target_link_libraries(gk runtime)
 if(WIN32)
     set_target_properties(gk PROPERTIES VS_DPI_AWARE "PerMonitor")
+endif()
+
+if(APPLE)
+    target_link_libraries(runtime "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+
+    # renders a textured, depth-tested frame through the Metal GfxRendererModule
+    # and verifies the output pixels. see game/graphics/pipelines/metal/
+    add_executable(metal-proof graphics/pipelines/metal/metal_proof_main.cpp)
+    target_link_libraries(metal-proof runtime)
 endif()

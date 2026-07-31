@@ -23,6 +23,10 @@
 #include "game/runtime.h"
 #include "pipelines/opengl.h"
 
+#ifdef __APPLE__
+#include "pipelines/metal/metal_pipeline.h"
+#endif
+
 namespace Gfx {
 
 std::function<void()> vsync_callback;
@@ -37,6 +41,13 @@ const GfxRendererModule* GetRenderer(GfxPipeline pipeline) {
       return NULL;
     case GfxPipeline::OpenGL:
       return &gRendererOpenGL;
+    case GfxPipeline::Metal:
+#ifdef __APPLE__
+      return &gRendererMetal;
+#else
+      lg::error("Metal renderer is only available on Apple platforms");
+      return NULL;
+#endif
     default:
       lg::error("Requested unknown renderer {}", fmt::underlying(pipeline));
       return NULL;
