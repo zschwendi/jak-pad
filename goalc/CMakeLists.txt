@@ -1,5 +1,6 @@
 add_library(compiler
         aot/AOTWriter.cpp
+        aot/CBackend.cpp
         emitter/CallingConvention.cpp
         emitter/CodeTester.cpp
         emitter/ObjectFileData.cpp
@@ -95,6 +96,7 @@ endif ()
 add_executable(goalc main.cpp)
 add_executable(goalc-simple simple_main.cpp)
 add_executable(goalc-aot aot_main.cpp)
+add_executable(goalc-cbackend aot/c_backend_main.cpp)
 
 add_executable(build_level build_level/main.cpp)
 add_executable(build_actor build_actor/main.cpp)
@@ -102,6 +104,7 @@ add_executable(build_actor build_actor/main.cpp)
 target_link_libraries(goalc common Zydis compiler)
 target_link_libraries(goalc-simple common Zydis compiler)
 target_link_libraries(goalc-aot common Zydis compiler)
+target_link_libraries(goalc-cbackend common Zydis compiler)
 target_link_libraries(build_level common Zydis compiler)
 target_link_libraries(build_actor common Zydis compiler)
 
@@ -112,3 +115,12 @@ add_test(
         -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
         -DOUTPUT_DIR=${CMAKE_BINARY_DIR}/test-output/goalc-aot-artifact-pair
         -P ${CMAKE_SOURCE_DIR}/test/goalc/test_arm64_aot_cli.cmake)
+
+add_test(
+        NAME goalc-c-backend-gcommon
+        COMMAND ${CMAKE_COMMAND}
+        -DGOALC_CBACKEND=$<TARGET_FILE:goalc-cbackend>
+        -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
+        -DC_COMPILER=${CMAKE_C_COMPILER}
+        -DOUTPUT_DIR=${CMAKE_BINARY_DIR}/test-output/goalc-c-backend-gcommon
+        -P ${CMAKE_SOURCE_DIR}/test/goalc/test_c_backend_cli.cmake)
