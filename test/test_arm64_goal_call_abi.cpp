@@ -53,16 +53,24 @@ static_assert(offsetof(Arm64GoalCallProbe, caller_x21_after) == 112);
 static_assert(offsetof(Arm64GoalCallProbe, caller_x22_after) == 120);
 
 extern "C" void arm64_goal_call_abi_outer(Arm64GoalCallProbe* probe);
+extern "C" std::uint64_t call_goal_asm_arm64(std::uint64_t,
+                                             std::uint64_t,
+                                             std::uint64_t,
+                                             void*,
+                                             void*,
+                                             void*);
 using Arm64GoalEntry =
     std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t);
 using Arm64GoalExport0Entry = std::uint64_t (*)();
 using Arm64GoalExport1Entry = std::uint64_t (*)(std::uint64_t);
 using Arm64GoalExport2Entry = std::uint64_t (*)(std::uint64_t, std::uint64_t);
+using Arm64GoalExport3Entry = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t);
 
 static_assert(sizeof(Arm64GoalEntry) == sizeof(std::uintptr_t));
 static_assert(sizeof(Arm64GoalExport0Entry) == sizeof(std::uintptr_t));
 static_assert(sizeof(Arm64GoalExport1Entry) == sizeof(std::uintptr_t));
 static_assert(sizeof(Arm64GoalExport2Entry) == sizeof(std::uintptr_t));
+static_assert(sizeof(Arm64GoalExport3Entry) == sizeof(std::uintptr_t));
 
 extern "C" std::uint64_t arm64_goal_call_abi_entry(std::uint64_t,
                                                     std::uint64_t,
@@ -92,6 +100,11 @@ extern "C" std::uint64_t arm64_goal_call_false_like_entry(std::uint64_t,
 #include "OpenGOALJak1WantVis.exports.h"
 #undef OPENGOAL_AOT_EXPORT2
 
+#define OPENGOAL_AOT_EXPORT3(goal_name, c_symbol) \
+  extern "C" std::uint64_t c_symbol(std::uint64_t, std::uint64_t, std::uint64_t);
+#include "OpenGOALJak1WantLevels.exports.h"
+#undef OPENGOAL_AOT_EXPORT3
+
 struct Arm64GoalExport0 {
   std::string_view goal_name;
   Arm64GoalExport0Entry entry;
@@ -105,6 +118,11 @@ struct Arm64GoalExport1 {
 struct Arm64GoalExport2 {
   std::string_view goal_name;
   Arm64GoalExport2Entry entry;
+};
+
+struct Arm64GoalExport3 {
+  std::string_view goal_name;
+  Arm64GoalExport3Entry entry;
 };
 
 constexpr Arm64GoalExport0 kArm64GoalExports0[] = {
@@ -131,9 +149,16 @@ constexpr Arm64GoalExport2 kArm64GoalExports2[] = {
 #undef OPENGOAL_AOT_EXPORT2
 };
 
+constexpr Arm64GoalExport3 kArm64GoalExports3[] = {
+#define OPENGOAL_AOT_EXPORT3(goal_name, c_symbol) {goal_name, &c_symbol},
+#include "OpenGOALJak1WantLevels.exports.h"
+#undef OPENGOAL_AOT_EXPORT3
+};
+
 static_assert(sizeof(kArm64GoalExports0) == 2 * sizeof(Arm64GoalExport0));
 static_assert(sizeof(kArm64GoalExports1) == 3 * sizeof(Arm64GoalExport1));
 static_assert(sizeof(kArm64GoalExports2) == 2 * sizeof(Arm64GoalExport2));
+static_assert(sizeof(kArm64GoalExports3) == sizeof(Arm64GoalExport3));
 
 template <typename Entry>
 std::uintptr_t entry_address(Entry entry) {
@@ -161,6 +186,10 @@ std::uint32_t read_u32(const std::byte* storage, std::size_t offset) {
   std::uint32_t value = 0;
   std::memcpy(&value, storage + offset, sizeof(value));
   return value;
+}
+
+void write_u32(std::byte* storage, std::size_t offset, std::uint32_t value) {
+  std::memcpy(storage + offset, &value, sizeof(value));
 }
 
 bool is_zero(std::byte value) {
@@ -424,6 +453,110 @@ TEST(Arm64GoalCallAbi, executes_generated_jak1_want_vis_against_two_guarded_aren
                           [=](std::byte value) { return value == kGuardValue; }));
   EXPECT_TRUE(std::all_of(arena.trailing_guard.begin(), arena.trailing_guard.end(),
                           [=](std::byte value) { return value == kGuardValue; }));
+}
+
+TEST(Arm64GoalCallAbi, executes_generated_jak1_want_levels_branch_matrix_against_guarded_arenas) {
+  struct WantLevelsSlot {
+    std::uint32_t name;
+    std::uint32_t display;
+    std::uint32_t force_vis;
+    std::uint32_t force_inside;
+  };
+  struct WantLevelsCase {
+    std::string_view name;
+    std::array<WantLevelsSlot, 2> initial;
+    std::uint32_t argument0;
+    std::uint32_t argument1;
+    std::array<WantLevelsSlot, 2> expected;
+  };
+
+  constexpr std::size_t kGuardSize = 16;
+  constexpr std::size_t kStorageSize = 0x80;
+  constexpr std::size_t kThis = 4;
+  constexpr std::size_t kSlotSize = 0x10;
+  constexpr std::uint32_t kFalse = 0x14fd24;
+  constexpr std::uint32_t kLevelA = 0x81234567;
+  constexpr std::uint32_t kLevelB = 0xf2345678;
+  constexpr std::uint32_t kLevelC = 0x89abcdef;
+  constexpr std::uint32_t kLevelD = 0xcafebabe;
+  constexpr std::uint32_t kFirstDisplay = 0x91a2b3c4;
+  constexpr std::uint32_t kFirstForceVis = 0xa1b2c3d4;
+  constexpr std::uint32_t kFirstForceInside = 0xb1c2d3e4;
+  constexpr std::uint32_t kSecondDisplay = 0xc1d2e3f4;
+  constexpr std::uint32_t kSecondForceVis = 0xd1e2f304;
+  constexpr std::uint32_t kSecondForceInside = 0xe1f20314;
+  constexpr std::byte kCanary = std::byte{0xa5};
+  constexpr WantLevelsSlot kSlotA{kLevelA, kFirstDisplay, kFirstForceVis, kFirstForceInside};
+  constexpr WantLevelsSlot kSlotB{kLevelB, kSecondDisplay, kSecondForceVis, kSecondForceInside};
+  constexpr WantLevelsSlot kSlotC{kLevelC, kFirstDisplay, kFirstForceVis, kFirstForceInside};
+  constexpr WantLevelsSlot kSlotD{kLevelD, kSecondDisplay, kSecondForceVis, kSecondForceInside};
+  constexpr WantLevelsSlot kSlotAReset{kLevelA, kFalse, kFalse, kFalse};
+  constexpr WantLevelsSlot kSlotBReset{kLevelB, kFalse, kFalse, kFalse};
+
+  static_assert(kThis + 2 * kSlotSize <= kStorageSize);
+  static_assert(kThis + 0 * kSlotSize == 0x4);
+  static_assert(kThis + 1 * kSlotSize == 0x14);
+  ASSERT_EQ(kArm64GoalExports3[0].goal_name, "want-levels");
+  ASSERT_NE(kArm64GoalExports3[0].entry, nullptr);
+
+  constexpr std::array cases{
+      WantLevelsCase{"both retained", {kSlotA, kSlotB}, kLevelA, kLevelB, {kSlotA, kSlotB}},
+      WantLevelsCase{
+          "both replaced", {kSlotC, kSlotD}, kLevelA, kLevelB, {kSlotAReset, kSlotBReset}},
+      WantLevelsCase{
+          "duplicate arguments", {kSlotA, kSlotC}, kLevelA, kLevelA, {kSlotA, kSlotAReset}},
+      WantLevelsCase{"argument zero false",
+                     {kSlotC, kSlotD},
+                     kFalse,
+                     kLevelB,
+                     {kSlotBReset,
+                      WantLevelsSlot{kFalse, kSecondDisplay, kSecondForceVis, kSecondForceInside}}},
+      WantLevelsCase{"argument one false",
+                     {kSlotC, kSlotD},
+                     kLevelA,
+                     kFalse,
+                     {kSlotAReset,
+                      WantLevelsSlot{kFalse, kSecondDisplay, kSecondForceVis, kSecondForceInside}}},
+      WantLevelsCase{"both false",
+                     {kSlotC, kSlotD},
+                     kFalse,
+                     kFalse,
+                     {WantLevelsSlot{kFalse, kFirstDisplay, kFirstForceVis, kFirstForceInside},
+                      WantLevelsSlot{kFalse, kSecondDisplay, kSecondForceVis, kSecondForceInside}}},
+  };
+
+  const auto write_slot = [](std::byte* storage, std::size_t index, const WantLevelsSlot& slot) {
+    const auto offset = kThis + index * kSlotSize;
+    write_u32(storage, offset + 0, slot.name);
+    write_u32(storage, offset + 4, slot.display);
+    write_u32(storage, offset + 8, slot.force_vis);
+    write_u32(storage, offset + 12, slot.force_inside);
+  };
+
+  for (const auto& test_case : cases) {
+    std::array<std::byte, kGuardSize + kStorageSize + kGuardSize> actual;
+    actual.fill(kCanary);
+    auto expected = actual;
+    auto* actual_storage = actual.data() + kGuardSize;
+    auto* expected_storage = expected.data() + kGuardSize;
+    for (std::size_t index = 0; index < test_case.initial.size(); ++index) {
+      write_slot(actual_storage, index, test_case.initial[index]);
+      write_slot(expected_storage, index, test_case.expected[index]);
+    }
+
+    const auto result = call_goal_asm_arm64(
+        kThis, test_case.argument0, test_case.argument1,
+        reinterpret_cast<void*>(entry_address(kArm64GoalExports3[0].entry)),
+        reinterpret_cast<void*>(static_cast<std::uintptr_t>(kFalse)), actual_storage);
+
+    SCOPED_TRACE(test_case.name);
+    EXPECT_EQ(result, 0u);
+    EXPECT_EQ(actual, expected);
+    EXPECT_TRUE(std::all_of(actual.begin(), actual.begin() + kGuardSize,
+                            [=](std::byte value) { return value == kCanary; }));
+    EXPECT_TRUE(std::all_of(actual.end() - kGuardSize, actual.end(),
+                            [=](std::byte value) { return value == kCanary; }));
+  }
 }
 
 }  // namespace

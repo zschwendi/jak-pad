@@ -81,6 +81,10 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
       "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1WantVis.s")
   set(ARM64_GOAL_CALL_AOT_WANT_VIS_EXPORTS
       "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1WantVis.exports.h")
+  set(ARM64_GOAL_CALL_AOT_WANT_LEVELS_ASSEMBLY
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1WantLevels.s")
+  set(ARM64_GOAL_CALL_AOT_WANT_LEVELS_EXPORTS
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1WantLevels.exports.h")
   set(ARM64_GOAL_CALL_AOT_ASSEMBLIES
       ${ARM64_GOAL_CALL_AOT_FALSE_ASSEMBLY}
       ${ARM64_GOAL_CALL_AOT_TRUE_ASSEMBLY}
@@ -88,7 +92,8 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
       ${ARM64_GOAL_CALL_AOT_LOGNOT_ASSEMBLY}
       ${ARM64_GOAL_CALL_AOT_GLST_NODE_NAME_ASSEMBLY}
       ${ARM64_GOAL_CALL_AOT_LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY}
-      ${ARM64_GOAL_CALL_AOT_WANT_VIS_ASSEMBLY})
+      ${ARM64_GOAL_CALL_AOT_WANT_VIS_ASSEMBLY}
+      ${ARM64_GOAL_CALL_AOT_WANT_LEVELS_ASSEMBLY})
   set(ARM64_GOAL_CALL_AOT_EXPORTS
       ${ARM64_GOAL_CALL_AOT_FALSE_EXPORTS}
       ${ARM64_GOAL_CALL_AOT_TRUE_EXPORTS}
@@ -96,7 +101,8 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
       ${ARM64_GOAL_CALL_AOT_LOGNOT_EXPORTS}
       ${ARM64_GOAL_CALL_AOT_GLST_NODE_NAME_EXPORTS}
       ${ARM64_GOAL_CALL_AOT_LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS}
-      ${ARM64_GOAL_CALL_AOT_WANT_VIS_EXPORTS})
+      ${ARM64_GOAL_CALL_AOT_WANT_VIS_EXPORTS}
+      ${ARM64_GOAL_CALL_AOT_WANT_LEVELS_EXPORTS})
 
   add_custom_command(
       OUTPUT ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_EXPORTS}
@@ -157,6 +163,14 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
               --output "${ARM64_GOAL_CALL_AOT_WANT_VIS_ASSEMBLY}"
               --exports-output "${ARM64_GOAL_CALL_AOT_WANT_VIS_EXPORTS}"
               --symbol goalpad_aot_load_state_want_vis
+      COMMAND $<TARGET_FILE:goalc-aot>
+              --project-path "${CMAKE_SOURCE_DIR}"
+              --input
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-want-levels-from-jak1-load-boundary.gc"
+              --function want-levels
+              --output "${ARM64_GOAL_CALL_AOT_WANT_LEVELS_ASSEMBLY}"
+              --exports-output "${ARM64_GOAL_CALL_AOT_WANT_LEVELS_EXPORTS}"
+              --symbol goalpad_aot_load_state_want_levels
       DEPENDS
               goalc-aot
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-false-func-from-jak1-gcommon.gc"
@@ -166,6 +180,7 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-glst-node-name-from-jak1-glist-h.gc"
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-level-group-load-commands-set-from-jak1-level.gc"
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-want-vis-from-jak1-load-boundary.gc"
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-want-levels-from-jak1-load-boundary.gc"
       COMMENT "Generating Jak 1 ARM64 AOT call artifacts"
       VERBATIM)
 
