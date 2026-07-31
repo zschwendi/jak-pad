@@ -51,3 +51,43 @@ _arm64_goal_call_abi_entry:
 _arm64_goal_call_false_like_entry:
   mov x0, x21
   ret
+
+.global _arm64_data_arena_native_method_invoker_outer
+.align 4
+_arm64_data_arena_native_method_invoker_outer:
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  stp x19, x20, [sp, #-16]!
+  stp x21, x22, [sp, #-16]!
+
+  mov x19, x0
+  mov x20, #0x14
+  mov x21, #0x15
+  mov x22, #0x16
+
+  mov x0, x19
+  add x1, x19, #24
+  bl _arm64_data_arena_native_method_invoker_test_callback
+
+  str x0, [x19, #72]
+  str x20, [x19, #80]
+  str x21, [x19, #88]
+  str x22, [x19, #96]
+
+  ldp x21, x22, [sp], #16
+  ldp x19, x20, [sp], #16
+  ldp x29, x30, [sp], #16
+  ret
+
+.global _arm64_data_arena_native_method_invoker_entry
+.align 4
+_arm64_data_arena_native_method_invoker_entry:
+  str x0, [x22, #32]
+  str x20, [x22, #40]
+  str x21, [x22, #48]
+  str x22, [x22, #56]
+  mov x9, sp
+  and x9, x9, #0xf
+  str x9, [x22, #64]
+  eor x0, x0, x20
+  ret

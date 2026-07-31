@@ -355,6 +355,13 @@ set(RUNTIME_SOURCE
 add_subdirectory(sound)
 
 include(kernel/jak1/data_arena.cmake)
+if(APPLE)
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+        include(kernel/jak1/data_arena_arm64_invoker.cmake)
+    elseif(NOT CMAKE_OSX_ARCHITECTURES AND CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
+        include(kernel/jak1/data_arena_arm64_invoker.cmake)
+    endif()
+endif()
 
 # we build the runtime as a static library.
 add_library(runtime STATIC ${RUNTIME_SOURCE} "../third-party/glad/src/glad.c")

@@ -11,6 +11,7 @@
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/memory_layout.h"
 #include "game/kernel/jak1/data_arena.h"
+#include "game/kernel/jak1/data_arena_arm64_invoker.h"
 #include "game/kernel/jak1/kscheme.h"
 #include "gtest/gtest.h"
 
@@ -53,7 +54,41 @@ static_assert(offsetof(Arm64GoalCallProbe, caller_x20_after) == 104);
 static_assert(offsetof(Arm64GoalCallProbe, caller_x21_after) == 112);
 static_assert(offsetof(Arm64GoalCallProbe, caller_x22_after) == 120);
 
+struct Arm64DataArenaNativeMethodInvokerProbe {
+  jak1::DataArenaNativeMethodCall1 call{};
+  jak1::DataArenaNativeMethodArm64Context context{};
+  std::uint64_t entry_x0 = 0;
+  std::uint64_t entry_x20 = 0;
+  std::uint64_t entry_x21 = 0;
+  std::uint64_t entry_x22 = 0;
+  std::uint64_t entry_sp_mod16 = 0;
+  std::uint64_t result = 0;
+  std::uint64_t caller_x20_after = 0;
+  std::uint64_t caller_x21_after = 0;
+  std::uint64_t caller_x22_after = 0;
+};
+
+static_assert(sizeof(jak1::DataArenaNativeMethodCall1) == 24);
+static_assert(offsetof(jak1::DataArenaNativeMethodCall1, entry) == 0);
+static_assert(offsetof(jak1::DataArenaNativeMethodCall1, object) == 8);
+static_assert(offsetof(jak1::DataArenaNativeMethodCall1, s7) == 12);
+static_assert(offsetof(jak1::DataArenaNativeMethodCall1, arena) == 16);
+static_assert(sizeof(Arm64DataArenaNativeMethodInvokerProbe) == 104);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, call) == 0);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, context) == 24);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, entry_x0) == 32);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, entry_x20) == 40);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, entry_x21) == 48);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, entry_x22) == 56);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, entry_sp_mod16) == 64);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, result) == 72);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, caller_x20_after) == 80);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, caller_x21_after) == 88);
+static_assert(offsetof(Arm64DataArenaNativeMethodInvokerProbe, caller_x22_after) == 96);
+
 extern "C" void arm64_goal_call_abi_outer(Arm64GoalCallProbe* probe);
+extern "C" void arm64_data_arena_native_method_invoker_outer(
+    Arm64DataArenaNativeMethodInvokerProbe* probe);
 extern "C" std::uint64_t call_goal_asm_arm64(std::uint64_t,
                                              std::uint64_t,
                                              std::uint64_t,
@@ -79,6 +114,13 @@ extern "C" std::uint64_t arm64_goal_call_abi_entry(std::uint64_t,
 extern "C" std::uint64_t arm64_goal_call_false_like_entry(std::uint64_t,
                                                            std::uint64_t,
                                                            std::uint64_t);
+extern "C" std::uint64_t arm64_data_arena_native_method_invoker_entry(std::uint64_t);
+
+extern "C" std::uint64_t arm64_data_arena_native_method_invoker_test_callback(
+    const jak1::DataArenaNativeMethodCall1* call,
+    void* user_context) {
+  return jak1::invoke_data_arena_native_method1_arm64(*call, user_context);
+}
 
 #define OPENGOAL_AOT_EXPORT0(goal_name, c_symbol) \
   extern "C" std::uint64_t c_symbol();
@@ -195,17 +237,6 @@ std::uintptr_t entry_address(Entry entry) {
   return reinterpret_cast<std::uintptr_t>(entry);
 }
 
-struct Arm64NativeMethodInvocation {
-  jak1::DataArenaNativeMethodEntry1 entry = nullptr;
-  std::uint32_t object = 0;
-  std::uint32_t s7 = 0;
-  std::byte* arena = nullptr;
-  std::size_t calls = 0;
-  std::uint64_t caller_x20_after = 0;
-  std::uint64_t caller_x21_after = 0;
-  std::uint64_t caller_x22_after = 0;
-};
-
 Arm64GoalCallProbe make_probe(std::uintptr_t entry, std::uintptr_t st, std::uintptr_t arena) {
   return {
       .argument0 = 0x1122334455667788,
@@ -216,31 +247,49 @@ Arm64GoalCallProbe make_probe(std::uintptr_t entry, std::uintptr_t st, std::uint
   };
 }
 
-std::uint64_t invoke_native_method1_through_arm64_abi(
-    const jak1::DataArenaNativeMethodCall1& call,
-    void* user_context) {
-  auto* invocation = static_cast<Arm64NativeMethodInvocation*>(user_context);
-  invocation->entry = call.entry;
-  invocation->object = call.object;
-  invocation->s7 = call.s7;
-  invocation->arena = call.arena;
-  ++invocation->calls;
+struct NativeMethodInvocationCounter {
+  std::size_t calls = 0;
+};
 
-  // The assembly outer calls call_goal_asm_arm64 and records restored callee-saved GOAL registers.
-  auto probe = make_probe(entry_address(call.entry), call.s7,
-                          reinterpret_cast<std::uintptr_t>(call.arena));
-  probe.argument0 = call.object;
-  arm64_goal_call_abi_outer(&probe);
-  invocation->caller_x20_after = probe.caller_x20_after;
-  invocation->caller_x21_after = probe.caller_x21_after;
-  invocation->caller_x22_after = probe.caller_x22_after;
-  return probe.result;
+std::uint64_t count_native_method_invocation(const jak1::DataArenaNativeMethodCall1&,
+                                             void* user_context) {
+  auto* counter = static_cast<NativeMethodInvocationCounter*>(user_context);
+  ++counter->calls;
+  return 0;
 }
 
 void expect_caller_registers_restored(const Arm64GoalCallProbe& probe) {
   EXPECT_EQ(probe.caller_x20_after, 0x14);
   EXPECT_EQ(probe.caller_x21_after, 0x15);
   EXPECT_EQ(probe.caller_x22_after, 0x16);
+}
+
+TEST(Arm64GoalCallAbi,
+     forwards_distinct_native_method_register_context_and_restores_caller_registers) {
+  constexpr std::uint64_t kProcess = UINT64_C(0xfedcba9876543210);
+  constexpr std::uint32_t kS7 = 0xf1234567;
+  constexpr std::uint32_t kObject = 0x81234567;
+  Arm64DataArenaNativeMethodInvokerProbe probe{
+      .call = {
+          .entry = arm64_data_arena_native_method_invoker_entry,
+          .object = kObject,
+          .s7 = kS7,
+      },
+      .context = {.process = kProcess},
+  };
+  probe.call.arena = reinterpret_cast<std::byte*>(&probe);
+
+  arm64_data_arena_native_method_invoker_outer(&probe);
+
+  EXPECT_EQ(probe.entry_x0, static_cast<std::uint64_t>(kObject));
+  EXPECT_EQ(probe.entry_x20, kProcess);
+  EXPECT_EQ(probe.entry_x21, static_cast<std::uint64_t>(kS7));
+  EXPECT_EQ(probe.entry_x22, reinterpret_cast<std::uintptr_t>(&probe));
+  EXPECT_EQ(probe.entry_sp_mod16, 0u);
+  EXPECT_EQ(probe.result, static_cast<std::uint64_t>(kObject) ^ kProcess);
+  EXPECT_EQ(probe.caller_x20_after, 0x14u);
+  EXPECT_EQ(probe.caller_x21_after, 0x15u);
+  EXPECT_EQ(probe.caller_x22_after, 0x16u);
 }
 
 std::uint32_t read_u32(const std::byte* storage, std::size_t offset) {
@@ -948,6 +997,7 @@ TEST(Arm64GoalCallAbi, executes_generated_jak1_load_state_reset_against_two_guar
 
 TEST(Arm64GoalCallAbi,
      binds_jak1_load_state_reset_to_the_real_aot_entry_across_two_synthetic_arena_bases) {
+  constexpr std::uint64_t kProcess = UINT64_C(0xfedcba9876543210);
   constexpr std::size_t kGuardSize = 16;
   constexpr std::byte kCanary = std::byte{0xa5};
   constexpr std::byte kSeed = std::byte{0x3c};
@@ -1020,6 +1070,7 @@ TEST(Arm64GoalCallAbi,
           .entry = kArm64GoalExports1[3].entry,
       },
   };
+  jak1::DataArenaNativeMethodArm64Context context{.process = kProcess};
 
   std::vector<std::byte> backing(2 * kLaneSize, kCanary);
   auto* first_arena = backing.data() + kGuardSize;
@@ -1081,10 +1132,9 @@ TEST(Arm64GoalCallAbi,
       write_expected(kObjectStatusOffset + index * sizeof(std::uint32_t), 0);
     }
 
-    Arm64NativeMethodInvocation invocation;
     const auto result = jak1::invoke_data_arena_native_basic_method1(
         storage, kArenaSize, header, kObject, kResetMethodId, bindings,
-        &invoke_native_method1_through_arm64_abi, &invocation);
+        &jak1::invoke_data_arena_native_method1_arm64, &context);
 
     ASSERT_TRUE(result.invoked());
     EXPECT_EQ(result.value, kObject);
@@ -1092,14 +1142,6 @@ TEST(Arm64GoalCallAbi,
     EXPECT_EQ(result.basic_method.allocated_size, kLoadStateAllocatedSize);
     EXPECT_EQ(result.basic_method.padded_size, kLoadStatePaddedSize);
     EXPECT_EQ(result.basic_method.method_value, kFunction);
-    EXPECT_EQ(invocation.calls, 1u);
-    EXPECT_EQ(invocation.entry, kArm64GoalExports1[3].entry);
-    EXPECT_EQ(invocation.object, kObject);
-    EXPECT_EQ(invocation.s7, header.s7);
-    EXPECT_EQ(invocation.arena, storage);
-    EXPECT_EQ(invocation.caller_x20_after, 0x14);
-    EXPECT_EQ(invocation.caller_x21_after, 0x15);
-    EXPECT_EQ(invocation.caller_x22_after, 0x16);
     EXPECT_EQ(read_u32(storage, kObjectRaw), kLoadStateType);
     EXPECT_EQ(read_u32(storage, kLoadStateType + offsetof(jak1::Type, new_method) +
                              kResetMethodId * sizeof(std::uint32_t)),
@@ -1120,10 +1162,10 @@ TEST(Arm64GoalCallAbi,
   auto unbound_binding = bindings[0];
   unbound_binding.method_value += BASIC_OFFSET;
   const std::array unbound_bindings{unbound_binding};
-  Arm64NativeMethodInvocation unbound_invocation;
+  NativeMethodInvocationCounter unbound_invocation;
   const auto unbound = jak1::invoke_data_arena_native_basic_method1(
       first_arena, kArenaSize, header, kObject, kResetMethodId, unbound_bindings,
-      &invoke_native_method1_through_arm64_abi, &unbound_invocation);
+      &count_native_method_invocation, &unbound_invocation);
   EXPECT_EQ(unbound.error, jak1::DataArenaNativeMethodInvokeError::UnboundMethod);
   EXPECT_EQ(unbound.lookup_error, jak1::DataArenaBasicMethodValueLookupError::None);
   EXPECT_EQ(unbound.basic_method.method_value, kFunction);

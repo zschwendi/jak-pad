@@ -46,7 +46,7 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
   gtest_discover_tests(jak1-data-arena-test)
 endif()
 
-if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND TARGET jak1-data-arena-arm64-invoker)
   enable_language(ASM)
 
   set(ARM64_GOAL_CALL_AOT_DIR
@@ -238,7 +238,8 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
   add_dependencies(arm64-goal-call-abi-test arm64-goal-call-aot-artifacts)
   target_include_directories(arm64-goal-call-abi-test
                              PRIVATE "${ARM64_GOAL_CALL_AOT_DIR}")
-  target_link_libraries(arm64-goal-call-abi-test jak1-data-arena gtest_main)
+  target_link_libraries(arm64-goal-call-abi-test
+                        PRIVATE jak1-data-arena-arm64-invoker gtest_main)
   target_compile_features(arm64-goal-call-abi-test PRIVATE cxx_std_20)
   gtest_discover_tests(arm64-goal-call-abi-test PROPERTIES RUN_SERIAL TRUE)
 endif()

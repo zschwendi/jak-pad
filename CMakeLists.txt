@@ -7,6 +7,15 @@ project(jak)
 
 option(OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY
        "Build only the portable Jak 1 data-arena static library" OFF)
+option(OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY
+       "Build only the Jak 1 data-arena ARM64 native-method invoker libraries" OFF)
+
+if(OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY AND OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY)
+  message(FATAL_ERROR
+          "OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY and "
+          "OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY are mutually exclusive.")
+endif()
+
 if(OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY)
   if(BUILD_TESTING)
     message(FATAL_ERROR
@@ -14,6 +23,32 @@ if(OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY)
   endif()
 
   include(game/kernel/jak1/data_arena.cmake)
+  return()
+endif()
+
+if(OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY)
+  if(BUILD_TESTING)
+    message(FATAL_ERROR
+            "OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY requires BUILD_TESTING=OFF.")
+  endif()
+  if(NOT APPLE)
+    message(FATAL_ERROR
+            "OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY requires Apple ARM64.")
+  endif()
+  if(CMAKE_OSX_ARCHITECTURES)
+    if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+      message(FATAL_ERROR
+              "OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY requires "
+              "CMAKE_OSX_ARCHITECTURES=arm64.")
+    endif()
+  elseif(NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
+    message(FATAL_ERROR
+            "OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY requires Apple ARM64.")
+  endif()
+
+  enable_language(ASM)
+  include(game/kernel/jak1/data_arena.cmake)
+  include(game/kernel/jak1/data_arena_arm64_invoker.cmake)
   return()
 endif()
 
