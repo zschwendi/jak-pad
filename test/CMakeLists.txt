@@ -46,6 +46,17 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
   gtest_discover_tests(jak1-data-arena-test)
 endif()
 
+if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+  enable_language(ASM)
+  add_executable(arm64-goal-call-abi-test
+                 ${CMAKE_CURRENT_LIST_DIR}/test_arm64_goal_call_abi.cpp
+                 ${CMAKE_CURRENT_LIST_DIR}/test_arm64_goal_call_abi.s
+                 ${CMAKE_SOURCE_DIR}/game/kernel/asm_funcs_arm64.s)
+  target_link_libraries(arm64-goal-call-abi-test gtest_main)
+  target_compile_features(arm64-goal-call-abi-test PRIVATE cxx_std_20)
+  gtest_discover_tests(arm64-goal-call-abi-test)
+endif()
+
 add_executable(test_image_resize ${CMAKE_CURRENT_LIST_DIR}/common/test_image_resize.cpp)
 target_link_libraries(test_image_resize common)
 
