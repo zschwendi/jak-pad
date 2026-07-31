@@ -1,6 +1,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 #include <vector>
 
@@ -71,8 +72,11 @@ extern "C" std::uint64_t arm64_goal_call_false_like_entry(std::uint64_t,
 
 #define OPENGOAL_AOT_EXPORT1(goal_name, c_symbol) \
   extern "C" std::uint64_t c_symbol(std::uint64_t);
+// clang-format off
 #include "OpenGOALJak1Identity.exports.h"
 #include "OpenGOALJak1Lognot.exports.h"
+#include "OpenGOALJak1GlstNodeName.exports.h"
+// clang-format on
 #undef OPENGOAL_AOT_EXPORT1
 
 struct Arm64GoalExport0 {
@@ -94,13 +98,16 @@ constexpr Arm64GoalExport0 kArm64GoalExports0[] = {
 
 constexpr Arm64GoalExport1 kArm64GoalExports1[] = {
 #define OPENGOAL_AOT_EXPORT1(goal_name, c_symbol) {goal_name, &c_symbol},
+// clang-format off
 #include "OpenGOALJak1Identity.exports.h"
 #include "OpenGOALJak1Lognot.exports.h"
+#include "OpenGOALJak1GlstNodeName.exports.h"
+// clang-format on
 #undef OPENGOAL_AOT_EXPORT1
 };
 
 static_assert(sizeof(kArm64GoalExports0) == 2 * sizeof(Arm64GoalExport0));
-static_assert(sizeof(kArm64GoalExports1) == 2 * sizeof(Arm64GoalExport1));
+static_assert(sizeof(kArm64GoalExports1) == 3 * sizeof(Arm64GoalExport1));
 
 template <typename Entry>
 std::uintptr_t entry_address(Entry entry) {
@@ -164,30 +171,67 @@ TEST(Arm64GoalCallAbi, executes_generated_jak1_aot_artifacts_against_one_data_ar
   ASSERT_EQ(kArm64GoalExports0[1].goal_name, "true-func");
   ASSERT_EQ(kArm64GoalExports1[0].goal_name, "identity");
   ASSERT_EQ(kArm64GoalExports1[1].goal_name, "lognot");
+  ASSERT_EQ(kArm64GoalExports1[2].goal_name, "glst-node-name");
   ASSERT_NE(kArm64GoalExports0[0].entry, nullptr);
   ASSERT_NE(kArm64GoalExports0[1].entry, nullptr);
   ASSERT_NE(kArm64GoalExports1[0].entry, nullptr);
   ASSERT_NE(kArm64GoalExports1[1].entry, nullptr);
+  ASSERT_NE(kArm64GoalExports1[2].entry, nullptr);
 
   const auto st = static_cast<std::uintptr_t>(initialized.header.s7);
   const auto arena_address = reinterpret_cast<std::uintptr_t>(arena.data());
-  auto invoke = [&](auto entry) {
-    auto probe = make_probe(entry_address(entry), st, arena_address);
+  auto invoke = [&](auto entry, std::uintptr_t logical_base,
+                    std::uint64_t argument0 = 0x1122334455667788) {
+    auto probe = make_probe(entry_address(entry), st, logical_base);
+    probe.argument0 = argument0;
     arm64_goal_call_abi_outer(&probe);
     expect_caller_registers_restored(probe);
     return probe;
   };
 
-  const auto false_probe = invoke(kArm64GoalExports0[0].entry);
-  const auto true_probe = invoke(kArm64GoalExports0[1].entry);
-  const auto identity_probe = invoke(kArm64GoalExports1[0].entry);
-  const auto lognot_probe = invoke(kArm64GoalExports1[1].entry);
+  const auto false_probe = invoke(kArm64GoalExports0[0].entry, arena_address);
+  const auto true_probe = invoke(kArm64GoalExports0[1].entry, arena_address);
+  const auto identity_probe = invoke(kArm64GoalExports1[0].entry, arena_address);
+  const auto lognot_probe = invoke(kArm64GoalExports1[1].entry, arena_address);
 
   EXPECT_EQ(false_probe.result, initialized.header.false_value);
   EXPECT_EQ(true_probe.result, initialized.header.true_value);
   EXPECT_NE(identity_probe.argument0, 0);
   EXPECT_EQ(identity_probe.result, identity_probe.argument0);
   EXPECT_EQ(lognot_probe.result, ~lognot_probe.argument0);
+
+  constexpr std::size_t kSecondLogicalBaseOffset = 0x40;
+  constexpr std::size_t kPrivnameOffset = 8;
+  constexpr std::uint32_t kFirstPrivname = 0x81234567;
+  constexpr std::uint32_t kSecondPrivname = 0xf2345678;
+  const auto node_offset = static_cast<std::size_t>(initialized.header.global_heap_current);
+  ASSERT_NE(node_offset, 0);
+  ASSERT_LE(node_offset, arena.size());
+  ASSERT_LE(kPrivnameOffset, arena.size() - node_offset);
+  const auto first_privname_offset = node_offset + kPrivnameOffset;
+  ASSERT_LE(sizeof(kFirstPrivname), arena.size() - first_privname_offset);
+
+  ASSERT_LE(kSecondLogicalBaseOffset, arena.size());
+  ASSERT_LE(node_offset, arena.size() - kSecondLogicalBaseOffset);
+  const auto second_node_offset = kSecondLogicalBaseOffset + node_offset;
+  ASSERT_LE(kPrivnameOffset, arena.size() - second_node_offset);
+  const auto second_privname_offset = second_node_offset + kPrivnameOffset;
+  ASSERT_LE(sizeof(kSecondPrivname), arena.size() - second_privname_offset);
+
+  std::memcpy(arena.data() + first_privname_offset, &kFirstPrivname, sizeof(kFirstPrivname));
+  std::memcpy(arena.data() + second_privname_offset, &kSecondPrivname, sizeof(kSecondPrivname));
+
+  const auto first_glst_node_name_probe =
+      invoke(kArm64GoalExports1[2].entry, arena_address, node_offset);
+  const auto second_arena_address =
+      reinterpret_cast<std::uintptr_t>(arena.data() + kSecondLogicalBaseOffset);
+  const auto second_glst_node_name_probe =
+      invoke(kArm64GoalExports1[2].entry, second_arena_address, node_offset);
+
+  EXPECT_EQ(first_glst_node_name_probe.result, UINT64_C(0x0000000081234567));
+  EXPECT_EQ(second_glst_node_name_probe.result, UINT64_C(0x00000000f2345678));
+  EXPECT_EQ(first_glst_node_name_probe.result >> 32, 0);
+  EXPECT_EQ(second_glst_node_name_probe.result >> 32, 0);
 }
 
 }  // namespace

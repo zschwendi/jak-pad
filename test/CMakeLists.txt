@@ -69,16 +69,22 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
       "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1Lognot.s")
   set(ARM64_GOAL_CALL_AOT_LOGNOT_EXPORTS
       "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1Lognot.exports.h")
+  set(ARM64_GOAL_CALL_AOT_GLST_NODE_NAME_ASSEMBLY
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1GlstNodeName.s")
+  set(ARM64_GOAL_CALL_AOT_GLST_NODE_NAME_EXPORTS
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1GlstNodeName.exports.h")
   set(ARM64_GOAL_CALL_AOT_ASSEMBLIES
       ${ARM64_GOAL_CALL_AOT_FALSE_ASSEMBLY}
       ${ARM64_GOAL_CALL_AOT_TRUE_ASSEMBLY}
       ${ARM64_GOAL_CALL_AOT_IDENTITY_ASSEMBLY}
-      ${ARM64_GOAL_CALL_AOT_LOGNOT_ASSEMBLY})
+      ${ARM64_GOAL_CALL_AOT_LOGNOT_ASSEMBLY}
+      ${ARM64_GOAL_CALL_AOT_GLST_NODE_NAME_ASSEMBLY})
   set(ARM64_GOAL_CALL_AOT_EXPORTS
       ${ARM64_GOAL_CALL_AOT_FALSE_EXPORTS}
       ${ARM64_GOAL_CALL_AOT_TRUE_EXPORTS}
       ${ARM64_GOAL_CALL_AOT_IDENTITY_EXPORTS}
-      ${ARM64_GOAL_CALL_AOT_LOGNOT_EXPORTS})
+      ${ARM64_GOAL_CALL_AOT_LOGNOT_EXPORTS}
+      ${ARM64_GOAL_CALL_AOT_GLST_NODE_NAME_EXPORTS})
 
   add_custom_command(
       OUTPUT ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_EXPORTS}
@@ -115,12 +121,21 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSO
               --output "${ARM64_GOAL_CALL_AOT_LOGNOT_ASSEMBLY}"
               --exports-output "${ARM64_GOAL_CALL_AOT_LOGNOT_EXPORTS}"
               --symbol goalpad_aot_lognot
+      COMMAND $<TARGET_FILE:goalc-aot>
+              --project-path "${CMAKE_SOURCE_DIR}"
+              --input
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-glst-node-name-from-jak1-glist-h.gc"
+              --function glst-node-name
+              --output "${ARM64_GOAL_CALL_AOT_GLST_NODE_NAME_ASSEMBLY}"
+              --exports-output "${ARM64_GOAL_CALL_AOT_GLST_NODE_NAME_EXPORTS}"
+              --symbol goalpad_aot_glst_node_name
       DEPENDS
               goalc-aot
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-false-func-from-jak1-gcommon.gc"
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-true-func-from-jak1-gcommon.gc"
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-identity-from-jak1-gcommon.gc"
               "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-lognot-from-jak1-gcommon.gc"
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-glst-node-name-from-jak1-glist-h.gc"
       COMMENT "Generating Jak 1 ARM64 AOT call artifacts"
       VERBATIM)
 
