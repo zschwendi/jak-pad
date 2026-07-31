@@ -1,15 +1,19 @@
 /*!
  * @file metal_proof_main.cpp
- * Standalone proof that the Metal graphics backend renders correctly through the
+ * Standalone proof that the Metal backend's frame scaffolding works through the
  * GfxRendererModule interface (the same seam the OpenGL pipeline sits behind).
  *
- * It selects the Metal renderer, opens a real window, renders frames, then reads
- * back the offscreen frame and asserts:
- *  - the clear color is present outside all geometry
- *  - the far quad rendered where it is unoccluded
- *  - the checkerboard texture sampled correctly (two different checker cells)
- *  - the near quad occludes the far quad even though the far quad is drawn
- *    later (proving depth testing)
+ * It selects the Metal renderer, opens a real window, renders frames, and
+ * verifies by pixel readback:
+ *  - the offscreen game target: opaque, additive, alpha, reverse-subtract and
+ *    color-write-masked draws resolve correctly through the PSO cache, textures
+ *    sample correctly, and the PS2-style depth convention (clear 0, GEQUAL)
+ *    rejects geometry behind what was already drawn
+ *  - the PSO / depth-stencil caches: distinct states are each built exactly
+ *    once and reused across frames
+ *  - the present pass: the game frame appears centered and letterboxed at 1:1
+ *    and scaled sizes, with black bars, and the pmode-alp blackout and
+ *    brightness/contrast math match the GL renderer's PCRTC pass
  */
 
 #include <cstdio>
@@ -25,6 +29,13 @@
 namespace {
 
 int g_fail_count = 0;
+
+void check(bool ok, const char* what) {
+  printf("[%s] %s\n", ok ? "PASS" : "FAIL", what);
+  if (!ok) {
+    g_fail_count++;
+  }
+}
 
 void check_pixel(const metal_renderer::FramePixels& frame,
                  int x,
@@ -73,11 +84,12 @@ int main() {
   }
   printf("[PASS] Metal display created\n");
 
-  // render some frames through the GfxDisplay interface, like Gfx::Loop does
+  // render frames through the GfxDisplay interface, like Gfx::Loop does
   for (int i = 0; i < 30; i++) {
     display->render();
   }
 
+  // ---- offscreen game target: blend / depth / mask states through the PSO cache ----
   metal_renderer::FramePixels frame;
   if (!metal_renderer::read_last_frame(&frame)) {
     printf("[FAIL] could not read back rendered frame\n");
@@ -85,18 +97,103 @@ int main() {
     mod->exit();
     return 1;
   }
-  printf("[PASS] read back %dx%d frame\n", frame.width, frame.height);
+  printf("[PASS] read back %dx%d game frame\n", frame.width, frame.height);
 
-  // Scene layout in the 640x480 offscreen frame:
-  //  - clear color (0.1, 0.2, 0.4) everywhere else
-  //  - far green quad covering x in [32, 608], y in [24, 456], z = 0.75, drawn last
-  //  - near checkerboard quad covering x in [160, 480], y in [120, 360], z = 0.25,
-  //    drawn first; 8x8 checker cells of 40x30 px, red when (cx+cy) is odd
-  check_pixel(frame, 5, 5, 26, 51, 102, "clear color outside all geometry");
-  check_pixel(frame, 80, 240, 0, 255, 0, "far quad where unoccluded");
-  check_pixel(frame, 320, 60, 0, 255, 0, "far quad above near quad");
-  check_pixel(frame, 300, 240, 255, 0, 0, "texture red cell + depth occlusion");
-  check_pixel(frame, 340, 240, 255, 255, 255, "texture white cell + depth occlusion");
+  // Scene layout in the 640x480 game frame (see MetalRenderer::build_validation_scene):
+  //  gray base x[80,560] y[60,420]; checker x[96,224] y[72,168] (16x12 px cells);
+  //  additive x[384,512] y[288,384]; alpha x[384,512] y[96,192];
+  //  rev-sub x[128,256] y[288,384]; red-mask x[288,352] y[216,264];
+  //  depth-rejected quad x[128,256] y[192,288] must not appear.
+  check_pixel(frame, 5, 5, 0, 0, 0, "clear color outside all geometry");
+  check_pixel(frame, 100, 400, 128, 128, 128, "opaque gray base");
+  check_pixel(frame, 192, 240, 128, 128, 128, "GEQUAL depth reject (behind quad invisible)");
+  check_pixel(frame, 104, 78, 255, 255, 255, "texture white cell");
+  check_pixel(frame, 120, 78, 255, 0, 0, "texture red cell");
+  check_pixel(frame, 448, 336, 128, 128, 191, "additive blend (ONE,ONE)");
+  check_pixel(frame, 448, 144, 191, 64, 64, "alpha blend (SRC_ALPHA,1-SRC_ALPHA)");
+  check_pixel(frame, 192, 336, 64, 64, 64, "reverse-subtract blend");
+  check_pixel(frame, 320, 240, 255, 128, 128, "color write mask (red only)");
+
+  // ---- PSO cache: distinct states built once, reused across frames ----
+  auto s1 = metal_renderer::get_stats();
+  for (int i = 0; i < 30; i++) {
+    display->render();
+  }
+  auto s2 = metal_renderer::get_stats();
+  printf("stats after %llu frames: %llu PSOs, %llu depth-stencil states, %llu misses, %llu hits\n",
+         (unsigned long long)s2.frames_rendered, (unsigned long long)s2.pso_count,
+         (unsigned long long)s2.depth_stencil_count, (unsigned long long)s2.pso_misses,
+         (unsigned long long)s2.pso_hits);
+  check(s1.pso_count >= 5, "PSO cache holds the distinct game-pass states");
+  check(s1.depth_stencil_count == 3, "3 distinct depth-stencil states");
+  check(s1.pso_misses == s1.pso_count, "each PSO built exactly once");
+  check(s2.pso_count == s1.pso_count && s2.pso_misses == s1.pso_misses,
+        "no new PSOs after 30 more frames");
+  check(s2.pso_hits > s1.pso_hits, "PSOs reused across frames");
+  check(s2.frames_rendered == s1.frames_rendered + 30, "frame counter advanced");
+
+  // ---- present pass: letterbox at 1:1 ----
+  metal_renderer::PresentTestOptions popts;
+  popts.window_w = 800;
+  popts.window_h = 600;
+  popts.draw_region_w = 640;
+  popts.draw_region_h = 480;
+  metal_renderer::FramePixels present;
+  if (!metal_renderer::read_present_frame(popts, &present)) {
+    printf("[FAIL] could not read back present frame\n");
+    display.reset();
+    mod->exit();
+    return 1;
+  }
+  printf("[PASS] read back %dx%d present frame (1:1 letterbox)\n", present.width, present.height);
+  check_pixel(present, 40, 300, 0, 0, 0, "left letterbox bar");
+  check_pixel(present, 770, 300, 0, 0, 0, "right letterbox bar");
+  check_pixel(present, 400, 30, 0, 0, 0, "top letterbox bar");
+  check_pixel(present, 161, 300, 128, 128, 128, "game content at 1:1 (gray base)");
+  check_pixel(present, 400, 300, 255, 128, 128, "game center at 1:1 (masked quad)");
+  check_pixel(present, 528, 204, 191, 64, 64, "game content at 1:1 (alpha quad)");
+
+  // ---- present pass: scaled letterbox (1.5x, pillarboxed 1280x720) ----
+  popts.window_w = 1280;
+  popts.window_h = 720;
+  popts.draw_region_w = 960;
+  popts.draw_region_h = 720;
+  if (metal_renderer::read_present_frame(popts, &present)) {
+    printf("[PASS] read back %dx%d present frame (1.5x scale)\n", present.width, present.height);
+    check_pixel(present, 80, 360, 0, 0, 0, "left pillarbox bar at 1.5x");
+    check_pixel(present, 1200, 360, 0, 0, 0, "right pillarbox bar at 1.5x");
+    check_pixel(present, 640, 360, 255, 128, 128, "game center scaled 1.5x");
+    check_pixel(present, 310, 600, 128, 128, 128, "gray base scaled 1.5x");
+  } else {
+    check(false, "read back 1.5x present frame");
+  }
+
+  // ---- present pass: pmode-alp blackout ----
+  popts.window_w = 800;
+  popts.window_h = 600;
+  popts.draw_region_w = 640;
+  popts.draw_region_h = 480;
+  popts.pmode_alp = 0.5f;
+  if (metal_renderer::read_present_frame(popts, &present)) {
+    check_pixel(present, 400, 300, 128, 64, 64, "pmode-alp 0.5 blackout halves content");
+    check_pixel(present, 40, 300, 0, 0, 0, "letterbox bar stays black under blackout");
+  } else {
+    check(false, "read back blackout present frame");
+  }
+  popts.pmode_alp = 1.f;
+
+  // ---- present pass: brightness/contrast (subtractive path) ----
+  popts.brightness_contrast_color = -32;  // subtract 0.25
+  if (metal_renderer::read_present_frame(popts, &present)) {
+    check_pixel(present, 161, 300, 64, 64, 64, "brightness -32 subtracts 0.25 from gray");
+  } else {
+    check(false, "read back brightness present frame");
+  }
+
+  // the extra present readbacks reuse the same target formats: only the blackout
+  // draw may have added one PSO
+  auto s3 = metal_renderer::get_stats();
+  check(s3.pso_count <= s2.pso_count + 1, "present verification added at most the blackout PSO");
 
   display.reset();
   mod->exit();

@@ -76,9 +76,14 @@ to a renderer (`game/graphics/opengl_renderer/OpenGLRenderer.h:66-76`).
 92 GLSL files = 46 vertex/fragment programs, ~3.1k lines total. They use only GLSL 4.10
 core features (no compute, no geometry, no SSBO). Translation to MSL is mechanical:
 uniforms become argument-buffer/`setBytes` constants, `sampler1D/2D` become
-`texture1d/2d` + sampler, `discard` maps directly. Plan: offline translation
-(hand or SPIRV-Cross-assisted), checked-in `.metal` sources compiled at build time into a
-`metallib` — no runtime shader generation, which keeps the iPadOS signing story clean.
+`texture1d/2d` + sampler, `discard` maps directly. The build step for this is
+*Implemented*: checked-in `.metal` sources under
+`game/graphics/pipelines/metal/shaders/` are compiled at build time by
+`xcrun metal` into a metallib, embedded into the runtime as a byte array
+(`embed_metallib.cmake`), and loaded with `newLibraryWithData:` — no runtime
+shader generation or compilation, which keeps the iPadOS signing story clean.
+The GLSL→MSL translation of the 92 game shaders happens per bucket renderer as
+each is ported.
 
 ### The seam
 
@@ -113,9 +118,11 @@ come from a `UIView`/SwiftUI instead of SDL.
 1. **Backend seam + first Metal frame** — *Implemented* (this change): `GfxPipeline::Metal`,
    `gRendererMetal` in `game/graphics/pipelines/metal/`, textured depth-tested frame
    rendered and pixel-verified via `metal-proof`.
-2. Frame scaffolding — *Planned*: per-frame command buffer, offscreen game render target
-   (640x480-scaled) + final upscale/letterbox pass (mirror of `OpenGLRenderer::setup_frame`
-   / `do_pcrtc_effects`), PSO cache keyed on blend/target state, MSL shader build step.
+2. Frame scaffolding — *Implemented*: per-frame command buffer, offscreen game render
+   target + letterboxed present pass (mirror of `OpenGLRenderer::setup_frame` /
+   `do_pcrtc_effects`, including brightness/contrast and pmode-alp blackout), PSO +
+   depth-stencil caches, build-time MSL shader pipeline. MSAA resolve is still planned
+   (the PSO key already carries a sample count).
 3. Texture path — *Planned*: TexturePool backed by `MTLTexture`, TextureUploadHandler port.
 4. First game visuals — *Planned*: DirectRenderer + SkyRenderer (+ SkyBlendCPU) → boot
    splash/title screen content renders under Metal on macOS using the existing DMA chain.
@@ -141,12 +148,31 @@ come from a `UIView`/SwiftUI instead of SDL.
 
 ## 4. Current state
 
-- **Implemented**: `GfxPipeline::Metal` seam; experimental Metal pipeline module
-  (`game/graphics/pipelines/metal/metal_pipeline.mm`) that creates a real Metal
-  device/window via SDL3, renders a textured, depth-tested validation frame through the
-  `GfxRendererModule`/`GfxDisplay` interfaces, presents it, and supports pixel readback.
-  Verified by the `metal-proof` target (`ninja -C build metal-proof && build/game/metal-proof`).
-- **Experimental**: the Metal pipeline ignores `send_chain` (logs once); it renders no
-  game content yet.
+- **Implemented**: `GfxPipeline::Metal` seam and the stage-2 frame scaffolding under
+  `game/graphics/pipelines/metal/`:
+  - `metal_pipeline.mm` — SDL3 window/`CAMetalLayer` setup and `GfxRendererModule` glue.
+  - `metal_renderer.{h,mm}` — per-frame structure: one command buffer per frame carrying
+    the game pass(es) into an offscreen game-resolution target
+    (BGRA8 + Depth32Float_Stencil8, cleared like Jak 1's `setup_frame`: color 0, depth 0,
+    PS2-style reversed depth with GEQUAL) followed by the PCRTC-style present pass that
+    draws the game frame into the centered letterboxed draw region of the drawable with
+    the POST_PROCESSING brightness/contrast math and the pmode-alp blackout.
+  - `metal_pso_cache.{h,mm}` — PSO cache keyed on (shader, sample count, color/depth
+    formats, blend enable/ops/factors, color write mask) plus a separate
+    `MTLDepthStencilState` cache keyed on (test, compare, write). Ported renderers
+    request GL-style per-draw state; each distinct combination is baked once and reused.
+  - `shaders/scaffold.metal` — checked-in MSL compiled at build time to an embedded
+    metallib (see §Shaders); nothing is compiled at runtime.
+  - Verified by the `metal-proof` target (`ninja -C build metal-proof &&
+    build/game/metal-proof`): renders 60 windowed frames, then readback-checks the
+    offscreen target (opaque/additive/alpha/reverse-subtract/write-masked draws, texture
+    sampling, GEQUAL depth rejection), the cache counters (each PSO built exactly once,
+    reused across frames), and the present pass (1:1 and 1.5x letterboxing with black
+    bars, blackout, brightness).
+- **Experimental**: the Metal pipeline ignores `send_chain` (logs once); it renders a
+  fixed validation scene, no game content yet. The stand-in draw region is a 4:3 fit of
+  the window until the game supplies real sizes.
+- **Planned**: MSAA render/resolve (PSO key already carries sample count), stencil ops in
+  the depth-stencil key (for ShadowRenderer), texture pool (stage 3).
 - The OpenGL renderer is untouched and remains the default (`gfx.cpp` still selects
   `GfxPipeline::OpenGL`).

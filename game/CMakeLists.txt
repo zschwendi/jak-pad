@@ -354,9 +354,41 @@ set(RUNTIME_SOURCE
 
 if(APPLE)
     # experimental Metal graphics pipeline (see game/graphics/pipelines/metal/)
-    list(APPEND RUNTIME_SOURCE graphics/pipelines/metal/metal_pipeline.mm)
-    set_source_files_properties(graphics/pipelines/metal/metal_pipeline.mm
+    set(METAL_PIPELINE_SOURCES
+        graphics/pipelines/metal/metal_pipeline.mm
+        graphics/pipelines/metal/metal_pso_cache.mm
+        graphics/pipelines/metal/metal_renderer.mm)
+    list(APPEND RUNTIME_SOURCE ${METAL_PIPELINE_SOURCES})
+    set_source_files_properties(${METAL_PIPELINE_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+
+    # MSL shaders are checked-in source compiled at build time to a metallib and
+    # embedded in the runtime as a byte array. No shader compilation happens at
+    # runtime, which keeps the app signing-clean for iPadOS.
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(METAL_SDK iphoneos)
+    else()
+        set(METAL_SDK macosx)
+    endif()
+    set(METAL_SHADER_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/scaffold.metal)
+    set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad.metallib)
+    add_custom_command(
+        OUTPUT ${METAL_LIB}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders
+        COMMAND xcrun -sdk ${METAL_SDK} metal -Wall -Werror -o ${METAL_LIB} ${METAL_SHADER_SOURCES}
+        DEPENDS ${METAL_SHADER_SOURCES}
+        COMMENT "Compiling MSL shaders to ${METAL_LIB}")
+    set(METAL_LIB_EMBED ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad_metallib_embed.c)
+    set(METAL_EMBED_SCRIPT
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/embed_metallib.cmake)
+    add_custom_command(
+        OUTPUT ${METAL_LIB_EMBED}
+        COMMAND ${CMAKE_COMMAND} -DINPUT=${METAL_LIB} -DOUTPUT=${METAL_LIB_EMBED}
+                -DSYMBOL=g_goalpad_metallib -P ${METAL_EMBED_SCRIPT}
+        DEPENDS ${METAL_LIB} ${METAL_EMBED_SCRIPT}
+        COMMENT "Embedding ${METAL_LIB}")
+    list(APPEND RUNTIME_SOURCE ${METAL_LIB_EMBED})
 endif()
 
 add_subdirectory(sound)
