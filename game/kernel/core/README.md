@@ -54,8 +54,27 @@ cmake --build build/Release/bin -j 4 --target jak1-aot-execution-test
 
 `jak1-aot-execution-test` builds `kernel/gcommon.gc` and `kernel/gstring.gc` through
 `goalc-cbackend` and the host C compiler, loads both into this kernel, runs their `top-level`
-functions through `call_goal`, and then calls real Jak 1 GOAL functions by symbol. It is also
-registered with CTest.
+functions through `call_goal`, and then calls real Jak 1 GOAL functions by symbol. It also runs
+GOAL code on a stack allocated from the real global heap, which is where GOAL's cooperative threads
+put their stacks; see `docs/aot-stack-model.md`. It is registered with CTest.
+
+```sh
+cmake --build build/Release/bin -j 4 --target jak1-aot-boot-test
+./build/Release/bin/game/jak1-aot-boot-test
+```
+
+`jak1-aot-boot-test` is the boot probe. It walks Jak 1's object files in the order
+`goal_src/jak1/game.gp` builds them - `goalc-cbackend-sweep` reads that order out of the make
+system and emits the C plus `aot_boot_manifest.c` - loads each one into the real global heap and
+runs its `top-level` through `call_goal`. It reports how far it got and what stopped it rather
+than only passing or failing.
+
+Today it loads the first **40** object files and runs all 40 top-levels, ending with 776 symbols
+in the real symbol table. The frontier is file 41, `engine/ps2/pad.gc`, whose `top-level` calls
+`cpad-open`: a machine-layer function from `kmachine.cpp` that this library does not have, so the
+call reads a symbol holding 0 and faults in the guard page. Raising the frontier means giving the
+portable kernel a machine layer, not changing the AOT path. `AOT_BOOT_TAGS` in
+`game/CMakeLists.txt` is the file list and has to be extended together with the frontier.
 
 Standalone static library for a device build:
 
@@ -126,11 +145,15 @@ trampolines, and it is the seam the compiler/AOT track needs.
   therefore not yet available on ARM64.
 - **Only Jak 1 was converted.** `game/kernel/{jak2,jak3,jakx}/kscheme.cpp` still write x86-64
   trampolines, so those kernels remain non-functional on ARM64.
-- **`kernel/gkernel.gc` cannot be loaded yet.** Its `top-level` uses `.pcpyld`, which the C
-  backend has no lowering for, so the file has no entry point to run. It and
-  `engine/sound/gsound.gc` are the only two of the 518 Jak 1 sources whose `top-level` fails to
-  translate, and gkernel is early in the build order, so this is the next blocker for loading
-  more of the game.
+- **No machine layer.** Nothing from `kmachine.cpp` is here, so no GOAL symbol holds `cpad-open`,
+  `file-stream-open`, `reset-graph`, the `scf-get-*` settings readers or the PC-port functions.
+  A GOAL call to one of them reads a symbol holding 0 and faults in the guard page rather than
+  reporting a name. This is what stops the boot probe at file 41.
+- **No thread switch.** The seven GOAL routines that switch stacks - `reset-and-call`,
+  `thread-suspend`, `thread-resume`, `return-from-thread`, `return-from-thread-dead`,
+  `(method new catch-frame)`, `throw-dispatch`, plus `enter-state` - cannot be expressed in C and
+  have no native implementation yet, so GOAL processes cannot run. See `docs/aot-stack-model.md`
+  for the model they have to implement.
 - **No file access.** `ee::sceOpen` and friends are stubs, so `FileLoad`, `load`, and DGO loading
   abort. An iPadOS file-path strategy is required before they can be implemented.
 - `game/kernel/common/kmachine.h` transitively includes `<SDL3/SDL.h>` through
