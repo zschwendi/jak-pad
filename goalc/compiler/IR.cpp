@@ -198,31 +198,6 @@ void IR_Return::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_Return::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                 const AllocationResult& allocs,
-                                 emitter::IR_Record irec) {
-  if (m_value->ireg().reg_class != RegClass::GPR_64 ||
-      m_return_reg->ireg().reg_class != RegClass::GPR_64) {
-    throw std::runtime_error("ARM64 AOT proof only supports GPR returns.");
-  }
-
-  const auto value_reg = get_reg(m_value, allocs, irec);
-  const auto return_reg = get_reg(m_return_reg, allocs, irec);
-  const auto abi_return_reg = get_register_info(gen->instr_set()).get_gpr_ret_reg();
-  if (m_ret_reg != abi_return_reg || return_reg != abi_return_reg) {
-    throw std::runtime_error("ARM64 AOT proof requires the ABI GPR return register.");
-  }
-  if (!value_reg.is_gpr(gen->instr_set()) || value_reg == ARM64_REG::SP) {
-    throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR return value.");
-  }
-
-  if (value_reg == return_reg) {
-    gen->add_instr(IGen::null(*gen), irec);
-  } else {
-    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, return_reg, value_reg), irec);
-  }
-}
-
 /////////////////////
 // LoadConstant64
 /////////////////////
@@ -243,20 +218,6 @@ void IR_LoadConstant64::do_codegen_x86(emitter::ObjectGenerator* gen,
                                        const AllocationResult& allocs,
                                        emitter::IR_Record irec) {
   auto dest_reg = get_reg(m_dest, allocs, irec);
-  load_constant(m_value, gen, irec, dest_reg);
-}
-
-void IR_LoadConstant64::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                         const AllocationResult& allocs,
-                                         emitter::IR_Record irec) {
-  if (m_dest->ireg().reg_class != RegClass::GPR_64) {
-    throw std::runtime_error("ARM64 AOT proof only supports GPR constants.");
-  }
-
-  const auto dest_reg = get_reg(m_dest, allocs, irec);
-  if (!dest_reg.is_gpr(gen->instr_set()) || dest_reg == ARM64_REG::SP) {
-    throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR constant destination.");
-  }
   load_constant(m_value, gen, irec, dest_reg);
 }
 
@@ -302,48 +263,6 @@ void IR_LoadSymbolPointer::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_LoadSymbolPointer::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                            const AllocationResult& allocs,
-                                            emitter::IR_Record irec) {
-  if (m_dest->ireg().reg_class != RegClass::GPR_64) {
-    throw std::runtime_error("ARM64 AOT proof only supports GPR symbol pointers.");
-  }
-
-  const auto dest_reg = get_reg(m_dest, allocs, irec);
-  if (!dest_reg.is_gpr(gen->instr_set()) || dest_reg == ARM64_REG::SP) {
-    throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR symbol destination.");
-  }
-  const auto st_reg = get_register_info(gen->instr_set()).get_st_reg();
-  if (m_name == "#f") {
-    static_assert(false_symbol_offset() == 0, "false symbol location");
-    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, st_reg), irec);
-  } else if (m_name == "#t") {
-    if (gen->version() != GameVersion::Jak1) {
-      throw std::runtime_error("ARM64 AOT proof only supports the Jak 1 #t symbol pointer.");
-    }
-    static_assert(true_symbol_offset(GameVersion::Jak1) == 0x8, "Jak 1 true symbol location");
-    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, st_reg), irec);
-    gen->add_instr(IGen::add_gpr64_imm8s(*gen, dest_reg, true_symbol_offset(GameVersion::Jak1)),
-                   irec);
-  } else if (m_name == "_empty_") {
-    if (gen->version() != GameVersion::Jak1) {
-      throw std::runtime_error("ARM64 AOT proof only supports the Jak 1 empty-pair symbol pointer.");
-    }
-    if (dest_reg.logical_id() < emitter::X0 || dest_reg.logical_id() > emitter::X15) {
-      throw std::runtime_error(
-          "ARM64 AOT proof requires an X0-X15 destination for the empty-pair symbol pointer.");
-    }
-    static_assert(empty_pair_offset_from_s7(GameVersion::Jak1) == -0xa,
-                  "Jak 1 empty pair symbol location");
-    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, st_reg), irec);
-    gen->add_instr(IGen::add_gpr64_imm8s(*gen, dest_reg,
-                                         empty_pair_offset_from_s7(GameVersion::Jak1)),
-                   irec);
-  } else {
-    throw std::runtime_error("ARM64 AOT proof only supports the #f, #t, or _empty_ symbol pointer.");
-  }
-}
-
 /////////////////////
 // SetSymbolValue
 /////////////////////
@@ -370,12 +289,6 @@ void IR_SetSymbolValue::do_codegen_x86(emitter::ObjectGenerator* gen,
           *gen, gRegInfo.get_st_reg(), gRegInfo.get_offset_reg(), src_reg, LINK_SYM_NO_OFFSET_FLAG),
       irec);
   gen->link_instruction_symbol_mem(instr, m_dest->name());
-}
-
-void IR_SetSymbolValue::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                         const AllocationResult& allocs,
-                                         emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_SetSymbolValue::do_codegen_arm64");
 }
 
 /////////////////////
@@ -414,12 +327,6 @@ void IR_GetSymbolValue::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_GetSymbolValue::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                         const AllocationResult& allocs,
-                                         emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_GetSymbolValue::do_codegen_arm64");
-}
-
 /////////////////////
 // RegSet
 /////////////////////
@@ -440,29 +347,6 @@ void IR_RegSet::do_codegen_x86(emitter::ObjectGenerator* gen,
                                const AllocationResult& allocs,
                                emitter::IR_Record irec) {
   regset_common(gen, allocs, irec, m_dest, m_src, true);
-}
-
-void IR_RegSet::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                 const AllocationResult& allocs,
-                                 emitter::IR_Record irec) {
-  if (m_dest->ireg().reg_class != RegClass::GPR_64 ||
-      m_src->ireg().reg_class != RegClass::GPR_64) {
-    throw std::runtime_error("ARM64 AOT proof only supports GPR register moves.");
-  }
-
-  const auto destination = get_reg(m_dest, allocs, irec);
-  const auto source = get_reg(m_src, allocs, irec);
-  if (!destination.is_gpr(gen->instr_set()) || !source.is_gpr(gen->instr_set()) ||
-      destination == ARM64_REG::SP || source == ARM64_REG::SP) {
-    throw std::runtime_error("ARM64 AOT proof requires non-stack GPR register moves.");
-  }
-
-  if (destination == source) {
-    gen->count_eliminated_move();
-    gen->add_instr(IGen::null(*gen), irec);
-  } else {
-    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, destination, source), irec);
-  }
 }
 
 std::string IR_RegSet::print() {
@@ -500,17 +384,6 @@ void IR_GotoLabel::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto instr = gen->add_instr(IGen::jmp_imm(*gen), irec);
   // TODO ARM - have to patch this differently, encoding for the immediate is different
   gen->link_instruction_jump(instr, gen->get_future_ir_record_in_same_func(irec, m_dest->idx));
-}
-
-void IR_GotoLabel::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                    const AllocationResult& allocs,
-                                    emitter::IR_Record irec) {
-  (void)allocs;
-  if (!m_resolved || !m_dest || m_dest->idx < 0) {
-    throw std::runtime_error("ARM64 AOT proof requires a resolved forward or backward label.");
-  }
-  const auto jump = gen->add_instr(IGen::jmp_imm(*gen), irec);
-  gen->link_instruction_jump(jump, gen->get_future_ir_record_in_same_func(irec, m_dest->idx));
 }
 
 void IR_GotoLabel::resolve(const Label* dest) {
@@ -587,12 +460,6 @@ void IR_FunctionCall::do_codegen_x86(emitter::ObjectGenerator* gen,
   // todo, can we do a sub to undo the modification to the register? does that actually work?
 }
 
-void IR_FunctionCall::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                       const AllocationResult& allocs,
-                                       emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_FunctionCall::do_codegen_arm64");
-}
-
 /////////////////////
 // RegValAddr
 /////////////////////
@@ -621,12 +488,6 @@ void IR_RegValAddr::do_codegen_x86(emitter::ObjectGenerator* gen,
   gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dst, emitter::gRegInfo.get_offset_reg()), irec);
 }
 
-void IR_RegValAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                     const AllocationResult& allocs,
-                                     emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_RegValAddr::do_codegen_arm64");
-}
-
 /////////////////////
 // StaticVarAddr
 /////////////////////
@@ -653,12 +514,6 @@ void IR_StaticVarAddr::do_codegen_x86(emitter::ObjectGenerator* gen,
   gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dr, emitter::gRegInfo.get_offset_reg()), irec);
 }
 
-void IR_StaticVarAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                        const AllocationResult& allocs,
-                                        emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_StaticVarAddr::do_codegen_arm64");
-}
-
 /////////////////////
 // FunctionAddr
 /////////////////////
@@ -682,12 +537,6 @@ void IR_FunctionAddr::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto instr = gen->add_instr(IGen::static_addr(*gen, dr, 0), irec);
   gen->link_instruction_to_function(instr, gen->get_existing_function_record(m_src->idx_in_file));
   gen->add_instr(IGen::sub_gpr64_gpr64(*gen, dr, emitter::gRegInfo.get_offset_reg()), irec);
-}
-
-void IR_FunctionAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                       const AllocationResult& allocs,
-                                       emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_FunctionAddr::do_codegen_arm64");
 }
 
 /////////////////////
@@ -862,61 +711,6 @@ void IR_IntegerMath::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_IntegerMath::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                      const AllocationResult& allocs,
-                                      emitter::IR_Record irec) {
-  if (m_dest->ireg().reg_class != RegClass::GPR_64) {
-    throw std::runtime_error("ARM64 AOT proof only supports GPR integer math destinations.");
-  }
-
-  const auto destination = get_reg(m_dest, allocs, irec);
-  if (!destination.is_gpr(gen->instr_set()) || destination == ARM64_REG::SP) {
-    throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR integer math destination.");
-  }
-
-  const auto is_aot_temp_gpr = [](const emitter::Register& reg) {
-    return reg.instruction_set() == emitter::InstructionSet::ARM64 &&
-           reg.logical_id() >= emitter::X0 && reg.logical_id() <= emitter::X15;
-  };
-
-  switch (m_kind) {
-    case IntegerMathKind::NOT_64:
-      if (m_arg != nullptr) {
-        throw std::runtime_error("ARM64 AOT proof requires a unary 64-bit integer NOT.");
-      }
-      gen->add_instr(IGen::not_gpr64(*gen, destination), irec);
-      return;
-    case IntegerMathKind::ADD_64: {
-      if (!m_arg || m_arg->ireg().reg_class != RegClass::GPR_64) {
-        throw std::runtime_error("ARM64 AOT proof requires a GPR source for 64-bit integer ADD.");
-      }
-      const auto source = get_reg(m_arg, allocs, irec);
-      if (!is_aot_temp_gpr(destination) || !is_aot_temp_gpr(source)) {
-        throw std::runtime_error(
-            "ARM64 AOT proof requires X0-X15 operands for 64-bit integer ADD.");
-      }
-      gen->add_instr(IGen::add_gpr64_gpr64(*gen, destination, source), irec);
-      return;
-    }
-    case IntegerMathKind::SHL_64:
-      if (m_arg != nullptr) {
-        throw std::runtime_error("ARM64 AOT proof requires an immediate 64-bit integer SHL.");
-      }
-      if (!is_aot_temp_gpr(destination)) {
-        throw std::runtime_error(
-            "ARM64 AOT proof requires an X0-X15 destination for immediate 64-bit integer SHL.");
-      }
-      if (m_shift_amount != 2 && m_shift_amount != 4) {
-        throw std::runtime_error(
-            "ARM64 AOT proof requires an immediate 64-bit integer SHL by two or four.");
-      }
-      gen->add_instr(IGen::shl_gpr64_u8(*gen, destination, m_shift_amount), irec);
-      return;
-    default:
-      throw std::runtime_error("ARM64 AOT proof only supports 64-bit integer NOT, ADD, or SHL.");
-  }
-}
-
 /////////////////////
 // FloatMath
 /////////////////////
@@ -998,12 +792,6 @@ void IR_FloatMath::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_FloatMath::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                    const AllocationResult& allocs,
-                                    emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_FloatMath::do_codegen_arm64");
-}
-
 /////////////////////
 // StaticVarLoad
 /////////////////////
@@ -1044,12 +832,6 @@ void IR_StaticVarLoad::do_codegen_x86(emitter::ObjectGenerator* gen,
   } else {
     ASSERT(false);
   }
-}
-
-void IR_StaticVarLoad::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                        const AllocationResult& allocs,
-                                        emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_StaticVarLoad::do_codegen_arm64");
 }
 
 /////////////////////
@@ -1156,58 +938,6 @@ void IR_ConditionalBranch::do_codegen_x86(emitter::ObjectGenerator* gen,
   gen->link_instruction_jump(jump_rec, gen->get_future_ir_record_in_same_func(irec, label.idx));
 }
 
-void IR_ConditionalBranch::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                            const AllocationResult& allocs,
-                                            emitter::IR_Record irec) {
-  if (!m_resolved || label.idx < 0) {
-    throw std::runtime_error("ARM64 AOT proof requires a resolved conditional branch label.");
-  }
-  if (condition.is_float || condition.a->ireg().reg_class != RegClass::GPR_64 ||
-      condition.b->ireg().reg_class != RegClass::GPR_64) {
-    throw std::runtime_error("ARM64 AOT proof only supports GPR conditional branches.");
-  }
-
-  const auto a = get_reg(condition.a, allocs, irec);
-  const auto b = get_reg(condition.b, allocs, irec);
-  if (!a.is_gpr(gen->instr_set()) || !b.is_gpr(gen->instr_set()) || a == ARM64_REG::SP ||
-      b == ARM64_REG::SP) {
-    throw std::runtime_error("ARM64 AOT proof requires non-stack GPR conditional operands.");
-  }
-
-  Instruction jump = InstructionARM64(0);
-  switch (condition.kind) {
-    case ConditionKind::EQUAL:
-      jump = IGen::je_imm(*gen);
-      break;
-    case ConditionKind::NOT_EQUAL:
-      jump = IGen::jne_imm(*gen);
-      break;
-    case ConditionKind::GEQ:
-      if (!condition.is_signed) {
-        throw std::runtime_error(
-            "ARM64 AOT proof only supports signed greater-than-or-equal conditional branches.");
-      }
-      jump = IGen::jge_imm(*gen);
-      break;
-    case ConditionKind::LT:
-      if (!condition.is_signed) {
-        throw std::runtime_error(
-            "ARM64 AOT proof only supports signed less-than conditional branches.");
-      }
-      jump = IGen::jl_imm(*gen);
-      break;
-    default:
-      throw std::runtime_error(
-          "ARM64 AOT proof only supports equality, signed greater-than-or-equal, or signed "
-          "less-than conditional branches.");
-  }
-
-  gen->add_instr(IGen::cmp_gpr64_gpr64(*gen, a, b), irec);
-  const auto jump_record = gen->add_instr(jump, irec);
-  gen->link_instruction_jump(jump_record,
-                             gen->get_future_ir_record_in_same_func(irec, label.idx));
-}
-
 /////////////////////
 // LoadConstantOffset
 /////////////////////
@@ -1255,24 +985,6 @@ void IR_LoadConstOffset::do_codegen_x86(emitter::ObjectGenerator* gen,
   } else {
     throw std::runtime_error("IR_LoadConstOffset::do_codegen_x86 not supported");
   }
-}
-
-void IR_LoadConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                          const AllocationResult& allocs,
-                                          emitter::IR_Record irec) {
-  const auto destination =
-      m_use_coloring ? get_reg(m_dest, allocs, irec) : get_no_color_reg(m_dest);
-  const auto base = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
-
-  if (m_dest->ireg().reg_class != RegClass::GPR_64 ||
-      m_base->ireg().reg_class != RegClass::GPR_64 || m_info.reg != RegClass::GPR_64) {
-    throw std::runtime_error("IR_LoadConstOffset::do_codegen_arm64 only supports GPR loads");
-  }
-
-  const auto offset = get_register_info(gen->instr_set()).get_offset_reg();
-  gen->add_instr(IGen::load_goal_gpr(*gen, destination, base, offset, m_offset, m_info.size,
-                                     m_info.sign_extend),
-                 irec);
 }
 
 ///////////////////////
@@ -1323,38 +1035,6 @@ void IR_StoreConstOffset::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                           const AllocationResult& allocs,
-                                           emitter::IR_Record irec) {
-  const auto base_reg = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
-  const auto value_reg =
-      m_use_coloring ? get_reg(m_value, allocs, irec) : get_no_color_reg(m_value);
-
-  if (m_value->ireg().reg_class == RegClass::GPR_64 &&
-      m_base->ireg().reg_class == RegClass::GPR_64 && m_size == 4) {
-    const auto goal_base = get_register_info(gen->instr_set()).get_offset_reg();
-    if (!base_reg.is_gpr(gen->instr_set()) || !value_reg.is_gpr(gen->instr_set()) ||
-        base_reg == emitter::SP || value_reg == emitter::SP) {
-      throw std::runtime_error("ARM64 constant-offset GPR stores require non-stack GPR operands");
-    }
-    if (base_reg == goal_base) {
-      throw std::runtime_error(
-          "ARM64 constant-offset GPR stores cannot use the GOAL base register as an address");
-    }
-    if (m_offset != 0 && (base_reg == emitter::X16 || value_reg == emitter::X16)) {
-      throw std::runtime_error(
-          "ARM64 constant-offset GPR stores cannot use X16 as a nonzero-offset base or value");
-    }
-    gen->add_instr(IGen::store_goal_gpr(*gen, base_reg, value_reg, goal_base, m_offset, m_size),
-                   irec);
-    return;
-  }
-
-  throw std::runtime_error(
-      fmt::format("IR_StoreConstOffset::do_codegen_arm64 can't handle this (c {} sz {})",
-                  fmt::underlying(m_value->ireg().reg_class), m_size));
-}
-
 ///////////////////////
 // Null
 ///////////////////////
@@ -1369,14 +1049,6 @@ RegAllocInstr IR_Null::to_rai() {
 void IR_Null::do_codegen_x86(emitter::ObjectGenerator* gen,
                              const AllocationResult& allocs,
                              emitter::IR_Record irec) {
-  (void)gen;
-  (void)allocs;
-  (void)irec;
-}
-
-void IR_Null::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                               const AllocationResult& allocs,
-                               emitter::IR_Record irec) {
   (void)gen;
   (void)allocs;
   (void)irec;
@@ -1402,14 +1074,6 @@ RegAllocInstr IR_ValueReset::to_rai() {
 void IR_ValueReset::do_codegen_x86(emitter::ObjectGenerator* gen,
                                    const AllocationResult& allocs,
                                    emitter::IR_Record irec) {
-  (void)gen;
-  (void)allocs;
-  (void)irec;
-}
-
-void IR_ValueReset::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                     const AllocationResult& allocs,
-                                     emitter::IR_Record irec) {
   (void)gen;
   (void)allocs;
   (void)irec;
@@ -1442,12 +1106,6 @@ void IR_FloatToInt::do_codegen_x86(emitter::ObjectGenerator* gen,
       irec);
 }
 
-void IR_FloatToInt::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                     const AllocationResult& allocs,
-                                     emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_FloatToInt::do_codegen_arm64");
-}
-
 ///////////////////////
 // IntToFloat
 ///////////////////////
@@ -1470,12 +1128,6 @@ void IR_IntToFloat::do_codegen_x86(emitter::ObjectGenerator* gen,
                                    emitter::IR_Record irec) {
   gen->add_instr(
       IGen::int32_to_f32(*gen, get_reg(m_dest, allocs, irec), get_reg(m_src, allocs, irec)), irec);
-}
-
-void IR_IntToFloat::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                     const AllocationResult& allocs,
-                                     emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_IntToFloat::do_codegen_arm64");
 }
 
 ///////////////////////
@@ -1511,12 +1163,6 @@ void IR_GetStackAddr::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_GetStackAddr::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                       const AllocationResult& allocs,
-                                       emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_GetStackAddr::do_codegen_arm64");
-}
-
 ///////////////////////
 // Nop
 ///////////////////////
@@ -1535,12 +1181,6 @@ void IR_Nop::do_codegen_x86(emitter::ObjectGenerator* gen,
                             const AllocationResult&,
                             emitter::IR_Record irec) {
   gen->add_instr(IGen::nop(*gen), irec);
-}
-
-void IR_Nop::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                              const AllocationResult& allocs,
-                              emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_Nop::do_codegen_arm64");
 }
 
 ///////////////////////
@@ -1578,12 +1218,6 @@ void IR_AsmRet::do_codegen_x86(emitter::ObjectGenerator* gen,
   gen->add_instr(IGen::ret(*gen), irec);
 }
 
-void IR_AsmRet::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                 const AllocationResult& allocs,
-                                 emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_AsmRet::do_codegen_arm64");
-}
-
 ///////////////////////
 // AsmFNop
 ///////////////////////
@@ -1605,12 +1239,6 @@ void IR_AsmFNop::do_codegen_x86(emitter::ObjectGenerator* gen,
   gen->add_instr(IGen::nop_vf(*gen), irec);
 }
 
-void IR_AsmFNop::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                  const AllocationResult& allocs,
-                                  emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_AsmFNop::do_codegen_arm64");
-}
-
 ///////////////////////
 // AsmFWait
 ///////////////////////
@@ -1630,12 +1258,6 @@ void IR_AsmFWait::do_codegen_x86(emitter::ObjectGenerator* gen,
                                  emitter::IR_Record irec) {
   (void)allocs;
   gen->add_instr(IGen::wait_vf(*gen), irec);
-}
-
-void IR_AsmFWait::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                   const AllocationResult& allocs,
-                                   emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_AsmFWait::do_codegen_arm64");
 }
 
 ///////////////////////
@@ -1666,12 +1288,6 @@ void IR_AsmPush::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_AsmPush::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                  const AllocationResult& allocs,
-                                  emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_AsmPush::do_codegen_arm64");
-}
-
 ///////////////////////
 // AsmPop
 ///////////////////////
@@ -1698,12 +1314,6 @@ void IR_AsmPop::do_codegen_x86(emitter::ObjectGenerator* gen,
   } else {
     gen->add_instr(IGen::pop_gpr64(*gen, get_no_color_reg(m_dst)), irec);
   }
-}
-
-void IR_AsmPop::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                 const AllocationResult& allocs,
-                                 emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_AsmPop::do_codegen_arm64");
 }
 
 ///////////////////////
@@ -1740,12 +1350,6 @@ void IR_AsmSub::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_AsmSub::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                 const AllocationResult& allocs,
-                                 emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_AsmSub::do_codegen_arm64");
-}
-
 ///////////////////////
 // AsmAdd
 ///////////////////////
@@ -1778,12 +1382,6 @@ void IR_AsmAdd::do_codegen_x86(emitter::ObjectGenerator* gen,
     gen->add_instr(IGen::add_gpr64_gpr64(*gen, get_no_color_reg(m_dst), get_no_color_reg(m_src)),
                    irec);
   }
-}
-
-void IR_AsmAdd::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                 const AllocationResult& allocs,
-                                 emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_AsmAdd::do_codegen_arm64");
 }
 
 ///////////////////////
@@ -1827,12 +1425,6 @@ void IR_GetSymbolValueAsm::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_GetSymbolValueAsm::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                            const AllocationResult& allocs,
-                                            emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_GetSymbolValueAsm::do_codegen_arm64");
-}
-
 ///////////////////////
 // AsmJumpReg
 ///////////////////////
@@ -1856,12 +1448,6 @@ void IR_JumpReg::do_codegen_x86(emitter::ObjectGenerator* gen,
                                 emitter::IR_Record irec) {
   auto src_reg = m_use_coloring ? get_reg(m_src, allocs, irec) : get_no_color_reg(m_src);
   gen->add_instr(IGen::jmp_r64(*gen, src_reg), irec);
-}
-
-void IR_JumpReg::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                  const AllocationResult& allocs,
-                                  emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_JumpReg::do_codegen_arm64");
 }
 
 ///////////////////////
@@ -1888,12 +1474,6 @@ void IR_RegSetAsm::do_codegen_x86(emitter::ObjectGenerator* gen,
                                   const AllocationResult& allocs,
                                   emitter::IR_Record irec) {
   regset_common(gen, allocs, irec, m_dst, m_src, m_use_coloring);
-}
-
-void IR_RegSetAsm::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                    const AllocationResult& allocs,
-                                    emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_RegSetAsm::do_codegen_arm64");
 }
 
 ///////////////////////
@@ -1980,12 +1560,6 @@ void IR_VFMath3Asm::do_codegen_x86(emitter::ObjectGenerator* gen,
     default:
       ASSERT(false);
   }
-}
-
-void IR_VFMath3Asm::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                     const AllocationResult& allocs,
-                                     emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_VFMath3Asm::do_codegen_arm64");
 }
 
 ///////////////////////
@@ -2160,12 +1734,6 @@ void IR_Int128Math3Asm::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_Int128Math3Asm::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                         const AllocationResult& allocs,
-                                         emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_Int128Math3Asm::do_codegen_arm64");
-}
-
 ///////////////////////
 // AsmVF2
 ///////////////////////
@@ -2215,12 +1783,6 @@ void IR_VFMath2Asm::do_codegen_x86(emitter::ObjectGenerator* gen,
     default:
       ASSERT(false);
   }
-}
-
-void IR_VFMath2Asm::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                     const AllocationResult& allocs,
-                                     emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_VFMath2Asm::do_codegen_arm64");
 }
 
 ///////////////////////
@@ -2365,12 +1927,6 @@ void IR_Int128Math2Asm::do_codegen_x86(emitter::ObjectGenerator* gen,
   }
 }
 
-void IR_Int128Math2Asm::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                         const AllocationResult& allocs,
-                                         emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_Int128Math2Asm::do_codegen_arm64");
-}
-
 // ---- Blend VF
 
 IR_BlendVF::IR_BlendVF(bool use_color,
@@ -2404,12 +1960,6 @@ void IR_BlendVF::do_codegen_x86(emitter::ObjectGenerator* gen,
   gen->add_instr(IGen::blend_vf(*gen, dst, src1, src2, m_mask), irec);
 }
 
-void IR_BlendVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                  const AllocationResult& allocs,
-                                  emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_BlendVF::do_codegen_arm64");
-}
-
 // ----- Splat VF
 
 IR_SplatVF::IR_SplatVF(bool use_color,
@@ -2438,12 +1988,6 @@ void IR_SplatVF::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto dst = get_reg_asm(m_dst, allocs, irec, m_use_coloring);
   auto src = get_reg_asm(m_src, allocs, irec, m_use_coloring);
   gen->add_instr(IGen::splat_vf(*gen, dst, src, m_element), irec);
-}
-
-void IR_SplatVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                  const AllocationResult& allocs,
-                                  emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_SplatVF::do_codegen_arm64");
 }
 
 // ---- Swizzle VF
@@ -2476,12 +2020,6 @@ void IR_SwizzleVF::do_codegen_x86(emitter::ObjectGenerator* gen,
   gen->add_instr(IGen::swizzle_vf(*gen, dst, src, m_controlBytes), irec);
 }
 
-void IR_SwizzleVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                    const AllocationResult& allocs,
-                                    emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_SwizzleVF::do_codegen_arm64");
-}
-
 // ---- Square Root VF
 
 IR_SqrtVF::IR_SqrtVF(bool use_color, const RegVal* dst, const RegVal* src)
@@ -2507,10 +2045,4 @@ void IR_SqrtVF::do_codegen_x86(emitter::ObjectGenerator* gen,
   auto dst = get_reg_asm(m_dst, allocs, irec, m_use_coloring);
   auto src = get_reg_asm(m_src, allocs, irec, m_use_coloring);
   gen->add_instr(IGen::sqrt_vf(*gen, dst, src), irec);
-}
-
-void IR_SqrtVF::do_codegen_arm64(emitter::ObjectGenerator* gen,
-                                 const AllocationResult& allocs,
-                                 emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_SqrtVF::do_codegen_arm64");
 }
