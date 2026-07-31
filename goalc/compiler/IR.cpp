@@ -860,10 +860,46 @@ void IR_IntegerMath::do_codegen_arm64(emitter::ObjectGenerator* gen,
     throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR integer math destination.");
   }
 
-  if (m_kind != IntegerMathKind::NOT_64 || m_arg != nullptr) {
-    throw std::runtime_error("ARM64 AOT proof only supports unary 64-bit integer NOT.");
+  const auto is_aot_temp_gpr = [](const emitter::Register& reg) {
+    return reg.instruction_set() == emitter::InstructionSet::ARM64 &&
+           reg.logical_id() >= emitter::X0 && reg.logical_id() <= emitter::X15;
+  };
+
+  switch (m_kind) {
+    case IntegerMathKind::NOT_64:
+      if (m_arg != nullptr) {
+        throw std::runtime_error("ARM64 AOT proof requires a unary 64-bit integer NOT.");
+      }
+      gen->add_instr(IGen::not_gpr64(*gen, destination), irec);
+      return;
+    case IntegerMathKind::ADD_64: {
+      if (!m_arg || m_arg->ireg().reg_class != RegClass::GPR_64) {
+        throw std::runtime_error("ARM64 AOT proof requires a GPR source for 64-bit integer ADD.");
+      }
+      const auto source = get_reg(m_arg, allocs, irec);
+      if (!is_aot_temp_gpr(destination) || !is_aot_temp_gpr(source)) {
+        throw std::runtime_error(
+            "ARM64 AOT proof requires X0-X15 operands for 64-bit integer ADD.");
+      }
+      gen->add_instr(IGen::add_gpr64_gpr64(*gen, destination, source), irec);
+      return;
+    }
+    case IntegerMathKind::SHL_64:
+      if (m_arg != nullptr) {
+        throw std::runtime_error("ARM64 AOT proof requires an immediate 64-bit integer SHL.");
+      }
+      if (!is_aot_temp_gpr(destination)) {
+        throw std::runtime_error(
+            "ARM64 AOT proof requires an X0-X15 destination for immediate 64-bit integer SHL.");
+      }
+      if (m_shift_amount != 4) {
+        throw std::runtime_error("ARM64 AOT proof requires an immediate 64-bit integer SHL by four.");
+      }
+      gen->add_instr(IGen::shl_gpr64_u8(*gen, destination, m_shift_amount), irec);
+      return;
+    default:
+      throw std::runtime_error("ARM64 AOT proof only supports 64-bit integer NOT, ADD, or SHL.");
   }
-  gen->add_instr(IGen::not_gpr64(*gen, destination), irec);
 }
 
 /////////////////////

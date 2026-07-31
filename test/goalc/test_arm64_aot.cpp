@@ -926,10 +926,12 @@ TEST(Arm64Aot, emits_unary_gpr_integer_not) {
             (std::vector<u8>{0xe0, 0x03, 0x20, 0xaa, 0xc0, 0x03, 0x5f, 0xd6}));
 }
 
-TEST(Arm64Aot, rejects_unsupported_arm64_integer_math) {
+TEST(Arm64Aot, emits_guarded_arm64_integer_add_and_immediate_shift) {
   RegVal destination{{RegClass::GPR_64, 0}, TypeSpec("int")};
   RegVal source{{RegClass::GPR_64, 1}, TypeSpec("int")};
   IR_IntegerMath integer_add(IntegerMathKind::ADD_64, &destination, &source);
+  IR_IntegerMath integer_shift(IntegerMathKind::SHL_64, &destination, u8(4));
+  EXPECT_EQ(integer_shift.shift_amount(), 4);
 
   Assignment destination_assignment;
   destination_assignment.kind = Assignment::Kind::REGISTER;
@@ -939,15 +941,89 @@ TEST(Arm64Aot, rejects_unsupported_arm64_integer_math) {
   source_assignment.reg = emitter::X1;
   AllocationResult allocations;
   allocations.ass_as_ranges = {
-      AssignmentRange(0, {true}, {destination_assignment}),
-      AssignmentRange(0, {true}, {source_assignment}),
+      AssignmentRange(0, {true, true}, {destination_assignment, destination_assignment}),
+      AssignmentRange(0, {true, true}, {source_assignment, source_assignment}),
   };
 
   FunctionDebugInfo debug{};
   emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
   const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
-  EXPECT_THROW(integer_add.do_codegen_arm64(&generator, allocations, generator.add_ir(function)),
-               std::runtime_error);
+  integer_add.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
+  integer_shift.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
+  generator.add_instr_no_ir(function, emitter::IGen::ret(generator),
+                            InstructionInfo::Kind::EPILOGUE);
+
+  EXPECT_EQ(generator.materialize_arm64_function(function),
+            (std::vector<u8>{0x00, 0x00, 0x01, 0x8b, 0x00, 0xec, 0x7c, 0xd3,
+                             0xc0, 0x03, 0x5f, 0xd6}));
+}
+
+TEST(Arm64Aot, rejects_integer_math_outside_the_guarded_arm64_aot_subset) {
+  const auto expect_rejected = [](IR_IntegerMath& math,
+                                  const std::vector<emitter::Register>& assignments) {
+    AllocationResult allocations;
+    std::vector<AssignmentRange> ranges;
+    for (size_t i = 0; i < assignments.size(); i++) {
+      Assignment assignment;
+      assignment.kind = Assignment::Kind::REGISTER;
+      assignment.reg = assignments.at(i);
+      ranges.emplace_back(0, std::vector<bool>{true}, std::vector<Assignment>{assignment});
+    }
+    allocations.ass_as_ranges = std::move(ranges);
+
+    FunctionDebugInfo debug{};
+    emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+    const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+    EXPECT_THROW(math.do_codegen_arm64(&generator, allocations, generator.add_ir(function)),
+                 std::runtime_error);
+  };
+
+  RegVal destination{{RegClass::GPR_64, 0}, TypeSpec("int")};
+  RegVal source{{RegClass::GPR_64, 1}, TypeSpec("int")};
+  IR_IntegerMath unsupported_subtract(IntegerMathKind::SUB_64, &destination, &source);
+  expect_rejected(unsupported_subtract, {emitter::X0, emitter::X1});
+
+  IR_IntegerMath add_without_source(IntegerMathKind::ADD_64, &destination, nullptr);
+  expect_rejected(add_without_source, {emitter::X0});
+
+  IR_IntegerMath non_immediate_shift(IntegerMathKind::SHL_64, &destination, &source);
+  expect_rejected(non_immediate_shift, {emitter::X0, emitter::X1});
+
+  RegVal float_source{{RegClass::FLOAT, 1}, TypeSpec("float")};
+  IR_IntegerMath add_with_non_gpr_source(IntegerMathKind::ADD_64, &destination, &float_source);
+  expect_rejected(add_with_non_gpr_source, {emitter::X0, emitter::V0});
+
+  RegVal float_destination{{RegClass::FLOAT, 0}, TypeSpec("float")};
+  IR_IntegerMath add_with_non_gpr_destination(IntegerMathKind::ADD_64, &float_destination,
+                                               &source);
+  expect_rejected(add_with_non_gpr_destination, {emitter::V0, emitter::X1});
+
+  const std::array<emitter::Register, 17> invalid_registers = {
+      emitter::Register{emitter::RAX}, emitter::Register{emitter::X16},
+      emitter::Register{emitter::X17}, emitter::Register{emitter::X18},
+      emitter::Register{emitter::X19}, emitter::Register{emitter::X20},
+      emitter::Register{emitter::X21}, emitter::Register{emitter::X22},
+      emitter::Register{emitter::X23}, emitter::Register{emitter::X24},
+      emitter::Register{emitter::X25}, emitter::Register{emitter::X26},
+      emitter::Register{emitter::X27}, emitter::Register{emitter::X28},
+      emitter::Register{emitter::X29}, emitter::Register{emitter::X30},
+      emitter::Register{emitter::SP},
+  };
+  for (const auto invalid : invalid_registers) {
+    IR_IntegerMath add_with_invalid_destination(IntegerMathKind::ADD_64, &destination, &source);
+    expect_rejected(add_with_invalid_destination, {invalid, emitter::X1});
+
+    IR_IntegerMath add_with_invalid_source(IntegerMathKind::ADD_64, &destination, &source);
+    expect_rejected(add_with_invalid_source, {emitter::X0, invalid});
+
+    IR_IntegerMath shift_with_invalid_destination(IntegerMathKind::SHL_64, &destination, u8(4));
+    expect_rejected(shift_with_invalid_destination, {invalid});
+  }
+
+  for (const auto shift_amount : {u8(3), u8(5), u8(63)}) {
+    IR_IntegerMath shift_by_other_amount(IntegerMathKind::SHL_64, &destination, shift_amount);
+    expect_rejected(shift_by_other_amount, {emitter::X0});
+  }
 }
 
 TEST(Arm64Aot, materializes_a_local_arm64_goto) {
