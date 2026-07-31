@@ -1,5 +1,7 @@
 #include "kscheme.h"
 
+#include <cstring>
+
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kprint.h"
@@ -116,6 +118,22 @@ uint64_t _call_goal_on_stack_asm_win32(u64 rsp, void* fptr, void* st_ptr, void* 
 }
 
 /*!
+ * On ARM64 a GOAL function object holds the 64-bit native entry point of its code rather than the
+ * code itself, because ahead-of-time compiled GOAL code lives in __TEXT and no 32-bit GOAL pointer
+ * can reach it. This is the one place the runtime turns a function object into something callable;
+ * every AOT call site does the same load through GOAL_FN (goalc/aot/goal_c_runtime.h).
+ */
+static void* goal_function_entry_point(Ptr<Function> f) {
+#ifdef __aarch64__
+  void* entry = nullptr;
+  memcpy(&entry, f.c(), sizeof(entry));
+  return entry;
+#else
+  return f.c();
+#endif
+}
+
+/*!
  * Wrapper around _call_goal_asm for calling a GOAL function from C.
  * Calls from the parent stack.
  */
@@ -123,7 +141,7 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
   // auto st_ptr = (void*)((uint8_t*)(offset) + st); updated for the new compiler!
   void* st_ptr = (void*)st;
 
-  void* fptr = f.c();
+  void* fptr = goal_function_entry_point(f);
 #ifdef __linux__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __x86_64__
@@ -141,7 +159,7 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
 u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   void* st_ptr = (void*)st;
 
-  void* fptr = f.c();
+  void* fptr = goal_function_entry_point(f);
 #ifdef __linux__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif defined __APPLE__ && defined __x86_64__

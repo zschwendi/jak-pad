@@ -46,6 +46,8 @@ set(JAK1_KERNEL_CORE_SOURCES
     # portable entry point + the stubs for everything deliberately left out
     "${CMAKE_CURRENT_LIST_DIR}/kernel_core.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/desktop_seams.cpp"
+    # loader for object files produced by the AOT C backend
+    "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
     # the ARM64 GOAL calling-convention trampolines
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/asm_funcs_arm64.s")
 

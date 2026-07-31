@@ -1,5 +1,7 @@
 #include "kernel_core.h"
 
+#include "game/kernel/core/aot_loader.h"
+
 #include <cerrno>
 #include <cstring>
 #include <string>
@@ -149,6 +151,8 @@ goal_kernel_core_status goal_kernel_core_initialize(void) {
 }
 
 void goal_kernel_core_shutdown(void) {
+  // every AOT object file was placed in the heap that is about to go away
+  goal_aot_reset();
   if (!g_ee_main_mem) {
     g_initialized = false;
     return;

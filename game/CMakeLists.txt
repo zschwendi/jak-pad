@@ -388,5 +388,56 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_executable(jak1-kernel-core-smoke-test kernel/core/host_smoke_test.cpp)
         target_link_libraries(jak1-kernel-core-smoke-test jak1-kernel-core)
         add_test(NAME jak1-kernel-core-smoke-test COMMAND jak1-kernel-core-smoke-test)
+
+        # Real Jak 1 GOAL code, compiled ahead of time to C and then to native ARM64 by the host
+        # compiler, executed inside the real kernel. goalc-cbackend emits C for the last source it
+        # is given, so each object file needs its own run over the same ordered prefix.
+        set(AOT_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-generated")
+        set(AOT_PREFIX_SOURCES
+                "${CMAKE_SOURCE_DIR}/goal_src/jak1/compiler-setup.gc"
+                "${CMAKE_SOURCE_DIR}/goal_src/jak1/kernel-defs.gc"
+                "${CMAKE_SOURCE_DIR}/goal_src/jak1/kernel/gcommon.gc")
+        set(AOT_GSTRING_SOURCES
+                ${AOT_PREFIX_SOURCES}
+                "${CMAKE_SOURCE_DIR}/goal_src/jak1/kernel/gstring-h.gc"
+                "${CMAKE_SOURCE_DIR}/goal_src/jak1/kernel/gkernel-h.gc"
+                "${CMAKE_SOURCE_DIR}/goal_src/jak1/kernel/gkernel.gc"
+                "${CMAKE_SOURCE_DIR}/goal_src/jak1/kernel/pskernel.gc"
+                "${CMAKE_SOURCE_DIR}/goal_src/jak1/kernel/gstring.gc")
+
+        add_custom_command(
+                OUTPUT "${AOT_GEN_DIR}/gcommon.c" "${AOT_GEN_DIR}/gcommon_generated.h"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${AOT_GEN_DIR}"
+                COMMAND $<TARGET_FILE:goalc-cbackend>
+                        --project-path "${CMAKE_SOURCE_DIR}" --tag gcommon
+                        --output "${AOT_GEN_DIR}/gcommon.c"
+                        --header "${AOT_GEN_DIR}/gcommon_generated.h"
+                        ${AOT_PREFIX_SOURCES}
+                DEPENDS goalc-cbackend ${AOT_PREFIX_SOURCES}
+                COMMENT "Emitting C for jak1 kernel/gcommon.gc")
+
+        add_custom_command(
+                OUTPUT "${AOT_GEN_DIR}/gstring.c" "${AOT_GEN_DIR}/gstring_generated.h"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${AOT_GEN_DIR}"
+                COMMAND $<TARGET_FILE:goalc-cbackend>
+                        --project-path "${CMAKE_SOURCE_DIR}" --tag gstring
+                        --output "${AOT_GEN_DIR}/gstring.c"
+                        --header "${AOT_GEN_DIR}/gstring_generated.h"
+                        ${AOT_GSTRING_SOURCES}
+                DEPENDS goalc-cbackend ${AOT_GSTRING_SOURCES}
+                COMMENT "Emitting C for jak1 kernel/gstring.gc")
+
+        add_executable(jak1-aot-execution-test
+                kernel/core/aot_execution_test.cpp
+                "${AOT_GEN_DIR}/gcommon.c"
+                "${AOT_GEN_DIR}/gstring.c")
+        # GOAL reads and writes the same memory at several widths, exactly like the x86-64 backend
+        # does, so the generated C must not be optimized under strict aliasing rules.
+        set_source_files_properties(
+                "${AOT_GEN_DIR}/gcommon.c" "${AOT_GEN_DIR}/gstring.c"
+                PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
+        target_include_directories(jak1-aot-execution-test PRIVATE "${AOT_GEN_DIR}")
+        target_link_libraries(jak1-aot-execution-test jak1-kernel-core)
+        add_test(NAME jak1-aot-execution-test COMMAND jak1-aot-execution-test)
     endif()
 endif()

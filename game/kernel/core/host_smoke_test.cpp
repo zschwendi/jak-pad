@@ -170,20 +170,20 @@ int main() {
   // ARM64 those bytes are still x86-64 (see the TODO in make_function_from_c_systemv), and the
   // heap is not executable anyway. Print the bytes so the state of that seam is visible instead
   // of assumed.
-  printf("\n== GOAL function objects built by the C kernel (execution seam) ==\n");
+  printf("\n== GOAL function objects built by the C kernel ==\n");
   for (const char* name : {"nothing", "zero-func", "string->symbol"}) {
     uint32_t sym = 0, value = 0;
     if (goal_kernel_core_lookup(name, &sym, &value) != GOAL_KERNEL_CORE_OK || !value) {
       continue;
     }
-    printf("  %-16s #x%08x  first bytes:", name, value);
-    auto* code = Ptr<u8>(value).c();
-    for (int i = 0; i < 12; i++) {
-      printf(" %02x", code[i]);
-    }
-    printf("\n");
+    uint64_t entry = 0;
+    memcpy(&entry, Ptr<u8>(value).c(), sizeof(entry));
+    printf("  %-16s #x%08x  native entry point %p\n", name, value, (void*)(uintptr_t)entry);
+    check(entry != 0, "function object holds a native entry point");
   }
-  printf("  EE main memory is %sexecutable; these bytes are x86-64 on every platform.\n",
+  printf("  EE main memory is %sexecutable. On ARM64 a function object holds the 64-bit native\n"
+         "  entry point of its code instead of the code itself, so nothing is executed from the\n"
+         "  GOAL heap. See game/kernel/core/aot_loader.h.\n",
          state.main_memory_executable ? "" : "NOT ");
 
   printf("\n== goal_kernel_core_shutdown ==\n");

@@ -4,8 +4,8 @@ The real OpenGOAL Jak 1 kernel subset, built as a static library for platforms t
 desktop windowing, no IOP/sound emulation, no DECI2 listener transport, and no runtime code
 generation. It is the library an iPadOS application links through an Objective-C++ bridge.
 
-**Status: Experimental.** It initializes real kernel state. It does not execute GOAL code and does
-not load game data.
+**Status: Experimental.** It initializes real kernel state and executes real Jak 1 GOAL code that
+was compiled ahead of time by goalc's AOT C backend. It does not load game data.
 
 ## What it does
 
@@ -17,6 +17,15 @@ not load game data.
 4. allocates the GOAL print buffer through `init_output()`,
 5. runs `jak1::InitSymbolAndTypes()` — the real symbol table allocation, `s7` setup, fundamental
    type bootstrap, and C-function symbol export from `game/kernel/jak1/kscheme.cpp`.
+
+`goal_aot_load()` (see `aot_loader.h`) then loads an object file produced by
+`goalc/aot/CBackend.cpp`:
+
+1. copies the file's static data into the real global heap in one `kmalloc`,
+2. creates one real GOAL `function` object per AOT function on that heap,
+3. applies the file's relocations against the real symbol table with the same rules
+   `game/kernel/jak1/klink.cpp` uses (`symlink_v3`, `typelink_v3`, `ptr_link_v3`),
+4. and leaves the file's `top-level` function ready to run through `call_goal`.
 
 `InitSymbolAndTypes` is the front half of upstream `InitHeapAndSymbol`, split out unchanged.
 `InitHeapAndSymbol` still exists and still does the same thing; it now calls
@@ -37,6 +46,16 @@ cmake --build build/Release/bin -j 4 --target jak1-kernel-core-smoke-test
 
 `jak1-kernel-core-smoke-test` prints the real values the kernel produced (heap pointers, `s7`, the
 symbol table, the fundamental types read back out of the heap) and is registered with CTest.
+
+```sh
+cmake --build build/Release/bin -j 4 --target jak1-aot-execution-test
+./build/Release/bin/game/jak1-aot-execution-test
+```
+
+`jak1-aot-execution-test` builds `kernel/gcommon.gc` and `kernel/gstring.gc` through
+`goalc-cbackend` and the host C compiler, loads both into this kernel, runs their `top-level`
+functions through `call_goal`, and then calls real Jak 1 GOAL functions by symbol. It is also
+registered with CTest.
 
 Standalone static library for a device build:
 
@@ -72,10 +91,17 @@ trampolines, and it is the seam the compiler/AOT track needs.
 
 ## Known limitations
 
-- **No executable GOAL heap.** `mmap` refuses `PROT_EXEC` for anonymous memory on both ARM64 macOS
-  and iOS, so `goal_kernel_core_state::main_memory_executable` is 0 and the x86-64 trampolines
-  that `make_function_from_c` writes into the heap are dead bytes on ARM64 regardless. Executing
-  GOAL code needs the separate AOT track.
+- **No executable GOAL heap.** `mmap` refuses `PROT_EXEC` for anonymous memory on ARM64 macOS, the
+  iOS simulator, and iOS, so `goal_kernel_core_state::main_memory_executable` is 0. On ARM64 the
+  kernel therefore stores the 64-bit native entry point in a function object instead of machine
+  code, and `call_goal` loads it. Nothing is executed out of the GOAL heap.
+- **`pp` and stack-argument kernel functions.** A native pointer cannot also say "pass the current
+  process in argument 3", so `copy_basic`, `new_basic` and `alloc_heap_object` get explicit
+  ARM64 shims that supply `UNKNOWN_PP`, and `_format`, `link` and `link-begin` get a shim that
+  rebuilds GOAL's 8-register argument array from the C arguments. Process allocation from GOAL is
+  therefore not yet available on ARM64.
+- **Only Jak 1 was converted.** `game/kernel/{jak2,jak3,jakx}/kscheme.cpp` still write x86-64
+  trampolines, so those kernels remain non-functional on ARM64.
 - **No file access.** `ee::sceOpen` and friends are stubs, so `FileLoad`, `load`, and DGO loading
   abort. An iPadOS file-path strategy is required before they can be implemented.
 - `game/kernel/common/kmachine.h` transitively includes `<SDL3/SDL.h>` through

@@ -499,6 +499,44 @@ Ptr<Function> make_stack_arg_function_from_c_win32(void* func) {
 }
 #endif
 
+#ifdef __aarch64__
+/*!
+ * GOALPad's ARM64 function-object representation: nothing is generated. The object holds the
+ * 64-bit native entry point of the C or AOT-compiled function, which is what `call_goal` and every
+ * AOT call site load from the function object's address. See `game/kernel/core/aot_loader.h`.
+ *
+ * ARM64 iPadOS grants no writable-executable memory, so the trampolines above cannot be used here
+ * even if they were ARM64 code.
+ */
+Ptr<Function> make_function_from_native(void* func) {
+  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
+                                       *(s7 + FIX_SYM_FUNCTION_TYPE), 0x10, UNKNOWN_PP));
+  memcpy(mem.c(), &func, sizeof(func));
+  return mem.cast<Function>();
+}
+
+/*! Immediately return, like the x86-64 `nothing` function. */
+u64 native_nothing_func() {
+  return 0;
+}
+
+/*! Return zero, like the x86-64 `zero-func`. */
+u64 native_zero_func() {
+  return 0;
+}
+
+/*!
+ * GOAL's stack-argument convention hands the callee all 8 argument registers as an array. The x86
+ * trampoline builds that array out of machine registers; a natively compiled caller arrives
+ * through the ordinary C convention, so the shim builds it out of the C arguments instead.
+ */
+template <u64 (*F)(u64*)>
+u64 stack_arg_shim(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7) {
+  u64 args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
+  return F(args);
+}
+#endif
+
 /*!
  * Create a GOAL function from a C function. This doesn't export it as a global function, it just
  * creates a function object on the global heap.
@@ -506,21 +544,40 @@ Ptr<Function> make_stack_arg_function_from_c_win32(void* func) {
  * The implementation is to create a simple trampoline function which jumps to the C function.
  */
 Ptr<Function> make_function_from_c(void* func, bool arg3_is_pp = false) {
-#ifdef __linux__
+#ifdef __aarch64__
+  // A native pointer cannot carry "and also pass pp in the 4th argument". The three kernel
+  // functions that need it are given an explicit shim instead; see make_function_from_c_pp.
+  ASSERT_MSG(!arg3_is_pp, "make_function_from_c: arg3_is_pp needs make_function_from_c_pp on ARM64");
+  return make_function_from_native(func);
+#elif defined(__linux__) || defined(__APPLE__)
   return make_function_from_c_systemv(func, arg3_is_pp);
-#elif __APPLE__
-  return make_function_from_c_systemv(func, arg3_is_pp);
-#elif _WIN32
+#elif defined(_WIN32)
   return make_function_from_c_win32(func, arg3_is_pp);
 #endif
 }
 
+/*!
+ * Create a GOAL function for a kernel C function whose 4th argument is the current process. The
+ * x86 trampoline copies it out of the pp register; ARM64 has no pp register a C function can read,
+ * and this kernel has no processes, so it calls a shim that supplies UNKNOWN_PP - which is what
+ * the C kernel already passes at every other call site.
+ */
+Ptr<Function> make_function_from_c_pp(void* with_pp, void* without_pp) {
+#ifdef __aarch64__
+  (void)with_pp;
+  return make_function_from_native(without_pp);
+#else
+  (void)without_pp;
+  return make_function_from_c(with_pp, true);
+#endif
+}
+
 Ptr<Function> make_stack_arg_function_from_c(void* func) {
-#ifdef __linux__
+#ifdef __aarch64__
+  return make_function_from_native(func);
+#elif defined(__linux__) || defined(__APPLE__)
   return make_stack_arg_function_from_c_systemv(func);
-#elif __APPLE__
-  return make_stack_arg_function_from_c_systemv(func);
-#elif _WIN32
+#elif defined(_WIN32)
   return make_stack_arg_function_from_c_win32(func);
 #endif
 }
@@ -529,6 +586,9 @@ Ptr<Function> make_stack_arg_function_from_c(void* func) {
  * Create a GOAL function which does nothing and immediately returns.
  */
 Ptr<Function> make_nothing_func() {
+#ifdef __aarch64__
+  return make_function_from_native((void*)native_nothing_func);
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
 
@@ -536,12 +596,16 @@ Ptr<Function> make_nothing_func() {
   mem.c()[0] = 0xc3;
   // CacheFlush(mem, 8);
   return mem.cast<Function>();
+#endif
 }
 
 /*!
  * Create a GOAL function which returns 0.
  */
 Ptr<Function> make_zero_func() {
+#ifdef __aarch64__
+  return make_function_from_native((void*)native_zero_func);
+#else
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
   // xor eax, eax
@@ -551,6 +615,7 @@ Ptr<Function> make_zero_func() {
   mem.c()[2] = 0xc3;
   // CacheFlush(mem, 8);
   return mem.cast<Function>();
+#endif
 }
 
 /*!
@@ -1443,6 +1508,29 @@ s32 test_function(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
 }
 
 /*!
+ * The three kernel functions that upstream reaches through a pp-injecting trampoline, called
+ * without a process. See make_function_from_c_pp.
+ */
+u64 copy_basic_no_pp(u32 obj, u32 heap, u32 unused) {
+  return copy_basic(obj, heap, unused, UNKNOWN_PP);
+}
+
+u64 new_basic_no_pp(u32 heap, u32 type, u32 size) {
+  return new_basic(heap, type, size, UNKNOWN_PP);
+}
+
+u64 alloc_heap_object_no_pp(u32 heap, u32 type, u32 size) {
+  return alloc_heap_object(heap, type, size, UNKNOWN_PP);
+}
+
+#ifdef __aarch64__
+/*! format_impl_jak1 with the u64(*)(u64*) shape the stack-argument shim expects. */
+u64 format_stack_entry(u64* args) {
+  return (u64)(s64)format_impl_jak1(args);
+}
+#endif
+
+/*!
  * Initializes the GOAL Symbol Table and the GOAL fundamental types on the already-initialized
  * global heap.
  *
@@ -1492,7 +1580,7 @@ s32 InitSymbolAndTypes() {
                    make_function_from_c((void*)asize_of_basic).offset);
   // NOTE: this is a typo in the game too.
   set_fixed_symbol(FIX_SYM_COPY_BASIC_FUNC, "asize-of-basic-func",
-                   make_function_from_c((void*)copy_basic, true).offset);
+                   make_function_from_c_pp((void*)copy_basic, (void*)copy_basic_no_pp).offset);
   set_fixed_symbol(FIX_SYM_DEL_BASIC_FUNC, "delete-basic",
                    make_function_from_c((void*)delete_basic).offset);
 
@@ -1547,7 +1635,7 @@ s32 InitSymbolAndTypes() {
   auto inspect_basic_function = make_function_from_c((void*)inspect_basic);
   set_fixed_type(FIX_SYM_BASIC_TYPE, "basic", (s7 + FIX_SYM_STRUCTURE_TYPE).cast<Symbol>(),
                  pack_type_flag(9, 0, 4), print_basic_func.offset, inspect_basic_function.offset);
-  auto new_basic_func = make_function_from_c((void*)new_basic, true);
+  auto new_basic_func = make_function_from_c_pp((void*)new_basic, (void*)new_basic_no_pp);
   auto basicType = Ptr<Type>(*(s7 + FIX_SYM_BASIC_TYPE));
   basicType->new_method = new_basic_func;
   basicType->delete_method.offset = *(s7 + FIX_SYM_DEL_BASIC_FUNC);
@@ -1683,7 +1771,8 @@ s32 InitSymbolAndTypes() {
                  pack_type_flag(9, 0, 0x10), 0, 0);
 
   // Object new macro
-  auto goal_new_object_func = make_function_from_c((void*)alloc_heap_object, true);
+  auto goal_new_object_func =
+      make_function_from_c_pp((void*)alloc_heap_object, (void*)alloc_heap_object_no_pp);
   object_type->new_method = goal_new_object_func;
 
   // Stuff that isn't in a fixed spot:
@@ -1695,7 +1784,11 @@ s32 InitSymbolAndTypes() {
   make_function_symbol_from_c("load", (void*)load);
   make_function_symbol_from_c("loado", (void*)loado);
   make_function_symbol_from_c("unload", (void*)unload);
+#ifdef __aarch64__
+  make_stack_arg_function_symbol_from_c("_format", (void*)stack_arg_shim<format_stack_entry>);
+#else
   make_stack_arg_function_symbol_from_c("_format", (void*)format_impl_jak1);
+#endif
 
   // allocations
   make_function_symbol_from_c("malloc", (void*)alloc_heap_memory);
@@ -1706,7 +1799,11 @@ s32 InitSymbolAndTypes() {
   make_function_symbol_from_c("method-set!", (void*)method_set);
 
   // dgo
+#ifdef __aarch64__
+  make_stack_arg_function_symbol_from_c("link", (void*)stack_arg_shim<link_and_exec_wrapper>);
+#else
   make_stack_arg_function_symbol_from_c("link", (void*)link_and_exec_wrapper);
+#endif
   make_function_symbol_from_c("dgo-load", (void*)load_and_link_dgo);
 
   // forward declare
@@ -1716,7 +1813,11 @@ s32 InitSymbolAndTypes() {
   make_raw_function_symbol_from_c("symlink3", 0);
 
   // game stuff
+#ifdef __aarch64__
+  make_stack_arg_function_symbol_from_c("link-begin", (void*)stack_arg_shim<link_begin>);
+#else
   make_stack_arg_function_symbol_from_c("link-begin", (void*)link_begin);
+#endif
   make_function_symbol_from_c("link-resume", (void*)link_resume);
   make_function_symbol_from_c("mc-run", (void*)MC_run);
   make_function_symbol_from_c("mc-format", (void*)MC_format);
