@@ -1054,6 +1054,7 @@ std::string FileEmitter::emit_function(const FunctionEnv& func,
 
 CBackendResult FileEmitter::run() {
   CBackendResult result;
+  result.tag = m_tag;
   std::string functions_source;
   std::set<std::string> used_names;
 

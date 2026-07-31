@@ -439,5 +439,60 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_include_directories(jak1-aot-execution-test PRIVATE "${AOT_GEN_DIR}")
         target_link_libraries(jak1-aot-execution-test jak1-kernel-core)
         add_test(NAME jak1-aot-execution-test COMMAND jak1-aot-execution-test)
+
+        # The boot probe: Jak 1's object files loaded into the real kernel in the order game.gp
+        # builds them, with each one's top-level run, going as far as the runtime can get.
+        #
+        # goalc-cbackend-sweep reads that order out of game.gp and emits one C file per source plus
+        # aot_boot_manifest.c. The tag list below is that same order and is what tells CMake which
+        # files the command produces; it comes from
+        #   goalc-cbackend-sweep --limit ${JAK1_AOT_BOOT_FILE_COUNT} --c-output-dir ...
+        # and has to be updated together with the count.
+        set(AOT_BOOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-boot")
+        #
+        # The count is the boot frontier: file 41, engine/ps2/pad.gc, is the first whose top-level
+        # calls a kernel C function this library does not have (cpad-open, from kmachine.cpp).
+        set(AOT_BOOT_TAGS
+                gcommon gstring_h gkernel_h gkernel pskernel gstring dgo_h gstate
+                types_h vu1_macros math vector_h gravity_h bounding_box_h matrix_h quaternion_h
+                euler_h transform_h geometry_h trigonometry_h transformq_h bounding_box matrix
+                transform quaternion euler geometry trigonometry gsound_h timer_h timer vif_h
+                dma_h video_h vu1_user_h dma dma_buffer pckernel_h pc_cheats pckernel_impl)
+        list(LENGTH AOT_BOOT_TAGS JAK1_AOT_BOOT_FILE_COUNT)
+
+        set(AOT_BOOT_OUTPUTS "${AOT_BOOT_DIR}/aot_boot_manifest.c"
+                "${AOT_BOOT_DIR}/aot_boot_manifest.h")
+        set(AOT_BOOT_C_SOURCES "")
+        foreach(tag IN LISTS AOT_BOOT_TAGS)
+            list(APPEND AOT_BOOT_C_SOURCES "${AOT_BOOT_DIR}/${tag}.c")
+            list(APPEND AOT_BOOT_OUTPUTS "${AOT_BOOT_DIR}/${tag}.c"
+                    "${AOT_BOOT_DIR}/${tag}_generated.h")
+        endforeach()
+
+        file(GLOB_RECURSE AOT_BOOT_GOAL_SOURCES CONFIGURE_DEPENDS
+                "${CMAKE_SOURCE_DIR}/goal_src/jak1/*.gc")
+        add_custom_command(
+                OUTPUT ${AOT_BOOT_OUTPUTS}
+                COMMAND $<TARGET_FILE:goalc-cbackend-sweep>
+                        --project-path "${CMAKE_SOURCE_DIR}"
+                        --limit ${JAK1_AOT_BOOT_FILE_COUNT}
+                        --c-output-dir "${AOT_BOOT_DIR}"
+                        --report "${AOT_BOOT_DIR}/coverage.tsv"
+                DEPENDS goalc-cbackend-sweep ${AOT_BOOT_GOAL_SOURCES}
+                        "${CMAKE_SOURCE_DIR}/goal_src/goal-lib.gc"
+                        "${CMAKE_SOURCE_DIR}/goal_src/jak1/game.gp"
+                COMMENT
+                "Emitting C for the first ${JAK1_AOT_BOOT_FILE_COUNT} Jak 1 object files")
+
+        add_executable(jak1-aot-boot-test
+                kernel/core/aot_boot_test.cpp
+                "${AOT_BOOT_DIR}/aot_boot_manifest.c"
+                ${AOT_BOOT_C_SOURCES})
+        set_source_files_properties(
+                "${AOT_BOOT_DIR}/aot_boot_manifest.c" ${AOT_BOOT_C_SOURCES}
+                PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
+        target_include_directories(jak1-aot-boot-test PRIVATE "${AOT_BOOT_DIR}")
+        target_link_libraries(jak1-aot-boot-test jak1-kernel-core)
+        add_test(NAME jak1-aot-boot-test COMMAND jak1-aot-boot-test)
     endif()
 endif()

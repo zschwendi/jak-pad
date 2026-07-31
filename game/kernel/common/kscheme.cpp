@@ -6,11 +6,23 @@
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kprint.h"
 
+#ifdef __aarch64__
+// ahead-of-time compiled GOAL keeps the current process here instead of in a pinned register
+#include "goalc/aot/goal_c_runtime.h"
+#endif
+
 // total number of symbols in the table
 s32 NumSymbols;
 
 // value of the GOAL s7 register, pointing to the middle of the symbol table
 Ptr<u32> s7;
+
+#ifdef __aarch64__
+// GOAL address of the running process: the r13 the x86-64 backend pins, for code that cannot pin a
+// register. Declared by goalc/aot/goal_c_runtime.h; it belongs with the rest of GOAL's machine
+// state, which is why it is defined here rather than in the AOT loader.
+extern "C" uint64_t g_goal_current_process = 0;
+#endif
 
 // used for crc32 calculation
 u32 crc_table[0x100];
@@ -133,6 +145,32 @@ static void* goal_function_entry_point(Ptr<Function> f) {
 #endif
 }
 
+#ifdef __aarch64__
+namespace {
+/*!
+ * The current process is ambient machine state: x86-64 pins it to r13, and the call trampolines
+ * set it on the way in and restore the caller's value on the way out. Ahead-of-time compiled GOAL
+ * code cannot pin a register and reads g_goal_current_process instead
+ * (goalc/aot/goal_c_runtime.h), so the trampolines' save/set/restore of r13 has to happen here too,
+ * or AOT code would never see the process call_goal established.
+ *
+ * Like the x86-64 trampoline, call_goal hands GOAL the symbol table rather than a real process.
+ */
+class ScopedCurrentProcess {
+ public:
+  explicit ScopedCurrentProcess(u64 pp) : m_saved(g_goal_current_process) {
+    g_goal_current_process = pp;
+  }
+  ~ScopedCurrentProcess() { g_goal_current_process = m_saved; }
+  ScopedCurrentProcess(const ScopedCurrentProcess&) = delete;
+  ScopedCurrentProcess& operator=(const ScopedCurrentProcess&) = delete;
+
+ private:
+  u64 m_saved;
+};
+}  // namespace
+#endif
+
 /*!
  * Wrapper around _call_goal_asm for calling a GOAL function from C.
  * Calls from the parent stack.
@@ -147,6 +185,7 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
 #elif defined(__APPLE__) && defined(__aarch64__)
+  ScopedCurrentProcess pp(st);
   return call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
 #elif _WIN32
   return _call_goal_asm_win32(a, b, c, fptr, st_ptr, offset);
@@ -165,6 +204,7 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
 #elif defined __APPLE__ && defined __x86_64__
   return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
 #elif defined(__APPLE__) && defined(__aarch64__)
+  ScopedCurrentProcess pp(st);
   return call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
 #elif _WIN32
   return _call_goal_on_stack_asm_win32(rsp, fptr, st_ptr, offset);

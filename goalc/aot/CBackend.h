@@ -26,6 +26,8 @@ struct CBackendFunctionResult {
 };
 
 struct CBackendResult {
+  /*! The file tag after mangling. The runtime looks statics and functions up by this exact name. */
+  std::string tag;
   std::string source;
   std::string header;
   std::vector<CBackendFunctionResult> functions;
