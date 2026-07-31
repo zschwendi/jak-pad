@@ -174,17 +174,44 @@ std::vector<u8> CodeGenerator::run_arm64_aot_function(
 
   FunctionEnv* function = nullptr;
   if (function_name) {
+    size_t matching_functions = 0;
     for (const auto& candidate : m_fe->functions()) {
       if (candidate->name() == *function_name) {
         function = candidate.get();
-        break;
+        matching_functions++;
       }
     }
     if (!function) {
       throw std::runtime_error(fmt::format(
           "ARM64 AOT function '{}' was not found in the compiled source.", *function_name));
     }
+    if (matching_functions != 1) {
+      throw std::runtime_error(
+          fmt::format("ARM64 AOT function '{}' is defined more than once.", *function_name));
+    }
+    if (m_fe->functions().size() != 2) {
+      throw std::runtime_error(
+          "Named ARM64 AOT proof requires exactly one function and its top-level installer.");
+    }
+
+    const auto& installer = m_fe->top_level_function().code();
+    const auto* function_address =
+        installer.size() == 4 ? dynamic_cast<IR_FunctionAddr*>(installer.at(0).get()) : nullptr;
+    const auto* symbol_value =
+        installer.size() == 4 ? dynamic_cast<IR_SetSymbolValue*>(installer.at(1).get()) : nullptr;
+    const bool supported_installer =
+        function_address && symbol_value && dynamic_cast<IR_Return*>(installer.at(2).get()) &&
+        dynamic_cast<IR_Null*>(installer.at(3).get()) && function_address->function() == function &&
+        symbol_value->source() == function_address->destination() &&
+        symbol_value->destination()->name() == *function_name;
+    if (!supported_installer) {
+      throw std::runtime_error(
+          "Named ARM64 AOT proof only supports an unmodified top-level defun installer.");
+    }
   } else {
+    if (m_fe->functions().size() != 1) {
+      throw std::runtime_error("ARM64 AOT proof only supports one top-level function.");
+    }
     const auto* top_level = &m_fe->top_level_function();
     for (const auto& candidate : m_fe->functions()) {
       if (candidate.get() == top_level) {
@@ -474,7 +501,7 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
   }
 
   const auto& code = env->code();
-  const auto is_supported_result = [](IR* ir) {
+  const auto is_supported_top_level_result = [](IR* ir) {
     if (const auto* constant = dynamic_cast<IR_LoadConstant64*>(ir)) {
       return constant->value() == 42;
     }
@@ -483,14 +510,17 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
     }
     return false;
   };
-  const bool supported_top_level = code.size() == 3 && is_supported_result(code.at(0).get()) &&
-                                   dynamic_cast<IR_Return*>(code.at(1).get()) &&
-                                   dynamic_cast<IR_Null*>(code.at(2).get());
+  const bool supported_top_level =
+      code.size() == 3 && is_supported_top_level_result(code.at(0).get()) &&
+      dynamic_cast<IR_Return*>(code.at(1).get()) && dynamic_cast<IR_Null*>(code.at(2).get());
   const auto* value_reset =
       code.size() == 4 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
+  const auto* false_value =
+      code.size() == 4 ? dynamic_cast<IR_LoadSymbolPointer*>(code.at(1).get()) : nullptr;
   const bool supported_false_function =
-      value_reset && value_reset->has_no_args() && is_supported_result(code.at(1).get()) &&
-      dynamic_cast<IR_Return*>(code.at(2).get()) && dynamic_cast<IR_Null*>(code.at(3).get());
+      env->name() == "false-func" && value_reset && value_reset->has_no_args() && false_value &&
+      false_value->name() == "#f" && dynamic_cast<IR_Return*>(code.at(2).get()) &&
+      dynamic_cast<IR_Null*>(code.at(3).get());
   if (!supported_top_level && !supported_false_function) {
     throw std::runtime_error(
         "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "

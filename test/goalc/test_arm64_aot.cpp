@@ -129,6 +129,34 @@ TEST(Arm64Aot, rejects_unknown_named_function) {
                std::runtime_error);
 }
 
+TEST(Arm64Aot, rejects_named_constant_function_outside_the_false_func_proof) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun answer () 42)", "answer",
+                                                 std::optional<std::string>{"answer"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_duplicate_named_functions) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun false-func () '#f)\n"
+                                                 "(defun false-func () '#f)",
+                                                 "duplicate-false-func",
+                                                 std::optional<std::string>{"false-func"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_named_function_with_extra_top_level_effects) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun false-func () '#f)\n"
+                                                 "42",
+                                                 "false-func-with-extra-top-level-effect",
+                                                 std::optional<std::string>{"false-func"}),
+               std::runtime_error);
+}
+
 TEST(Arm64Aot, rejects_full_jak1_identity_until_parameter_moves_are_supported) {
   Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
   const auto source = file_util::read_text_file(file_util::get_file_path(

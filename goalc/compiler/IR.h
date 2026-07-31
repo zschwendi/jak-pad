@@ -93,6 +93,8 @@ class IR_SetSymbolValue : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const SymbolVal* destination() const { return m_dest; }
+  const RegVal* source() const { return m_src; }
 
  protected:
   const SymbolVal* m_dest = nullptr;
@@ -223,6 +225,8 @@ class IR_FunctionAddr : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const RegVal* destination() const { return m_dest; }
+  const FunctionEnv* function() const { return m_src; }
 
  protected:
   const RegVal* m_dest = nullptr;
