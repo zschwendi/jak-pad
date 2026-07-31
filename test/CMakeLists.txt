@@ -48,13 +48,104 @@ endif()
 
 if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
   enable_language(ASM)
+
+  set(ARM64_GOAL_CALL_AOT_DIR
+      "${CMAKE_CURRENT_BINARY_DIR}/generated-arm64-goal-call")
+  set(ARM64_GOAL_CALL_AOT_SOURCE_DIR
+      "${CMAKE_SOURCE_DIR}/test/goalc/source_templates/arm64-aot")
+  set(ARM64_GOAL_CALL_AOT_FALSE_ASSEMBLY
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1FalseFunc.s")
+  set(ARM64_GOAL_CALL_AOT_FALSE_EXPORTS
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1FalseFunc.exports.h")
+  set(ARM64_GOAL_CALL_AOT_TRUE_ASSEMBLY
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1TrueFunc.s")
+  set(ARM64_GOAL_CALL_AOT_TRUE_EXPORTS
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1TrueFunc.exports.h")
+  set(ARM64_GOAL_CALL_AOT_IDENTITY_ASSEMBLY
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1Identity.s")
+  set(ARM64_GOAL_CALL_AOT_IDENTITY_EXPORTS
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1Identity.exports.h")
+  set(ARM64_GOAL_CALL_AOT_LOGNOT_ASSEMBLY
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1Lognot.s")
+  set(ARM64_GOAL_CALL_AOT_LOGNOT_EXPORTS
+      "${ARM64_GOAL_CALL_AOT_DIR}/OpenGOALJak1Lognot.exports.h")
+  set(ARM64_GOAL_CALL_AOT_ASSEMBLIES
+      ${ARM64_GOAL_CALL_AOT_FALSE_ASSEMBLY}
+      ${ARM64_GOAL_CALL_AOT_TRUE_ASSEMBLY}
+      ${ARM64_GOAL_CALL_AOT_IDENTITY_ASSEMBLY}
+      ${ARM64_GOAL_CALL_AOT_LOGNOT_ASSEMBLY})
+  set(ARM64_GOAL_CALL_AOT_EXPORTS
+      ${ARM64_GOAL_CALL_AOT_FALSE_EXPORTS}
+      ${ARM64_GOAL_CALL_AOT_TRUE_EXPORTS}
+      ${ARM64_GOAL_CALL_AOT_IDENTITY_EXPORTS}
+      ${ARM64_GOAL_CALL_AOT_LOGNOT_EXPORTS})
+
+  add_custom_command(
+      OUTPUT ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_EXPORTS}
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${ARM64_GOAL_CALL_AOT_DIR}"
+      COMMAND $<TARGET_FILE:goalc-aot>
+              --project-path "${CMAKE_SOURCE_DIR}"
+              --input
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-false-func-from-jak1-gcommon.gc"
+              --function false-func
+              --output "${ARM64_GOAL_CALL_AOT_FALSE_ASSEMBLY}"
+              --exports-output "${ARM64_GOAL_CALL_AOT_FALSE_EXPORTS}"
+              --symbol goalpad_aot_false_func
+      COMMAND $<TARGET_FILE:goalc-aot>
+              --project-path "${CMAKE_SOURCE_DIR}"
+              --input
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-true-func-from-jak1-gcommon.gc"
+              --function true-func
+              --output "${ARM64_GOAL_CALL_AOT_TRUE_ASSEMBLY}"
+              --exports-output "${ARM64_GOAL_CALL_AOT_TRUE_EXPORTS}"
+              --symbol goalpad_aot_true_func
+      COMMAND $<TARGET_FILE:goalc-aot>
+              --project-path "${CMAKE_SOURCE_DIR}"
+              --input
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-identity-from-jak1-gcommon.gc"
+              --function identity
+              --output "${ARM64_GOAL_CALL_AOT_IDENTITY_ASSEMBLY}"
+              --exports-output "${ARM64_GOAL_CALL_AOT_IDENTITY_EXPORTS}"
+              --symbol goalpad_aot_identity
+      COMMAND $<TARGET_FILE:goalc-aot>
+              --project-path "${CMAKE_SOURCE_DIR}"
+              --input
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-lognot-from-jak1-gcommon.gc"
+              --function lognot
+              --output "${ARM64_GOAL_CALL_AOT_LOGNOT_ASSEMBLY}"
+              --exports-output "${ARM64_GOAL_CALL_AOT_LOGNOT_EXPORTS}"
+              --symbol goalpad_aot_lognot
+      DEPENDS
+              goalc-aot
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-false-func-from-jak1-gcommon.gc"
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-true-func-from-jak1-gcommon.gc"
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-identity-from-jak1-gcommon.gc"
+              "${ARM64_GOAL_CALL_AOT_SOURCE_DIR}/full-lognot-from-jak1-gcommon.gc"
+      COMMENT "Generating Jak 1 ARM64 AOT call artifacts"
+      VERBATIM)
+
+  add_custom_target(
+      arm64-goal-call-aot-artifacts
+      DEPENDS ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_EXPORTS})
+  set_source_files_properties(
+      ${ARM64_GOAL_CALL_AOT_ASSEMBLIES} ${ARM64_GOAL_CALL_AOT_EXPORTS}
+      PROPERTIES GENERATED TRUE)
+  set_source_files_properties(
+      ${ARM64_GOAL_CALL_AOT_EXPORTS}
+      PROPERTIES HEADER_FILE_ONLY TRUE)
+
   add_executable(arm64-goal-call-abi-test
                  ${CMAKE_CURRENT_LIST_DIR}/test_arm64_goal_call_abi.cpp
                  ${CMAKE_CURRENT_LIST_DIR}/test_arm64_goal_call_abi.s
-                 ${CMAKE_SOURCE_DIR}/game/kernel/asm_funcs_arm64.s)
-  target_link_libraries(arm64-goal-call-abi-test gtest_main)
+                 ${CMAKE_SOURCE_DIR}/game/kernel/asm_funcs_arm64.s
+                 ${ARM64_GOAL_CALL_AOT_ASSEMBLIES}
+                 ${ARM64_GOAL_CALL_AOT_EXPORTS})
+  add_dependencies(arm64-goal-call-abi-test arm64-goal-call-aot-artifacts)
+  target_include_directories(arm64-goal-call-abi-test
+                             PRIVATE "${ARM64_GOAL_CALL_AOT_DIR}")
+  target_link_libraries(arm64-goal-call-abi-test jak1-data-arena gtest_main)
   target_compile_features(arm64-goal-call-abi-test PRIVATE cxx_std_20)
-  gtest_discover_tests(arm64-goal-call-abi-test)
+  gtest_discover_tests(arm64-goal-call-abi-test PROPERTIES RUN_SERIAL TRUE)
 endif()
 
 add_executable(test_image_resize ${CMAKE_CURRENT_LIST_DIR}/common/test_image_resize.cpp)
