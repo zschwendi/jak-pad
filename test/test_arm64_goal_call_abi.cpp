@@ -1087,9 +1087,8 @@ TEST(Arm64GoalCallAbi,
     write_u32(storage, header.global_heap_info + offsetof(kheapinfo, current),
               header.global_heap_current);
     write_u32(storage, header.global_heap_info + offsetof(kheapinfo, top_base),
-              header.global_heap_base);
+              header.global_heap_end);
     write_u32(storage, header.s7 + jak1_symbols::FIX_SYM_EMPTY_CAR, header.empty_pair);
-    write_u32(storage, header.s7 + jak1_symbols::FIX_SYM_EMPTY_PAIR, header.empty_pair);
     write_u32(storage, header.s7 + jak1_symbols::FIX_SYM_EMPTY_CDR, header.empty_pair);
     write_u32(storage, header.s7 + jak1_symbols::FIX_SYM_FALSE, header.false_value);
     write_u32(storage, header.s7 + jak1_symbols::FIX_SYM_TRUE, header.true_value);
@@ -1115,6 +1114,19 @@ TEST(Arm64GoalCallAbi,
     write_u32(storage, kObject + kVisNickOffset, kVisNickSentinel);
     std::fill(storage + kObjectGuardBegin, storage + kObjectRaw, kCanary);
     std::fill(storage + kObjectEnd, storage + kObjectGuardEnd, kCanary);
+
+    EXPECT_EQ(read_u32(storage, header.global_heap_info + offsetof(kheapinfo, base)),
+              header.global_heap_base);
+    EXPECT_EQ(read_u32(storage, header.global_heap_info + offsetof(kheapinfo, top)),
+              header.global_heap_end);
+    EXPECT_EQ(read_u32(storage, header.global_heap_info + offsetof(kheapinfo, current)),
+              header.global_heap_current);
+    EXPECT_EQ(read_u32(storage, header.global_heap_info + offsetof(kheapinfo, top_base)),
+              header.global_heap_end);
+    EXPECT_EQ(read_u32(storage, header.s7 + jak1_symbols::FIX_SYM_EMPTY_CAR),
+              header.empty_pair);
+    EXPECT_EQ(read_u32(storage, header.s7 + jak1_symbols::FIX_SYM_EMPTY_CDR),
+              header.empty_pair);
   };
 
   const auto invoke_and_expect_reset = [&](std::byte* storage, const char* lane_name) {
