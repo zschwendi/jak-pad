@@ -757,13 +757,27 @@ TEST(Arm64Aot, rejects_want_vis_with_a_different_field_offset) {
   Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
   auto source = file_util::read_text_file(file_util::get_file_path(
       {"test/goalc/source_templates/arm64-aot/full-want-vis-from-jak1-load-boundary.gc"}));
-  const std::string expected_field = "(vis-nick symbol :offset #x24 :offset-assert #x24)";
+  const std::string expected_field = "(vis-nick symbol :offset-assert #x24)";
   const auto field_position = source.find(expected_field);
   ASSERT_NE(field_position, std::string::npos);
   source.replace(field_position, expected_field.size(),
                  "(vis-nick symbol :offset #x28 :offset-assert #x28)");
 
   EXPECT_THROW(compiler.compile_arm64_aot_source(source, "want-vis-with-shifted-field",
+                                                 std::optional<std::string>{"want-vis"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_want_vis_with_an_unpacked_inline_layout) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-want-vis-from-jak1-load-boundary.gc"}));
+  const std::string expected_packing = "  :pack-me\n";
+  const auto packing_position = source.find(expected_packing);
+  ASSERT_NE(packing_position, std::string::npos);
+  source.erase(packing_position, expected_packing.size());
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "want-vis-with-unpacked-inline-layout",
                                                  std::optional<std::string>{"want-vis"}),
                std::runtime_error);
 }

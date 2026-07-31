@@ -8,13 +8,14 @@
    (display? symbol)
    (force-vis? symbol)
    (force-inside? symbol))
+  :pack-me
   :size-assert #x10
   :no-runtime-type
   :no-inspect)
 
 (deftype load-state (basic)
   ((want level-buffer-state 2 :inline)
-   (vis-nick symbol :offset #x24 :offset-assert #x24))
+   (vis-nick symbol :offset-assert #x24))
   :no-runtime-type
   :no-inspect)
 
