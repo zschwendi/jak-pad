@@ -132,10 +132,15 @@ int main(int argc, char** argv) {
         aot::write_apple_arm64_artifact_pair(
             options.output_path, *options.exports_output_path, {options.symbol, code},
             aot::NativeExport2{*options.function_name, options.symbol});
+      } else if (*options.function_name == "want-levels") {
+        aot::write_apple_arm64_artifact_pair(
+            options.output_path, *options.exports_output_path, {options.symbol, code},
+            aot::NativeExport3{*options.function_name, options.symbol});
       } else {
         throw std::invalid_argument(
             "AOT native export proof only supports false-func, true-func, identity, lognot, or "
-            "glst-node-name, level-group-load-commands-set!, or want-vis function artifacts");
+            "glst-node-name, level-group-load-commands-set!, want-vis, or want-levels function "
+            "artifacts");
       }
     } else {
       aot::write_apple_arm64_assembly(options.output_path, {options.symbol, code});

@@ -540,6 +540,16 @@ TEST(Arm64Aot, renders_want_vis_two_argument_native_export_metadata) {
             "OPENGOAL_AOT_EXPORT2(\"want-vis\", goalpad_aot_load_state_want_vis)\n");
 }
 
+TEST(Arm64Aot, renders_want_levels_three_argument_native_export_metadata) {
+  const aot::NativeExport3 native_export{"want-levels", "goalpad_aot_load_state_want_levels"};
+
+  EXPECT_EQ(aot::render_cpp_xmacro_export3(native_export),
+            "#ifndef OPENGOAL_AOT_EXPORT3\n"
+            "#error \"Define OPENGOAL_AOT_EXPORT3 before including this file.\"\n"
+            "#endif\n"
+            "OPENGOAL_AOT_EXPORT3(\"want-levels\", goalpad_aot_load_state_want_levels)\n");
+}
+
 TEST(Arm64Aot, rejects_native_exports_outside_the_zero_argument_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"", "goalpad_aot_false_func"}),
                std::invalid_argument);
@@ -607,6 +617,35 @@ TEST(Arm64Aot, rejects_native_exports_outside_the_two_argument_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export2(
                    {"level-group-load-commands-set!", "goalpad_aot_load_state_want_vis"}),
                std::invalid_argument);
+}
+
+TEST(Arm64Aot, rejects_native_exports_outside_the_three_argument_proof) {
+  EXPECT_THROW(aot::render_cpp_xmacro_export3({"", "goalpad_aot_load_state_want_levels"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export3({"false-func", "goalpad_aot_false_func"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export3({"identity", "goalpad_aot_identity"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export3({"want-vis", "goalpad_aot_load_state_want_vis"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export3({"want-levels", "invalid-symbol"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export3({"want-levels", "goalpad_aot_want_levels"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export3({"want-levels", "goalpad_aot_load_state_want_vis"}),
+               std::invalid_argument);
+}
+
+TEST(Arm64Aot, rejects_want_levels_native_export_symbols_at_other_arities) {
+  EXPECT_THROW(
+      aot::render_cpp_xmacro_export0({"want-levels", "goalpad_aot_load_state_want_levels"}),
+      std::invalid_argument);
+  EXPECT_THROW(
+      aot::render_cpp_xmacro_export1({"want-levels", "goalpad_aot_load_state_want_levels"}),
+      std::invalid_argument);
+  EXPECT_THROW(
+      aot::render_cpp_xmacro_export2({"want-levels", "goalpad_aot_load_state_want_levels"}),
+      std::invalid_argument);
 }
 
 TEST(Arm64Aot, rejects_unknown_named_function) {

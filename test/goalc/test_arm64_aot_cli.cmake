@@ -38,6 +38,13 @@ set(WANT_VIS_INPUT
 set(WANT_VIS_ASSEMBLY_ONLY "${OUTPUT_DIR}/want-vis-assembly-only.s")
 set(WANT_VIS_PAIRED_ASSEMBLY "${OUTPUT_DIR}/want-vis-paired.s")
 set(WANT_VIS_EXPORTS "${OUTPUT_DIR}/want-vis-paired.exports.inc")
+set(WANT_LEVELS_INPUT
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-want-levels-from-jak1-load-boundary.gc")
+set(WANT_LEVELS_GOLDEN
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-want-levels-from-jak1-load-boundary.s")
+set(WANT_LEVELS_ASSEMBLY_ONLY "${OUTPUT_DIR}/want-levels-assembly-only.s")
+set(WANT_LEVELS_PAIRED_ASSEMBLY "${OUTPUT_DIR}/want-levels-paired.s")
+set(WANT_LEVELS_EXPORTS "${OUTPUT_DIR}/want-levels-paired.exports.inc")
 
 execute_process(
   COMMAND "${GOALC_AOT}"
@@ -809,4 +816,103 @@ file(READ "${WANT_VIS_WRONG_EXPORTS}" ACTUAL_WANT_VIS_WRONG_EXPORTS)
 if(NOT ACTUAL_WANT_VIS_WRONG_ASSEMBLY STREQUAL "old want-vis wrong assembly\n" OR
    NOT ACTUAL_WANT_VIS_WRONG_EXPORTS STREQUAL "old want-vis wrong exports\n")
   message(FATAL_ERROR "Failed want-vis export validation modified an existing artifact")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${WANT_LEVELS_INPUT}"
+          --function want-levels
+          --output "${WANT_LEVELS_ASSEMBLY_ONLY}"
+          --symbol goalpad_aot_load_state_want_levels
+  RESULT_VARIABLE WANT_LEVELS_ASSEMBLY_ONLY_RESULT)
+if(NOT WANT_LEVELS_ASSEMBLY_ONLY_RESULT EQUAL 0)
+  message(FATAL_ERROR "Assembly-only want-levels goalc-aot invocation failed")
+endif()
+
+file(READ "${WANT_LEVELS_GOLDEN}" WANT_LEVELS_GENERIC_GOLDEN_ASSEMBLY)
+string(REPLACE "_goalpad_aot_want_levels" "_goalpad_aot_load_state_want_levels"
+       EXPECTED_WANT_LEVELS_ASSEMBLY "${WANT_LEVELS_GENERIC_GOLDEN_ASSEMBLY}")
+file(READ "${WANT_LEVELS_ASSEMBLY_ONLY}" ACTUAL_WANT_LEVELS_ASSEMBLY)
+if(NOT ACTUAL_WANT_LEVELS_ASSEMBLY STREQUAL EXPECTED_WANT_LEVELS_ASSEMBLY)
+  message(FATAL_ERROR "Assembly-only want-levels artifact did not match the committed ARM64 golden")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${WANT_LEVELS_INPUT}"
+          --function want-levels
+          --output "${WANT_LEVELS_PAIRED_ASSEMBLY}"
+          --exports-output "${WANT_LEVELS_EXPORTS}"
+          --symbol goalpad_aot_load_state_want_levels
+  RESULT_VARIABLE WANT_LEVELS_PAIRED_RESULT)
+if(NOT WANT_LEVELS_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "Paired want-levels goalc-aot invocation failed")
+endif()
+
+file(SHA256 "${WANT_LEVELS_ASSEMBLY_ONLY}" WANT_LEVELS_ASSEMBLY_ONLY_SHA256)
+file(SHA256 "${WANT_LEVELS_PAIRED_ASSEMBLY}" WANT_LEVELS_PAIRED_ASSEMBLY_SHA256)
+if(NOT WANT_LEVELS_ASSEMBLY_ONLY_SHA256 STREQUAL WANT_LEVELS_PAIRED_ASSEMBLY_SHA256)
+  message(FATAL_ERROR "Adding want-levels export metadata changed the ARM64 assembly")
+endif()
+
+file(READ "${WANT_LEVELS_PAIRED_ASSEMBLY}" ACTUAL_WANT_LEVELS_PAIRED_ASSEMBLY)
+file(READ "${WANT_LEVELS_EXPORTS}" ACTUAL_WANT_LEVELS_EXPORTS)
+if(NOT ACTUAL_WANT_LEVELS_PAIRED_ASSEMBLY STREQUAL EXPECTED_WANT_LEVELS_ASSEMBLY)
+  message(FATAL_ERROR "Paired want-levels artifact did not match the committed ARM64 golden")
+endif()
+
+set(EXPECTED_WANT_LEVELS_EXPORTS
+    "#ifndef OPENGOAL_AOT_EXPORT3\n#error \"Define OPENGOAL_AOT_EXPORT3 before including this file.\"\n#endif\nOPENGOAL_AOT_EXPORT3(\"want-levels\", goalpad_aot_load_state_want_levels)\n")
+if(NOT ACTUAL_WANT_LEVELS_EXPORTS STREQUAL EXPECTED_WANT_LEVELS_EXPORTS)
+  message(FATAL_ERROR "Generated want-levels export metadata did not match the expected record")
+endif()
+
+set(WANT_LEVELS_WRONG_ASSEMBLY "${OUTPUT_DIR}/want-levels-wrong.s")
+set(WANT_LEVELS_WRONG_EXPORTS "${OUTPUT_DIR}/want-levels-wrong.exports.inc")
+file(WRITE "${WANT_LEVELS_WRONG_ASSEMBLY}" "old want-levels wrong assembly\n")
+file(WRITE "${WANT_LEVELS_WRONG_EXPORTS}" "old want-levels wrong exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${WANT_LEVELS_INPUT}"
+          --function want-levels
+          --output "${WANT_LEVELS_WRONG_ASSEMBLY}"
+          --exports-output "${WANT_LEVELS_WRONG_EXPORTS}"
+          --symbol goalpad_aot_want_levels
+  RESULT_VARIABLE WANT_LEVELS_WRONG_SYMBOL_RESULT)
+if(WANT_LEVELS_WRONG_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted want-levels with an unsupported symbol")
+endif()
+
+file(READ "${WANT_LEVELS_WRONG_ASSEMBLY}" ACTUAL_WANT_LEVELS_WRONG_ASSEMBLY)
+file(READ "${WANT_LEVELS_WRONG_EXPORTS}" ACTUAL_WANT_LEVELS_WRONG_EXPORTS)
+if(NOT ACTUAL_WANT_LEVELS_WRONG_ASSEMBLY STREQUAL "old want-levels wrong assembly\n" OR
+   NOT ACTUAL_WANT_LEVELS_WRONG_EXPORTS STREQUAL "old want-levels wrong exports\n")
+  message(FATAL_ERROR "Failed want-levels export validation modified an existing artifact")
+endif()
+
+set(WANT_LEVELS_CROSS_ASSEMBLY "${OUTPUT_DIR}/want-levels-cross.s")
+set(WANT_LEVELS_CROSS_EXPORTS "${OUTPUT_DIR}/want-levels-cross.exports.inc")
+file(WRITE "${WANT_LEVELS_CROSS_ASSEMBLY}" "old want-levels cross assembly\n")
+file(WRITE "${WANT_LEVELS_CROSS_EXPORTS}" "old want-levels cross exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${WANT_LEVELS_INPUT}"
+          --function want-levels
+          --output "${WANT_LEVELS_CROSS_ASSEMBLY}"
+          --exports-output "${WANT_LEVELS_CROSS_EXPORTS}"
+          --symbol goalpad_aot_load_state_want_vis
+  RESULT_VARIABLE WANT_LEVELS_CROSS_ARITY_RESULT)
+if(WANT_LEVELS_CROSS_ARITY_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted want-levels with the Export2 symbol")
+endif()
+
+file(READ "${WANT_LEVELS_CROSS_ASSEMBLY}" ACTUAL_WANT_LEVELS_CROSS_ASSEMBLY)
+file(READ "${WANT_LEVELS_CROSS_EXPORTS}" ACTUAL_WANT_LEVELS_CROSS_EXPORTS)
+if(NOT ACTUAL_WANT_LEVELS_CROSS_ASSEMBLY STREQUAL "old want-levels cross assembly\n" OR
+   NOT ACTUAL_WANT_LEVELS_CROSS_EXPORTS STREQUAL "old want-levels cross exports\n")
+  message(FATAL_ERROR "Failed want-levels cross-arity validation modified an existing artifact")
 endif()

@@ -81,6 +81,16 @@ void validate(const NativeExport2& native_export) {
   }
 }
 
+void validate(const NativeExport3& native_export) {
+  const bool is_want_levels = native_export.goal_name == "want-levels" &&
+                              native_export.c_symbol == "goalpad_aot_load_state_want_levels";
+  if (!is_want_levels) {
+    throw std::invalid_argument(
+        "AOT native export proof only supports want-levels as "
+        "goalpad_aot_load_state_want_levels three-argument artifacts");
+  }
+}
+
 std::filesystem::path normalized_path(const std::filesystem::path& path) {
   return std::filesystem::weakly_canonical(std::filesystem::absolute(path));
 }
@@ -258,6 +268,18 @@ std::string render_cpp_xmacro_export2(const NativeExport2& native_export) {
   return output.str();
 }
 
+std::string render_cpp_xmacro_export3(const NativeExport3& native_export) {
+  validate(native_export);
+  std::ostringstream output;
+  output << "#ifndef OPENGOAL_AOT_EXPORT3\n"
+         << "#error \"Define OPENGOAL_AOT_EXPORT3 before including this file.\"\n"
+         << "#endif\n"
+         << "OPENGOAL_AOT_EXPORT3(\"" << native_export.goal_name << "\", " << native_export.c_symbol
+         << ")\n";
+
+  return output.str();
+}
+
 void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
                                      const std::string& export_output_path,
                                      const AppleArm64Function& function,
@@ -284,6 +306,16 @@ void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
                                      const NativeExport2& native_export) {
   const auto assembly = render_apple_arm64_assembly(function);
   const auto native_export_source = render_cpp_xmacro_export2(native_export);
+  write_apple_arm64_artifact_pair(assembly_output_path, export_output_path, assembly,
+                                  native_export_source);
+}
+
+void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
+                                     const std::string& export_output_path,
+                                     const AppleArm64Function& function,
+                                     const NativeExport3& native_export) {
+  const auto assembly = render_apple_arm64_assembly(function);
+  const auto native_export_source = render_cpp_xmacro_export3(native_export);
   write_apple_arm64_artifact_pair(assembly_output_path, export_output_path, assembly,
                                   native_export_source);
 }
