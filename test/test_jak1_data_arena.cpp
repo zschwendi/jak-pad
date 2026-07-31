@@ -176,6 +176,69 @@ struct BasicMethodFixture {
   }
 };
 
+std::uint64_t synthetic_load_state_reset(std::uint64_t object) {
+  return object;
+}
+
+std::uint64_t alternate_synthetic_load_state_reset(std::uint64_t object) {
+  return object;
+}
+
+struct NativeMethodInvocationProbe {
+  jak1::DataArenaNativeMethodEntry1 entry = nullptr;
+  std::uint32_t object = 0;
+  std::uint32_t s7 = 0;
+  std::byte* arena = nullptr;
+  std::size_t calls = 0;
+};
+
+std::uint64_t invoke_synthetic_native_method(const jak1::DataArenaNativeMethodCall1& call,
+                                             void* user_context) {
+  auto* probe = static_cast<NativeMethodInvocationProbe*>(user_context);
+  probe->entry = call.entry;
+  probe->object = call.object;
+  probe->s7 = call.s7;
+  probe->arena = call.arena;
+  ++probe->calls;
+  return call.entry(call.object);
+}
+
+jak1::DataArenaNativeMethodBinding1 load_state_reset_binding() {
+  return {
+      .object_type = BasicMethodFixture::kObjectType,
+      .method_id = kResetMethodId,
+      .method_value = BasicMethodFixture::kFunction,
+      .allocated_size = BasicMethodFixture::kAllocatedSize,
+      .padded_size = BasicMethodFixture::kPaddedSize,
+      .arity = 1,
+      .entry = &synthetic_load_state_reset,
+  };
+}
+
+void install_derived_reset(BasicMethodFixture* fixture) {
+  write_u32(fixture->arena.storage.data(), BasicMethodFixture::kDerivedType - BASIC_OFFSET,
+            BasicMethodFixture::kTypeType);
+  write_u32(fixture->arena.storage.data(),
+            BasicMethodFixture::kDerivedType + offsetof(jak1::Type, parent),
+            BasicMethodFixture::kObjectType);
+  write_u16(fixture->arena.storage.data(),
+            BasicMethodFixture::kDerivedType + offsetof(jak1::Type, allocated_size),
+            BasicMethodFixture::kAllocatedSize);
+  write_u16(fixture->arena.storage.data(),
+            BasicMethodFixture::kDerivedType + offsetof(jak1::Type, padded_size),
+            BasicMethodFixture::kPaddedSize);
+  write_u16(fixture->arena.storage.data(),
+            BasicMethodFixture::kDerivedType + offsetof(jak1::Type, num_methods),
+            BasicMethodFixture::kMethodCount);
+  write_u32(fixture->arena.storage.data(),
+            BasicMethodFixture::method_slot(BasicMethodFixture::kDerivedType, kResetMethodId),
+            BasicMethodFixture::kDerivedFunction);
+  write_u32(fixture->arena.storage.data(), BasicMethodFixture::kDerivedFunction - BASIC_OFFSET,
+            BasicMethodFixture::kFunctionType);
+  write_u32(fixture->arena.storage.data(), BasicMethodFixture::kObject - BASIC_OFFSET,
+            BasicMethodFixture::kDerivedType);
+}
+
 }  // namespace
 
 TEST(Jak1DataArena, InitializesCanonicalDataOnlyHeader) {
@@ -899,4 +962,393 @@ TEST(Jak1DataArena, RejectsOutOfRangeAndOutOfBoundsMethodSlotsWithoutMutation) {
     EXPECT_EQ(result.error, jak1::DataArenaBasicMethodValueLookupError::InvalidMethodSlot);
     EXPECT_EQ(fixture.arena.storage, before);
   }
+}
+
+TEST(Jak1DataArena, InvokesTrustedLoadStateResetBindingWithoutMutatingStorage) {
+  auto fixture = BasicMethodFixture{};
+  const auto bindings = std::array{load_state_reset_binding()};
+  NativeMethodInvocationProbe probe;
+  const auto before = fixture.arena.storage;
+
+  const auto result = jak1::invoke_data_arena_native_basic_method1(
+      fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+      BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+      &probe);
+
+  ASSERT_TRUE(result.invoked());
+  EXPECT_EQ(result.value, BasicMethodFixture::kObject);
+  EXPECT_EQ(result.basic_method.object_type, BasicMethodFixture::kObjectType);
+  EXPECT_EQ(result.basic_method.method_value, BasicMethodFixture::kFunction);
+  EXPECT_EQ(probe.calls, 1U);
+  EXPECT_EQ(probe.entry, &synthetic_load_state_reset);
+  EXPECT_EQ(probe.object, BasicMethodFixture::kObject);
+  EXPECT_EQ(probe.s7, fixture.arena.header.s7);
+  EXPECT_EQ(probe.arena, fixture.arena.storage.data());
+  EXPECT_EQ(fixture.arena.storage, before);
+}
+
+TEST(Jak1DataArena, RequiresTheExactTrustedMethodBindingTuple) {
+  {
+    auto fixture = BasicMethodFixture{};
+    install_derived_reset(&fixture);
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::UnboundMethod);
+    EXPECT_EQ(result.basic_method.object_type, BasicMethodFixture::kDerivedType);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    constexpr std::uint32_t kOtherMethodId = kResetMethodId - 1;
+    write_u32(fixture.arena.storage.data(),
+              BasicMethodFixture::method_slot(BasicMethodFixture::kObjectType, kOtherMethodId),
+              BasicMethodFixture::kFunction);
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kOtherMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::UnboundMethod);
+    EXPECT_EQ(result.basic_method.method_value, BasicMethodFixture::kFunction);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u32(fixture.arena.storage.data(), BasicMethodFixture::kDerivedFunction - BASIC_OFFSET,
+              BasicMethodFixture::kFunctionType);
+    write_u32(fixture.arena.storage.data(),
+              BasicMethodFixture::method_slot(BasicMethodFixture::kObjectType, kResetMethodId),
+              BasicMethodFixture::kDerivedFunction);
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::UnboundMethod);
+    EXPECT_EQ(result.basic_method.method_value, BasicMethodFixture::kDerivedFunction);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u16(fixture.arena.storage.data(),
+              BasicMethodFixture::kObjectType + offsetof(jak1::Type, allocated_size), 0x81c);
+    write_u16(fixture.arena.storage.data(),
+              BasicMethodFixture::kObjectType + offsetof(jak1::Type, padded_size), 0x820);
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::UnboundMethod);
+    EXPECT_EQ(result.basic_method.allocated_size, 0x81c);
+    EXPECT_EQ(result.basic_method.padded_size, 0x820);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    auto binding = load_state_reset_binding();
+    binding.allocated_size = BasicMethodFixture::kAllocatedSize - 0x10;
+    const auto bindings = std::array{binding};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::UnboundMethod);
+    EXPECT_EQ(result.basic_method.allocated_size, BasicMethodFixture::kAllocatedSize);
+    EXPECT_EQ(result.basic_method.padded_size, BasicMethodFixture::kPaddedSize);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    auto binding = load_state_reset_binding();
+    binding.padded_size = BasicMethodFixture::kPaddedSize - 0x10;
+    const auto bindings = std::array{binding};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::UnboundMethod);
+    EXPECT_EQ(result.basic_method.allocated_size, BasicMethodFixture::kAllocatedSize);
+    EXPECT_EQ(result.basic_method.padded_size, BasicMethodFixture::kPaddedSize);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+}
+
+TEST(Jak1DataArena, BindsTheActualDerivedTypeOnlyWhenTheTupleMatches) {
+  auto fixture = BasicMethodFixture{};
+  install_derived_reset(&fixture);
+  auto derived_binding = load_state_reset_binding();
+  derived_binding.object_type = BasicMethodFixture::kDerivedType;
+  derived_binding.method_value = BasicMethodFixture::kDerivedFunction;
+  const auto bindings = std::array{derived_binding};
+  NativeMethodInvocationProbe probe;
+  const auto before = fixture.arena.storage;
+
+  const auto result = jak1::invoke_data_arena_native_basic_method1(
+      fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+      BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+      &probe);
+
+  ASSERT_TRUE(result.invoked());
+  EXPECT_EQ(result.basic_method.object_type, BasicMethodFixture::kDerivedType);
+  EXPECT_EQ(result.basic_method.method_value, BasicMethodFixture::kDerivedFunction);
+  EXPECT_EQ(probe.calls, 1U);
+  EXPECT_EQ(fixture.arena.storage, before);
+}
+
+TEST(Jak1DataArena, RejectsZeroAndIncorrectlyTaggedNativeMethodValues) {
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u32(fixture.arena.storage.data(),
+              BasicMethodFixture::method_slot(BasicMethodFixture::kObjectType, kResetMethodId), 0);
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::InvalidFunctionValue);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u32(fixture.arena.storage.data(), BasicMethodFixture::kFunction - BASIC_OFFSET,
+              BasicMethodFixture::kObjectType);
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::InvalidFunctionTag);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u32(fixture.arena.storage.data(), BasicMethodFixture::kFunctionType - BASIC_OFFSET, 0);
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::InvalidFunctionType);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    write_u32(fixture.arena.storage.data(),
+              fixture.arena.header.s7 + jak1_symbols::FIX_SYM_FUNCTION_TYPE, 0);
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::InvalidFunctionType);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    constexpr std::uint32_t kOutOfBoundsFunction = kSyntheticArenaSize + BASIC_OFFSET;
+    static_assert((kOutOfBoundsFunction & OFFSET_MASK) == BASIC_OFFSET);
+    write_u32(fixture.arena.storage.data(),
+              BasicMethodFixture::method_slot(BasicMethodFixture::kObjectType, kResetMethodId),
+              kOutOfBoundsFunction);
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::InvalidFunctionValue);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+}
+
+TEST(Jak1DataArena, RejectsInvalidOrUnknownNativeMethodBindingTables) {
+  {
+    auto fixture = BasicMethodFixture{};
+    const auto binding = load_state_reset_binding();
+    auto duplicate = binding;
+    duplicate.entry = &alternate_synthetic_load_state_reset;
+    const auto bindings = std::array{binding, duplicate};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::DuplicateBinding);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    auto binding = load_state_reset_binding();
+    binding.entry = nullptr;
+    const auto bindings = std::array{binding};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::NullNativeEntry);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    auto binding = load_state_reset_binding();
+    binding.arity = 0;
+    const auto bindings = std::array{binding};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::InvalidBindingArity);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    const auto binding = load_state_reset_binding();
+    auto unrelated_invalid_binding = binding;
+    unrelated_invalid_binding.object_type = BasicMethodFixture::kDerivedType;
+    unrelated_invalid_binding.arity = 0;
+    const auto bindings = std::array{binding, unrelated_invalid_binding};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::InvalidBindingArity);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    const std::array<jak1::DataArenaNativeMethodBinding1, 0> bindings{};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, &invoke_synthetic_native_method,
+        &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::UnboundMethod);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+
+  {
+    auto fixture = BasicMethodFixture{};
+    const auto bindings = std::array{load_state_reset_binding()};
+    NativeMethodInvocationProbe probe;
+    const auto before = fixture.arena.storage;
+
+    const auto result = jak1::invoke_data_arena_native_basic_method1(
+        fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+        BasicMethodFixture::kObject, kResetMethodId, bindings, nullptr, &probe);
+
+    EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::NullInvoker);
+    EXPECT_EQ(probe.calls, 0U);
+    EXPECT_EQ(fixture.arena.storage, before);
+  }
+}
+
+TEST(Jak1DataArena, PreservesBasicMethodLookupFailuresForNativeBindings) {
+  auto fixture = BasicMethodFixture{};
+  const auto bindings = std::array{load_state_reset_binding()};
+  NativeMethodInvocationProbe probe;
+  const auto before = fixture.arena.storage;
+
+  const auto result = jak1::invoke_data_arena_native_basic_method1(
+      fixture.arena.storage.data(), fixture.arena.storage.size(), fixture.arena.header,
+      BasicMethodFixture::kObject, BasicMethodFixture::kMethodCount, bindings,
+      &invoke_synthetic_native_method, &probe);
+
+  EXPECT_EQ(result.error, jak1::DataArenaNativeMethodInvokeError::BasicMethodLookupFailed);
+  EXPECT_EQ(result.lookup_error, jak1::DataArenaBasicMethodValueLookupError::MethodOutOfRange);
+  EXPECT_EQ(probe.calls, 0U);
+  EXPECT_EQ(fixture.arena.storage, before);
 }

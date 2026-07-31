@@ -1,5 +1,6 @@
 #include "data_arena.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -342,6 +343,56 @@ DataArenaSymbolValueLookupResult finish_symbol_probe(const std::byte* storage,
   return {.error = DataArenaSymbolValueLookupError::NotFound};
 }
 
+enum class FunctionTagValidationError {
+  None,
+  InvalidFunctionValue,
+  InvalidFunctionType,
+  InvalidFunctionTag,
+};
+
+FunctionTagValidationError validate_function_tag(const std::byte* storage,
+                                                 std::size_t storage_size,
+                                                 const DataArenaHeader& header,
+                                                 std::uint32_t method_value) {
+  if (!is_readable_basic_pointer(storage_size, method_value)) {
+    return FunctionTagValidationError::InvalidFunctionValue;
+  }
+
+  std::uint32_t type_type = 0;
+  std::uint32_t function_type = 0;
+  if (!read_fixed_symbol_value(storage, storage_size, header, jak1_symbols::FIX_SYM_TYPE_TYPE,
+                               &type_type) ||
+      !is_readable_basic_pointer(storage_size, type_type) ||
+      read_u32(storage, type_type - BASIC_OFFSET) != type_type ||
+      !read_fixed_symbol_value(storage, storage_size, header, jak1_symbols::FIX_SYM_FUNCTION_TYPE,
+                               &function_type) ||
+      !is_readable_basic_pointer(storage_size, function_type) ||
+      read_u32(storage, function_type - BASIC_OFFSET) != type_type) {
+    return FunctionTagValidationError::InvalidFunctionType;
+  }
+
+  if (read_u32(storage, method_value - BASIC_OFFSET) != function_type) {
+    return FunctionTagValidationError::InvalidFunctionTag;
+  }
+  return FunctionTagValidationError::None;
+}
+
+bool binding_tuples_match(const DataArenaNativeMethodBinding1& lhs,
+                          const DataArenaNativeMethodBinding1& rhs) {
+  return lhs.object_type == rhs.object_type && lhs.method_id == rhs.method_id &&
+         lhs.method_value == rhs.method_value && lhs.allocated_size == rhs.allocated_size &&
+         lhs.padded_size == rhs.padded_size && lhs.arity == rhs.arity;
+}
+
+bool binding_matches_method(const DataArenaNativeMethodBinding1& binding,
+                            const DataArenaBasicMethodValue& method,
+                            std::uint32_t method_id) {
+  return binding.object_type == method.object_type && binding.method_id == method_id &&
+         binding.method_value == method.method_value &&
+         binding.allocated_size == method.allocated_size &&
+         binding.padded_size == method.padded_size && binding.arity == 1;
+}
+
 }  // namespace
 
 DataArenaHeaderResult initialize_data_arena_header(std::byte* storage, std::size_t storage_size) {
@@ -537,6 +588,87 @@ DataArenaBasicMethodValueLookupResult read_data_arena_basic_method_value(
               .method_value = read_u32(storage, method_offset),
           },
       .error = DataArenaBasicMethodValueLookupError::None,
+  };
+}
+
+DataArenaNativeMethodInvokeResult invoke_data_arena_native_basic_method1(
+    std::byte* storage,
+    std::size_t storage_size,
+    const DataArenaHeader& header,
+    std::uint32_t object,
+    std::uint32_t method_id,
+    std::span<const DataArenaNativeMethodBinding1> bindings,
+    DataArenaNativeMethodInvoker1 invoker,
+    void* user_context) {
+  if (!invoker) {
+    return {.error = DataArenaNativeMethodInvokeError::NullInvoker};
+  }
+
+  for (std::size_t index = 0; index < bindings.size(); ++index) {
+    const auto& binding = bindings[index];
+    if (binding.arity != 1) {
+      return {.error = DataArenaNativeMethodInvokeError::InvalidBindingArity};
+    }
+    if (!binding.entry) {
+      return {.error = DataArenaNativeMethodInvokeError::NullNativeEntry};
+    }
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      if (binding_tuples_match(binding, bindings[previous])) {
+        return {.error = DataArenaNativeMethodInvokeError::DuplicateBinding};
+      }
+    }
+  }
+
+  const auto lookup =
+      read_data_arena_basic_method_value(storage, storage_size, header, object, method_id);
+  if (!lookup.found()) {
+    return {
+        .lookup_error = lookup.error,
+        .error = DataArenaNativeMethodInvokeError::BasicMethodLookupFailed,
+    };
+  }
+
+  switch (validate_function_tag(storage, storage_size, header, lookup.value.method_value)) {
+    case FunctionTagValidationError::None:
+      break;
+    case FunctionTagValidationError::InvalidFunctionValue:
+      return {
+          .basic_method = lookup.value,
+          .error = DataArenaNativeMethodInvokeError::InvalidFunctionValue,
+      };
+    case FunctionTagValidationError::InvalidFunctionType:
+      return {
+          .basic_method = lookup.value,
+          .error = DataArenaNativeMethodInvokeError::InvalidFunctionType,
+      };
+    case FunctionTagValidationError::InvalidFunctionTag:
+      return {
+          .basic_method = lookup.value,
+          .error = DataArenaNativeMethodInvokeError::InvalidFunctionTag,
+      };
+  }
+
+  const auto matching_binding =
+      std::find_if(bindings.begin(), bindings.end(), [&](const auto& binding) {
+        return binding_matches_method(binding, lookup.value, method_id);
+      });
+  if (matching_binding == bindings.end()) {
+    return {
+        .basic_method = lookup.value,
+        .error = DataArenaNativeMethodInvokeError::UnboundMethod,
+    };
+  }
+
+  const DataArenaNativeMethodCall1 call{
+      .entry = matching_binding->entry,
+      .object = object,
+      .s7 = header.s7,
+      .arena = storage,
+  };
+  return {
+      .value = invoker(call, user_context),
+      .basic_method = lookup.value,
+      .error = DataArenaNativeMethodInvokeError::None,
   };
 }
 

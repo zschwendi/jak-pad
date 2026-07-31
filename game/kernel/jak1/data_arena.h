@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "common/goal_constants.h"
@@ -93,6 +94,53 @@ struct DataArenaBasicMethodValueLookupResult {
   [[nodiscard]] bool found() const { return error == DataArenaBasicMethodValueLookupError::None; }
 };
 
+// The entry remains a native pointer held outside the GOAL data arena. The arity is part of the
+// type so callers cannot invoke a statically linked entry through an incompatible function type.
+using DataArenaNativeMethodEntry1 = std::uint64_t (*)(std::uint64_t);
+
+struct DataArenaNativeMethodCall1 {
+  DataArenaNativeMethodEntry1 entry = nullptr;
+  std::uint32_t object = 0;
+  std::uint32_t s7 = 0;
+  std::byte* arena = nullptr;
+};
+
+// The platform layer owns the ABI bridge. On ARM64 it can use the call context to establish GOAL
+// registers before calling entry; this data-only layer never converts a GOAL word into code.
+using DataArenaNativeMethodInvoker1 = std::uint64_t (*)(const DataArenaNativeMethodCall1&, void*);
+
+struct DataArenaNativeMethodBinding1 {
+  std::uint32_t object_type = 0;
+  std::uint32_t method_id = 0;
+  std::uint32_t method_value = 0;
+  std::uint16_t allocated_size = 0;
+  std::uint16_t padded_size = 0;
+  std::uint8_t arity = 1;
+  DataArenaNativeMethodEntry1 entry = nullptr;
+};
+
+enum class DataArenaNativeMethodInvokeError {
+  None,
+  NullInvoker,
+  InvalidBindingArity,
+  NullNativeEntry,
+  DuplicateBinding,
+  BasicMethodLookupFailed,
+  InvalidFunctionValue,
+  InvalidFunctionType,
+  InvalidFunctionTag,
+  UnboundMethod,
+};
+
+struct DataArenaNativeMethodInvokeResult {
+  std::uint64_t value = 0;
+  DataArenaBasicMethodValue basic_method{};
+  DataArenaBasicMethodValueLookupError lookup_error = DataArenaBasicMethodValueLookupError::None;
+  DataArenaNativeMethodInvokeError error = DataArenaNativeMethodInvokeError::UnboundMethod;
+
+  [[nodiscard]] bool invoked() const { return error == DataArenaNativeMethodInvokeError::None; }
+};
+
 [[nodiscard]] constexpr std::size_t minimum_data_arena_header_size() {
   return static_cast<std::size_t>(GLOBAL_HEAP_END);
 }
@@ -143,5 +191,37 @@ struct DataArenaBasicMethodValueLookupResult {
     const DataArenaHeader& header,
     std::uint32_t object,
     std::uint32_t method_id);
+
+/*!
+ * Resolve and invoke a trusted arity-1 native BASIC method binding in one synchronous operation.
+ *
+ * Bindings are caller-owned immutable records. Production callers must source entries through
+ * normal static linkage in the signed binary and keep binding storage immutable and alive. A
+ * binding is accepted only when its complete trusted tuple exactly matches the value read from the
+ * caller-owned arena. The tuple contains the actual object Type, requested method id, raw GOAL
+ * method value, allocated size, padded size, and arity. The raw
+ * method value is verified as a Function-tagged BASIC object but is never interpreted as a host
+ * pointer. The corresponding native entry comes only from the binding table and is passed to the
+ * caller-supplied ABI invoker together with the object, s7, and arena base.
+ *
+ * This function does not write the arena. The invoked native method may write it. Callers must
+ * keep the arena, header, binding span, and every alias they expose alive; prevent concurrent
+ * mutation or reallocation; and serialize exclusive access for the entire operation. This
+ * function provides no internal synchronization.
+ *
+ * It validates the Function tag and the bounded method slot established by the data-arena lookup.
+ * It does not validate a Type allocation's full extent, the Function body, native-entry
+ * provenance, code signatures, or any platform ABI. Those remain caller and platform-layer
+ * responsibilities.
+ */
+[[nodiscard]] DataArenaNativeMethodInvokeResult invoke_data_arena_native_basic_method1(
+    std::byte* storage,
+    std::size_t storage_size,
+    const DataArenaHeader& header,
+    std::uint32_t object,
+    std::uint32_t method_id,
+    std::span<const DataArenaNativeMethodBinding1> bindings,
+    DataArenaNativeMethodInvoker1 invoker,
+    void* user_context = nullptr);
 
 }  // namespace jak1
