@@ -859,9 +859,8 @@ CBackendResult FileEmitter::run() {
   std::string functions_source;
   std::set<std::string> used_names;
 
-  const auto& functions = m_file.functions();
-  for (size_t i = 0; i < functions.size(); i++) {
-    const auto& func = *functions.at(i);
+  for (const auto& function : m_file.functions()) {
+    const auto& func = *function;
     CBackendFunctionResult entry;
     entry.goal_name = func.name();
     entry.c_name = fmt::format("goal_{}_{}", m_tag, mangle(func.name()));
@@ -872,7 +871,6 @@ CBackendResult FileEmitter::run() {
       }
       entry.c_name = fmt::format("{}_{}", entry.c_name, suffix);
     }
-    (void)i;
     try {
       functions_source += emit_function(func, entry.c_name, &entry.prototype);
       functions_source += "\n";
