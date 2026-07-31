@@ -1443,12 +1443,14 @@ s32 test_function(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
 }
 
 /*!
- * Initializes the GOAL Heap, GOAL Symbol Table, GOAL Funcdamental Types, loads the GOAL kernel,
- * exports Machine functions, loads the game engine, and calls "play" to initialize the engine.
+ * Initializes the GOAL Symbol Table and the GOAL fundamental types on the already-initialized
+ * global heap.
  *
- * This takes care of all initialization that isn't for the hardware itself.
+ * This is the part of InitHeapAndSymbol that needs neither game data nor any host platform
+ * service beyond the heap itself, so it can also run on platforms that do not have the DGO
+ * loader, the listener transport, or the machine/graphics layer.
  */
-s32 InitHeapAndSymbol() {
+s32 InitSymbolAndTypes() {
   Timer heap_init_timer;
   // reset all mips2c functions
   Mips2C::gLinkedFunctionTable = {};
@@ -1744,6 +1746,22 @@ s32 InitHeapAndSymbol() {
   intern_from_c("*boot-video-mode*")->value = 0;  // (u32)BootVideoMode;
 
   lg::info("Initialized GOAL heap in {:.2} ms", heap_init_timer.getMs());
+  return 0;
+}
+
+/*!
+ * Initializes the GOAL Heap, GOAL Symbol Table, GOAL Funcdamental Types, loads the GOAL kernel,
+ * exports Machine functions, loads the game engine, and calls "play" to initialize the engine.
+ *
+ * This takes care of all initialization that isn't for the hardware itself.
+ */
+s32 InitHeapAndSymbol() {
+  s32 symbol_status = InitSymbolAndTypes();
+  if (symbol_status < 0) {
+    return symbol_status;
+  }
+  auto method_set_symbol = intern_from_c("*enable-method-set*");
+
   // load the kernel!
   if (MasterUseKernel) {
     Timer kernel_load_timer;
