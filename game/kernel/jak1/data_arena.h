@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "common/goal_constants.h"
+
 #include "game/kernel/common/memory_layout.h"
 
 namespace jak1 {
@@ -38,17 +39,24 @@ struct DataArenaHeaderResult {
 };
 
 [[nodiscard]] constexpr std::size_t minimum_data_arena_header_size() {
-  return static_cast<std::size_t>(HEAP_START) + static_cast<std::size_t>(SYM_TABLE_MEM_SIZE);
+  return static_cast<std::size_t>(GLOBAL_HEAP_END);
 }
 
 /*!
  * Initialize the data-only prefix of Jak 1's GOAL memory layout in caller-owned storage.
  *
- * This establishes the global heap record, symbol table extent, fixed #f/#t value cells, and
- * empty pair representation. It neither binds the storage to g_ee_main_mem nor creates GOAL
- * code, native-function trampolines, symbol metadata, type objects, or linked game data.
+ * Storage represents zero-based GOAL offsets and must provide at least GLOBAL_HEAP_END bytes.
+ * Successful initialization clears only [storage, storage + GLOBAL_HEAP_END). The global heap
+ * record uses the base and bounds configured by InitMachine; the current pointer is the end of
+ * the initial symbol-table allocation. It also stages the symbol table extent, fixed #f/#t
+ * value cells, and empty pair representation. Callers must treat that range as destructively
+ * initialized; bytes beyond it are left untouched.
+ *
+ * This is a partial data-only bootstrap, not a complete InitHeapAndSymbol snapshot. It neither
+ * binds the storage to g_ee_main_mem nor creates GOAL code, native-function trampolines, symbol
+ * metadata, type objects, or linked game data.
  */
 [[nodiscard]] DataArenaHeaderResult initialize_data_arena_header(std::byte* storage,
-                                                                   std::size_t storage_size);
+                                                                 std::size_t storage_size);
 
 }  // namespace jak1
