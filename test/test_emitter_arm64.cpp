@@ -70,7 +70,7 @@ TEST(ARM64EmitterExactEncodings, cmp_and_register_add) {
   EXPECT_EQ(code, (std::array<u8, 4>{0x63, 0x00, 0x04, 0x8b}));
 }
 
-TEST(ARM64EmitterExactEncodings, lsl_and_condition_branch) {
+TEST(ARM64EmitterExactEncodings, lsl_and_condition_branches) {
   std::array<u8, 4> code{};
 
   const auto shift = IGen::ARM64::shl_gpr64_u8(X3, 4);
@@ -80,6 +80,10 @@ TEST(ARM64EmitterExactEncodings, lsl_and_condition_branch) {
   const auto geq = IGen::ARM64::jge_imm();
   EXPECT_EQ(geq.emit(code.data()), code.size());
   EXPECT_EQ(code, (std::array<u8, 4>{0x0a, 0x00, 0x00, 0x54}));
+
+  const auto less_than = IGen::ARM64::jl_imm();
+  EXPECT_EQ(less_than.emit(code.data()), code.size());
+  EXPECT_EQ(code, (std::array<u8, 4>{0x0b, 0x00, 0x00, 0x54}));
 
   const auto signed_negative_conditional_offset =
       InstructionARM64(ARM64::Base(0b01010100, 8), ARM64::Imm19(0x7ffff), ARM64::Cond(0xa));

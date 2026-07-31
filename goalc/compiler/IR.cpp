@@ -1174,10 +1174,17 @@ void IR_ConditionalBranch::do_codegen_arm64(emitter::ObjectGenerator* gen,
       }
       jump = IGen::jge_imm(*gen);
       break;
+    case ConditionKind::LT:
+      if (!condition.is_signed) {
+        throw std::runtime_error(
+            "ARM64 AOT proof only supports signed less-than conditional branches.");
+      }
+      jump = IGen::jl_imm(*gen);
+      break;
     default:
       throw std::runtime_error(
-          "ARM64 AOT proof only supports equality or signed greater-than-or-equal conditional "
-          "branches.");
+          "ARM64 AOT proof only supports equality, signed greater-than-or-equal, or signed "
+          "less-than conditional branches.");
   }
 
   gen->add_instr(IGen::cmp_gpr64_gpr64(*gen, a, b), irec);

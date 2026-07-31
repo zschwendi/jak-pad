@@ -1309,10 +1309,41 @@ TEST(Arm64Aot, rejects_unresolved_arm64_goto_and_conditional_branch_labels) {
                std::runtime_error);
 }
 
-TEST(Arm64Aot, rejects_an_unsupported_signed_lt_arm64_conditional_branch) {
+TEST(Arm64Aot, materializes_a_backward_signed_lt_branch_with_a_local_arm64_label) {
   RegVal left{{RegClass::GPR_64, 0}, TypeSpec("int")};
   RegVal right{{RegClass::GPR_64, 1}, TypeSpec("int")};
   const Condition condition{ConditionKind::LT, &left, &right, true, false};
+  IR_ConditionalBranch branch(condition, Label(nullptr, 0));
+  branch.mark_as_resolved();
+
+  Assignment left_assignment;
+  left_assignment.kind = Assignment::Kind::REGISTER;
+  left_assignment.reg = emitter::X0;
+  Assignment right_assignment;
+  right_assignment.kind = Assignment::Kind::REGISTER;
+  right_assignment.reg = emitter::X1;
+  AllocationResult allocations;
+  allocations.ass_as_ranges = {
+      AssignmentRange(0, {true, true}, {left_assignment, left_assignment}),
+      AssignmentRange(0, {true, true}, {right_assignment, right_assignment}),
+  };
+
+  FunctionDebugInfo debug{};
+  emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+  const auto destination_ir = generator.add_ir(function);
+  generator.add_instr(emitter::IGen::ret(generator), destination_ir);
+  branch.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
+
+  EXPECT_EQ(generator.materialize_arm64_function(function),
+            (std::vector<u8>{0xc0, 0x03, 0x5f, 0xd6, 0x1f, 0x00, 0x01, 0xeb,
+                             0xcb, 0xff, 0xff, 0x54}));
+}
+
+TEST(Arm64Aot, rejects_an_unsigned_lt_arm64_conditional_branch) {
+  RegVal left{{RegClass::GPR_64, 0}, TypeSpec("int")};
+  RegVal right{{RegClass::GPR_64, 1}, TypeSpec("int")};
+  const Condition condition{ConditionKind::LT, &left, &right, false, false};
   IR_ConditionalBranch branch(condition, Label(nullptr, 1));
   branch.mark_as_resolved();
 
