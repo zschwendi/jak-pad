@@ -181,6 +181,43 @@ void check_remaining_relocation_kinds() {
   check_u64("that function object runs", goal_aot_call(*Ptr<u32>(other).c(), 0, 0, 0), 0x600d);
 }
 
+/*!
+ * GOAL's cooperative threads run on stacks carved out of GOAL memory, so AOT-compiled GOAL code
+ * has to work with the stack pointer inside `g_ee_main_mem`. `call_goal_on_stack` makes that
+ * switch, but it passes no GOAL arguments - the first argument register holds the new stack
+ * pointer at the call - so the function it runs here is a small native trampoline installed as a
+ * real GOAL function object, the same way check_remaining_relocation_kinds installs one. The
+ * trampoline records where it is running and then calls the recursive GOAL function `fact` with
+ * the ordinary `call_goal`, which runs on whatever stack it is called from: so `fact` and all of
+ * its recursion happen on the GOAL-memory stack.
+ */
+u64 g_trampoline_frame = 0;
+u64 g_trampoline_fact = 0;
+
+u64 goal_stack_trampoline() {
+  volatile u8 frame = 0;
+  g_trampoline_frame = (u64)(uintptr_t)&frame;
+  g_trampoline_fact =
+      call_goal(Ptr<Function>(symbol_value("fact")), 10, 0, 0, s7.offset, g_ee_main_mem);
+  return g_trampoline_fact;
+}
+
+/*! Count the non-zero bytes in a region and report how far below its end the lowest one is. */
+u32 count_dirty_bytes(const u8* region, s32 size, s32* out_depth) {
+  u32 dirty = 0;
+  s32 lowest = size;
+  for (s32 i = 0; i < size; i++) {
+    if (region[i]) {
+      dirty++;
+      if (i < lowest) {
+        lowest = i;
+      }
+    }
+  }
+  *out_depth = size - lowest;
+  return dirty;
+}
+
 }  // namespace
 
 int main() {
@@ -333,6 +370,64 @@ int main() {
       fail("GOAL printing did not produce the expected text");
     }
   }
+
+  std::printf("\n== running AOT-compiled GOAL code on a stack inside GOAL memory ==\n");
+  {
+    // GOAL's own PROCESS_STACK_SIZE is #x6000 on the PC port; 32 KiB is more than fact needs.
+    constexpr s32 kStackSize = 32 * 1024;
+    const Ptr<u8> stack =
+        kmalloc(kglobalheap, kStackSize, KMALLOC_MEMSET | KMALLOC_ALIGN_16, "goal-thread-stack");
+    if (!stack.offset) {
+      fail("kmalloc(goal-thread-stack)");
+    } else {
+      // the stack grows down, so what call_goal_on_stack wants is the top of the region, as a
+      // native pointer rather than a GOAL pointer
+      const u32 stack_top_goal = stack.offset + (u32)kStackSize;
+      const u64 stack_top_native = (u64)(uintptr_t)g_ee_main_mem + stack_top_goal;
+      std::printf("  stack region: GOAL #x%x - #x%x (%d bytes), native top #x%" PRIx64 "\n",
+                  stack.offset, stack_top_goal, kStackSize, stack_top_native);
+      check_u64("stack top 16-byte aligned", stack_top_native & 0xf, 0);
+
+      const u8* region = Ptr<u8>(stack.offset).c();
+      s32 depth = 0;
+      check_u64("stack region zeroed by kmalloc", count_dirty_bytes(region, kStackSize, &depth), 0);
+
+      static const void* const trampoline_functions[1] = {(const void*)&goal_stack_trampoline};
+      goal_aot_object_file file = {"goal-stack-check", nullptr, 0, trampoline_functions, 1,
+                                   nullptr};
+      if (goal_aot_load(&file) != GOAL_KERNEL_CORE_OK) {
+        fail("goal_aot_load(goal-stack-check)");
+      } else {
+        const u32 func = goal_aot_function_object("goal-stack-check", 0);
+        const u64 result =
+            call_goal_on_stack(Ptr<Function>(func), stack_top_native, s7.offset, g_ee_main_mem);
+        check_s64("(fact 10) on the GOAL stack", result, 3628800);
+        check_s64("...and as call_goal saw it", g_trampoline_fact, 3628800);
+
+        // the switch really happened: the trampoline's own frame was inside the region
+        std::printf("  trampoline frame at native #x%" PRIx64 ", %" PRId64
+                    " bytes below the top\n",
+                    g_trampoline_frame, (s64)(stack_top_native - g_trampoline_frame));
+        if (g_trampoline_frame <= (u64)(uintptr_t)g_ee_main_mem + stack.offset ||
+            g_trampoline_frame > stack_top_native) {
+          fail("call_goal_on_stack did not switch to the GOAL-memory stack");
+        }
+
+        // and the GOAL code left its frames behind in the region kmalloc had zeroed
+        const u32 dirty = count_dirty_bytes(region, kStackSize, &depth);
+        std::printf("  %u bytes of the region are non-zero afterwards, deepest write %d bytes "
+                    "below the top\n",
+                    dirty, depth);
+        if (!dirty) {
+          fail("nothing was written to the GOAL-memory stack");
+        }
+      }
+    }
+  }
+
+  std::printf("\n== the native stack survived the switch ==\n");
+  check_s64("(fact 10) on the native stack", call_symbol("fact", 10), 3628800);
+  check_s64("(+ 3 4) on the native stack", call_symbol("+", 3, 4), 7);
 
   goal_aot_reset();
   goal_kernel_core_shutdown();

@@ -248,33 +248,40 @@ _call_goal8_asm_arm64:
 _call_goal_on_stack_asm_arm64:
   stp	x29, x30, [sp, #-16]!
   mov	x29, sp
-  ;; x0 - stack pointer
+  ;; x0 - stack pointer (native pointer to the top of the new stack, must be 16-byte aligned)
   ;; x1 - unused
   ;; x2 - unused
   ;; x3 - function pointer
   ;; x4  - st (goes in x21 and x20)
   ;; x5  - offset (goes in x22)
 
-  ;; saved registers we need to modify for GOAL should be preserved
+  ;; saved registers we need to modify for GOAL should be preserved.
+  ;; these stay on the caller's stack, which is still ours until the switch below.
   ; ARM64 requires 16-byte stack pointer alignment
   stp x20, x21, [sp, #-16]!
-  ;; also stash the current stack pointer on the stack
+  str x22, [sp, #-16]!
+
+  ;; switch to the new stack first, then stash the old stack pointer on the NEW stack.
+  ;; the load that undoes this runs after the call, while sp still points into the new stack,
+  ;; so the saved value has to live there: stashing it on the old stack would make that load
+  ;; read whatever GOAL happened to leave at the top of the new stack instead.
   ;; NOTE - you cannot directly store or load the `sp` register in arm64
   mov x9, sp
-  stp x22, x9, [sp, #-16]!
-
-  ;; switch to new stack
   mov sp, x0
+  str x9, [sp, #-16]!
 
-  mov x20, x4 ;; set GOAL function pointer  
+  mov x20, x4 ;; set GOAL function pointer
   mov x21, x4 ;; symbol table
   mov x22, x5 ;; offset
   ;; call GOAL by function pointer
   blr x3
 
-  ;; restore registers
-  ldp x22, x9, [sp], #16
+  ;; take the old stack pointer back off the new stack and switch back to the caller's stack
+  ldr x9, [sp], #16
   mov sp, x9
+
+  ;; restore registers
+  ldr x22, [sp], #16
   ldp x20, x21, [sp], #16
   ldp	x29, x30, [sp], #16
   ret
