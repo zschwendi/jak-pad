@@ -7,6 +7,7 @@
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/symbols.h"
+#include "common/util/Assert.h"
 
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kscheme.h"
@@ -86,6 +87,24 @@ uint64_t goal_static_addr(const char* file, int index) {
     return 0;
   }
   return loaded->static_addrs.at(index);
+}
+
+/*!
+ * GOAL address of the current stack pointer, for (suspend)'s stack-overflow check and with-sp.
+ *
+ * GOAL cooperative threads run on stacks inside GOAL memory (see docs/aot-stack-model.md), so this
+ * is a real GOAL pointer into the running thread's stack and GOAL's own stack accounting works
+ * unchanged. Reading it from a native stack means the caller is not running as a GOAL thread, and
+ * there is no honest answer, so this refuses rather than returning a number that would make GOAL's
+ * arithmetic quietly wrong.
+ */
+uint64_t goal_stack_pointer(const void* frame) {
+  const uintptr_t base = (uintptr_t)g_ee_main_mem;
+  const uintptr_t addr = (uintptr_t)frame;
+  ASSERT_MSG(base && addr >= base && addr - base < EE_MAIN_MEM_SIZE,
+             "GOAL read the stack pointer while running on a native stack. GOAL code that reads "
+             "rsp must run on a GOAL-memory stack; see docs/aot-stack-model.md.");
+  return (uint64_t)(addr - base);
 }
 
 uint64_t goal_function_addr(const char* file, int index) {

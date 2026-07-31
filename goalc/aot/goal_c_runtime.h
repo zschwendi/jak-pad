@@ -65,6 +65,19 @@ extern uint64_t goal_static_addr(const char* file, int index);
 extern uint64_t goal_function_addr(const char* file, int index);
 
 /*!
+ * GOAL address of the current stack pointer, for the (suspend) stack-overflow check and with-sp.
+ *
+ * GOAL cooperative threads run on stacks carved out of GOAL memory, so the machine stack pointer
+ * has a GOAL address and `(- sp off)` is a real pointer into the running thread's stack. The C
+ * backend can express reading it but not writing it; see docs/aot-stack-model.md.
+ *
+ * The runtime refuses to answer when the current stack is not a GOAL stack, because there is no
+ * correct answer then and a made-up one would silently corrupt GOAL's stack accounting.
+ */
+extern uint64_t goal_stack_pointer(const void* frame);
+#define GOAL_STACK_POINTER() goal_stack_pointer(__builtin_frame_address(0))
+
+/*!
  * Static data description.
  *
  * goalc's x86-64 path writes static objects into the object file and lets the runtime linker

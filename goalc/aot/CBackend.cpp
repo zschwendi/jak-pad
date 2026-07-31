@@ -130,6 +130,7 @@ class FileEmitter {
   std::string emit_instruction(const FunctionEnv& func, IR* ir);
   void find_machine_state_regs(const FunctionEnv& func);
   bool is_machine_state(const RegVal* rv) const;
+  void check_stack_pointer_use(const FunctionEnv& func) const;
   std::string rlet_reset_expr(const RegVal* rv);
   int symbol_index(const std::string& name);
   std::string symbol_pointer_expr(const std::string& name);
@@ -148,6 +149,7 @@ class FileEmitter {
   std::map<const StaticObject*, int> m_static_index;
   const IR* m_argument_reset = nullptr;
   std::map<int, std::string> m_machine_state_regs;
+  std::set<int> m_stack_pointer_regs;
 
   struct StaticSize {
     int align;
@@ -271,6 +273,7 @@ std::string FileEmitter::emit_statics() {
  */
 void FileEmitter::find_machine_state_regs(const FunctionEnv& func) {
   m_machine_state_regs.clear();
+  m_stack_pointer_regs.clear();
   const auto& info = emitter::get_register_info(emitter::InstructionSet::X86);
   for (const auto& rv : func.reg_vals()) {
     if (!rv->rlet_constraint().has_value()) {
@@ -285,10 +288,47 @@ void FileEmitter::find_machine_state_regs(const FunctionEnv& func) {
       // GOAL pointers are already offsets from the memory base in the C model, so the base is
       // zero and an ordinary local holding it behaves identically. rlet_reset_expr sets it.
       continue;
+    } else if (constrained == emitter::RSP) {
+      // Reading the stack pointer is expressible in C and is what (suspend) and with-sp do;
+      // writing it is not. check_stack_pointer_use rejects the writers.
+      m_stack_pointer_regs.insert(rv->ireg().id);
     } else if (info.get_info(constrained).special) {
       throw std::runtime_error(
           fmt::format("rlet binds machine register {}, which has no C equivalent",
                       constrained.print()));
+    }
+  }
+}
+
+/*!
+ * A variable bound to rsp names the machine's stack pointer, so on x86-64 an assignment to it moves
+ * the stack. C has no such thing: the compiler owns the stack pointer. Reading it is fine - GOAL
+ * only reads it to measure how much of the current thread's stack is in use - so a read-only
+ * binding becomes an ordinary local seeded by rlet_reset_expr. Anything that assigns to it, which
+ * is gkernel's hand-written thread-switching code, has to fail here rather than silently write to a
+ * local and leave the real stack alone. Those functions need a native implementation instead; see
+ * docs/aot-stack-model.md.
+ */
+void FileEmitter::check_stack_pointer_use(const FunctionEnv& func) const {
+  if (m_stack_pointer_regs.empty()) {
+    return;
+  }
+  std::set<int> seeded;
+  for (const auto& ir : func.code()) {
+    const bool is_reset = dynamic_cast<IR_ValueReset*>(ir.get()) != nullptr;
+    for (const auto& written : ir->to_rai().write) {
+      if (!m_stack_pointer_regs.count(written.id)) {
+        continue;
+      }
+      if (!is_reset) {
+        throw std::runtime_error("rlet assigns to rsp, which C cannot express");
+      }
+      seeded.insert(written.id);
+    }
+  }
+  for (int id : m_stack_pointer_regs) {
+    if (!seeded.count(id)) {
+      throw std::runtime_error("rlet binds rsp without :reset-here, so its value is undefined");
     }
   }
 }
@@ -306,6 +346,9 @@ std::string FileEmitter::rlet_reset_expr(const RegVal* rv) {
   const auto constrained = rv->rlet_constraint().value();
   if (constrained == info.get_offset_reg()) {
     return "GOAL_ADDR_OF(g_goal_mem)";
+  }
+  if (constrained == emitter::RSP) {
+    return "GOAL_STACK_POINTER()";
   }
   throw std::runtime_error(fmt::format(
       "rlet :reset-here on machine register {}, which has no C equivalent", constrained.print()));
@@ -904,6 +947,7 @@ std::string FileEmitter::emit_function(const FunctionEnv& func,
                                        std::string* prototype) {
   const auto& code = func.code();
   find_machine_state_regs(func);
+  check_stack_pointer_use(func);
 
   // arguments come from the IR_ValueReset the function prologue emits, which is always first.
   // Later IR_ValueResets come from (rlet ... :reset-here #t) and are not arguments.
