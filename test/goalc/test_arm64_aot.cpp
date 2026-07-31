@@ -151,6 +151,16 @@ TEST(Arm64Aot, renders_zero_argument_native_export_metadata) {
             "OPENGOAL_AOT_EXPORT0(\"false-func\", goalpad_aot_false_func)\n");
 }
 
+TEST(Arm64Aot, renders_one_argument_native_export_metadata) {
+  const aot::NativeExport1 native_export{"identity", "goalpad_aot_identity"};
+
+  EXPECT_EQ(aot::render_cpp_xmacro_export1(native_export),
+            "#ifndef OPENGOAL_AOT_EXPORT1\n"
+            "#error \"Define OPENGOAL_AOT_EXPORT1 before including this file.\"\n"
+            "#endif\n"
+            "OPENGOAL_AOT_EXPORT1(\"identity\", goalpad_aot_identity)\n");
+}
+
 TEST(Arm64Aot, rejects_native_exports_outside_the_false_func_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"", "goalpad_aot_false_func"}),
                std::invalid_argument);
@@ -162,6 +172,15 @@ TEST(Arm64Aot, rejects_native_exports_outside_the_false_func_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "_Reserved"}), std::invalid_argument);
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "class"}), std::invalid_argument);
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "main"}), std::invalid_argument);
+}
+
+TEST(Arm64Aot, rejects_native_exports_outside_the_identity_proof) {
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"", "goalpad_aot_identity"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"false-func", "goalpad_aot_identity"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export1({"identity", "goalpad_aot_false_func"}),
+               std::invalid_argument);
 }
 
 TEST(Arm64Aot, rejects_unknown_named_function) {

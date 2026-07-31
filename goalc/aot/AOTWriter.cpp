@@ -50,6 +50,13 @@ void validate(const NativeExport0& native_export) {
   }
 }
 
+void validate(const NativeExport1& native_export) {
+  if (native_export.goal_name != "identity" || native_export.c_symbol != "goalpad_aot_identity") {
+    throw std::invalid_argument(
+        "AOT native export proof only supports identity as goalpad_aot_identity");
+  }
+}
+
 std::filesystem::path normalized_path(const std::filesystem::path& path) {
   return std::filesystem::weakly_canonical(std::filesystem::absolute(path));
 }
@@ -90,58 +97,10 @@ void validate_output_destination(const std::string& output_path) {
   }
 }
 
-}  // namespace
-
-std::string render_apple_arm64_assembly(const AppleArm64Function& function) {
-  validate(function);
-
-  std::ostringstream output;
-  output << ".section __TEXT,__text,regular,pure_instructions\n"
-         << ".p2align 2\n"
-         << ".globl _" << function.c_symbol << "\n"
-         << "_" << function.c_symbol << ":\n";
-
-  for (size_t offset = 0; offset < function.code.size(); offset += sizeof(std::uint32_t)) {
-    output << "  .long 0x" << std::hex << std::nouppercase << std::setfill('0') << std::setw(8)
-           << read_little_endian_word(function.code, offset) << "\n";
-  }
-
-  output << ".subsections_via_symbols\n";
-  return output.str();
-}
-
-void write_apple_arm64_assembly(const std::string& output_path,
-                                const AppleArm64Function& function) {
-  const auto assembly = render_apple_arm64_assembly(function);
-  std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
-  if (!output) {
-    throw std::runtime_error("Unable to open AOT assembly output: " + output_path);
-  }
-
-  output << assembly;
-  if (!output) {
-    throw std::runtime_error("Unable to write AOT assembly output: " + output_path);
-  }
-}
-
-std::string render_cpp_xmacro_export0(const NativeExport0& native_export) {
-  validate(native_export);
-  std::ostringstream output;
-  output << "#ifndef OPENGOAL_AOT_EXPORT0\n"
-         << "#error \"Define OPENGOAL_AOT_EXPORT0 before including this file.\"\n"
-         << "#endif\n"
-         << "OPENGOAL_AOT_EXPORT0(\"" << native_export.goal_name << "\", " << native_export.c_symbol
-         << ")\n";
-
-  return output.str();
-}
-
 void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
                                      const std::string& export_output_path,
-                                     const AppleArm64Function& function,
-                                     const NativeExport0& native_export) {
-  const auto assembly = render_apple_arm64_assembly(function);
-  const auto native_export_source = render_cpp_xmacro_export0(native_export);
+                                     const std::string& assembly,
+                                     const std::string& native_export_source) {
   if (normalized_path(assembly_output_path) == normalized_path(export_output_path)) {
     throw std::invalid_argument("AOT assembly and export output paths must differ");
   }
@@ -203,6 +162,84 @@ void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
   if (export_backup_created) {
     std::filesystem::remove(export_backup_path, ignored_error);
   }
+}
+
+}  // namespace
+
+std::string render_apple_arm64_assembly(const AppleArm64Function& function) {
+  validate(function);
+
+  std::ostringstream output;
+  output << ".section __TEXT,__text,regular,pure_instructions\n"
+         << ".p2align 2\n"
+         << ".globl _" << function.c_symbol << "\n"
+         << "_" << function.c_symbol << ":\n";
+
+  for (size_t offset = 0; offset < function.code.size(); offset += sizeof(std::uint32_t)) {
+    output << "  .long 0x" << std::hex << std::nouppercase << std::setfill('0') << std::setw(8)
+           << read_little_endian_word(function.code, offset) << "\n";
+  }
+
+  output << ".subsections_via_symbols\n";
+  return output.str();
+}
+
+void write_apple_arm64_assembly(const std::string& output_path,
+                                const AppleArm64Function& function) {
+  const auto assembly = render_apple_arm64_assembly(function);
+  std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    throw std::runtime_error("Unable to open AOT assembly output: " + output_path);
+  }
+
+  output << assembly;
+  if (!output) {
+    throw std::runtime_error("Unable to write AOT assembly output: " + output_path);
+  }
+}
+
+std::string render_cpp_xmacro_export0(const NativeExport0& native_export) {
+  validate(native_export);
+  std::ostringstream output;
+  output << "#ifndef OPENGOAL_AOT_EXPORT0\n"
+         << "#error \"Define OPENGOAL_AOT_EXPORT0 before including this file.\"\n"
+         << "#endif\n"
+         << "OPENGOAL_AOT_EXPORT0(\"" << native_export.goal_name << "\", " << native_export.c_symbol
+         << ")\n";
+
+  return output.str();
+}
+
+std::string render_cpp_xmacro_export1(const NativeExport1& native_export) {
+  validate(native_export);
+  std::ostringstream output;
+  output << "#ifndef OPENGOAL_AOT_EXPORT1\n"
+         << "#error \"Define OPENGOAL_AOT_EXPORT1 before including this file.\"\n"
+         << "#endif\n"
+         << "OPENGOAL_AOT_EXPORT1(\"" << native_export.goal_name << "\", "
+         << native_export.c_symbol << ")\n";
+
+  return output.str();
+}
+
+void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
+                                     const std::string& export_output_path,
+                                     const AppleArm64Function& function,
+                                     const NativeExport0& native_export) {
+  const auto assembly = render_apple_arm64_assembly(function);
+  const auto native_export_source = render_cpp_xmacro_export0(native_export);
+  write_apple_arm64_artifact_pair(assembly_output_path, export_output_path, assembly,
+                                  native_export_source);
+}
+
+void write_apple_arm64_artifact_pair(const std::string& assembly_output_path,
+                                     const std::string& export_output_path,
+                                     const AppleArm64Function& function,
+                                     const NativeExport1& native_export) {
+  const auto assembly = render_apple_arm64_assembly(function);
+  const auto native_export_source = render_cpp_xmacro_export1(native_export);
+  write_apple_arm64_artifact_pair(assembly_output_path, export_output_path, assembly,
+                                  native_export_source);
 }
 
 }  // namespace aot

@@ -118,9 +118,18 @@ int main(int argc, char** argv) {
     const auto code =
         compiler.compile_arm64_aot_source(source, options.input_path, options.function_name);
     if (options.exports_output_path) {
-      aot::write_apple_arm64_artifact_pair(options.output_path, *options.exports_output_path,
-                                           {options.symbol, code},
-                                           {*options.function_name, options.symbol});
+      if (*options.function_name == "false-func") {
+        aot::write_apple_arm64_artifact_pair(options.output_path, *options.exports_output_path,
+                                             {options.symbol, code},
+                                             aot::NativeExport0{*options.function_name, options.symbol});
+      } else if (*options.function_name == "identity") {
+        aot::write_apple_arm64_artifact_pair(options.output_path, *options.exports_output_path,
+                                             {options.symbol, code},
+                                             aot::NativeExport1{*options.function_name, options.symbol});
+      } else {
+        throw std::invalid_argument(
+            "AOT native export proof only supports false-func or identity function artifacts");
+      }
     } else {
       aot::write_apple_arm64_assembly(options.output_path, {options.symbol, code});
     }

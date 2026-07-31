@@ -5,6 +5,11 @@ set(INPUT
 set(ASSEMBLY_ONLY "${OUTPUT_DIR}/assembly-only.s")
 set(PAIRED_ASSEMBLY "${OUTPUT_DIR}/paired.s")
 set(EXPORTS "${OUTPUT_DIR}/paired.exports.inc")
+set(IDENTITY_INPUT
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-identity-from-jak1-gcommon.gc")
+set(IDENTITY_ASSEMBLY_ONLY "${OUTPUT_DIR}/identity-assembly-only.s")
+set(IDENTITY_PAIRED_ASSEMBLY "${OUTPUT_DIR}/identity-paired.s")
+set(IDENTITY_EXPORTS "${OUTPUT_DIR}/identity-paired.exports.inc")
 
 execute_process(
   COMMAND "${GOALC_AOT}"
@@ -47,6 +52,44 @@ endif()
 execute_process(
   COMMAND "${GOALC_AOT}"
           --project-path "${PROJECT_ROOT}"
+          --input "${IDENTITY_INPUT}"
+          --function identity
+          --output "${IDENTITY_ASSEMBLY_ONLY}"
+          --symbol goalpad_aot_identity
+  RESULT_VARIABLE IDENTITY_ASSEMBLY_ONLY_RESULT)
+if(NOT IDENTITY_ASSEMBLY_ONLY_RESULT EQUAL 0)
+  message(FATAL_ERROR "Assembly-only identity goalc-aot invocation failed")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${IDENTITY_INPUT}"
+          --function identity
+          --output "${IDENTITY_PAIRED_ASSEMBLY}"
+          --exports-output "${IDENTITY_EXPORTS}"
+          --symbol goalpad_aot_identity
+  RESULT_VARIABLE IDENTITY_PAIRED_RESULT)
+if(NOT IDENTITY_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "Paired identity goalc-aot invocation failed")
+endif()
+
+file(SHA256 "${IDENTITY_ASSEMBLY_ONLY}" IDENTITY_ASSEMBLY_ONLY_SHA256)
+file(SHA256 "${IDENTITY_PAIRED_ASSEMBLY}" IDENTITY_PAIRED_ASSEMBLY_SHA256)
+if(NOT IDENTITY_ASSEMBLY_ONLY_SHA256 STREQUAL IDENTITY_PAIRED_ASSEMBLY_SHA256)
+  message(FATAL_ERROR "Adding identity export metadata changed the ARM64 assembly")
+endif()
+
+file(READ "${IDENTITY_EXPORTS}" ACTUAL_IDENTITY_EXPORTS)
+set(EXPECTED_IDENTITY_EXPORTS
+    "#ifndef OPENGOAL_AOT_EXPORT1\n#error \"Define OPENGOAL_AOT_EXPORT1 before including this file.\"\n#endif\nOPENGOAL_AOT_EXPORT1(\"identity\", goalpad_aot_identity)\n")
+if(NOT ACTUAL_IDENTITY_EXPORTS STREQUAL EXPECTED_IDENTITY_EXPORTS)
+  message(FATAL_ERROR "Generated identity export metadata did not match the expected record")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
           --input "${INPUT}"
           --function false-func
           --output alias.s
@@ -80,6 +123,78 @@ file(READ "${UNCHANGED_EXPORTS}" ACTUAL_UNCHANGED_EXPORTS)
 if(NOT ACTUAL_UNCHANGED_ASSEMBLY STREQUAL "old assembly\n" OR
    NOT ACTUAL_UNCHANGED_EXPORTS STREQUAL "old exports\n")
   message(FATAL_ERROR "Failed paired generation modified an existing artifact")
+endif()
+
+set(CROSS_ASSEMBLY "${OUTPUT_DIR}/cross.s")
+set(CROSS_EXPORTS "${OUTPUT_DIR}/cross.exports.inc")
+file(WRITE "${CROSS_ASSEMBLY}" "old cross assembly\n")
+file(WRITE "${CROSS_EXPORTS}" "old cross exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${IDENTITY_INPUT}"
+          --function identity
+          --output "${CROSS_ASSEMBLY}"
+          --exports-output "${CROSS_EXPORTS}"
+          --symbol goalpad_aot_false_func
+  RESULT_VARIABLE IDENTITY_FALSE_SYMBOL_RESULT)
+if(IDENTITY_FALSE_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted identity with the Export0 symbol")
+endif()
+
+file(READ "${CROSS_ASSEMBLY}" ACTUAL_CROSS_ASSEMBLY)
+file(READ "${CROSS_EXPORTS}" ACTUAL_CROSS_EXPORTS)
+if(NOT ACTUAL_CROSS_ASSEMBLY STREQUAL "old cross assembly\n" OR
+   NOT ACTUAL_CROSS_EXPORTS STREQUAL "old cross exports\n")
+  message(FATAL_ERROR "Failed identity cross-ABI generation modified an existing artifact")
+endif()
+
+set(FALSE_CROSS_ASSEMBLY "${OUTPUT_DIR}/false-cross.s")
+set(FALSE_CROSS_EXPORTS "${OUTPUT_DIR}/false-cross.exports.inc")
+file(WRITE "${FALSE_CROSS_ASSEMBLY}" "old false cross assembly\n")
+file(WRITE "${FALSE_CROSS_EXPORTS}" "old false cross exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${INPUT}"
+          --function false-func
+          --output "${FALSE_CROSS_ASSEMBLY}"
+          --exports-output "${FALSE_CROSS_EXPORTS}"
+          --symbol goalpad_aot_identity
+  RESULT_VARIABLE FALSE_IDENTITY_SYMBOL_RESULT)
+if(FALSE_IDENTITY_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted false-func with the Export1 symbol")
+endif()
+
+file(READ "${FALSE_CROSS_ASSEMBLY}" ACTUAL_FALSE_CROSS_ASSEMBLY)
+file(READ "${FALSE_CROSS_EXPORTS}" ACTUAL_FALSE_CROSS_EXPORTS)
+if(NOT ACTUAL_FALSE_CROSS_ASSEMBLY STREQUAL "old false cross assembly\n" OR
+   NOT ACTUAL_FALSE_CROSS_EXPORTS STREQUAL "old false cross exports\n")
+  message(FATAL_ERROR "Failed false-func cross-ABI generation modified an existing artifact")
+endif()
+
+set(WRONG_IDENTITY_ASSEMBLY "${OUTPUT_DIR}/wrong-identity.s")
+set(WRONG_IDENTITY_EXPORTS "${OUTPUT_DIR}/wrong-identity.exports.inc")
+file(WRITE "${WRONG_IDENTITY_ASSEMBLY}" "old wrong identity assembly\n")
+file(WRITE "${WRONG_IDENTITY_EXPORTS}" "old wrong identity exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${IDENTITY_INPUT}"
+          --function identity
+          --output "${WRONG_IDENTITY_ASSEMBLY}"
+          --exports-output "${WRONG_IDENTITY_EXPORTS}"
+          --symbol wrong_identity_symbol
+  RESULT_VARIABLE WRONG_IDENTITY_SYMBOL_RESULT)
+if(WRONG_IDENTITY_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted an unsupported identity symbol")
+endif()
+
+file(READ "${WRONG_IDENTITY_ASSEMBLY}" ACTUAL_WRONG_IDENTITY_ASSEMBLY)
+file(READ "${WRONG_IDENTITY_EXPORTS}" ACTUAL_WRONG_IDENTITY_EXPORTS)
+if(NOT ACTUAL_WRONG_IDENTITY_ASSEMBLY STREQUAL "old wrong identity assembly\n" OR
+   NOT ACTUAL_WRONG_IDENTITY_EXPORTS STREQUAL "old wrong identity exports\n")
+  message(FATAL_ERROR "Failed identity metadata validation modified an existing artifact")
 endif()
 
 set(BLOCKED_ASSEMBLY "${OUTPUT_DIR}/blocked.s")
