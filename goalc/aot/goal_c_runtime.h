@@ -7,6 +7,7 @@
  * The emitted C reproduces the GOAL machine model that goalc's x86-64 backend targets:
  *  - GOAL pointers are offsets from a single memory base (x86-64 keeps this base in r15).
  *  - The symbol table lives at a GOAL address kept in s7 (x86-64 keeps this in r14).
+ *  - The process a thread is running lives in a fixed register too (x86-64 keeps this in r13).
  *  - Symbol values, static objects and function objects are resolved by the loader, not by
  *    patching instructions, so nothing here needs writable executable memory.
  */
@@ -28,6 +29,20 @@ extern uint8_t* g_goal_mem;
 
 /*! GOAL address of the symbol table (the "#f" symbol). */
 extern uint64_t g_goal_s7;
+
+/*!
+ * GOAL address of the process that is currently running.
+ *
+ * x86-64 keeps this in r13 and never lets the register allocator use it, so it is ambient machine
+ * state: an ordinary call leaves it alone, and only the kernel's thread dispatch code assigns it.
+ * This location reproduces exactly that. A behavior's `self` and every
+ * (rlet ((pp :reg r13 ...)) ...) read and write it directly, so they always agree, including
+ * inside callees and after a thread switch.
+ *
+ * Like g_goal_mem and g_goal_s7 this assumes GOAL code runs on one OS thread at a time, which is
+ * what the OpenGOAL kernel does.
+ */
+extern uint64_t g_goal_current_process;
 
 /*!
  * Loader-provided tables. Emitted code indexes these instead of embedding absolute addresses,
