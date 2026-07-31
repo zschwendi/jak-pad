@@ -81,7 +81,6 @@ constexpr int kThreadPc = 20;
 constexpr int kThreadSp = 24;
 constexpr int kThreadStackTop = 28;
 constexpr int kThreadStackSize = 32;
-constexpr int kCpuThreadRreg = 36;   // uint64 x 7
 constexpr int kCpuThreadStack = 124;  // uint8, dynamic: the backup stack
 // stack-frame / catch-frame
 constexpr int kStackFrameName = 0;

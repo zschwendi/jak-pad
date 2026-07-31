@@ -117,8 +117,10 @@ cmake --build build/ios-kernel-core -j 4
 Use `-DCMAKE_OSX_SYSROOT=iphonesimulator` for the simulator. The resulting archive links against
 only `libc++` and `libSystem`.
 
-The same AOT execution proof can be built for a device or the simulator. The generated C comes
-from the host build above; only the compiler target changes.
+The same AOT proofs can be built for a device or the simulator. The generated C comes from the host
+build above; only the compiler target changes. `jak1-aot-boot-test` and `jak1-thread-switch-test`
+build the same way from `build/Release/bin/game/aot-boot` and `.../aot-thread-switch` - one
+`clang -c` per generated `.c`, then the driver, then a link against the archive.
 
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
