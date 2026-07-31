@@ -71,6 +71,30 @@ cmake --build build/ios-kernel-core -j 4
 Use `-DCMAKE_OSX_SYSROOT=iphonesimulator` for the simulator. The resulting archive links against
 only `libc++` and `libSystem`.
 
+The same AOT execution proof can be built for a device or the simulator. The generated C comes
+from the host build above; only the compiler target changes.
+
+```sh
+SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+GEN=build/Release/bin/game/aot-generated
+TARGET=arm64-apple-ios18.0            # or arm64-apple-ios18.0-simulator with the simulator SDK
+
+clang   -c -O2 -fno-strict-aliasing -std=c11   -target $TARGET -isysroot "$SDK" \
+        -I . -I $GEN -o gcommon.o $GEN/gcommon.c
+clang   -c -O2 -fno-strict-aliasing -std=c11   -target $TARGET -isysroot "$SDK" \
+        -I . -I $GEN -o gstring.o $GEN/gstring.c
+clang++ -c -O2 -std=c++20 -target $TARGET -isysroot "$SDK" -DFMT_HEADER_ONLY=1 \
+        -I . -I third-party -I third-party/fmt/include -I third-party/SDL/include -I $GEN \
+        -o aot_execution_test.o game/kernel/core/aot_execution_test.cpp
+clang++ -target $TARGET -isysroot "$SDK" -o jak1-aot-execution-test-ios \
+        aot_execution_test.o gcommon.o gstring.o build/ios-kernel-core/libjak1-kernel-core.a
+codesign -s - -f jak1-aot-execution-test-ios
+```
+
+The AOT GOAL functions land in `__TEXT,__text` (`initprot r-x`); the binary has no
+writable-executable segment and signs normally. The simulator build runs with
+`xcrun simctl spawn <device> ./jak1-aot-execution-test-ios`.
+
 ## What is not in this library
 
 Every upstream translation unit that is left out, and the loudly-failing stub that stands in for
@@ -102,6 +126,11 @@ trampolines, and it is the seam the compiler/AOT track needs.
   therefore not yet available on ARM64.
 - **Only Jak 1 was converted.** `game/kernel/{jak2,jak3,jakx}/kscheme.cpp` still write x86-64
   trampolines, so those kernels remain non-functional on ARM64.
+- **`kernel/gkernel.gc` cannot be loaded yet.** Its `top-level` uses `.pcpyld`, which the C
+  backend has no lowering for, so the file has no entry point to run. It and
+  `engine/sound/gsound.gc` are the only two of the 518 Jak 1 sources whose `top-level` fails to
+  translate, and gkernel is early in the build order, so this is the next blocker for loading
+  more of the game.
 - **No file access.** `ee::sceOpen` and friends are stubs, so `FileLoad`, `load`, and DGO loading
   abort. An iPadOS file-path strategy is required before they can be implemented.
 - `game/kernel/common/kmachine.h` transitively includes `<SDL3/SDL.h>` through
