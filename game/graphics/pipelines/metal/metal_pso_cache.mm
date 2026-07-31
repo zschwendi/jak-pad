@@ -12,6 +12,7 @@ struct ShaderFunctionNames {
 constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"scaffold_vs", "scaffold_fs"},  // SCAFFOLD
     {"present_vs", "present_fs"},    // PRESENT
+    {"scaffold_vs", "sample_fs"},    // SAMPLE
 };
 
 size_t hash_combine(size_t seed, size_t v) {

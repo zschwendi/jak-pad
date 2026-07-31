@@ -22,6 +22,7 @@
 
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
+#include "game/graphics/pipelines/metal/metal_texture.h"
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -51,6 +52,7 @@ class MetalRenderer {
  public:
   bool init(id<MTLDevice> device);
   id<MTLDevice> device() const { return m_device; }
+  id<MTLCommandQueue> queue() const { return m_queue; }
 
   // Renders one frame: game passes into the offscreen target, then the present
   // pass into the layer's next drawable, all in one command buffer.
@@ -69,6 +71,12 @@ class MetalRenderer {
                           metal_renderer::FramePixels* out);
 
   metal_renderer::ScaffoldStats stats();
+
+  // Renders a quad sampling the given registry texture with the requested
+  // sampler state into a small offscreen target and reads it back. Verifies
+  // the texture path (upload, mips, sampler modes) by pixel readback.
+  bool read_texture_sample(const metal_renderer::TextureSampleSpec& spec,
+                           metal_renderer::FramePixels* out);
 
  private:
   // A draw of the validation scene: a vertex range plus the GL-style state that
@@ -91,6 +99,7 @@ class MetalRenderer {
   id<MTLDevice> m_device;
   id<MTLCommandQueue> m_queue;
   MetalPsoCache m_pso_cache;
+  MetalSamplerCache m_sampler_cache;
 
   // offscreen game render target (game internal resolution)
   id<MTLTexture> m_game_color;

@@ -21,6 +21,7 @@
 enum class MetalShaderId : u16 {
   SCAFFOLD = 0,  // colored/textured validation geometry
   PRESENT = 1,   // PCRTC-style final blit
+  SAMPLE = 2,    // textured quad with an API-supplied sampler state
   COUNT,
 };
 

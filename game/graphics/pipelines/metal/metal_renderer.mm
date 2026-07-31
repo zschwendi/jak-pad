@@ -141,6 +141,7 @@ bool MetalRenderer::init(id<MTLDevice> device) {
   if (!m_pso_cache.init(device, library)) {
     return false;
   }
+  m_sampler_cache.init(device);
 
   m_checker_texture = make_checker_texture(device);
   build_validation_scene();
@@ -404,6 +405,78 @@ bool MetalRenderer::read_present_frame(int window_w,
     id<MTLTexture> target = make_color_target(m_device, window_w, window_h, false);
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
     encode_present_pass(cmds, target, opts);
+#if TARGET_OS_OSX
+    {
+      id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
+      [blit synchronizeResource:target];
+      [blit endEncoding];
+    }
+#endif
+    [cmds commit];
+    [cmds waitUntilCompleted];
+    return read_color_target(target, out);
+  }
+}
+
+bool MetalRenderer::read_texture_sample(const metal_renderer::TextureSampleSpec& spec,
+                                        metal_renderer::FramePixels* out) {
+  @autoreleasepool {
+    id<MTLTexture> tex = metal_texture_lookup(spec.texture);
+    if (!tex) {
+      lg::error("read_texture_sample: unknown texture handle {}", spec.texture);
+      return false;
+    }
+
+    // full-target quad with the requested uv range; row 0 of the readback is
+    // the v0 edge (NDC y=+1)
+    ScaffoldVertex verts[6];
+    auto vert = [&](float x, float y, float u, float v) {
+      ScaffoldVertex vx{};
+      vx.pos[0] = x;
+      vx.pos[1] = y;
+      vx.uv[0] = u;
+      vx.uv[1] = v;
+      return vx;
+    };
+    verts[0] = vert(-1.f, 1.f, spec.u0, spec.v0);
+    verts[1] = vert(1.f, 1.f, spec.u1, spec.v0);
+    verts[2] = vert(1.f, -1.f, spec.u1, spec.v1);
+    verts[3] = vert(-1.f, 1.f, spec.u0, spec.v0);
+    verts[4] = vert(1.f, -1.f, spec.u1, spec.v1);
+    verts[5] = vert(-1.f, -1.f, spec.u0, spec.v1);
+
+    MetalSamplerKey sampler_key;
+    sampler_key.min_filter =
+        spec.min_linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+    sampler_key.mag_filter =
+        spec.mag_linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+    sampler_key.mip_filter = spec.mip_mode == 0   ? MTLSamplerMipFilterNotMipmapped
+                             : spec.mip_mode == 1 ? MTLSamplerMipFilterNearest
+                                                  : MTLSamplerMipFilterLinear;
+    sampler_key.wrap_s =
+        spec.wrap_s_repeat ? MTLSamplerAddressModeRepeat : MTLSamplerAddressModeClampToEdge;
+    sampler_key.wrap_t =
+        spec.wrap_t_repeat ? MTLSamplerAddressModeRepeat : MTLSamplerAddressModeClampToEdge;
+    sampler_key.max_anisotropy = std::max(1, spec.max_aniso);
+
+    id<MTLTexture> target = make_color_target(m_device, spec.out_w, spec.out_h, false);
+    auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = target;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+
+    id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
+    id<MTLRenderCommandEncoder> enc = [cmds renderCommandEncoderWithDescriptor:pass];
+    MetalPsoKey pso_key;
+    pso_key.shader = MetalShaderId::SAMPLE;
+    pso_key.color_format = (u32)target.pixelFormat;
+    [enc setRenderPipelineState:m_pso_cache.get_pipeline(pso_key)];
+    [enc setVertexBytes:verts length:sizeof(verts) atIndex:0];
+    [enc setFragmentTexture:tex atIndex:0];
+    [enc setFragmentSamplerState:m_sampler_cache.get(sampler_key) atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+    [enc endEncoding];
 #if TARGET_OS_OSX
     {
       id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];

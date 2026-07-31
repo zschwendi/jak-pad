@@ -44,6 +44,15 @@ fragment float4 scaffold_fs(ScaffoldVSOut in [[stage_in]],
   return mix(in.color, tex.sample(s, in.uv), in.use_tex);
 }
 
+// Samples with an API-supplied sampler state (filter / wrap / mip modes from
+// the MetalSamplerCache). Used by the texture-path verification and by ported
+// renderers that need GL-style per-draw sampler control.
+fragment float4 sample_fs(ScaffoldVSOut in [[stage_in]],
+                          texture2d<float> tex [[texture(0)]],
+                          sampler s [[sampler(0)]]) {
+  return tex.sample(s, in.uv);
+}
+
 // ---------------------------------------------------------------------------
 // "present" program: the PCRTC-style final blit. Draws the offscreen game
 // frame into the letterboxed draw region of the window, applying the same

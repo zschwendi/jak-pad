@@ -13,6 +13,9 @@
 #include "common/log/log.h"
 
 #include "game/graphics/pipelines/metal/metal_renderer.h"
+#include "game/graphics/pipelines/metal/metal_texture.h"
+#include "game/graphics/texture/TexturePool.h"
+#include "game/runtime.h"
 #include "game/system/hid/display_manager.h"
 #include "game/system/hid/input_manager.h"
 
@@ -22,6 +25,10 @@
 namespace {
 
 MetalRenderer* g_renderer = nullptr;
+
+// texture pool for the Metal pipeline (the analog of GraphicsData::texture_pool
+// in the GL pipeline). Created with the display, once the device exists.
+std::shared_ptr<TexturePool> g_texture_pool;
 
 // Largest centered region with the game's 4:3 aspect that fits the window.
 // The real game supplies its own draw region sizes; this stands in until the
@@ -123,6 +130,29 @@ ScaffoldStats get_stats() {
   return g_renderer ? g_renderer->stats() : ScaffoldStats{};
 }
 
+bool read_texture_sample(const TextureSampleSpec& spec, FramePixels* out) {
+  return g_renderer && g_renderer->read_texture_sample(spec, out);
+}
+
+TexturePool* get_texture_pool() {
+  return g_texture_pool.get();
+}
+
+u64 upload_texture_rgba8(const u8* data, int w, int h) {
+  if (!g_renderer) {
+    return 0;
+  }
+  return metal_upload_texture_rgba8(g_renderer->device(), g_renderer->queue(), data, w, h);
+}
+
+u64 pool_add_texture(const tfrag3::Texture& tex, bool is_common) {
+  if (!g_renderer || !g_texture_pool) {
+    return 0;
+  }
+  return metal_add_texture(g_renderer->device(), g_renderer->queue(), *g_texture_pool, tex,
+                           is_common);
+}
+
 }  // namespace metal_renderer
 
 static int metal_init(GfxGlobalSettings& /*settings*/) {
@@ -139,7 +169,7 @@ static std::shared_ptr<GfxDisplay> metal_make_display(int width,
                                                       int height,
                                                       const char* title,
                                                       GfxGlobalSettings& /*settings*/,
-                                                      GameVersion /*version*/,
+                                                      GameVersion version,
                                                       bool is_main) {
   SDL_Window* window = SDL_CreateWindow(
       title, width, height, SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -183,10 +213,22 @@ static std::shared_ptr<GfxDisplay> metal_make_display(int width,
   layer.device = g_renderer->device();
   layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
 
+  if (!g_texture_pool) {
+    g_texture_pool = std::make_shared<TexturePool>(version);
+    if (!metal_setup_placeholder(g_renderer->device(), g_renderer->queue(), *g_texture_pool)) {
+      lg::error("Metal: placeholder texture creation failed");
+      g_texture_pool.reset();
+      SDL_Metal_DestroyView(view);
+      SDL_DestroyWindow(window);
+      return NULL;
+    }
+  }
+
   return std::make_shared<MetalDisplay>(window, view, layer, is_main);
 }
 
 static void metal_exit() {
+  g_texture_pool.reset();
   delete g_renderer;
   g_renderer = nullptr;
 }
@@ -207,8 +249,24 @@ static void metal_send_chain(const void* /*data*/, u32 /*offset*/) {
   }
 }
 
-static void metal_texture_upload_now(const u8* /*tpage*/, int /*mode*/, u32 /*s7_ptr*/) {}
-static void metal_texture_relocate(u32 /*dst*/, u32 /*src*/, u32 /*format*/) {}
+/*!
+ * Upload a texture-page outside the main DMA chain. Same contract as the GL
+ * pipeline's gl_texture_upload_now: the pool locks internally.
+ */
+static void metal_texture_upload_now(const u8* tpage, int mode, u32 s7_ptr) {
+  if (g_texture_pool) {
+    g_texture_pool->handle_upload_now(tpage, mode, g_ee_main_mem, s7_ptr, false);
+  }
+}
+
+/*!
+ * VRAM-to-VRAM texture copy: pure pointer bookkeeping in the pool.
+ */
+static void metal_texture_relocate(u32 dst, u32 src, u32 format) {
+  if (g_texture_pool) {
+    g_texture_pool->relocate(dst, src, format);
+  }
+}
 static void metal_set_levels(const std::vector<std::string>& /*levels*/) {}
 static void metal_set_active_levels(const std::vector<std::string>& /*levels*/) {}
 static void metal_force_reload_all() {}

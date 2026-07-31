@@ -23,6 +23,12 @@
 
 extern const GfxRendererModule gRendererMetal;
 
+class TexturePool;
+
+namespace tfrag3 {
+struct Texture;
+}
+
 namespace metal_renderer {
 
 // RGBA8 copy of a rendered frame, used by tests to verify that rendering
@@ -64,5 +70,38 @@ bool read_last_frame(FramePixels* out);
 bool read_present_frame(const PresentTestOptions& opts, FramePixels* out);
 
 ScaffoldStats get_stats();
+
+// --- texture path (plain C++ mirror of the Objective-C++ API in
+// metal_texture.h, so tests can drive it) ----------------------------------
+
+// A textured-quad readback: sample `texture` over the uv range [u0,u1]x[v0,v1]
+// into an out_w x out_h target with the requested sampler state. Row 0 of the
+// result is the v0 edge. Minification (out size < sampled texel count) drives
+// mip selection when mip_mode is enabled.
+struct TextureSampleSpec {
+  u64 texture = 0;  // registry handle (also what TexturePool::lookup returns)
+  int out_w = 4;
+  int out_h = 4;
+  float u0 = 0.f, v0 = 0.f, u1 = 1.f, v1 = 1.f;
+  bool min_linear = false;
+  bool mag_linear = false;
+  int mip_mode = 0;  // 0 = mips off, 1 = nearest mip, 2 = linear between mips
+  bool wrap_s_repeat = false;  // false = clamp to edge
+  bool wrap_t_repeat = false;
+  int max_aniso = 1;
+};
+
+// Renders and reads back the sample quad. Requires a created display.
+bool read_texture_sample(const TextureSampleSpec& spec, FramePixels* out);
+
+// The Metal pipeline's texture pool (null before make_display).
+TexturePool* get_texture_pool();
+
+// Uploads RGBA8888 pixels (with a full GPU-generated mip chain) and returns
+// the registry handle, or 0 on failure.
+u64 upload_texture_rgba8(const u8* data, int w, int h);
+
+// Mirror of the GL loader's add_texture against the pipeline's pool.
+u64 pool_add_texture(const tfrag3::Texture& tex, bool is_common);
 
 }  // namespace metal_renderer

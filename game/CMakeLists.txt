@@ -357,10 +357,13 @@ if(APPLE)
     set(METAL_PIPELINE_SOURCES
         graphics/pipelines/metal/metal_pipeline.mm
         graphics/pipelines/metal/metal_pso_cache.mm
-        graphics/pipelines/metal/metal_renderer.mm)
+        graphics/pipelines/metal/metal_renderer.mm
+        graphics/pipelines/metal/metal_texture.mm)
     list(APPEND RUNTIME_SOURCE ${METAL_PIPELINE_SOURCES})
     set_source_files_properties(${METAL_PIPELINE_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    # plain C++ part of the Metal texture path (testable without Objective-C++)
+    list(APPEND RUNTIME_SOURCE graphics/pipelines/metal/metal_texture_upload_handler.cpp)
 
     # MSL shaders are checked-in source compiled at build time to a metallib and
     # embedded in the runtime as a byte array. No shader compilation happens at

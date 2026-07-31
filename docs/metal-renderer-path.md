@@ -123,7 +123,11 @@ come from a `UIView`/SwiftUI instead of SDL.
    `do_pcrtc_effects`, including brightness/contrast and pmode-alp blackout), PSO +
    depth-stencil caches, build-time MSL shader pipeline. MSAA resolve is still planned
    (the PSO key already carries a sample count).
-3. Texture path — *Planned*: TexturePool backed by `MTLTexture`, TextureUploadHandler port.
+3. Texture path — *Implemented* (see §Current state): backend-neutral TexturePool
+   backed by an `MTLTexture` registry, uploads with GPU-generated mips, a sampler-state
+   cache, the `texture_upload_now` / `texture_relocate` module hooks, and the
+   TextureUploadHandler DMA walk. The handler's eye-renderer and texture-animator
+   sub-paths ride with their renderers in later stages.
 4. First game visuals — *Planned*: DirectRenderer + SkyRenderer (+ SkyBlendCPU) → boot
    splash/title screen content renders under Metal on macOS using the existing DMA chain.
 5. Background geometry — *Planned*: TFragment, Tie3, Shrub (+ time-of-day 1D LUTs,
@@ -169,10 +173,47 @@ come from a `UIView`/SwiftUI instead of SDL.
     sampling, GEQUAL depth rejection), the cache counters (each PSO built exactly once,
     reused across frames), and the present pass (1:1 and 1.5x letterboxing with black
     bars, blackout, brightness).
+- **Implemented** (stage 3, texture path):
+  - The shared `TexturePool` (`game/graphics/texture/TexturePool.{h,cpp}`) is now
+    graphics-API-neutral: handles are opaque `u64` (a GL texture name or a Metal registry
+    handle) and each backend uploads the 16x16 placeholder itself
+    (`placeholder_data()` / `set_placeholder()`). The GL pipeline does this in
+    `GraphicsData`'s constructor, at the same point in initialization as before.
+  - `metal_texture.{h,mm}` — the `MTLTexture` registry behind the pool's u64 handles
+    (mutex-protected, the Metal analog of GL's texture-name namespace);
+    `metal_upload_texture_rgba8` (RGBA8Unorm, shared storage = one copy in unified
+    memory on macOS-on-Apple-silicon and iPadOS, full mip chain generated with a blit
+    encoder — the analog of `glGenerateMipmap`); `metal_add_texture`, a mirror of the GL
+    loader's `add_texture`; and `MetalSamplerCache`, which bakes each distinct
+    min/mag/mip filter + wrap + anisotropy combination into an `MTLSamplerState` once
+    (GL renderers set these per draw with `glTexParameteri`).
+  - `metal_texture_upload_handler.{h,cpp}` — plain-C++ port of the TextureUploadHandler
+    bucket renderer's DMA walk: collects PC-port upload packets (PC_PORT vifcode,
+    vif1 == 3) and applies them to the pool. Eye-renderer DMA and texture-animator
+    packets flush at the same points as the GL handler but are counted and skipped until
+    their renderers are ported.
+  - `metal_pipeline.mm` now owns a `TexturePool` (created with the display) and
+    implements the `texture_upload_now` / `texture_relocate` module hooks with the same
+    contract as the GL pipeline.
+  - Verified by `metal-proof` pixel readbacks, all through the public seams:
+    RGBA8888 upload + nearest/linear filters, clamp/repeat wrap, GPU mip generation and
+    mip selection (trilinear minification averages a 1px checker; mips-off stays pure),
+    anisotropic sampler creation; all five PS2 format combinations the GL path converts
+    (PSMT8+PSMCT32, PSMT8+PSMCT16, PSMT4+PSMCT16, PSMT4+PSMCT32, PSMCT16) authored
+    swizzled in emulated VRAM with the real GS address translation, converted by the
+    shared `TextureConverter`, uploaded, GPU-sampled, and compared byte-exact;
+    `texture_upload_now` with a synthetic GOAL texture-page (given texture, `#f` slot,
+    and never-loaded texture → placeholder), `texture_relocate` (plain and mt4hh
+    format 44), pool unload → placeholder fallback; and the TextureUploadHandler DMA
+    walk over a synthetic chain. Optionally (`metal-proof <file.fr3>`) real extracted
+    level textures are uploaded and verified byte-exact against their CPU data; no game
+    data is bundled or required.
 - **Experimental**: the Metal pipeline ignores `send_chain` (logs once); it renders a
   fixed validation scene, no game content yet. The stand-in draw region is a 4:3 fit of
-  the window until the game supplies real sizes.
+  the window until the game supplies real sizes. The Metal pipeline does not run the
+  Loader yet, so nothing feeds `metal_add_texture` outside the proof.
 - **Planned**: MSAA render/resolve (PSO key already carries sample count), stencil ops in
-  the depth-stencil key (for ShadowRenderer), texture pool (stage 3).
+  the depth-stencil key (for ShadowRenderer), a Metal loader upload stage (stage 4/5),
+  eye-renderer and texture-animator paths of the upload handler.
 - The OpenGL renderer is untouched and remains the default (`gfx.cpp` still selects
   `GfxPipeline::OpenGL`).
