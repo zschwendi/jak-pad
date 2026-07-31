@@ -9,6 +9,24 @@ option(OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY
        "Build only the portable Jak 1 data-arena static library" OFF)
 option(OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY
        "Build only the Jak 1 data-arena ARM64 native-method invoker libraries" OFF)
+option(OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY
+       "Build only the portable Jak 1 kernel core static library" OFF)
+
+if(OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY)
+  if(BUILD_TESTING)
+    message(FATAL_ERROR
+            "OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY requires BUILD_TESTING=OFF.")
+  endif()
+  if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64" AND
+     NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    message(FATAL_ERROR
+            "OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY requires ARM64; the kernel core links "
+            "game/kernel/asm_funcs_arm64.s.")
+  endif()
+
+  include(game/kernel/core/kernel_core.cmake)
+  return()
+endif()
 
 if(OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY AND OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY)
   message(FATAL_ERROR

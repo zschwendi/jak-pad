@@ -378,3 +378,15 @@ target_link_libraries(gk runtime)
 if(WIN32)
     set_target_properties(gk PROPERTIES VS_DPI_AWARE "PerMonitor")
 endif()
+
+# The portable kernel core is built the same way here as it is for iOS, so that host runs keep the
+# cross-compiled configuration honest. It is a separate target from `runtime` on purpose: it must
+# not gain a dependency on the desktop graphics/IOP/listener code.
+if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    include(kernel/core/kernel_core.cmake)
+    if(GOAL_HOST_TESTS_ENABLED)
+        add_executable(jak1-kernel-core-smoke-test kernel/core/host_smoke_test.cpp)
+        target_link_libraries(jak1-kernel-core-smoke-test jak1-kernel-core)
+        add_test(NAME jak1-kernel-core-smoke-test COMMAND jak1-kernel-core-smoke-test)
+    endif()
+endif()
