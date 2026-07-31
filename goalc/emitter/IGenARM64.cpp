@@ -759,14 +759,14 @@ InstructionARM64 store32_gpr64_gpr64_plus_gpr64_plus_s32(Register addr1,
 InstructionARM64 load32u_gpr64_gpr64_plus_gpr64(Register dst, Register addr1, Register addr2) {
   // https://www.scs.stanford.edu/~zyedidia/arm64/ldr_reg_gen.html
   // 32-bit variant
-  // LDR <Wt>, [<Xn|SP>, (<Wm>|<Xm>){, <extend> {<amount>}}]
+  // LDR <Wt>, [<Xn|SP>, <Xm>{, LSL #0}]
   ASSERT(dst.is_gpr(instr_set));
   ASSERT(addr1.is_gpr(instr_set));
   ASSERT(addr2.is_gpr(instr_set));
   ASSERT(addr1 != addr2);
   ASSERT(addr1 != SP);
   ASSERT(addr2 != SP);
-  return InstructionARM64(Base(0b1011100001100000000010, 22), Rt(dst.id()), Rn(addr1.id()),
+  return InstructionARM64(0xb8606800u, Rt(dst.id()), Rn(addr1.id()),
                           Rm(addr2.id()));
 }
 
@@ -2134,9 +2134,9 @@ InstructionARM64 movsx_r64_r32(Register dst, Register src) {
 }
 
 InstructionARM64 cmp_gpr64_gpr64(Register a, Register b) {
-  // https://www.scs.stanford.edu/~zyedidia/arm64/cmp_subs_addsub_ext.html
-  // CMP <Xn|SP>, <R><m>{, <extend> {#<amount>}}
-  return InstructionARM64(Base(0b11101011001000000000000000011111, 32), Rn(a.id()), Rn(b.id()));
+  // https://www.scs.stanford.edu/~zyedidia/arm64/cmp_subs_addsub_shift.html
+  // CMP <Xn|SP>, <Xm>{, <shift> #<amount>}
+  return InstructionARM64(0xeb00001fu, Rn(a.id()), Rm(b.id()));
 }
 
 //;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

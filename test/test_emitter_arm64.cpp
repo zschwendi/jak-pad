@@ -57,3 +57,40 @@ TEST(ARM64EmitterIntegerMath, add_gpr64_imm8s) {
   }
   tester.clear();
 }
+
+TEST(ARM64EmitterExactEncodings, cmp_and_register_add) {
+  std::array<u8, 4> code{};
+
+  const auto compare = IGen::ARM64::cmp_gpr64_gpr64(X0, X1);
+  EXPECT_EQ(compare.emit(code.data()), code.size());
+  EXPECT_EQ(code, (std::array<u8, 4>{0x1f, 0x00, 0x01, 0xeb}));
+
+  const auto add = IGen::ARM64::add_gpr64_gpr64(X3, X4);
+  EXPECT_EQ(add.emit(code.data()), code.size());
+  EXPECT_EQ(code, (std::array<u8, 4>{0x63, 0x00, 0x04, 0x8b}));
+}
+
+TEST(ARM64EmitterExactEncodings, lsl_and_condition_branch) {
+  std::array<u8, 4> code{};
+
+  const auto shift = IGen::ARM64::shl_gpr64_u8(X3, 4);
+  EXPECT_EQ(shift.emit(code.data()), code.size());
+  EXPECT_EQ(code, (std::array<u8, 4>{0x63, 0xec, 0x7c, 0xd3}));
+
+  const auto geq = IGen::ARM64::jge_imm();
+  EXPECT_EQ(geq.emit(code.data()), code.size());
+  EXPECT_EQ(code, (std::array<u8, 4>{0x0a, 0x00, 0x00, 0x54}));
+
+  const auto signed_negative_conditional_offset =
+      InstructionARM64(ARM64::Base(0b01010100, 8), ARM64::Imm19(0x7ffff), ARM64::Cond(0xa));
+  EXPECT_EQ(signed_negative_conditional_offset.emit(code.data()), code.size());
+  EXPECT_EQ(code, (std::array<u8, 4>{0xea, 0xff, 0xff, 0x54}));
+}
+
+TEST(ARM64EmitterExactEncodings, dynamic_word_load) {
+  std::array<u8, 4> code{};
+
+  const auto load = IGen::ARM64::load32u_gpr64_gpr64_plus_gpr64(X0, X1, X2);
+  EXPECT_EQ(load.emit(code.data()), code.size());
+  EXPECT_EQ(code, (std::array<u8, 4>{0x20, 0x68, 0x62, 0xb8}));
+}
