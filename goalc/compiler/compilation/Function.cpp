@@ -653,7 +653,7 @@ Val* Compiler::compile_real_function_call(const goos::Object& form,
   auto temp_function = fe->make_gpr(function->type());
   env->emit_ir<IR_RegSet>(form, temp_function, function);
   env->emit_ir<IR_FunctionCall>(form, temp_function, return_reg, arg_outs, cc.arg_regs,
-                                cc.return_reg);
+                                cc.return_reg, m_instr_set);
 
   if (m_settings.emit_move_after_return) {
     auto result_reg = env->make_ireg(return_reg->type(), ret_reg_class);

@@ -60,6 +60,10 @@ RegisterInfo RegisterInfo::make_register_info(InstructionSet instruction_set) {
     info.m_xmm_alloc_order.insert(info.m_xmm_alloc_order.end(), info.m_saved_xmms.begin(),
                                   info.m_saved_xmms.end());
     info.m_xmm_spill_temp_alloc_order = info.m_xmm_alloc_order;
+    info.m_call_clobbered = info.m_gpr_temp_only_alloc_order;
+    info.m_call_clobbered.insert(info.m_call_clobbered.end(),
+                                 info.m_xmm_temp_only_alloc_order.begin(),
+                                 info.m_xmm_temp_only_alloc_order.end());
 
     info.m_gpr_v2_temp_only_alloc_order = info.m_gpr_temp_only_alloc_order;
     info.m_xmm_v2_temp_only_alloc_order = info.m_xmm_temp_only_alloc_order;
@@ -136,6 +140,10 @@ RegisterInfo RegisterInfo::make_register_info(InstructionSet instruction_set) {
   // these should only be temp registers!
   info.m_gpr_temp_only_alloc_order = {RAX, RCX, RDX, RSI, RDI, R8, R9};
   info.m_xmm_temp_only_alloc_order = {XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7};
+  info.m_call_clobbered = info.m_gpr_temp_only_alloc_order;
+  info.m_call_clobbered.insert(info.m_call_clobbered.end(),
+                               info.m_xmm_temp_only_alloc_order.begin(),
+                               info.m_xmm_temp_only_alloc_order.end());
 
   info.m_gpr_spill_temp_alloc_order = {RAX, RCX, RDX, RBX, RBP, RSI,
                                        RDI, R8,  R9,  R10, R11, R12};  // arbitrary

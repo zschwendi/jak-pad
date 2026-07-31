@@ -276,6 +276,7 @@ class RegisterInfo {
   const std::vector<Register>& get_xmm_spill_alloc_order() const {
     return m_xmm_spill_temp_alloc_order;
   }
+  const std::vector<Register>& get_call_clobbered() const { return m_call_clobbered; }
   const std::vector<Register>& get_v2_alloc_order(HWRegKind kind,
                                                    bool saved_first,
                                                    bool asm_function,
@@ -304,6 +305,7 @@ class RegisterInfo {
   std::vector<Register> m_xmm_temp_only_alloc_order;
   std::vector<Register> m_gpr_spill_temp_alloc_order;
   std::vector<Register> m_xmm_spill_temp_alloc_order;
+  std::vector<Register> m_call_clobbered;
   std::vector<Register> m_gpr_v2_saved_first_alloc_order;
   std::vector<Register> m_xmm_v2_saved_first_alloc_order;
   std::vector<Register> m_gpr_v2_temp_first_alloc_order;

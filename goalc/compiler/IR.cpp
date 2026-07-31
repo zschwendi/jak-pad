@@ -469,12 +469,14 @@ IR_FunctionCall::IR_FunctionCall(const RegVal* func,
                                  const RegVal* ret,
                                  std::vector<RegVal*> args,
                                  std::vector<emitter::Register> arg_regs,
-                                 std::optional<emitter::Register> ret_reg)
+                                 std::optional<emitter::Register> ret_reg,
+                                 emitter::InstructionSet instruction_set)
     : m_func(func),
       m_ret(ret),
       m_args(std::move(args)),
       m_arg_regs(std::move(arg_regs)),
-      m_ret_reg(ret_reg) {}
+      m_ret_reg(ret_reg),
+      m_instruction_set(instruction_set) {}
 
 std::string IR_FunctionCall::print() {
   std::string result = fmt::format("call {} (ret {}) (args ", m_func->print(), m_ret->print());
@@ -495,12 +497,7 @@ RegAllocInstr IR_FunctionCall::to_rai() {
     rai.read.push_back(arg->ireg());
   }
 
-  for (int i = 0; i < emitter::RegisterInfo::N_REGS; i++) {
-    auto& info = emitter::gRegInfo.get_info(i);
-    if (info.temp()) {
-      rai.clobber.emplace_back(i);
-    }
-  }
+  rai.clobber = emitter::get_register_info(m_instruction_set).get_call_clobbered();
 
   return rai;
 }
