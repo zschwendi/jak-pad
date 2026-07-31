@@ -57,6 +57,7 @@ class IR_LoadConstant64 : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const RegVal* destination() const { return m_dest; }
   u64 value() const { return m_value; }
 
  protected:

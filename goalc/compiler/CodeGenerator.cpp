@@ -702,14 +702,67 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       level_group_load_commands_return->value() ==
           level_group_load_commands_value_move->destination() &&
       level_group_load_commands_uses_apple_abi && dynamic_cast<IR_Null*>(code.at(5).get());
+  const auto* want_vis_value_reset =
+      code.size() == 7 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
+  const auto* want_vis_this_move =
+      code.size() == 7 ? dynamic_cast<IR_RegSet*>(code.at(1).get()) : nullptr;
+  const auto* want_vis_value_move =
+      code.size() == 7 ? dynamic_cast<IR_RegSet*>(code.at(2).get()) : nullptr;
+  const auto* want_vis_store =
+      code.size() == 7 ? dynamic_cast<IR_StoreConstOffset*>(code.at(3).get()) : nullptr;
+  const auto* want_vis_zero =
+      code.size() == 7 ? dynamic_cast<IR_LoadConstant64*>(code.at(4).get()) : nullptr;
+  const auto* want_vis_return =
+      code.size() == 7 ? dynamic_cast<IR_Return*>(code.at(5).get()) : nullptr;
+  const auto* want_vis_this_argument =
+      want_vis_value_reset && want_vis_value_reset->args().size() == 2
+          ? want_vis_value_reset->args().at(0)
+          : nullptr;
+  const auto* want_vis_value_argument =
+      want_vis_value_reset && want_vis_value_reset->args().size() == 2
+          ? want_vis_value_reset->args().at(1)
+          : nullptr;
+  const bool want_vis_uses_apple_abi =
+      want_vis_this_argument && want_vis_value_argument && want_vis_this_move &&
+      want_vis_value_move && want_vis_store && want_vis_zero && want_vis_return &&
+      is_allocated_to(want_vis_this_argument, 0, first_argument_register) &&
+      is_allocated_to(want_vis_value_argument, 0, second_argument_register) &&
+      is_allocated_to(want_vis_this_move->source(), 1, first_argument_register) &&
+      is_allocated_to(want_vis_this_move->destination(), 1, first_argument_register) &&
+      is_allocated_to(want_vis_value_move->source(), 2, second_argument_register) &&
+      is_allocated_to(want_vis_value_move->destination(), 2, second_argument_register) &&
+      is_allocated_to(want_vis_store->base(), 3, first_argument_register) &&
+      is_allocated_to(want_vis_store->value(), 3, second_argument_register) &&
+      is_allocated_to(want_vis_zero->destination(), 4, return_register) &&
+      is_allocated_to(want_vis_return->value(), 5, return_register);
+  const bool supported_want_vis_function =
+      env->name() == "want-vis" && want_vis_this_argument && want_vis_value_argument &&
+      want_vis_this_move && want_vis_value_move && want_vis_store && want_vis_zero &&
+      want_vis_return && want_vis_this_argument->type() == TypeSpec("load-state") &&
+      want_vis_this_argument->ireg().reg_class == RegClass::GPR_64 &&
+      want_vis_value_argument->type() == TypeSpec("symbol") &&
+      want_vis_value_argument->ireg().reg_class == RegClass::GPR_64 &&
+      want_vis_this_move->source() == want_vis_this_argument &&
+      want_vis_this_move->destination()->type() == TypeSpec("load-state") &&
+      want_vis_this_move->destination()->ireg().reg_class == RegClass::GPR_64 &&
+      want_vis_value_move->source() == want_vis_value_argument &&
+      want_vis_value_move->destination()->type() == TypeSpec("symbol") &&
+      want_vis_value_move->destination()->ireg().reg_class == RegClass::GPR_64 &&
+      want_vis_store->base() == want_vis_this_move->destination() &&
+      want_vis_store->value() == want_vis_value_move->destination() &&
+      want_vis_store->offset() == 0x20 && want_vis_store->size() == 4 &&
+      want_vis_zero->value() == 0 && want_vis_return->value() == want_vis_zero->destination() &&
+      want_vis_uses_apple_abi && dynamic_cast<IR_Null*>(code.at(6).get());
   if (!supported_top_level && !supported_false_function && !supported_true_function &&
       !supported_lognot_function && !supported_identity_function &&
-      !supported_glst_node_name_function && !supported_level_group_load_commands_set_function) {
+      !supported_glst_node_name_function && !supported_level_group_load_commands_set_function &&
+      !supported_want_vis_function) {
     throw std::runtime_error(
         "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "
         "Jak 1 false or true function, one-argument identity function, or one-argument int lognot "
         "function, the one-argument Jak 1 glst-node-name function, or the direct two-argument "
-        "Jak 1 level-group load-commands-set! body.");
+        "Jak 1 level-group load-commands-set! body, or the direct two-argument Jak 1 want-vis "
+        "body.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());

@@ -33,6 +33,11 @@ set(LEVEL_GROUP_LOAD_COMMANDS_SET_PAIRED_ASSEMBLY
     "${OUTPUT_DIR}/level-group-load-commands-set-paired.s")
 set(LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS
     "${OUTPUT_DIR}/level-group-load-commands-set-paired.exports.inc")
+set(WANT_VIS_INPUT
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-want-vis-from-jak1-load-boundary.gc")
+set(WANT_VIS_ASSEMBLY_ONLY "${OUTPUT_DIR}/want-vis-assembly-only.s")
+set(WANT_VIS_PAIRED_ASSEMBLY "${OUTPUT_DIR}/want-vis-paired.s")
+set(WANT_VIS_EXPORTS "${OUTPUT_DIR}/want-vis-paired.exports.inc")
 
 execute_process(
   COMMAND "${GOALC_AOT}"
@@ -735,4 +740,73 @@ if(NOT ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_ASSEMBLY STREQUAL
    NOT ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_EXPORTS STREQUAL
        "old level-group cross exports\n")
   message(FATAL_ERROR "Failed level-group-load-commands-set! cross-ABI generation modified an existing artifact")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${WANT_VIS_INPUT}"
+          --function want-vis
+          --output "${WANT_VIS_ASSEMBLY_ONLY}"
+          --symbol goalpad_aot_load_state_want_vis
+  RESULT_VARIABLE WANT_VIS_ASSEMBLY_ONLY_RESULT)
+if(NOT WANT_VIS_ASSEMBLY_ONLY_RESULT EQUAL 0)
+  message(FATAL_ERROR "Assembly-only want-vis goalc-aot invocation failed")
+endif()
+
+file(READ "${WANT_VIS_ASSEMBLY_ONLY}" ACTUAL_WANT_VIS_ASSEMBLY)
+set(EXPECTED_WANT_VIS_ASSEMBLY
+    ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n.globl _goalpad_aot_load_state_want_vis\n_goalpad_aot_load_state_want_vis:\n  .long 0x8b160010\n  .long 0x91008210\n  .long 0xb9000201\n  .long 0xca000000\n  .long 0xd65f03c0\n.subsections_via_symbols\n")
+if(NOT ACTUAL_WANT_VIS_ASSEMBLY STREQUAL EXPECTED_WANT_VIS_ASSEMBLY)
+  message(FATAL_ERROR "Assembly-only want-vis artifact did not match the expected ARM64 code")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${WANT_VIS_INPUT}"
+          --function want-vis
+          --output "${WANT_VIS_PAIRED_ASSEMBLY}"
+          --exports-output "${WANT_VIS_EXPORTS}"
+          --symbol goalpad_aot_load_state_want_vis
+  RESULT_VARIABLE WANT_VIS_PAIRED_RESULT)
+if(NOT WANT_VIS_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "Paired want-vis goalc-aot invocation failed")
+endif()
+
+file(SHA256 "${WANT_VIS_ASSEMBLY_ONLY}" WANT_VIS_ASSEMBLY_ONLY_SHA256)
+file(SHA256 "${WANT_VIS_PAIRED_ASSEMBLY}" WANT_VIS_PAIRED_ASSEMBLY_SHA256)
+if(NOT WANT_VIS_ASSEMBLY_ONLY_SHA256 STREQUAL WANT_VIS_PAIRED_ASSEMBLY_SHA256)
+  message(FATAL_ERROR "Adding want-vis export metadata changed the ARM64 assembly")
+endif()
+
+file(READ "${WANT_VIS_EXPORTS}" ACTUAL_WANT_VIS_EXPORTS)
+set(EXPECTED_WANT_VIS_EXPORTS
+    "#ifndef OPENGOAL_AOT_EXPORT2\n#error \"Define OPENGOAL_AOT_EXPORT2 before including this file.\"\n#endif\nOPENGOAL_AOT_EXPORT2(\"want-vis\", goalpad_aot_load_state_want_vis)\n")
+if(NOT ACTUAL_WANT_VIS_EXPORTS STREQUAL EXPECTED_WANT_VIS_EXPORTS)
+  message(FATAL_ERROR "Generated want-vis export metadata did not match the expected record")
+endif()
+
+set(WANT_VIS_WRONG_ASSEMBLY "${OUTPUT_DIR}/want-vis-wrong.s")
+set(WANT_VIS_WRONG_EXPORTS "${OUTPUT_DIR}/want-vis-wrong.exports.inc")
+file(WRITE "${WANT_VIS_WRONG_ASSEMBLY}" "old want-vis wrong assembly\n")
+file(WRITE "${WANT_VIS_WRONG_EXPORTS}" "old want-vis wrong exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${WANT_VIS_INPUT}"
+          --function want-vis
+          --output "${WANT_VIS_WRONG_ASSEMBLY}"
+          --exports-output "${WANT_VIS_WRONG_EXPORTS}"
+          --symbol goalpad_aot_level_group_load_commands_set
+  RESULT_VARIABLE WANT_VIS_WRONG_SYMBOL_RESULT)
+if(WANT_VIS_WRONG_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted want-vis with the level-group export symbol")
+endif()
+
+file(READ "${WANT_VIS_WRONG_ASSEMBLY}" ACTUAL_WANT_VIS_WRONG_ASSEMBLY)
+file(READ "${WANT_VIS_WRONG_EXPORTS}" ACTUAL_WANT_VIS_WRONG_EXPORTS)
+if(NOT ACTUAL_WANT_VIS_WRONG_ASSEMBLY STREQUAL "old want-vis wrong assembly\n" OR
+   NOT ACTUAL_WANT_VIS_WRONG_EXPORTS STREQUAL "old want-vis wrong exports\n")
+  message(FATAL_ERROR "Failed want-vis export validation modified an existing artifact")
 endif()

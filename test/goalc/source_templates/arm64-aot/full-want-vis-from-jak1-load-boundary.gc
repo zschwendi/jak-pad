@@ -1,0 +1,23 @@
+;; AOT-only direct function form of the exact body of
+;; load-state::want-vis in goal_src/jak1/engine/level/load-boundary.gc.
+;; This does not install or replace the runtime method.
+;; This is the minimum layout required to preserve the raw #x24 vis-nick field;
+;; the basic-pointer bias makes its effective GOAL pointer-relative offset #x20.
+(deftype level-buffer-state (structure)
+  ((name symbol)
+   (display? symbol)
+   (force-vis? symbol)
+   (force-inside? symbol))
+  :size-assert #x10
+  :no-runtime-type
+  :no-inspect)
+
+(deftype load-state (basic)
+  ((want level-buffer-state 2 :inline)
+   (vis-nick symbol :offset #x24 :offset-assert #x24))
+  :no-runtime-type
+  :no-inspect)
+
+(defun want-vis ((this load-state) (arg0 symbol))
+  (set! (-> this vis-nick) arg0)
+  0)

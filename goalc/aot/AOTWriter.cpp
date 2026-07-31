@@ -71,10 +71,13 @@ void validate(const NativeExport2& native_export) {
   const bool is_level_group_load_commands_set =
       native_export.goal_name == "level-group-load-commands-set!" &&
       native_export.c_symbol == "goalpad_aot_level_group_load_commands_set";
-  if (!is_level_group_load_commands_set) {
+  const bool is_want_vis = native_export.goal_name == "want-vis" &&
+                           native_export.c_symbol == "goalpad_aot_load_state_want_vis";
+  if (!is_level_group_load_commands_set && !is_want_vis) {
     throw std::invalid_argument(
         "AOT native export proof only supports level-group-load-commands-set! as "
-        "goalpad_aot_level_group_load_commands_set two-argument artifact");
+        "goalpad_aot_level_group_load_commands_set or want-vis as "
+        "goalpad_aot_load_state_want_vis two-argument artifacts");
   }
 }
 

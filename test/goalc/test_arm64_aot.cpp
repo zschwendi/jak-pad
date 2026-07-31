@@ -233,6 +233,30 @@ TEST(Arm64Aot, compiles_direct_jak1_level_group_load_commands_set_and_renders_ap
             ".subsections_via_symbols\n");
 }
 
+TEST(Arm64Aot, compiles_direct_jak1_want_vis_and_renders_apple_text) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-want-vis-from-jak1-load-boundary.gc"}));
+  const auto code = compiler.compile_arm64_aot_source(
+      source, "full-want-vis-from-jak1-load-boundary", std::optional<std::string>{"want-vis"});
+
+  EXPECT_EQ(code, (std::vector<u8>{0x10, 0x00, 0x16, 0x8b, 0x10, 0x82, 0x00, 0x91, 0x01, 0x02,
+                                   0x00, 0xb9, 0x00, 0x00, 0x00, 0xca, 0xc0, 0x03, 0x5f, 0xd6}));
+
+  const aot::AppleArm64Function function{"goalpad_aot_load_state_want_vis", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            ".section __TEXT,__text,regular,pure_instructions\n"
+            ".p2align 2\n"
+            ".globl _goalpad_aot_load_state_want_vis\n"
+            "_goalpad_aot_load_state_want_vis:\n"
+            "  .long 0x8b160010\n"
+            "  .long 0x91008210\n"
+            "  .long 0xb9000201\n"
+            "  .long 0xca000000\n"
+            "  .long 0xd65f03c0\n"
+            ".subsections_via_symbols\n");
+}
+
 TEST(Arm64Aot, renders_zero_argument_native_export_metadata) {
   const aot::NativeExport0 native_export{"false-func", "goalpad_aot_false_func"};
 
@@ -295,6 +319,16 @@ TEST(Arm64Aot, renders_level_group_load_commands_set_two_argument_native_export_
             "goalpad_aot_level_group_load_commands_set)\n");
 }
 
+TEST(Arm64Aot, renders_want_vis_two_argument_native_export_metadata) {
+  const aot::NativeExport2 native_export{"want-vis", "goalpad_aot_load_state_want_vis"};
+
+  EXPECT_EQ(aot::render_cpp_xmacro_export2(native_export),
+            "#ifndef OPENGOAL_AOT_EXPORT2\n"
+            "#error \"Define OPENGOAL_AOT_EXPORT2 before including this file.\"\n"
+            "#endif\n"
+            "OPENGOAL_AOT_EXPORT2(\"want-vis\", goalpad_aot_load_state_want_vis)\n");
+}
+
 TEST(Arm64Aot, rejects_native_exports_outside_the_zero_argument_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"", "goalpad_aot_false_func"}),
                std::invalid_argument);
@@ -353,6 +387,14 @@ TEST(Arm64Aot, rejects_native_exports_outside_the_two_argument_proof) {
                std::invalid_argument);
   EXPECT_THROW(aot::render_cpp_xmacro_export2(
                    {"glst-node-name", "goalpad_aot_level_group_load_commands_set"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export2({"want-vis", "invalid-symbol"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export2(
+                   {"want-vis", "goalpad_aot_level_group_load_commands_set"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export2(
+                   {"level-group-load-commands-set!", "goalpad_aot_load_state_want_vis"}),
                std::invalid_argument);
 }
 
@@ -666,6 +708,77 @@ TEST(Arm64Aot, rejects_level_group_load_commands_set_with_multiple_parameters) {
   EXPECT_THROW(compiler.compile_arm64_aot_source(
                    source, "level-group-load-commands-set-with-three-parameters",
                    std::optional<std::string>{"level-group-load-commands-set!"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_want_vis_with_a_different_body) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-want-vis-from-jak1-load-boundary.gc"}));
+  const std::string expected_body = "(set! (-> this vis-nick) arg0)";
+  const auto body_position = source.find(expected_body);
+  ASSERT_NE(body_position, std::string::npos);
+  source.replace(body_position, expected_body.size(), "this");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "want-vis-with-identity-body",
+                                                 std::optional<std::string>{"want-vis"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_want_vis_with_a_nonzero_return) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-want-vis-from-jak1-load-boundary.gc"}));
+  const std::string expected_return = "  0)";
+  const auto return_position = source.rfind(expected_return);
+  ASSERT_NE(return_position, std::string::npos);
+  source.replace(return_position, expected_return.size(), "  arg0)");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "want-vis-with-argument-return",
+                                                 std::optional<std::string>{"want-vis"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_want_vis_body_under_a_different_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-want-vis-from-jak1-load-boundary.gc"}));
+  const std::string expected_definition = "(defun want-vis";
+  const auto definition_position = source.find(expected_definition);
+  ASSERT_NE(definition_position, std::string::npos);
+  source.replace(definition_position, expected_definition.size(), "(defun other-want-vis");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "other-want-vis",
+                                                 std::optional<std::string>{"other-want-vis"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_want_vis_with_a_different_field_offset) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-want-vis-from-jak1-load-boundary.gc"}));
+  const std::string expected_field = "(vis-nick symbol :offset #x24 :offset-assert #x24)";
+  const auto field_position = source.find(expected_field);
+  ASSERT_NE(field_position, std::string::npos);
+  source.replace(field_position, expected_field.size(),
+                 "(vis-nick symbol :offset #x28 :offset-assert #x28)");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "want-vis-with-shifted-field",
+                                                 std::optional<std::string>{"want-vis"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_want_vis_with_a_non_symbol_value) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-want-vis-from-jak1-load-boundary.gc"}));
+  const std::string expected_parameter = "(arg0 symbol)";
+  const auto parameter_position = source.find(expected_parameter);
+  ASSERT_NE(parameter_position, std::string::npos);
+  source.replace(parameter_position, expected_parameter.size(), "(arg0 pair)");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "want-vis-with-pair-value",
+                                                 std::optional<std::string>{"want-vis"}),
                std::runtime_error);
 }
 
