@@ -91,6 +91,7 @@ extern "C" std::uint64_t arm64_goal_call_false_like_entry(std::uint64_t,
 #include "OpenGOALJak1Identity.exports.h"
 #include "OpenGOALJak1Lognot.exports.h"
 #include "OpenGOALJak1GlstNodeName.exports.h"
+#include "OpenGOALJak1LoadStateReset.exports.h"
 // clang-format on
 #undef OPENGOAL_AOT_EXPORT1
 
@@ -138,6 +139,7 @@ constexpr Arm64GoalExport1 kArm64GoalExports1[] = {
 #include "OpenGOALJak1Identity.exports.h"
 #include "OpenGOALJak1Lognot.exports.h"
 #include "OpenGOALJak1GlstNodeName.exports.h"
+#include "OpenGOALJak1LoadStateReset.exports.h"
 // clang-format on
 #undef OPENGOAL_AOT_EXPORT1
 };
@@ -156,7 +158,7 @@ constexpr Arm64GoalExport3 kArm64GoalExports3[] = {
 };
 
 static_assert(sizeof(kArm64GoalExports0) == 2 * sizeof(Arm64GoalExport0));
-static_assert(sizeof(kArm64GoalExports1) == 3 * sizeof(Arm64GoalExport1));
+static_assert(sizeof(kArm64GoalExports1) == 4 * sizeof(Arm64GoalExport1));
 static_assert(sizeof(kArm64GoalExports2) == 2 * sizeof(Arm64GoalExport2));
 static_assert(sizeof(kArm64GoalExports3) == sizeof(Arm64GoalExport3));
 
@@ -557,6 +559,112 @@ TEST(Arm64GoalCallAbi, executes_generated_jak1_want_levels_branch_matrix_against
     EXPECT_TRUE(std::all_of(actual.end() - kGuardSize, actual.end(),
                             [=](std::byte value) { return value == kCanary; }));
   }
+}
+
+TEST(Arm64GoalCallAbi, executes_generated_jak1_load_state_reset_against_two_guarded_arena_bases) {
+  constexpr std::size_t kGuardSize = 16;
+  constexpr std::size_t kStorageSize = 0x112c;
+  struct alignas(16) GuardedLoadStateArena {
+    std::array<std::byte, kGuardSize> leading_guard;
+    std::array<std::byte, kStorageSize> storage;
+    std::array<std::byte, kGuardSize> trailing_guard;
+  };
+
+  constexpr std::size_t kThis = 4;
+  constexpr std::size_t kSecondArenaBaseOffset = 0x900;
+  constexpr std::size_t kLoadStateSize = 0x82c;
+  constexpr std::size_t kWantOffset = 0x4;
+  constexpr std::size_t kWantWordCount = 8;
+  constexpr std::size_t kVisNickOffset = 0x24;
+  constexpr std::size_t kCommandListOffset = 0x28;
+  constexpr std::size_t kObjectNameOffset = 0x2c;
+  constexpr std::size_t kObjectStatusOffset = 0x42c;
+  constexpr std::size_t kObjectCount = 256;
+  constexpr std::uint32_t kFalse = 0x0014fd24;
+  constexpr std::uint32_t kEmpty = kFalse - 0x0a;
+  constexpr auto seeded_byte = [](std::size_t index) {
+    return static_cast<std::byte>(1 + (index * 37) % 255);
+  };
+
+  static_assert(offsetof(GuardedLoadStateArena, storage) == kGuardSize);
+  static_assert(kThis == kWantOffset);
+  static_assert(kWantOffset + kWantWordCount * sizeof(std::uint32_t) == kVisNickOffset);
+  static_assert(kSecondArenaBaseOffset >= kLoadStateSize);
+  static_assert(kSecondArenaBaseOffset + kLoadStateSize == kStorageSize);
+
+  ASSERT_EQ(kArm64GoalExports1[3].goal_name, "reset!");
+  ASSERT_NE(kArm64GoalExports1[3].entry, nullptr);
+
+  GuardedLoadStateArena actual;
+  std::size_t seed_index = 0;
+  const auto seed_range = [&](auto& range) {
+    for (auto& byte : range) {
+      byte = seeded_byte(seed_index++);
+    }
+  };
+  seed_range(actual.leading_guard);
+  seed_range(actual.storage);
+  seed_range(actual.trailing_guard);
+  auto expected = actual;
+
+  const auto reset_expected = [&](std::size_t base_offset) {
+    for (std::size_t index = 0; index < kWantWordCount; ++index) {
+      write_u32(expected.storage.data(),
+                base_offset + kWantOffset + index * sizeof(std::uint32_t), kFalse);
+    }
+    write_u32(expected.storage.data(), base_offset + kCommandListOffset, kEmpty);
+    for (std::size_t index = 0; index < kObjectCount; ++index) {
+      write_u32(expected.storage.data(),
+                base_offset + kObjectNameOffset + index * sizeof(std::uint32_t), kFalse);
+      write_u32(expected.storage.data(),
+                base_offset + kObjectStatusOffset + index * sizeof(std::uint32_t), 0);
+    }
+  };
+  reset_expected(0);
+  reset_expected(kSecondArenaBaseOffset);
+
+  const auto first_arena_base = reinterpret_cast<std::uintptr_t>(actual.storage.data());
+  const auto invoke = [&](std::size_t base_offset) {
+    auto probe = make_probe(entry_address(kArm64GoalExports1[3].entry), kFalse,
+                            first_arena_base + base_offset);
+    probe.argument0 = kThis;
+    arm64_goal_call_abi_outer(&probe);
+    expect_caller_registers_restored(probe);
+    return probe;
+  };
+
+  EXPECT_EQ(invoke(0).result, kThis);
+  EXPECT_EQ(invoke(kSecondArenaBaseOffset).result, kThis);
+
+  const auto expect_reset_arena = [&](std::size_t base_offset) {
+    EXPECT_EQ(read_u32(actual.storage.data(), base_offset),
+              read_u32(expected.storage.data(), base_offset));
+    for (std::size_t index = 0; index < kWantWordCount; ++index) {
+      EXPECT_EQ(read_u32(actual.storage.data(),
+                         base_offset + kWantOffset + index * sizeof(std::uint32_t)),
+                kFalse);
+    }
+    EXPECT_EQ(read_u32(actual.storage.data(), base_offset + kVisNickOffset),
+              read_u32(expected.storage.data(), base_offset + kVisNickOffset));
+    EXPECT_EQ(read_u32(actual.storage.data(), base_offset + kCommandListOffset), kEmpty);
+    for (std::size_t index = 0; index < kObjectCount; ++index) {
+      EXPECT_EQ(read_u32(actual.storage.data(),
+                         base_offset + kObjectNameOffset + index * sizeof(std::uint32_t)),
+                kFalse);
+      EXPECT_EQ(read_u32(actual.storage.data(),
+                         base_offset + kObjectStatusOffset + index * sizeof(std::uint32_t)),
+                0u);
+    }
+  };
+  expect_reset_arena(0);
+  expect_reset_arena(kSecondArenaBaseOffset);
+
+  EXPECT_TRUE(std::equal(actual.storage.begin() + static_cast<std::ptrdiff_t>(kLoadStateSize),
+                         actual.storage.begin() + static_cast<std::ptrdiff_t>(kSecondArenaBaseOffset),
+                         expected.storage.begin() + static_cast<std::ptrdiff_t>(kLoadStateSize)));
+  EXPECT_EQ(actual.leading_guard, expected.leading_guard);
+  EXPECT_EQ(actual.storage, expected.storage);
+  EXPECT_EQ(actual.trailing_guard, expected.trailing_guard);
 }
 
 }  // namespace
