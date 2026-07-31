@@ -780,9 +780,42 @@ std::string FileEmitter::emit_instruction(const FunctionEnv& func, IR* ir) {
     const std::string t = c_type_for(p->destination()->ireg().reg_class);
     const std::string a = fmt::format("(goal_vi){}", reg(p->source1()));
     const std::string b = fmt::format("(goal_vi){}", reg(p->source2()));
+    const auto helper = [&](const char* name) {
+      return fmt::format("{} = ({}){}({}, {});", d, t, name, a, b);
+    };
     switch (p->get_kind()) {
       case IR_Int128Math3Asm::Kind::PCPYUD:
-        return fmt::format("{} = ({})goal_pcpyud({}, {});", d, t, a, b);
+        return helper("goal_pcpyud");
+      case IR_Int128Math3Asm::Kind::PCPYLD:
+        return helper("goal_pcpyld");
+      case IR_Int128Math3Asm::Kind::PEXTLB:
+        return helper("goal_pextlb");
+      case IR_Int128Math3Asm::Kind::PEXTLH:
+        return helper("goal_pextlh");
+      case IR_Int128Math3Asm::Kind::PEXTLW:
+        return helper("goal_pextlw");
+      case IR_Int128Math3Asm::Kind::PEXTUB:
+        return helper("goal_pextub");
+      case IR_Int128Math3Asm::Kind::PEXTUH:
+        return helper("goal_pextuh");
+      case IR_Int128Math3Asm::Kind::PEXTUW:
+        return helper("goal_pextuw");
+      case IR_Int128Math3Asm::Kind::PCEQB:
+        return helper("goal_pceqb");
+      case IR_Int128Math3Asm::Kind::PCEQH:
+        return helper("goal_pceqh");
+      case IR_Int128Math3Asm::Kind::PCEQW:
+        return helper("goal_pceqw");
+      case IR_Int128Math3Asm::Kind::PCGTB:
+        return helper("goal_pcgtb");
+      case IR_Int128Math3Asm::Kind::PCGTH:
+        return helper("goal_pcgth");
+      case IR_Int128Math3Asm::Kind::PCGTW:
+        return helper("goal_pcgtw");
+      case IR_Int128Math3Asm::Kind::PADDB:
+        return helper("goal_paddb");
+      case IR_Int128Math3Asm::Kind::PACKUSWB:
+        return helper("goal_packuswb");
       case IR_Int128Math3Asm::Kind::POR:
         return fmt::format("{} = ({})({} | {});", d, t, a, b);
       case IR_Int128Math3Asm::Kind::PXOR:
@@ -795,6 +828,72 @@ std::string FileEmitter::emit_instruction(const FunctionEnv& func, IR* ir) {
         throw std::runtime_error(
             fmt::format("no C lowering for this PS2 128-bit integer operation: {}", ir->print()));
     }
+  }
+
+  if (auto* p = dynamic_cast<IR_Int128Math2Asm*>(ir)) {
+    const std::string d = reg(p->destination());
+    const std::string t = c_type_for(p->destination()->ireg().reg_class);
+    const std::string s = fmt::format("(goal_vi){}", reg(p->source()));
+    if (!p->immediate().has_value()) {
+      throw std::runtime_error("128-bit integer shift without an immediate");
+    }
+    const int64_t imm = *p->immediate();
+
+    // A shift count that reaches the lane width means different things on the two machines this
+    // has to agree with: the PS2 keeps the low bits of the count, x86-64 produces zero (or all
+    // sign bits for an arithmetic shift). Jak 1 only ever shifts by 6, 10 or 16, so rather than
+    // pick a winner, refuse the ambiguous case and stay loud about it.
+    const auto lane_shift = [&](const char* name, int lane_bits) {
+      if (imm < 0 || imm >= lane_bits) {
+        throw std::runtime_error(fmt::format(
+            "shift of {} by {}, which the PS2 and x86-64 backends disagree about", name, imm));
+      }
+      return fmt::format("{} = ({}){}({}, {});", d, t, name, s, imm);
+    };
+
+    switch (p->get_kind()) {
+      case IR_Int128Math2Asm::Kind::PW_SLL:
+        return lane_shift("goal_pw_sll", 32);
+      case IR_Int128Math2Asm::Kind::PW_SRL:
+        return lane_shift("goal_pw_srl", 32);
+      case IR_Int128Math2Asm::Kind::PW_SRA:
+        return lane_shift("goal_pw_sra", 32);
+      case IR_Int128Math2Asm::Kind::PH_SLL:
+        return lane_shift("goal_ph_sll", 16);
+      case IR_Int128Math2Asm::Kind::PH_SRL:
+        return lane_shift("goal_ph_srl", 16);
+      case IR_Int128Math2Asm::Kind::VPSRLDQ:
+        return fmt::format("{} = ({})goal_vsrl_bytes({}, {});", d, t, s, imm);
+      case IR_Int128Math2Asm::Kind::VPSLLDQ:
+        return fmt::format("{} = ({})goal_vsll_bytes({}, {});", d, t, s, imm);
+      case IR_Int128Math2Asm::Kind::VPSHUFLW:
+        return fmt::format("{} = ({})goal_shuffle_low_halfwords({}, {});", d, t, s, imm);
+      case IR_Int128Math2Asm::Kind::VPSHUFHW:
+        return fmt::format("{} = ({})goal_shuffle_high_halfwords({}, {});", d, t, s, imm);
+      default:
+        throw std::runtime_error(
+            fmt::format("no C lowering for this PS2 128-bit integer operation: {}", ir->print()));
+    }
+  }
+
+  if (auto* p = dynamic_cast<IR_BlendVF*>(ir)) {
+    return fmt::format("{} = ({})goal_blend_vf((goal_vf){}, (goal_vf){}, {});",
+                       reg(p->destination()), c_type_for(p->destination()->ireg().reg_class),
+                       reg(p->source1()), reg(p->source2()), int(p->mask()));
+  }
+
+  if (auto* p = dynamic_cast<IR_SwizzleVF*>(ir)) {
+    return fmt::format("{} = ({})goal_vf_shuffle((goal_vf){}, {});", reg(p->destination()),
+                       c_type_for(p->destination()->ireg().reg_class), reg(p->source()),
+                       int(p->control_bytes()));
+  }
+
+  // .nop.vf and .wait.vf are VU0 macro-mode synchronisation: they make the main CPU wait for the
+  // vector unit before reading back a result. The C backend has no separate vector unit - every
+  // vector operation is an ordinary C statement in program order - so there is nothing to wait
+  // for, and the correct translation is no code at all. This is not an unimplemented case.
+  if (dynamic_cast<IR_AsmFNop*>(ir) || dynamic_cast<IR_AsmFWait*>(ir)) {
+    return ";";
   }
 
   throw std::runtime_error(fmt::format("no C lowering for IR node: {}", ir->print()));
