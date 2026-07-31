@@ -89,6 +89,7 @@ extern "C" std::uint64_t arm64_goal_call_false_like_entry(std::uint64_t,
 #define OPENGOAL_AOT_EXPORT2(goal_name, c_symbol) \
   extern "C" std::uint64_t c_symbol(std::uint64_t, std::uint64_t);
 #include "OpenGOALJak1LevelGroupLoadCommandsSet.exports.h"
+#include "OpenGOALJak1WantVis.exports.h"
 #undef OPENGOAL_AOT_EXPORT2
 
 struct Arm64GoalExport0 {
@@ -126,12 +127,13 @@ constexpr Arm64GoalExport1 kArm64GoalExports1[] = {
 constexpr Arm64GoalExport2 kArm64GoalExports2[] = {
 #define OPENGOAL_AOT_EXPORT2(goal_name, c_symbol) {goal_name, &c_symbol},
 #include "OpenGOALJak1LevelGroupLoadCommandsSet.exports.h"
+#include "OpenGOALJak1WantVis.exports.h"
 #undef OPENGOAL_AOT_EXPORT2
 };
 
 static_assert(sizeof(kArm64GoalExports0) == 2 * sizeof(Arm64GoalExport0));
 static_assert(sizeof(kArm64GoalExports1) == 3 * sizeof(Arm64GoalExport1));
-static_assert(sizeof(kArm64GoalExports2) == sizeof(Arm64GoalExport2));
+static_assert(sizeof(kArm64GoalExports2) == 2 * sizeof(Arm64GoalExport2));
 
 template <typename Entry>
 std::uintptr_t entry_address(Entry entry) {
@@ -170,8 +172,8 @@ struct ExpectedArenaWord {
   std::uint32_t value;
 };
 
-template <std::size_t N>
-void expect_sparse_arena(const std::vector<std::byte>& arena,
+template <typename Arena, std::size_t N>
+void expect_sparse_arena(const Arena& arena,
                          const std::array<ExpectedArenaWord, N>& expected_words) {
   std::size_t next_offset = 0;
   for (const auto& [offset, value] : expected_words) {
@@ -360,6 +362,68 @@ TEST(Arm64GoalCallAbi, executes_generated_jak1_aot_artifacts_against_one_data_ar
       ExpectedArenaWord{second_load_commands_offset, kSecondPair},
   };
   expect_sparse_arena(arena, expected_words);
+}
+
+TEST(Arm64GoalCallAbi, executes_generated_jak1_want_vis_against_two_guarded_arena_bases) {
+  struct alignas(16) GuardedWantVisArena {
+    std::array<std::byte, 16> leading_guard;
+    std::array<std::byte, 0x80> storage;
+    std::array<std::byte, 16> trailing_guard;
+  } arena{};
+
+  constexpr auto kGuardValue = std::byte{0xa5};
+  std::fill(arena.leading_guard.begin(), arena.leading_guard.end(), kGuardValue);
+  std::fill(arena.trailing_guard.begin(), arena.trailing_guard.end(), kGuardValue);
+
+  ASSERT_EQ(kArm64GoalExports2[1].goal_name, "want-vis");
+  ASSERT_NE(kArm64GoalExports2[1].entry, nullptr);
+
+  constexpr std::uintptr_t kSt = 0x14fd24;
+  constexpr std::size_t kSecondArenaBaseOffset = 0x40;
+  constexpr std::size_t kBasicPointerBias = 4;
+  constexpr std::size_t kEmittedStoreOffset = 0x20;
+  constexpr std::size_t kRawVisNickOffset = 0x24;
+  constexpr std::uint64_t kFirstSymbol = UINT64_C(0xaabbccdd81234567);
+  constexpr std::uint64_t kSecondSymbol = UINT64_C(0x11223344f2345678);
+  static_assert(kBasicPointerBias + kEmittedStoreOffset == kRawVisNickOffset);
+  static_assert(kSecondArenaBaseOffset + kRawVisNickOffset + sizeof(std::uint32_t) <=
+                sizeof(arena.storage));
+
+  const auto first_arena_base = reinterpret_cast<std::uintptr_t>(arena.storage.data());
+  const auto second_arena_base = first_arena_base + kSecondArenaBaseOffset;
+  const auto invoke = [&](std::uintptr_t arena_base, std::uint64_t symbol) {
+    auto probe = make_probe(entry_address(kArm64GoalExports2[1].entry), kSt, arena_base);
+    probe.argument0 = kBasicPointerBias;
+    probe.argument1 = symbol;
+    arm64_goal_call_abi_outer(&probe);
+    expect_caller_registers_restored(probe);
+    return probe;
+  };
+
+  const auto first_probe = invoke(first_arena_base, kFirstSymbol);
+  EXPECT_EQ(first_probe.result, 0u);
+  EXPECT_EQ(read_u32(arena.storage.data(), kRawVisNickOffset),
+            static_cast<std::uint32_t>(kFirstSymbol));
+  EXPECT_EQ(read_u32(arena.storage.data(), kSecondArenaBaseOffset + kRawVisNickOffset), 0u);
+  expect_sparse_arena(
+      arena.storage,
+      std::array{ExpectedArenaWord{kRawVisNickOffset, static_cast<std::uint32_t>(kFirstSymbol)}});
+
+  const auto second_probe = invoke(second_arena_base, kSecondSymbol);
+  EXPECT_EQ(second_probe.result, 0u);
+  EXPECT_EQ(read_u32(arena.storage.data(), kRawVisNickOffset),
+            static_cast<std::uint32_t>(kFirstSymbol));
+  EXPECT_EQ(read_u32(arena.storage.data(), kSecondArenaBaseOffset + kRawVisNickOffset),
+            static_cast<std::uint32_t>(kSecondSymbol));
+  expect_sparse_arena(
+      arena.storage,
+      std::array{ExpectedArenaWord{kRawVisNickOffset, static_cast<std::uint32_t>(kFirstSymbol)},
+                 ExpectedArenaWord{kSecondArenaBaseOffset + kRawVisNickOffset,
+                                   static_cast<std::uint32_t>(kSecondSymbol)}});
+  EXPECT_TRUE(std::all_of(arena.leading_guard.begin(), arena.leading_guard.end(),
+                          [=](std::byte value) { return value == kGuardValue; }));
+  EXPECT_TRUE(std::all_of(arena.trailing_guard.begin(), arena.trailing_guard.end(),
+                          [=](std::byte value) { return value == kGuardValue; }));
 }
 
 }  // namespace
