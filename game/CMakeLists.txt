@@ -520,5 +520,50 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_include_directories(jak1-aot-boot-test PRIVATE "${AOT_BOOT_DIR}")
         target_link_libraries(jak1-aot-boot-test jak1-kernel-core)
         add_test(NAME jak1-aot-boot-test COMMAND jak1-aot-boot-test)
+
+        # The thread-switch test: the same GOAL kernel, plus a fixture that drives the routines
+        # that had to be written in native ARM64 - catch frames, throw, state entry, temporary
+        # threads, suspend and resume. The kernel prefix is the first 8 object files in game.gp
+        # build order, which is everything through kernel/gstate.gc.
+        set(AOT_TSW_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-thread-switch")
+        set(AOT_TSW_FIXTURE "${CMAKE_SOURCE_DIR}/test/goalc/aot/thread_switch_test.gc")
+        set(AOT_TSW_TAGS gcommon gstring_h gkernel_h gkernel pskernel gstring dgo_h gstate
+                thread_switch_test)
+        list(LENGTH AOT_TSW_TAGS AOT_TSW_KERNEL_COUNT)
+        math(EXPR AOT_TSW_KERNEL_COUNT "${AOT_TSW_KERNEL_COUNT} - 1")
+
+        set(AOT_TSW_OUTPUTS "${AOT_TSW_DIR}/aot_boot_manifest.c"
+                "${AOT_TSW_DIR}/aot_boot_manifest.h")
+        set(AOT_TSW_C_SOURCES "")
+        foreach(tag IN LISTS AOT_TSW_TAGS)
+            list(APPEND AOT_TSW_C_SOURCES "${AOT_TSW_DIR}/${tag}.c")
+            list(APPEND AOT_TSW_OUTPUTS "${AOT_TSW_DIR}/${tag}.c"
+                    "${AOT_TSW_DIR}/${tag}_generated.h")
+        endforeach()
+
+        add_custom_command(
+                OUTPUT ${AOT_TSW_OUTPUTS}
+                COMMAND $<TARGET_FILE:goalc-cbackend-sweep>
+                        --project-path "${CMAKE_SOURCE_DIR}"
+                        --limit ${AOT_TSW_KERNEL_COUNT}
+                        --extra-source test/goalc/aot/thread_switch_test.gc
+                        --c-output-dir "${AOT_TSW_DIR}"
+                        --report "${AOT_TSW_DIR}/coverage.tsv"
+                DEPENDS goalc-cbackend-sweep ${AOT_BOOT_GOAL_SOURCES} ${AOT_TSW_FIXTURE}
+                        "${CMAKE_SOURCE_DIR}/goal_src/goal-lib.gc"
+                        "${CMAKE_SOURCE_DIR}/goal_src/jak1/game.gp"
+                COMMENT "Emitting C for the GOAL kernel and the thread-switch fixture")
+
+        add_executable(jak1-thread-switch-test
+                kernel/core/thread_switch_test.cpp
+                kernel/core/goal_thread_test_arm64.s
+                "${AOT_TSW_DIR}/aot_boot_manifest.c"
+                ${AOT_TSW_C_SOURCES})
+        set_source_files_properties(
+                "${AOT_TSW_DIR}/aot_boot_manifest.c" ${AOT_TSW_C_SOURCES}
+                PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
+        target_include_directories(jak1-thread-switch-test PRIVATE "${AOT_TSW_DIR}")
+        target_link_libraries(jak1-thread-switch-test jak1-kernel-core)
+        add_test(NAME jak1-thread-switch-test COMMAND jak1-thread-switch-test)
     endif()
 endif()

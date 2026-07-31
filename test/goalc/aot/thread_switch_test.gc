@@ -1,0 +1,182 @@
+;;-*-Lisp-*-
+(in-package goal)
+
+;; GOALPad: a fixture that drives GOAL's own thread switch, catch frames and state entry.
+;;
+;; `game/kernel/core/thread_switch_test.cpp` compiles this on top of the real Jak 1 kernel through
+;; the AOT C backend, loads it into the real kernel, and calls the entry points below. Everything
+;; here is ordinary GOAL: the routines under test are reached the way the game reaches them - a
+;; process spawn, `(new 'stack 'catch-frame ...)`, `throw`, `go`, `suspend`, `reset-and-call` - so
+;; what is being checked is the real semantics and not a C model of them.
+;;
+;; The native ARM64 implementations are in game/kernel/core/goal_native_kernel.cpp; see
+;; docs/aot-stack-model.md.
+
+;; A running trace. Each step sets its own bit, so the C side can check both that a step ran and
+;; that steps it should have skipped did not.
+(define *tsw-log* 0)
+
+(defconstant TSW_CATCH_RETURNED 1)
+(defconstant TSW_AFTER_THROW_UNREACHABLE 2)
+(defconstant TSW_THREW 4)
+(defconstant TSW_INIT_RAN 8)
+(defconstant TSW_STATE_CODE_RAN 16)
+(defconstant TSW_BEFORE_SUSPEND 32)
+(defconstant TSW_AFTER_SUSPEND 64)
+(defconstant TSW_STATE_CODE_FINISHED 128)
+(defconstant TSW_TEMP_THREAD_RAN 256)
+(defconstant TSW_AFTER_ABANDON_UNREACHABLE 512)
+
+(define *tsw-proc* (the process #f)) ;; the process the C side is driving
+(define *tsw-catch-result* 0)
+(define *tsw-throw-result* 0)
+;; values kept live across a throw and across a suspend, to check that the callee-saved registers
+;; and the stack really come back
+(define *tsw-live-across-throw* 0)
+(define *tsw-stack-across-suspend* 0)
+
+(defun tsw-note ((bit int))
+  (set! *tsw-log* (logior *tsw-log* bit))
+  0)
+
+(defun tsw-reset ()
+  (set! *tsw-log* 0)
+  (set! *tsw-catch-result* 0)
+  (set! *tsw-throw-result* 0)
+  (set! *tsw-live-across-throw* 0)
+  (set! *tsw-stack-across-suspend* 0)
+  0)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; catch frames and throw
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun tsw-catch-body ((arg0 int) (arg1 int) (arg2 int) (arg3 int) (arg4 int) (arg5 int))
+  "Return normally out of a catch frame, using every parameter the frame passes."
+  (tsw-note TSW_CATCH_RETURNED)
+  (the object (+ arg0 (+ arg1 (+ arg2 (+ arg3 (+ arg4 arg5))))))) ;; 1+2+4+8+16+32 = 63
+
+(defun tsw-throw-body ((arg0 int) (arg1 int) (arg2 int) (arg3 int) (arg4 int) (arg5 int))
+  "Throw out of a catch frame from a nested call."
+  (tsw-note TSW_THREW)
+  (throw 'tsw-tag (+ arg0 arg1)) ;; 3
+  (tsw-note TSW_AFTER_ABANDON_UNREACHABLE)
+  (the object -1))
+
+(defbehavior tsw-catch-init process ()
+  "Runs inside a real process, which a catch frame needs: it pushes itself onto the process's
+   stack-frame list."
+  (let ((params (new 'stack-no-clear 'array 'uint64 6)))
+    (dotimes (i 6) (set! (-> params i) (the-as uint64 (ash 1 i))))
+    (set! *tsw-catch-result* (the int (new 'stack 'catch-frame 'tsw-tag tsw-catch-body params)))
+    ;; the values below are live across the throwing frame, so a throw that failed to restore the
+    ;; callee-saved registers would come back with the wrong sum
+    (let ((a 100000)
+          (b 20000)
+          (c 3000)
+          (d 400)
+          (e 50))
+      (set! *tsw-throw-result* (the int (new 'stack 'catch-frame 'tsw-tag tsw-throw-body params)))
+      (set! *tsw-live-across-throw* (+ a (+ b (+ c (+ d e))))))) ;; 123450
+  (none))
+
+(defun tsw-run-catch-tests ()
+  "Spawn a process whose init function exercises catch and throw, and let it die normally."
+  (process-spawn process
+                 :init tsw-catch-init
+                 :to *active-pool*
+                 :name 'tsw-catch
+                 :stack-size 8192)
+  0)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; states, suspend and resume
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defstate tsw-state (process)
+  :code (behavior ()
+          (tsw-note TSW_STATE_CODE_RAN)
+          ;; on the thread's own stack, so the suspend has to copy it out and back
+          (let ((scratch (new 'stack-no-clear 'array 'int32 8)))
+            (set! (-> scratch 0) 4242)
+            (set! (-> scratch 7) 1337)
+            (tsw-note TSW_BEFORE_SUSPEND)
+            (suspend)
+            (tsw-note TSW_AFTER_SUSPEND)
+            (set! *tsw-stack-across-suspend* (+ (-> scratch 0) (-> scratch 7)))) ;; 5579
+          (tsw-note TSW_STATE_CODE_FINISHED)
+          (none)))
+
+(defbehavior tsw-state-init process ()
+  "Go to a state during initialization, which throws back to run-function-in-process and leaves the
+   main thread set to run enter-state next time it is resumed."
+  ;; An ARM64 machine context is 176 bytes, against the 40 the five x86-64 saved registers take, so
+  ;; a thread that suspends needs a bigger backup stack than GOAL's PROCESS_STACK_SAVE_SIZE default
+  ;; of 256. Raising it here is what the game itself does (see init-time-of-day).
+  (stack-size-set! (-> self main-thread) 2048)
+  (tsw-note TSW_INIT_RAN)
+  (go tsw-state)
+  (tsw-note TSW_AFTER_ABANDON_UNREACHABLE)
+  (none))
+
+(defun tsw-spawn-state-proc ()
+  "Spawn a process that will enter tsw-state the next time its main thread is resumed. It is left
+   in *tsw-proc* so the C side can drive the resumes and scribble on the thread's stack in between."
+  (set! *tsw-proc* (the process (ppointer->process (process-spawn process
+                                                                   :init tsw-state-init
+                                                                   :to *active-pool*
+                                                                   :name 'tsw-state
+                                                                   :stack-size 8192))))
+  (if *tsw-proc* 1 0))
+
+(defun tsw-resume ()
+  "Resume the process's main thread, the way the kernel dispatcher does.
+
+   The kernel-context's current-process has to be set around it: enter-state defers to the next
+   dispatch when the process it is entering is not the one the kernel says is running."
+  (let ((proc *tsw-proc*))
+    (set! (-> *kernel-context* current-process) proc)
+    ((-> proc main-thread resume-hook) (-> proc main-thread))
+    (set! (-> *kernel-context* current-process) #f))
+  0)
+
+(defun tsw-thread-stack-used ()
+  "How much of its execution stack the process's main thread had live when it suspended."
+  (- (the int (-> *tsw-proc* main-thread stack-top)) (the int (-> *tsw-proc* main-thread sp))))
+
+(defun tsw-thread-stack-pointer ()
+  (the int (-> *tsw-proc* main-thread sp)))
+
+(defun tsw-process-dead? ()
+  (if (eq? (-> *tsw-proc* status) 'dead) 1 0))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; temporary threads: reset-and-call and return-from-thread
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun tsw-temp-body ()
+  "Runs on a temporary thread's stack and returns a value, which reaches reset-and-call's caller
+   through the return-from-thread trampoline."
+  (tsw-note TSW_TEMP_THREAD_RAN)
+  (the object 90210))
+
+(defun tsw-temp-abandon-body ()
+  "Runs on a temporary thread's stack and abandons it instead of returning."
+  (tsw-note TSW_TEMP_THREAD_RAN)
+  (abandon-thread)
+  (tsw-note TSW_AFTER_ABANDON_UNREACHABLE)
+  (the object -1))
+
+(defun tsw-run-temp-thread ((func function))
+  "Run a function on a temporary thread of *tsw-proc*, the way the kernel runs a trans or post hook."
+  (let* ((proc *tsw-proc*)
+         (temp (new 'process 'cpu-thread proc 'tsw-temp PROCESS_STACK_SAVE_SIZE *kernel-dram-stack*))
+         (result (reset-and-call temp func)))
+    (delete temp)
+    (the int result)))
+
+(defun tsw-run-temp-return ()
+  (tsw-run-temp-thread tsw-temp-body))
+
+(defun tsw-run-temp-abandon ()
+  (tsw-run-temp-thread tsw-temp-abandon-body))

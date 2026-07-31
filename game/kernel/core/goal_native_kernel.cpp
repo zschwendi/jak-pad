@@ -137,20 +137,16 @@ uint32_t goal_address_of(const void* native, const char* what) {
   return (uint32_t)(addr - base);
 }
 
+/*!
+ * These intern rather than look up, because *kernel-sp* has no other reader left: GOAL only ever
+ * touched it from the routines that now live here, so nothing else puts it in the symbol table.
+ */
 uint32_t symbol_value(const char* name) {
-  auto sym = jak1::find_symbol_from_c(name);
-  if (!sym.offset) {
-    fail("the symbol %s does not exist", name);
-  }
-  return sym->value;
+  return jak1::intern_from_c(name)->value;
 }
 
 void set_symbol_value(const char* name, uint32_t value) {
-  auto sym = jak1::find_symbol_from_c(name);
-  if (!sym.offset) {
-    fail("the symbol %s does not exist", name);
-  }
-  sym->value = value;
+  jak1::intern_from_c(name)->value = value;
 }
 
 /*! GOAL address of a quoted symbol, which is what a symbol-valued field holds. */

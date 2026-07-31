@@ -29,6 +29,7 @@ struct Options {
   std::string report_path;
   std::string c_output_dir;
   std::string project_path;
+  std::vector<std::string> extra_sources;
   int limit = 0;
 };
 
@@ -38,9 +39,12 @@ void print_usage() {
                "                            [--target GROUP:all-code]\n"
                "                            [--c-output-dir DIR] [--report OUT.tsv]\n"
                "                            [--project-path OPENGOAL_ROOT] [--limit N]\n"
+               "                            [--extra-source FILE.gc]...\n"
                "\n"
                "--limit stops after the first N sources in build order, for building a boot\n"
                "prefix instead of the whole game.\n"
+               "--extra-source compiles a source that is not part of the game after that\n"
+               "prefix, for building a test fixture on top of a real kernel.\n"
                "--c-output-dir also writes each file's header and aot_boot_manifest.{h,c},\n"
                "which lists every emitted file in build order.\n");
 }
@@ -66,6 +70,8 @@ bool parse_options(int argc, char** argv, Options* options) {
       options->c_output_dir = argv[i];
     } else if (argument == "--project-path") {
       options->project_path = argv[i];
+    } else if (argument == "--extra-source") {
+      options->extra_sources.push_back(argv[i]);
     } else if (argument == "--limit") {
       options->limit = std::atoi(argv[i]);
     } else {
@@ -187,6 +193,9 @@ int main(int argc, char** argv) {
   if (options.limit > 0 && options.limit < (int)sources.size()) {
     sources.resize((size_t)options.limit);
     std::fprintf(stderr, "limited to the first %d\n", options.limit);
+  }
+  for (const auto& extra : options.extra_sources) {
+    sources.push_back(extra);
   }
 
   std::string report = "#kind\tfile\tfunction\tdetail\n";
