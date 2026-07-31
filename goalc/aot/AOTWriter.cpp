@@ -43,10 +43,13 @@ void validate(const AppleArm64Function& function) {
 }
 
 void validate(const NativeExport0& native_export) {
-  if (native_export.goal_name != "false-func" ||
-      native_export.c_symbol != "goalpad_aot_false_func") {
+  const bool is_false_func = native_export.goal_name == "false-func" &&
+                             native_export.c_symbol == "goalpad_aot_false_func";
+  const bool is_true_func = native_export.goal_name == "true-func" &&
+                            native_export.c_symbol == "goalpad_aot_true_func";
+  if (!is_false_func && !is_true_func) {
     throw std::invalid_argument(
-        "AOT native export proof only supports false-func as goalpad_aot_false_func");
+        "AOT native export proof only supports false-func or true-func zero-argument artifacts");
   }
 }
 

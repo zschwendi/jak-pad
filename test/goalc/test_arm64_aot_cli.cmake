@@ -111,8 +111,6 @@ if(NOT ACTUAL_TRUE_ASSEMBLY STREQUAL EXPECTED_TRUE_ASSEMBLY)
   message(FATAL_ERROR "Assembly-only true-func artifact did not match the expected ARM64 code")
 endif()
 
-file(WRITE "${TRUE_PAIRED_ASSEMBLY}" "old true assembly\n")
-file(WRITE "${TRUE_EXPORTS}" "old true exports\n")
 execute_process(
   COMMAND "${GOALC_AOT}"
           --project-path "${PROJECT_ROOT}"
@@ -122,15 +120,93 @@ execute_process(
           --exports-output "${TRUE_EXPORTS}"
           --symbol goalpad_aot_true_func
   RESULT_VARIABLE TRUE_PAIRED_RESULT)
-if(TRUE_PAIRED_RESULT EQUAL 0)
-  message(FATAL_ERROR "goalc-aot accepted true-func native export metadata")
+if(NOT TRUE_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "Paired true-func goalc-aot invocation failed")
 endif()
 
-file(READ "${TRUE_PAIRED_ASSEMBLY}" ACTUAL_TRUE_PAIRED_ASSEMBLY)
+file(SHA256 "${TRUE_ASSEMBLY_ONLY}" TRUE_ASSEMBLY_ONLY_SHA256)
+file(SHA256 "${TRUE_PAIRED_ASSEMBLY}" TRUE_PAIRED_ASSEMBLY_SHA256)
+if(NOT TRUE_ASSEMBLY_ONLY_SHA256 STREQUAL TRUE_PAIRED_ASSEMBLY_SHA256)
+  message(FATAL_ERROR "Adding true-func export metadata changed the ARM64 assembly")
+endif()
+
 file(READ "${TRUE_EXPORTS}" ACTUAL_TRUE_EXPORTS)
-if(NOT ACTUAL_TRUE_PAIRED_ASSEMBLY STREQUAL "old true assembly\n" OR
-   NOT ACTUAL_TRUE_EXPORTS STREQUAL "old true exports\n")
-  message(FATAL_ERROR "Rejected true-func native export modified an existing artifact")
+set(EXPECTED_TRUE_EXPORTS
+    "#ifndef OPENGOAL_AOT_EXPORT0\n#error \"Define OPENGOAL_AOT_EXPORT0 before including this file.\"\n#endif\nOPENGOAL_AOT_EXPORT0(\"true-func\", goalpad_aot_true_func)\n")
+if(NOT ACTUAL_TRUE_EXPORTS STREQUAL EXPECTED_TRUE_EXPORTS)
+  message(FATAL_ERROR "Generated true-func export metadata did not match the expected record")
+endif()
+
+set(TRUE_WRONG_ASSEMBLY "${OUTPUT_DIR}/true-wrong.s")
+set(TRUE_WRONG_EXPORTS "${OUTPUT_DIR}/true-wrong.exports.inc")
+file(WRITE "${TRUE_WRONG_ASSEMBLY}" "old true wrong assembly\n")
+file(WRITE "${TRUE_WRONG_EXPORTS}" "old true wrong exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${TRUE_INPUT}"
+          --function true-func
+          --output "${TRUE_WRONG_ASSEMBLY}"
+          --exports-output "${TRUE_WRONG_EXPORTS}"
+          --symbol goalpad_aot_false_func
+  RESULT_VARIABLE TRUE_WRONG_SYMBOL_RESULT)
+if(TRUE_WRONG_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted true-func with the false-func symbol")
+endif()
+
+file(READ "${TRUE_WRONG_ASSEMBLY}" ACTUAL_TRUE_WRONG_ASSEMBLY)
+file(READ "${TRUE_WRONG_EXPORTS}" ACTUAL_TRUE_WRONG_EXPORTS)
+if(NOT ACTUAL_TRUE_WRONG_ASSEMBLY STREQUAL "old true wrong assembly\n" OR
+   NOT ACTUAL_TRUE_WRONG_EXPORTS STREQUAL "old true wrong exports\n")
+  message(FATAL_ERROR "Failed true-func symbol validation modified an existing artifact")
+endif()
+
+set(TRUE_CROSS_ASSEMBLY "${OUTPUT_DIR}/true-cross.s")
+set(TRUE_CROSS_EXPORTS "${OUTPUT_DIR}/true-cross.exports.inc")
+file(WRITE "${TRUE_CROSS_ASSEMBLY}" "old true cross assembly\n")
+file(WRITE "${TRUE_CROSS_EXPORTS}" "old true cross exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${TRUE_INPUT}"
+          --function true-func
+          --output "${TRUE_CROSS_ASSEMBLY}"
+          --exports-output "${TRUE_CROSS_EXPORTS}"
+          --symbol goalpad_aot_identity
+  RESULT_VARIABLE TRUE_IDENTITY_SYMBOL_RESULT)
+if(TRUE_IDENTITY_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted true-func with the Export1 symbol")
+endif()
+
+file(READ "${TRUE_CROSS_ASSEMBLY}" ACTUAL_TRUE_CROSS_ASSEMBLY)
+file(READ "${TRUE_CROSS_EXPORTS}" ACTUAL_TRUE_CROSS_EXPORTS)
+if(NOT ACTUAL_TRUE_CROSS_ASSEMBLY STREQUAL "old true cross assembly\n" OR
+   NOT ACTUAL_TRUE_CROSS_EXPORTS STREQUAL "old true cross exports\n")
+  message(FATAL_ERROR "Failed true-func cross-ABI generation modified an existing artifact")
+endif()
+
+set(FALSE_WRONG_ASSEMBLY "${OUTPUT_DIR}/false-wrong.s")
+set(FALSE_WRONG_EXPORTS "${OUTPUT_DIR}/false-wrong.exports.inc")
+file(WRITE "${FALSE_WRONG_ASSEMBLY}" "old false wrong assembly\n")
+file(WRITE "${FALSE_WRONG_EXPORTS}" "old false wrong exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${INPUT}"
+          --function false-func
+          --output "${FALSE_WRONG_ASSEMBLY}"
+          --exports-output "${FALSE_WRONG_EXPORTS}"
+          --symbol goalpad_aot_true_func
+  RESULT_VARIABLE FALSE_TRUE_SYMBOL_RESULT)
+if(FALSE_TRUE_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted false-func with the true-func symbol")
+endif()
+
+file(READ "${FALSE_WRONG_ASSEMBLY}" ACTUAL_FALSE_WRONG_ASSEMBLY)
+file(READ "${FALSE_WRONG_EXPORTS}" ACTUAL_FALSE_WRONG_EXPORTS)
+if(NOT ACTUAL_FALSE_WRONG_ASSEMBLY STREQUAL "old false wrong assembly\n" OR
+   NOT ACTUAL_FALSE_WRONG_EXPORTS STREQUAL "old false wrong exports\n")
+  message(FATAL_ERROR "Failed false-func symbol validation modified an existing artifact")
 endif()
 
 execute_process(
