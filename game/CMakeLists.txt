@@ -354,7 +354,7 @@ set(RUNTIME_SOURCE
 
 add_subdirectory(sound)
 
-add_library(jak1-data-arena STATIC kernel/jak1/data_arena.cpp)
+include(kernel/jak1/data_arena.cmake)
 
 # we build the runtime as a static library.
 add_library(runtime STATIC ${RUNTIME_SOURCE} "../third-party/glad/src/glad.c")

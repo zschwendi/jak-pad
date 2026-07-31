@@ -4,6 +4,19 @@ cmake_minimum_required(VERSION 3.10)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 project(jak)
+
+option(OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY
+       "Build only the portable Jak 1 data-arena static library" OFF)
+if(OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY)
+  if(BUILD_TESTING)
+    message(FATAL_ERROR
+            "OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY requires BUILD_TESTING=OFF.")
+  endif()
+
+  include(game/kernel/jak1/data_arena.cmake)
+  return()
+endif()
+
 include(CTest)
 
 # Include third-party modules
