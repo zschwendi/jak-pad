@@ -7,6 +7,9 @@
 
 set(JAK1_KERNEL_CORE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../..")
 
+# common/versions/versions.cpp is deliberately absent: only the kmachine translation units call it,
+# and it includes the CMake-generated common/versions/revision.h, which would force every consumer
+# of this list — including the Xcode app target — to run a CMake configure first.
 set(JAK1_KERNEL_CORE_SOURCES
     # common support
     "${JAK1_KERNEL_CORE_ROOT}/common/cross_os_debug/xdbg.cpp"
@@ -18,7 +21,6 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${JAK1_KERNEL_CORE_ROOT}/common/util/string_util.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/util/Timer.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/util/unicode_util.cpp"
-    "${JAK1_KERNEL_CORE_ROOT}/common/versions/versions.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/third-party/lzokay/lzokay.cpp"
     # game-version-independent kernel
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/fileio.cpp"
