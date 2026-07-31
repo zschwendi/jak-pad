@@ -1,0 +1,63 @@
+.section __TEXT,__text,regular,pure_instructions
+.p2align 2
+.globl _goalpad_aot_load_state_reset
+_goalpad_aot_load_state_reset:
+  .long 0xaa1503e1
+  .long 0xb836e801
+  .long 0xaa1503e1
+  .long 0x8b160010
+  .long 0x91001210
+  .long 0xb9000201
+  .long 0xaa1503e1
+  .long 0x8b160010
+  .long 0x91002210
+  .long 0xb9000201
+  .long 0xaa1503e1
+  .long 0x8b160010
+  .long 0x91003210
+  .long 0xb9000201
+  .long 0xaa1503e1
+  .long 0x8b160010
+  .long 0x91004210
+  .long 0xb9000201
+  .long 0xaa1503e1
+  .long 0x8b160010
+  .long 0x91005210
+  .long 0xb9000201
+  .long 0xaa1503e1
+  .long 0x8b160010
+  .long 0x91006210
+  .long 0xb9000201
+  .long 0xaa1503e1
+  .long 0x8b160010
+  .long 0x91007210
+  .long 0xb9000201
+  .long 0xaa1503e1
+  .long 0xd1002821
+  .long 0x8b160010
+  .long 0x91009210
+  .long 0xb9000201
+  .long 0xca010021
+  .long 0x14000011
+  .long 0xaa1503e2
+  .long 0xaa0103e3
+  .long 0xd37ef463
+  .long 0xd2800504
+  .long 0x8b000084
+  .long 0x8b040063
+  .long 0xb836e862
+  .long 0xca020042
+  .long 0xaa0103e3
+  .long 0xd37ef463
+  .long 0xd2808504
+  .long 0x8b000084
+  .long 0x8b040063
+  .long 0xb836e862
+  .long 0xd2800022
+  .long 0x8b020021
+  .long 0xd2802002
+  .long 0xeb02003f
+  .long 0x54fffdcb
+  .long 0xaa1503e1
+  .long 0xd65f03c0
+.subsections_via_symbols

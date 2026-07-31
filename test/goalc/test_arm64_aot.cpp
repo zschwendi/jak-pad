@@ -69,6 +69,11 @@ std::string read_want_levels_source() {
       {"test/goalc/source_templates/arm64-aot/full-want-levels-from-jak1-load-boundary.gc"}));
 }
 
+std::string read_load_state_reset_source() {
+  return file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-load-state-reset-from-jak1-load-boundary.gc"}));
+}
+
 void replace_once(std::string& source,
                   const std::string& expected,
                   const std::string& replacement) {
@@ -81,6 +86,13 @@ void expect_want_levels_rejected(const std::string& source, const std::string& o
   Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
   EXPECT_THROW(compiler.compile_arm64_aot_source(source, object_name,
                                                  std::optional<std::string>{"want-levels"}),
+               std::runtime_error);
+}
+
+void expect_load_state_reset_rejected(const std::string& source, const std::string& object_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, object_name,
+                                                 std::optional<std::string>{"reset!"}),
                std::runtime_error);
 }
 
@@ -291,6 +303,67 @@ TEST(Arm64Aot, compiles_full_jak1_want_levels_and_renders_apple_text) {
             file_util::read_text_file(
                 file_util::get_file_path({"test/goalc/source_templates/arm64-aot/"
                                           "full-want-levels-from-jak1-load-boundary.s"})));
+}
+
+TEST(Arm64Aot, compiles_full_jak1_load_state_reset_without_name_gating) {
+  const auto source = read_load_state_reset_source();
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto code = compiler.compile_arm64_aot_source(
+      source, "full-load-state-reset-from-jak1-load-boundary", std::optional<std::string>{"reset!"});
+
+  ASSERT_EQ(code.size(), 232);
+  const aot::AppleArm64Function function{"goalpad_aot_load_state_reset", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            file_util::read_text_file(file_util::get_file_path(
+                {"test/goalc/source_templates/arm64-aot/"
+                 "full-load-state-reset-from-jak1-load-boundary.s"})));
+
+  auto renamed_source = source;
+  replace_once(renamed_source, "(defun reset!", "(defun reset-candidate");
+  Compiler renamed_compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  EXPECT_EQ(renamed_compiler.compile_arm64_aot_source(
+                renamed_source, "renamed-load-state-reset",
+                std::optional<std::string>{"reset-candidate"}),
+            code);
+}
+
+TEST(Arm64Aot, rejects_load_state_reset_with_different_required_body_data) {
+  auto source = read_load_state_reset_source();
+  replace_once(source, "((this load-state))", "((this load-state) (arg symbol))");
+  expect_load_state_reset_rejected(source, "load-state-reset-with-extra-argument");
+
+  source = read_load_state_reset_source();
+  replace_once(source, "(set! (-> this want 0 name) #f)",
+               "(set! (-> this want 0 name) #t)");
+  expect_load_state_reset_rejected(source, "load-state-reset-with-true-want-clear");
+
+  source = read_load_state_reset_source();
+  replace_once(source, "(set! (-> this command-list) '())", "(set! (-> this command-list) #f)");
+  expect_load_state_reset_rejected(source, "load-state-reset-with-false-command-list");
+
+  source = read_load_state_reset_source();
+  replace_once(source, "(dotimes (v1-1 256)", "(dotimes (v1-1 255)");
+  expect_load_state_reset_rejected(source, "load-state-reset-with-different-loop-bound");
+
+  source = read_load_state_reset_source();
+  replace_once(source, "(set! (-> this object-name v1-1) #f)",
+               "(set! (-> this object-name 0) #f)");
+  expect_load_state_reset_rejected(source, "load-state-reset-with-different-array-index");
+
+  source = read_load_state_reset_source();
+  replace_once(source, "(set! (-> this object-status v1-1) (the-as basic 0))",
+               "(set! (-> this object-status v1-1) (the-as basic 1))");
+  expect_load_state_reset_rejected(source, "load-state-reset-without-basic-zero");
+
+  source = read_load_state_reset_source();
+  const auto return_position = source.rfind("  this)");
+  ASSERT_NE(return_position, std::string::npos);
+  source.replace(return_position, 7, "  #f)");
+  expect_load_state_reset_rejected(source, "load-state-reset-with-different-return");
+
+  source = read_load_state_reset_source();
+  source += "\n0\n";
+  expect_load_state_reset_rejected(source, "load-state-reset-with-trailing-top-level-code");
 }
 
 TEST(Arm64Aot, exposes_arm64_aot_control_flow_and_return_metadata) {
@@ -1175,12 +1248,64 @@ TEST(Arm64Aot, emits_unary_gpr_integer_not) {
             (std::vector<u8>{0xe0, 0x03, 0x20, 0xaa, 0xc0, 0x03, 0x5f, 0xd6}));
 }
 
+TEST(Arm64Aot, emits_jak1_empty_pair_symbol_pointer_without_clobbering_goal_context) {
+  RegVal destination{{RegClass::GPR_64, 0}, TypeSpec("pair")};
+  IR_LoadSymbolPointer empty_pair(&destination, "_empty_");
+
+  Assignment assignment;
+  assignment.kind = Assignment::Kind::REGISTER;
+  assignment.reg = emitter::X0;
+  AllocationResult allocations;
+  allocations.ass_as_ranges = {AssignmentRange(0, {true}, {assignment})};
+
+  FunctionDebugInfo debug{};
+  emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+  empty_pair.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
+  generator.add_instr_no_ir(function, emitter::IGen::ret(generator),
+                            InstructionInfo::Kind::EPILOGUE);
+
+  EXPECT_EQ(generator.materialize_arm64_function(function),
+            (std::vector<u8>{0xe0, 0x03, 0x15, 0xaa, 0x00, 0x28,
+                             0x00, 0xd1, 0xc0, 0x03, 0x5f, 0xd6}));
+}
+
+TEST(Arm64Aot, rejects_empty_pair_symbol_pointer_outside_jak1_aot_temporaries) {
+  const auto expect_rejected = [](GameVersion version,
+                                  RegClass reg_class,
+                                  const TypeSpec& type,
+                                  emitter::Register destination_register) {
+    RegVal destination{{reg_class, 0}, type};
+    IR_LoadSymbolPointer empty_pair(&destination, "_empty_");
+
+    Assignment assignment;
+    assignment.kind = Assignment::Kind::REGISTER;
+    assignment.reg = destination_register;
+    AllocationResult allocations;
+    allocations.ass_as_ranges = {AssignmentRange(0, {true}, {assignment})};
+
+    FunctionDebugInfo debug{};
+    emitter::ObjectGenerator generator(version, emitter::InstructionSet::ARM64);
+    const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+    EXPECT_THROW(empty_pair.do_codegen_arm64(&generator, allocations, generator.add_ir(function)),
+                 std::runtime_error);
+  };
+
+  expect_rejected(GameVersion::Jak2, RegClass::GPR_64, TypeSpec("pair"), emitter::X0);
+  for (const auto destination : {emitter::X16, emitter::X21, emitter::SP}) {
+    expect_rejected(GameVersion::Jak1, RegClass::GPR_64, TypeSpec("pair"), destination);
+  }
+  expect_rejected(GameVersion::Jak1, RegClass::FLOAT, TypeSpec("float"), emitter::V0);
+}
+
 TEST(Arm64Aot, emits_guarded_arm64_integer_add_and_immediate_shift) {
   RegVal destination{{RegClass::GPR_64, 0}, TypeSpec("int")};
   RegVal source{{RegClass::GPR_64, 1}, TypeSpec("int")};
   IR_IntegerMath integer_add(IntegerMathKind::ADD_64, &destination, &source);
   IR_IntegerMath integer_shift(IntegerMathKind::SHL_64, &destination, u8(4));
+  IR_IntegerMath integer_shift_two(IntegerMathKind::SHL_64, &destination, u8(2));
   EXPECT_EQ(integer_shift.shift_amount(), 4);
+  EXPECT_EQ(integer_shift_two.shift_amount(), 2);
 
   Assignment destination_assignment;
   destination_assignment.kind = Assignment::Kind::REGISTER;
@@ -1190,8 +1315,10 @@ TEST(Arm64Aot, emits_guarded_arm64_integer_add_and_immediate_shift) {
   source_assignment.reg = emitter::X1;
   AllocationResult allocations;
   allocations.ass_as_ranges = {
-      AssignmentRange(0, {true, true}, {destination_assignment, destination_assignment}),
-      AssignmentRange(0, {true, true}, {source_assignment, source_assignment}),
+      AssignmentRange(0, {true, true, true},
+                      {destination_assignment, destination_assignment, destination_assignment}),
+      AssignmentRange(0, {true, true, false},
+                      {source_assignment, source_assignment, source_assignment}),
   };
 
   FunctionDebugInfo debug{};
@@ -1199,12 +1326,13 @@ TEST(Arm64Aot, emits_guarded_arm64_integer_add_and_immediate_shift) {
   const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
   integer_add.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
   integer_shift.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
+  integer_shift_two.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
   generator.add_instr_no_ir(function, emitter::IGen::ret(generator),
                             InstructionInfo::Kind::EPILOGUE);
 
   EXPECT_EQ(generator.materialize_arm64_function(function),
             (std::vector<u8>{0x00, 0x00, 0x01, 0x8b, 0x00, 0xec, 0x7c, 0xd3,
-                             0xc0, 0x03, 0x5f, 0xd6}));
+                             0x00, 0xf4, 0x7e, 0xd3, 0xc0, 0x03, 0x5f, 0xd6}));
 }
 
 TEST(Arm64Aot, rejects_integer_math_outside_the_guarded_arm64_aot_subset) {
@@ -1269,7 +1397,7 @@ TEST(Arm64Aot, rejects_integer_math_outside_the_guarded_arm64_aot_subset) {
     expect_rejected(shift_with_invalid_destination, {invalid});
   }
 
-  for (const auto shift_amount : {u8(3), u8(5), u8(63)}) {
+  for (const auto shift_amount : {u8(0), u8(3), u8(5), u8(63)}) {
     IR_IntegerMath shift_by_other_amount(IntegerMathKind::SHL_64, &destination, shift_amount);
     expect_rejected(shift_by_other_amount, {emitter::X0});
   }

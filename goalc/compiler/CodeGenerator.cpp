@@ -422,6 +422,162 @@ bool is_supported_want_levels_function(const FunctionEnv* env,
   return true;
 }
 
+bool is_supported_load_state_reset_function(const FunctionEnv* env,
+                                            const AllocationResult& allocations) {
+  const auto& code = env->code();
+  if (code.size() != 50) {
+    return false;
+  }
+
+  const TypeSpec load_state_type("load-state");
+  const TypeSpec basic_type("basic");
+  const TypeSpec none_type("none");
+  const auto ir_at = [&code](int index) -> const IR* {
+    return index >= 0 && index < int(code.size()) ? code.at(index).get() : nullptr;
+  };
+  const auto is_allocated_to = [&allocations](const RegVal* value,
+                                              int instruction,
+                                              emitter::Register expected) {
+    if (!value) {
+      return false;
+    }
+    const auto ireg_id = value->ireg().id;
+    if (ireg_id < 0 || ireg_id >= int(allocations.ass_as_ranges.size())) {
+      return false;
+    }
+    const auto& assignments = allocations.ass_as_ranges.at(ireg_id);
+    if (!assignments.is_live_at_instr(instruction)) {
+      return false;
+    }
+    const auto& assignment = assignments.get(instruction);
+    return assignment.kind == Assignment::Kind::REGISTER && assignment.reg == expected;
+  };
+  const auto reg_set_destination = [&](int index, const RegVal* source) -> const RegVal* {
+    const auto* set = dynamic_cast<const IR_RegSet*>(ir_at(index));
+    return set && set->source() == source && set->destination() ? set->destination() : nullptr;
+  };
+  const auto constant_destination = [&](int index, u64 value) -> const RegVal* {
+    const auto* constant = dynamic_cast<const IR_LoadConstant64*>(ir_at(index));
+    return constant && constant->value() == value && constant->destination()
+               ? constant->destination()
+               : nullptr;
+  };
+  const auto symbol_destination = [&](int index, const char* symbol) -> const RegVal* {
+    const auto* load = dynamic_cast<const IR_LoadSymbolPointer*>(ir_at(index));
+    return load && load->name() == symbol && load->destination()
+               ? load->destination()
+               : nullptr;
+  };
+  const auto matches_store = [&](int index, const RegVal* value, const RegVal* base, int offset) {
+    const auto* store = dynamic_cast<const IR_StoreConstOffset*>(ir_at(index));
+    return store && store->value() == value && store->base() == base && store->offset() == offset &&
+           store->size() == 4;
+  };
+  const auto matches_integer_math = [&](int index,
+                                        IntegerMathKind kind,
+                                        const RegVal* destination,
+                                        const RegVal* argument,
+                                        u8 shift_amount = 0) {
+    const auto* math = dynamic_cast<const IR_IntegerMath*>(ir_at(index));
+    return math && math->get_kind() == kind && math->destination() == destination &&
+           math->argument() == argument && math->shift_amount() == shift_amount;
+  };
+  const auto matches_goto = [&](int index, int destination_index) {
+    const auto* jump = dynamic_cast<const IR_GotoLabel*>(ir_at(index));
+    const auto* destination = jump ? jump->destination() : nullptr;
+    return jump && jump->is_resolved() && destination && destination->func == env &&
+           destination->idx == destination_index;
+  };
+  const auto matches_signed_lt_branch = [&](int index,
+                                            const RegVal* left,
+                                            const RegVal* right,
+                                            int destination_index) {
+    const auto* branch = dynamic_cast<const IR_ConditionalBranch*>(ir_at(index));
+    return branch && branch->is_resolved() &&
+           (branch->label.func == nullptr || branch->label.func == env) &&
+           branch->label.idx >= 0 && branch->label.idx < int(code.size()) &&
+           branch->label.idx == destination_index && branch->condition.kind == ConditionKind::LT &&
+           branch->condition.a == left && branch->condition.b == right &&
+           branch->condition.is_signed && !branch->condition.is_float;
+  };
+
+  const auto* value_reset = dynamic_cast<const IR_ValueReset*>(ir_at(0));
+  if (!value_reset || value_reset->args().size() != 1 ||
+      value_reset->args().front()->type() != load_state_type ||
+      !is_allocated_to(value_reset->args().front(), 0, emitter::X0)) {
+    return false;
+  }
+  const auto* this_value = reg_set_destination(1, value_reset->args().front());
+  if (!this_value || this_value->type() != load_state_type ||
+      !is_allocated_to(this_value, 1, emitter::X0)) {
+    return false;
+  }
+
+  for (int field = 0; field < 8; field++) {
+    const auto* false_value = symbol_destination(2 + 2 * field, "#f");
+    if (!false_value || !matches_store(3 + 2 * field, false_value, this_value, 4 * field)) {
+      return false;
+    }
+  }
+  const auto* empty_pair = symbol_destination(18, "_empty_");
+  if (!empty_pair || !matches_store(19, empty_pair, this_value, 36)) {
+    return false;
+  }
+
+  const auto* first_zero = constant_destination(20, 0);
+  const auto* counter = reg_set_destination(21, first_zero);
+  if (!first_zero || !counter || !matches_goto(22, 44)) {
+    return false;
+  }
+
+  const auto* object_name_false = symbol_destination(23, "#f");
+  const auto* object_name_shift = reg_set_destination(24, counter);
+  const auto* object_name_address = reg_set_destination(26, object_name_shift);
+  const auto* object_name_offset = constant_destination(27, 40);
+  const auto* object_name_base = object_name_offset;
+  if (!object_name_false || !object_name_shift || !object_name_address || !object_name_offset ||
+      !object_name_base ||
+      !matches_integer_math(25, IntegerMathKind::SHL_64, object_name_shift, nullptr, 2) ||
+      !matches_integer_math(28, IntegerMathKind::ADD_64, object_name_base, this_value) ||
+      !matches_integer_math(29, IntegerMathKind::ADD_64, object_name_address, object_name_base) ||
+      !matches_store(30, object_name_false, object_name_address, 0)) {
+    return false;
+  }
+
+  const auto* object_status_zero = constant_destination(31, 0);
+  const auto* object_status_value = reg_set_destination(32, object_status_zero);
+  const auto* object_status_shift = reg_set_destination(33, counter);
+  const auto* object_status_address = reg_set_destination(35, object_status_shift);
+  const auto* object_status_offset = constant_destination(36, 1064);
+  const auto* object_status_base = object_status_offset;
+  if (!object_status_zero || !object_status_value || object_status_value->type() != basic_type ||
+      !object_status_shift || !object_status_address ||
+      !object_status_offset || !object_status_base ||
+      !matches_integer_math(34, IntegerMathKind::SHL_64, object_status_shift, nullptr, 2) ||
+      !matches_integer_math(37, IntegerMathKind::ADD_64, object_status_base, this_value) ||
+      !matches_integer_math(38, IntegerMathKind::ADD_64, object_status_address, object_status_base) ||
+      !matches_store(39, object_status_value, object_status_address, 0)) {
+    return false;
+  }
+
+  const auto* increment = reg_set_destination(40, counter);
+  const auto* one = constant_destination(41, 1);
+  const auto* bound = constant_destination(44, 256);
+  const auto* result = symbol_destination(46, "#f");
+  const auto* function_return = dynamic_cast<const IR_Return*>(ir_at(48));
+  if (!increment || !one || !bound || !result ||
+      !matches_integer_math(42, IntegerMathKind::ADD_64, increment, one) ||
+      reg_set_destination(43, increment) != counter ||
+      !matches_signed_lt_branch(45, counter, bound, 23) || !dynamic_cast<const IR_Null*>(ir_at(47)) ||
+      !function_return || function_return->value() != this_value ||
+      function_return->return_register()->type() != none_type ||
+      !dynamic_cast<const IR_Null*>(ir_at(49))) {
+    return false;
+  }
+
+  return true;
+}
+
 }  // namespace
 
 CodeGenerator::CodeGenerator(FileEnv* env,
@@ -1061,16 +1217,20 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       want_vis_zero->value() == 0 && want_vis_return->value() == want_vis_zero->destination() &&
       want_vis_uses_apple_abi && dynamic_cast<IR_Null*>(code.at(6).get());
   const bool supported_want_levels_function = is_supported_want_levels_function(env, allocs);
+  const bool supported_load_state_reset_function =
+      is_supported_load_state_reset_function(env, allocs);
   if (!supported_top_level && !supported_false_function && !supported_true_function &&
       !supported_lognot_function && !supported_identity_function &&
       !supported_glst_node_name_function && !supported_level_group_load_commands_set_function &&
-      !supported_want_vis_function && !supported_want_levels_function) {
+      !supported_want_vis_function && !supported_want_levels_function &&
+      !supported_load_state_reset_function) {
     throw std::runtime_error(
         "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "
         "Jak 1 false or true function, one-argument identity function, or one-argument int lognot "
         "function, the one-argument Jak 1 glst-node-name function, the direct two-argument Jak "
-        "1 level-group load-commands-set! body, the direct two-argument Jak 1 want-vis body, or "
-        "the direct three-argument Jak 1 want-levels body.");
+        "1 level-group load-commands-set! body, the direct two-argument Jak 1 want-vis body, the "
+        "direct three-argument Jak 1 want-levels body, or the direct one-argument Jak 1 load-state "
+        "reset body.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());

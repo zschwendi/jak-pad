@@ -45,6 +45,11 @@ set(WANT_LEVELS_GOLDEN
 set(WANT_LEVELS_ASSEMBLY_ONLY "${OUTPUT_DIR}/want-levels-assembly-only.s")
 set(WANT_LEVELS_PAIRED_ASSEMBLY "${OUTPUT_DIR}/want-levels-paired.s")
 set(WANT_LEVELS_EXPORTS "${OUTPUT_DIR}/want-levels-paired.exports.inc")
+set(LOAD_STATE_RESET_INPUT
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-load-state-reset-from-jak1-load-boundary.gc")
+set(LOAD_STATE_RESET_GOLDEN
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-load-state-reset-from-jak1-load-boundary.s")
+set(LOAD_STATE_RESET_ASSEMBLY_ONLY "${OUTPUT_DIR}/load-state-reset-assembly-only.s")
 
 execute_process(
   COMMAND "${GOALC_AOT}"
@@ -836,6 +841,24 @@ string(REPLACE "_goalpad_aot_want_levels" "_goalpad_aot_load_state_want_levels"
 file(READ "${WANT_LEVELS_ASSEMBLY_ONLY}" ACTUAL_WANT_LEVELS_ASSEMBLY)
 if(NOT ACTUAL_WANT_LEVELS_ASSEMBLY STREQUAL EXPECTED_WANT_LEVELS_ASSEMBLY)
   message(FATAL_ERROR "Assembly-only want-levels artifact did not match the committed ARM64 golden")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOAD_STATE_RESET_INPUT}"
+          --function reset!
+          --output "${LOAD_STATE_RESET_ASSEMBLY_ONLY}"
+          --symbol goalpad_aot_load_state_reset
+  RESULT_VARIABLE LOAD_STATE_RESET_ASSEMBLY_ONLY_RESULT)
+if(NOT LOAD_STATE_RESET_ASSEMBLY_ONLY_RESULT EQUAL 0)
+  message(FATAL_ERROR "Assembly-only load-state reset goalc-aot invocation failed")
+endif()
+
+file(READ "${LOAD_STATE_RESET_GOLDEN}" EXPECTED_LOAD_STATE_RESET_ASSEMBLY)
+file(READ "${LOAD_STATE_RESET_ASSEMBLY_ONLY}" ACTUAL_LOAD_STATE_RESET_ASSEMBLY)
+if(NOT ACTUAL_LOAD_STATE_RESET_ASSEMBLY STREQUAL EXPECTED_LOAD_STATE_RESET_ASSEMBLY)
+  message(FATAL_ERROR "Assembly-only load-state reset artifact did not match the committed ARM64 golden")
 endif()
 
 execute_process(

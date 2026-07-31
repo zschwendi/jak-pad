@@ -325,8 +325,22 @@ void IR_LoadSymbolPointer::do_codegen_arm64(emitter::ObjectGenerator* gen,
     gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, st_reg), irec);
     gen->add_instr(IGen::add_gpr64_imm8s(*gen, dest_reg, true_symbol_offset(GameVersion::Jak1)),
                    irec);
+  } else if (m_name == "_empty_") {
+    if (gen->version() != GameVersion::Jak1) {
+      throw std::runtime_error("ARM64 AOT proof only supports the Jak 1 empty-pair symbol pointer.");
+    }
+    if (dest_reg.logical_id() < emitter::X0 || dest_reg.logical_id() > emitter::X15) {
+      throw std::runtime_error(
+          "ARM64 AOT proof requires an X0-X15 destination for the empty-pair symbol pointer.");
+    }
+    static_assert(empty_pair_offset_from_s7(GameVersion::Jak1) == -0xa,
+                  "Jak 1 empty pair symbol location");
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, st_reg), irec);
+    gen->add_instr(IGen::add_gpr64_imm8s(*gen, dest_reg,
+                                         empty_pair_offset_from_s7(GameVersion::Jak1)),
+                   irec);
   } else {
-    throw std::runtime_error("ARM64 AOT proof only supports the #f or #t symbol pointer.");
+    throw std::runtime_error("ARM64 AOT proof only supports the #f, #t, or _empty_ symbol pointer.");
   }
 }
 
@@ -892,8 +906,9 @@ void IR_IntegerMath::do_codegen_arm64(emitter::ObjectGenerator* gen,
         throw std::runtime_error(
             "ARM64 AOT proof requires an X0-X15 destination for immediate 64-bit integer SHL.");
       }
-      if (m_shift_amount != 4) {
-        throw std::runtime_error("ARM64 AOT proof requires an immediate 64-bit integer SHL by four.");
+      if (m_shift_amount != 2 && m_shift_amount != 4) {
+        throw std::runtime_error(
+            "ARM64 AOT proof requires an immediate 64-bit integer SHL by two or four.");
       }
       gen->add_instr(IGen::shl_gpr64_u8(*gen, destination, m_shift_amount), irec);
       return;

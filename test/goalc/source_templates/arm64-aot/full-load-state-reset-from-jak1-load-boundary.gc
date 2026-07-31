@@ -1,0 +1,39 @@
+;; AOT-only direct function form of the exact body of
+;; load-state::reset! in goal_src/jak1/engine/level/load-boundary.gc.
+;; This does not install or replace the runtime method.
+;; Preserve the real packed inline want-array and the complete load-state
+;; layout so dynamic field accesses retain their source offsets and stride.
+(deftype level-buffer-state (structure)
+  ((name symbol :offset-assert 0)
+   (display? symbol :offset-assert 4)
+   (force-vis? symbol :offset-assert 8)
+   (force-inside? symbol :offset-assert 12))
+  :pack-me
+  :size-assert #x10
+  :no-runtime-type
+  :no-inspect)
+
+(deftype load-state (basic)
+  ((want level-buffer-state 2 :inline :offset-assert #x4)
+   (vis-nick symbol :offset-assert #x24)
+   (command-list pair :offset-assert #x28)
+   (object-name symbol 256 :offset-assert #x2c)
+   (object-status basic 256 :offset-assert #x42c))
+  :size-assert #x82c
+  :no-runtime-type
+  :no-inspect)
+
+(defun reset! ((this load-state))
+  (set! (-> this want 0 name) #f)
+  (set! (-> this want 0 display?) #f)
+  (set! (-> this want 0 force-vis?) #f)
+  (set! (-> this want 0 force-inside?) #f)
+  (set! (-> this want 1 name) #f)
+  (set! (-> this want 1 display?) #f)
+  (set! (-> this want 1 force-vis?) #f)
+  (set! (-> this want 1 force-inside?) #f)
+  (set! (-> this command-list) '())
+  (dotimes (v1-1 256)
+    (set! (-> this object-name v1-1) #f)
+    (set! (-> this object-status v1-1) (the-as basic 0)))
+  this)
