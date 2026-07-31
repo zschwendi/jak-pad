@@ -158,9 +158,12 @@ std::vector<u8> ObjectGenerator::materialize_arm64_function(
   }
 
   for (int seg = 0; seg < N_SEG; seg++) {
+    if (seg != function.seg && !m_jump_temp_links_by_seg.at(seg).empty()) {
+      throw std::runtime_error(
+          "ARM64 AOT materialization does not support branch links outside the target segment.");
+    }
     if (!m_static_data_by_seg.at(seg).empty() || !m_data_by_seg.at(seg).empty() ||
         !m_link_by_seg.at(seg).empty() || !m_static_type_temp_links_by_seg.at(seg).empty() ||
-        !m_jump_temp_links_by_seg.at(seg).empty() ||
         !m_symbol_instr_temp_links_by_seg.at(seg).empty() ||
         !m_static_sym_temp_links_by_seg.at(seg).empty() ||
         !m_static_data_temp_ptr_links_by_seg.at(seg).empty() ||
@@ -176,16 +179,61 @@ std::vector<u8> ObjectGenerator::materialize_arm64_function(
 
   const auto& function_data = m_function_data_by_seg.at(function.seg).at(function.func_id);
   std::vector<u8> code;
+  std::vector<int> instruction_offsets;
   for (const auto& instruction : function_data.instructions) {
     if (!std::holds_alternative<InstructionARM64>(instruction.instr)) {
       throw std::runtime_error("ARM64 AOT materialization received a non-ARM64 instruction.");
     }
+    instruction_offsets.push_back(int(code.size()));
     u8 encoded[InstructionARM64::kMaxInstrs * sizeof(u32)];
     const auto count = instruction.emit(encoded);
     if (count % sizeof(u32) != 0) {
       throw std::runtime_error("ARM64 AOT materialization emitted a partial instruction word.");
     }
     code.insert(code.end(), encoded, encoded + count);
+  }
+
+  for (const auto& link : m_jump_temp_links_by_seg.at(function.seg)) {
+    if (link.jump_instr.func_id != function.func_id || link.dest.func_id != function.func_id ||
+        link.jump_instr.ir_id < 0 || link.dest.ir_id < 0 ||
+        link.jump_instr.instr_id < 0 ||
+        link.jump_instr.instr_id >= int(instruction_offsets.size()) ||
+        link.dest.ir_id >= int(function_data.ir_to_instruction.size())) {
+      throw std::runtime_error("ARM64 AOT materialization received an invalid local branch link.");
+    }
+
+    const auto destination_instruction = function_data.ir_to_instruction.at(link.dest.ir_id);
+    if (destination_instruction < 0 || destination_instruction >= int(instruction_offsets.size())) {
+      throw std::runtime_error("ARM64 AOT materialization received an invalid branch destination.");
+    }
+
+    const auto branch_offset = instruction_offsets.at(link.jump_instr.instr_id);
+    const auto destination_offset = instruction_offsets.at(destination_instruction);
+    const auto byte_distance = destination_offset - branch_offset;
+    if (byte_distance % int(sizeof(u32)) != 0 || branch_offset < 0 ||
+        branch_offset + int(sizeof(u32)) > int(code.size())) {
+      throw std::runtime_error("ARM64 AOT materialization received an unaligned branch link.");
+    }
+
+    u32 instruction = 0;
+    memcpy(&instruction, code.data() + branch_offset, sizeof(instruction));
+    const auto instruction_distance = byte_distance / int(sizeof(u32));
+    if ((instruction & 0xfc000000u) == 0x14000000u) {
+      if (instruction_distance < -(1 << 25) || instruction_distance >= (1 << 25)) {
+        throw std::runtime_error("ARM64 AOT unconditional branch exceeds its signed 26-bit range.");
+      }
+      instruction = (instruction & ~0x03ffffffu) |
+                    (static_cast<u32>(instruction_distance) & 0x03ffffffu);
+    } else if ((instruction & 0xff000010u) == 0x54000000u) {
+      if (instruction_distance < -(1 << 18) || instruction_distance >= (1 << 18)) {
+        throw std::runtime_error("ARM64 AOT conditional branch exceeds its signed 19-bit range.");
+      }
+      instruction = (instruction & ~0x00ffffe0u) |
+                    ((static_cast<u32>(instruction_distance) & 0x0007ffffu) << 5);
+    } else {
+      throw std::runtime_error("ARM64 AOT materialization received an unsupported branch opcode.");
+    }
+    memcpy(code.data() + branch_offset, &instruction, sizeof(instruction));
   }
 
   if (code.empty()) {
@@ -294,9 +342,9 @@ void ObjectGenerator::link_static_type_ptr(StaticRecord rec,
  * use get_future_ir.
  */
 void ObjectGenerator::link_instruction_jump(InstructionRecord jump_instr, IR_Record destination) {
-  // must jump within our own function.
-  ASSERT(jump_instr.seg == destination.seg);
-  ASSERT(jump_instr.func_id == destination.func_id);
+  if (jump_instr.seg != destination.seg || jump_instr.func_id != destination.func_id) {
+    throw std::runtime_error("Instruction jumps must remain within one function and segment.");
+  }
   m_jump_temp_links_by_seg.at(jump_instr.seg).push_back({jump_instr, destination});
 }
 

@@ -491,7 +491,12 @@ void IR_GotoLabel::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_GotoLabel::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                     const AllocationResult& allocs,
                                     emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_GotoLabel::do_codegen_arm64");
+  (void)allocs;
+  if (!m_resolved || !m_dest || m_dest->idx < 0) {
+    throw std::runtime_error("ARM64 AOT proof requires a resolved forward or backward label.");
+  }
+  const auto jump = gen->add_instr(IGen::jmp_imm(*gen), irec);
+  gen->link_instruction_jump(jump, gen->get_future_ir_record_in_same_func(irec, m_dest->idx));
 }
 
 void IR_GotoLabel::resolve(const Label* dest) {
@@ -1103,7 +1108,46 @@ void IR_ConditionalBranch::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_ConditionalBranch::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                             const AllocationResult& allocs,
                                             emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_ConditionalBranch::do_codegen_arm64");
+  if (!m_resolved || label.idx < 0) {
+    throw std::runtime_error("ARM64 AOT proof requires a resolved conditional branch label.");
+  }
+  if (condition.is_float || condition.a->ireg().reg_class != RegClass::GPR_64 ||
+      condition.b->ireg().reg_class != RegClass::GPR_64) {
+    throw std::runtime_error("ARM64 AOT proof only supports GPR conditional branches.");
+  }
+
+  const auto a = get_reg(condition.a, allocs, irec);
+  const auto b = get_reg(condition.b, allocs, irec);
+  if (!a.is_gpr(gen->instr_set()) || !b.is_gpr(gen->instr_set()) || a == ARM64_REG::SP ||
+      b == ARM64_REG::SP) {
+    throw std::runtime_error("ARM64 AOT proof requires non-stack GPR conditional operands.");
+  }
+
+  Instruction jump = InstructionARM64(0);
+  switch (condition.kind) {
+    case ConditionKind::EQUAL:
+      jump = IGen::je_imm(*gen);
+      break;
+    case ConditionKind::NOT_EQUAL:
+      jump = IGen::jne_imm(*gen);
+      break;
+    case ConditionKind::GEQ:
+      if (!condition.is_signed) {
+        throw std::runtime_error(
+            "ARM64 AOT proof only supports signed greater-than-or-equal conditional branches.");
+      }
+      jump = IGen::jge_imm(*gen);
+      break;
+    default:
+      throw std::runtime_error(
+          "ARM64 AOT proof only supports equality or signed greater-than-or-equal conditional "
+          "branches.");
+  }
+
+  gen->add_instr(IGen::cmp_gpr64_gpr64(*gen, a, b), irec);
+  const auto jump_record = gen->add_instr(jump, irec);
+  gen->link_instruction_jump(jump_record,
+                             gen->get_future_ir_record_in_same_func(irec, label.idx));
 }
 
 /////////////////////
