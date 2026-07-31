@@ -1224,7 +1224,27 @@ void IR_StoreConstOffset::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                            const AllocationResult& allocs,
                                            emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_StoreConstOffset::do_codegen_arm64");
+  const auto base_reg = m_use_coloring ? get_reg(m_base, allocs, irec) : get_no_color_reg(m_base);
+  const auto value_reg =
+      m_use_coloring ? get_reg(m_value, allocs, irec) : get_no_color_reg(m_value);
+
+  if (m_value->ireg().reg_class == RegClass::GPR_64 &&
+      m_base->ireg().reg_class == RegClass::GPR_64 && m_size == 4) {
+    if (m_offset != 0 && (base_reg == emitter::X16 || value_reg == emitter::X16)) {
+      throw std::runtime_error(
+          "ARM64 constant-offset GPR stores cannot use X16 as a nonzero-offset base or value");
+    }
+    gen->add_instr(
+        IGen::store_goal_gpr(*gen, base_reg, value_reg,
+                             emitter::get_register_info(gen->instr_set()).get_offset_reg(),
+                             m_offset, m_size),
+        irec);
+    return;
+  }
+
+  throw std::runtime_error(
+      fmt::format("IR_StoreConstOffset::do_codegen_arm64 can't handle this (c {} sz {})",
+                  fmt::underlying(m_value->ireg().reg_class), m_size));
 }
 
 ///////////////////////

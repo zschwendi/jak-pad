@@ -498,6 +498,10 @@ class IR_StoreConstOffset : public IR_Asm {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const RegVal* value() const { return m_value; }
+  int offset() const { return m_offset; }
+  const RegVal* base() const { return m_base; }
+  int size() const { return m_size; }
 
  private:
   const RegVal* m_value = nullptr;

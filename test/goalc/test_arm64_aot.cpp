@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/util/FileUtil.h"
@@ -206,6 +207,32 @@ TEST(Arm64Aot, compiles_full_jak1_glst_node_name_and_renders_apple_text) {
             ".subsections_via_symbols\n");
 }
 
+TEST(Arm64Aot, compiles_direct_jak1_level_group_load_commands_set_and_renders_apple_text) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(
+      file_util::get_file_path({"test/goalc/source_templates/arm64-aot/"
+                                "full-level-group-load-commands-set-from-jak1-level.gc"}));
+  const auto code = compiler.compile_arm64_aot_source(
+      source, "full-level-group-load-commands-set-from-jak1-level",
+      std::optional<std::string>{"level-group-load-commands-set!"});
+
+  EXPECT_EQ(code, (std::vector<u8>{0x10, 0x00, 0x16, 0x8b, 0x10, 0x82, 0x00, 0x91, 0x01, 0x02,
+                                   0x00, 0xb9, 0xe0, 0x03, 0x01, 0xaa, 0xc0, 0x03, 0x5f, 0xd6}));
+
+  const aot::AppleArm64Function function{"goalpad_aot_level_group_load_commands_set", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            ".section __TEXT,__text,regular,pure_instructions\n"
+            ".p2align 2\n"
+            ".globl _goalpad_aot_level_group_load_commands_set\n"
+            "_goalpad_aot_level_group_load_commands_set:\n"
+            "  .long 0x8b160010\n"
+            "  .long 0x91008210\n"
+            "  .long 0xb9000201\n"
+            "  .long 0xaa0103e0\n"
+            "  .long 0xd65f03c0\n"
+            ".subsections_via_symbols\n");
+}
+
 TEST(Arm64Aot, renders_zero_argument_native_export_metadata) {
   const aot::NativeExport0 native_export{"false-func", "goalpad_aot_false_func"};
 
@@ -256,6 +283,18 @@ TEST(Arm64Aot, renders_glst_node_name_one_argument_native_export_metadata) {
             "OPENGOAL_AOT_EXPORT1(\"glst-node-name\", goalpad_aot_glst_node_name)\n");
 }
 
+TEST(Arm64Aot, renders_level_group_load_commands_set_two_argument_native_export_metadata) {
+  const aot::NativeExport2 native_export{"level-group-load-commands-set!",
+                                         "goalpad_aot_level_group_load_commands_set"};
+
+  EXPECT_EQ(aot::render_cpp_xmacro_export2(native_export),
+            "#ifndef OPENGOAL_AOT_EXPORT2\n"
+            "#error \"Define OPENGOAL_AOT_EXPORT2 before including this file.\"\n"
+            "#endif\n"
+            "OPENGOAL_AOT_EXPORT2(\"level-group-load-commands-set!\", "
+            "goalpad_aot_level_group_load_commands_set)\n");
+}
+
 TEST(Arm64Aot, rejects_native_exports_outside_the_zero_argument_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export0({"", "goalpad_aot_false_func"}),
                std::invalid_argument);
@@ -300,6 +339,20 @@ TEST(Arm64Aot, rejects_native_exports_outside_the_one_argument_proof) {
   EXPECT_THROW(aot::render_cpp_xmacro_export1({"identity", "goalpad_aot_glst_node_name"}),
                std::invalid_argument);
   EXPECT_THROW(aot::render_cpp_xmacro_export1({"glst-node-name", "goalpad_aot_false_func"}),
+               std::invalid_argument);
+}
+
+TEST(Arm64Aot, rejects_native_exports_outside_the_two_argument_proof) {
+  EXPECT_THROW(aot::render_cpp_xmacro_export2({"", "goalpad_aot_level_group_load_commands_set"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export2(
+                   {"load-commands-set!", "goalpad_aot_level_group_load_commands_set"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export2(
+                   {"level-group-load-commands-set!", "goalpad_aot_glst_node_name"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export2(
+                   {"glst-node-name", "goalpad_aot_level_group_load_commands_set"}),
                std::invalid_argument);
 }
 
@@ -511,6 +564,188 @@ TEST(Arm64Aot, rejects_glst_node_name_with_multiple_parameters) {
 
   EXPECT_THROW(compiler.compile_arm64_aot_source(source, "glst-node-name-with-two-parameters",
                                                  std::optional<std::string>{"glst-node-name"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_level_group_load_commands_set_with_a_different_body) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(
+      file_util::get_file_path({"test/goalc/source_templates/arm64-aot/"
+                                "full-level-group-load-commands-set-from-jak1-level.gc"}));
+  const std::string expected_body = "(set! (-> this load-commands) load-commands)";
+  const auto body_position = source.find(expected_body);
+  ASSERT_NE(body_position, std::string::npos);
+  source.replace(body_position, expected_body.size(), "this");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(
+                   source, "level-group-load-commands-set-with-identity-body",
+                   std::optional<std::string>{"level-group-load-commands-set!"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_level_group_load_commands_set_body_under_a_different_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(
+      file_util::get_file_path({"test/goalc/source_templates/arm64-aot/"
+                                "full-level-group-load-commands-set-from-jak1-level.gc"}));
+  const std::string expected_definition = "(defun level-group-load-commands-set!";
+  const auto definition_position = source.find(expected_definition);
+  ASSERT_NE(definition_position, std::string::npos);
+  source.replace(definition_position, expected_definition.size(),
+                 "(defun other-load-commands-set!");
+
+  EXPECT_THROW(
+      compiler.compile_arm64_aot_source(source, "other-level-group-load-commands-set",
+                                        std::optional<std::string>{"other-load-commands-set!"}),
+      std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_level_group_load_commands_set_with_a_different_field_offset) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(
+      file_util::get_file_path({"test/goalc/source_templates/arm64-aot/"
+                                "full-level-group-load-commands-set-from-jak1-level.gc"}));
+  const std::string expected_fields =
+      "(pad uint8 32)\n   (load-commands pair :offset #x24 :offset-assert #x24)";
+  const std::string shifted_fields =
+      "(pad uint8 36)\n   (load-commands pair :offset #x28 :offset-assert #x28)";
+  const auto fields_position = source.find(expected_fields);
+  ASSERT_NE(fields_position, std::string::npos);
+  source.replace(fields_position, expected_fields.size(), shifted_fields);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(
+                   source, "level-group-load-commands-set-with-shifted-field",
+                   std::optional<std::string>{"level-group-load-commands-set!"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_level_group_load_commands_set_with_a_non_pair_value) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(
+      file_util::get_file_path({"test/goalc/source_templates/arm64-aot/"
+                                "full-level-group-load-commands-set-from-jak1-level.gc"}));
+  const std::string expected_parameter = "(load-commands pair)";
+  const auto parameter_position = source.find(expected_parameter);
+  ASSERT_NE(parameter_position, std::string::npos);
+  source.replace(parameter_position, expected_parameter.size(), "(load-commands symbol)");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(
+                   source, "level-group-load-commands-set-with-symbol-value",
+                   std::optional<std::string>{"level-group-load-commands-set!"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_level_group_load_commands_set_with_a_non_pair_field) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(
+      file_util::get_file_path({"test/goalc/source_templates/arm64-aot/"
+                                "full-level-group-load-commands-set-from-jak1-level.gc"}));
+  const std::string expected_field = "(load-commands pair :offset #x24 :offset-assert #x24)";
+  const auto field_position = source.find(expected_field);
+  ASSERT_NE(field_position, std::string::npos);
+  source.replace(field_position, expected_field.size(),
+                 "(load-commands symbol :offset #x24 :offset-assert #x24)");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(
+                   source, "level-group-load-commands-set-with-symbol-field",
+                   std::optional<std::string>{"level-group-load-commands-set!"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_level_group_load_commands_set_with_multiple_parameters) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  auto source = file_util::read_text_file(
+      file_util::get_file_path({"test/goalc/source_templates/arm64-aot/"
+                                "full-level-group-load-commands-set-from-jak1-level.gc"}));
+  const std::string expected_parameters = "((this level-group) (load-commands pair))";
+  const auto parameters_position = source.find(expected_parameters);
+  ASSERT_NE(parameters_position, std::string::npos);
+  source.replace(parameters_position, expected_parameters.size(),
+                 "((this level-group) (load-commands pair) (arg2 object))");
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(
+                   source, "level-group-load-commands-set-with-three-parameters",
+                   std::optional<std::string>{"level-group-load-commands-set!"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, emits_arm64_constant_offset_gpr_store_using_the_target_goal_base) {
+  RegVal value{{RegClass::GPR_64, 0}, TypeSpec("pair")};
+  RegVal base{{RegClass::GPR_64, 1}, TypeSpec("level-group")};
+  IR_StoreConstOffset store(&value, 0x20, &base, 4);
+
+  Assignment value_assignment;
+  value_assignment.kind = Assignment::Kind::REGISTER;
+  value_assignment.reg = emitter::X1;
+  Assignment base_assignment;
+  base_assignment.kind = Assignment::Kind::REGISTER;
+  base_assignment.reg = emitter::X0;
+  AllocationResult allocations;
+  allocations.ass_as_ranges = {
+      AssignmentRange(0, {true}, {value_assignment}),
+      AssignmentRange(0, {true}, {base_assignment}),
+  };
+
+  FunctionDebugInfo debug{};
+  emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+  store.do_codegen_arm64(&generator, allocations, generator.add_ir(function));
+  generator.add_instr_no_ir(function, emitter::IGen::ret(generator),
+                            InstructionInfo::Kind::EPILOGUE);
+
+  EXPECT_EQ(generator.materialize_arm64_function(function),
+            (std::vector<u8>{0x10, 0x00, 0x16, 0x8b, 0x10, 0x82, 0x00, 0x91, 0x01, 0x02, 0x00, 0xb9,
+                             0xc0, 0x03, 0x5f, 0xd6}));
+}
+
+TEST(Arm64Aot, rejects_arm64_constant_offset_gpr_store_that_aliases_x16) {
+  for (const auto [value_register, base_register] :
+       {std::pair{emitter::X16, emitter::X0}, std::pair{emitter::X1, emitter::X16}}) {
+    RegVal value{{RegClass::GPR_64, 0}, TypeSpec("pair")};
+    RegVal base{{RegClass::GPR_64, 1}, TypeSpec("level-group")};
+    IR_StoreConstOffset store(&value, 0x20, &base, 4);
+
+    Assignment value_assignment;
+    value_assignment.kind = Assignment::Kind::REGISTER;
+    value_assignment.reg = value_register;
+    Assignment base_assignment;
+    base_assignment.kind = Assignment::Kind::REGISTER;
+    base_assignment.reg = base_register;
+    AllocationResult allocations;
+    allocations.ass_as_ranges = {
+        AssignmentRange(0, {true}, {value_assignment}),
+        AssignmentRange(0, {true}, {base_assignment}),
+    };
+
+    FunctionDebugInfo debug{};
+    emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+    const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+    EXPECT_THROW(store.do_codegen_arm64(&generator, allocations, generator.add_ir(function)),
+                 std::runtime_error);
+  }
+}
+
+TEST(Arm64Aot, rejects_arm64_constant_offset_gpr_store_outside_the_four_byte_proof) {
+  RegVal value{{RegClass::GPR_64, 0}, TypeSpec("pair")};
+  RegVal base{{RegClass::GPR_64, 1}, TypeSpec("level-group")};
+  IR_StoreConstOffset store(&value, 0x20, &base, 8);
+
+  Assignment value_assignment;
+  value_assignment.kind = Assignment::Kind::REGISTER;
+  value_assignment.reg = emitter::X1;
+  Assignment base_assignment;
+  base_assignment.kind = Assignment::Kind::REGISTER;
+  base_assignment.reg = emitter::X0;
+  AllocationResult allocations;
+  allocations.ass_as_ranges = {
+      AssignmentRange(0, {true}, {value_assignment}),
+      AssignmentRange(0, {true}, {base_assignment}),
+  };
+
+  FunctionDebugInfo debug{};
+  emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+  EXPECT_THROW(store.do_codegen_arm64(&generator, allocations, generator.add_ir(function)),
                std::runtime_error);
 }
 

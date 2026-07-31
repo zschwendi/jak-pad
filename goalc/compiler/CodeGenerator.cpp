@@ -641,13 +641,75 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
       glst_node_name_load->info().size == 4 && !glst_node_name_load->info().sign_extend &&
       glst_node_name_return->value() == glst_node_name_load->destination() &&
       glst_node_name_uses_apple_abi && dynamic_cast<IR_Null*>(code.at(4).get());
+  const auto* level_group_load_commands_value_reset =
+      code.size() == 6 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
+  const auto* level_group_load_commands_this_move =
+      code.size() == 6 ? dynamic_cast<IR_RegSet*>(code.at(1).get()) : nullptr;
+  const auto* level_group_load_commands_value_move =
+      code.size() == 6 ? dynamic_cast<IR_RegSet*>(code.at(2).get()) : nullptr;
+  const auto* level_group_load_commands_store =
+      code.size() == 6 ? dynamic_cast<IR_StoreConstOffset*>(code.at(3).get()) : nullptr;
+  const auto* level_group_load_commands_return =
+      code.size() == 6 ? dynamic_cast<IR_Return*>(code.at(4).get()) : nullptr;
+  const auto* level_group_load_commands_this_argument =
+      level_group_load_commands_value_reset &&
+              level_group_load_commands_value_reset->args().size() == 2
+          ? level_group_load_commands_value_reset->args().at(0)
+          : nullptr;
+  const auto* level_group_load_commands_value_argument =
+      level_group_load_commands_value_reset &&
+              level_group_load_commands_value_reset->args().size() == 2
+          ? level_group_load_commands_value_reset->args().at(1)
+          : nullptr;
+  const auto second_argument_register = register_info.get_gpr_arg_reg(1);
+  const bool level_group_load_commands_uses_apple_abi =
+      level_group_load_commands_this_argument && level_group_load_commands_value_argument &&
+      level_group_load_commands_this_move && level_group_load_commands_value_move &&
+      level_group_load_commands_store && level_group_load_commands_return &&
+      is_allocated_to(level_group_load_commands_this_argument, 0, first_argument_register) &&
+      is_allocated_to(level_group_load_commands_value_argument, 0, second_argument_register) &&
+      is_allocated_to(level_group_load_commands_this_move->source(), 1, first_argument_register) &&
+      is_allocated_to(level_group_load_commands_this_move->destination(), 1,
+                      first_argument_register) &&
+      is_allocated_to(level_group_load_commands_value_move->source(), 2,
+                      second_argument_register) &&
+      is_allocated_to(level_group_load_commands_value_move->destination(), 2,
+                      second_argument_register) &&
+      is_allocated_to(level_group_load_commands_store->base(), 3, first_argument_register) &&
+      is_allocated_to(level_group_load_commands_store->value(), 3, second_argument_register) &&
+      is_allocated_to(level_group_load_commands_return->value(), 4, second_argument_register);
+  const bool supported_level_group_load_commands_set_function =
+      env->name() == "level-group-load-commands-set!" && level_group_load_commands_this_argument &&
+      level_group_load_commands_value_argument && level_group_load_commands_this_move &&
+      level_group_load_commands_value_move && level_group_load_commands_store &&
+      level_group_load_commands_return &&
+      level_group_load_commands_this_argument->type() == TypeSpec("level-group") &&
+      level_group_load_commands_this_argument->ireg().reg_class == RegClass::GPR_64 &&
+      level_group_load_commands_value_argument->type() == TypeSpec("pair") &&
+      level_group_load_commands_value_argument->ireg().reg_class == RegClass::GPR_64 &&
+      level_group_load_commands_this_move->source() == level_group_load_commands_this_argument &&
+      level_group_load_commands_this_move->destination()->type() == TypeSpec("level-group") &&
+      level_group_load_commands_this_move->destination()->ireg().reg_class == RegClass::GPR_64 &&
+      level_group_load_commands_value_move->source() == level_group_load_commands_value_argument &&
+      level_group_load_commands_value_move->destination()->type() == TypeSpec("pair") &&
+      level_group_load_commands_value_move->destination()->ireg().reg_class == RegClass::GPR_64 &&
+      level_group_load_commands_store->base() ==
+          level_group_load_commands_this_move->destination() &&
+      level_group_load_commands_store->value() ==
+          level_group_load_commands_value_move->destination() &&
+      level_group_load_commands_store->offset() == 0x20 &&
+      level_group_load_commands_store->size() == 4 &&
+      level_group_load_commands_return->value() ==
+          level_group_load_commands_value_move->destination() &&
+      level_group_load_commands_uses_apple_abi && dynamic_cast<IR_Null*>(code.at(5).get());
   if (!supported_top_level && !supported_false_function && !supported_true_function &&
       !supported_lognot_function && !supported_identity_function &&
-      !supported_glst_node_name_function) {
+      !supported_glst_node_name_function && !supported_level_group_load_commands_set_function) {
     throw std::runtime_error(
         "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "
         "Jak 1 false or true function, one-argument identity function, or one-argument int lognot "
-        "function, or the one-argument Jak 1 glst-node-name function.");
+        "function, the one-argument Jak 1 glst-node-name function, or the direct two-argument "
+        "Jak 1 level-group load-commands-set! body.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());

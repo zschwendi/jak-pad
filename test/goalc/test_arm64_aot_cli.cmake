@@ -25,6 +25,14 @@ set(GLST_NODE_NAME_INPUT
 set(GLST_NODE_NAME_ASSEMBLY_ONLY "${OUTPUT_DIR}/glst-node-name-assembly-only.s")
 set(GLST_NODE_NAME_PAIRED_ASSEMBLY "${OUTPUT_DIR}/glst-node-name-paired.s")
 set(GLST_NODE_NAME_EXPORTS "${OUTPUT_DIR}/glst-node-name-paired.exports.inc")
+set(LEVEL_GROUP_LOAD_COMMANDS_SET_INPUT
+    "${PROJECT_ROOT}/test/goalc/source_templates/arm64-aot/full-level-group-load-commands-set-from-jak1-level.gc")
+set(LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY_ONLY
+    "${OUTPUT_DIR}/level-group-load-commands-set-assembly-only.s")
+set(LEVEL_GROUP_LOAD_COMMANDS_SET_PAIRED_ASSEMBLY
+    "${OUTPUT_DIR}/level-group-load-commands-set-paired.s")
+set(LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS
+    "${OUTPUT_DIR}/level-group-load-commands-set-paired.exports.inc")
 
 execute_process(
   COMMAND "${GOALC_AOT}"
@@ -645,4 +653,86 @@ if(NOT ACTUAL_GLST_NODE_NAME_CROSS_ASSEMBLY STREQUAL
        "old glst-node-name cross assembly\n" OR
    NOT ACTUAL_GLST_NODE_NAME_CROSS_EXPORTS STREQUAL "old glst-node-name cross exports\n")
   message(FATAL_ERROR "Failed glst-node-name cross-ABI generation modified an existing artifact")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LEVEL_GROUP_LOAD_COMMANDS_SET_INPUT}"
+          --function level-group-load-commands-set!
+          --output "${LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY_ONLY}"
+          --symbol goalpad_aot_level_group_load_commands_set
+  RESULT_VARIABLE LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY_ONLY_RESULT)
+if(NOT LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY_ONLY_RESULT EQUAL 0)
+  message(FATAL_ERROR "Assembly-only level-group-load-commands-set! goalc-aot invocation failed")
+endif()
+
+file(READ "${LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY_ONLY}"
+     ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY)
+set(EXPECTED_LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY
+    ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n.globl _goalpad_aot_level_group_load_commands_set\n_goalpad_aot_level_group_load_commands_set:\n  .long 0x8b160010\n  .long 0x91008210\n  .long 0xb9000201\n  .long 0xaa0103e0\n  .long 0xd65f03c0\n.subsections_via_symbols\n")
+if(NOT ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY STREQUAL
+       EXPECTED_LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY)
+  message(FATAL_ERROR "Assembly-only level-group-load-commands-set! artifact did not match the expected ARM64 code")
+endif()
+
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LEVEL_GROUP_LOAD_COMMANDS_SET_INPUT}"
+          --function level-group-load-commands-set!
+          --output "${LEVEL_GROUP_LOAD_COMMANDS_SET_PAIRED_ASSEMBLY}"
+          --exports-output "${LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS}"
+          --symbol goalpad_aot_level_group_load_commands_set
+  RESULT_VARIABLE LEVEL_GROUP_LOAD_COMMANDS_SET_PAIRED_RESULT)
+if(NOT LEVEL_GROUP_LOAD_COMMANDS_SET_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "Paired level-group-load-commands-set! goalc-aot invocation failed")
+endif()
+
+file(SHA256 "${LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY_ONLY}"
+     LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY_ONLY_SHA256)
+file(SHA256 "${LEVEL_GROUP_LOAD_COMMANDS_SET_PAIRED_ASSEMBLY}"
+     LEVEL_GROUP_LOAD_COMMANDS_SET_PAIRED_ASSEMBLY_SHA256)
+if(NOT LEVEL_GROUP_LOAD_COMMANDS_SET_ASSEMBLY_ONLY_SHA256 STREQUAL
+       LEVEL_GROUP_LOAD_COMMANDS_SET_PAIRED_ASSEMBLY_SHA256)
+  message(FATAL_ERROR "Adding level-group-load-commands-set! export metadata changed the ARM64 assembly")
+endif()
+
+file(READ "${LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS}"
+     ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS)
+set(EXPECTED_LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS
+    "#ifndef OPENGOAL_AOT_EXPORT2\n#error \"Define OPENGOAL_AOT_EXPORT2 before including this file.\"\n#endif\nOPENGOAL_AOT_EXPORT2(\"level-group-load-commands-set!\", goalpad_aot_level_group_load_commands_set)\n")
+if(NOT ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS STREQUAL
+       EXPECTED_LEVEL_GROUP_LOAD_COMMANDS_SET_EXPORTS)
+  message(FATAL_ERROR "Generated level-group-load-commands-set! export metadata did not match the expected record")
+endif()
+
+set(LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_ASSEMBLY
+    "${OUTPUT_DIR}/level-group-load-commands-set-cross.s")
+set(LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_EXPORTS
+    "${OUTPUT_DIR}/level-group-load-commands-set-cross.exports.inc")
+file(WRITE "${LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_ASSEMBLY}" "old level-group cross assembly\n")
+file(WRITE "${LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_EXPORTS}" "old level-group cross exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LEVEL_GROUP_LOAD_COMMANDS_SET_INPUT}"
+          --function level-group-load-commands-set!
+          --output "${LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_ASSEMBLY}"
+          --exports-output "${LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_EXPORTS}"
+          --symbol goalpad_aot_glst_node_name
+  RESULT_VARIABLE LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_ABI_RESULT)
+if(LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_ABI_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted level-group-load-commands-set! with the Export1 symbol")
+endif()
+
+file(READ "${LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_ASSEMBLY}"
+     ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_ASSEMBLY)
+file(READ "${LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_EXPORTS}"
+     ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_EXPORTS)
+if(NOT ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_ASSEMBLY STREQUAL
+       "old level-group cross assembly\n" OR
+   NOT ACTUAL_LEVEL_GROUP_LOAD_COMMANDS_SET_CROSS_EXPORTS STREQUAL
+       "old level-group cross exports\n")
+  message(FATAL_ERROR "Failed level-group-load-commands-set! cross-ABI generation modified an existing artifact")
 endif()
