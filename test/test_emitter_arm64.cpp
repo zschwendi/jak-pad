@@ -1,10 +1,25 @@
 #include "emitter_util.h"
 
+#include <array>
+
 #include "goalc/emitter/CodeTester.h"
 #include "goalc/emitter/IGen.h"
+#include "goalc/emitter/IGenARM64.h"
 #include "gtest/gtest.h"
 
 using namespace emitter;
+
+TEST(ARM64EmitterLoads, mov_gpr64_u64_encodes_immediate_and_shift) {
+  std::array<u8, 4> code{};
+
+  auto literal = IGen::ARM64::mov_gpr64_u64(X0, 42);
+  EXPECT_EQ(literal.emit(code.data()), code.size());
+  EXPECT_EQ(code, (std::array<u8, 4>{0x40, 0x05, 0x80, 0xd2}));
+
+  auto shifted = IGen::ARM64::mov_gpr64_u64(X0, 0x10000);
+  EXPECT_EQ(shifted.emit(code.data()), code.size());
+  EXPECT_EQ(code, (std::array<u8, 4>{0x20, 0x00, 0xa0, 0xd2}));
+}
 
 TEST(ARM64EmitterIntegerMath, add_gpr64_imm8s) {
   CodeTester tester(InstructionSet::ARM64);

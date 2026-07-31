@@ -201,7 +201,26 @@ void IR_Return::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_Return::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                  const AllocationResult& allocs,
                                  emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_Return::do_codegen_arm64");
+  if (m_value->ireg().reg_class != RegClass::GPR_64 ||
+      m_return_reg->ireg().reg_class != RegClass::GPR_64) {
+    throw std::runtime_error("ARM64 AOT proof only supports GPR returns.");
+  }
+
+  const auto value_reg = get_reg(m_value, allocs, irec);
+  const auto return_reg = get_reg(m_return_reg, allocs, irec);
+  const auto abi_return_reg = get_register_info(gen->instr_set()).get_gpr_ret_reg();
+  if (m_ret_reg != abi_return_reg || return_reg != abi_return_reg) {
+    throw std::runtime_error("ARM64 AOT proof requires the ABI GPR return register.");
+  }
+  if (!value_reg.is_gpr(gen->instr_set()) || value_reg == ARM64_REG::SP) {
+    throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR return value.");
+  }
+
+  if (value_reg == return_reg) {
+    gen->add_instr(IGen::null(*gen), irec);
+  } else {
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, return_reg, value_reg), irec);
+  }
 }
 
 /////////////////////
@@ -230,7 +249,15 @@ void IR_LoadConstant64::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_LoadConstant64::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                          const AllocationResult& allocs,
                                          emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_LoadConstant64::do_codegen_arm64");
+  if (m_dest->ireg().reg_class != RegClass::GPR_64) {
+    throw std::runtime_error("ARM64 AOT proof only supports GPR constants.");
+  }
+
+  const auto dest_reg = get_reg(m_dest, allocs, irec);
+  if (!dest_reg.is_gpr(gen->instr_set()) || dest_reg == ARM64_REG::SP) {
+    throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR constant destination.");
+  }
+  load_constant(m_value, gen, irec, dest_reg);
 }
 
 /////////////////////
@@ -1162,7 +1189,9 @@ void IR_Null::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_Null::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                const AllocationResult& allocs,
                                emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_Null::do_codegen_arm64");
+  (void)gen;
+  (void)allocs;
+  (void)irec;
 }
 
 ///////////////////////

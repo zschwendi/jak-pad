@@ -163,6 +163,33 @@ std::vector<u8> CodeGenerator::run(const TypeSystem* ts) {
   return m_gen.generate_data_v3(ts).to_vector();
 }
 
+std::vector<u8> CodeGenerator::run_arm64_aot_literal_42() {
+  if (m_gen.instr_set() != InstructionSet::ARM64) {
+    throw std::runtime_error("ARM64 AOT proof requires the ARM64 instruction set.");
+  }
+  if (m_fe->functions().size() != 1 ||
+      &m_fe->top_level_function() != m_fe->functions().front().get()) {
+    throw std::runtime_error("ARM64 AOT proof only supports one top-level function.");
+  }
+  if (!m_fe->statics().empty()) {
+    throw std::runtime_error("ARM64 AOT proof does not support static data or relocations.");
+  }
+
+  auto* function = m_fe->functions().front().get();
+  auto rec = m_gen.add_function_to_seg(
+      function->segment, &m_debug_info->add_function(function->name(), m_fe->name()));
+  for (const auto& source : function->code_source()) {
+    rec.debug->code_sources.push_back(source.heap_obj);
+  }
+  for (const auto& ir : function->code()) {
+    rec.debug->ir_strings.push_back(ir->print());
+  }
+  record_local_variables(function, rec.debug);
+
+  do_goal_function_arm64(function, 0);
+  return m_gen.materialize_arm64_function(rec);
+}
+
 void CodeGenerator::do_function(FunctionEnv* env, int f_idx) {
   if (env->is_asm_func) {
     if (m_gen.instr_set() == InstructionSet::X86) {
@@ -400,7 +427,52 @@ void CodeGenerator::do_goal_function_x86(FunctionEnv* env, int f_idx) {
 }
 
 void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
-  throw std::runtime_error("NYI - CodeGenerator::do_goal_function_arm64");
+  if (env != &m_fe->top_level_function() || m_fe->functions().size() != 1) {
+    throw std::runtime_error("ARM64 AOT proof only supports one top-level function.");
+  }
+  if (!m_fe->statics().empty()) {
+    throw std::runtime_error("ARM64 AOT proof does not support static data or relocations.");
+  }
+
+  const auto& allocs = env->alloc_result();
+  if (!allocs.ok) {
+    throw std::runtime_error("ARM64 AOT proof requires successful register allocation.");
+  }
+  if (!allocs.used_saved_regs.empty()) {
+    throw std::runtime_error("ARM64 AOT proof does not support saved registers.");
+  }
+  if (allocs.stack_slots_for_spills || allocs.num_spills || allocs.num_spilled_vars ||
+      allocs.needs_aligned_stack_for_spills) {
+    throw std::runtime_error("ARM64 AOT proof does not support spills.");
+  }
+  if (allocs.stack_slots_for_vars || env->needs_aligned_stack()) {
+    throw std::runtime_error("ARM64 AOT proof does not support stack locals.");
+  }
+  if (allocs.stack_ops.size() != env->code().size()) {
+    throw std::runtime_error("ARM64 AOT proof received invalid stack allocation metadata.");
+  }
+  for (const auto& stack_op : allocs.stack_ops) {
+    if (!stack_op.ops.empty()) {
+      throw std::runtime_error("ARM64 AOT proof does not support spill stack operations.");
+    }
+  }
+
+  const auto& code = env->code();
+  auto* constant = code.size() == 3 ? dynamic_cast<IR_LoadConstant64*>(code.at(0).get()) : nullptr;
+  if (!constant || constant->value() != 42 || !dynamic_cast<IR_Return*>(code.at(1).get()) ||
+      !dynamic_cast<IR_Null*>(code.at(2).get())) {
+    throw std::runtime_error(
+        "ARM64 AOT proof only supports IR_LoadConstant64, IR_Return, and IR_Null for literal 42.");
+  }
+
+  auto* debug = &m_debug_info->function_by_name(env->name());
+  debug->stack_usage = 0;
+  const auto f_rec = m_gen.get_existing_function_record(f_idx);
+  for (int ir_idx = 0; ir_idx < int(code.size()); ir_idx++) {
+    const auto i_rec = m_gen.add_ir(f_rec);
+    code.at(ir_idx)->do_codegen_arm64(&m_gen, allocs, i_rec);
+  }
+  m_gen.add_instr_no_ir(f_rec, IGen::ret(m_gen), InstructionInfo::Kind::EPILOGUE);
 }
 
 void CodeGenerator::do_asm_function_x86(FunctionEnv* env, int f_idx, bool allow_saved_regs) {

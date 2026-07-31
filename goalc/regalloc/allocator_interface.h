@@ -154,6 +154,7 @@ struct AllocationResult {
  * Input to the allocate_registers algorithm
  */
 struct AllocationInput {
+  emitter::InstructionSet instruction_set = emitter::InstructionSet::X86;
   std::vector<RegAllocInstr> instructions;           // all instructions in the function
   std::vector<IRegConstraint> constraints;           // all register constraints
   std::unordered_set<int> force_on_stack_regs;       // registers which must be on the stack

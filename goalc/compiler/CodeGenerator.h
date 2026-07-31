@@ -23,6 +23,7 @@ class CodeGenerator {
                 GameVersion version,
                 emitter::InstructionSet instruction_set);
   std::vector<u8> run(const TypeSystem* ts);
+  std::vector<u8> run_arm64_aot_literal_42();
   emitter::ObjectGeneratorStats get_obj_stats() const { return m_gen.get_stats(); }
 
  private:

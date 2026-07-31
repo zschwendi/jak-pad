@@ -71,6 +71,7 @@ class ObjectGenerator {
                                      FunctionDebugInfo* debug,
                                      int min_align = 16);  // should align and insert function tag
   FunctionRecord get_existing_function_record(int f_idx);
+  std::vector<u8> materialize_arm64_function(const FunctionRecord& function) const;
   IR_Record add_ir(const FunctionRecord& func);
   IR_Record get_future_ir_record(const FunctionRecord& func, int ir_id);
   IR_Record get_future_ir_record_in_same_func(const IR_Record& irec, int ir_id);

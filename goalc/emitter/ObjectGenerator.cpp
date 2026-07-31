@@ -15,6 +15,8 @@
 
 #include "ObjectGenerator.h"
 
+#include <stdexcept>
+
 #include "common/goal_constants.h"
 #include "common/type_system/TypeSystem.h"
 #include "common/versions/versions.h"
@@ -143,6 +145,53 @@ FunctionRecord ObjectGenerator::add_function_to_seg(int seg,
 
 FunctionRecord ObjectGenerator::get_existing_function_record(int f_idx) {
   return m_all_function_records.at(f_idx);
+}
+
+std::vector<u8> ObjectGenerator::materialize_arm64_function(
+    const FunctionRecord& function) const {
+  if (m_instruction_set != InstructionSet::ARM64) {
+    throw std::runtime_error("ARM64 AOT materialization requires the ARM64 instruction set.");
+  }
+  if (m_all_function_records.size() != 1 || m_all_function_records.front().seg != function.seg ||
+      m_all_function_records.front().func_id != function.func_id) {
+    throw std::runtime_error("ARM64 AOT materialization requires exactly one function.");
+  }
+
+  for (int seg = 0; seg < N_SEG; seg++) {
+    if (!m_static_data_by_seg.at(seg).empty() || !m_data_by_seg.at(seg).empty() ||
+        !m_link_by_seg.at(seg).empty() || !m_static_type_temp_links_by_seg.at(seg).empty() ||
+        !m_jump_temp_links_by_seg.at(seg).empty() ||
+        !m_symbol_instr_temp_links_by_seg.at(seg).empty() ||
+        !m_static_sym_temp_links_by_seg.at(seg).empty() ||
+        !m_static_data_temp_ptr_links_by_seg.at(seg).empty() ||
+        !m_static_function_temp_ptr_links_by_seg.at(seg).empty() ||
+        !m_rip_func_temp_links_by_seg.at(seg).empty() || !m_rip_data_temp_links_by_seg.at(seg).empty() ||
+        !m_type_ptr_links_by_seg.at(seg).empty() || !m_sym_links_by_seg.at(seg).empty() ||
+        !m_rip_links_by_seg.at(seg).empty() ||
+        !m_pointer_links_by_seg.at(seg).empty()) {
+      throw std::runtime_error(
+          "ARM64 AOT materialization does not support static data or relocations.");
+    }
+  }
+
+  const auto& function_data = m_function_data_by_seg.at(function.seg).at(function.func_id);
+  std::vector<u8> code;
+  for (const auto& instruction : function_data.instructions) {
+    if (!std::holds_alternative<InstructionARM64>(instruction.instr)) {
+      throw std::runtime_error("ARM64 AOT materialization received a non-ARM64 instruction.");
+    }
+    u8 encoded[InstructionARM64::kMaxInstrs * sizeof(u32)];
+    const auto count = instruction.emit(encoded);
+    if (count % sizeof(u32) != 0) {
+      throw std::runtime_error("ARM64 AOT materialization emitted a partial instruction word.");
+    }
+    code.insert(code.end(), encoded, encoded + count);
+  }
+
+  if (code.empty()) {
+    throw std::runtime_error("ARM64 AOT materialization requires generated instructions.");
+  }
+  return code;
 }
 
 /*!

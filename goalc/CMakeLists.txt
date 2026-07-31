@@ -1,4 +1,5 @@
 add_library(compiler
+        aot/AOTWriter.cpp
         emitter/CallingConvention.cpp
         emitter/CodeTester.cpp
         emitter/ObjectFileData.cpp
@@ -93,11 +94,13 @@ endif ()
 
 add_executable(goalc main.cpp)
 add_executable(goalc-simple simple_main.cpp)
+add_executable(goalc-aot aot_main.cpp)
 
 add_executable(build_level build_level/main.cpp)
 add_executable(build_actor build_actor/main.cpp)
 
 target_link_libraries(goalc common Zydis compiler)
 target_link_libraries(goalc-simple common Zydis compiler)
+target_link_libraries(goalc-aot common Zydis compiler)
 target_link_libraries(build_level common Zydis compiler)
 target_link_libraries(build_actor common Zydis compiler)

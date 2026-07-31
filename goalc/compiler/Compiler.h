@@ -78,6 +78,8 @@ class Compiler {
   void run_front_end_on_file(const std::vector<std::string>& path);
   void run_full_compiler_on_string_no_save(const std::string& src,
                                            const std::optional<std::string>& string_name);
+  std::vector<u8> compile_top_level_source(const std::string& source,
+                                           const std::string& object_name = "aot");
   void shutdown_target();
   void enable_throw_on_redefines() { m_throw_on_define_extern_redefinition = true; }
   void add_ignored_define_extern_symbol(const std::string& name) {

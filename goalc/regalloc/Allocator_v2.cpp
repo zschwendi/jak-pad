@@ -268,74 +268,13 @@ struct RACache {
   } stats;
 };
 
-struct AssignmentOrder {
-  std::vector<emitter::Register> xmms, gprs;
-};
-
-AssignmentOrder REG_saved_first_order = {
-    {emitter::XMM8, emitter::XMM9, emitter::XMM10, emitter::XMM11, emitter::XMM12, emitter::XMM13,
-     emitter::XMM14, emitter::XMM15, emitter::XMM7, emitter::XMM6, emitter::XMM5, emitter::XMM4,
-     emitter::XMM3, emitter::XMM2, emitter::XMM1, emitter::XMM0},
-    {emitter::RBX, emitter::RBP, emitter::R12, emitter::R11, emitter::R10, emitter::R9, emitter::R8,
-     emitter::RCX, emitter::RDX, emitter::RSI, emitter::RDI, emitter::RAX}};
-
-AssignmentOrder REG_temp_first_order = {
-    {emitter::XMM7, emitter::XMM6, emitter::XMM5, emitter::XMM4, emitter::XMM3, emitter::XMM2,
-     emitter::XMM1, emitter::XMM0, emitter::XMM8, emitter::XMM9, emitter::XMM10, emitter::XMM11,
-     emitter::XMM12, emitter::XMM13, emitter::XMM14, emitter::XMM15},
-    {emitter::R9, emitter::R8, emitter::RCX, emitter::RDX, emitter::RSI, emitter::RDI, emitter::RAX,
-     emitter::RBX, emitter::RBP, emitter::R12, emitter::R11, emitter::R10}};
-
-AssignmentOrder REG_extra_hard_order = {
-    {emitter::XMM7, emitter::XMM6, emitter::XMM5, emitter::XMM4, emitter::XMM3, emitter::XMM2,
-     emitter::XMM1, emitter::XMM0, emitter::XMM8, emitter::XMM9},
-    {emitter::R9, emitter::RSI, emitter::RDI, emitter::RAX, emitter::RBP, emitter::R12}};
-
-AssignmentOrder REG_temp_only_order = {{emitter::XMM7, emitter::XMM6, emitter::XMM5, emitter::XMM4,
-                                        emitter::XMM3, emitter::XMM2, emitter::XMM1, emitter::XMM0},
-                                       {emitter::R9, emitter::R8, emitter::RCX, emitter::RDX,
-                                        emitter::RSI, emitter::RDI, emitter::RAX}};
-std::vector<emitter::Register> allowable_local_var_move_elim = {
-    emitter::R9,    emitter::R8,    emitter::RCX,   emitter::RDX,  emitter::RSI,   emitter::RDI,
-    emitter::RAX,   emitter::RBX,   emitter::RBP,   emitter::R12,  emitter::R11,   emitter::R10,
-    emitter::XMM7,  emitter::XMM6,  emitter::XMM5,  emitter::XMM4, emitter::XMM3,  emitter::XMM2,
-    emitter::XMM1,  emitter::XMM0,  emitter::XMM8,  emitter::XMM9, emitter::XMM10, emitter::XMM11,
-    emitter::XMM12, emitter::XMM13, emitter::XMM14, emitter::XMM15};
-
 const std::vector<emitter::Register>& get_alloc_order(int var_idx,
                                                       const AllocationInput& in,
                                                       const RACache& cache,
                                                       bool saved_first) {
-  bool is_gpr =
-      emitter::reg_class_to_hw(cache.iregs.at(var_idx).reg_class) == emitter::HWRegKind::GPR;
-  if (in.is_asm_function) {
-    if (is_gpr) {
-      return REG_temp_only_order.gprs;
-    } else {
-      return REG_temp_only_order.xmms;
-    }
-  } else {
-    if (torture_test_spills) {
-      if (is_gpr) {
-        return REG_extra_hard_order.gprs;
-      } else {
-        return REG_extra_hard_order.xmms;
-      }
-    }
-    if (saved_first) {
-      if (is_gpr) {
-        return REG_saved_first_order.gprs;
-      } else {
-        return REG_saved_first_order.xmms;
-      }
-    } else {
-      if (is_gpr) {
-        return REG_temp_first_order.gprs;
-      } else {
-        return REG_temp_first_order.xmms;
-      }
-    }
-  }
+  const auto kind = emitter::reg_class_to_hw(cache.iregs.at(var_idx).reg_class);
+  return emitter::get_register_info(in.instruction_set)
+      .get_v2_alloc_order(kind, saved_first, in.is_asm_function, torture_test_spills);
 }
 
 /*!
@@ -890,7 +829,9 @@ loop_top:
       auto& check_other_var = cache->vars.at(check_other_reg);
       if (check_other_var.assigned_to_reg()) {
         auto reg = check_other_var.reg();
-        if (vector_contains(allowable_local_var_move_elim, reg)) {
+        if (emitter::get_register_info(input.instruction_set)
+                .is_allocatable(
+                    emitter::reg_class_to_hw(cache->iregs.at(check_other_reg).reg_class), reg)) {
           if (check_register_assign_at(input, *cache, var_idx, instr_idx, reg)) {
             var.set_stack_slot_reg(reg, instr_idx);
             bonus.reg = reg;
@@ -1012,7 +953,10 @@ bool run_assignment_on_var(const AllocationInput& input,
       const auto& other_var = cache->vars.at(other_live_var_idx);
       if (other_var.assigned_to_reg() &&
           safe_overlap(input, *cache, var, other_var, var.first_live())) {
-        if (vector_contains(allowable_local_var_move_elim, other_var.reg())) {
+        if (emitter::get_register_info(input.instruction_set)
+                .is_allocatable(
+                    emitter::reg_class_to_hw(cache->iregs.at(other_live_var_idx).reg_class),
+                    other_var.reg())) {
           bool worked = check_register_assign(input, *cache, var_idx, other_var.reg());
           if (trace) {
             lg::print("m0 trying var {} in {}: {}\n", cache->iregs.at(var_idx).to_string(),
@@ -1040,7 +984,10 @@ bool run_assignment_on_var(const AllocationInput& input,
 
       if (other_var.assigned_to_reg() &&
           safe_overlap(input, *cache, var, other_var, var.last_live())) {
-        if (vector_contains(allowable_local_var_move_elim, other_var.reg())) {
+        if (emitter::get_register_info(input.instruction_set)
+                .is_allocatable(
+                    emitter::reg_class_to_hw(cache->iregs.at(other_live_var_idx).reg_class),
+                    other_var.reg())) {
           bool worked = check_register_assign(input, *cache, var_idx, other_var.reg());
           if (trace) {
             lg::print("m1 trying var {} in {}: {}\n", cache->iregs.at(var_idx).to_string(),
@@ -1182,7 +1129,7 @@ AllocationResult allocate_registers_v2(const AllocationInput& input) {
   result.stack_slots_for_vars = input.stack_slots_for_stack_vars;
 
   // check for use of saved registers
-  for (auto sr : emitter::gRegInfo.get_all_saved()) {
+  for (auto sr : emitter::get_register_info(input.instruction_set).get_all_saved()) {
     bool uses_sr = false;
     for (auto& lr : cache.vars) {
       for (int instr_idx = lr.first_live(); instr_idx <= lr.last_live(); instr_idx++) {
