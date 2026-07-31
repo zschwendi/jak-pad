@@ -1,0 +1,4 @@
+(defun identity ((x object))
+  "Function which returns its input. The first function of the game!
+   This will not preserve the upper 64-bits of a 128-bit value."
+  x)

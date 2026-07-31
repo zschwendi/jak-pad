@@ -314,7 +314,14 @@ void Compiler::color_object_file(FileEnv* env) {
 }
 
 std::vector<u8> Compiler::compile_top_level_source(const std::string& source,
-                                                    const std::string& object_name) {
+                                                   const std::string& object_name) {
+  return compile_arm64_aot_source(source, object_name, std::nullopt);
+}
+
+std::vector<u8> Compiler::compile_arm64_aot_source(
+    const std::string& source,
+    const std::string& object_name,
+    const std::optional<std::string>& function_name) {
   if (m_instr_set != emitter::InstructionSet::ARM64) {
     throw std::runtime_error("Raw AOT output is only available for the ARM64 instruction set.");
   }
@@ -327,7 +334,7 @@ std::vector<u8> Compiler::compile_top_level_source(const std::string& source,
     auto debug_info = &m_debugger.get_debug_info_for_object(object_file->name());
     debug_info->clear();
     CodeGenerator gen(object_file, debug_info, m_version, m_instr_set);
-    auto result = gen.run_arm64_aot_literal_42();
+    auto result = gen.run_arm64_aot_function(function_name);
     m_debug_stats.num_moves_eliminated += gen.get_obj_stats().moves_eliminated;
     object_file->cleanup_after_codegen();
     return result;

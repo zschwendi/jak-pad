@@ -1232,7 +1232,9 @@ void IR_ValueReset::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_ValueReset::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                      const AllocationResult& allocs,
                                      emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_ValueReset::do_codegen_arm64");
+  (void)gen;
+  (void)allocs;
+  (void)irec;
 }
 
 ///////////////////////

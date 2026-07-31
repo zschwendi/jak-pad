@@ -359,6 +359,7 @@ class IR_Null : public IR {
 class IR_ValueReset : public IR {
  public:
   IR_ValueReset(std::vector<RegVal*> args);
+  bool has_no_args() const { return m_args.empty(); }
   std::string print() override;
   RegAllocInstr to_rai() override;
   void do_codegen_x86(emitter::ObjectGenerator* gen,

@@ -7,6 +7,9 @@
 
 #pragma once
 
+#include <optional>
+#include <string>
+
 #include "Env.h"
 
 #include "common/versions/versions.h"
@@ -23,7 +26,8 @@ class CodeGenerator {
                 GameVersion version,
                 emitter::InstructionSet instruction_set);
   std::vector<u8> run(const TypeSystem* ts);
-  std::vector<u8> run_arm64_aot_literal_42();
+  std::vector<u8> run_arm64_aot_function(
+      const std::optional<std::string>& function_name = std::nullopt);
   emitter::ObjectGeneratorStats get_obj_stats() const { return m_gen.get_stats(); }
 
  private:

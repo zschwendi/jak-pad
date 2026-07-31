@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "common/util/FileUtil.h"
@@ -16,14 +18,13 @@
 namespace {
 
 void expect_no_reserved_arm64_registers(const std::vector<emitter::Register>& registers) {
-  for (const auto reserved : {emitter::X20, emitter::X21, emitter::X22, emitter::SP,
-                              emitter::X29, emitter::X30}) {
+  for (const auto reserved :
+       {emitter::X20, emitter::X21, emitter::X22, emitter::SP, emitter::X29, emitter::X30}) {
     EXPECT_EQ(std::find(registers.begin(), registers.end(), reserved), registers.end());
   }
 }
 
-void expect_arm64_live_across_call_uses_saved_register(RegClass reg_class,
-                                                       bool use_v2_allocator) {
+void expect_arm64_live_across_call_uses_saved_register(RegClass reg_class, bool use_v2_allocator) {
   const auto& registers = emitter::get_register_info(emitter::InstructionSet::ARM64);
   AllocationInput input;
   input.instruction_set = emitter::InstructionSet::ARM64;
@@ -52,8 +53,8 @@ void expect_arm64_live_across_call_uses_saved_register(RegClass reg_class,
   const auto& expected_saved = registers.get_all_saved();
   EXPECT_NE(std::find(expected_saved.begin(), expected_saved.end(), assignment.reg),
             expected_saved.end());
-  EXPECT_EQ(std::find(registers.get_call_clobbered().begin(),
-                      registers.get_call_clobbered().end(), assignment.reg),
+  EXPECT_EQ(std::find(registers.get_call_clobbered().begin(), registers.get_call_clobbered().end(),
+                      assignment.reg),
             registers.get_call_clobbered().end());
   EXPECT_EQ(assignment.reg.instruction_set(), emitter::InstructionSet::ARM64);
 }
@@ -96,6 +97,46 @@ TEST(Arm64Aot, compiles_jak1_false_expression_and_renders_apple_text) {
             "  .long 0xaa1503e0\n"
             "  .long 0xd65f03c0\n"
             ".subsections_via_symbols\n");
+}
+
+TEST(Arm64Aot, compiles_full_jak1_false_func_and_renders_apple_text) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-false-func-from-jak1-gcommon.gc"}));
+  const auto code = compiler.compile_arm64_aot_source(source, "full-false-func-from-jak1-gcommon",
+                                                      std::optional<std::string>{"false-func"});
+
+  EXPECT_EQ(code, (std::vector<u8>{0xe0, 0x03, 0x15, 0xaa, 0xc0, 0x03, 0x5f, 0xd6}));
+
+  const aot::AppleArm64Function function{"goalpad_aot_false_func", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            ".section __TEXT,__text,regular,pure_instructions\n"
+            ".p2align 2\n"
+            ".globl _goalpad_aot_false_func\n"
+            "_goalpad_aot_false_func:\n"
+            "  .long 0xaa1503e0\n"
+            "  .long 0xd65f03c0\n"
+            ".subsections_via_symbols\n");
+}
+
+TEST(Arm64Aot, rejects_unknown_named_function) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-false-func-from-jak1-gcommon.gc"}));
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "full-false-func-from-jak1-gcommon",
+                                                 std::optional<std::string>{"missing-false-func"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_full_jak1_identity_until_parameter_moves_are_supported) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/full-identity-from-jak1-gcommon.gc"}));
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source(source, "full-identity-from-jak1-gcommon",
+                                                 std::optional<std::string>{"identity"}),
+               std::runtime_error);
 }
 
 TEST(Arm64Aot, rejects_source_outside_the_supported_aot_proof) {
@@ -159,8 +200,7 @@ TEST(Arm64Aot, function_calls_clobber_only_target_temporaries) {
     EXPECT_EQ(reg.instruction_set(), emitter::InstructionSet::ARM64);
   }
 
-  IR_FunctionCall x86_call(&function, &result, {}, {}, std::nullopt,
-                           emitter::InstructionSet::X86);
+  IR_FunctionCall x86_call(&function, &result, {}, {}, std::nullopt, emitter::InstructionSet::X86);
   const auto x86_rai = x86_call.to_rai();
   const std::vector<emitter::Register> expected_x86_clobbers = {
       emitter::RAX,  emitter::RCX,  emitter::RDX,  emitter::RSI,  emitter::RDI,

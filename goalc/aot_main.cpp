@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <exception>
+#include <optional>
 #include <string>
 
 #include "common/log/log.h"
@@ -16,12 +17,14 @@ struct Options {
   std::string output_path;
   std::string project_path;
   std::string symbol = "goalpad_aot_entry";
+  std::optional<std::string> function_name;
 };
 
 void print_usage() {
   std::fprintf(stderr,
                "Usage: goalc-aot --input SOURCE.gc --output BUILD_OUTPUT.s "
-               "[--project-path OPENGOAL_ROOT] [--symbol C_SYMBOL]\n");
+               "[--project-path OPENGOAL_ROOT] [--symbol C_SYMBOL] "
+               "[--function GOAL_FUNCTION]\n");
 }
 
 bool parse_options(int argc, char** argv, Options* options) {
@@ -32,7 +35,7 @@ bool parse_options(int argc, char** argv, Options* options) {
       return false;
     }
     if (argument == "--input" || argument == "--output" || argument == "--project-path" ||
-        argument == "--symbol") {
+        argument == "--symbol" || argument == "--function") {
       if (++i == argc) {
         std::fprintf(stderr, "Missing value for %s\n", argument.c_str());
         return false;
@@ -43,8 +46,10 @@ bool parse_options(int argc, char** argv, Options* options) {
         options->output_path = argv[i];
       } else if (argument == "--project-path") {
         options->project_path = argv[i];
-      } else {
+      } else if (argument == "--symbol") {
         options->symbol = argv[i];
+      } else {
+        options->function_name = argv[i];
       }
       continue;
     }
@@ -91,7 +96,8 @@ int main(int argc, char** argv) {
   try {
     Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
     const auto source = file_util::read_text_file(options.input_path);
-    const auto code = compiler.compile_top_level_source(source, options.input_path);
+    const auto code =
+        compiler.compile_arm64_aot_source(source, options.input_path, options.function_name);
     aot::write_apple_arm64_assembly(options.output_path, {options.symbol, code});
   } catch (const std::exception& error) {
     std::fprintf(stderr, "goalc-aot: %s\n", error.what());

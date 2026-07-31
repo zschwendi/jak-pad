@@ -163,21 +163,40 @@ std::vector<u8> CodeGenerator::run(const TypeSystem* ts) {
   return m_gen.generate_data_v3(ts).to_vector();
 }
 
-std::vector<u8> CodeGenerator::run_arm64_aot_literal_42() {
+std::vector<u8> CodeGenerator::run_arm64_aot_function(
+    const std::optional<std::string>& function_name) {
   if (m_gen.instr_set() != InstructionSet::ARM64) {
     throw std::runtime_error("ARM64 AOT proof requires the ARM64 instruction set.");
-  }
-  if (m_fe->functions().size() != 1 ||
-      &m_fe->top_level_function() != m_fe->functions().front().get()) {
-    throw std::runtime_error("ARM64 AOT proof only supports one top-level function.");
   }
   if (!m_fe->statics().empty()) {
     throw std::runtime_error("ARM64 AOT proof does not support static data or relocations.");
   }
 
-  auto* function = m_fe->functions().front().get();
-  auto rec = m_gen.add_function_to_seg(
-      function->segment, &m_debug_info->add_function(function->name(), m_fe->name()));
+  FunctionEnv* function = nullptr;
+  if (function_name) {
+    for (const auto& candidate : m_fe->functions()) {
+      if (candidate->name() == *function_name) {
+        function = candidate.get();
+        break;
+      }
+    }
+    if (!function) {
+      throw std::runtime_error(fmt::format(
+          "ARM64 AOT function '{}' was not found in the compiled source.", *function_name));
+    }
+  } else {
+    const auto* top_level = &m_fe->top_level_function();
+    for (const auto& candidate : m_fe->functions()) {
+      if (candidate.get() == top_level) {
+        function = candidate.get();
+        break;
+      }
+    }
+    ASSERT(function);
+  }
+
+  auto rec = m_gen.add_function_to_seg(function->segment,
+                                       &m_debug_info->add_function(function->name(), m_fe->name()));
   for (const auto& source : function->code_source()) {
     rec.debug->code_sources.push_back(source.heap_obj);
   }
@@ -427,9 +446,6 @@ void CodeGenerator::do_goal_function_x86(FunctionEnv* env, int f_idx) {
 }
 
 void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
-  if (env != &m_fe->top_level_function() || m_fe->functions().size() != 1) {
-    throw std::runtime_error("ARM64 AOT proof only supports one top-level function.");
-  }
   if (!m_fe->statics().empty()) {
     throw std::runtime_error("ARM64 AOT proof does not support static data or relocations.");
   }
@@ -458,15 +474,27 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
   }
 
   const auto& code = env->code();
-  auto* constant = code.size() == 3 ? dynamic_cast<IR_LoadConstant64*>(code.at(0).get()) : nullptr;
-  auto* symbol =
-      code.size() == 3 ? dynamic_cast<IR_LoadSymbolPointer*>(code.at(0).get()) : nullptr;
-  const bool supported_first_instruction =
-      (constant && constant->value() == 42) || (symbol && symbol->name() == "#f");
-  if (!supported_first_instruction || !dynamic_cast<IR_Return*>(code.at(1).get()) ||
-      !dynamic_cast<IR_Null*>(code.at(2).get())) {
+  const auto is_supported_result = [](IR* ir) {
+    if (const auto* constant = dynamic_cast<IR_LoadConstant64*>(ir)) {
+      return constant->value() == 42;
+    }
+    if (const auto* symbol = dynamic_cast<IR_LoadSymbolPointer*>(ir)) {
+      return symbol->name() == "#f";
+    }
+    return false;
+  };
+  const bool supported_top_level = code.size() == 3 && is_supported_result(code.at(0).get()) &&
+                                   dynamic_cast<IR_Return*>(code.at(1).get()) &&
+                                   dynamic_cast<IR_Null*>(code.at(2).get());
+  const auto* value_reset =
+      code.size() == 4 ? dynamic_cast<IR_ValueReset*>(code.at(0).get()) : nullptr;
+  const bool supported_false_function =
+      value_reset && value_reset->has_no_args() && is_supported_result(code.at(1).get()) &&
+      dynamic_cast<IR_Return*>(code.at(2).get()) && dynamic_cast<IR_Null*>(code.at(3).get());
+  if (!supported_top_level && !supported_false_function) {
     throw std::runtime_error(
-        "ARM64 AOT proof only supports literal 42 or #f followed by IR_Return and IR_Null.");
+        "ARM64 AOT proof only supports top-level literal 42, top-level #f, or the zero-argument "
+        "Jak 1 false function.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());
