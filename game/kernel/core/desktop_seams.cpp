@@ -22,11 +22,15 @@
  *   - game/mips2c/**                           : hand-translated PS2 VU/asm renderer + collision
  */
 
+#include <cstdio>
+#include <utility>
+
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
 #include "game/kernel/common/kmachine.h"
 #include "game/kernel/jak1/kmachine.h"
+#include "game/kernel/jak1/kscheme.h"
 #include "game/mips2c/mips2c_table.h"
 #include "game/sce/deci2.h"
 #include "game/sce/sif_ee.h"
@@ -56,9 +60,189 @@ void CacheFlush(void* mem, int size) {
 // game/kernel/jak1/kmachine.cpp
 // ---------------------------------------------------------------------------------------------
 
+namespace {
+
+/*!
+ * Every GOAL symbol the real jak1::InitMachineScheme fills in: the PS2 library shims, the pad and
+ * file-stream entry points, the system-config readers, the sound RPC, and the PC port's own
+ * functions. Taken from game/kernel/jak1/kmachine.cpp, game/kernel/jak1/ksound.cpp and
+ * init_common_pc_port_functions in game/kernel/common/kmachine.cpp.
+ *
+ * None of them are implemented here. They exist so that GOAL calling one reports which function it
+ * wanted, instead of reading a symbol that holds 0 and faulting in the guard page with no name
+ * attached.
+ */
+const char* const kMachineFunctionNames[] = {
+    "__pc-set-levels",
+    "pc-discord-rpc-update",
+    "put-display-env",
+    "syncv",
+    "sync-path",
+    "reset-path",
+    "reset-graph",
+    "dma-sync",
+    "gs-put-imr",
+    "gs-get-imr",
+    "gs-store-image",
+    "flush-cache",
+    "cpad-open",
+    "cpad-get-data",
+    "install-handler",
+    "install-debug-handler",
+    "file-stream-open",
+    "file-stream-close",
+    "file-stream-length",
+    "file-stream-seek",
+    "file-stream-read",
+    "file-stream-write",
+    "scf-get-language",
+    "scf-get-time",
+    "scf-get-aspect",
+    "scf-get-volume",
+    "scf-get-territory",
+    "scf-get-timeout",
+    "scf-get-inactive-timeout",
+    "dma-to-iop",
+    "kernel-shutdown",
+    "aybabtu",
+    "rpc-call",
+    "rpc-busy?",
+    "test-load-dgo-c",
+    "pc-sound-set-flava-hack",
+    "pc-sound-set-fade-hack",
+    "__read-ee-timer",
+    "__mem-move",
+    "__send-gfx-dma-chain",
+    "__pc-texture-upload-now",
+    "__pc-texture-relocate",
+    "__pc-get-mips2c",
+    "__pc-force-reload-all-levels",
+    "__pc-force-reload-level",
+    "__pc-force-reload-common-level",
+    "pc-get-display-id",
+    "pc-set-display-id!",
+    "pc-get-display-name",
+    "pc-get-display-mode",
+    "pc-set-display-mode!",
+    "pc-get-display-count",
+    "pc-get-active-display-size",
+    "pc-get-active-display-refresh-rate",
+    "pc-get-window-size",
+    "pc-get-window-scale",
+    "pc-set-window-size!",
+    "pc-get-num-resolutions",
+    "pc-get-resolution",
+    "pc-is-supported-resolution?",
+    "pc-get-controller-name",
+    "pc-get-current-bind",
+    "pc-get-controller-count",
+    "pc-get-controller-index",
+    "pc-set-controller!",
+    "pc-get-keyboard-enabled?",
+    "pc-set-keyboard-enabled!",
+    "pc-set-mouse-options!",
+    "pc-set-mouse-camera-sens!",
+    "pc-ignore-background-controller-events!",
+    "pc-current-controller-has-led?",
+    "pc-current-controller-has-rumble?",
+    "pc-set-controller-led!",
+    "pc-waiting-for-bind?",
+    "pc-set-waiting-for-bind!",
+    "pc-stop-waiting-for-bind!",
+    "pc-reset-bindings-to-defaults!",
+    "pc-set-auto-hide-cursor!",
+    "pc-get-pressure-sensitivity-enabled?",
+    "pc-set-pressure-sensitivity-enabled!",
+    "pc-set-axis-scale!",
+    "pc-get-axis-scale",
+    "pc-current-controller-has-pressure-sensitivity?",
+    "pc-current-controller-has-trigger-effect-support?",
+    "pc-get-trigger-effects-enabled?",
+    "pc-set-trigger-effects-enabled!",
+    "pc-clear-trigger-effect!",
+    "pc-send-trigger-effect-feedback!",
+    "pc-send-trigger-effect-vibrate!",
+    "pc-send-trigger-effect-weapon!",
+    "pc-send-trigger-rumble!",
+    "pc-set-vsync",
+    "pc-set-msaa",
+    "pc-set-frame-rate",
+    "pc-set-game-resolution",
+    "pc-set-brightness-contrast",
+    "pc-set-letterbox",
+    "pc-renderer-tree-set-lod",
+    "pc-set-collision-mode",
+    "pc-set-collision-mask",
+    "pc-get-collision-mask",
+    "pc-set-collision-wireframe",
+    "pc-set-collision",
+    "pc-set-gfx-hack",
+    "pc-get-os",
+    "pc-get-unix-timestamp",
+    "pc-treat-pad0-as-pad1",
+    "pc-is-imgui-visible?",
+    "pc-filepath-exists?",
+    "pc-mkdir-file-path",
+    "pc-discord-rpc-set",
+    "pc-prof",
+    "pc-rand",
+    "pc-encode-utf8-string",
+    "pc-filter-debug-string?",
+    "pc-screen-shot",
+    "pc-register-screen-shot-settings",
+};
+constexpr int kMachineFunctionCount = int(sizeof(kMachineFunctionNames) / sizeof(const char*));
+
+bool g_machine_stubs_abort = true;
+bool g_machine_stub_reported[kMachineFunctionCount];
+
+u64 machine_function_called(int index) {
+  if (g_machine_stubs_abort) {
+    missing("the machine layer (kmachine.cpp)", kMachineFunctionNames[index]);
+  }
+  if (!g_machine_stub_reported[index]) {
+    g_machine_stub_reported[index] = true;
+    std::fprintf(stdout, "  MISSING MACHINE FUNCTION: %s\n", kMachineFunctionNames[index]);
+    std::fflush(stdout);
+  }
+  return 0;
+}
+
+// one distinct native entry point per name, so the stub knows which symbol was called
+template <int Index>
+u64 machine_function_stub() {
+  return machine_function_called(Index);
+}
+
+template <int... Index>
+void install_machine_function_stubs(std::integer_sequence<int, Index...>) {
+  (jak1::make_function_symbol_from_c(kMachineFunctionNames[Index],
+                                     (void*)&machine_function_stub<Index>),
+   ...);
+}
+
+}  // namespace
+
+void goal_kernel_core_set_machine_stub_mode(bool abort_when_called) {
+  g_machine_stubs_abort = abort_when_called;
+}
+
 namespace jak1 {
+/*!
+ * The machine layer is not in this library, so this installs a loudly-failing GOAL function object
+ * for every symbol it would define, and sets the three stack constants, which are plain facts about
+ * where GOAL's own stack lives (see docs/aot-stack-model.md).
+ *
+ * This is not an implementation of the machine layer and does not pretend to be one: calling any of
+ * these functions from GOAL either aborts or, in the reporting mode the boot probe uses, prints the
+ * function's name and returns 0. A run that continues past one of those messages is measuring how
+ * far the loader gets, not demonstrating that anything works.
+ */
 void InitMachineScheme() {
-  missing("the machine layer (IOP/video/pad/PC-port functions)", "jak1::InitMachineScheme");
+  install_machine_function_stubs(std::make_integer_sequence<int, kMachineFunctionCount>{});
+  intern_from_c("*stack-top*")->value = 0x07ffc000;
+  intern_from_c("*stack-base*")->value = 0x07ffffff;
+  intern_from_c("*stack-size*")->value = 0x4000;
 }
 }  // namespace jak1
 

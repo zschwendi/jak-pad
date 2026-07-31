@@ -109,6 +109,22 @@ goal_kernel_core_status goal_kernel_core_type_name_of_symbol(const char* name,
                                                              size_t buffer_size);
 
 /*!
+ * Install a loudly-failing GOAL function object for every symbol the machine layer
+ * (`kmachine.cpp`: pads, video, file streams, system config, sound RPC, PC-port functions) would
+ * define, and set the `*stack-top*` / `*stack-base*` / `*stack-size*` constants.
+ *
+ * The machine layer is not part of this library. Without this, GOAL calling one of its functions
+ * reads a symbol holding 0 and faults in the guard page with no name attached; with it, the call
+ * says which function was wanted.
+ *
+ * This is a diagnostic, not an implementation. With `abort_when_called` non-zero a call aborts.
+ * With it zero the call prints the function's name once and returns 0, which lets a probe find
+ * everything that is missing in one run - but nothing that happens after such a message is
+ * evidence that the code works.
+ */
+goal_kernel_core_status goal_kernel_core_stub_machine_layer(int abort_when_called);
+
+/*!
  * Describe the last failure. Never NULL; returns "" when there has been no failure. The returned
  * pointer is owned by the kernel and stays valid until the next failing call.
  */

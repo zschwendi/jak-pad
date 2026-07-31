@@ -28,6 +28,12 @@
 #include "game/kernel/jak1/kscheme.h"
 #include "game/runtime.h"
 
+// defined in desktop_seams.cpp, next to the machine-layer stubs it controls
+void goal_kernel_core_set_machine_stub_mode(bool abort_when_called);
+namespace jak1 {
+void InitMachineScheme();
+}
+
 // These globals normally live in game/runtime.cpp, which is the desktop runtime entry point and
 // is not part of this library. The kernel reaches them through game/runtime.h.
 u8* g_ee_main_mem = nullptr;
@@ -173,6 +179,16 @@ void goal_kernel_core_shutdown(void) {
 
 int goal_kernel_core_is_initialized(void) {
   return g_initialized ? 1 : 0;
+}
+
+goal_kernel_core_status goal_kernel_core_stub_machine_layer(int abort_when_called) {
+  if (!g_initialized) {
+    set_error("goal_kernel_core_stub_machine_layer: not initialized");
+    return GOAL_KERNEL_CORE_NOT_INITIALIZED;
+  }
+  goal_kernel_core_set_machine_stub_mode(abort_when_called != 0);
+  jak1::InitMachineScheme();
+  return GOAL_KERNEL_CORE_OK;
 }
 
 goal_kernel_core_status goal_kernel_core_get_state(goal_kernel_core_state* out) {

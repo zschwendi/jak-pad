@@ -91,6 +91,11 @@ int main() {
   }
   clear_print();
 
+  // The machine layer is not in this library. Reporting mode names each of its functions the first
+  // time GOAL asks for one and returns 0, so one run enumerates everything a boot needs; a file
+  // that loads after such a message has not been shown to work.
+  goal_kernel_core_stub_machine_layer(0);
+
   int loaded = 0;
   int ran = 0;
   int missing_functions = 0;

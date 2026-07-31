@@ -69,12 +69,24 @@ system and emits the C plus `aot_boot_manifest.c` - loads each one into the real
 runs its `top-level` through `call_goal`. It reports how far it got and what stopped it rather
 than only passing or failing.
 
-Today it loads the first **40** object files and runs all 40 top-levels, ending with 776 symbols
-in the real symbol table. The frontier is file 41, `engine/ps2/pad.gc`, whose `top-level` calls
-`cpad-open`: a machine-layer function from `kmachine.cpp` that this library does not have, so the
-call reads a symbol holding 0 and faults in the guard page. Raising the frontier means giving the
-portable kernel a machine layer, not changing the AOT path. `AOT_BOOT_TAGS` in
-`game/CMakeLists.txt` is the file list and has to be extended together with the frontier.
+Today it loads the first **207** of Jak 1's 518 object files and runs all 207 top-levels, ending
+with 3048 symbols in the real symbol table. That is the whole GOAL kernel, the math and geometry
+library, DMA, the GS and display headers, the loader, textures, fonts, collision, the camera,
+particles, moods and the game-settings layer.
+
+The frontier is file 208, `engine/gfx/mood/time-of-day.gc`. Its `top-level` runs
+`(process-spawn time-of-day-proc ...)`, which reaches `run-function-in-process` and then
+`(method new catch-frame)` - one of the GOAL routines that manipulates the stack directly, so it
+has no C translation and no native implementation yet. Raising the frontier past 208 means writing
+those routines natively; see `docs/aot-stack-model.md`. `AOT_BOOT_TAGS` in `game/CMakeLists.txt`
+is the file list and has to be extended together with the frontier.
+
+Between files 41 and 207, seven machine-layer functions are asked for and reported by
+`goal_kernel_core_stub_machine_layer` rather than implemented: `cpad-open` (`engine/ps2/pad.gc`),
+`__pc-get-mips2c` (`engine/gfx/texture/texture.gc`), `rpc-call` and `rpc-busy?`
+(`engine/sound/gsound.gc`), and `scf-get-volume`, `scf-get-language` and `scf-get-aspect`
+(`engine/game/settings.gc`). Those files' top-levels ran to completion, but with those calls
+returning 0, so they are known to load rather than known to work.
 
 Standalone static library for a device build:
 
@@ -145,10 +157,11 @@ trampolines, and it is the seam the compiler/AOT track needs.
   therefore not yet available on ARM64.
 - **Only Jak 1 was converted.** `game/kernel/{jak2,jak3,jakx}/kscheme.cpp` still write x86-64
   trampolines, so those kernels remain non-functional on ARM64.
-- **No machine layer.** Nothing from `kmachine.cpp` is here, so no GOAL symbol holds `cpad-open`,
+- **No machine layer.** Nothing from `kmachine.cpp` is here, so nothing implements `cpad-open`,
   `file-stream-open`, `reset-graph`, the `scf-get-*` settings readers or the PC-port functions.
-  A GOAL call to one of them reads a symbol holding 0 and faults in the guard page rather than
-  reporting a name. This is what stops the boot probe at file 41.
+  `goal_kernel_core_stub_machine_layer` puts a loudly-failing GOAL function object in each of
+  those 117 symbols so a call says which function was wanted instead of faulting in the guard
+  page, but that is a diagnostic and not an implementation.
 - **No thread switch.** The seven GOAL routines that switch stacks - `reset-and-call`,
   `thread-suspend`, `thread-resume`, `return-from-thread`, `return-from-thread-dead`,
   `(method new catch-frame)`, `throw-dispatch`, plus `enter-state` - cannot be expressed in C and
