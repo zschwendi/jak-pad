@@ -135,8 +135,6 @@ if(NOT ACTUAL_LOGNOT_ASSEMBLY STREQUAL EXPECTED_LOGNOT_ASSEMBLY)
   message(FATAL_ERROR "Assembly-only lognot artifact did not match the expected ARM64 code")
 endif()
 
-file(WRITE "${LOGNOT_PAIRED_ASSEMBLY}" "old lognot assembly\n")
-file(WRITE "${LOGNOT_EXPORTS}" "old lognot exports\n")
 execute_process(
   COMMAND "${GOALC_AOT}"
           --project-path "${PROJECT_ROOT}"
@@ -146,15 +144,74 @@ execute_process(
           --exports-output "${LOGNOT_EXPORTS}"
           --symbol goalpad_aot_lognot
   RESULT_VARIABLE LOGNOT_PAIRED_RESULT)
-if(LOGNOT_PAIRED_RESULT EQUAL 0)
-  message(FATAL_ERROR "goalc-aot accepted lognot native export metadata")
+if(NOT LOGNOT_PAIRED_RESULT EQUAL 0)
+  message(FATAL_ERROR "Paired lognot goalc-aot invocation failed")
+endif()
+
+file(SHA256 "${LOGNOT_ASSEMBLY_ONLY}" LOGNOT_ASSEMBLY_ONLY_SHA256)
+file(SHA256 "${LOGNOT_PAIRED_ASSEMBLY}" LOGNOT_PAIRED_ASSEMBLY_SHA256)
+if(NOT LOGNOT_ASSEMBLY_ONLY_SHA256 STREQUAL LOGNOT_PAIRED_ASSEMBLY_SHA256)
+  message(FATAL_ERROR "Adding lognot export metadata changed the ARM64 assembly")
 endif()
 
 file(READ "${LOGNOT_PAIRED_ASSEMBLY}" ACTUAL_LOGNOT_PAIRED_ASSEMBLY)
 file(READ "${LOGNOT_EXPORTS}" ACTUAL_LOGNOT_EXPORTS)
-if(NOT ACTUAL_LOGNOT_PAIRED_ASSEMBLY STREQUAL "old lognot assembly\n" OR
-   NOT ACTUAL_LOGNOT_EXPORTS STREQUAL "old lognot exports\n")
-  message(FATAL_ERROR "Rejected lognot native export modified an existing artifact")
+if(NOT ACTUAL_LOGNOT_PAIRED_ASSEMBLY STREQUAL EXPECTED_LOGNOT_ASSEMBLY)
+  message(FATAL_ERROR "Paired lognot artifact did not match the expected ARM64 code")
+endif()
+
+set(EXPECTED_LOGNOT_EXPORTS
+    "#ifndef OPENGOAL_AOT_EXPORT1\n#error \"Define OPENGOAL_AOT_EXPORT1 before including this file.\"\n#endif\nOPENGOAL_AOT_EXPORT1(\"lognot\", goalpad_aot_lognot)\n")
+if(NOT ACTUAL_LOGNOT_EXPORTS STREQUAL EXPECTED_LOGNOT_EXPORTS)
+  message(FATAL_ERROR "Generated lognot export metadata did not match the expected record")
+endif()
+
+set(LOGNOT_WRONG_ASSEMBLY "${OUTPUT_DIR}/lognot-wrong.s")
+set(LOGNOT_WRONG_EXPORTS "${OUTPUT_DIR}/lognot-wrong.exports.inc")
+file(WRITE "${LOGNOT_WRONG_ASSEMBLY}" "old lognot wrong assembly\n")
+file(WRITE "${LOGNOT_WRONG_EXPORTS}" "old lognot wrong exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOGNOT_INPUT}"
+          --function lognot
+          --output "${LOGNOT_WRONG_ASSEMBLY}"
+          --exports-output "${LOGNOT_WRONG_EXPORTS}"
+          --symbol goalpad_aot_identity
+  RESULT_VARIABLE LOGNOT_WRONG_SYMBOL_RESULT)
+if(LOGNOT_WRONG_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted lognot with the identity symbol")
+endif()
+
+file(READ "${LOGNOT_WRONG_ASSEMBLY}" ACTUAL_LOGNOT_WRONG_ASSEMBLY)
+file(READ "${LOGNOT_WRONG_EXPORTS}" ACTUAL_LOGNOT_WRONG_EXPORTS)
+if(NOT ACTUAL_LOGNOT_WRONG_ASSEMBLY STREQUAL "old lognot wrong assembly\n" OR
+   NOT ACTUAL_LOGNOT_WRONG_EXPORTS STREQUAL "old lognot wrong exports\n")
+  message(FATAL_ERROR "Failed lognot symbol validation modified an existing artifact")
+endif()
+
+set(LOGNOT_CROSS_ASSEMBLY "${OUTPUT_DIR}/lognot-cross.s")
+set(LOGNOT_CROSS_EXPORTS "${OUTPUT_DIR}/lognot-cross.exports.inc")
+file(WRITE "${LOGNOT_CROSS_ASSEMBLY}" "old lognot cross assembly\n")
+file(WRITE "${LOGNOT_CROSS_EXPORTS}" "old lognot cross exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${LOGNOT_INPUT}"
+          --function lognot
+          --output "${LOGNOT_CROSS_ASSEMBLY}"
+          --exports-output "${LOGNOT_CROSS_EXPORTS}"
+          --symbol goalpad_aot_false_func
+  RESULT_VARIABLE LOGNOT_CROSS_ABI_RESULT)
+if(LOGNOT_CROSS_ABI_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted lognot with the Export0 symbol")
+endif()
+
+file(READ "${LOGNOT_CROSS_ASSEMBLY}" ACTUAL_LOGNOT_CROSS_ASSEMBLY)
+file(READ "${LOGNOT_CROSS_EXPORTS}" ACTUAL_LOGNOT_CROSS_EXPORTS)
+if(NOT ACTUAL_LOGNOT_CROSS_ASSEMBLY STREQUAL "old lognot cross assembly\n" OR
+   NOT ACTUAL_LOGNOT_CROSS_EXPORTS STREQUAL "old lognot cross exports\n")
+  message(FATAL_ERROR "Failed lognot cross-ABI generation modified an existing artifact")
 endif()
 
 execute_process(
@@ -229,6 +286,30 @@ file(READ "${TRUE_CROSS_EXPORTS}" ACTUAL_TRUE_CROSS_EXPORTS)
 if(NOT ACTUAL_TRUE_CROSS_ASSEMBLY STREQUAL "old true cross assembly\n" OR
    NOT ACTUAL_TRUE_CROSS_EXPORTS STREQUAL "old true cross exports\n")
   message(FATAL_ERROR "Failed true-func cross-ABI generation modified an existing artifact")
+endif()
+
+set(TRUE_LOGNOT_ASSEMBLY "${OUTPUT_DIR}/true-lognot.s")
+set(TRUE_LOGNOT_EXPORTS "${OUTPUT_DIR}/true-lognot.exports.inc")
+file(WRITE "${TRUE_LOGNOT_ASSEMBLY}" "old true lognot assembly\n")
+file(WRITE "${TRUE_LOGNOT_EXPORTS}" "old true lognot exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${TRUE_INPUT}"
+          --function true-func
+          --output "${TRUE_LOGNOT_ASSEMBLY}"
+          --exports-output "${TRUE_LOGNOT_EXPORTS}"
+          --symbol goalpad_aot_lognot
+  RESULT_VARIABLE TRUE_LOGNOT_SYMBOL_RESULT)
+if(TRUE_LOGNOT_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted true-func with the lognot symbol")
+endif()
+
+file(READ "${TRUE_LOGNOT_ASSEMBLY}" ACTUAL_TRUE_LOGNOT_ASSEMBLY)
+file(READ "${TRUE_LOGNOT_EXPORTS}" ACTUAL_TRUE_LOGNOT_EXPORTS)
+if(NOT ACTUAL_TRUE_LOGNOT_ASSEMBLY STREQUAL "old true lognot assembly\n" OR
+   NOT ACTUAL_TRUE_LOGNOT_EXPORTS STREQUAL "old true lognot exports\n")
+  message(FATAL_ERROR "Failed true-func lognot validation modified an existing artifact")
 endif()
 
 set(FALSE_WRONG_ASSEMBLY "${OUTPUT_DIR}/false-wrong.s")
@@ -317,6 +398,30 @@ if(NOT ACTUAL_CROSS_ASSEMBLY STREQUAL "old cross assembly\n" OR
   message(FATAL_ERROR "Failed identity cross-ABI generation modified an existing artifact")
 endif()
 
+set(IDENTITY_LOGNOT_ASSEMBLY "${OUTPUT_DIR}/identity-lognot.s")
+set(IDENTITY_LOGNOT_EXPORTS "${OUTPUT_DIR}/identity-lognot.exports.inc")
+file(WRITE "${IDENTITY_LOGNOT_ASSEMBLY}" "old identity lognot assembly\n")
+file(WRITE "${IDENTITY_LOGNOT_EXPORTS}" "old identity lognot exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${IDENTITY_INPUT}"
+          --function identity
+          --output "${IDENTITY_LOGNOT_ASSEMBLY}"
+          --exports-output "${IDENTITY_LOGNOT_EXPORTS}"
+          --symbol goalpad_aot_lognot
+  RESULT_VARIABLE IDENTITY_LOGNOT_SYMBOL_RESULT)
+if(IDENTITY_LOGNOT_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted identity with the lognot symbol")
+endif()
+
+file(READ "${IDENTITY_LOGNOT_ASSEMBLY}" ACTUAL_IDENTITY_LOGNOT_ASSEMBLY)
+file(READ "${IDENTITY_LOGNOT_EXPORTS}" ACTUAL_IDENTITY_LOGNOT_EXPORTS)
+if(NOT ACTUAL_IDENTITY_LOGNOT_ASSEMBLY STREQUAL "old identity lognot assembly\n" OR
+   NOT ACTUAL_IDENTITY_LOGNOT_EXPORTS STREQUAL "old identity lognot exports\n")
+  message(FATAL_ERROR "Failed identity lognot validation modified an existing artifact")
+endif()
+
 set(FALSE_CROSS_ASSEMBLY "${OUTPUT_DIR}/false-cross.s")
 set(FALSE_CROSS_EXPORTS "${OUTPUT_DIR}/false-cross.exports.inc")
 file(WRITE "${FALSE_CROSS_ASSEMBLY}" "old false cross assembly\n")
@@ -339,6 +444,30 @@ file(READ "${FALSE_CROSS_EXPORTS}" ACTUAL_FALSE_CROSS_EXPORTS)
 if(NOT ACTUAL_FALSE_CROSS_ASSEMBLY STREQUAL "old false cross assembly\n" OR
    NOT ACTUAL_FALSE_CROSS_EXPORTS STREQUAL "old false cross exports\n")
   message(FATAL_ERROR "Failed false-func cross-ABI generation modified an existing artifact")
+endif()
+
+set(FALSE_LOGNOT_ASSEMBLY "${OUTPUT_DIR}/false-lognot.s")
+set(FALSE_LOGNOT_EXPORTS "${OUTPUT_DIR}/false-lognot.exports.inc")
+file(WRITE "${FALSE_LOGNOT_ASSEMBLY}" "old false lognot assembly\n")
+file(WRITE "${FALSE_LOGNOT_EXPORTS}" "old false lognot exports\n")
+execute_process(
+  COMMAND "${GOALC_AOT}"
+          --project-path "${PROJECT_ROOT}"
+          --input "${INPUT}"
+          --function false-func
+          --output "${FALSE_LOGNOT_ASSEMBLY}"
+          --exports-output "${FALSE_LOGNOT_EXPORTS}"
+          --symbol goalpad_aot_lognot
+  RESULT_VARIABLE FALSE_LOGNOT_SYMBOL_RESULT)
+if(FALSE_LOGNOT_SYMBOL_RESULT EQUAL 0)
+  message(FATAL_ERROR "goalc-aot accepted false-func with the lognot symbol")
+endif()
+
+file(READ "${FALSE_LOGNOT_ASSEMBLY}" ACTUAL_FALSE_LOGNOT_ASSEMBLY)
+file(READ "${FALSE_LOGNOT_EXPORTS}" ACTUAL_FALSE_LOGNOT_EXPORTS)
+if(NOT ACTUAL_FALSE_LOGNOT_ASSEMBLY STREQUAL "old false lognot assembly\n" OR
+   NOT ACTUAL_FALSE_LOGNOT_EXPORTS STREQUAL "old false lognot exports\n")
+  message(FATAL_ERROR "Failed false-func lognot validation modified an existing artifact")
 endif()
 
 set(WRONG_IDENTITY_ASSEMBLY "${OUTPUT_DIR}/wrong-identity.s")

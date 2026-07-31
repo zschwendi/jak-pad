@@ -54,9 +54,14 @@ void validate(const NativeExport0& native_export) {
 }
 
 void validate(const NativeExport1& native_export) {
-  if (native_export.goal_name != "identity" || native_export.c_symbol != "goalpad_aot_identity") {
+  const bool is_identity =
+      native_export.goal_name == "identity" && native_export.c_symbol == "goalpad_aot_identity";
+  const bool is_lognot =
+      native_export.goal_name == "lognot" && native_export.c_symbol == "goalpad_aot_lognot";
+  if (!is_identity && !is_lognot) {
     throw std::invalid_argument(
-        "AOT native export proof only supports identity as goalpad_aot_identity");
+        "AOT native export proof only supports identity as goalpad_aot_identity or lognot as "
+        "goalpad_aot_lognot");
   }
 }
 
