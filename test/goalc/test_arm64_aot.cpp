@@ -79,9 +79,30 @@ TEST(Arm64Aot, compiles_top_level_literal_and_renders_apple_text) {
             ".subsections_via_symbols\n");
 }
 
-TEST(Arm64Aot, rejects_source_outside_the_literal_42_proof) {
+TEST(Arm64Aot, compiles_jak1_false_expression_and_renders_apple_text) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+  const auto source = file_util::read_text_file(file_util::get_file_path(
+      {"test/goalc/source_templates/arm64-aot/false-from-jak1-gcommon.gc"}));
+  const auto code = compiler.compile_top_level_source(source, "false-from-jak1-gcommon");
+
+  EXPECT_EQ(code, (std::vector<u8>{0xe0, 0x03, 0x15, 0xaa, 0xc0, 0x03, 0x5f, 0xd6}));
+
+  const aot::AppleArm64Function function{"goalpad_aot_false", code};
+  EXPECT_EQ(aot::render_apple_arm64_assembly(function),
+            ".section __TEXT,__text,regular,pure_instructions\n"
+            ".p2align 2\n"
+            ".globl _goalpad_aot_false\n"
+            "_goalpad_aot_false:\n"
+            "  .long 0xaa1503e0\n"
+            "  .long 0xd65f03c0\n"
+            ".subsections_via_symbols\n");
+}
+
+TEST(Arm64Aot, rejects_source_outside_the_supported_aot_proof) {
   Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
   EXPECT_THROW(compiler.compile_top_level_source("41", "constant-41"), std::runtime_error);
+  EXPECT_THROW(compiler.compile_top_level_source("'#t", "true-from-jak1-gcommon"),
+               std::runtime_error);
 }
 
 TEST(Arm64Aot, uses_apple_abi_registers_without_goal_specials) {

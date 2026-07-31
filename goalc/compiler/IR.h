@@ -75,6 +75,7 @@ class IR_LoadSymbolPointer : public IR {
   void do_codegen_arm64(emitter::ObjectGenerator* gen,
                         const AllocationResult& allocs,
                         emitter::IR_Record irec) override;
+  const std::string& name() const { return m_name; }
 
  protected:
   const RegVal* m_dest = nullptr;

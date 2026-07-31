@@ -305,7 +305,20 @@ void IR_LoadSymbolPointer::do_codegen_x86(emitter::ObjectGenerator* gen,
 void IR_LoadSymbolPointer::do_codegen_arm64(emitter::ObjectGenerator* gen,
                                             const AllocationResult& allocs,
                                             emitter::IR_Record irec) {
-  throw std::runtime_error("NYI - IR_LoadSymbolPointer::do_codegen_arm64");
+  if (m_name != "#f") {
+    throw std::runtime_error("ARM64 AOT proof only supports the #f symbol pointer.");
+  }
+  static_assert(false_symbol_offset() == 0, "false symbol location");
+  if (m_dest->ireg().reg_class != RegClass::GPR_64) {
+    throw std::runtime_error("ARM64 AOT proof only supports GPR symbol pointers.");
+  }
+
+  const auto dest_reg = get_reg(m_dest, allocs, irec);
+  if (!dest_reg.is_gpr(gen->instr_set()) || dest_reg == ARM64_REG::SP) {
+    throw std::runtime_error("ARM64 AOT proof requires a non-stack GPR symbol destination.");
+  }
+  const auto st_reg = get_register_info(gen->instr_set()).get_st_reg();
+  gen->add_instr(IGen::mov_gpr64_gpr64(*gen, dest_reg, st_reg), irec);
 }
 
 /////////////////////

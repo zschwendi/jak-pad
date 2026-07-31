@@ -459,10 +459,14 @@ void CodeGenerator::do_goal_function_arm64(FunctionEnv* env, int f_idx) {
 
   const auto& code = env->code();
   auto* constant = code.size() == 3 ? dynamic_cast<IR_LoadConstant64*>(code.at(0).get()) : nullptr;
-  if (!constant || constant->value() != 42 || !dynamic_cast<IR_Return*>(code.at(1).get()) ||
+  auto* symbol =
+      code.size() == 3 ? dynamic_cast<IR_LoadSymbolPointer*>(code.at(0).get()) : nullptr;
+  const bool supported_first_instruction =
+      (constant && constant->value() == 42) || (symbol && symbol->name() == "#f");
+  if (!supported_first_instruction || !dynamic_cast<IR_Return*>(code.at(1).get()) ||
       !dynamic_cast<IR_Null*>(code.at(2).get())) {
     throw std::runtime_error(
-        "ARM64 AOT proof only supports IR_LoadConstant64, IR_Return, and IR_Null for literal 42.");
+        "ARM64 AOT proof only supports literal 42 or #f followed by IR_Return and IR_Null.");
   }
 
   auto* debug = &m_debug_info->function_by_name(env->name());

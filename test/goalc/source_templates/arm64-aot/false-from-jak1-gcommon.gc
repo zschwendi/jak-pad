@@ -1,0 +1,2 @@
+;; Exact expression from the body of false-func in goal_src/jak1/kernel/gcommon.gc.
+'#f
