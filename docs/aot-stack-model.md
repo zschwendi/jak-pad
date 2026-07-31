@@ -110,6 +110,12 @@ through a real GOAL `function` object. On ARM64 that means saving `x19`-`x28`, `
 `cpu-thread`'s `regs` and `freg` arrays. Nothing about this is blocked; it is simply not written
 yet.
 
+This is not a theoretical item. `jak1-aot-boot-test` loads 207 of Jak 1's 518 object files in
+build order and stops at file 208, `engine/gfx/mood/time-of-day.gc`, whose `top-level` runs
+`(process-spawn time-of-day-proc ...)`. That reaches `run-function-in-process` and then
+`(new 'stack 'catch-frame ...)`, which is `(method new catch-frame)` in the table above. These
+routines are the next thing gating the boot path, not a cleanup task.
+
 **Stack copying keeps working.** ARM64 frames contain saved frame pointers that point into the same
 stack region and return addresses that point into `__TEXT`. `thread-suspend` restores the bytes to
 the same addresses, so both stay valid. This is the property that would have been lost if threads
