@@ -119,6 +119,29 @@ TEST(Arm64Aot, compiles_full_jak1_false_func_and_renders_apple_text) {
             ".subsections_via_symbols\n");
 }
 
+TEST(Arm64Aot, renders_zero_argument_native_export_metadata) {
+  const aot::NativeExport0 native_export{"false-func", "goalpad_aot_false_func"};
+
+  EXPECT_EQ(aot::render_cpp_xmacro_export0(native_export),
+            "#ifndef OPENGOAL_AOT_EXPORT0\n"
+            "#error \"Define OPENGOAL_AOT_EXPORT0 before including this file.\"\n"
+            "#endif\n"
+            "OPENGOAL_AOT_EXPORT0(\"false-func\", goalpad_aot_false_func)\n");
+}
+
+TEST(Arm64Aot, rejects_native_exports_outside_the_false_func_proof) {
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"", "goalpad_aot_false_func"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"other", "goalpad_aot_false_func"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "invalid-symbol"}),
+               std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "__reserved"}), std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "_Reserved"}), std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "class"}), std::invalid_argument);
+  EXPECT_THROW(aot::render_cpp_xmacro_export0({"false-func", "main"}), std::invalid_argument);
+}
+
 TEST(Arm64Aot, rejects_unknown_named_function) {
   Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
   const auto source = file_util::read_text_file(file_util::get_file_path(
@@ -134,6 +157,22 @@ TEST(Arm64Aot, rejects_named_constant_function_outside_the_false_func_proof) {
 
   EXPECT_THROW(compiler.compile_arm64_aot_source("(defun answer () 42)", "answer",
                                                  std::optional<std::string>{"answer"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_false_func_name_with_a_non_false_body) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun false-func () 42)", "non-false-body",
+                                                 std::optional<std::string>{"false-func"}),
+               std::runtime_error);
+}
+
+TEST(Arm64Aot, rejects_false_body_under_a_different_name) {
+  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+
+  EXPECT_THROW(compiler.compile_arm64_aot_source("(defun other () '#f)", "other-false",
+                                                 std::optional<std::string>{"other"}),
                std::runtime_error);
 }
 

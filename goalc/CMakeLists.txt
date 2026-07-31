@@ -104,3 +104,11 @@ target_link_libraries(goalc-simple common Zydis compiler)
 target_link_libraries(goalc-aot common Zydis compiler)
 target_link_libraries(build_level common Zydis compiler)
 target_link_libraries(build_actor common Zydis compiler)
+
+add_test(
+        NAME goalc-aot-artifact-pair
+        COMMAND ${CMAKE_COMMAND}
+        -DGOALC_AOT=$<TARGET_FILE:goalc-aot>
+        -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
+        -DOUTPUT_DIR=${CMAKE_BINARY_DIR}/test-output/goalc-aot-artifact-pair
+        -P ${CMAKE_SOURCE_DIR}/test/goalc/test_arm64_aot_cli.cmake)
