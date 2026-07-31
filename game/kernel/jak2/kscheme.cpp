@@ -278,24 +278,12 @@ u64 make_debug_string_from_c(const char* c_str) {
 }
 
 extern "C" {
-#ifndef __aarch64__
-#ifdef __APPLE__
-void _arg_call_systemv() asm("_arg_call_systemv");
-void _stack_call_systemv() asm("_stack_call_systemv");
-void _stack_call_win32() asm("_stack_call_win32");
-#else
-void _arg_call_systemv();
-void _stack_call_systemv();
-void _stack_call_win32();
-#endif
-#else
 #if defined(__APPLE__)
 void _arg_call_arm64() asm("_arg_call_arm64");
 void _stack_call_arm64() asm("_stack_call_arm64");
 #else
 void _arg_call_arm64();
 void _stack_call_arm64();
-#endif
 #endif
 }
 
@@ -308,11 +296,7 @@ Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
                                        u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
-#ifndef __aarch64__
-  auto trampoline_function_addr = _arg_call_systemv;
-#else
   auto trampoline_function_addr = _arg_call_arm64;
-#endif
   auto trampoline = (u8*)&trampoline_function_addr;
   // TODO - x86 code still being emitted below
 
@@ -351,80 +335,13 @@ Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
   return mem.cast<Function>();
 }
 
-/*!
- * Create a GOAL function from a C function. This doesn't export it as a global function, it just
- * creates a function object on the global heap.
- *
- * This creates a simple trampoline function which jumps to the C function and reorders the
- * arguments to be correct for Windows.
- */
-Ptr<Function> make_function_from_c_win32(void* func, bool arg3_is_pp) {
-  // allocate a function object on the global heap
-  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x80, UNKNOWN_PP));
-  auto f = (uint64_t)func;
-  auto fp = (u8*)&f;
-
-  int i = 0;
-  // we will put the function address in RAX with a movabs rax, imm8
-  mem.c()[i++] = 0x48;
-  mem.c()[i++] = 0xb8;
-  for (int j = 0; j < 8; j++) {
-    mem.c()[i++] = fp[j];
-  }
-
-  /*
-    push rdi
-    push rsi
-    push rdx
-    push rcx
-    pop r9
-    pop r8
-    pop rdx
-    pop rcx
-    push r10
-    push r11
-    sub rsp, 40
-   */
-  for (auto x : {0x57, 0x56, 0x52, 0x51, 0x41, 0x59, 0x41, 0x58, 0x5A, 0x59, 0x41, 0x52, 0x41, 0x53,
-                 0x48, 0x83, 0xEC, 0x28}) {
-    mem.c()[i++] = x;
-  }
-
-  if (arg3_is_pp) {
-    // mov r9, r13. Puts pp in the third argument.
-    mem.c()[i++] = 0x4d;
-    mem.c()[i++] = 0x89;
-    mem.c()[i++] = 0xe9;
-  }
-
-  /*
-    call rax
-    add rsp, 40
-    pop r11
-    pop r10
-    ret
-   */
-  for (auto x : {0xFF, 0xD0, 0x48, 0x83, 0xC4, 0x28, 0x41, 0x5B, 0x41, 0x5A, 0xC3}) {
-    mem.c()[i++] = x;
-  }
-
-  // CacheFlush(mem, 0x34);
-
-  return mem.cast<Function>();
-}
-
 Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
   // allocate a function object on the global heap
   auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
                                        u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
   auto f = (uint64_t)func;
   auto target_function = (u8*)&f;
-#ifndef __aarch64__
-  auto trampoline_function_addr = _stack_call_systemv;
-#else
   auto trampoline_function_addr = _stack_call_arm64;
-#endif
   auto trampoline = (u8*)&trampoline_function_addr;
 
   // movabs rax, target_function
@@ -454,49 +371,6 @@ Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
   return mem.cast<Function>();
 }
 
-#ifdef _WIN32
-/*!
- * Create a GOAL function from a C function.  This calls a windows function, but doesn't scramble
- * the argument order.  It's supposed to be used with _format_win32 which assumes GOAL order.
- */
-Ptr<Function> make_stack_arg_function_from_c_win32(void* func) {
-  // allocate a function object on the global heap
-  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x80, UNKNOWN_PP));
-  auto f = (uint64_t)func;
-  auto fp = (u8*)&f;
-  auto trampoline_function_addr = _stack_call_win32;
-  auto trampoline = (u8*)&trampoline_function_addr;
-
-  int i = 0;
-  // we will put the function address in RAX with a movabs rax, imm8
-  mem.c()[i++] = 0x48;
-  mem.c()[i++] = 0xb8;
-  for (int j = 0; j < 8; j++) {
-    mem.c()[i++] = fp[j];
-  }
-
-  // push rax
-  mem.c()[i++] = 0x50;
-
-  // we will put the function address in RAX with a movabs rax, imm8
-  mem.c()[i++] = 0x48;
-  mem.c()[i++] = 0xb8;
-  for (int j = 0; j < 8; j++) {
-    mem.c()[i++] = trampoline[j];
-  }
-
-  /*
-   * jmp rax
-   */
-  for (auto x : {0xFF, 0xE0}) {
-    mem.c()[i++] = x;
-  }
-
-  return mem.cast<Function>();
-}
-#endif
-
 /*!
  * Create a GOAL function from a C function. This doesn't export it as a global function, it just
  * creates a function object on the global heap.
@@ -504,23 +378,11 @@ Ptr<Function> make_stack_arg_function_from_c_win32(void* func) {
  * The implementation is to create a simple trampoline function which jumps to the C function.
  */
 Ptr<Function> make_function_from_c(void* func, bool arg3_is_pp = false) {
-#ifdef __linux__
   return make_function_from_c_systemv(func, arg3_is_pp);
-#elif __APPLE__
-  return make_function_from_c_systemv(func, arg3_is_pp);
-#elif _WIN32
-  return make_function_from_c_win32(func, arg3_is_pp);
-#endif
 }
 
 Ptr<Function> make_stack_arg_function_from_c(void* func) {
-#ifdef __linux__
   return make_stack_arg_function_from_c_systemv(func);
-#elif __APPLE__
-  return make_stack_arg_function_from_c_systemv(func);
-#elif _WIN32
-  return make_stack_arg_function_from_c_win32(func);
-#endif
 }
 
 /*!

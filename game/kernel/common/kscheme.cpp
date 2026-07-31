@@ -97,25 +97,7 @@ u64 goal_malloc(u32 heap, u32 size, u32 flags, u32 name) {
 }
 
 extern "C" {
-// defined in asm_funcs.asm
-#ifdef __linux__
-uint64_t _call_goal_asm_systemv(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset);
-uint64_t _call_goal_on_stack_asm_systemv(u64 rsp,
-                                         u64 u0,
-                                         u64 u1,
-                                         void* fptr,
-                                         void* st_ptr,
-                                         void* offset);
-#elif defined __APPLE__ && defined __x86_64__
-uint64_t _call_goal_asm_systemv(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset) asm(
-    "_call_goal_asm_systemv");
-uint64_t _call_goal_on_stack_asm_systemv(u64 rsp,
-                                         u64 u0,
-                                         u64 u1,
-                                         void* fptr,
-                                         void* st_ptr,
-                                         void* offset) asm("_call_goal_on_stack_asm_systemv");
-#elif defined(__APPLE__) && defined(__aarch64__)
+// defined in asm_funcs_arm64.s
 uint64_t call_goal_asm_arm64(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset);
 uint64_t call_goal_on_stack_asm_arm64(u64 rsp,
                                       u64 u0,
@@ -123,10 +105,6 @@ uint64_t call_goal_on_stack_asm_arm64(u64 rsp,
                                       void* fptr,
                                       void* st_ptr,
                                       void* offset);
-#elif _WIN32
-uint64_t _call_goal_asm_win32(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset);
-uint64_t _call_goal_on_stack_asm_win32(u64 rsp, void* fptr, void* st_ptr, void* offset);
-#endif
 }
 
 /*!
@@ -136,13 +114,9 @@ uint64_t _call_goal_on_stack_asm_win32(u64 rsp, void* fptr, void* st_ptr, void* 
  * every AOT call site does the same load through GOAL_FN (goalc/aot/goal_c_runtime.h).
  */
 static void* goal_function_entry_point(Ptr<Function> f) {
-#ifdef __aarch64__
   void* entry = nullptr;
   memcpy(&entry, f.c(), sizeof(entry));
   return entry;
-#else
-  return f.c();
-#endif
 }
 
 #ifdef __aarch64__
@@ -180,16 +154,8 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
   void* st_ptr = (void*)st;
 
   void* fptr = goal_function_entry_point(f);
-#ifdef __linux__
-  return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
-#elif defined __APPLE__ && defined __x86_64__
-  return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
-#elif defined(__APPLE__) && defined(__aarch64__)
   ScopedCurrentProcess pp(st);
   return call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
-#elif _WIN32
-  return _call_goal_asm_win32(a, b, c, fptr, st_ptr, offset);
-#endif
 }
 
 /*!
@@ -199,16 +165,8 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   void* st_ptr = (void*)st;
 
   void* fptr = goal_function_entry_point(f);
-#ifdef __linux__
-  return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
-#elif defined __APPLE__ && defined __x86_64__
-  return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
-#elif defined(__APPLE__) && defined(__aarch64__)
   ScopedCurrentProcess pp(st);
   return call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
-#elif _WIN32
-  return _call_goal_on_stack_asm_win32(rsp, fptr, st_ptr, offset);
-#endif
 }
 
 /*!
