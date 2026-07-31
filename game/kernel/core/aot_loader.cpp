@@ -142,6 +142,14 @@ goal_kernel_core_status goal_aot_load(const goal_aot_object_file* file) {
   u32 total = 0;
   for (int i = 0; i < file->static_count; i++) {
     const int align = file->statics[i].align > 0 ? file->statics[i].align : 4;
+    // A zero-size static takes up no room here, so every reference to it would resolve to whatever
+    // static follows it. Nothing GOAL emits is legitimately empty, so this means the C backend has
+    // a static kind it does not know how to write out.
+    if (file->statics[i].size <= 0) {
+      set_error(fmt::format("goal_aot_load: {} static {} has size {}", file->tag, i,
+                            file->statics[i].size));
+      return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
+    }
     if (align > 16) {
       set_error(fmt::format("goal_aot_load: {} static {} wants {}-byte alignment", file->tag, i,
                             align));

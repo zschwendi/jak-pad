@@ -179,10 +179,17 @@ int StaticPair::get_addr_offset() const {
   return PAIR_OFFSET;
 }
 
-void StaticPair::generate(emitter::ObjectGenerator* gen) {
+void StaticPair::build_data() {
+  if (!data.empty()) {
+    return;
+  }
   data.resize(2 * POINTER_SIZE);  // size of pair
   generate_item(m_car, 0);
   generate_item(m_cdr, 4);
+}
+
+void StaticPair::generate(emitter::ObjectGenerator* gen) {
+  build_data();
   generate_structure(gen);
 }
 

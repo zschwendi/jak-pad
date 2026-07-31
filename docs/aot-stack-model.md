@@ -1,7 +1,8 @@
 # The AOT stack model
 
-Status: **Decided and partly implemented.** The decision below is implemented for everything
-except GOAL's thread switch itself, which is listed as remaining work at the end.
+Status: **Decided and implemented,** including GOAL's thread switch. Every Jak 1 function now has
+native ARM64 code behind it: 10595 of 10602 through the C backend and the remaining 7 written by
+hand (`game/kernel/core/goal_native_kernel.cpp`, `goal_thread_arm64.s`).
 
 ## The question
 
@@ -84,55 +85,98 @@ Writing `rsp` stays impossible: in C the compiler owns the stack pointer. The ba
 local and leaving the real stack alone.
 
 Whole-game C backend coverage went from **9539/10601 (89.98%)** to **10590/10601 (99.90%)**. The
-11 that remain are exactly the functions that manipulate the stack or other machine registers
-directly:
+11 that remained were exactly the functions that manipulate the stack or other machine registers
+directly. Four of them turned out not to need machine code at all; the other seven are written by
+hand in ARM64:
 
-| Function | File | What it needs |
+| Function | File | What became of it |
 | --- | --- | --- |
-| `return-from-thread` | `kernel/gkernel.gc` | assigns `rsp`, pops saved registers, `.ret` |
-| `return-from-thread-dead` | `kernel/gkernel.gc` | same, after `deactivate` |
-| `reset-and-call` | `kernel/gkernel.gc` | switches to a thread's stack and jumps |
-| `(method thread-suspend cpu-thread)` | `kernel/gkernel.gc` | saves registers, copies the stack, returns to the kernel |
-| `(method thread-resume cpu-thread)` | `kernel/gkernel.gc` | the inverse |
-| `(method new catch-frame)` | `kernel/gkernel.gc` | captures the return address and stack pointer |
-| `throw-dispatch` | `kernel/gkernel.gc` | restores them |
-| `enter-state` | `kernel/gstate.gc` | reuses the caller's frame for a state's code |
-| `set-to-run-bootstrap` | `kernel/gkernel.gc` | `.add` on the process register |
-| `(method deactivate process)` | `kernel/gkernel.gc` | `.push` |
-| `(method compute-alignment! align-control)` | `engine/anim/aligner.gc` | `.add` on a register pair |
+| `return-from-thread` | `kernel/gkernel.gc` | native: restores the context `*kernel-sp*` names |
+| `reset-and-call` | `kernel/gkernel.gc` | native: saves the kernel context, runs the function on the thread's stack |
+| `(method thread-suspend cpu-thread)` | `kernel/gkernel.gc` | native: context to the stack, stack to the backup, back to the kernel |
+| `(method thread-resume cpu-thread)` | `kernel/gkernel.gc` | native: the inverse, plus the first-run path |
+| `(method new catch-frame)` | `kernel/gkernel.gc` | native: captures a context, runs the function, pops the frame |
+| `throw-dispatch` | `kernel/gkernel.gc` | native: goes back to a catch frame's context with a value |
+| `enter-state-run-code` | `kernel/gstate.gc` | native, and new: the machine-level tail of `enter-state`, lifted into a function so the rest of `enter-state` is translatable |
+| `return-from-thread-dead` | `kernel/gkernel.gc` | plain GOAL: `(deactivate pp)` then `(return-from-thread)` |
+| `set-to-run-bootstrap` | `kernel/gkernel.gc` | plain GOAL: reads the function and arguments out of the thread instead of out of saved registers |
+| `(method deactivate process)` | `kernel/gkernel.gc` | plain GOAL: `abandon-thread` is a call now, not a forged return address |
+| `(method compute-alignment! align-control)` | `engine/anim/aligner.gc` | plain GOAL, for the same reason |
+
+The three GOAL rewrites are identical in effect on x86-64. `return-from-thread` never returns - it
+sets the stack pointer from `*kernel-sp*` and returns from there - so the return address an ordinary
+`call` pushes is discarded exactly like the forged one was.
 
 ## Consequences
 
-**The seven thread and exception routines need native implementations.** They are the same kind of
-thing `game/mips2c/**` already is: a native function standing in for a GOAL function, reached
-through a real GOAL `function` object. On ARM64 that means saving `x19`-`x28`, `d8`-`d15`, `sp` and
-`lr`, which is what `thread-suspend` already does for the x86-64 callee-saved set, into the
-`cpu-thread`'s `regs` and `freg` arrays. Nothing about this is blocked; it is simply not written
-yet.
+**The machine context lives on the stack, not in the object.** A resumable ARM64 context is
+`x19`-`x28`, `x29`, `x30`, `sp` and `d8`-`d15`: 176 bytes. A `cpu-thread` has seven 64-bit `rreg`
+slots and a `catch-frame` five, sized for the five registers x86-64 GOAL saves, so the context does
+not fit in either. It is written to the running GOAL stack instead and the object records its GOAL
+address - which is what those objects' `sp` fields already mean, and which is inside the region
+`thread-suspend` copies, so suspend and resume carry the context along with everything else.
 
-This is not a theoretical item. `jak1-aot-boot-test` loads 207 of Jak 1's 518 object files in
-build order and stops at file 208, `engine/gfx/mood/time-of-day.gc`, whose `top-level` runs
-`(process-spawn time-of-day-proc ...)`. That reaches `run-function-in-process` and then
-`(new 'stack 'catch-frame ...)`, which is `(method new catch-frame)` in the table above. These
-routines are the next thing gating the boot path, not a cleanup task.
+`(-> catch-frame ra)` and `(-> cpu-thread pc)` have nothing left to hold: an ARM64 return address is
+a `__TEXT` address that no 32-bit GOAL field can express. `ra` is set to 0. `pc` records the GOAL
+address of the saved context, so `thread-resume` can tell a suspended thread from one `set-to-run`
+has never started; those are the only two states it is ever in.
+
+**Return addresses are not forged; trampolines take their place.** x86-64 GOAL pushes
+`return-from-thread` and jumps to the user function. Ahead-of-time compiled GOAL functions are
+ordinary native functions reached with `bl`, so there is nothing to forge with. The native routines
+call the user function on the thread's stack and then do what the forged return address would have
+done. Which value reaches the kernel is unchanged, so `reset-and-call` still returns what the
+listener function returned.
+
+**Three primitives are all the assembly there is.** `goal_thread_arm64.s` holds
+`goal_context_save_and_call` (capture a context at the current stack pointer and call something that
+is not expected to return), `goal_context_restore` (go back to one from anywhere, with a value) and
+`goal_call_on_stack_arm64` (run a function on a different stack). Everything else is C reading and
+writing GOAL structures.
 
 **Stack copying keeps working.** ARM64 frames contain saved frame pointers that point into the same
 stack region and return addresses that point into `__TEXT`. `thread-suspend` restores the bytes to
 the same addresses, so both stay valid. This is the property that would have been lost if threads
 ran on native stacks at whatever address the OS handed out.
 
-**Stack size needs watching, not redesigning.** Upstream already raised `PROCESS_STACK_SIZE` from
-the PS2's `#x1c00` to `#x6000` because compiled x86-64 GOAL uses more stack than PS2 MIPS did.
-Clang-compiled ARM64 GOAL is in the same class - 448 bytes for ten frames of `fact` - but the
-deepest engine call chains have not been measured. `(suspend)`'s stack-overflow check now works
-in AOT builds, so GOAL itself will report the problem if it happens.
+**Backup stacks are too small and the game will have to say so.** Upstream already raised
+`PROCESS_STACK_SIZE` from the PS2's `#x1c00` to `#x6000` because compiled x86-64 GOAL uses more
+stack than PS2 MIPS did. `PROCESS_STACK_SAVE_SIZE`, the *backup* size a process's main thread gets
+by default, is still the PS2's 256 bytes, and the ARM64 context alone is 176 of them. A trivial
+state that suspends once measured 368 bytes live. Individual processes raise their own with
+`stack-size-set!` - `init-time-of-day` asks for 128 - and those numbers were chosen for the PS2.
+
+This is data tuning, not a design problem, and it fails loudly rather than silently: GOAL's own
+check in `thread-suspend` compares the live stack against the backup size, and the native
+implementation aborts with both numbers instead of copying past the end of the thread object. The
+values will have to be revisited as processes start suspending for real.
 
 **Guard pages.** A GOAL-memory stack has none: an overflow runs off the bottom of the region into
 whatever the process heap put below it, silently. That is exactly the situation upstream is in, and
 GOAL's own `(suspend)` check is the mitigation. A future improvement is to `mprotect` a page below
 each thread stack, which is possible because the stacks come out of a heap the runtime controls.
 
-**Nothing here needs writable-executable memory.** GOAL-memory stacks are data.
+**Nothing here needs writable-executable memory.** GOAL-memory stacks are data, and the native
+routines are ordinary signed code in `__TEXT`. The `arm64-apple-ios` build of
+`jak1-thread-switch-test` links and code-signs with `__TEXT` at `r-x` and no writable-executable
+segment.
+
+## What this turned up
+
+Two things were wrong in the runtime and only showed up once GOAL started spawning processes.
+
+**Top-levels ran with `*enable-method-set*` clear.** `method_set` only propagates a method to
+subtypes that already exist while that symbol is raised, and upstream raises it around the kernel
+and engine DGO loads. Nothing raised it here, so `(defmethod stack-size-set! ((this thread) ...))`
+in `gkernel.gc` never reached `cpu-thread`, whose type was built one file earlier - the method slot
+was 0 and the first process to call it faulted. `goal_aot_run_top_level` now raises it, and runs
+the top-level on GOAL's own stack, which is the other thing a process spawn needs: `(new 'stack ...)`
+gives a C local a GOAL address, and a catch-frame's address is stored in a 32-bit field.
+
+**Process allocation was disabled on ARM64.** `copy_basic`, `new_basic` and `alloc_heap_object`
+reach the current process through a fourth argument that the x86-64 trampoline fills from `r13`. The
+ARM64 shims passed `UNKNOWN_PP`, so every `(new 'process ...)` aborted. They read
+`g_goal_current_process`, which is where ARM64 keeps `r13`.
 
 ## Rejected alternative: native stacks
 

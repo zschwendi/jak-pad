@@ -195,6 +195,12 @@ class StaticPair : public StaticStructure {
   int get_addr_offset() const override;
   void generate(emitter::ObjectGenerator* gen) override;
   void generate_item(const StaticResult& item, int offset);
+  /*!
+   * Fill in the pair's two words and its link records, without emitting an object file. A pair is
+   * the one static kind whose bytes only exist after generate() runs, so a consumer that does not
+   * emit an object file - the AOT C backend - has to ask for them.
+   */
+  void build_data();
 
  private:
   StaticResult m_car, m_cdr;

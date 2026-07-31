@@ -450,11 +450,11 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         # and has to be updated together with the count.
         set(AOT_BOOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-boot")
         #
-        # The count is the boot frontier. File 214, engine/level/load-boundary-data.gc, is the
-        # first whose top-level cannot run: load-boundary-from-template takes the car of what
-        # should be a static list and gets GOAL #xf, so a static in that file is not being
-        # relocated the way the real linker would. That is a static-data problem, not a thread
-        # or stack one.
+        # The count is the boot frontier. File 512, pc/hud-classes-pc.gc, is the first whose
+        # top-level cannot run, and it stops for want of game data rather than for want of
+        # runtime: it spawns a hud process at top level and that process's init-particles!
+        # dereferences *fuelcell-naked-sg*, an art group that only exists once level art has been
+        # loaded. This library has no file I/O, so nothing has loaded any.
         set(AOT_BOOT_TAGS
                 gcommon gstring_h gkernel_h gkernel pskernel gstring dgo_h gstate types_h vu1_macros
                 math vector_h gravity_h bounding_box_h matrix_h quaternion_h euler_h transform_h
@@ -483,7 +483,51 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
                 draw_node shrubbery shrub_work tfrag_near tfrag tfrag_methods tfrag_work tie
                 tie_near tie_work tie_methods sync_info trajectory sparticle_launcher sparticle
                 entity_table loader task_control_h game_info game_save settings mood_tables mood
-                weather_part time_of_day sky_utils sky sky_tng load_boundary_h load_boundary)
+                weather_part time_of_day sky_utils sky sky_tng load_boundary_h load_boundary
+                load_boundary_data level_info level text collide_probe collide_frag collide_mesh
+                collide_touch collide_edge_grab collide_shape collide_shape_rider collide merc_death
+                water_h camera cam_interface cam_master cam_states cam_states_dbg cam_combiner
+                cam_update vol_h cam_layout cam_debug cam_start process_drawable hint_control
+                ambient assert generic_obs target_util target_part collide_reaction_target
+                logic_target sidekick voicebox target_handler target target2 target_death menu
+                drawable drawable_group drawable_inline_array drawable_tree prototype main_collide
+                video autosplit_h pckernel_common pckernel main collide_cache relocate memory_usage
+                entity path vol navigate aligner effect_control water collectables_part collectables
+                task_control process_taskable pov_camera powerups crates hud hud_classes
+                progress_static progress_part progress_draw progress credits projectiles ocean
+                ocean_vu0 ocean_texture ocean_mid ocean_transition ocean_near shadow eye glist_h
+                glist anim_tester viewer part_tester default_menu texture_upload rigid_body_h
+                water_anim dark_eco_pool rigid_body nav_enemy_h nav_enemy baseplat basebutton tippy
+                joint_exploder babak sharkey orb_cache plat plat_button plat_eco ropebridge ticky
+                villagep_obs oracle blocking_plane launcherdoor battlecontroller target_racer_h
+                racer_part racer target_racer racer_states collide_reaction_racer flut_part flutflut
+                target_flut air_h air wobbler twister beach_obs bird_lady bird_lady_beach mayor
+                sculptor pelican lurkerworm lurkercrab lurkerpuppy beach_rocks seagull beach_part
+                jungle_elevator bouncer hopper junglesnake darkvine jungle_obs jungle_mirrors
+                junglefish fisher jungle_part farmer explorer assistant sage yakow village_obs
+                fishermans_boat village1_part village1_part2 sequence_a_village1 jungleb_obs
+                plat_flip aphid plant_boss evilbro mistycannon babak_with_cannon misty_obs
+                misty_warehouse misty_conveyor mud muse bonelurker quicksandlurker
+                misty_teetertotter balloonlurker misty_part sidekick_human swamp_obs swamp_bat
+                swamp_rat swamp_rat_nest kermit swamp_part billy sunken_part sunken_part2
+                sunken_part3 sunken_part4 sunken_part5 target_tube sunken_obs shover square_platform
+                sun_iris_door orbit_plat wedge_plats wall_plat qbert_plat steam_cap sun_exit_chamber
+                floating_launcher sunken_water whirlpool sunken_pipegame bully double_lurker
+                helix_water puffer sunken_fish target_snowball target_ice ice_cube snow_ball
+                snow_obs snow_flutflut_obs snow_bumper snow_ram_h snow_ram_boss snow_ram snow_part
+                yeti snow_bunny firecanyon_part assistant_firecanyon firecanyon_obs ogre_part
+                ogreboss ogre_obs flying_lurker village2_part village2_obs village2_part2 gambler
+                warrior geologist swamp_blimp sage_bluehut flutflut_bluehut assistant_village2
+                sunken_elevator rolling_obs rolling_lightning_mole rolling_robber rolling_race_ring
+                village3_part village3_obs minecart miners assistant_village3 sage_village3
+                training_obs training_part cavecrystal_light darkcave_obs maincave_obs maincave_part
+                spiderwebs dark_crystal baby_spider mother_spider_h mother_spider_egg
+                mother_spider_proj mother_spider gnawer driller_lurker cave_trap spider_egg
+                robocave_part lavatube_obs lavatube_energy lavatube_part assistant_lavatube
+                citadel_part citadel_obs citb_plat citadel_sages citb_bunny citb_drop_plat
+                assistant_citadel robotboss_h robotboss_part sage_finalboss_part light_eco
+                robotboss_weapon robotboss_misc green_eco_lurker robotboss final_door sage_finalboss
+                static_screen demo_obs progress_pc title_obs knuth_rand autosplit speedruns subtitle)
         list(LENGTH AOT_BOOT_TAGS JAK1_AOT_BOOT_FILE_COUNT)
 
         set(AOT_BOOT_OUTPUTS "${AOT_BOOT_DIR}/aot_boot_manifest.c"

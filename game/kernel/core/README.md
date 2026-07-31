@@ -63,30 +63,45 @@ cmake --build build/Release/bin -j 4 --target jak1-aot-boot-test
 ./build/Release/bin/game/jak1-aot-boot-test
 ```
 
+```sh
+cmake --build build/Release/bin -j 4 --target jak1-thread-switch-test
+./build/Release/bin/game/jak1-thread-switch-test
+```
+
+`jak1-thread-switch-test` builds the kernel through `kernel/gstate.gc` plus
+`test/goalc/aot/thread_switch_test.gc`, a fixture written in ordinary GOAL, and drives the routines
+that had to be written in native ARM64: catch frames, `throw`, `go`, a state that suspends and
+resumes, and temporary threads run with `reset-and-call`. Between the two resumes of the suspended
+thread it overwrites every byte the thread had live, so a suspend that did not really copy the
+stack out cannot pass. It also checks that `x19`-`x28` and `d8`-`d15` survive a context round trip,
+using sentinels installed by `goal_thread_test_arm64.s`. It is registered with CTest.
+
 `jak1-aot-boot-test` is the boot probe. It walks Jak 1's object files in the order
 `goal_src/jak1/game.gp` builds them - `goalc-cbackend-sweep` reads that order out of the make
 system and emits the C plus `aot_boot_manifest.c` - loads each one into the real global heap and
 runs its `top-level` through `call_goal`. It reports how far it got and what stopped it rather
 than only passing or failing.
 
-Today it loads the first **207** of Jak 1's 518 object files and runs all 207 top-levels, ending
-with 3048 symbols in the real symbol table. That is the whole GOAL kernel, the math and geometry
-library, DMA, the GS and display headers, the loader, textures, fonts, collision, the camera,
-particles, moods and the game-settings layer.
+Today it loads the first **511** of Jak 1's 518 object files and runs all 511 top-levels, ending
+with 7877 symbols in the real symbol table. That is the whole GOAL kernel and engine: math and
+geometry, DMA, the GS and display layer, the loader, textures, fonts, collision, the camera,
+particles, moods, the level and entity systems, all of `engine/`, `levels/`, `pc/` and the game
+task and menu code. Processes really spawn: `engine/gfx/mood/time-of-day.gc` and several later
+files run `process-spawn` at top level, which reaches `(method new catch-frame)`, `throw` and
+`enter-state`.
 
-The frontier is file 208, `engine/gfx/mood/time-of-day.gc`. Its `top-level` runs
-`(process-spawn time-of-day-proc ...)`, which reaches `run-function-in-process` and then
-`(method new catch-frame)` - one of the GOAL routines that manipulates the stack directly, so it
-has no C translation and no native implementation yet. Raising the frontier past 208 means writing
-those routines natively; see `docs/aot-stack-model.md`. `AOT_BOOT_TAGS` in `game/CMakeLists.txt`
-is the file list and has to be extended together with the frontier.
+The frontier is file 512, `pc/hud-classes-pc.gc`, and it stops for want of game data rather than
+for want of runtime. Its `top-level` calls `activate-hud-pc`, which spawns a `hud-battle-enemy`
+whose `init-particles!` dereferences `*fuelcell-naked-sg*` - an art group that only exists once
+level art has been loaded. This library has no file I/O, so nothing has loaded any.
+`AOT_BOOT_TAGS` in `game/CMakeLists.txt` is the file list and has to be extended together with the
+frontier.
 
-Between files 41 and 207, seven machine-layer functions are asked for and reported by
-`goal_kernel_core_stub_machine_layer` rather than implemented: `cpad-open` (`engine/ps2/pad.gc`),
-`__pc-get-mips2c` (`engine/gfx/texture/texture.gc`), `rpc-call` and `rpc-busy?`
-(`engine/sound/gsound.gc`), and `scf-get-volume`, `scf-get-language` and `scf-get-aspect`
-(`engine/game/settings.gc`). Those files' top-levels ran to completion, but with those calls
-returning 0, so they are known to load rather than known to work.
+Twenty-four machine-layer functions are asked for along the way and reported by
+`goal_kernel_core_stub_machine_layer` rather than implemented - `cpad-open`, `__pc-get-mips2c`,
+`rpc-call`, `rpc-busy?`, the `scf-get-*` settings readers, the `file-stream-*` and `pc-*`
+PC-port functions. Those files' top-levels ran to completion, but with those calls returning 0, so
+they are known to load rather than known to work.
 
 Standalone static library for a device build:
 
@@ -142,7 +157,9 @@ it, is listed at the top of `desktop_seams.cpp`. Summary:
 | `game/runtime.cpp` | desktop process entry point; `g_ee_main_mem` is defined in `kernel_core.cpp` instead |
 
 `game/kernel/asm_funcs_arm64.s` *is* included: it holds the ARM64 GOAL calling-convention
-trampolines, and it is the seam the compiler/AOT track needs.
+trampolines, and it is the seam the compiler/AOT track needs. So are
+`game/kernel/core/goal_thread_arm64.s` and `goal_native_kernel.cpp`, the native implementations of
+the GOAL kernel routines that switch stacks.
 
 ## Known limitations
 
@@ -152,9 +169,9 @@ trampolines, and it is the seam the compiler/AOT track needs.
   code, and `call_goal` loads it. Nothing is executed out of the GOAL heap.
 - **`pp` and stack-argument kernel functions.** A native pointer cannot also say "pass the current
   process in argument 3", so `copy_basic`, `new_basic` and `alloc_heap_object` get explicit
-  ARM64 shims that supply `UNKNOWN_PP`, and `_format`, `link` and `link-begin` get a shim that
-  rebuilds GOAL's 8-register argument array from the C arguments. Process allocation from GOAL is
-  therefore not yet available on ARM64.
+  ARM64 shims that read `g_goal_current_process` - which is where ARM64 keeps what x86-64 keeps in
+  `r13` - and `_format`, `link` and `link-begin` get a shim that rebuilds GOAL's 8-register
+  argument array from the C arguments.
 - **Only Jak 1 was converted.** `game/kernel/{jak2,jak3,jakx}/kscheme.cpp` still write x86-64
   trampolines, so those kernels remain non-functional on ARM64.
 - **No machine layer.** Nothing from `kmachine.cpp` is here, so nothing implements `cpad-open`,
@@ -162,11 +179,10 @@ trampolines, and it is the seam the compiler/AOT track needs.
   `goal_kernel_core_stub_machine_layer` puts a loudly-failing GOAL function object in each of
   those 117 symbols so a call says which function was wanted instead of faulting in the guard
   page, but that is a diagnostic and not an implementation.
-- **No thread switch.** The seven GOAL routines that switch stacks - `reset-and-call`,
-  `thread-suspend`, `thread-resume`, `return-from-thread`, `return-from-thread-dead`,
-  `(method new catch-frame)`, `throw-dispatch`, plus `enter-state` - cannot be expressed in C and
-  have no native implementation yet, so GOAL processes cannot run. See `docs/aot-stack-model.md`
-  for the model they have to implement.
+- **Backup stacks are sized for the PS2.** `PROCESS_STACK_SAVE_SIZE` is 256 bytes and an ARM64
+  machine context alone is 176, so a process that suspends needs `stack-size-set!` with a larger
+  number than the game currently asks for. `thread-suspend` aborts with both numbers rather than
+  copying past the end of the thread object. See `docs/aot-stack-model.md`.
 - **No file access.** `ee::sceOpen` and friends are stubs, so `FileLoad`, `load`, and DGO loading
   abort. An iPadOS file-path strategy is required before they can be implemented.
 - `game/kernel/common/kmachine.h` transitively includes `<SDL3/SDL.h>` through

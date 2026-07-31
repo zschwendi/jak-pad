@@ -220,6 +220,13 @@ std::string FileEmitter::emit_statics() {
   std::string out;
 
   for (size_t i = 0; i < statics.size(); i++) {
+    // A pair's two words and its link records only exist after StaticPair::generate() has run, and
+    // that is the object-file path, not this one. Build them so the StaticStructure branch below
+    // sees a real 8-byte static: without this a pair is zero bytes, takes up no room in the
+    // loader's segment, and every reference to one resolves to whatever static follows it.
+    if (auto* pair = dynamic_cast<StaticPair*>(statics.at(i).get())) {
+      pair->build_data();
+    }
     const auto* obj = statics.at(i).get();
     std::vector<u8> data;
     std::vector<std::string> relocs;
@@ -254,6 +261,11 @@ std::string FileEmitter::emit_statics() {
       }
       data.push_back(0);
     } else if (const auto* st = dynamic_cast<const StaticStructure*>(obj)) {
+      if (dynamic_cast<const StaticPair*>(obj)) {
+        // two 4-byte words. 8 keeps the pair offset of 2 where it belongs and does not pad every
+        // pair out to 16 bytes; Jak 1's level data has thousands of them.
+        align = 8;
+      }
       data = st->data;
       for (const auto& sym : st->symbols) {
         add_reloc("GOAL_RELOC_SYMBOL_PTR", sym.offset, sym.name, 0, 0);
