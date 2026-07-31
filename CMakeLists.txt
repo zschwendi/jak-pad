@@ -39,13 +39,28 @@ endif()
 # a more recent issue - https://github.com/libsdl-org/SDL/issues/12078
 if (APPLE)
   enable_language(OBJC)
-  execute_process(
-    COMMAND xcrun --show-sdk-path
-        OUTPUT_VARIABLE MACOSX_SYSROOT
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-    # Tell CMake to use it
-    set(CMAKE_OSX_SYSROOT "${MACOSX_SYSROOT}" CACHE PATH "macOS SDK path" FORCE)
+  if(NOT CMAKE_OSX_SYSROOT)
+    execute_process(
+      COMMAND xcrun --show-sdk-path
+          OUTPUT_VARIABLE MACOSX_SYSROOT
+          OUTPUT_STRIP_TRAILING_WHITESPACE
+      )
+      # Tell CMake to use the host SDK unless a caller selected an Apple platform SDK.
+      set(CMAKE_OSX_SYSROOT "${MACOSX_SYSROOT}" CACHE PATH "macOS SDK path" FORCE)
+  endif()
+endif()
+
+# Cross-compiled test executables cannot be discovered or run on the host. The explicit sysroot
+# check also covers non-macOS Apple SDK selections that do not set CMAKE_CROSSCOMPILING.
+set(GOAL_HOST_TESTS_ENABLED OFF)
+if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
+  set(GOAL_HOST_TESTS_ENABLED ON)
+  if(APPLE)
+    string(TOLOWER "${CMAKE_OSX_SYSROOT}" GOAL_APPLE_SYSROOT)
+    if(NOT GOAL_APPLE_SYSROOT MATCHES "macosx")
+      set(GOAL_HOST_TESTS_ENABLED OFF)
+    endif()
+  endif()
 endif()
 
 # Setup compiler flags
