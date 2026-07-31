@@ -725,6 +725,34 @@ TEST(Arm64Aot, rejects_arm64_constant_offset_gpr_store_that_aliases_x16) {
   }
 }
 
+TEST(Arm64Aot, rejects_arm64_constant_offset_gpr_store_with_reserved_address_operands) {
+  for (const auto [value_register, base_register] :
+       {std::pair{emitter::X1, emitter::X22}, std::pair{emitter::X1, emitter::SP},
+        std::pair{emitter::SP, emitter::X0}}) {
+    RegVal value{{RegClass::GPR_64, 0}, TypeSpec("pair")};
+    RegVal base{{RegClass::GPR_64, 1}, TypeSpec("level-group")};
+    IR_StoreConstOffset store(&value, 0x20, &base, 4);
+
+    Assignment value_assignment;
+    value_assignment.kind = Assignment::Kind::REGISTER;
+    value_assignment.reg = value_register;
+    Assignment base_assignment;
+    base_assignment.kind = Assignment::Kind::REGISTER;
+    base_assignment.reg = base_register;
+    AllocationResult allocations;
+    allocations.ass_as_ranges = {
+        AssignmentRange(0, {true}, {value_assignment}),
+        AssignmentRange(0, {true}, {base_assignment}),
+    };
+
+    FunctionDebugInfo debug{};
+    emitter::ObjectGenerator generator(GameVersion::Jak1, emitter::InstructionSet::ARM64);
+    const auto function = generator.add_function_to_seg(MAIN_SEGMENT, &debug);
+    EXPECT_THROW(store.do_codegen_arm64(&generator, allocations, generator.add_ir(function)),
+                 std::runtime_error);
+  }
+}
+
 TEST(Arm64Aot, rejects_arm64_constant_offset_gpr_store_outside_the_four_byte_proof) {
   RegVal value{{RegClass::GPR_64, 0}, TypeSpec("pair")};
   RegVal base{{RegClass::GPR_64, 1}, TypeSpec("level-group")};

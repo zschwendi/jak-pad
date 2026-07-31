@@ -1230,15 +1230,21 @@ void IR_StoreConstOffset::do_codegen_arm64(emitter::ObjectGenerator* gen,
 
   if (m_value->ireg().reg_class == RegClass::GPR_64 &&
       m_base->ireg().reg_class == RegClass::GPR_64 && m_size == 4) {
+    const auto goal_base = get_register_info(gen->instr_set()).get_offset_reg();
+    if (!base_reg.is_gpr(gen->instr_set()) || !value_reg.is_gpr(gen->instr_set()) ||
+        base_reg == emitter::SP || value_reg == emitter::SP) {
+      throw std::runtime_error("ARM64 constant-offset GPR stores require non-stack GPR operands");
+    }
+    if (base_reg == goal_base) {
+      throw std::runtime_error(
+          "ARM64 constant-offset GPR stores cannot use the GOAL base register as an address");
+    }
     if (m_offset != 0 && (base_reg == emitter::X16 || value_reg == emitter::X16)) {
       throw std::runtime_error(
           "ARM64 constant-offset GPR stores cannot use X16 as a nonzero-offset base or value");
     }
-    gen->add_instr(
-        IGen::store_goal_gpr(*gen, base_reg, value_reg,
-                             emitter::get_register_info(gen->instr_set()).get_offset_reg(),
-                             m_offset, m_size),
-        irec);
+    gen->add_instr(IGen::store_goal_gpr(*gen, base_reg, value_reg, goal_base, m_offset, m_size),
+                   irec);
     return;
   }
 
