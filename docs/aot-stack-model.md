@@ -148,8 +148,13 @@ state that suspends once measured 368 bytes live. Individual processes raise the
 
 This is data tuning, not a design problem, and it fails loudly rather than silently: GOAL's own
 check in `thread-suspend` compares the live stack against the backup size, and the native
-implementation aborts with both numbers instead of copying past the end of the thread object. The
-values will have to be revisited as processes start suspending for real.
+implementation aborts with both numbers instead of copying past the end of the thread object.
+
+Processes now do suspend for real, and this is what stops the engine's frame loop.
+`jak1-data-boot-test --frames 1` loads `KERNEL.CGO` and `GAME.CGO` and calls the GOAL kernel
+dispatcher once; the first process to suspend needs **400** bytes backed up into a **128**-byte
+buffer and the run aborts there. The numbers in `goal_src` will have to be revisited before the
+frame loop can run.
 
 **Guard pages.** A GOAL-memory stack has none: an overflow runs off the bottom of the region into
 whatever the process heap put below it, silently. That is exactly the situation upstream is in, and

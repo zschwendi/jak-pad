@@ -3,32 +3,46 @@
  * Definitions for the desktop-only symbols that the portable Jak 1 kernel subset still references
  * at link time.
  *
- * Every function in this file is a STUB. None of them are implemented, and none of them return a
- * plausible-looking failure value: they abort with a message naming the missing subsystem. They
+ * Almost every function in this file is a STUB. A stub is not implemented and does not return a
+ * plausible-looking failure value: it aborts with a message naming the missing subsystem. They
  * exist so that the real kernel translation units can be linked without also linking the desktop
  * windowing, IOP, sound, and debugger-transport code.
  *
  * If you hit one of these at runtime, the answer is to implement the subsystem, not to soften the
  * stub.
  *
+ * The exceptions, each marked where it is defined, are the ones with nothing platform-specific
+ * left in them once the PS2 hardware is gone: host file I/O (`ee::sceOpen` and friends, against
+ * the configured data directory), `__mem-move`, `__read-ee-timer`, and `__pc-get-mips2c`.
+ *
  * Subsystems intentionally not in this library:
  *   - game/kernel/{common,jak1}/kmachine.cpp   : IOP boot, video, pads, PC-port functions (SDL,
  *                                                OpenGL, Discord, sqlite)
  *   - game/kernel/{common,jak1}/ksound.cpp     : 989snd / overlord sound
  *   - game/kernel/jak1/kboot.cpp               : desktop boot + GOAL kernel dispatch loop
- *   - game/sce/sif_ee.cpp                      : EE<->IOP bridge and host file I/O (needs the IOP
- *                                                thread emulation and a desktop file layout)
+ *   - game/sce/sif_ee.cpp                      : the EE<->IOP RPC bridge (the file calls it also
+ *                                                declares are implemented below)
  *   - game/sce/deci2.cpp, game/system/**       : DECI2 debugger transport and sockets
- *   - game/mips2c/**                           : hand-translated PS2 VU/asm renderer + collision
+ *   - game/mips2c/mips2c_table.cpp             : names all four games; core/mips2c_seam.cpp
+ *                                                registers the Jak 1 functions instead
  */
 
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <utility>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "common/log/log.h"
 #include "common/util/Assert.h"
+#include "common/util/Timer.h"
 
+#include "game/kernel/common/Ptr.h"
 #include "game/kernel/common/kmachine.h"
+#include "game/kernel/common/kscheme.h"
+#include "game/kernel/core/kernel_core.h"
 #include "game/kernel/jak1/kmachine.h"
 #include "game/kernel/jak1/kscheme.h"
 #include "game/mips2c/mips2c_table.h"
@@ -68,9 +82,9 @@ namespace {
  * functions. Taken from game/kernel/jak1/kmachine.cpp, game/kernel/jak1/ksound.cpp and
  * init_common_pc_port_functions in game/kernel/common/kmachine.cpp.
  *
- * None of them are implemented here. They exist so that GOAL calling one reports which function it
- * wanted, instead of reading a symbol that holds 0 and faulting in the guard page with no name
- * attached.
+ * They are stubs, and they exist so that GOAL calling one reports which function it wanted instead
+ * of reading a symbol that holds 0 and faulting in the guard page with no name attached. The three
+ * that install_implemented_machine_functions overwrites below are the exception.
  */
 const char* const kMachineFunctionNames[] = {
     "__pc-set-levels",
@@ -221,6 +235,35 @@ void install_machine_function_stubs(std::integer_sequence<int, Index...>) {
    ...);
 }
 
+/*!
+ * The few functions in the list above that are not machine-specific at all: they move memory and
+ * read a clock. They are implemented rather than stubbed because nothing loads without them - the
+ * PC port's `ultimate-memcpy` is a call to `__mem-move`, so a stub there means every data object
+ * in a DGO gets linked against zeroes - and because nothing platform-dependent is left in them
+ * once the PS2 hardware is gone. Everything else in the list stays a stub.
+ */
+u64 pc_mem_move(u32 dst, u32 src, u32 size) {
+  memmove(Ptr<u8>(dst).c(), Ptr<u8>(src).c(), size);
+  return 0;
+}
+
+u64 read_ee_timer() {
+  // The PS2's EE timer runs at 300 MHz. GOAL only ever takes differences of it.
+  static Timer ee_clock;
+  return (ee_clock.getNs() * 3) / 10;
+}
+
+/*! GOAL's `def-mips2c` asks for a hand-translated PS2 function by name. See mips2c_seam.cpp. */
+u64 pc_get_mips2c(u32 name) {
+  return Mips2C::gLinkedFunctionTable.get(Ptr<String>(name).c()->data());
+}
+
+void install_implemented_machine_functions() {
+  jak1::make_function_symbol_from_c("__mem-move", (void*)pc_mem_move);
+  jak1::make_function_symbol_from_c("__read-ee-timer", (void*)read_ee_timer);
+  jak1::make_function_symbol_from_c("__pc-get-mips2c", (void*)pc_get_mips2c);
+}
+
 }  // namespace
 
 void goal_kernel_core_set_machine_stub_mode(bool abort_when_called) {
@@ -240,6 +283,7 @@ namespace jak1 {
  */
 void InitMachineScheme() {
   install_machine_function_stubs(std::make_integer_sequence<int, kMachineFunctionCount>{});
+  install_implemented_machine_functions();
   intern_from_c("*stack-top*")->value = 0x07ffc000;
   intern_from_c("*stack-base*")->value = 0x07ffffff;
   intern_from_c("*stack-size*")->value = 0x4000;
@@ -248,40 +292,118 @@ void InitMachineScheme() {
 
 // ---------------------------------------------------------------------------------------------
 // game/sce/sif_ee.cpp - host file I/O and the EE<->IOP RPC bridge
+//
+// The file calls are implemented, because the runtime cannot load anything without them. They are
+// ordinary POSIX file descriptors, and every name is resolved under the data directory the host
+// application configured (goal_kernel_core_set_data_directory). Nothing here knows a path of its
+// own, so a build with no data directory set can open nothing at all.
+//
+// The RPC calls are still stubs: the IOP/overlord thread emulation is not part of this library.
+// Its one job that this platform needs - streaming a DGO off the disc - is done synchronously in
+// dgo_loader.cpp instead. See that file for why.
 // ---------------------------------------------------------------------------------------------
 
 namespace ee {
 
 s32 sceOpen(const char* filename, s32 flag) {
-  (void)filename;
-  (void)flag;
-  missing("host file I/O", "ee::sceOpen");
+  if (!filename) {
+    return -1;
+  }
+  char path[1024];
+  if (goal_kernel_core_resolve_data_path(filename, path, sizeof(path)) != GOAL_KERNEL_CORE_OK) {
+    lg::error("[kernel-core] cannot open '{}': {}", filename, goal_kernel_core_last_error());
+    return -1;
+  }
+
+  // SCE_RDWR is SCE_RDONLY | SCE_WRONLY, so the access mode has to be compared, not masked.
+  int posix_flags;
+  switch (flag & SCE_RDWR) {
+    case SCE_RDWR:
+      posix_flags = O_RDWR;
+      break;
+    case SCE_WRONLY:
+      posix_flags = O_WRONLY;
+      break;
+    default:
+      posix_flags = O_RDONLY;
+      break;
+  }
+  if (flag & SCE_CREAT) {
+    posix_flags |= O_CREAT;
+  }
+  if (flag & SCE_TRUNC) {
+    posix_flags |= O_TRUNC;
+  }
+  if (flag & SCE_APPEND) {
+    posix_flags |= O_APPEND;
+  }
+
+  const int fd = ::open(path, posix_flags, 0644);
+  if (fd < 0) {
+    lg::error("[kernel-core] cannot open '{}': {}", path, strerror(errno));
+    return -1;
+  }
+  return fd;
 }
 
 s32 sceClose(s32 fd) {
-  (void)fd;
-  missing("host file I/O", "ee::sceClose");
+  return fd < 0 ? -1 : ::close(fd);
 }
 
 s32 sceRead(s32 fd, void* buf, s32 nbyte) {
-  (void)fd;
-  (void)buf;
-  (void)nbyte;
-  missing("host file I/O", "ee::sceRead");
+  if (fd < 0 || !buf || nbyte < 0) {
+    return -1;
+  }
+  // A short read is normal for a pipe and never expected for a regular file, so this loops rather
+  // than returning a count the caller would have to know to check.
+  s32 done = 0;
+  while (done < nbyte) {
+    const ssize_t got = ::read(fd, (u8*)buf + done, (size_t)(nbyte - done));
+    if (got < 0) {
+      return -1;
+    }
+    if (got == 0) {
+      break;
+    }
+    done += (s32)got;
+  }
+  return done;
 }
 
 s32 sceWrite(s32 fd, const void* buf, s32 nbyte) {
-  (void)fd;
-  (void)buf;
-  (void)nbyte;
-  missing("host file I/O", "ee::sceWrite");
+  if (fd < 0 || !buf || nbyte < 0) {
+    return -1;
+  }
+  s32 done = 0;
+  while (done < nbyte) {
+    const ssize_t put = ::write(fd, (const u8*)buf + done, (size_t)(nbyte - done));
+    if (put <= 0) {
+      return -1;
+    }
+    done += (s32)put;
+  }
+  return done;
 }
 
 s32 sceLseek(s32 fd, s32 offset, s32 where) {
-  (void)fd;
-  (void)offset;
-  (void)where;
-  missing("host file I/O", "ee::sceLseek");
+  if (fd < 0) {
+    return -1;
+  }
+  int whence;
+  switch (where) {
+    case SCE_SEEK_SET:
+      whence = SEEK_SET;
+      break;
+    case SCE_SEEK_CUR:
+      whence = SEEK_CUR;
+      break;
+    case SCE_SEEK_END:
+      whence = SEEK_END;
+      break;
+    default:
+      return -1;
+  }
+  return (s32)::lseek(fd, offset, whence);
 }
 
 s32 sceSifCallRpc(sceSifClientData* bd,
@@ -359,31 +481,5 @@ void LIBRARY_sceDeci2_run_sends() {
 
 }  // namespace ee
 
-// ---------------------------------------------------------------------------------------------
-// game/mips2c/mips2c_table.cpp
-//
-// The mips2c table names every hand-translated PS2 renderer/collision function for all three
-// games, so linking it pulls in the whole game/mips2c tree. The link callback map is empty here,
-// which means no mips2c function is ever registered, and any object file that asks the linker for
-// one aborts below instead of silently linking against nothing.
-// ---------------------------------------------------------------------------------------------
-
-namespace Mips2C {
-
-LinkedFunctionTable gLinkedFunctionTable;
-PerGameVersion<std::unordered_map<std::string, std::vector<void (*)()>>> gMips2CLinkCallbacks = {
-    {}, {}, {}, {}};
-
-void LinkedFunctionTable::reg(const std::string& name, u64 (*exec)(void*), u32 goal_stack_size) {
-  (void)exec;
-  (void)goal_stack_size;
-  lg::error("[kernel-core] mips2c function {} tried to register.", name);
-  missing("the mips2c function library", "Mips2C::LinkedFunctionTable::reg");
-}
-
-u32 LinkedFunctionTable::get(const std::string& name) {
-  lg::error("[kernel-core] mips2c function {} was requested by the linker.", name);
-  missing("the mips2c function library", "Mips2C::LinkedFunctionTable::get");
-}
-
-}  // namespace Mips2C
+// game/mips2c: the Jak 1 half of the hand-translated PS2 assembly library is in this build. It is
+// wired up in mips2c_seam.cpp, which explains why the table itself is not.

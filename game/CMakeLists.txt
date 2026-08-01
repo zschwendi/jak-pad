@@ -450,11 +450,12 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         # and has to be updated together with the count.
         set(AOT_BOOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-boot")
         #
-        # The count is the boot frontier. File 512, pc/hud-classes-pc.gc, is the first whose
-        # top-level cannot run, and it stops for want of game data rather than for want of
-        # runtime: it spawns a hud process at top level and that process's init-particles!
-        # dereferences *fuelcell-naked-sg*, an art group that only exists once level art has been
-        # loaded. This library has no file I/O, so nothing has loaded any.
+        # This is now the whole game - all 518 object files - because jak1-data-boot-test needs
+        # every file GAME.CGO can name. jak1-aot-boot-test still walks them in game.gp order with
+        # no game data loaded, and stops at file 512, pc/hud-classes-pc.gc, for want of data
+        # rather than for want of runtime: its top-level spawns a hud process whose
+        # init-particles! dereferences *fuelcell-naked-sg*, an art group that only exists once
+        # level art has been loaded. JAK1_AOT_BOOT_FRONTIER below is that documented frontier.
         set(AOT_BOOT_TAGS
                 gcommon gstring_h gkernel_h gkernel pskernel gstring dgo_h gstate types_h vu1_macros
                 math vector_h gravity_h bounding_box_h matrix_h quaternion_h euler_h transform_h
@@ -527,8 +528,11 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
                 citadel_part citadel_obs citb_plat citadel_sages citb_bunny citb_drop_plat
                 assistant_citadel robotboss_h robotboss_part sage_finalboss_part light_eco
                 robotboss_weapon robotboss_misc green_eco_lurker robotboss final_door sage_finalboss
-                static_screen demo_obs progress_pc title_obs knuth_rand autosplit speedruns subtitle)
+                static_screen demo_obs progress_pc title_obs knuth_rand autosplit speedruns subtitle
+                hud_classes_pc anim_tester_x entity_debug default_menu_pc pc_debug_common
+                pc_debug_methods test_zone_obs)
         list(LENGTH AOT_BOOT_TAGS JAK1_AOT_BOOT_FILE_COUNT)
+        set(JAK1_AOT_BOOT_FRONTIER 511)
 
         set(AOT_BOOT_OUTPUTS "${AOT_BOOT_DIR}/aot_boot_manifest.c"
                 "${AOT_BOOT_DIR}/aot_boot_manifest.h")
@@ -562,8 +566,24 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
                 "${AOT_BOOT_DIR}/aot_boot_manifest.c" ${AOT_BOOT_C_SOURCES}
                 PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
         target_include_directories(jak1-aot-boot-test PRIVATE "${AOT_BOOT_DIR}")
+        target_compile_definitions(jak1-aot-boot-test
+                PRIVATE JAK1_AOT_BOOT_FRONTIER=${JAK1_AOT_BOOT_FRONTIER})
         target_link_libraries(jak1-aot-boot-test jak1-kernel-core)
         add_test(NAME jak1-aot-boot-test COMMAND jak1-aot-boot-test)
+
+        # The same object files, loaded the way the game loads them: out of KERNEL.CGO and
+        # GAME.CGO, in DGO order, with each object's code coming from the AOT path and each
+        # object's data coming from the archive. Registered twice: --synthetic uses a DGO this
+        # test writes itself and needs no game data; the default run needs the player's own
+        # extracted data and skips cleanly without it.
+        add_executable(jak1-data-boot-test
+                kernel/core/data_boot_test.cpp
+                "${AOT_BOOT_DIR}/aot_boot_manifest.c"
+                ${AOT_BOOT_C_SOURCES})
+        target_include_directories(jak1-data-boot-test PRIVATE "${AOT_BOOT_DIR}")
+        target_link_libraries(jak1-data-boot-test jak1-kernel-core)
+        add_test(NAME jak1-dgo-synthetic-test COMMAND jak1-data-boot-test --synthetic)
+        add_test(NAME jak1-data-boot-test COMMAND jak1-data-boot-test)
 
         # The thread-switch test: the same GOAL kernel, plus a fixture that drives the routines
         # that had to be written in native ARM64 - catch frames, throw, state entry, temporary

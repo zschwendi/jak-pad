@@ -125,6 +125,28 @@ goal_kernel_core_status goal_kernel_core_type_name_of_symbol(const char* name,
 goal_kernel_core_status goal_kernel_core_stub_machine_layer(int abort_when_called);
 
 /*!
+ * Point the runtime at the player's own prepared Jak 1 data. `path` is the directory that holds
+ * the `iso/` and `fr3/` directories the OpenGOAL extraction tools produce - what
+ * `goal_src/jak1/game.gp` calls `$OUT/iso` and `$OUT/fr3`.
+ *
+ * No game data ships with this library and none is ever written into it. Until a directory is set,
+ * every file open fails with a message saying so. Pass NULL or "" to unset.
+ */
+goal_kernel_core_status goal_kernel_core_set_data_directory(const char* path);
+
+/*! The configured data directory, or "" if none has been set. Never NULL. */
+const char* goal_kernel_core_data_directory(void);
+
+/*!
+ * Resolve a data-relative name such as "iso/KERNEL.CGO" against the data directory. A name that
+ * is already absolute is copied through unchanged. Returns GOAL_KERNEL_CORE_NOT_FOUND when no
+ * data directory has been set.
+ */
+goal_kernel_core_status goal_kernel_core_resolve_data_path(const char* name,
+                                                           char* out,
+                                                           size_t out_size);
+
+/*!
  * Describe the last failure. Never NULL; returns "" when there has been no failure. The returned
  * pointer is owned by the kernel and stays valid until the next failing call.
  */

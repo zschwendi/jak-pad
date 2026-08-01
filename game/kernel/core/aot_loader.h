@@ -55,6 +55,23 @@ typedef struct goal_aot_object_file {
 goal_kernel_core_status goal_aot_load(const goal_aot_object_file* file);
 
 /*!
+ * Record that `file` is the native translation of the DGO object named `object_name`, so the DGO
+ * loader can find it when that object comes off the disc. `object_name` is the name in the DGO's
+ * object header, which is the GOAL source's base name without its extension: "hud-classes-pc" for
+ * goal_src/jak1/pc/hud-classes-pc.gc.
+ *
+ * `file` is copied. Registering a name twice replaces the earlier registration.
+ */
+goal_kernel_core_status goal_aot_register_object(const char* object_name,
+                                                 const goal_aot_object_file* file);
+
+/*! The translation unit registered for `object_name`, or NULL. */
+const goal_aot_object_file* goal_aot_registered_object(const char* object_name);
+
+/*! Non-zero if goal_aot_load has already placed `tag` in the heap. */
+int goal_aot_is_loaded(const char* tag);
+
+/*!
  * GOAL address of the function object for `index` in `tag`, or 0 if unknown.
  */
 uint32_t goal_aot_function_object(const char* tag, int index);

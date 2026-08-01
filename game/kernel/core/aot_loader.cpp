@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/goal_constants.h"
@@ -33,6 +34,9 @@ struct LoadedFile {
 
 std::vector<LoadedFile> g_loaded;
 std::string g_error;
+
+/*! DGO object name -> the AOT translation unit that stands in for its code. */
+std::vector<std::pair<std::string, goal_aot_object_file>> g_registered;
 
 LoadedFile* find_file(const char* tag) {
   for (auto& file : g_loaded) {
@@ -249,6 +253,38 @@ goal_kernel_core_status goal_aot_load(const goal_aot_object_file* file) {
   return GOAL_KERNEL_CORE_OK;
 }
 
+goal_kernel_core_status goal_aot_register_object(const char* object_name,
+                                                 const goal_aot_object_file* file) {
+  if (!object_name || !object_name[0] || !file || !file->tag) {
+    set_error("goal_aot_register_object: bad argument");
+    return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
+  }
+  for (auto& entry : g_registered) {
+    if (entry.first == object_name) {
+      entry.second = *file;
+      return GOAL_KERNEL_CORE_OK;
+    }
+  }
+  g_registered.emplace_back(object_name, *file);
+  return GOAL_KERNEL_CORE_OK;
+}
+
+const goal_aot_object_file* goal_aot_registered_object(const char* object_name) {
+  if (!object_name) {
+    return nullptr;
+  }
+  for (const auto& entry : g_registered) {
+    if (entry.first == object_name) {
+      return &entry.second;
+    }
+  }
+  return nullptr;
+}
+
+int goal_aot_is_loaded(const char* tag) {
+  return tag && find_file(tag) ? 1 : 0;
+}
+
 uint32_t goal_aot_function_object(const char* tag, int index) {
   auto* loaded = find_file(tag);
   if (!loaded || index < 0 || index >= (int)loaded->function_addrs.size()) {
@@ -332,6 +368,7 @@ goal_kernel_core_status goal_aot_call_symbol(const char* name,
 
 void goal_aot_reset(void) {
   g_loaded.clear();
+  g_registered.clear();
   g_goal_mem = nullptr;
   g_goal_s7 = 0;
 }

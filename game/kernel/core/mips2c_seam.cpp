@@ -1,0 +1,384 @@
+/*!
+ * @file mips2c_seam.cpp
+ * The Jak 1 mips2c function library, wired into this runtime.
+ *
+ * `def-mips2c` in GOAL source names a function that was never GOAL: PS2 VU or MIPS assembly that
+ * OpenGOAL hand-translated into C++ under game/mips2c/jak1_functions. GOAL's top-level asks for it
+ * by name through `__pc-get-mips2c`, so a runtime that answers 0 leaves the symbol empty and the
+ * first caller dereferences it. Loading any art group hits this immediately: `login` on an
+ * art-group reaches `adgif-shader-login-fast`, which calls the mips2c
+ * `adgif-shader<-texture-with-update!`.
+ *
+ * Two things are different here from upstream's game/mips2c/mips2c_table.cpp, which is not in this
+ * library because it names all four games and would pull all four function libraries in:
+ *
+ * **The trampoline is C, not generated machine code.** Upstream writes an x86-64 stub into the
+ * GOAL heap that pushes the C function and the stack size and jumps to `_mips2c_call_systemv`.
+ * Nothing can be written into the GOAL heap and executed here, so each registered function gets a
+ * distinct native entry point instead - the same shape as every other function object in this
+ * runtime, see aot_loader.h - which builds the ExecutionContext itself.
+ *
+ * **Everything is registered up front.** Upstream registers a file's mips2c functions when that
+ * file is linked, through `gMips2CLinkCallbacks`. Registration only fills a name table that
+ * `__pc-get-mips2c` reads, so doing it once at startup has the same effect and does not depend on
+ * the linker knowing which object file it is working on.
+ *
+ * Note that a mips2c function that calls back into GOAL (`jalr`) is not supported on ARM64 - see
+ * ExecutionContext::jalr in game/mips2c/mips2c_private.h, which has no ARM64 case. None of the
+ * functions on the art-group login path do, and the ones that do abort rather than return a value
+ * they never computed.
+ */
+
+#include <string>
+#include <unordered_map>
+
+#include "common/log/log.h"
+#include "common/util/Assert.h"
+
+#include "game/kernel/common/kmalloc.h"
+#include "game/kernel/common/kscheme.h"
+#include "game/kernel/core/mips2c_seam.h"
+#include "game/kernel/jak1/kscheme.h"
+#include "game/mips2c/mips2c_private.h"
+#include "game/mips2c/mips2c_table.h"
+#include "game/runtime.h"
+#include "goalc/aot/goal_c_runtime.h"
+
+#include "fmt/format.h"
+
+namespace Mips2C {
+
+/*! Take the mips2c scratch stack out of the global heap. See run_mips2c_slot. */
+void reserve_mips2c_stack();
+/*! Drop every registration, for a kernel that is being torn down. */
+void forget_mips2c_registrations();
+
+LinkedFunctionTable gLinkedFunctionTable;
+Rng gRng;
+
+// Upstream links a file's mips2c functions when that file is linked. This runtime registers them
+// all at startup instead (see the file comment), so the map stays empty and klink.cpp's lookup
+// never finds anything to do.
+PerGameVersion<std::unordered_map<std::string, std::vector<void (*)()>>> gMips2CLinkCallbacks = {
+    {}, {}, {}, {}};
+
+namespace {
+
+/*! One registered mips2c function. The index into this table is baked into its native entry. */
+struct Mips2CSlot {
+  u64 (*exec)(void*) = nullptr;
+  u32 goal_stack_size = 0;
+};
+
+constexpr int kMips2CSlotCount = 128;
+Mips2CSlot g_slots[kMips2CSlotCount];
+int g_slot_count = 0;
+
+/*!
+ * Scratch memory for the translated code's MIPS stack.
+ *
+ * `sp` in a mips2c function has to be a GOAL address, because the translated code reaches it
+ * through `g_ee_main_mem + sp`. Upstream points it at the native stack, which only means anything
+ * when GOAL is already running on a GOAL-memory stack - and the linker calls a data object's
+ * `login` method straight from C, where it is not. So this runtime gives mips2c a small dedicated
+ * region of GOAL memory instead, used as a stack: each call takes its declared size off the top
+ * and puts it back on return, so nesting works. The largest declared size in Jak 1 is 1024 bytes.
+ */
+constexpr u32 kMips2CStackSize = 0x10000;
+Ptr<u8> g_mips2c_stack_base{0};
+u32 g_mips2c_stack_top = 0;
+
+/*!
+ * Run a mips2c function with GOAL's arguments, the way _mips2c_call_systemv does on x86-64: the
+ * translated code reads its arguments out of the MIPS a0-a3/t0-t3 registers, the current process
+ * out of s6, and the symbol table out of s7.
+ */
+u64 run_mips2c_slot(int index, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7) {
+  const Mips2CSlot& slot = g_slots[index];
+  const u32 frame = (slot.goal_stack_size + 15) & ~15u;
+  ASSERT_MSG(g_mips2c_stack_base.offset && g_mips2c_stack_top >= g_mips2c_stack_base.offset + frame,
+             "[mips2c] the scratch stack is exhausted");
+
+  const u32 saved_top = g_mips2c_stack_top;
+  g_mips2c_stack_top -= frame;
+
+  ExecutionContext ctx;
+  ctx.gprs[Mips2C::a0].du64[0] = a0;
+  ctx.gprs[Mips2C::a1].du64[0] = a1;
+  ctx.gprs[Mips2C::a2].du64[0] = a2;
+  ctx.gprs[Mips2C::a3].du64[0] = a3;
+  ctx.gprs[Mips2C::t0].du64[0] = a4;
+  ctx.gprs[Mips2C::t1].du64[0] = a5;
+  ctx.gprs[Mips2C::t2].du64[0] = a6;
+  ctx.gprs[Mips2C::t3].du64[0] = a7;
+  ctx.gprs[Mips2C::s6].du64[0] = g_goal_current_process;
+  ctx.gprs[Mips2C::s7].du64[0] = ::s7.offset;
+  ctx.gprs[Mips2C::sp].du64[0] = saved_top;
+
+  const u64 result = slot.exec(&ctx);
+  g_mips2c_stack_top = saved_top;
+  return result;
+}
+
+// one distinct native entry point per slot, so a function object can name its slot
+template <int Index>
+u64 mips2c_entry(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7) {
+  return run_mips2c_slot(Index, a0, a1, a2, a3, a4, a5, a6, a7);
+}
+
+template <int... Index>
+void collect_entries(void* (&out)[kMips2CSlotCount], std::integer_sequence<int, Index...>) {
+  ((out[Index] = (void*)&mips2c_entry<Index>), ...);
+}
+
+void* const* entry_points() {
+  static void* entries[kMips2CSlotCount];
+  static bool built = false;
+  if (!built) {
+    collect_entries(entries, std::make_integer_sequence<int, kMips2CSlotCount>{});
+    built = true;
+  }
+  return entries;
+}
+
+}  // namespace
+
+void forget_mips2c_registrations() {
+  gLinkedFunctionTable = LinkedFunctionTable();
+  g_slot_count = 0;
+  g_mips2c_stack_base.offset = 0;
+  g_mips2c_stack_top = 0;
+}
+
+void reserve_mips2c_stack() {
+  g_mips2c_stack_base = kmalloc(kglobalheap, kMips2CStackSize, KMALLOC_MEMSET, "mips2c-stack");
+  ASSERT_MSG(g_mips2c_stack_base.offset, "[mips2c] no room for the scratch stack");
+  g_mips2c_stack_top = g_mips2c_stack_base.offset + kMips2CStackSize;
+}
+
+void LinkedFunctionTable::reg(const std::string& name, u64 (*exec)(void*), u32 goal_stack_size) {
+  if (m_executes.find(name) != m_executes.end()) {
+    lg::warn("[mips2c] {} was registered twice; keeping the first registration.", name);
+    return;
+  }
+  ASSERT_MSG(g_slot_count < kMips2CSlotCount, "[mips2c] out of trampoline slots");
+
+  const int index = g_slot_count++;
+  g_slots[index] = {exec, goal_stack_size};
+  auto trampoline = jak1::make_function_from_native(entry_points()[index]);
+  m_executes.insert({name, {exec, trampoline.cast<u8>()}});
+}
+
+u32 LinkedFunctionTable::get(const std::string& name) {
+  const auto& it = m_executes.find(name);
+  if (it == m_executes.end()) {
+    lg::error("[mips2c] GOAL asked for the function {}, which is not registered.", name);
+    ASSERT_NOT_REACHED_MSG("unregistered mips2c function");
+  }
+  return it->second.goal_trampoline.offset;
+}
+
+namespace jak1 {
+namespace draw_string { extern void link(); }
+namespace particle_adgif { extern void link(); }
+namespace sp_launch_particles_var { extern void link(); }
+namespace sp_process_block_3d { extern void link(); }
+namespace sp_process_block_2d { extern void link(); }
+namespace draw_large_polygon { extern void link(); }
+namespace init_sky_regs { extern void link(); }
+namespace clip_polygon_against_positive_hyperplane { extern void link(); }
+namespace render_sky_quad { extern void link(); }
+namespace render_sky_tri { extern void link(); }
+namespace set_tex_offset { extern void link(); }
+namespace set_sky_vf27 { extern void link(); }
+namespace set_sky_vf23_value { extern void link(); }
+namespace adgif_shader_texture_with_update { extern void link(); }
+namespace init_boundary_regs { extern void link(); }
+namespace render_boundary_quad { extern void link(); }
+namespace render_boundary_tri { extern void link(); }
+namespace draw_boundary_polygon { extern void link(); }
+namespace draw_inline_array_tfrag { extern void link(); }
+namespace stats_tfrag_asm { extern void link(); }
+namespace time_of_day_interp_colors_scratch { extern void link(); }
+namespace collide_do_primitives { extern void link(); }
+namespace moving_sphere_triangle_intersect { extern void link(); }
+namespace method_12_collide_mesh { extern void link(); }
+namespace method_11_collide_mesh { extern void link(); }
+namespace collide_probe_node { extern void link(); }
+namespace collide_probe_instance_tie { extern void link(); }
+namespace method_26_collide_cache { extern void link(); }
+namespace method_32_collide_cache { extern void link(); }
+namespace pc_upload_collide_frag { extern void link(); }
+namespace method_28_collide_cache { extern void link(); }
+namespace method_27_collide_cache { extern void link(); }
+namespace method_29_collide_cache { extern void link(); }
+namespace method_12_collide_shape_prim_mesh { extern void link(); }
+namespace method_14_collide_shape_prim_mesh { extern void link(); }
+namespace method_13_collide_shape_prim_mesh { extern void link(); }
+namespace method_30_collide_cache { extern void link(); }
+namespace method_9_collide_cache_prim { extern void link(); }
+namespace method_10_collide_cache_prim { extern void link(); }
+namespace method_10_collide_puss_work { extern void link(); }
+namespace method_9_collide_puss_work { extern void link(); }
+namespace method_15_collide_mesh { extern void link(); }
+namespace method_14_collide_mesh { extern void link(); }
+namespace method_16_collide_edge_work { extern void link(); }
+namespace method_15_collide_edge_work { extern void link(); }
+namespace method_10_collide_edge_hold_list { extern void link(); }
+namespace method_18_collide_edge_work { extern void link(); }
+namespace calc_animation_from_spr { extern void link(); }
+namespace bones_mtx_calc { extern void link(); }
+namespace cspace_parented_transformq_joint { extern void link(); }
+namespace draw_bones_merc { extern void link(); }
+namespace draw_bones_check_longest_edge_asm { extern void link(); }
+namespace blerc_execute { extern void link(); }
+namespace setup_blerc_chains_for_one_fragment { extern void link(); }
+namespace generic_merc_init_asm { extern void link(); }
+namespace generic_merc_execute_asm { extern void link(); }
+namespace mercneric_convert { extern void link(); }
+namespace generic_prepare_dma_double { extern void link(); }
+namespace generic_light_proc { extern void link(); }
+namespace generic_envmap_proc { extern void link(); }
+namespace high_speed_reject { extern void link(); }
+namespace generic_prepare_dma_single { extern void link(); }
+namespace ripple_create_wave_table { extern void link(); }
+namespace ripple_execute_init { extern void link(); }
+namespace ripple_apply_wave_table { extern void link(); }
+namespace ripple_matrix_scale { extern void link(); }
+namespace init_ocean_far_regs { extern void link(); }
+namespace render_ocean_quad { extern void link(); }
+namespace draw_large_polygon_ocean { extern void link(); }
+namespace ocean_interp_wave { extern void link(); }
+namespace ocean_generate_verts { extern void link(); }
+namespace shadow_execute { extern void link(); }
+namespace shadow_add_double_edges { extern void link(); }
+namespace shadow_add_double_tris { extern void link(); }
+namespace shadow_add_single_edges { extern void link(); }
+namespace shadow_add_facing_single_tris { extern void link(); }
+namespace shadow_add_verts { extern void link(); }
+namespace shadow_find_double_edges { extern void link(); }
+namespace shadow_find_facing_double_tris { extern void link(); }
+namespace shadow_find_single_edges { extern void link(); }
+namespace shadow_find_facing_single_tris { extern void link(); }
+namespace shadow_init_vars { extern void link(); }
+namespace shadow_scissor_top { extern void link(); }
+namespace shadow_scissor_edges { extern void link(); }
+namespace shadow_calc_dual_verts { extern void link(); }
+namespace shadow_xform_verts { extern void link(); }
+namespace draw_inline_array_instance_tie { extern void link(); }
+namespace draw_inline_array_prototype_tie_generic_asm { extern void link(); }
+namespace generic_tie_dma_to_spad_sync { extern void link(); }
+namespace generic_envmap_dproc { extern void link(); }
+namespace generic_interp_dproc { extern void link(); }
+namespace generic_no_light_dproc { extern void link(); }
+namespace generic_tie_convert { extern void link(); }
+}  // namespace jak1
+
+}  // namespace Mips2C
+
+/*!
+ * Register every Jak 1 mips2c function. Must run after the symbol table and heaps exist, because
+ * each registration allocates a GOAL function object.
+ */
+void goal_mips2c_reset(void) {
+  Mips2C::forget_mips2c_registrations();
+}
+
+void goal_mips2c_register_jak1(void) {
+  Mips2C::forget_mips2c_registrations();
+  Mips2C::reserve_mips2c_stack();
+  using namespace Mips2C::jak1;
+  draw_string::link();
+  particle_adgif::link();
+  sp_launch_particles_var::link();
+  sp_process_block_3d::link();
+  sp_process_block_2d::link();
+  draw_large_polygon::link();
+  init_sky_regs::link();
+  clip_polygon_against_positive_hyperplane::link();
+  render_sky_quad::link();
+  render_sky_tri::link();
+  set_tex_offset::link();
+  set_sky_vf27::link();
+  set_sky_vf23_value::link();
+  adgif_shader_texture_with_update::link();
+  init_boundary_regs::link();
+  render_boundary_quad::link();
+  render_boundary_tri::link();
+  draw_boundary_polygon::link();
+  draw_inline_array_tfrag::link();
+  stats_tfrag_asm::link();
+  time_of_day_interp_colors_scratch::link();
+  collide_do_primitives::link();
+  moving_sphere_triangle_intersect::link();
+  method_12_collide_mesh::link();
+  method_11_collide_mesh::link();
+  collide_probe_node::link();
+  collide_probe_instance_tie::link();
+  method_26_collide_cache::link();
+  method_32_collide_cache::link();
+  pc_upload_collide_frag::link();
+  method_28_collide_cache::link();
+  method_27_collide_cache::link();
+  method_29_collide_cache::link();
+  method_12_collide_shape_prim_mesh::link();
+  method_14_collide_shape_prim_mesh::link();
+  method_13_collide_shape_prim_mesh::link();
+  method_30_collide_cache::link();
+  method_9_collide_cache_prim::link();
+  method_10_collide_cache_prim::link();
+  method_10_collide_puss_work::link();
+  method_9_collide_puss_work::link();
+  method_15_collide_mesh::link();
+  method_14_collide_mesh::link();
+  method_16_collide_edge_work::link();
+  method_15_collide_edge_work::link();
+  method_10_collide_edge_hold_list::link();
+  method_18_collide_edge_work::link();
+  calc_animation_from_spr::link();
+  bones_mtx_calc::link();
+  cspace_parented_transformq_joint::link();
+  draw_bones_merc::link();
+  draw_bones_check_longest_edge_asm::link();
+  blerc_execute::link();
+  setup_blerc_chains_for_one_fragment::link();
+  generic_merc_init_asm::link();
+  generic_merc_execute_asm::link();
+  mercneric_convert::link();
+  generic_prepare_dma_double::link();
+  generic_light_proc::link();
+  generic_envmap_proc::link();
+  high_speed_reject::link();
+  generic_prepare_dma_single::link();
+  ripple_create_wave_table::link();
+  ripple_execute_init::link();
+  ripple_apply_wave_table::link();
+  ripple_matrix_scale::link();
+  init_ocean_far_regs::link();
+  render_ocean_quad::link();
+  draw_large_polygon_ocean::link();
+  ocean_interp_wave::link();
+  ocean_generate_verts::link();
+  shadow_execute::link();
+  shadow_add_double_edges::link();
+  shadow_add_double_tris::link();
+  shadow_add_single_edges::link();
+  shadow_add_facing_single_tris::link();
+  shadow_add_verts::link();
+  shadow_find_double_edges::link();
+  shadow_find_facing_double_tris::link();
+  shadow_find_single_edges::link();
+  shadow_find_facing_single_tris::link();
+  shadow_init_vars::link();
+  shadow_scissor_top::link();
+  shadow_scissor_edges::link();
+  shadow_calc_dual_verts::link();
+  shadow_xform_verts::link();
+  draw_inline_array_instance_tie::link();
+  draw_inline_array_prototype_tie_generic_asm::link();
+  generic_tie_dma_to_spad_sync::link();
+  generic_envmap_dproc::link();
+  generic_interp_dproc::link();
+  generic_no_light_dproc::link();
+  generic_tie_convert::link();
+}

@@ -1,6 +1,7 @@
 #include "kernel_core.h"
 
 #include "game/kernel/core/aot_loader.h"
+#include "game/kernel/core/mips2c_seam.h"
 
 #include <cerrno>
 #include <cstring>
@@ -44,6 +45,7 @@ namespace {
 bool g_initialized = false;
 bool g_main_memory_executable = false;
 std::string g_last_error;
+std::string g_data_directory;
 
 void set_error(const char* msg) {
   g_last_error = msg;
@@ -152,13 +154,20 @@ goal_kernel_core_status goal_kernel_core_initialize(void) {
     return GOAL_KERNEL_CORE_SYMBOL_INIT_FAILED;
   }
 
+  // The hand-translated PS2 assembly functions GOAL's `def-mips2c` asks for by name. Upstream
+  // registers each file's as that file is linked; this runtime does it once, here. See
+  // mips2c_seam.cpp.
+  goal_mips2c_register_jak1();
+
   g_initialized = true;
   return GOAL_KERNEL_CORE_OK;
 }
 
 void goal_kernel_core_shutdown(void) {
-  // every AOT object file was placed in the heap that is about to go away
+  // every AOT object file and every mips2c trampoline was placed in the heap that is about to go
+  // away
   goal_aot_reset();
+  goal_mips2c_reset();
   if (!g_ee_main_mem) {
     g_initialized = false;
     return;
@@ -308,6 +317,41 @@ goal_kernel_core_status goal_kernel_core_type_name_of_symbol(const char* name,
   const char* type_name = jak1::info(type->symbol)->str->data();
   strncpy(buffer, type_name, buffer_size - 1);
   buffer[buffer_size - 1] = '\0';
+  return GOAL_KERNEL_CORE_OK;
+}
+
+goal_kernel_core_status goal_kernel_core_set_data_directory(const char* path) {
+  g_data_directory = path ? path : "";
+  while (g_data_directory.size() > 1 && g_data_directory.back() == '/') {
+    g_data_directory.pop_back();
+  }
+  return GOAL_KERNEL_CORE_OK;
+}
+
+const char* goal_kernel_core_data_directory(void) {
+  return g_data_directory.c_str();
+}
+
+goal_kernel_core_status goal_kernel_core_resolve_data_path(const char* name,
+                                                           char* out,
+                                                           size_t out_size) {
+  if (!name || !out || out_size == 0) {
+    set_error("goal_kernel_core_resolve_data_path: bad argument");
+    return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
+  }
+  std::string resolved = name;
+  if (resolved.empty() || resolved.front() != '/') {
+    if (g_data_directory.empty()) {
+      set_error("no data directory is set; call goal_kernel_core_set_data_directory first");
+      return GOAL_KERNEL_CORE_NOT_FOUND;
+    }
+    resolved = g_data_directory + "/" + resolved;
+  }
+  if (resolved.size() + 1 > out_size) {
+    set_error("goal_kernel_core_resolve_data_path: path does not fit");
+    return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
+  }
+  memcpy(out, resolved.c_str(), resolved.size() + 1);
   return GOAL_KERNEL_CORE_OK;
 }
 

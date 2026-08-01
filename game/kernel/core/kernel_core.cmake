@@ -34,9 +34,10 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/kprint.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/kscheme.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/ksocket.cpp"
-    # Jak 1 kernel
+    # Jak 1 kernel. game/kernel/jak1/kdgo.cpp is replaced by core/dgo_loader.cpp below: it defines
+    # the same jak1 entry points, but reads the archive with file calls instead of through the IOP
+    # RPC, and takes each object's code from the AOT path. See that file's comment.
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak1/fileio.cpp"
-    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak1/kdgo.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak1/klink.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak1/klisten.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak1/kprint.cpp"
@@ -48,11 +49,21 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/desktop_seams.cpp"
     # loader for object files produced by the AOT C backend
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
+    # synchronous DGO reader, in place of game/kernel/jak1/kdgo.cpp
+    "${CMAKE_CURRENT_LIST_DIR}/dgo_loader.cpp"
+    # the Jak 1 mips2c function library, in place of game/mips2c/mips2c_table.cpp
+    "${CMAKE_CURRENT_LIST_DIR}/mips2c_seam.cpp"
     # native implementations of the GOAL kernel routines that switch stacks
     "${CMAKE_CURRENT_LIST_DIR}/goal_native_kernel.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/goal_thread_arm64.s"
     # the ARM64 GOAL calling-convention trampolines
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/asm_funcs_arm64.s")
+
+# The Jak 1 half of game/mips2c. Upstream's mips2c_table.cpp names all four games and would pull
+# in all four function libraries; mips2c_seam.cpp registers only these.
+file(GLOB JAK1_MIPS2C_SOURCES CONFIGURE_DEPENDS
+     "${JAK1_KERNEL_CORE_ROOT}/game/mips2c/jak1_functions/*.cpp")
+list(APPEND JAK1_KERNEL_CORE_SOURCES ${JAK1_MIPS2C_SOURCES})
 
 enable_language(ASM)
 set(CMAKE_ASM_SOURCE_FILE_EXTENSIONS ${CMAKE_ASM_SOURCE_FILE_EXTENSIONS} s)
