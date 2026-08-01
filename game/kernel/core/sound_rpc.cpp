@@ -24,11 +24,11 @@
  * - There is no VBlank interrupt, so `goal_sound_frame` stands in for `VBlank_Handler`: it runs
  *   the music fade and writes the `sound-iop-info` block back to the EE.
  *
- * - Streamed VAG audio is not implemented. Upstream that is a whole second subsystem - the ISO
- *   thread's VAG state machine, `game/overlord/jak1/stream.cpp`, and the 'STRV' plugin feeding raw
- *   SPU voices. Requests for it are counted and named rather than silently dropped, so a run says
- *   what it could not play. Everything sequenced - sound effects from .SBK banks and music from
- *   .MUS banks - does play.
+ * - Streamed VAG audio - the spooled dialogue and cutscene audio in VAGWAD.<lang> - is answered by
+ *   `vag_stream.cpp`, which is the same state machine without the ISO thread. This file is what
+ *   drives it: the `spool-` prefix on the player channel, the streamed-audio channel (5), and the
+ *   pause/stop/volume commands that address the stream by its sound id rather than a sound slot.
+ *   The 'STRV' plugin - the path where a music sequence itself queues a stream - is still absent.
  *
  * 989snd has no output device in this build (GOALPAD_SND_NO_CUBEB). `goal_sound_pull_audio` is the
  * seam instead: it calls the same `snd::Player::Tick` the desktop port's audio callback calls.
@@ -47,8 +47,10 @@
 
 #include "game/common/game_common_types.h"
 #include "game/common/play_rpc_types.h"
+#include "game/common/str_rpc_types.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/sound_rpc.h"
+#include "game/kernel/core/vag_stream.h"
 #include "game/overlord/common/sbank.h"
 #include "game/overlord/common/srpc.h"
 #include "game/overlord/common/ssound.h"
@@ -61,8 +63,8 @@
 u64 goal_kernel_core_machine_stub_report(const char* what);
 
 namespace jak1 {
-// Declared by game/overlord/jak1/srpc.h and defined by srpc.cpp, which is not in this build: the
-// id of the streaming VAG voice. Nothing here starts one, so it stays 0 and never matches a sound.
+// Declared by game/overlord/jak1/srpc.h and defined by srpc.cpp, which is not in this build. The
+// streaming voice's id lives in vag_stream.cpp instead; this exists only to satisfy the header.
 s32 gVAG_Id = 0;
 }  // namespace jak1
 
@@ -319,20 +321,40 @@ void set_ear_trans(const Vec3w* ear_trans, const Vec3w* cam_trans, s32 cam_angle
       update_location(&s);
     }
   }
+
+  // `SetEarTrans` ends in `SetVAGVol`: a positioned stream is aimed from the listener too.
+  vag_stream::update_volume();
 }
 
 // ================================================================================================
 // RPC_Player, from game/overlord/jak1/srpc.cpp
 // ================================================================================================
 
-/*! The `spool-` prefix means streamed VAG out of VAGWAD.<lang>, which this build does not have.
- *  `name` is what is left of a 16-byte sound name after the prefix, so 10 bytes and possibly
- *  unterminated. */
-void report_spool_request(const char* name) {
+/*! A VAGDIR name is 8 bytes, space-padded and uppercase. `name` is a sound name's tail, which may
+ *  run to the end of the 16 bytes without a terminator. */
+void vag_name_from(char* out8, const char* name, size_t max) {
+  memset(out8, ' ', 8);
+  for (size_t i = 0; i < 8 && i < max && name[i]; i++) {
+    const char c = name[i];
+    out8[i] = c >= 'a' && c <= 'z' ? (char)(c - 0x20) : c;
+  }
+}
+
+/*! The `spool-` prefix means streamed VAG out of VAGWAD.<lang>. This is upstream's PLAY case for
+ *  it (game/overlord/jak1/srpc.cpp), which reads the trans out of the command when the pitch
+ *  modifier is set. `name` is what is left of a 16-byte sound name after the prefix. */
+void play_spool_request(const jak1::SoundRpcCommand* cmd) {
   g_stats.spool_requests++;
-  char stem[11] = {};
-  memcpy(stem, name, sizeof(stem) - 1);
-  note_unhandled(fmt::format("streamed audio '{}' (VAG streaming is not implemented)", stem));
+  char stem[9] = {};
+  vag_name_from(stem, cmd->play.name + 6, 10);
+
+  const VagStreamEntry* vag = vag_stream::find(stem);
+  if (!vag) {
+    note_unhandled(fmt::format("streamed audio '{}' (no stream by that name)", stem));
+    return;
+  }
+  const Vec3w* trans = cmd->play.parms.pitch_mod ? &cmd->play.parms.trans : nullptr;
+  vag_stream::play(vag, cmd->play.sound_id, cmd->play.parms.volume, 0, trans);
 }
 
 void play_sound(const jak1::SoundRpcCommand* cmd) {
@@ -340,7 +362,7 @@ void play_sound(const jak1::SoundRpcCommand* cmd) {
     return;
   }
   if (!memcmp(cmd->play.name, "spool-", 6)) {
-    report_spool_request(cmd->play.name + 6);
+    play_spool_request(cmd);
     return;
   }
 
@@ -410,6 +432,9 @@ void play_sound(const jak1::SoundRpcCommand* cmd) {
 void set_param(const jak1::SoundRpcCommand* cmd) {
   Sound* sound = LookupSound(cmd->sound_id.sound_id);
   if (!sound) {
+    if ((s32)cmd->sound_id.sound_id == vag_stream::stream_id()) {
+      vag_stream::set_stream_volume(cmd->param.parms.volume);
+    }
     return;
   }
   const u32 mask = cmd->param.parms.mask;
@@ -493,16 +518,22 @@ void rpc_player(u32 send_buffer, int send_size) {
       case jak1::Jak1SoundCommand::PAUSE_SOUND:
         if (Sound* sound = LookupSound(cmd->sound_id.sound_id)) {
           snd_PauseSound(sound->sound_handle);
+        } else if ((s32)cmd->sound_id.sound_id == vag_stream::stream_id()) {
+          vag_stream::pause();
         }
         break;
       case jak1::Jak1SoundCommand::STOP_SOUND:
         if (Sound* sound = LookupSound(cmd->sound_id.sound_id)) {
           snd_StopSound(sound->sound_handle);
+        } else if ((s32)cmd->sound_id.sound_id == vag_stream::stream_id()) {
+          vag_stream::stop(nullptr, 0);
         }
         break;
       case jak1::Jak1SoundCommand::CONTINUE_SOUND:
         if (Sound* sound = LookupSound(cmd->sound_id.sound_id)) {
           snd_ContinueSound(sound->sound_handle);
+        } else if ((s32)cmd->sound_id.sound_id == vag_stream::stream_id()) {
+          vag_stream::unpause();
         }
         break;
       case jak1::Jak1SoundCommand::SET_PARAM:
@@ -514,8 +545,10 @@ void rpc_player(u32 send_buffer, int send_size) {
           if ((group >> bit) & 1) {
             if (bit == 1) {
               g_music_vol = cmd->master_volume.volume;
-            } else if (bit != 2) {
-              // Group 2 is the dialog volume, which upstream routes through the VAG stream.
+            } else if (bit == 2) {
+              // Group 2 is the dialog volume: upstream routes it to the VAG stream, not to 989snd.
+              vag_stream::set_dialog_volume(cmd->master_volume.volume);
+            } else {
               snd_SetMasterVolume(bit, cmd->master_volume.volume);
             }
           }
@@ -523,15 +556,24 @@ void rpc_player(u32 send_buffer, int send_size) {
       } break;
       case jak1::Jak1SoundCommand::PAUSE_GROUP:
         snd_PauseAllSoundsInGroup(cmd->group.group);
+        if (cmd->group.group & 4) {
+          vag_stream::pause();
+        }
         if (cmd->group.group & 2) {
           gMusicPause = 1;
         }
         break;
       case jak1::Jak1SoundCommand::STOP_GROUP:
         KillSoundsInGroup(cmd->group.group);
+        if (cmd->group.group & 4) {
+          vag_stream::stop(nullptr, 0);
+        }
         break;
       case jak1::Jak1SoundCommand::CONTINUE_GROUP:
         snd_ContinueAllSoundsInGroup(cmd->group.group);
+        if (cmd->group.group & 4) {
+          vag_stream::unpause();
+        }
         if (cmd->group.group & 2) {
           gMusicPause = 0;
         }
@@ -624,6 +666,7 @@ void rpc_loader(u32 send_buffer, int send_size, u32 recv_buffer) {
       case jak1::Jak1SoundCommand::SET_LANGUAGE:
         if (cmd->set_language.langauge_id < sizeof(kLanguages) / sizeof(kLanguages[0])) {
           gLanguage = kLanguages[cmd->set_language.langauge_id];
+          vag_stream::set_language(gLanguage);
           lg::info("[sound-rpc] language {}", gLanguage);
         }
         break;
@@ -644,6 +687,45 @@ void rpc_loader(u32 send_buffer, int send_size, u32 recv_buffer) {
         g_stats.unknown_commands++;
         note_unhandled(fmt::format("loader RPC command {}", (int)cmd->j1command));
         break;
+    }
+  }
+}
+
+// ================================================================================================
+// RPC_PLAY, from game/overlord/jak1/stream.cpp
+//
+// Channel 5 is how the game starts, stops and queues a spooled stream by name. Upstream's handler
+// also re-finds the VAGWAD file record every sixteenth call to keep the drive's head near it; there
+// is no drive here, so only the name matters.
+// ================================================================================================
+
+void rpc_play(u32 send_buffer, int send_size) {
+  constexpr int kPlayMsgSize = (int)sizeof(RPC_Play_Cmd_Jak1);  // 0x40
+  const int count = send_size / kPlayMsgSize;
+  const auto* cmd = (const RPC_Play_Cmd_Jak1*)Ptr<u8>(send_buffer).c();
+
+  for (int i = 0; i < count; i++, cmd++) {
+    char name[9] = {};
+    if (cmd->name[0] == '$') {
+      vag_name_from(name, cmd->name + 1, sizeof(cmd->name) - 1);
+    } else {
+      // An animation name, which has its own spelling on disc.
+      char iso_name[128];
+      file_util::ISONameFromAnimationName(iso_name, cmd->name);
+      memcpy(name, iso_name, 8);
+    }
+
+    const VagStreamEntry* vag = vag_stream::find(name);
+    if (!vag) {
+      note_unhandled(fmt::format("streamed audio '{}' (no stream by that name)", name));
+      continue;
+    }
+    if (cmd->result == 0) {
+      vag_stream::play(vag, cmd->address, 0x400, 1, nullptr);
+    } else if (cmd->result == 1) {
+      vag_stream::stop(vag, 1);
+    } else {
+      vag_stream::queue(vag, 0, 1);
     }
   }
 }
@@ -705,6 +787,13 @@ goal_kernel_core_status goal_sound_install(void) {
 
   load_music_tweaks();
 
+  // Streamed VAG audio. It needs the pan table above for a positioned stream, and it is optional:
+  // without VAGDIR.AYB the sequenced sound still plays and a spool request reports itself.
+  if (!vag_stream::install(g_pan_table)) {
+    note_unhandled("streamed audio: there is no VAGDIR.AYB in the data directory");
+  }
+  vag_stream::set_language(gLanguage);
+
   g_installed = true;
   lg::info("[sound-rpc] 989snd is running at {} Hz; the sound RPC channels are answered here",
            kSampleRate);
@@ -715,6 +804,7 @@ void goal_sound_shutdown(void) {
   if (!g_installed) {
     return;
   }
+  vag_stream::shutdown();
   unload_music();
   snd_StopSoundSystem();
   g_installed = false;
@@ -746,16 +836,18 @@ void goal_sound_frame(void) {
     }
   }
 
+  // One turn of the ISO thread's VAG work: advance the stream and refill the voice's buffer.
+  vag_stream::frame();
+
   if (!g_info_ee) {
     return;
   }
   gFrameNum++;
   g_info.frame = gFrameNum;
-  // No VAG stream is ever running here, so the position stays -1, which is what `str-is-playing?`
-  // reads to decide nothing is playing. Anything else would make the game wait for a stream that
-  // will never advance.
-  g_info.strpos = -1;
-  g_info.std_id = 0;
+  // `str-is-playing?` reads strpos: -1 when nothing is streaming, so the game does not wait on a
+  // stream that will never advance.
+  g_info.strpos = vag_stream::stream_pos();
+  g_info.std_id = (u32)vag_stream::stream_id();
   g_info.freemem = 0;
   g_info.freemem2 = 0;
   g_info.nocd = 0;
@@ -782,6 +874,11 @@ int goal_sound_pull_audio(int16_t* out, int frames) {
 
 void goal_sound_rpc_stats_get(goal_sound_rpc_stats* out) {
   *out = g_stats;
+  const vag_stream::stats vag = vag_stream::get_stats();
+  out->streams_started = vag.streams_started;
+  out->streams_played_out = vag.streams_finished;
+  out->stream_buffers = vag.buffers_read;
+  out->streams_missing = vag.streams_missing;
 }
 
 const char* goal_sound_unhandled_report(void) {
@@ -815,9 +912,8 @@ uint64_t goal_sound_rpc_call(int32_t channel, const uint64_t* args) {
   const u32 recv_buffer = (u32)args[5];
 
   if (channel == PLAY_RPC_CHANNEL) {
-    // Channel 5 plays and queues streamed VAG audio. Nothing feeds it here; see the file comment.
     g_stats.play_rpc_calls++;
-    note_unhandled("the streamed-audio RPC (channel 5): VAG streaming is not implemented");
+    rpc_play(send_buffer, send_size);
     return 0;
   }
   if (channel == 1) {

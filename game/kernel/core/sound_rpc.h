@@ -73,8 +73,12 @@ typedef struct goal_sound_rpc_stats {
   int sounds_started;   /*! sounds 989snd gave a voice to */
   int sounds_missing;   /*! play requests naming a sound no loaded bank has */
   int music_starts;     /*! times the loaded music bank was (re)started */
-  int spool_requests;   /*! `spool-` play requests: streamed VAG, which is not implemented */
-  int play_rpc_calls;   /*! calls on channel 5, the streamed-audio channel, also not implemented */
+  int spool_requests;   /*! `spool-` play requests on the player channel: streamed VAG */
+  int play_rpc_calls;   /*! calls on channel 5, the streamed-audio channel */
+  int streams_started;  /*! VAG streams actually started out of VAGWAD.<lang> */
+  int streams_played_out; /*! VAG streams that reached their end */
+  int stream_buffers;   /*! 0x6000-byte buffers read out of VAGWAD.<lang> */
+  int streams_missing;  /*! streams asked for that VAGDIR.AYB does not name */
   int unknown_commands; /*! commands this implementation does not handle */
   int music_group_volume; /*! the volume the music group is at: (game volume * fade >> 16) * tweak >> 7,
                              out of 0x400. What upstream's SetMusicVol computes. */

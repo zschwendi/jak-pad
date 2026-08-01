@@ -59,6 +59,8 @@ set(JAK1_KERNEL_CORE_SOURCES
     # the sound RPC channels, in place of game/overlord/jak1/srpc.cpp's two IOP threads, plus the
     # seam a host pulls mixed audio out of
     "${CMAKE_CURRENT_LIST_DIR}/sound_rpc.cpp"
+    # streamed VAG audio, in place of game/overlord/jak1/stream.cpp and the ISO thread's VAG cases
+    "${CMAKE_CURRENT_LIST_DIR}/vag_stream.cpp"
     # the overlord's sound tables, used unchanged: the 64 sound slots with their falloff/pan math,
     # the 6 bank slots, and the globals both share. Everything else in game/overlord is the IOP.
     "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/sbank.cpp"

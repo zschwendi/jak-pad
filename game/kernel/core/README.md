@@ -424,13 +424,17 @@ bank, which 989snd drives through its MIDI/AME handlers. Music is not started by
 upstream does, the player channel restarts the loaded music bank's sound 0 under the internal id 666
 whenever it is not already running, and re-fades it in.
 
-**What does not.** Streamed VAG audio - the spooled cutscene and dialogue audio in `VAGWAD.<lang>`,
-reached by the `spool-` prefix on the player channel and by channel 5. Upstream that is a second
-subsystem: the ISO thread's VAG state machine, `game/overlord/jak1/stream.cpp`, and a plugin feeding
-raw SPU voices, none of which is here. Requests for it are counted and named rather than dropped
-quietly, so a run reports what it could not play instead of just being quieter than it should be.
-The same goes for a play request naming a sound no loaded bank has, and for an RPC command this
-implementation does not handle.
+**Streamed audio.** The spooled cutscene and dialogue audio in `VAGWAD.<lang>` is answered by
+`vag_stream.cpp`: `VAGDIR.AYB` is the directory of streams, and one of 989snd's raw SPU voices plays
+out of a 0xC000-byte double buffer that `goal_sound_frame` refills. It is the same state machine as
+upstream's ISO thread VAG cases plus `game/overlord/jak1/stream.cpp`, with the thread taken out.
+`sound_rpc.cpp` drives it from the `spool-` prefix on the player channel, from channel 5, and from
+the pause/stop/volume commands that address the stream by sound id. What is still absent is the
+'STRV' plugin, the path where a music sequence itself queues a stream.
+
+A run reports what it could not play rather than being quieter than it should be: a spool request
+naming a stream `VAGDIR.AYB` does not have, a play request naming a sound no loaded bank has, and an
+RPC command this implementation does not handle.
 
 ```sh
 GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 ./build/Release/bin/game/jak1-data-boot-test \
@@ -583,9 +587,11 @@ with no case now fails to compile rather than returning garbage.
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
   names - what `file-stream-open` would be given - are not translated yet, because nothing calls
   `file-stream-open` here.
-- **No streamed VAG audio.** Sequenced sound - effects out of `.SBK` banks and music out of `.MUS`
-  banks - plays. The spooled cutscene and dialogue audio in `VAGWAD.<lang>` does not; see **Sound**
-  above. It is counted and named, not dropped quietly. `--no-sound` puts the sound channels back on
+- **Streamed VAG audio is experimental.** It plays - see **Sound** above - but the only path that
+  is missing, the 'STRV' plugin, is the one where a music sequence queues a stream itself. Because
+  `str-is-playing?` now reports a real stream position, cutscenes that used to be skipped instantly
+  play out, which moves every later event in a scripted run. `--no-sound` puts the sound channels
+  back on
   the machine-layer stub path, where `gsound.gc` prints `IRX version 0.0` and
   `ERROR: IRX is the wrong version - need 2.0` once during boot.
 - `game/kernel/common/kmachine.h` transitively includes `<SDL3/SDL.h>` through
