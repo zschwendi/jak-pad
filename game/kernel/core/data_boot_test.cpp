@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cctype>
+#include <filesystem>
 #include <cinttypes>
 #include <cmath>
 #include <cstdarg>
@@ -1266,6 +1267,14 @@ int run_real_boot(const std::string& data_dir,
                   bool require_audio) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
+
+  // A scripted run that starts a new game writes a save the moment a slot is picked. Keep the
+  // harness hermetic: its saves go to a scratch directory, never to the player's own saves.
+  const std::string saves_dir =
+      (std::filesystem::temp_directory_path() / "goalpad-data-boot-saves").string();
+  std::filesystem::remove_all(saves_dir);
+  goal_kernel_core_set_saves_directory(saves_dir.c_str());
+  say("saves directory: %s\n", saves_dir.c_str());
 
   goal_dgo_load_stats stats;
   const u32 boot_flags = LINK_FLAG_OUTPUT_LOAD | LINK_FLAG_EXECUTE | LINK_FLAG_PRINT_LOGIN;
