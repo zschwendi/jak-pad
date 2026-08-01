@@ -24,7 +24,8 @@
 namespace {
 
 struct Options {
-  std::string project_file = "goal_src/jak1/game.gp";
+  std::string game = "jak1";
+  std::string project_file;
   std::string target = "GROUP:all-code";
   std::string report_path;
   std::string c_output_dir;
@@ -35,7 +36,7 @@ struct Options {
 
 void print_usage() {
   std::fprintf(stderr,
-               "Usage: goalc-cbackend-sweep [--project-file goal_src/jak1/game.gp]\n"
+               "Usage: goalc-cbackend-sweep [--game jak1] [--project-file goal_src/jak1/game.gp]\n"
                "                            [--target GROUP:all-code]\n"
                "                            [--c-output-dir DIR] [--report OUT.tsv]\n"
                "                            [--project-path OPENGOAL_ROOT] [--limit N]\n"
@@ -60,7 +61,9 @@ bool parse_options(int argc, char** argv, Options* options) {
       std::fprintf(stderr, "Missing value for %s\n", argument.c_str());
       return false;
     }
-    if (argument == "--project-file") {
+    if (argument == "--game") {
+      options->game = argv[i];
+    } else if (argument == "--project-file") {
       options->project_file = argv[i];
     } else if (argument == "--target") {
       options->target = argv[i];
@@ -159,6 +162,14 @@ int main(int argc, char** argv) {
   if (!parse_options(argc, argv, &options)) {
     return 2;
   }
+  if (!valid_game_version(options.game)) {
+    std::fprintf(stderr, "Unknown game version %s\n", options.game.c_str());
+    return 2;
+  }
+  const GameVersion game_version = game_name_to_version(options.game);
+  if (options.project_file.empty()) {
+    options.project_file = fmt::format("goal_src/{}/game.gp", options.game);
+  }
 
   lg::set_stdout_level(lg::level::warn);
   lg::set_flush_level(lg::level::warn);
@@ -173,7 +184,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  Compiler compiler(GameVersion::Jak1, emitter::InstructionSet::X86);
+  Compiler compiler(game_version, emitter::InstructionSet::X86);
   std::vector<std::string> sources;
   try {
     compiler.make_system().load_project_file(file_util::get_file_path({options.project_file}));
@@ -212,7 +223,7 @@ int main(int argc, char** argv) {
     try {
       auto code = compiler.get_goos().reader.read_from_file({source});
       auto* file = compiler.compile_object_file(tag, std::move(code), true);
-      auto result = aot::emit_c_file(*file, tag, GameVersion::Jak1, compiler.type_system());
+      auto result = aot::emit_c_file(*file, tag, game_version, compiler.type_system());
       total_functions += result.total_count();
       total_emitted += result.emitted_count();
       report += fmt::format("FILE\t{}\t{}\t{}\n", source, result.emitted_count(),

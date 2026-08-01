@@ -57,6 +57,9 @@ namespace {
  *
  * The file tag is matched too, so a function elsewhere in the game that happens to share a name
  * with one of these cannot silently pick up the wrong implementation.
+ *
+ * These implementations were written against the Jak 1 kernel, so only Jak 1 uses this table.
+ * Other games count the same functions as failures until their kernels are actually ported.
  */
 struct NativeImplementation {
   const char* file_tag;
@@ -74,7 +77,12 @@ constexpr NativeImplementation kNativeImplementations[] = {
     {"gstate", "enter-state-run-code", "goal_native_enter_state_run_code"},
 };
 
-const char* native_implementation_for(const std::string& file_tag, const std::string& goal_name) {
+const char* native_implementation_for(GameVersion version,
+                                      const std::string& file_tag,
+                                      const std::string& goal_name) {
+  if (version != GameVersion::Jak1) {
+    return nullptr;
+  }
   for (const auto& entry : kNativeImplementations) {
     if (file_tag == entry.file_tag && goal_name == entry.goal_name) {
       return entry.c_symbol;
@@ -1145,7 +1153,7 @@ CBackendResult FileEmitter::run() {
     } catch (const std::exception& e) {
       entry.ok = false;
       entry.error = e.what();
-      if (const char* native = native_implementation_for(m_tag, entry.goal_name)) {
+      if (const char* native = native_implementation_for(m_version, m_tag, entry.goal_name)) {
         entry.native_symbol = native;
         functions_source +=
             fmt::format("/* {}: {}. Supplied natively by {}. */\n"
