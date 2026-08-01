@@ -25,7 +25,7 @@ to a renderer (`game/graphics/opengl_renderer/OpenGLRenderer.h:66-76`).
 | `foreground/Generic2` | VU1 "generic" fallback path | yes |
 | `foreground/Shadow2`, `ShadowRenderer` | shadow volumes (Shadow2 = Jak 2/3, ShadowRenderer = Jak 1) | ShadowRenderer |
 | `sprite/Sprite3` (+`_Distort`, `_Glow`, `GlowRenderer`) | particles, screen distortion, glow probes | yes (Sprite3 ported; distort/glow pending) |
-| `ocean/*` | ocean surface near/mid/far, generated ocean texture, envmap | yes |
+| `ocean/*` | ocean surface near/mid/far, generated ocean texture, envmap | yes (ported; envmap is Jak 2/3 only) |
 | `SkyRenderer`, `SkyBlendCPU`/`SkyBlendGPU` | sky texture blending (CPU and GPU variants) | yes (CPU variant suffices initially) |
 | `EyeRenderer` | renders eyes into small textures | yes |
 | `DepthCue` | Jak 1 full-screen depth-cue effect | yes |
@@ -141,9 +141,10 @@ come from a `UIView`/SwiftUI instead of SDL.
    multidraw loops).
 6. Foreground — *Planned*: Merc2 (bones via buffer offsets), Generic2, ShadowRenderer,
    EyeRenderer.
-7. Sprite/effects — *Partially implemented*: Sprite3's 2D / HUD / 3D sprite paths are
-   ported and verified (see §Current state); the distorter's DMA is walked but its
-   drawing, plus glow, DepthCue, ocean and post effects, remain *Planned*.
+7. Sprite/effects — *Partially implemented*: Sprite3's 2D / HUD / 3D sprite paths and
+   the whole Jak 1 ocean path (ocean-mid-and-far, ocean-near, the generated ocean
+   texture) are ported and verified (see §Current state); the distorter's drawing,
+   glow, DepthCue and post effects remain *Planned*.
 8. iPad presentation — *Planned*: drive the same backend from a `CAMetalLayer` provided by
    the SwiftUI app instead of SDL; controller/input wiring; simulator first, then physical
    device per AGENTS.md gates.
@@ -300,10 +301,12 @@ come from a `UIView`/SwiftUI instead of SDL.
       Sandover sunset, blended by the ported SkyBlendCPU and drawn by the ported
       SkyRenderer/DirectRenderer - and the title's **"PRESS START" draws in the game's
       own font**, as DEBUG-bucket DirectRenderer content sampling the real font texture.
-      4 draws / 88 triangles per frame, 10 texture upload packets applied, ~160 k lit
-      pixels. Consumed but not drawn (counted, logged once): ocean-mid-far 82.5 kB,
-      ocean-near 38.9 kB, tie 5.6 kB, tfrag 5.8 kB, shrub, merc, generic, eyes, and
-      992 bytes of tfrag-trans inside the sky-blend bucket.
+      Since the ocean port (below) the **ocean draws too**: 7 game-target draws /
+      3971 triangles per frame plus 12 offscreen ocean-texture draws, 10 texture
+      upload packets applied, ~301 k lit pixels (was ~160 k with the ocean band
+      black). Consumed but not drawn (counted, logged once): tie 5.6 kB,
+      tfrag 5.8 kB, shrub, merc, generic, eyes, and 992 bytes of tfrag-trans inside
+      the sky-blend bucket - 15.7 kB per frame, down from 137 kB.
     - frame 100 (14 kB): renders black, honestly. Its content is the merc logo and
       character models (not ported) plus a 160-byte sky-draw that is a black quad
       because nothing had been blended into the sky texture that frame.
@@ -343,6 +346,80 @@ come from a `UIView`/SwiftUI instead of SDL.
     scale says; two HUD sprites resolve their four texture quadrants correctly (which
     checks the `st_array`/vertex-id wiring end to end), and the second one moves by the
     `hud_hvdf_user[0]` entry its matrix index selects.
+- **Implemented** (stage 7 part 2, the ocean): `metal_ocean_renderer.{h,mm}` +
+  `shaders/ocean.metal`, the Jak 1 ocean path.
+  - The VU1 emulators are *shared*, not copied. Roughly 10k of the ocean
+    renderer's 14k lines are transcriptions of the VU1 microprograms
+    (`OceanTexture_PC.cpp`, `OceanMid_PS2.cpp`, `OceanNear_PS2.cpp`) that touch
+    nothing but VU registers, VU data memory and CPU-side vertex buffers. They
+    now live on three backend-neutral base classes in
+    `game/graphics/opengl_renderer/ocean/OceanVu.h` - `OceanTextureVu`,
+    `OceanMidVu`, `OceanNearVu` - which both `OceanTexture`/`OceanMid`/
+    `OceanNear` (GL) and `MetalOceanTexture`/`MetalOceanMid`/`MetalOceanNear`
+    derive from, supplying only `xgkick` and the drawing. The upstream change is
+    a mechanical one: the emulator functions are re-qualified onto the base
+    classes (30 lines across the two `_PS2.cpp` files) and `OceanTexture_PC.cpp`
+    is split into `OceanTexture_VU.cpp` (VU, GL-free) and the GL objects it kept.
+    No VU instruction was retyped, so the two backends cannot drift.
+  - What the Metal file ports is the rest: the ocean-mid-and-far and ocean-near
+    DMA walks, the ocean-texture DMA walk, `CommonOceanRenderer`'s GIF/GS state
+    machine and strip/fan assembly, and the drawing. Blend/depth state becomes
+    PSO and depth-stencil keys - all five GL per-bucket blend configurations
+    (`SRC_ALPHA/1-SRC_ALPHA`, `ZERO/ONE`, `DST_ALPHA/ONE`, blend off, and the
+    reversed-index envmap pass), depth GEQUAL without writes for near and
+    ALWAYS with writes for mid.
+  - ocean-far needed no new code: it is plain GIF forwarded to the already-ported
+    DirectRenderer, including the ta0 patch.
+  - **The one architectural decision**: `OceanTexture` needs 1 + 8 offscreen
+    render passes and `MetalFrameContext` hands bucket renderers an already-open
+    encoder. The generator therefore runs on **its own command buffer**, encoded,
+    committed and waited on while the frame's encoder is still recording; the
+    frame's command buffer is committed later, so the generated texture is always
+    complete before anything samples it - the ordering the immediate-mode GL
+    renderer gets for free. This needed no change to the frame scaffolding.
+  - `shaders/ocean.metal` is the MSL port of `ocean_texture.{vert,frag}`,
+    `ocean_texture_mipmap.{vert,frag}` and `ocean_common.{vert,frag}`, line for
+    line, with three deliberate differences: Metal clip-space z is `[0,1]` so
+    GL's `z * 2 - 1` becomes `z`; the GL `SCISSOR_ADJUST`/`HEIGHT_SCALE` text
+    substitutions arrive as a uniform; and the *generated* ocean texture is
+    rendered y-flipped, because Metal render targets are top-down while GL
+    framebuffers are bottom-up and that texture is rendered and then sampled.
+    (On-screen geometry needs no flip - the same clip-space math shows the same
+    image in both APIs.) The mip chain drops the GL renderer's `1/(1<<level)`
+    quad scale: GL keeps the level-0 viewport for every mip level, while a Metal
+    render pass targets the level directly, so the quad is a plain 1:1 copy. The
+    deliberate `max(0, 1 - 0.51 * level)` alpha fade is kept.
+  - Faithfulness notes preserved rather than "fixed": both `OceanTexture`
+    instances publish to the same VRAM slot (8160 on Jak 1) and the last bucket
+    of the frame wins, so ocean-near's single-level texture replaces
+    ocean-mid-and-far's mipmapped one; and the mid adgif handler compares against
+    the Jak 2 slot with no Jak 1 branch.
+  - Not ported: `OceanEnvmap` (Jak 2/3 only) and the Jak 2/3 DMA layouts, matching
+    the rest of the Jak 1-only Metal bucket table.
+  - Verified by `metal-proof --replay` on the real captures (the ocean is entirely
+    DMA driven, so it only has content when a captured frame carries the ocean
+    buckets; the argument-less proof still runs 144 checks, 149 with an `.fr3`):
+    - the ocean buckets are fully consumed - the frame's skipped payload drops
+      from 137 kB to 15.7 kB, exactly the 82,544 + 38,864 bytes the two ocean
+      buckets carry;
+    - the texture VU program produces its full 32 x 66 vertex mesh, and the
+      generated 128x128 texture reads back with every texel drawn and varied
+      content;
+    - the mip chain's alpha fade is checked by minifying all the way down: the
+      mipmapped texture reads back with alpha 0 at its smallest level (level 7's
+      intensity is `max(0, 1 - 0.51 * 7)` = 0) while the single-level texture
+      ocean-near publishes keeps its alpha;
+    - the ocean VRAM slot holds the last generated texture of the frame;
+    - the band below the horizon, which read back **solid black** before this
+      renderer (0 lit pixels in rows 260-340), is now drawn (~47.8 k lit pixels);
+      the whole frame goes from ~160 k to ~301 k lit pixels.
+  - Note on what the generated texture is: the VU feeds the GS an RGBAQ of
+    `(0, 0, 0, 0x80)` for every vertex - the "vertex" quadwords of the
+    ocean-texture input are `(0, 0, 0, scale)` - so `ocean_texture.frag` writes
+    black with the envmap's alpha. It is an **alpha mask**, not a color map: the
+    ocean's visible color comes from the ocean-mid envmap pass, which the mask's
+    destination alpha gates. This is the GL behaviour, byte for byte, because the
+    VU code is the same code.
 - **Experimental**: the validation scene still renders when no chain is pending (keeps
   the window alive and the scaffold checks meaningful); its draw region is a 4:3 fit
   of the window. The Metal pipeline does not run the Loader yet, so nothing feeds
@@ -359,37 +436,35 @@ come from a `UIView`/SwiftUI instead of SDL.
 - The OpenGL renderer is untouched and remains the default (`gfx.cpp` still selects
   `GfxPipeline::OpenGL`).
 
-## 5. Next targets: Ocean and Merc2 (scoped, not started)
+## 5. Ocean (done) and Merc2 (next)
 
-These are the two biggest payload carriers left in the captured title frames (ocean
-~121 kB/frame, merc ~4.5 kB/frame). Scoped from the GL sources; both are *Investigating*
-only in the sense that the work below is not started - the data flow itself is settled.
+The ocean was the biggest payload carrier left in the captured title frames
+(~121 kB/frame) and is now *Implemented* - see §4 for what was built, how the
+1 + 8 offscreen ocean-texture passes fit the frame structure, and the readback
+evidence. Merc is next (~4.5 kB/frame), and is blocked on a Metal loader stage.
 
-**Ocean first.** It has *no* Loader or level-data dependency: nothing under
-`game/graphics/opengl_renderer/ocean/` mentions `tfrag3`, `LevelData` or `Loader`.
-Everything is DMA plus VU1 emulation, and ~10k of its ~14k lines are the `*_PS2.cpp` /
-`*_PC.cpp` VU emulators, which contain no GL and port unchanged.
+**Ocean: what shipped and what did not.** It had *no* Loader or level-data
+dependency - nothing under `game/graphics/opengl_renderer/ocean/` mentions
+`tfrag3`, `LevelData` or `Loader` - so it went in ahead of the background
+renderers. Entry points `OceanMidAndFar` (`ocean/OceanMidAndFar.cpp:25`, jak1
+path `:48`, `BucketId::OCEAN_MID_AND_FAR`) and `OceanNear`
+(`ocean/OceanNear.cpp:25`, jak1 `:48`, `BucketId::OCEAN_NEAR`) both have Metal
+counterparts. Still open:
 
-- Entry points: `OceanMidAndFar` (`ocean/OceanMidAndFar.cpp:25`, jak1 path `:48`,
-  `BucketId::OCEAN_MID_AND_FAR`) and `OceanNear` (`ocean/OceanNear.cpp:25`, jak1 `:48`,
-  `BucketId::OCEAN_NEAR`). They own `OceanTexture`, `OceanMid` and
-  `CommonOceanRenderer`; `OceanEnvmap` is Jak 2/3 only.
-- Real GL surface: `CommonOceanRenderer.cpp` (1 VAO, 3 index buffers, 5 draws across
-  `flush_near`/`flush_mid`) + `OceanTexture.cpp` (a 128x128 render target with 8 mip
-  levels generated by a custom 8-pass chain, *not* `glGenerateMipmap`, with a deliberate
-  `max(0, 1 - 0.51*i)` alpha fade per level) + ~60 GL lines in `OceanTexture_PC.cpp`.
-- Suggested order and first proofs: (1) ocean-far only - it is plain GIF forwarded to the
-  already-ported DirectRenderer, so the horizon band renders with no new code;
-  (2) `OceanTexture`, whose 128x128 result can be read back and compared level by level,
-  the strongest readback proof available here; (3) `CommonOceanRenderer` + `OceanMid`;
-  (4) `OceanNear`.
-- The one architectural decision: `MetalFrameContext` currently hands bucket renderers an
-  already-open render encoder, and `OceanTexture` needs 1 + 8 separate offscreen passes.
-  Either expose the `MTLCommandBuffer` on the context, or run ocean-texture generation
-  before the game encoder opens. The latter is cleaner.
-- Faithfulness notes to preserve rather than "fix": both `OceanTexture` instances publish
-  to the same VRAM slot (8160 on Jak 1) and the last bucket wins, and
-  `CommonOceanRenderer.cpp:433` compares against the Jak 2 slot with no Jak 1 branch.
+- `OceanEnvmap` is Jak 2/3 only and is not ported.
+- The Jak 2/3 DMA layouts (`render_jak2`, `handle_ocean_texture_jak2`,
+  `run_jak2`) are not ported; their VU emulators are on the shared base classes
+  and compile, so those paths are a DMA-walk port away.
+- Neither capture available here exercises **ocean-near geometry**: the
+  ocean-near bucket runs its texture generator but its VU produces zero vertices
+  at the title camera (one `call0`, no `call39`), so `flush_near`'s three-bucket
+  draw path is code-complete but has only been exercised with an empty vertex
+  set. It needs a capture taken near the water.
+- The ocean-mid envmap does not cover every tile the base pass covers (2476 vs
+  1229 indices in frame 838), so some tiles read back black. That is the GL
+  result too - the base pass samples an all-black color texture - but it has not
+  been diffed against a GL render of the same frame, because this tree has no GL
+  capture-replay harness.
 
 **Merc2 after a Metal Loader stage.** Merc's per-frame DMA is only control data: the
 setup packet, `VuLights`, the flags quadword, and *EE pointers* to bone matrices

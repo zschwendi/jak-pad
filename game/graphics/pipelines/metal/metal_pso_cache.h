@@ -25,6 +25,9 @@ enum class MetalShaderId : u16 {
   DIRECT_BASIC = 3,     // DirectRenderer, untextured (direct_basic.{vert,frag})
   DIRECT_TEXTURED = 4,  // DirectRenderer, textured (direct_basic_textured.{vert,frag})
   SPRITE3 = 5,          // Sprite3 2D/HUD/3D sprites (sprite3_3d.{vert,frag})
+  OCEAN_TEXTURE = 6,          // generated ocean texture (ocean_texture.{vert,frag})
+  OCEAN_TEXTURE_MIPMAP = 7,   // its mip chain (ocean_texture_mipmap.{vert,frag})
+  OCEAN_COMMON = 8,           // ocean near/mid mesh (ocean_common.{vert,frag})
   COUNT,
 };
 

@@ -80,6 +80,18 @@ struct ChainStats {
   int sprites_distort = 0;  // DMA consumed; distort drawing is not ported
   int sprite_draws = 0;
   int sprite_missing_textures = 0;
+  // ocean buckets, from the last chain frame
+  int ocean_draws = 0;
+  int ocean_triangles = 0;
+  int ocean_texture_verts = 0;  // VU-produced vertices of the generated ocean texture
+  int ocean_mid_verts = 0;
+  int ocean_near_verts = 0;
+  int ocean_missing_textures = 0;
+  // registry handles of the two generated ocean textures (mipmapped one from
+  // ocean-mid-and-far, single-level one from ocean-near), so tests can read
+  // them back
+  u64 ocean_mid_texture = 0;
+  u64 ocean_near_texture = 0;
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets

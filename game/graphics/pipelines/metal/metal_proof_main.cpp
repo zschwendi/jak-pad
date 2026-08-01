@@ -1865,6 +1865,141 @@ int load_fr3_textures(const char* path, bool is_common) {
   return added;
 }
 
+// ---------------------------------------------------------------------------
+// Ocean readback checks (replay only - the ocean is entirely DMA driven, so it
+// only has content when a captured frame carries the ocean buckets).
+//
+// Three things are verified from pixels rather than counters:
+//  1. the generated 128x128 ocean texture has real, varied content (the VU
+//     program ran and its geometry rasterized),
+//  2. the mipmapped copy fades its alpha out with level - the deliberate
+//     `max(0, 1 - 0.51 * level)` trick that makes the ocean fade with distance -
+//     while the single-level copy ocean-near publishes does not,
+//  3. the frame's ocean band, which reads back solid black without this
+//     renderer, is now drawn.
+// ---------------------------------------------------------------------------
+
+// Counts non-black pixels and the mean channel values of a readback.
+void frame_summary(const metal_renderer::FramePixels& f,
+                   int y0,
+                   int y1,
+                   int* lit,
+                   int* mean_rgb,
+                   int* mean_a) {
+  long sum_rgb = 0, sum_a = 0;
+  int count = 0;
+  *lit = 0;
+  for (int y = y0; y < y1; y++) {
+    for (int x = 0; x < f.width; x++) {
+      const u8* p = &f.rgba[(y * f.width + x) * 4];
+      if (p[0] || p[1] || p[2]) {
+        (*lit)++;
+      }
+      sum_rgb += p[0] + p[1] + p[2];
+      sum_a += p[3];
+      count++;
+    }
+  }
+  *mean_rgb = count ? (int)(sum_rgb / (3 * count)) : 0;
+  *mean_a = count ? (int)(sum_a / count) : 0;
+}
+
+void check_ocean(const metal_renderer::ChainStats& stats,
+                 const metal_renderer::FramePixels& frame,
+                 const std::string& png_path) {
+  check(stats.ocean_texture_verts == (int)(32 * 66),
+        "ocean: the texture VU program produced a full 32x66 vertex mesh");
+  check(stats.ocean_missing_textures == 0, "ocean: every ocean draw found its texture");
+
+  // the pool slot both generators publish to must hold the last one of the
+  // frame (ocean-near's), like the GL renderer
+  auto* pool = metal_renderer::get_texture_pool();
+  auto slot = pool ? pool->lookup(8160) : std::nullopt;
+  check(slot.has_value() && stats.ocean_near_texture != 0 && *slot == stats.ocean_near_texture,
+        "ocean: the ocean VRAM slot holds the last generated texture of the frame");
+
+  // The generated texture is an alpha mask, not a color map: the VU feeds the
+  // GS an RGBAQ of (0, 0, 0, 0x80) for every vertex (the "vertex" quadwords of
+  // the ocean-texture input are (0, 0, 0, scale)), so ocean_texture.frag writes
+  // black with the envmap's alpha. The ocean's visible color comes from the
+  // ocean-mid envmap pass, which that alpha gates. Alpha is therefore the
+  // channel worth checking.
+  metal_renderer::FramePixels tex;
+  metal_renderer::TextureSampleSpec spec;
+  spec.texture = stats.ocean_mid_texture;
+  spec.out_w = 128;
+  spec.out_h = 128;
+  if (sample_tex(spec, &tex, "ocean: read back the generated texture")) {
+    int drawn = 0;
+    u8 lo = 255, hi = 0;
+    long sum_a = 0;
+    for (size_t i = 0; i < tex.rgba.size(); i += 4) {
+      u8 a = tex.rgba[i + 3];
+      sum_a += a;
+      lo = std::min(lo, a);
+      hi = std::max(hi, a);
+      if (a) {
+        drawn++;
+      }
+    }
+    printf("generated ocean texture: %d/%d texels drawn, alpha %d-%d (mean %d)\n", drawn,
+           tex.width * tex.height, lo, hi, (int)(sum_a / (tex.width * tex.height)));
+    check(drawn > (tex.width * tex.height) / 2,
+          "ocean: the generated texture is drawn, not an empty render target");
+    check(hi - lo > 16, "ocean: the generated texture varies rather than being one flat value");
+
+    if (!png_path.empty()) {
+      // the mask is written with its alpha in every channel, so it is visible
+      auto tex_png = fs::path(png_path).replace_extension("").string() + "-ocean-tex.png";
+      std::vector<u8> px = tex.rgba;
+      for (size_t i = 0; i < px.size(); i += 4) {
+        px[i] = px[i + 1] = px[i + 2] = px[i + 3];
+        px[i + 3] = 255;
+      }
+      try {
+        file_util::write_rgba_png(fs::path(tex_png), px.data(), tex.width, tex.height);
+        printf("[PASS] wrote the generated ocean texture mask to %s\n", tex_png.c_str());
+      } catch (const std::exception& e) {
+        printf("[FAIL] could not write %s: %s\n", tex_png.c_str(), e.what());
+        g_fail_count++;
+      }
+    }
+  }
+
+  // the mip chain's alpha fade: level 7's alpha_intensity is max(0, 1 - 0.51*7)
+  // = 0, so minifying all the way down must read back fully transparent.
+  metal_renderer::FramePixels mip;
+  metal_renderer::TextureSampleSpec mip_spec;
+  mip_spec.texture = stats.ocean_mid_texture;
+  mip_spec.out_w = 1;
+  mip_spec.out_h = 1;
+  mip_spec.mip_mode = 1;  // nearest mip
+  if (sample_tex(mip_spec, &mip, "ocean: read back the texture's smallest mip")) {
+    printf("ocean texture top mip: rgba (%d,%d,%d,%d)\n", mip.rgba[0], mip.rgba[1], mip.rgba[2],
+           mip.rgba[3]);
+    check(mip.rgba[3] == 0, "ocean: the mip chain fades alpha to zero at the smallest level");
+  }
+
+  // ocean-near publishes a single-level texture, so the same minification has
+  // nothing to fade: its alpha survives.
+  metal_renderer::FramePixels near_mip;
+  metal_renderer::TextureSampleSpec near_spec = mip_spec;
+  near_spec.texture = stats.ocean_near_texture;
+  if (sample_tex(near_spec, &near_mip, "ocean: read back the near texture's smallest mip")) {
+    check(near_mip.rgba[3] > 0,
+          "ocean: the single-level texture ocean-near publishes keeps its alpha");
+  }
+
+  // the band below the horizon: solid black before this renderer existed
+  int lit = 0, mean_rgb = 0, mean_a = 0;
+  frame_summary(frame, frame.height * 260 / 480, frame.height * 340 / 480, &lit, &mean_rgb,
+                &mean_a);
+  printf("ocean band (rows %d-%d): %d lit pixels, mean rgb %d\n", frame.height * 260 / 480,
+         frame.height * 340 / 480, lit, mean_rgb);
+  check(lit > frame.width * (frame.height * 80 / 480) / 2,
+        "ocean: the frame's ocean band is drawn");
+}
+
 void run_chain_replay(const GfxRendererModule* mod,
                       std::shared_ptr<GfxDisplay>& display,
                       const std::string& capture_path,
@@ -1990,7 +2125,16 @@ void run_chain_replay(const GfxRendererModule* mod,
       "(drawing not ported), %d missing textures\n",
       stats.sprites_2d, stats.sprites_3d, stats.sprites_hud, stats.sprite_draws,
       stats.sprites_distort, stats.sprite_missing_textures);
+  printf(
+      "ocean buckets: %d texture verts, %d mid verts, %d near verts, %d draws, %d tris, "
+      "%d missing textures\n",
+      stats.ocean_texture_verts, stats.ocean_mid_verts, stats.ocean_near_verts, stats.ocean_draws,
+      stats.ocean_triangles, stats.ocean_missing_textures);
   check(stats.direct_unsupported_blends == 0, "replay: no unsupported GS blend modes");
+
+  if (stats.ocean_texture_verts > 0) {
+    check_ocean(stats, frame, png_path);
+  }
 
   int lit = 0;
   for (int i = 0; i < frame.width * frame.height * 4; i += 4) {

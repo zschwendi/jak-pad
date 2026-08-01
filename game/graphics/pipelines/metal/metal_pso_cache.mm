@@ -16,6 +16,9 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"direct_basic_vs", "direct_basic_fs"},    // DIRECT_BASIC
     {"direct_textured_vs", "direct_textured_fs"},  // DIRECT_TEXTURED
     {"sprite3_vs", "sprite3_fs"},                  // SPRITE3
+    {"ocean_texture_vs", "ocean_texture_fs"},      // OCEAN_TEXTURE
+    {"ocean_texture_mipmap_vs", "ocean_texture_mipmap_fs"},  // OCEAN_TEXTURE_MIPMAP
+    {"ocean_common_vs", "ocean_common_fs"},        // OCEAN_COMMON
 };
 
 size_t hash_combine(size_t seed, size_t v) {

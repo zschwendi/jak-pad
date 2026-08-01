@@ -66,6 +66,7 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/ocean/OceanNear_PS2.cpp
         graphics/opengl_renderer/ocean/OceanNear.cpp
         graphics/opengl_renderer/ocean/OceanTexture_PC.cpp
+        graphics/opengl_renderer/ocean/OceanTexture_VU.cpp
         graphics/opengl_renderer/ocean/OceanTexture.cpp
         graphics/opengl_renderer/opengl_utils.cpp
         graphics/opengl_renderer/OpenGLRenderer.cpp
@@ -357,6 +358,7 @@ if(APPLE)
     set(METAL_PIPELINE_SOURCES
         graphics/pipelines/metal/metal_bucket_renderer.mm
         graphics/pipelines/metal/metal_direct_renderer.mm
+        graphics/pipelines/metal/metal_ocean_renderer.mm
         graphics/pipelines/metal/metal_pipeline.mm
         graphics/pipelines/metal/metal_pso_cache.mm
         graphics/pipelines/metal/metal_renderer.mm
@@ -383,7 +385,8 @@ if(APPLE)
     set(METAL_SHADER_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/scaffold.metal
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/direct.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/sprite.metal)
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/sprite.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/ocean.metal)
     set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad.metallib)
     add_custom_command(
         OUTPUT ${METAL_LIB}

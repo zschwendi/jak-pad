@@ -1,4 +1,4 @@
-#include "OceanMid.h"
+#include "OceanVu.h"
 
 namespace {
 u32 clip(const Vf& vector, float val, u32 old_clip) {
@@ -54,7 +54,7 @@ static inline REALLY_INLINE float erleng(const Vf& in) {
 }
 }  // namespace
 
-void OceanMid::run_call0_vu2c() {
+void OceanMidVu::run_call0_vu2c() {
   bool bc;
   // lq.xyzw vf01, 733(vi00)    |  nop                            0
   lq_buffer(Mask::xyzw, vu.vf01, 733);
@@ -184,7 +184,7 @@ L5:
   return;
 }
 
-void OceanMid::run_call41_vu2c() {
+void OceanMidVu::run_call41_vu2c() {
   // nop                        |  nop :e                         41
 
   // nop                        |  nop                            42
@@ -192,7 +192,7 @@ void OceanMid::run_call41_vu2c() {
   return;
 }
 
-void OceanMid::run_call43_vu2c() {
+void OceanMidVu::run_call43_vu2c() {
   // iaddiu vi10, vi00, 0x243   |  nop                            43
   vu.vi10 = 0x243; /* 579 */
   // nop                        |  nop :e                         44
@@ -202,7 +202,7 @@ void OceanMid::run_call43_vu2c() {
   return;
 }
 
-void OceanMid::run_call46_vu2c() {
+void OceanMidVu::run_call46_vu2c() {
   bool bc;
   // xtop vi02                  |  nop                            46
   vu.vi02 = xtop();
@@ -283,7 +283,7 @@ L11:
   return;
 }
 
-void OceanMid::run_call73_vu2c() {
+void OceanMidVu::run_call73_vu2c() {
   bool bc;
   // xtop vi02                  |  nop                            73
   vu.vi02 = xtop();
@@ -387,7 +387,7 @@ L15:
   return;
 }
 
-void OceanMid::run_call73_vu2c_jak2() {
+void OceanMidVu::run_call73_vu2c_jak2() {
   bool bc;
   // xtop vi02                  |  nop                            73
   vu.vi02 = xtop();
@@ -491,7 +491,7 @@ L15:
   return;
 }
 
-void OceanMid::run_call107_vu2c() {
+void OceanMidVu::run_call107_vu2c() {
   bool bc;
   // xtop vi02                  |  nop                            107
   vu.vi02 = xtop();
@@ -904,7 +904,7 @@ L21:
   return;
 }
 
-void OceanMid::run_call107_vu2c_jak2() {
+void OceanMidVu::run_call107_vu2c_jak2() {
   bool bc;
   // xtop vi02                  |  nop                            107
   vu.vi02 = xtop();
@@ -1317,7 +1317,7 @@ L21:
   return;
 }
 
-void OceanMid::run_call275_vu2c() {
+void OceanMidVu::run_call275_vu2c() {
   bool bc;
   // fmt::print("call 275\n");
   // xtop vi02                  |  nop                            275
@@ -1613,7 +1613,7 @@ L25:
   return;
 }
 
-void OceanMid::run_call275_vu2c_jak2() {
+void OceanMidVu::run_call275_vu2c_jak2() {
   bool bc;
   // fmt::print("call 275\n");
   // xtop vi02                  |  nop                            275
@@ -1909,7 +1909,7 @@ L25:
   return;
 }
 
-void OceanMid::run_L26_vu2c() {
+void OceanMidVu::run_L26_vu2c() {
   bool bc = false;
   u32 cf = 0;
   // L26:
@@ -2126,7 +2126,7 @@ L31:
 /*!
  * packet generation for plain envmapped ocean
  */
-void OceanMid::run_L32_vu2c() {
+void OceanMidVu::run_L32_vu2c() {
   bool bc = false;
   u32 cf = 0;
   // ilw.x vi05, 757(vi07)      |  nop                            459
@@ -2646,7 +2646,7 @@ L37:
   // nop                        |  nop                            613
 }
 
-void OceanMid::run_L32_vu2c_jak2() {
+void OceanMidVu::run_L32_vu2c_jak2() {
   bool bc = false;
   u32 cf = 0;
   // ilw.x vi05, 757(vi07)      |  nop                            459
@@ -3158,7 +3158,7 @@ L37:
   // nop                        |  nop                            613
 }
 
-void OceanMid::run_L38_vu2c() {
+void OceanMidVu::run_L38_vu2c() {
   bool bc;
 
   // lq.xyzw vf31, 734(vi00)    |  nop                            614
@@ -3499,7 +3499,7 @@ L42:
   // nop                        |  nop                            748
 }
 
-void OceanMid::run_L38_vu2c_jak2() {
+void OceanMidVu::run_L38_vu2c_jak2() {
   bool bc;
 
   // lq.xyzw vf31, 734(vi00)    |  nop                            614
@@ -3834,7 +3834,7 @@ L42:
   // nop                        |  nop                            748
 }
 
-void OceanMid::run_L43_vu2c() {
+void OceanMidVu::run_L43_vu2c() {
   bool bc;
   // sq.xyzw vf07, -1(vi08)     |  nop                            749
   sq_buffer(Mask::xyzw, vu.vf07, vu.vi08 + -1);
@@ -3934,7 +3934,7 @@ L44:
   vu.vi10 = vu.vi01 - vu.vi10;
 }
 
-void OceanMid::run_L45_vu2c() {
+void OceanMidVu::run_L45_vu2c() {
   // fmt::print("run L45\n");
 
   bool bc = false;
