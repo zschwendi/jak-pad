@@ -277,140 +277,80 @@ u64 make_debug_string_from_c(const char* c_str) {
   return mem;
 }
 
-extern "C" {
-#if defined(__APPLE__)
-void _arg_call_arm64() asm("_arg_call_arm64");
-void _stack_call_arm64() asm("_stack_call_arm64");
-#else
-void _arg_call_arm64();
-void _stack_call_arm64();
-#endif
+/*!
+ * GOALPad's ARM64 function-object representation: nothing is generated. The object holds the
+ * 64-bit native entry point of the C or AOT-compiled function, which is what `call_goal` and every
+ * AOT call site load from the function object's address. See `game/kernel/core/aot_loader.h`.
+ *
+ * ARM64 iPadOS grants no writable-executable memory, so the x86 trampolines this used to emit
+ * cannot be used here even if they were ARM64 code.
+ */
+Ptr<Function> make_function_from_native(void* func) {
+  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
+                                       u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x10, UNKNOWN_PP));
+  memcpy(mem.c(), &func, sizeof(func));
+  return mem.cast<Function>();
+}
+
+/*! Immediately return, like GOAL's `nothing` function. */
+u64 native_nothing_func() {
+  return 0;
+}
+
+/*! Return zero, like GOAL's `zero-func`. */
+u64 native_zero_func() {
+  return 0;
 }
 
 /*!
- * This creates an OpenGOAL function from a C++ function. Only 6 arguments can be accepted.
- * But calling this function is fast. It used to be really fast but wrong.
+ * GOAL's stack-argument convention hands the callee all 8 argument registers as an array. The x86
+ * trampoline built that array out of machine registers; a natively compiled caller arrives
+ * through the ordinary C convention, so the shim builds it out of the C arguments instead.
  */
-Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
-  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
-  auto f = (uint64_t)func;
-  auto target_function = (u8*)&f;
-  auto trampoline_function_addr = _arg_call_arm64;
-  auto trampoline = (u8*)&trampoline_function_addr;
-  // TODO - x86 code still being emitted below
-
-  // movabs rax, target_function
-  int offset = 0;
-  mem.c()[offset++] = 0x48;
-  mem.c()[offset++] = 0xb8;
-  for (int i = 0; i < 8; i++) {
-    mem.c()[offset++] = target_function[i];
-  }
-
-  // push rax
-  mem.c()[offset++] = 0x50;
-
-  // movabs rax, trampoline
-  mem.c()[offset++] = 0x48;
-  mem.c()[offset++] = 0xb8;
-  for (int i = 0; i < 8; i++) {
-    mem.c()[offset++] = trampoline[i];
-  }
-
-  if (arg3_is_pp) {
-    // mov rcx, r13. Puts pp in the third argument.
-    mem.c()[offset++] = 0x4c;
-    mem.c()[offset++] = 0x89;
-    mem.c()[offset++] = 0xe9;
-  }
-
-  // jmp rax
-  mem.c()[offset++] = 0xff;
-  mem.c()[offset++] = 0xe0;
-  // the asm function's ret will return to the caller of this (GOAL code) directlyz.
-
-  // CacheFlush(mem, 0x34);
-
-  return mem.cast<Function>();
-}
-
-Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
-  // allocate a function object on the global heap
-  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
-  auto f = (uint64_t)func;
-  auto target_function = (u8*)&f;
-  auto trampoline_function_addr = _stack_call_arm64;
-  auto trampoline = (u8*)&trampoline_function_addr;
-
-  // movabs rax, target_function
-  int offset = 0;
-  mem.c()[offset++] = 0x48;
-  mem.c()[offset++] = 0xb8;
-  for (int i = 0; i < 8; i++) {
-    mem.c()[offset++] = target_function[i];
-  }
-
-  // push rax
-  mem.c()[offset++] = 0x50;
-
-  // movabs rax, trampoline
-  mem.c()[offset++] = 0x48;
-  mem.c()[offset++] = 0xb8;
-  for (int i = 0; i < 8; i++) {
-    mem.c()[offset++] = trampoline[i];
-  }
-
-  // jmp rax
-  mem.c()[offset++] = 0xff;
-  mem.c()[offset++] = 0xe0;
-
-  // CacheFlush(mem, 0x34);
-
-  return mem.cast<Function>();
+template <u64 (*F)(u64*)>
+u64 stack_arg_shim(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7) {
+  u64 args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
+  return F(args);
 }
 
 /*!
  * Create a GOAL function from a C function. This doesn't export it as a global function, it just
  * creates a function object on the global heap.
- *
- * The implementation is to create a simple trampoline function which jumps to the C function.
  */
 Ptr<Function> make_function_from_c(void* func, bool arg3_is_pp = false) {
-  return make_function_from_c_systemv(func, arg3_is_pp);
+  // A native pointer cannot carry "and also pass pp in the 4th argument". The kernel functions
+  // that need it are given an explicit shim instead; see make_function_from_c_pp.
+  ASSERT_MSG(!arg3_is_pp, "make_function_from_c: arg3_is_pp needs make_function_from_c_pp on ARM64");
+  return make_function_from_native(func);
+}
+
+/*!
+ * Create a GOAL function for a kernel C function whose 4th argument is the current process. The
+ * x86 trampoline copied it out of the pp register; ARM64 has no pp register a C function can read,
+ * so it calls a shim that reads g_goal_current_process, which the ARM64 call trampolines and
+ * ahead-of-time compiled GOAL keep up to date in its place.
+ */
+Ptr<Function> make_function_from_c_pp(void* with_pp, void* without_pp) {
+  (void)with_pp;
+  return make_function_from_native(without_pp);
 }
 
 Ptr<Function> make_stack_arg_function_from_c(void* func) {
-  return make_stack_arg_function_from_c_systemv(func);
+  return make_function_from_native(func);
 }
 
 /*!
  * Create a GOAL function which does nothing and immediately returns.
  */
 Ptr<Function> make_nothing_func() {
-  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
-
-  // a single x86-64 ret.
-  mem.c()[0] = 0xc3;
-  // CacheFlush(mem, 8);
-  return mem.cast<Function>();
+  return make_function_from_native((void*)native_nothing_func);
 }
 
 /*!
  * Create a GOAL function which returns 0.
  */
 Ptr<Function> make_zero_func() {
-  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
-                                       u32_in_fixed_sym(FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
-  // xor eax, eax
-  mem.c()[0] = 0x31;
-  mem.c()[1] = 0xc0;
-  // ret
-  mem.c()[2] = 0xc3;
-  // CacheFlush(mem, 8);
-  return mem.cast<Function>();
+  return make_function_from_native((void*)native_zero_func);
 }
 
 /*!
@@ -1335,7 +1275,32 @@ u64 pack_type_flag(u64 methods, u64 heap_base, u64 size) {
 }
 }  // namespace
 
-int InitHeapAndSymbol() {
+u64 copy_basic_current_pp(u32 obj, u32 heap, u32 unused) {
+  return copy_basic(obj, heap, unused, (u32)g_goal_current_process);
+}
+
+u64 new_basic_current_pp(u32 heap, u32 type, u32 size) {
+  return new_basic(heap, type, size, (u32)g_goal_current_process);
+}
+
+u64 alloc_heap_object_current_pp(u32 heap, u32 type, u32 size) {
+  return alloc_heap_object(heap, type, size, (u32)g_goal_current_process);
+}
+
+/*! format_impl_jak2 with the u64(*)(u64*) shape the stack-argument shim expects. */
+u64 format_stack_entry(u64* args) {
+  return (u64)(s64)format_impl_jak2(args);
+}
+
+/*!
+ * Initializes the GOAL Symbol Table and the GOAL fundamental types on the already-initialized
+ * global heap.
+ *
+ * This is the part of InitHeapAndSymbol that needs neither game data nor any host platform
+ * service beyond the heap itself, so it can also run on platforms that do not have the DGO
+ * loader, the listener transport, or the machine/graphics layer.
+ */
+int InitSymbolAndTypes() {
   // allocate memory for all 3 tables
   Ptr<u32> symbol_table =
       kmalloc(kglobalheap, jak2::SYM_TABLE_MEM_SIZE, KMALLOC_MEMSET, "symbol-table").cast<u32>();
@@ -1369,7 +1334,7 @@ int InitHeapAndSymbol() {
   set_fixed_symbol(FIX_SYM_ASIZE_OF_BASIC_FUNC, "asize-of-basic-func",
                    make_function_from_c((void*)asize_of_basic).offset);
   set_fixed_symbol(FIX_SYM_COPY_BASIC_FUNC, "asize-of-basic-func",
-                   make_function_from_c((void*)copy_basic, true).offset);
+                   make_function_from_c_pp((void*)copy_basic, (void*)copy_basic_current_pp).offset);
   set_fixed_symbol(FIX_SYM_DELETE_BASIC, "delete-basic",
                    make_function_from_c((void*)delete_basic).offset);
   set_fixed_symbol(FIX_SYM_GLOBAL_HEAP, "global", kglobalheap.offset);
@@ -1418,7 +1383,7 @@ int InitHeapAndSymbol() {
       set_fixed_type(FIX_SYM_BASIC, "basic", get_fixed_type_symbol(FIX_SYM_STRUCTURE),
                      pack_type_flag(9, 0, 4), make_function_from_c((void*)print_basic).offset,
                      make_function_from_c((void*)inspect_basic).offset);
-  basic_type->new_method = make_function_from_c((void*)new_basic, true);
+  basic_type->new_method = make_function_from_c_pp((void*)new_basic, (void*)new_basic_current_pp);
   basic_type->delete_method = Ptr<Function>(u32_in_fixed_sym(FIX_SYM_DELETE_BASIC));
   basic_type->asize_of_method = Ptr<Function>(u32_in_fixed_sym(FIX_SYM_ASIZE_OF_BASIC_FUNC));
   basic_type->copy_method = Ptr<Function>(u32_in_fixed_sym(FIX_SYM_COPY_BASIC_FUNC));
@@ -1545,7 +1510,7 @@ int InitHeapAndSymbol() {
                  pack_type_flag(9, 0, 16), 0, 0);
 
   Ptr<Type>(u32_in_fixed_sym(FIX_SYM_OBJECT_TYPE))->new_method =
-      make_function_from_c((void*)alloc_heap_object, true);
+      make_function_from_c_pp((void*)alloc_heap_object, (void*)alloc_heap_object_current_pp);
 
   make_function_symbol_from_c("string->symbol", (void*)intern);
   make_function_symbol_from_c("print", (void*)sprint);
@@ -1554,14 +1519,14 @@ int InitHeapAndSymbol() {
   make_function_symbol_from_c("loadb", (void*)loadb);
   make_function_symbol_from_c("loado", (void*)loado);
   make_function_symbol_from_c("unload", (void*)unload);
-  make_stack_arg_function_symbol_from_c("_format", (void*)format_impl_jak2);
+  make_stack_arg_function_symbol_from_c("_format", (void*)stack_arg_shim<format_stack_entry>);
   make_function_symbol_from_c("malloc", (void*)alloc_heap_memory);
   make_function_symbol_from_c("kmalloc", (void*)goal_malloc);
   make_function_symbol_from_c("kmemopen", (void*)kmemopen);
   make_function_symbol_from_c("kmemclose", (void*)kmemclose);
   make_function_symbol_from_c("new-dynamic-structure", (void*)new_dynamic_structure);
   make_function_symbol_from_c("method-set!", (void*)method_set);
-  make_stack_arg_function_symbol_from_c("link", (void*)link_and_exec_wrapper);
+  make_stack_arg_function_symbol_from_c("link", (void*)stack_arg_shim<link_and_exec_wrapper>);
   make_function_symbol_from_c("link-busy?", (void*)link_busy);
   make_function_symbol_from_c("link-reset", (void*)link_reset);
   make_function_symbol_from_c("dgo-load", (void*)load_and_link_dgo);
@@ -1569,7 +1534,7 @@ int InitHeapAndSymbol() {
   make_raw_function_symbol_from_c("memcpy-and-rellink", 0);
   make_raw_function_symbol_from_c("symlink2", 0);
   make_raw_function_symbol_from_c("symlink3", 0);
-  make_stack_arg_function_symbol_from_c("link-begin", (void*)link_begin);
+  make_stack_arg_function_symbol_from_c("link-begin", (void*)stack_arg_shim<link_begin>);
   make_function_symbol_from_c("link-resume", (void*)link_resume);
   make_function_symbol_from_c("sql-query", (void*)sql_query_sync);
   make_function_symbol_from_c("mc-run", (void*)MC_run);
@@ -1606,6 +1571,20 @@ int InitHeapAndSymbol() {
   CollapseQuote = intern_from_c("*collapse-quote*");
   CollapseQuote->value() = s7.offset + FIX_SYM_TRUE;
   LevelTypeList = intern_from_c("*level-type-list*");
+  return 0;
+}
+
+/*!
+ * Initializes the GOAL Heap, GOAL Symbol Table, GOAL fundamental types, loads the GOAL kernel,
+ * exports Machine functions, loads the game engine, and calls "play" to initialize the engine.
+ *
+ * This takes care of all initialization that isn't for the hardware itself.
+ */
+int InitHeapAndSymbol() {
+  int symbol_status = InitSymbolAndTypes();
+  if (symbol_status < 0) {
+    return symbol_status;
+  }
 
   // load kernel!
 
