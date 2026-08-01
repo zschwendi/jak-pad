@@ -514,7 +514,21 @@ come from a `UIView`/SwiftUI instead of SDL.
     the GL buffer, and `alloc_bones` rounds `first_bone` up to 16 bone vectors (256 bytes)
     so every offset satisfies Metal's buffer-offset alignment. The `std140` padding of
     the bone struct (mat3 columns padded to `vec4`, plus the trailing `vec4`) is
-    reproduced exactly, so the CPU-side layout is the GL one.
+    reproduced exactly, so the CPU-side layout is the GL one. This layout is checked end
+    to end by the proof's **Y-rotation sweep**: one bone is driven through
+    `translate * rotate_y` at nine yaws and the model's silhouette is measured against the
+    same transform computed on the CPU. The model is a cross of two quads - one spanning
+    model x above the origin, one spanning model z below it - so its width is
+    `h * max(|cos|, |sin|)`, which never falls below `h/sqrt(2)`; the two quads carry
+    different normals, so their shading reads back two columns of the normal matrix in the
+    same frame. Diagonal bone matrices (all the merc checks used before) map onto
+    themselves under a transposed, short-strided or column-dropping read, so they cannot
+    see any of those. The sweep fails on all three: dropping the `X[2]` column takes the
+    model to 0 px wide at 90 degrees, a row-major read to 0 px at every yaw, and reading
+    the mat3 columns at a packed 12-byte stride mis-shades it.
+  - **Draw-buffer overflow**: a flush retires every level draw bucket, so the bucket
+    pointer is re-acquired after the "out of draws" flush. Holding the pre-flush pointer
+    appended to a bucket outside the live range, and those draws were never issued.
   - **One deliberate divergence from the GL source**: the GL renderer resolves the bone
     matrices with `setup.data - setup.data_offset + addr`, which works there only because
     the GL pipeline renders from the *original* EE memory (`run_dma_copy = false` in
@@ -668,7 +682,7 @@ Daxter logo and "PRESS START". The eye, Generic2, shadow, TIE-envmap-second-draw
 tfrag-trans ports then closed every remaining payload gap.
 `metal-proof --replay`, `MTL_DEBUG_LAYER=1`, headless, 45 checks per frame (42 on
 frame 100), no Metal validation diagnostics. The argument-less proof runs
-190 checks, 206 with an `.fr3` - the union of every branch's checks, none dropped.
+224 checks, 240 with an `.fr3` - the union of every branch's checks, none dropped.
 
 | frame | draws | triangles | lit pixels |
 | --- | --- | --- | --- |
