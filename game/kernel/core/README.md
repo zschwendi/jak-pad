@@ -293,6 +293,14 @@ the GOAL kernel routines that switch stacks.
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
   names - what `file-stream-open` would be given - are not translated yet, because nothing calls
   `file-stream-open` here.
+- **Visibility decompression produces bits the BSP says cannot be set.** Every time the level
+  system swaps in a new VIS, `(method update-vis! level)` in `engine/load/decomp.gc` reports
+  `ERROR: illegal vis bits set` for a handful of bytes - its own check that the huffman decoder's
+  output only names drawables that exist. `unpack-comp-huf` is ordinary AOT-translated GOAL full of
+  `b! ... :delay` branch-delay slots, and it decompresses into the fake scratchpad, which is the
+  same memory the scratchpad process stacks use. Either is a plausible cause and neither has been
+  ruled out. Nothing stops, because the game only reports it, but what a frame would draw is wrong
+  until this is found.
 - **mips2c calls back into GOAL do not work on ARM64.** `ExecutionContext::jalr` in
   `game/mips2c/mips2c_private.h` has no ARM64 case. Nothing on the art-group login path uses it.
 - `game/kernel/common/kmachine.h` transitively includes `<SDL3/SDL.h>` through
