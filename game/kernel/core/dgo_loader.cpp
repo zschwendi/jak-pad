@@ -91,6 +91,7 @@ namespace {
 
 std::string g_error;
 goal_dgo_load_stats g_stats;
+goal_dgo_rpc_stats g_rpc_stats;
 bool g_verbose = false;
 
 void set_error(const std::string& message) {
@@ -186,24 +187,37 @@ bool is_data_object(Ptr<u8> object) {
  * `on_goal_stack` says whether the caller is already running as GOAL. A C-driven load is not, and
  * has to switch to GOAL's stack; a `link-begin` from the level loader already is, and switching
  * would overwrite the frames of the GOAL thread that called it.
+ *
+ * `heap` is the `kheapinfo` the caller wants the file in, or 0 for the global heap. Upstream links
+ * an object file's code into whatever heap the caller named, and a level DGO names the level's own
+ * heap, so `(method unload! level)` frees a level's code with its data. That is the difference
+ * between reusing a file and relinking it below: a file in the global heap stays where it is - the
+ * kernel and engine are loaded once and never unloaded - and a file in a level heap is relinked
+ * every time, because the heap it was in has been reset under it.
  */
-bool load_code_object(const char* object_name, u32 link_flags, bool on_goal_stack) {
+bool load_code_object(const char* object_name, u32 link_flags, bool on_goal_stack, u32 heap) {
   const goal_aot_object_file* aot = goal_aot_registered_object(object_name);
   if (!aot) {
     set_error(fmt::format("the code object '{}' has no native translation", object_name));
     return false;
   }
+  const bool global = heap == 0 || heap == kglobalheap.offset;
   if (goal_aot_is_loaded(aot->tag)) {
-    // An earlier DGO already brought this file in. Upstream would relink it into the new heap;
-    // here the native code and its statics are already placed and still valid, and running the
-    // top-level a second time is not the same as loading it once.
-    g_stats.reused_code++;
-    return true;
+    if (global) {
+      // An earlier DGO already brought this file into the global heap, which nothing resets.
+      g_stats.reused_code++;
+      return true;
+    }
+    goal_aot_forget(aot->tag);
   }
-  if (goal_aot_load(aot) != GOAL_KERNEL_CORE_OK) {
+  const u32 before = global ? 0 : Ptr<kheapinfo>(heap)->current.offset;
+  if (goal_aot_load_into(aot, heap) != GOAL_KERNEL_CORE_OK) {
     set_error(fmt::format("could not load the native translation of '{}': {}", object_name,
                           goal_kernel_core_last_error()));
     return false;
+  }
+  if (!global) {
+    g_rpc_stats.level_code_bytes += Ptr<kheapinfo>(heap)->current.offset - before;
   }
   if (link_flags & LINK_FLAG_EXECUTE) {
     const auto status = on_goal_stack ? goal_aot_run_top_level_here(aot->tag, nullptr)
@@ -368,7 +382,7 @@ void load_and_link_dgo_from_c(const char* name,
       link_and_exec(obj, objName, objSize, heap, linkFlag, jump_from_c_to_goal);
     } else {
       g_stats.code_objects++;
-      if (!load_code_object(objName, linkFlag, false)) {
+      if (!load_code_object(objName, linkFlag, false, heap.offset)) {
         g_dgo.failed = true;
         break;
       }
@@ -422,8 +436,6 @@ struct DgoRpcCmd {
   char name[16];
 };
 static_assert(sizeof(DgoRpcCmd) == 32, "GOAL's DGO RPC buffer element is 32 bytes");
-
-goal_dgo_rpc_stats g_rpc_stats;
 
 /*! Fill in the reply the same way the overlord does: where the object landed, and whether there
  *  are more. `buffer1` is where GOAL reads the address from, whichever buffer was actually used. */
@@ -806,7 +818,7 @@ u64 goal_link_begin(u64* args) {
     return jak1::link_begin(args);
   }
   g_rpc_stats.linked_code_objects++;
-  if (!load_code_object(name, flags, true)) {
+  if (!load_code_object(name, flags, true, (u32)args[3])) {
     lg::error("[dgo-loader] link-begin: {}", g_error);
     ASSERT_NOT_REACHED_MSG("link-begin was given a code object this build cannot supply");
   }

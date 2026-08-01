@@ -30,6 +30,8 @@ struct LoadedFile {
   std::string tag;
   std::vector<u32> static_addrs;
   std::vector<u32> function_addrs;
+  u32 heap = 0;   /*! the kheapinfo it was placed in */
+  u32 bytes = 0;  /*! what it took, so a caller can report what a level's code costs */
 };
 
 std::vector<LoadedFile> g_loaded;
@@ -121,6 +123,10 @@ uint64_t goal_function_addr(const char* file, int index) {
 }
 
 goal_kernel_core_status goal_aot_load(const goal_aot_object_file* file) {
+  return goal_aot_load_into(file, 0);
+}
+
+goal_kernel_core_status goal_aot_load_into(const goal_aot_object_file* file, uint32_t heap_ptr) {
   if (!file || !file->tag || (file->static_count > 0 && !file->statics) ||
       (file->function_count > 0 && !file->functions)) {
     set_error("goal_aot_load: bad argument");
@@ -134,12 +140,15 @@ goal_kernel_core_status goal_aot_load(const goal_aot_object_file* file) {
     set_error(fmt::format("goal_aot_load: {} is already loaded", file->tag));
     return GOAL_KERNEL_CORE_ALREADY_INITIALIZED;
   }
+  Ptr<kheapinfo> heap = heap_ptr ? Ptr<kheapinfo>(heap_ptr) : kglobalheap;
 
   g_goal_mem = g_ee_main_mem;
   g_goal_s7 = s7.offset;
 
   LoadedFile loaded;
   loaded.tag = file->tag;
+  loaded.heap = heap.offset;
+  const u32 heap_before = heap->current.offset;
 
   // One allocation for the whole file's static data, like link_control's "main-segment" copy.
   // kmalloc is 16-byte aligned, and no static asks for more than that.
@@ -165,7 +174,7 @@ goal_kernel_core_status goal_aot_load(const goal_aot_object_file* file) {
 
   Ptr<u8> segment(0);
   if (total) {
-    segment = kmalloc(kglobalheap, (s32)total, KMALLOC_MEMSET, "aot-static-segment");
+    segment = kmalloc(heap, (s32)total, KMALLOC_MEMSET, "aot-static-segment");
     if (!segment.offset) {
       set_error(fmt::format("goal_aot_load: no room for {} bytes of {} static data", total,
                             file->tag));
@@ -193,20 +202,23 @@ goal_kernel_core_status goal_aot_load(const goal_aot_object_file* file) {
       loaded.function_addrs.push_back(0);
       continue;
     }
-    const u64 obj = jak1::alloc_heap_object(s7.offset + jak1_symbols::FIX_SYM_GLOBAL_HEAP,
-                                            *(s7 + jak1_symbols::FIX_SYM_FUNCTION_TYPE),
-                                            AOT_FUNCTION_OBJECT_SIZE, UNKNOWN_PP);
-    if (!obj) {
+    // What alloc_heap_object does, against a kheapinfo rather than a heap symbol: level code
+    // goes in the level's heap, and only the global heap has a symbol.
+    const auto mem = kmalloc(heap, AOT_FUNCTION_OBJECT_SIZE, KMALLOC_MEMSET, "function");
+    if (!mem.offset) {
       set_error(fmt::format("goal_aot_load: no room for a {} function object", file->tag));
       return GOAL_KERNEL_CORE_OUT_OF_MEMORY;
     }
+    *Ptr<u32>(mem.offset).c() = *(s7 + jak1_symbols::FIX_SYM_FUNCTION_TYPE);
+    const u32 obj = mem.offset + BASIC_OFFSET;
     const void* native = file->functions[i];
-    memcpy(Ptr<u8>((u32)obj).c(), &native, sizeof(native));
-    loaded.function_addrs.push_back((u32)obj);
+    memcpy(Ptr<u8>(obj).c(), &native, sizeof(native));
+    loaded.function_addrs.push_back(obj);
   }
 
   // Register before relocating: relocations and the file's own link step both resolve through the
   // tag-keyed tables above.
+  loaded.bytes = heap->current.offset - heap_before;
   g_loaded.push_back(std::move(loaded));
   const auto& placed = g_loaded.back();
 
@@ -283,6 +295,22 @@ const goal_aot_object_file* goal_aot_registered_object(const char* object_name) 
 
 int goal_aot_is_loaded(const char* tag) {
   return tag && find_file(tag) ? 1 : 0;
+}
+
+uint32_t goal_aot_loaded_heap(const char* tag) {
+  auto* loaded = tag ? find_file(tag) : nullptr;
+  return loaded ? loaded->heap : 0;
+}
+
+uint32_t goal_aot_forget(const char* tag) {
+  for (auto it = g_loaded.begin(); it != g_loaded.end(); ++it) {
+    if (it->tag == tag) {
+      const u32 bytes = it->bytes;
+      g_loaded.erase(it);
+      return bytes;
+    }
+  }
+  return 0;
 }
 
 uint32_t goal_aot_function_object(const char* tag, int index) {

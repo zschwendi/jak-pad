@@ -586,6 +586,12 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_test(NAME jak1-dgo-synthetic-test COMMAND jak1-data-boot-test --synthetic)
         add_test(NAME jak1-data-boot-test COMMAND jak1-data-boot-test)
         add_test(NAME jak1-play-frames-test COMMAND jak1-data-boot-test --play --frames 60)
+        # Unload and reload a level through the level system's own load state. Level code is linked
+        # into the level's heap, which unloading resets, so the global heap has to stand still while
+        # the level's object files are linked over again.
+        add_test(NAME jak1-level-cycle-test
+                COMMAND jak1-data-boot-test --play --frames 200 --level-frames 600
+                        --levels title,title+village1,title)
 
         # The thread-switch test: the same GOAL kernel, plus a fixture that drives the routines
         # that had to be written in native ARM64 - catch frames, throw, state entry, temporary

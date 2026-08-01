@@ -55,6 +55,16 @@ typedef struct goal_aot_object_file {
 goal_kernel_core_status goal_aot_load(const goal_aot_object_file* file);
 
 /*!
+ * The same, into `heap` - a GOAL pointer to a `kheapinfo`, or 0 for the global heap.
+ *
+ * Upstream's linker puts an object file's code wherever the caller says, and a level DGO says the
+ * level's own heap (`dgo-load-link` in engine/load/load-dgo.gc), so unloading the level frees the
+ * code along with the data. A level file is therefore forgotten and relinked every time the level
+ * loads - see `goal_aot_forget` - because the heap it lived in has been reset under it.
+ */
+goal_kernel_core_status goal_aot_load_into(const goal_aot_object_file* file, uint32_t heap);
+
+/*!
  * Record that `file` is the native translation of the DGO object named `object_name`, so the DGO
  * loader can find it when that object comes off the disc. `object_name` is the name in the DGO's
  * object header, which is the GOAL source's base name without its extension: "hud-classes-pc" for
@@ -70,6 +80,16 @@ const goal_aot_object_file* goal_aot_registered_object(const char* object_name);
 
 /*! Non-zero if goal_aot_load has already placed `tag` in the heap. */
 int goal_aot_is_loaded(const char* tag);
+
+/*! The `kheapinfo` a loaded `tag` was placed in, or 0. */
+uint32_t goal_aot_loaded_heap(const char* tag);
+
+/*!
+ * Forget that `tag` is loaded, so the next `goal_aot_load_into` places it again. Returns how many
+ * heap bytes it had taken. Nothing is freed: the heap this is used for - a level's - is reset by
+ * `(method unload! level)` all at once.
+ */
+uint32_t goal_aot_forget(const char* tag);
 
 /*!
  * GOAL address of the function object for `index` in `tag`, or 0 if unknown.

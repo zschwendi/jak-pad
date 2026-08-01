@@ -281,7 +281,9 @@ int run_synthetic() {
 int run_real_boot(const std::string& data_dir,
                   int dispatch_frames,
                   bool run_play,
-                  const std::string& dma_capture_path) {
+                  const std::string& dma_capture_path,
+                  const std::vector<std::string>& level_cycle,
+                  int level_cycle_frames) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
 
@@ -359,12 +361,53 @@ int run_real_boot(const std::string& data_dir,
     return 1;
   }
   say("\n=== kernel-dispatcher: %d frames\n", dispatch_frames);
-  for (int frame = 0; frame < dispatch_frames; frame++) {
-    call_goal_on_stack(Ptr<Function>(dispatcher->value), goal_kernel_stack_top(), s7.offset,
-                       g_ee_main_mem);
-    drain_goal_print_buffer();
-  }
+  auto run_frames = [&](int count) {
+    for (int frame = 0; frame < count; frame++) {
+      call_goal_on_stack(Ptr<Function>(dispatcher->value), goal_kernel_stack_top(), s7.offset,
+                         g_ee_main_mem);
+      drain_goal_print_buffer();
+    }
+  };
+  run_frames(dispatch_frames);
   report_heap("after the dispatcher");
+
+  // Ask the level system for one level at a time. The point is the global heap: a level's object
+  // files are linked into the level's own heap, which `(method unload! level)` resets, so cycling
+  // through levels must not make the global heap grow. It did before that routing was fixed - each
+  // level's code went into the global heap and stayed there.
+  u32 heap_before_cycle = 0;
+  u32 heap_after_cycle = 0;
+  if (!level_cycle.empty()) {
+    say("\n=== level cycle: %d levels, %d frames each\n", (int)level_cycle.size(),
+        level_cycle_frames);
+    goal_kernel_core_state state;
+    goal_kernel_core_get_state(&state);
+    heap_before_cycle = state.global_heap_used_bytes;
+    for (const auto& name : level_cycle) {
+      auto want = jak1::find_symbol_from_c("load-state-want-levels");
+      if (!want.offset || !want->value) {
+        say("FAILED: load-state-want-levels holds nothing\n");
+        return 1;
+      }
+      // One step of the cycle names the levels the load state should want, "a" or "a+b".
+      // "none" is #f, which unloads whatever is loaded.
+      auto as_symbol = [](const std::string& n) {
+        return n.empty() || n == "none" ? s7.offset : jak1::intern_from_c(n.c_str()).offset;
+      };
+      const size_t plus = name.find('+');
+      goal_aot_call(want->value, as_symbol(name.substr(0, plus)),
+                    plus == std::string::npos ? s7.offset : as_symbol(name.substr(plus + 1)), 0);
+      run_frames(level_cycle_frames);
+      goal_kernel_core_get_state(&state);
+      goal_dgo_rpc_stats step;
+      goal_dgo_goal_loader_stats(&step);
+      say("  wanted %-10s -> global heap %u bytes (%+d since the cycle began),"
+          " %u bytes of level code linked so far\n",
+          name.c_str(), state.global_heap_used_bytes,
+          (int)state.global_heap_used_bytes - (int)heap_before_cycle, step.level_code_bytes);
+    }
+    heap_after_cycle = state.global_heap_used_bytes;
+  }
   report_stack_watermark();
 
   goal_gfx_dma_stats dma;
@@ -383,6 +426,8 @@ int run_real_boot(const std::string& data_dir,
   say("  visibility: %d .VIS files in the ramdisk, %d vis strings read, %d misses,"
       " %d illegal-vis reports\n",
       rpc.ramdisk_files, rpc.ramdisk_reads, rpc.ramdisk_misses, g_illegal_vis_reports);
+  say("  level code: %u bytes linked into level heaps, and none into the global heap\n",
+      rpc.level_code_bytes);
 
   int failures = 0;
   auto expect = [&](bool ok, const char* what) {
@@ -423,6 +468,13 @@ int run_real_boot(const std::string& data_dir,
       expect(dma.captured_bytes > 0, "a DMA chain was written to the capture file");
     }
   }
+  if (!level_cycle.empty()) {
+    // The whole point of linking level code into the level's own heap: unloading a level has to
+    // give the memory back. Each pass through the cycle relinks the level's object files, so the
+    // global heap standing still is the measurement.
+    expect(heap_after_cycle == heap_before_cycle,
+           "the global heap did not grow across the level cycle");
+  }
 
   say("\nBOOT: KERNEL.CGO and GAME.CGO are loaded and the GOAL kernel dispatcher ran %d frames.\n",
       dispatch_frames);
@@ -436,6 +488,8 @@ int main(int argc, char** argv) {
   bool run_play = false;
   std::string data_dir;
   std::string dma_capture_path;
+  std::vector<std::string> level_cycle;
+  int level_cycle_frames = 600;
   int dispatch_frames = 0;
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
@@ -451,6 +505,22 @@ int main(int argc, char** argv) {
       dispatch_frames = std::atoi(argv[++i]);
     } else if (arg == "--capture-dma" && i + 1 < argc) {
       dma_capture_path = argv[++i];
+    } else if (arg == "--levels" && i + 1 < argc) {
+      const std::string list = argv[++i];
+      size_t at = 0;
+      while (at <= list.size()) {
+        const size_t comma = list.find(',', at);
+        const std::string name = list.substr(at, comma == std::string::npos ? comma : comma - at);
+        if (!name.empty()) {
+          level_cycle.push_back(name);
+        }
+        if (comma == std::string::npos) {
+          break;
+        }
+        at = comma + 1;
+      }
+    } else if (arg == "--level-frames" && i + 1 < argc) {
+      level_cycle_frames = std::atoi(argv[++i]);
     } else {
       say("unknown argument %s\n", arg.c_str());
       return 2;
@@ -483,7 +553,7 @@ int main(int argc, char** argv) {
 
   const int result = synthetic ? run_synthetic()
                                : run_real_boot(data_dir, dispatch_frames, run_play,
-                                               dma_capture_path);
+                                               dma_capture_path, level_cycle, level_cycle_frames);
 
   goal_aot_reset();
   goal_kernel_core_shutdown();

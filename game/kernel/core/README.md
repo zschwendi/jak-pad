@@ -193,6 +193,23 @@ straight into GOAL memory. The game uses it for the text and subtitle banks and 
 the animations in `engine/load/loader.gc`, which link whatever comes back, which is why it is
 implemented rather than stubbed.
 
+`link-begin` puts an object file's code in the heap the caller named, which is what upstream's
+linker does: the boot names the global heap and a level DGO names the level's own heap
+(`dgo-load-link` in `engine/load/load-dgo.gc`), so `(method unload! level)` frees a level's code
+along with its data. A file in the global heap is loaded once and reused; a file in a level heap is
+relinked every time the level loads, because the heap it was in has been reset under it.
+
+```sh
+GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 ./build/Release/bin/game/jak1-data-boot-test \
+  --play --frames 200 --level-frames 600 --levels title,title+village1,title
+```
+
+`--levels` names the levels the load state should want, one step at a time (`a`, `a+b`, or `none`),
+running `--level-frames` frames between steps, and reports the global heap after each. It is how
+the paragraph above is measured rather than asserted: cycling `village1` in and out four times
+links 598320 bytes of level code and leaves the global heap at the same 55483634 bytes it started
+at. It is registered with CTest.
+
 Channel 2, the ramdisk RPC, is answered as well. Upstream's overlord keeps one whole file in the
 IOP's spare RAM and hands the EE 2 kB windows of it; only visibility uses it. `vis-load` in
 `engine/level/level.gc` asks for `<nickname>.VIS`, and `(method update-vis! level)` in
@@ -296,11 +313,6 @@ the GOAL kernel routines that switch stacks.
   are the machine functions a frame calls and they all report and return 0. `__send-gfx-dma-chain`
   is the exception: `dma_capture.cpp` follows the chain with the same `FixedChunkDmaCopier` the
   renderer uses, records its size, and drops it. Nothing is drawn.
-- **Level code is loaded onto the global heap and never freed.** `link-begin` puts a level object's
-  native translation where every other AOT file goes rather than in the level heap, and a level
-  that is loaded a second time reuses it instead of relinking. That is correct for repeated loads
-  and wrong for memory: unloading a level frees its data and not its code. Upstream relinks into
-  the level heap each time.
 - **File access is data-directory-relative only.** `ee::sceOpen` and friends are real POSIX file
   descriptors, but every name is resolved under the configured data directory
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
