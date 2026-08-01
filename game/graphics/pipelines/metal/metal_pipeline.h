@@ -252,6 +252,26 @@ bool merc_add_level(std::unique_ptr<tfrag3::Level> level,
                     MercLevelLoad* out,
                     std::string* error);
 
+// --- frame pacing ----------------------------------------------------------
+
+// How long each presented frame must stay on screen, in seconds; 0 presents at
+// the next vsync, whatever the display's rate is. See MetalRenderOptions::
+// min_present_duration for why a 60 fps game on a 120 Hz display needs this.
+void set_present_pacing(double seconds);
+
+// Presentation intervals since the last call, in milliseconds: this is what
+// says whether frames are arriving regularly, which an average frame rate
+// cannot.
+struct PresentTiming {
+  int frames = 0;
+  double mean_ms = 0;
+  double min_ms = 0;
+  double max_ms = 0;
+  double stddev_ms = 0;
+  int late_frames = 0;  // intervals more than 1.5x the mean
+};
+PresentTiming take_present_timing();
+
 // --- the level art the running game asks for (__pc-set-levels) --------------
 
 // Where the extracted `.fr3` level art lives: the `fr3` directory of the
@@ -269,5 +289,11 @@ struct LevelArtStats {
   std::string loaded;       // every level currently on the GPU, joined with '+'
 };
 LevelArtStats get_level_art_stats();
+
+// Loads the shared level (GAME.fr3) now, on the calling thread. A host calls this after
+// set_level_art_directory and before the game starts: the game's own boot relocates textures out
+// of it (`setup-font-texture!` while GAME.CGO links), so it has to be whole before the game runs
+// at all rather than appearing underneath it.
+bool load_common_level_art();
 
 }  // namespace metal_renderer

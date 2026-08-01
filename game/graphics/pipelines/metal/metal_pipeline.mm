@@ -11,6 +11,7 @@
 #include "metal_pipeline.h"
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <mutex>
 
@@ -79,6 +80,14 @@ struct LevelArt {
 };
 LevelArt g_level_art;
 
+// Frame pacing and its measurement. `g_present_min_duration` is what the render
+// thread asks Metal to hold each drawable for; the samples are the intervals
+// between the render thread's own passes, which is the cadence the game is
+// paced by.
+double g_present_min_duration = 0.0;
+std::mutex g_timing_mutex;
+std::vector<double> g_present_intervals_ms;
+
 std::string join_plus(const std::vector<std::string>& names) {
   std::string out;
   for (const auto& name : names) {
@@ -143,16 +152,6 @@ void service_level_requests() {
     }
     g_level_art.wanted_changed = false;
     wanted = g_level_art.wanted;
-  }
-
-  // The shared level every other level's textures sit beside. The GL loader
-  // calls this one "common" and loads it once at startup.
-  if (!g_level_art.common_loaded) {
-    g_level_art.common_loaded = true;
-    if (!load_level_art("GAME", true)) {
-      std::lock_guard<std::mutex> lock(g_level_art.mutex);
-      g_level_art.stats.load_failures++;
-    }
   }
 
   for (const auto& name : wanted) {
@@ -284,6 +283,7 @@ void MetalDisplay::render() {
     opts.pmode_alp = g_chain.pmode_alp;
     opts.brightness_contrast_color = Gfx::g_global_settings.brightness_contrast_color;
     opts.brightness_contrast_alpha = Gfx::g_global_settings.brightness_contrast_alpha;
+    opts.min_present_duration = g_present_min_duration;
 
     const auto& chain = g_chain.copier->get_last_result();
     g_renderer->render_chain_frame(opts, m_layer, chain.data.data(), chain.start_offset);
@@ -301,6 +301,17 @@ void MetalDisplay::render() {
     static FrameLimiter limiter;
     limiter.run(Gfx::g_global_settings.target_fps, Gfx::g_global_settings.experimental_accurate_lag,
                 Gfx::g_global_settings.sleep_in_frame_limiter, 1.0 / 60.0);
+  }
+  {
+    static Timer since_last_present;
+    static bool have_previous = false;
+    const double ms = since_last_present.getMs();
+    since_last_present.start();
+    if (have_previous) {
+      std::lock_guard<std::mutex> lock(g_timing_mutex);
+      g_present_intervals_ms.push_back(ms);
+    }
+    have_previous = true;
   }
 
   // mark the chain as rendered so sync_path can return (GL does this under the
@@ -475,9 +486,60 @@ bool merc_add_level(std::unique_ptr<tfrag3::Level> level,
   return true;
 }
 
+void set_present_pacing(double seconds) {
+  g_present_min_duration = seconds;
+}
+
+PresentTiming take_present_timing() {
+  std::vector<double> samples;
+  {
+    std::lock_guard<std::mutex> lock(g_timing_mutex);
+    samples.swap(g_present_intervals_ms);
+  }
+  PresentTiming out;
+  out.frames = (int)samples.size();
+  if (samples.empty()) {
+    return out;
+  }
+  out.min_ms = samples[0];
+  out.max_ms = samples[0];
+  double total = 0;
+  for (double ms : samples) {
+    total += ms;
+    out.min_ms = std::min(out.min_ms, ms);
+    out.max_ms = std::max(out.max_ms, ms);
+  }
+  out.mean_ms = total / samples.size();
+  double variance = 0;
+  for (double ms : samples) {
+    variance += (ms - out.mean_ms) * (ms - out.mean_ms);
+    if (ms > out.mean_ms * 1.5) {
+      out.late_frames++;
+    }
+  }
+  out.stddev_ms = std::sqrt(variance / samples.size());
+  return out;
+}
+
 void set_level_art_directory(const std::string& path) {
   std::lock_guard<std::mutex> lock(g_level_art.mutex);
   g_level_art.directory = path;
+}
+
+bool load_common_level_art() {
+  {
+    std::lock_guard<std::mutex> lock(g_level_art.mutex);
+    if (g_level_art.directory.empty() || g_level_art.common_loaded) {
+      return g_level_art.common_loaded;
+    }
+    g_level_art.common_loaded = true;
+  }
+  const bool ok = load_level_art("GAME", true);
+  std::lock_guard<std::mutex> lock(g_level_art.mutex);
+  if (!ok) {
+    g_level_art.stats.load_failures++;
+  }
+  return ok;
 }
 
 LevelArtStats get_level_art_stats() {

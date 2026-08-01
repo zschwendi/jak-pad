@@ -524,7 +524,11 @@ void MetalRenderer::render_frame(const MetalRenderOptions& opts, CAMetalLayer* l
     id<CAMetalDrawable> drawable = [layer nextDrawable];
     if (drawable) {
       encode_present_pass(cmds, drawable.texture, opts);
-      [cmds presentDrawable:drawable];
+      if (opts.min_present_duration > 0.0) {
+        [cmds presentDrawable:drawable afterMinimumDuration:opts.min_present_duration];
+      } else {
+        [cmds presentDrawable:drawable];
+      }
     }
 
     [cmds commit];
@@ -649,7 +653,11 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     id<CAMetalDrawable> drawable = [layer nextDrawable];
     if (drawable) {
       encode_present_pass(cmds, drawable.texture, opts);
-      [cmds presentDrawable:drawable];
+      if (opts.min_present_duration > 0.0) {
+        [cmds presentDrawable:drawable afterMinimumDuration:opts.min_present_duration];
+      } else {
+        [cmds presentDrawable:drawable];
+      }
     }
 
     [cmds commit];

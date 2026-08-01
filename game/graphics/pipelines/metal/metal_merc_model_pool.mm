@@ -64,10 +64,8 @@ bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
   entry->name = entry->level->level_name;
 
   // textures, the way the GL loader's TextureLoaderStage / load_common do
-  for (const auto& tex : entry->level->textures) {
-    entry->textures.push_back(
-        metal_add_texture(m_device, m_queue, *m_texture_pool, tex, is_common));
-  }
+  metal_add_textures(m_device, m_queue, *m_texture_pool, entry->level->textures, is_common,
+                     &entry->textures);
 
   // merc geometry: the GL MercLoaderStage's two buffers
   const auto& merc = entry->level->merc_data;

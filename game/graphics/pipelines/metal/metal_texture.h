@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 /*!
  * @file metal_texture.h
  * Texture path for the Metal backend. Objective-C++ only.
@@ -58,6 +60,21 @@ u64 metal_upload_texture_rgba8(id<MTLDevice> device,
 
 // Mirror of the GL loader's add_texture: upload, then give to the pool if the
 // texture is flagged for it. Returns the registry handle.
+// Uploads a whole level's textures and hands them to the pool as one indivisible step.
+//
+// This is not a convenience wrapper. TexturePool has no notion of a half-loaded level: the game
+// thread's `relocate` and `handle_upload_now` look a texture up and assert on what they find, so
+// a level whose textures appear one at a time is a level the game can catch mid-registration -
+// which is exactly what `setup-font-texture!` did during the GAME.CGO boot. The uploads (and
+// their GPU waits) happen outside the pool's lock; the registration, which is pure bookkeeping,
+// happens inside it in one go.
+void metal_add_textures(id<MTLDevice> device,
+                        id<MTLCommandQueue> queue,
+                        TexturePool& pool,
+                        const std::vector<tfrag3::Texture>& textures,
+                        bool is_common,
+                        std::vector<u64>* out);
+
 u64 metal_add_texture(id<MTLDevice> device,
                       id<MTLCommandQueue> queue,
                       TexturePool& pool,

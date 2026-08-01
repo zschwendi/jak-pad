@@ -788,9 +788,12 @@ if(APPLE)
 
         add_executable(goalpad-play
             goalpad_play.cpp
+            goalpad_audio.cpp
             "${AOT_BOOT_DIR}/aot_boot_manifest.c"
             ${AOT_BOOT_C_SOURCES})
         target_include_directories(goalpad-play PRIVATE "${AOT_BOOT_DIR}")
-        target_link_libraries(goalpad-play goalpad-metal-gfx)
+        # CoreAudio: the host's audio device. The vendored SDL is built with SDL_AUDIO OFF.
+        target_link_libraries(goalpad-play goalpad-metal-gfx
+            "-framework AudioToolbox" "-framework CoreAudio")
     endif()
 endif()

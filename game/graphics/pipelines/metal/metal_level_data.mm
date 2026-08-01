@@ -151,10 +151,7 @@ MetalLevelData* load_fr3(id<MTLDevice> device,
   tfrag3::Level& level = *data->level;
 
   // textures: same order and same rule as the GL TextureLoaderStage.
-  data->textures.reserve(level.textures.size());
-  for (const auto& tex : level.textures) {
-    data->textures.push_back(metal_add_texture(device, queue, pool, tex, is_common));
-  }
+  metal_add_textures(device, queue, pool, level.textures, is_common, &data->textures);
 
   // geometry. The unpack step (packed -> GPU vertices and the full index list)
   // is the shared tfrag3 code, unchanged.

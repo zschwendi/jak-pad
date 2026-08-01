@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -58,6 +59,7 @@ extern "C" {
 #include "game/kernel/core/pad.h"
 #include "game/kernel/core/sound_rpc.h"
 #include "game/kernel/jak1/klisten.h"
+#include "game/goalpad_audio.h"
 #include "game/kernel/jak1/kscheme.h"
 #include "game/runtime.h"
 
@@ -83,6 +85,7 @@ struct Options {
   bool sound = true;
   bool report_state = false;
   bool report_pad = false;
+  bool present_pacing = true;
   // frame -> file. Written from the offscreen game target, which is exactly what the present pass
   // shows.
   std::map<int, std::string> screenshots;
@@ -187,57 +190,6 @@ void host_set_levels(const char* const* names, int count) {
 }
 void host_set_pmode_alp(float alp) {
   g_gfx->set_pmode_alp(alp);
-}
-
-// ---------------------------------------------------------------------------------------------
-// audio: SDL's device, pulling from the same seam the iPad's AVAudioEngine node will
-// ---------------------------------------------------------------------------------------------
-
-SDL_AudioStream* g_audio_stream = nullptr;
-
-void SDLCALL audio_callback(void* /*user*/,
-                            SDL_AudioStream* stream,
-                            int additional_amount,
-                            int /*total*/) {
-  if (additional_amount <= 0) {
-    return;
-  }
-  const int frames = additional_amount / (2 * (int)sizeof(int16_t));
-  if (frames <= 0) {
-    return;
-  }
-  static std::vector<int16_t> buffer;
-  buffer.assign((size_t)frames * 2, 0);
-  // Before the sound system is up (and after it is torn down) this writes silence rather than
-  // whatever was in the buffer last.
-  goal_sound_pull_audio(buffer.data(), frames);
-  SDL_PutAudioStreamData(stream, buffer.data(), (int)(buffer.size() * sizeof(int16_t)));
-}
-
-bool start_audio() {
-  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-    lg::error("could not initialize SDL audio: {}", SDL_GetError());
-    return false;
-  }
-  SDL_AudioSpec spec;
-  spec.format = SDL_AUDIO_S16LE;
-  spec.channels = 2;
-  spec.freq = goal_sound_sample_rate();
-  g_audio_stream =
-      SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_callback, nullptr);
-  if (!g_audio_stream) {
-    lg::error("could not open an audio device: {}", SDL_GetError());
-    return false;
-  }
-  SDL_ResumeAudioStreamDevice(g_audio_stream);
-  return true;
-}
-
-void stop_audio() {
-  if (g_audio_stream) {
-    SDL_DestroyAudioStream(g_audio_stream);
-    g_audio_stream = nullptr;
-  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -733,6 +685,8 @@ int main(int argc, char** argv) {
       opts.game_res_h = std::atoi(argv[++i]);
     } else if (arg == "--scale" && i + 1 < argc) {
       opts.render_scale = std::clamp(std::atoi(argv[++i]), 1, 4);
+    } else if (arg == "--no-present-pacing") {
+      opts.present_pacing = false;
     } else if (arg == "--report-pad") {
       opts.report_pad = true;
     } else if (arg == "--frames" && i + 1 < argc) {
@@ -823,8 +777,50 @@ int main(int argc, char** argv) {
     return 1;
   }
   metal_renderer::set_level_art_directory(opts.data_dir + "/fr3");
+  // Before the game exists. The boot relocates textures out of the shared level while GAME.CGO
+  // links (`setup-font-texture!`), so it cannot be appearing underneath a running game.
+  if (!metal_renderer::load_common_level_art()) {
+    lg::error("could not load the shared level art ({}/fr3/GAME.fr3); textures will be missing",
+              opts.data_dir);
+  }
 
-  if (opts.sound && !start_audio()) {
+  // Frame pacing. There are two clocks available and running both is worse than running either:
+  //
+  //  - the display. Asking Metal to hold each drawable for one game frame
+  //    (presentDrawable:afterMinimumDuration:) makes the game's rate an exact division of the
+  //    refresh rate, which is as steady as the hardware gets - but only when the refresh rate
+  //    really is a multiple of the game's 60.
+  //  - the software frame limiter, which sleeps to a wall-clock target. It works on any display,
+  //    but its period is the target plus its own overhead: measured 16.69 ms against the 16.67 ms
+  //    the game wants. On a 120 Hz display that 0.02 ms is a slow drift against the vsync grid,
+  //    and every ~13 seconds a frame misses its slot and is held an extra refresh. The average
+  //    frame rate stays 59.9; the picture hitches.
+  //
+  // So: when the display's refresh is a whole multiple of the target rate, the display is the
+  // clock and the limiter is switched off. Otherwise the limiter is the only clock there is.
+  {
+    const float target = Gfx::g_global_settings.target_fps;
+    float refresh = 0;
+    if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay())) {
+      refresh = mode->refresh_rate;
+    }
+    const double multiple = refresh > 0 ? refresh / target : 0;
+    const bool display_can_pace =
+        opts.present_pacing && multiple >= 1 && std::abs(multiple - std::round(multiple)) < 0.02;
+    metal_renderer::set_present_pacing(display_can_pace ? 1.0 / target : 0.0);
+    // Both clocks stay on, at the same rate. The limiter has to: presentation pacing stops
+    // applying the moment the window is not being composited - occluded, or on another space -
+    // and measured, the loop then runs away to the display's full 120 fps. Giving the limiter
+    // headroom so the display alone decides was tried and measured worse (interval 16.8 ms
+    // +/- 1.3, spikes to 26 ms, against +/- 0.01 with both at the target rate): with headroom
+    // each frame is free to land on either of two vsyncs, and it takes both.
+    Gfx::g_global_settings.framelimiter = true;
+    lg::info("[gfx] display is {:.3f} Hz, target {:.0f} fps: paced by {}", refresh, target,
+             display_can_pace ? "the display, with the frame limiter as a floor"
+                              : "the software frame limiter");
+  }
+
+  if (opts.sound && !goalpad_audio::start()) {
     lg::warn("running without audio");
   }
   start_gamepads();
@@ -858,9 +854,13 @@ int main(int argc, char** argv) {
     if (now - last_report >= 2.0) {
       const int frames = g_shared.game_frames;
       const auto art = metal_renderer::get_level_art_stats();
-      lg::info("[gfx] {:.1f} game fps, {} frames, levels wanted '{}' loaded '{}'",
-               (frames - frames_at_report) / (now - last_report), frames,
-               art.wanted.empty() ? "-" : art.wanted, art.loaded.empty() ? "-" : art.loaded);
+      const auto timing = metal_renderer::take_present_timing();
+      lg::info(
+          "[gfx] {:.1f} game fps, {} frames, frame interval {:.2f} ms +/- {:.2f} "
+          "(min {:.2f}, max {:.2f}, {} late), levels wanted '{}' loaded '{}'",
+          (frames - frames_at_report) / (now - last_report), frames, timing.mean_ms,
+          timing.stddev_ms, timing.min_ms, timing.max_ms, timing.late_frames,
+          art.wanted.empty() ? "-" : art.wanted, art.loaded.empty() ? "-" : art.loaded);
       last_report = now;
       frames_at_report = frames;
     }
@@ -902,7 +902,7 @@ int main(int argc, char** argv) {
     lg::info("the target's states, in the order they were first entered:{}", states);
   }
 
-  stop_audio();
+  goalpad_audio::stop();
   goal_sound_shutdown();
   display.reset();
   g_gfx->exit();

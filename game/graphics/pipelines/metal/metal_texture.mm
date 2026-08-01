@@ -115,6 +115,37 @@ u64 metal_add_texture(id<MTLDevice> device,
   return handle;
 }
 
+void metal_add_textures(id<MTLDevice> device,
+                        id<MTLCommandQueue> queue,
+                        TexturePool& pool,
+                        const std::vector<tfrag3::Texture>& textures,
+                        bool is_common,
+                        std::vector<u64>* out) {
+  out->clear();
+  out->reserve(textures.size());
+  for (const auto& tex : textures) {
+    out->push_back(metal_upload_texture_rgba8(device, queue, (const u8*)tex.data.data(), tex.w,
+                                              tex.h));
+  }
+  std::lock_guard<std::mutex> pool_lock(pool.mutex());
+  for (size_t i = 0; i < textures.size(); i++) {
+    const auto& tex = textures[i];
+    if (!(*out)[i] || !tex.load_to_pool) {
+      continue;
+    }
+    TextureInput in;
+    in.debug_page_name = tex.debug_tpage_name;
+    in.debug_name = tex.debug_name;
+    in.w = tex.w;
+    in.h = tex.h;
+    in.gpu_texture = (*out)[i];
+    in.common = is_common;
+    in.id = PcTextureId::from_combo_id(tex.combo_id);
+    in.src_data = (const u8*)tex.data.data();
+    pool.give_texture(in);
+  }
+}
+
 bool metal_setup_placeholder(id<MTLDevice> device, id<MTLCommandQueue> queue, TexturePool& pool) {
   const auto& data = pool.placeholder_data();
   u64 handle = metal_upload_texture_rgba8(device, queue, (const u8*)data.data(), 16, 16);

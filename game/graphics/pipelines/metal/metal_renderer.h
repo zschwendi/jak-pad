@@ -55,6 +55,11 @@ struct MetalRenderOptions {
   float pmode_alp = 1.f;
   int brightness_contrast_color = 0;    // 0 = no change
   int brightness_contrast_alpha = 128;  // 128 = no change
+  // How long the drawable must stay on screen, in seconds, or 0 to present at the next vsync.
+  // On a display whose refresh is a multiple of the game's rate this is what makes presentation
+  // regular: at 0 a 60 fps game on a 120 Hz display lands on alternating 8.3 ms and 16.7 ms
+  // vsyncs and judders even though the average rate is exactly right.
+  double min_present_duration = 0.0;
 };
 
 class MetalRenderer {
