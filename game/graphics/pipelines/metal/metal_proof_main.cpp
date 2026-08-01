@@ -2927,6 +2927,21 @@ void run_chain_replay(const GfxRendererModule* mod,
     }
   }
 
+  // --- shadow ---
+  {
+    u64 shadow_payload = 0;
+    for (auto& b : inv.buckets) {
+      if (metal_chain_replay::jak1_bucket_name(b.bucket) == "SHADOW") {
+        shadow_payload += b.payload_bytes;
+      }
+    }
+    printf("shadow bucket: %d bytes of DMA, %d volumes, %d vertices, %d draws, %d tris, "
+           "%d unexpected-DMA reports\n",
+           (int)shadow_payload, stats.shadow_volumes, stats.shadow_vertices, stats.shadow_draws,
+           stats.shadow_triangles, stats.shadow_unexpected_dma);
+    check(stats.shadow_unexpected_dma == 0, "replay: the shadow bucket matched its renderer");
+  }
+
   // --- generic2 ---
   {
     u64 generic_payload = 0;

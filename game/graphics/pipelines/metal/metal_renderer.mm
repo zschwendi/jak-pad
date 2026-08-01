@@ -9,6 +9,7 @@
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_generic2.h"
+#include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
 #include "game/graphics/pipelines/metal/metal_shrub.h"
@@ -253,7 +254,7 @@ void MetalRenderer::init_bucket_renderers_jak1() {
 
   merc_bucket(BucketId::MERC_AFTER_ALPHA, "common-alpha-merc");
   generic_bucket(BucketId::GENERIC_ALPHA, "common-alpha-generic");
-  skip(BucketId::SHADOW, "shadow");
+  set(BucketId::SHADOW, std::make_unique<MetalShadowRenderer>("shadow", (int)BucketId::SHADOW));
 
   tex(BucketId::PRIS_TEX_LEVEL0, "l0-pris-tex");
   merc_bucket(BucketId::MERC_PRIS_LEVEL0, "l0-pris-merc");
@@ -724,6 +725,13 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         m_chain_stats.sprite_missing_textures = ss.missing_textures;
       } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {
         merc_stats.add(mc->stats());
+      } else if (auto* sh = dynamic_cast<MetalShadowRenderer*>(r.get())) {
+        const auto& ss = sh->stats();
+        m_chain_stats.shadow_volumes = ss.volumes;
+        m_chain_stats.shadow_vertices = ss.vertices;
+        m_chain_stats.shadow_draws = ss.draw_calls;
+        m_chain_stats.shadow_triangles = ss.triangles;
+        m_chain_stats.shadow_unexpected_dma = ss.unexpected_dma;
       } else if (auto* gn = dynamic_cast<MetalGeneric2BucketRenderer*>(r.get())) {
         generic_stats.add(gn->stats());
       } else if (auto* ey = dynamic_cast<MetalEyeRenderer*>(r.get())) {

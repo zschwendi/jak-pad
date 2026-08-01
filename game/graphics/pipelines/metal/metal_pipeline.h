@@ -128,6 +128,12 @@ struct ChainStats {
   int generic_unsupported_blends = 0;
   int generic_unexpected_dma = 0;
   int generic_overflow = 0;
+  // shadow renderer, from the last chain frame
+  int shadow_volumes = 0;
+  int shadow_vertices = 0;
+  int shadow_draws = 0;
+  int shadow_triangles = 0;
+  int shadow_unexpected_dma = 0;
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets

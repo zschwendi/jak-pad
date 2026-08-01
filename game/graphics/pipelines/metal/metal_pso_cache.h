@@ -35,6 +35,7 @@ enum class MetalShaderId : u16 {
   EMERC = 13,           // Merc2 envmap pass (emerc.{vert,frag})
   EYE = 14,             // EyeRenderer's eye composition (eye.{vert,frag})
   GENERIC = 15,         // Generic2 VU1 fallback path (generic.{vert,frag})
+  SHADOW = 16,          // shadow volumes (shadow.{vert,frag})
   COUNT,
 };
 
@@ -66,15 +67,26 @@ struct MetalPsoKey {
   }
 };
 
-// Depth/stencil state that GL renderers set per draw (glDepthFunc / glDepthMask).
-// Stencil operations will be added when ShadowRenderer is ported.
+// Depth/stencil state that GL renderers set per draw (glDepthFunc /
+// glDepthMask, plus glStencilFunc / glStencilOp for the shadow volumes).
 struct MetalDepthStencilKey {
   bool depth_test = false;  // false = compare Always (glDisable(GL_DEPTH_TEST))
   u8 compare = MTLCompareFunctionAlways;  // MTLCompareFunction
   bool depth_write = false;
+  // stencil (glEnable(GL_STENCIL_TEST) + glStencilFunc/glStencilOp)
+  bool stencil_test = false;
+  u8 stencil_compare = MTLCompareFunctionAlways;        // MTLCompareFunction
+  u8 stencil_depth_pass_op = MTLStencilOperationKeep;   // MTLStencilOperation
+  u8 stencil_read_mask = 0xff;
+  u8 stencil_write_mask = 0xff;
 
   bool operator==(const MetalDepthStencilKey& o) const {
-    return depth_test == o.depth_test && compare == o.compare && depth_write == o.depth_write;
+    return depth_test == o.depth_test && compare == o.compare &&
+           depth_write == o.depth_write && stencil_test == o.stencil_test &&
+           stencil_compare == o.stencil_compare &&
+           stencil_depth_pass_op == o.stencil_depth_pass_op &&
+           stencil_read_mask == o.stencil_read_mask &&
+           stencil_write_mask == o.stencil_write_mask;
   }
 };
 

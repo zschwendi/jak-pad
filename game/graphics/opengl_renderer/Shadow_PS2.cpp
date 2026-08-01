@@ -1,8 +1,8 @@
 #include "common/log/log.h"
 
-#include "game/graphics/opengl_renderer/ShadowRenderer.h"
+#include "game/graphics/opengl_renderer/ShadowVu.h"
 
-void ShadowRenderer::run_mscal10_vu2c() {
+void ShadowVu::run_mscal10_vu2c() {
   // ENTER_10:
   // iaddiu vi01, vi00, 0x358   |  nop                            10
   vu.vi01 = 0x358; /* 856 */
@@ -74,7 +74,7 @@ void fsand(u16& dest, u16 a, u16 b) {
 
 }  // namespace
 
-void ShadowRenderer::handle_bal52() {
+void ShadowVu::handle_bal52() {
   // nop                        |  sub.xyzw vf16, vf15, vf14      736
   vu.vf16.sub(Mask::xyzw, vu.vf15, vu.vf14);
   // waitq                      |  mul.xyzw vf16, vf16, Q         737
@@ -84,7 +84,7 @@ void ShadowRenderer::handle_bal52() {
   // nop                        |  nop                            739
 }
 
-void ShadowRenderer::handle_jalr_to_end_block(u16 val, u32& first_flag, u32& second_flag) {
+void ShadowVu::handle_jalr_to_end_block(u16 val, u32& first_flag, u32& second_flag) {
   switch (val) {
     case 724:
       // jr vi11                    |  addx.w vf30, vf14, vf14        724
@@ -137,7 +137,7 @@ void ShadowRenderer::handle_jalr_to_end_block(u16 val, u32& first_flag, u32& sec
   }
 }
 
-void ShadowRenderer::run_mscal_vu2c(u16 imm) {
+void ShadowVu::run_mscal_vu2c(u16 imm) {
   u32 cf = 0, sf0, sf1;
   bool bc;
   switch (imm) {
