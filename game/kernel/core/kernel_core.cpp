@@ -47,6 +47,7 @@ bool g_initialized = false;
 bool g_main_memory_executable = false;
 std::string g_last_error;
 std::string g_data_directory;
+std::string g_saves_directory;
 
 void set_error(const char* msg) {
   g_last_error = msg;
@@ -379,6 +380,19 @@ goal_kernel_core_status goal_kernel_core_set_data_directory(const char* path) {
 
 const char* goal_kernel_core_data_directory(void) {
   return g_data_directory.c_str();
+}
+
+goal_kernel_core_status goal_kernel_core_set_saves_directory(const char* path) {
+  g_saves_directory = path ? path : "";
+  while (g_saves_directory.size() > 1 && g_saves_directory.back() == '/') {
+    g_saves_directory.pop_back();
+  }
+  kmemcard_set_directory(g_saves_directory.c_str());
+  return GOAL_KERNEL_CORE_OK;
+}
+
+const char* goal_kernel_core_saves_directory(void) {
+  return g_saves_directory.c_str();
 }
 
 goal_kernel_core_status goal_kernel_core_resolve_data_path(const char* name,
