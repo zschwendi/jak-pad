@@ -37,6 +37,7 @@
 
 #include "common/goal_constants.h"
 
+#include "game/kernel/core/kernel_core.h"
 #include "game/kernel/jak1/kscheme.h"
 #include "game/runtime.h"
 #include "goalc/aot/goal_c_runtime.h"
@@ -76,6 +77,7 @@ constexpr int kProcessMainThread = 40;
 constexpr int kProcessTopThread = 44;
 constexpr int kProcessStackFrameTop = 88;
 // thread / cpu-thread
+constexpr int kThreadName = 0;
 constexpr int kThreadProcess = 4;
 constexpr int kThreadPc = 20;
 constexpr int kThreadSp = 24;
@@ -88,6 +90,23 @@ constexpr int kStackFrameNext = 4;
 constexpr int kCatchFrameSp = 8;
 constexpr int kCatchFrameRa = 12;
 }  // namespace field
+
+/*!
+ * How much of the backup stacks the run actually used. `thread-suspend` still aborts when a live
+ * stack does not fit - this only records what did fit, so a run can say how close the
+ * process-stack-save-size conversion in gkernel-h.gc came to being wrong.
+ */
+struct StackWatermark {
+  int suspends;
+  int deepest_used;   // the largest live stack any suspend had to copy
+  int deepest_size;
+  uint32_t deepest_name;
+  int fullest_used;   // the suspend that came closest to filling its buffer
+  int fullest_size;
+  uint32_t fullest_name;
+};
+
+StackWatermark g_stack_watermark = {0, 0, 0, 0, 0, 1, 0};
 
 [[noreturn]] void fail(const char* format, ...) __attribute__((format(printf, 1, 2)));
 [[noreturn]] void fail(const char* format, ...) {
@@ -169,6 +188,51 @@ GoalFunction goal_function(uint32_t object, const char* what) {
     fail("%s (GOAL #x%x) has no native entry point", what, object);
   }
   return (GoalFunction)entry;
+}
+
+/*! The name of a GOAL symbol, or "" if the address does not look like one. */
+const char* goal_thread_stack_watermark_name(uint32_t symbol) {
+  if (!symbol || symbol >= EE_MAIN_MEM_SIZE || !g_ee_main_mem) {
+    return "";
+  }
+  return jak1::info(Ptr<jak1::Symbol>(symbol))->str->data();
+}
+
+/*! The name of the GOAL type of a basic, for a diagnostic. "" when it does not look like one. */
+const char* type_name_of(uint32_t basic) {
+  if (!basic || basic < 4 || basic >= EE_MAIN_MEM_SIZE) {
+    return "";
+  }
+  const uint32_t type = load32(basic, -4);
+  if (!type || type >= EE_MAIN_MEM_SIZE) {
+    return "";
+  }
+  return goal_thread_stack_watermark_name(load32(type, 0));
+}
+
+/*! What a GOAL object calls itself: a symbol's or string's text, otherwise its type's name. */
+const char* goal_name_of(uint32_t basic) {
+  const char* type = type_name_of(basic);
+  if (!std::strcmp(type, "string")) {
+    return (const char*)(mem() + basic + 4);
+  }
+  if (!std::strcmp(type, "symbol")) {
+    return goal_thread_stack_watermark_name(basic);
+  }
+  return type;
+}
+
+/*!
+ * Who a thread is, for the failure messages below: its type, its name, and the process it belongs
+ * to. A thread whose type is not `cpu-thread` is the usual reason one of these fires.
+ */
+const char* describe_thread(uint32_t thread) {
+  static char buffer[256];
+  const uint32_t process = load32(thread, field::kThreadProcess);
+  std::snprintf(buffer, sizeof(buffer), "the %s '%s' at GOAL #x%x, of the %s '%s' at #x%x",
+                type_name_of(thread), goal_name_of(load32(thread, 0)), thread,
+                type_name_of(process), goal_name_of(load32(process, 0)), process);
+  return buffer;
 }
 
 const GoalContext* checked_context(uint32_t goal_addr, const char* what) {
@@ -270,12 +334,24 @@ void thread_suspend_body(GoalContext* ctx, uint64_t thread_u) {
   const int32_t used = (int32_t)(stack_top - sp);
   const int32_t backup_size = (int32_t)load32(thread, field::kThreadStackSize);
 
+  g_stack_watermark.suspends++;
+  if (used > g_stack_watermark.deepest_used) {
+    g_stack_watermark.deepest_used = used;
+    g_stack_watermark.deepest_size = backup_size;
+    g_stack_watermark.deepest_name = load32(thread, field::kThreadName);
+  }
+  if (backup_size > 0 && used * g_stack_watermark.fullest_size > backup_size * g_stack_watermark.fullest_used) {
+    g_stack_watermark.fullest_used = used;
+    g_stack_watermark.fullest_size = backup_size;
+    g_stack_watermark.fullest_name = load32(thread, field::kThreadName);
+  }
+
   // GOAL's own check, which is a (break) there. Copying more than the backup buffer holds would
   // walk off the end of the thread object and into the process heap behind it.
   if (used > backup_size) {
-    fail("a thread used %d bytes of stack but its backup buffer is only %d. Raise the thread's "
+    fail("%s used %d bytes of stack but its backup buffer is only %d. Raise the thread's "
          "stack-size; see docs/aot-stack-model.md.",
-         used, backup_size);
+         describe_thread(thread), used, backup_size);
   }
   if (used < 0) {
     fail("a suspending thread's stack pointer (GOAL #x%x) is above its stack top (#x%x)", sp,
@@ -312,9 +388,9 @@ void thread_resume_body(GoalContext* ctx, uint64_t thread_u) {
   const int32_t used = (int32_t)(stack_top - sp);
   const int32_t backup_size = (int32_t)load32(thread, field::kThreadStackSize);
   if (used < 0 || used > backup_size) {
-    fail("thread-resume was given a thread whose stack pointer (GOAL #x%x) does not fit under its "
+    fail("thread-resume was given %s, whose stack pointer (GOAL #x%x) does not fit under its "
          "stack top (#x%x) and backup size (%d)",
-         sp, stack_top, backup_size);
+         describe_thread(thread), sp, stack_top, backup_size);
   }
   const uint32_t backup_end = thread + (uint32_t)field::kCpuThreadStack + (uint32_t)backup_size;
   std::memcpy(mem() + sp, mem() + backup_end - used, (size_t)used);
@@ -511,6 +587,21 @@ uint64_t goal_native_enter_state_run_code(uint64_t code,
   goal_call_on_stack_arm64(native_stack_pointer(stack_top), (void*)&state_code_trampoline, code, a0,
                            a1, a2, a3, 0);
   fail("enter-state's code trampoline returned");
+}
+
+/*!
+ * What the run did to its backup stacks. `thread-suspend` still aborts when a live stack does not
+ * fit; this reports what did fit, so a run can say how close the process-stack-save-size
+ * conversion in gkernel-h.gc came to being wrong. The names are GOAL symbol addresses.
+ */
+void goal_thread_stack_watermark(goal_thread_stack_watermark_report* out) {
+  out->suspends = g_stack_watermark.suspends;
+  out->deepest_used = g_stack_watermark.deepest_used;
+  out->deepest_size = g_stack_watermark.deepest_size;
+  out->deepest_name = goal_thread_stack_watermark_name(g_stack_watermark.deepest_name);
+  out->fullest_used = g_stack_watermark.fullest_used;
+  out->fullest_size = g_stack_watermark.fullest_size;
+  out->fullest_name = goal_thread_stack_watermark_name(g_stack_watermark.fullest_name);
 }
 
 }  // extern "C"

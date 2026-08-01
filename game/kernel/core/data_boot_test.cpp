@@ -71,6 +71,23 @@ void drain_goal_print_buffer() {
   }
 }
 
+/*!
+ * How close the run came to overflowing a GOAL thread's backup stack. The sizes come from
+ * `process-stack-save-size` in kernel/gkernel-h.gc, which converts the game's PS2 measurements for
+ * this build's code generator; this says whether that conversion is generous or nearly wrong.
+ */
+void report_stack_watermark() {
+  goal_thread_stack_watermark_report w;
+  goal_thread_stack_watermark(&w);
+  if (!w.suspends) {
+    return;
+  }
+  say("  backup stacks: %d suspends, deepest %d bytes of %d ('%s), fullest %d of %d (%d%%, '%s)\n",
+      w.suspends, w.deepest_used, w.deepest_size, w.deepest_name, w.fullest_used, w.fullest_size,
+      w.fullest_size ? 100 * w.fullest_used / w.fullest_size : 0, w.fullest_name);
+}
+
+
 void report_heap(const char* what) {
   goal_kernel_core_state state;
   if (goal_kernel_core_get_state(&state) == GOAL_KERNEL_CORE_OK) {
@@ -102,6 +119,23 @@ void register_aot_objects() {
     goal_aot_object_file file = {entry.tag,       entry.statics,          *entry.static_count,
                                  entry.functions, *entry.function_count,  entry.link};
     goal_aot_register_object(object_name_of(entry.source).c_str(), &file);
+  }
+}
+
+/*!
+ * GAME.CGO is the release build's union of ENGINE.CGO, ART.CGO and COMMON.CGO, which do not exist
+ * as separate files on the disc. The C kernel records that by putting their names in
+ * `*kernel-packages*` after loading GAME.CGO (jak1::InitMachineScheme in
+ * game/kernel/jak1/kmachine.cpp), so `alloc-levels!`'s `(load-package "art" global)` finds "art"
+ * already loaded and asks for nothing. Without this the level system tries to load ART.CGO and
+ * fails, because there is no such file to load.
+ */
+void record_packages_in_game_cgo() {
+  using namespace jak1_symbols;
+  for (const char* package : {"engine", "art", "common"}) {
+    jak1::kernel_packages->value =
+        jak1::new_pair(s7.offset + FIX_SYM_GLOBAL_HEAP, *((s7 + FIX_SYM_PAIR_TYPE).cast<u32>()),
+                       jak1::make_string_from_c(package), jak1::kernel_packages->value);
   }
 }
 
@@ -259,9 +293,11 @@ int run_real_boot(const std::string& data_dir, int dispatch_frames, bool run_pla
   say("  GOAL kernel version %u.%u\n", kernel_version >> 0x13, (kernel_version >> 3) & 0xffff);
 
   // InitListener, then InitMachineScheme. The machine layer is not in this library; the stubs
-  // stand in for it and name themselves the first time GOAL calls one.
+  // stand in for it and name themselves the first time GOAL calls one. The DGO RPC and the two
+  // linker entry points GOAL's own level loader drives are real, and replace the stubs.
   jak1::InitListener();
   goal_kernel_core_stub_machine_layer(0);
+  goal_dgo_install_goal_loader();
   jak1::intern_from_c("*kernel-boot-message*")->value =
       jak1::intern_from_c(DebugBootMessage).offset;
   jak1::intern_from_c("*kernel-boot-mode*")->value = jak1::intern_from_c("boot").offset;
@@ -281,13 +317,12 @@ int run_real_boot(const std::string& data_dir, int dispatch_frames, bool run_pla
   say("  %d objects: %d code, %d data; heap use %u -> %u bytes\n", stats.objects,
       stats.code_objects, stats.data_objects, stats.heap_used_before, stats.heap_used_after);
   report_heap("after GAME.CGO");
+  record_packages_in_game_cgo();
 
-  // The last thing InitMachineScheme does. It does not come back yet: `play` starts the title
-  // level load, and GOAL's own level loader (engine/load/load-dgo.gc, engine/level/level.gc)
-  // drives the DGO through `rpc-call` / `rpc-busy?` and links it with `link-begin` / `link-resume`.
-  // Neither is available here: the DGO RPC is the IOP channel this library replaced with a
-  // synchronous reader, and GOAL-side linking has no way to substitute AOT code for a v3 object.
-  // So it spins in `(check-busy rpc-buffer-pair)` forever. Opt in with --play to see it happen.
+  // The last thing InitMachineScheme does. `play` allocates the level heaps and drives the whole
+  // title-level load itself: with no display process running yet its `while` loop calls
+  // `load-continue` until the level reaches 'active, which is what needs the DGO RPC and
+  // `link-begin` above.
   if (run_play) {
     say("\n=== (play)\n");
     const u64 play_result = jak1::call_goal_function_by_name("play");
@@ -295,7 +330,7 @@ int run_real_boot(const std::string& data_dir, int dispatch_frames, bool run_pla
     say("  play returned #x%" PRIx64 "\n", play_result);
     report_heap("after play");
   } else {
-    say("\n=== (play) skipped; pass --play to run it. See the comment in data_boot_test.cpp.\n");
+    say("\n=== (play) skipped; pass --play to run it.\n");
   }
 
   // KernelCheckAndDispatch's loop body, without the listener half: this is the GOAL kernel's own
@@ -306,24 +341,48 @@ int run_real_boot(const std::string& data_dir, int dispatch_frames, bool run_pla
     return 1;
   }
   say("\n=== kernel-dispatcher: %d frames\n", dispatch_frames);
-  if (!dispatch_frames) {
-    // Measured, not guessed: one frame aborts in the native thread-suspend, because a process that
-    // suspends needs to back up more stack than its buffer holds. PROCESS_STACK_SAVE_SIZE is the
-    // PS2's 256 bytes, the game lowers some processes to 128 with stack-size-set!, and an ARM64
-    // machine context alone is 176. That is data tuning in goal_src, not a runtime gap, and it
-    // fails loudly rather than corrupting the heap. See docs/aot-stack-model.md.
-    say("  not run. --frames 1 reaches the GOAL kernel's first frame and aborts in\n"
-        "  thread-suspend: a process used 400 bytes of stack against a 128-byte backup buffer.\n"
-        "  The game's stack sizes were chosen for the PS2; see docs/aot-stack-model.md.\n");
-  }
   for (int frame = 0; frame < dispatch_frames; frame++) {
     call_goal_on_stack(Ptr<Function>(dispatcher->value), goal_kernel_stack_top(), s7.offset,
                        g_ee_main_mem);
     drain_goal_print_buffer();
   }
   report_heap("after the dispatcher");
-  say("\nBOOT: KERNEL.CGO and GAME.CGO are loaded and the GOAL kernel dispatcher is callable.\n");
-  return 0;
+  report_stack_watermark();
+
+  goal_dgo_rpc_stats rpc;
+  goal_dgo_goal_loader_stats(&rpc);
+  say("  GOAL's own loader: %d DGO loads, %d objects (%d code from the AOT path, %d data linked),"
+      " %d STR reads, %d STR misses\n",
+      rpc.dgo_archives, rpc.dgo_objects, rpc.linked_code_objects, rpc.linked_data_objects,
+      rpc.str_reads, rpc.str_failures);
+
+  int failures = 0;
+  auto expect = [&](bool ok, const char* what) {
+    say("%s %s\n", ok ? "ok  " : "FAIL", what);
+    if (!ok) {
+      failures++;
+    }
+  };
+  if (run_play) {
+    // `play` cannot finish without GOAL's own loader having read a level out of a DGO through the
+    // RPC and linked both halves of it, so these are the shape of what it did, not a restatement
+    // of "it did not crash".
+    expect(rpc.dgo_archives > 0, "GOAL started a level DGO load through the RPC");
+    expect(rpc.dgo_objects >= rpc.linked_code_objects + rpc.linked_data_objects,
+           "every object GOAL linked came from the RPC");
+    expect(rpc.linked_code_objects > 0, "GOAL linked level code through the AOT path");
+    expect(rpc.linked_data_objects > 0, "GOAL linked level data through the real linker");
+  }
+  if (dispatch_frames > 0) {
+    goal_thread_stack_watermark_report w;
+    goal_thread_stack_watermark(&w);
+    expect(w.suspends > 0, "processes suspended and resumed across the frames");
+    expect(w.fullest_used <= w.fullest_size, "no backup stack was overrun");
+  }
+
+  say("\nBOOT: KERNEL.CGO and GAME.CGO are loaded and the GOAL kernel dispatcher ran %d frames.\n",
+      dispatch_frames);
+  return failures ? 1 : 0;
 }
 
 }  // namespace

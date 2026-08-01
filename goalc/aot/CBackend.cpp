@@ -353,7 +353,16 @@ void FileEmitter::find_machine_state_regs(const FunctionEnv& func) {
     } else if (constrained == emitter::RSP) {
       // Reading the stack pointer is expressible in C and is what (suspend) and with-sp do;
       // writing it is not. check_stack_pointer_use rejects the writers.
+      //
+      // It is machine state for the same reason the process and symbol-table registers are: on
+      // x86-64 the binding *is* the register, so every read sees the value at that moment, and
+      // GOAL's compiler emits one `:reset-here` per function no matter how many `(suspend)` sites
+      // it has. Copying it into a local once would leave every later site reading a stale value -
+      // or zero, when the single reset is on a path that did not run - and GOAL's own stack
+      // accounting would be quietly wrong. Reading it at each use is exact: a C frame address does
+      // not move within a function.
       m_stack_pointer_regs.insert(rv->ireg().id);
+      m_machine_state_regs[rv->ireg().id] = "GOAL_STACK_POINTER()";
     } else if (info.get_info(constrained).special) {
       throw std::runtime_error(
           fmt::format("rlet binds machine register {}, which has no C equivalent",
@@ -408,9 +417,6 @@ std::string FileEmitter::rlet_reset_expr(const RegVal* rv) {
   const auto constrained = rv->rlet_constraint().value();
   if (constrained == info.get_offset_reg()) {
     return "GOAL_ADDR_OF(g_goal_mem)";
-  }
-  if (constrained == emitter::RSP) {
-    return "GOAL_STACK_POINTER()";
   }
   throw std::runtime_error(fmt::format(
       "rlet :reset-here on machine register {}, which has no C equivalent", constrained.print()));

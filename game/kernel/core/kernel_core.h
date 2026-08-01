@@ -147,6 +147,27 @@ goal_kernel_core_status goal_kernel_core_resolve_data_path(const char* name,
                                                            size_t out_size);
 
 /*!
+ * How much of GOAL's per-thread backup stacks a run used. Every GOAL thread copies the live part
+ * of its execution stack into a small buffer when it suspends, and the size of that buffer comes
+ * from numbers in `goal_src` that were measured on the PS2 (see `process-stack-save-size` in
+ * `kernel/gkernel-h.gc`). `thread-suspend` aborts when a live stack does not fit; this reports
+ * what did fit, so a run can say how close those numbers came to being wrong.
+ *
+ * The name strings are owned by the kernel and are valid until shutdown.
+ */
+typedef struct goal_thread_stack_watermark_report {
+  int suspends;
+  int deepest_used; /*!< the largest live stack any suspend copied */
+  int deepest_size;
+  const char* deepest_name;
+  int fullest_used; /*!< the suspend that came closest to filling its buffer */
+  int fullest_size;
+  const char* fullest_name;
+} goal_thread_stack_watermark_report;
+
+void goal_thread_stack_watermark(goal_thread_stack_watermark_report* out);
+
+/*!
  * Describe the last failure. Never NULL; returns "" when there has been no failure. The returned
  * pointer is owned by the kernel and stays valid until the next failing call.
  */

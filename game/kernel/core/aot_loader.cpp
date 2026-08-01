@@ -312,7 +312,9 @@ uint64_t goal_kernel_stack_top(void) {
   return (u64)(uintptr_t)g_ee_main_mem + EE_MAIN_MEM_SIZE - 16;
 }
 
-goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_result) {
+static goal_kernel_core_status run_top_level(const char* tag,
+                                             uint64_t* out_result,
+                                             bool switch_to_kernel_stack) {
   if (!tag) {
     set_error("goal_aot_run_top_level: bad argument");
     return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
@@ -331,14 +333,24 @@ goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_re
   // while *enable-method-set* is raised (jak1::method_set). Upstream raises it around the kernel
   // and engine DGO loads, which is the step this stands in for.
   *EnableMethodSet = *EnableMethodSet + 1;
-  const u64 result = call_goal_on_stack(Ptr<Function>(top_level), goal_kernel_stack_top(),
-                                        s7.offset, g_ee_main_mem);
+  const u64 result = switch_to_kernel_stack
+                         ? call_goal_on_stack(Ptr<Function>(top_level), goal_kernel_stack_top(),
+                                              s7.offset, g_ee_main_mem)
+                         : goal_aot_call(top_level, 0, 0, 0);
   *EnableMethodSet = *EnableMethodSet - 1;
 
   if (out_result) {
     *out_result = result;
   }
   return GOAL_KERNEL_CORE_OK;
+}
+
+goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_result) {
+  return run_top_level(tag, out_result, true);
+}
+
+goal_kernel_core_status goal_aot_run_top_level_here(const char* tag, uint64_t* out_result) {
+  return run_top_level(tag, out_result, false);
 }
 
 goal_kernel_core_status goal_aot_call_symbol(const char* name,

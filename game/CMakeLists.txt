@@ -573,9 +573,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
 
         # The same object files, loaded the way the game loads them: out of KERNEL.CGO and
         # GAME.CGO, in DGO order, with each object's code coming from the AOT path and each
-        # object's data coming from the archive. Registered twice: --synthetic uses a DGO this
-        # test writes itself and needs no game data; the default run needs the player's own
-        # extracted data and skips cleanly without it.
+        # object's data coming from the archive. Registered three times: --synthetic uses a DGO
+        # this test writes itself and needs no game data; the other two need the player's own
+        # extracted data and skip cleanly without it. The --play run goes on to the engine's own
+        # startup, which drives a level DGO through the RPC and runs the GOAL kernel's frame loop.
         add_executable(jak1-data-boot-test
                 kernel/core/data_boot_test.cpp
                 "${AOT_BOOT_DIR}/aot_boot_manifest.c"
@@ -584,6 +585,7 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak1-data-boot-test jak1-kernel-core)
         add_test(NAME jak1-dgo-synthetic-test COMMAND jak1-data-boot-test --synthetic)
         add_test(NAME jak1-data-boot-test COMMAND jak1-data-boot-test)
+        add_test(NAME jak1-play-frames-test COMMAND jak1-data-boot-test --play --frames 60)
 
         # The thread-switch test: the same GOAL kernel, plus a fixture that drives the routines
         # that had to be written in native ARM64 - catch frames, throw, state entry, temporary

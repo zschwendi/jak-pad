@@ -139,22 +139,40 @@ stack region and return addresses that point into `__TEXT`. `thread-suspend` res
 the same addresses, so both stay valid. This is the property that would have been lost if threads
 ran on native stacks at whatever address the OS handed out.
 
-**Backup stacks are too small and the game will have to say so.** Upstream already raised
+**Backup stacks had to be resized, and the sizes are one rule now.** Upstream already raised
 `PROCESS_STACK_SIZE` from the PS2's `#x1c00` to `#x6000` because compiled x86-64 GOAL uses more
-stack than PS2 MIPS did. `PROCESS_STACK_SAVE_SIZE`, the *backup* size a process's main thread gets
-by default, is still the PS2's 256 bytes, and the ARM64 context alone is 176 of them. A trivial
-state that suspends once measured 368 bytes live. Individual processes raise their own with
-`stack-size-set!` - `init-time-of-day` asks for 128 - and those numbers were chosen for the PS2.
+stack than PS2 MIPS did. The *backup* sizes had the same problem and had not been touched: a
+process's default was the PS2's 256 bytes, individual processes lower their own to 128 with
+`stack-size-set!`, and the ARM64 context alone is 176. `jak1-data-boot-test --frames 1` measured
+one process needing 400 bytes into a 128-byte buffer.
 
-This is data tuning, not a design problem, and it fails loudly rather than silently: GOAL's own
-check in `thread-suspend` compares the live stack against the backup size, and the native
-implementation aborts with both numbers instead of copying past the end of the thread object.
+Those numbers are PS2 measurements of one thing - how deep a process's code is when it suspends -
+and translating them for a different code generator is one rule, so it lives in one place.
+`process-stack-save-size` in `kernel/gkernel-h.gc` is `512 + 3 x`, `stack-size-set!` applies it to
+whatever a process asks for, and `PROCESS_STACK_SAVE_SIZE` is the PS2 default put through the same
+rule. The game's own numbers stay as they are, which keeps them re-measurable and keeps the
+downstream delta to one macro.
 
-Processes now do suspend for real, and this is what stops the engine's frame loop.
-`jak1-data-boot-test --frames 1` loads `KERNEL.CGO` and `GAME.CGO` and calls the GOAL kernel
-dispatcher once; the first process to suspend needs **400** bytes backed up into a **128**-byte
-buffer and the run aborts there. The numbers in `goal_src` will have to be revisited before the
-frame loop can run.
+Measured after: across 1000 frames of the title level and `village1` streaming in, 14424 suspends,
+the deepest backing up 752 bytes of its 2048, and the one that came closest to filling its buffer
+using 400 of 896. `jak1-data-boot-test` reports both numbers at the end of a run
+(`goal_thread_stack_watermark`), so the headroom is a measurement and not a hope.
+
+**A backup stack comes out of the process's own heap, and nothing checked that it fit.** Raising
+the sizes turned that into a real failure: `camera-slave` overran its 4 KB process heap by 544
+bytes, and every suspend then copied its live stack over the process the pool had put after it -
+whose main thread later failed `thread-resume` with a `stack-size` of 1. `process-heap-overrun-check`
+in `gkernel.gc` now reports and stops on that, and the fixed-size dead pools grow by
+`PROCESS_STACK_SAVE_GROWTH`, the most the conversion can add to one process.
+
+**Reading `rsp` had to become a read, not a copy.** The C backend lowered an `rlet` binding of
+`rsp` to a local seeded once by `GOAL_STACK_POINTER()`. GOAL's compiler emits one `:reset-here` per
+function no matter how many `(suspend)` sites it has - on x86-64 the binding *is* the register, so
+one is enough - and 300-odd Jak 1 functions have more than one. Every later site read a stale value
+or, when the single reset was on a path that had not run, zero, and `(suspend)`'s own overflow
+check reported nonsense on every spooled animation. The binding is machine state now
+(`find_machine_state_regs`), so each use reads the stack pointer, which is exact: a C frame address
+does not move within a function.
 
 **Guard pages.** A GOAL-memory stack has none: an overflow runs off the bottom of the region into
 whatever the process heap put below it, silently. That is exactly the situation upstream is in, and
@@ -168,7 +186,7 @@ segment.
 
 ## What this turned up
 
-Two things were wrong in the runtime and only showed up once GOAL started spawning processes.
+Three things were wrong in the runtime and only showed up once GOAL started spawning processes.
 
 **Top-levels ran with `*enable-method-set*` clear.** `method_set` only propagates a method to
 subtypes that already exist while that symbol is raised, and upstream raises it around the kernel
@@ -182,6 +200,15 @@ gives a C local a GOAL address, and a catch-frame's address is stored in a 32-bi
 reach the current process through a fourth argument that the x86-64 trampoline fills from `r13`. The
 ARM64 shims passed `UNKNOWN_PP`, so every `(new 'process ...)` aborted. They read
 `g_goal_current_process`, which is where ARM64 keeps `r13`.
+
+**GOAL's symbol hash table ran on a table of zeroes.** `init_crc` fills the CRC table GOAL hashes
+symbol names with, and upstream calls it from `jak1::goal_main` - the desktop entry point, which is
+not part of the portable kernel. `kscheme_init_globals_common` zeroes the table, so nothing filled
+it in. Interning still worked, because it was self-consistent, but `EMPTY_HASH` no longer matched
+and `intern_from_c("_empty_")` made an ordinary symbol instead of returning the empty pair. Every
+static field holding `'()` linked to that symbol, `(null? ...)` said no, and the first walk over one
+- `get-continue-by-name`, on the game's own startup - dereferenced the car of a list that was not a
+list. `goal_kernel_core_initialize` calls `init_crc` now.
 
 ## Rejected alternative: native stacks
 

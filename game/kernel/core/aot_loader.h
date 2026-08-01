@@ -108,6 +108,13 @@ uint64_t goal_kernel_stack_top(void);
 goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_result);
 
 /*!
+ * The same, on the stack the caller is already running on. Use this when GOAL is the caller - a
+ * `link-begin` from the level loader, for one. Switching to the kernel stack there would overwrite
+ * the frames of whatever GOAL thread is running.
+ */
+goal_kernel_core_status goal_aot_run_top_level_here(const char* tag, uint64_t* out_result);
+
+/*!
  * Look the symbol up in the real symbol table and call whatever function object it holds, through
  * `call_goal`. Returns GOAL_KERNEL_CORE_NOT_FOUND if the symbol does not exist or is empty.
  */

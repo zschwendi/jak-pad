@@ -39,6 +39,28 @@ goal_kernel_core_status goal_dgo_load(const char* name,
                                       int32_t buffer_size,
                                       goal_dgo_load_stats* out);
 
+/*!
+ * Install the entry points GOAL's own level loader drives a DGO with: the DGO RPC (`rpc-call` /
+ * `rpc-busy?`, answered synchronously out of the same reader) and `link-begin` / `link-resume`
+ * with this platform's code/data rule applied. See dgo_loader.cpp.
+ *
+ * Call after `goal_kernel_core_stub_machine_layer`, whose stubs for `rpc-call` and `rpc-busy?`
+ * these replace. Calling it clears the counters below.
+ */
+void goal_dgo_install_goal_loader(void);
+
+/*! What GOAL's own loader asked the RPC for, so a caller can report it instead of assuming it. */
+typedef struct goal_dgo_rpc_stats {
+  int dgo_archives;          /*! DGO loads GOAL started */
+  int dgo_objects;           /*! objects the RPC handed back */
+  int linked_code_objects;   /*! link-begin calls taken from the AOT path */
+  int linked_data_objects;   /*! link-begin calls given to the real linker */
+  int str_reads;             /*! files and animation chunks the STR RPC delivered */
+  int str_failures;          /*! STR requests that found nothing to read */
+} goal_dgo_rpc_stats;
+
+void goal_dgo_goal_loader_stats(goal_dgo_rpc_stats* out);
+
 /*! Print every object as it is read, with where it landed and how it was classified. */
 void goal_dgo_set_verbose(int on);
 

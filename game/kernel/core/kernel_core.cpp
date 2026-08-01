@@ -99,6 +99,14 @@ void init_kernel_globals() {
   jak1::klisten_init_globals();
   kmemcard_init_globals();
   kprint_init_globals_common();
+
+  // GOAL hashes symbol names with its own CRC table, and kscheme_init_globals_common zeroes that
+  // table. Upstream fills it in jak1::goal_main (game/kernel/jak1/kboot.cpp), which is the desktop
+  // entry point and is not part of this library. Without it every hash is computed from a table of
+  // zeroes: symbol interning still works, because it is self-consistent, but `EMPTY_HASH` no
+  // longer matches, so `intern_from_c("_empty_")` makes an ordinary symbol instead of returning
+  // the empty pair - and every static field holding '() links to it. `(null? ...)` then says no.
+  init_crc();
 }
 
 /*!

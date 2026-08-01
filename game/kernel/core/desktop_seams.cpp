@@ -30,7 +30,9 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -268,6 +270,29 @@ void install_implemented_machine_functions() {
 
 void goal_kernel_core_set_machine_stub_mode(bool abort_when_called) {
   g_machine_stubs_abort = abort_when_called;
+}
+
+/*!
+ * Report a machine-layer call that has no implementation here, the same way the stubs above do:
+ * abort, or - in the reporting mode the probes use - name it once and return 0.
+ *
+ * This exists for a symbol that is only partly implemented, so the part that is missing still says
+ * so. `rpc-call` is one: the DGO channel is answered for real and every other channel is not.
+ */
+u64 goal_kernel_core_machine_stub_report(const char* what) {
+  if (g_machine_stubs_abort) {
+    missing("the machine layer (kmachine.cpp)", what);
+  }
+  static std::vector<std::string> reported;
+  for (const auto& seen : reported) {
+    if (seen == what) {
+      return 0;
+    }
+  }
+  reported.emplace_back(what);
+  std::fprintf(stdout, "  MISSING MACHINE FUNCTION: %s\n", what);
+  std::fflush(stdout);
+  return 0;
 }
 
 namespace jak1 {

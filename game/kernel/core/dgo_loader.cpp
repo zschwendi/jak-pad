@@ -42,6 +42,17 @@
  * A v3 object with no registered translation unit is a failure and is reported as one. It is never
  * skipped: skipping it would mean the game is missing a file it asked for, and every symptom after
  * that would be a mystery.
+ *
+ * Two ways in
+ * -----------
+ * `load_and_link_dgo_from_c` above is the C-driven load: the boot uses it for KERNEL.CGO and
+ * GAME.CGO, and it runs to completion before returning.
+ *
+ * GOAL's own level loader does not use it. `engine/load/load-dgo.gc` and `engine/level/level.gc`
+ * drive a DGO one object per frame through the overlord's RPC (`rpc-call` / `rpc-busy?`) and link
+ * each object with `link-begin` / `link-resume`. The second half of this file answers that RPC out
+ * of the same reader, and installs a `link-begin` that applies the same code/data rule, so both
+ * ways in agree about what an object file is.
  */
 
 #include <cstdio>
@@ -50,7 +61,12 @@
 
 #include "common/link_types.h"
 #include "common/log/log.h"
+#include "common/util/Assert.h"
+#include "common/util/FileUtil.h"
 
+#include "game/common/dgo_rpc_types.h"
+#include "game/common/play_rpc_types.h"
+#include "game/common/str_rpc_types.h"
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kdgo.h"
 #include "game/kernel/common/klink.h"
@@ -60,9 +76,13 @@
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/jak1/kdgo.h"
 #include "game/kernel/jak1/klink.h"
+#include "game/kernel/jak1/kscheme.h"
 #include "game/sce/sif_ee.h"
 
 #include "fmt/format.h"
+
+// defined in desktop_seams.cpp, next to the machine-layer stubs it reports through
+u64 goal_kernel_core_machine_stub_report(const char* what);
 
 namespace {
 
@@ -141,6 +161,56 @@ bool read_next_object() {
 
   g_dgo.most_recent = dest;
   g_dgo.objects_read++;
+  return true;
+}
+
+/*!
+ * Which half of an object file this platform can use. See the file comment: v2 and v4 objects hold
+ * no machine code and are linked out of the archive; v3 objects are x86-64 code and come from the
+ * AOT path instead.
+ */
+bool is_data_object(Ptr<u8> object) {
+  const auto* header = (const LinkHeaderV2*)object.c();
+  return header->type_tag == 0xffffffff && (header->version == 2 || header->version == 4);
+}
+
+/*!
+ * Put the native translation of a code object in the heap and run its top-level, which is what the
+ * linker would have done with the object's own v3 code. Returns false and sets the error when
+ * there is no translation - never silently skips, because a missing file makes every symptom after
+ * it a mystery.
+ *
+ * `on_goal_stack` says whether the caller is already running as GOAL. A C-driven load is not, and
+ * has to switch to GOAL's stack; a `link-begin` from the level loader already is, and switching
+ * would overwrite the frames of the GOAL thread that called it.
+ */
+bool load_code_object(const char* object_name, u32 link_flags, bool on_goal_stack) {
+  const goal_aot_object_file* aot = goal_aot_registered_object(object_name);
+  if (!aot) {
+    set_error(fmt::format("the code object '{}' has no native translation", object_name));
+    return false;
+  }
+  if (goal_aot_is_loaded(aot->tag)) {
+    // An earlier DGO already brought this file in. Upstream would relink it into the new heap;
+    // here the native code and its statics are already placed and still valid, and running the
+    // top-level a second time is not the same as loading it once.
+    g_stats.reused_code++;
+    return true;
+  }
+  if (goal_aot_load(aot) != GOAL_KERNEL_CORE_OK) {
+    set_error(fmt::format("could not load the native translation of '{}': {}", object_name,
+                          goal_kernel_core_last_error()));
+    return false;
+  }
+  if (link_flags & LINK_FLAG_EXECUTE) {
+    const auto status = on_goal_stack ? goal_aot_run_top_level_here(aot->tag, nullptr)
+                                      : goal_aot_run_top_level(aot->tag, nullptr);
+    if (status != GOAL_KERNEL_CORE_OK) {
+      set_error(fmt::format("the top-level of '{}' failed: {}", object_name,
+                            goal_kernel_core_last_error()));
+      return false;
+    }
+  }
   return true;
 }
 
@@ -281,10 +351,9 @@ void load_and_link_dgo_from_c(const char* name,
     strcpy(objName, (dgoObj + 4).cast<char>().c());
     g_stats.objects++;
 
-    const auto* header = (const LinkHeaderV2*)obj.c();
-    const bool is_data = header->type_tag == 0xffffffff && (header->version == 2 ||
-                                                            header->version == 4);
+    const bool is_data = is_data_object(obj);
     if (g_verbose) {
+      const auto* header = (const LinkHeaderV2*)obj.c();
       std::printf("  [%3d/%3d] %-24s %s v%d %8d bytes at #x%x, heap #x%x\n", g_stats.objects,
                   g_dgo.object_count, objName, is_data ? "data" : "code",
                   is_data ? header->version : *(const u32*)(obj + 8).c(), objSize, obj.offset,
@@ -296,33 +365,9 @@ void load_and_link_dgo_from_c(const char* name,
       link_and_exec(obj, objName, objSize, heap, linkFlag, jump_from_c_to_goal);
     } else {
       g_stats.code_objects++;
-      const goal_aot_object_file* aot = goal_aot_registered_object(objName);
-      if (!aot) {
-        set_error(fmt::format("{} holds the code object '{}', which has no native translation",
-                              fileName, objName));
+      if (!load_code_object(objName, linkFlag, false)) {
         g_dgo.failed = true;
         break;
-      }
-      if (goal_aot_is_loaded(aot->tag)) {
-        // an earlier DGO already brought this file in; upstream would relink it, but the native
-        // code and its statics are already in the heap and running the top-level twice is not the
-        // same as loading it once.
-        g_stats.reused_code++;
-      } else {
-        if (goal_aot_load(aot) != GOAL_KERNEL_CORE_OK) {
-          set_error(fmt::format("could not load the native translation of '{}': {}", objName,
-                                goal_kernel_core_last_error()));
-          g_dgo.failed = true;
-          break;
-        }
-        if (linkFlag & LINK_FLAG_EXECUTE) {
-          if (goal_aot_run_top_level(aot->tag, nullptr) != GOAL_KERNEL_CORE_OK) {
-            set_error(fmt::format("the top-level of '{}' failed: {}", objName,
-                                  goal_kernel_core_last_error()));
-            g_dgo.failed = true;
-            break;
-          }
-        }
       }
     }
 
@@ -338,7 +383,323 @@ void load_and_link_dgo_from_c(const char* name,
 
 }  // namespace jak1
 
+// ================================================================================================
+// The DGO RPC, answered synchronously
+//
+// GOAL's level loader talks to the overlord instead of calling the loop above. `dgo-load-begin`,
+// `dgo-load-get-next` and `dgo-load-continue` (engine/load/load-dgo.gc) put a 32-byte
+// `load-dgo-msg` in an RPC buffer and send it on channel 3, then poll `rpc-busy?` until the reply
+// comes back in the same buffer.
+//
+// There is no IOP here, so the RPC is answered where it is sent: `rpc-call` does the work and
+// returns, and `rpc-busy?` is therefore always 0. That is a real behavioural difference from the
+// PS2 - a whole object file is read inside one `rpc-call` instead of streaming while the EE runs -
+// but it is a difference in *when* the bytes arrive, not in what GOAL sees. GOAL's own state
+// machine is untouched: it still gets one object per frame, still toggles between the two load
+// buffers, still gets the last object at the heap top, and still sees `more` until the archive is
+// done.
+//
+// The three function numbers are upstream's (game/common/dgo_rpc_types.h): 0 begins a load, 1
+// continues it, 2 cancels. The result codes are `load-msg-result` in load-dgo.gc.
+// ================================================================================================
+
+namespace {
+
+/*!
+ * The 32-byte command GOAL sends and the overlord replies in: `load-dgo-msg` in load-dgo.gc, and
+ * `RPC_Dgo_Cmd` in game/common/dgo_rpc_types.h without the padding the later games added. GOAL's
+ * RPC buffer element is 32 bytes, so only these fields may be touched.
+ */
+struct DgoRpcCmd {
+  u16 rsvd;
+  u16 result;
+  u32 buffer1;
+  u32 buffer2;
+  u32 buffer_heap_top;
+  char name[16];
+};
+static_assert(sizeof(DgoRpcCmd) == 32, "GOAL's DGO RPC buffer element is 32 bytes");
+
+goal_dgo_rpc_stats g_rpc_stats;
+
+/*! Fill in the reply the same way the overlord does: where the object landed, and whether there
+ *  are more. `buffer1` is where GOAL reads the address from, whichever buffer was actually used. */
+void answer_with_next_object(DgoRpcCmd* reply) {
+  u32 last = 0;
+  const auto object = jak1::GetNextDGO(&last);
+  if (!object.offset) {
+    reply->result = DGO_RPC_RESULT_ERROR;
+    return;
+  }
+  g_rpc_stats.dgo_objects++;
+  reply->buffer1 = object.offset;
+  reply->result = last ? DGO_RPC_RESULT_DONE : DGO_RPC_RESULT_MORE;
+}
+
+/*!
+ * GOAL's stack-argument convention hands the callee all eight argument registers as an array. A
+ * natively compiled caller arrives through the ordinary C convention, so the shim builds the array
+ * out of the C arguments. Same shape as the one in game/kernel/jak1/kscheme.cpp.
+ */
+template <u64 (*F)(u64*)>
+u64 stack_arg_shim(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7) {
+  u64 args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
+  return F(args);
+}
+
+u64 dgo_rpc(u32 fno, u32 send_buffer, u32 recv_buffer) {
+  DgoRpcCmd cmd;
+  memcpy(&cmd, Ptr<u8>(send_buffer).c(), sizeof(cmd));
+
+  switch (fno) {
+    case DGO_RPC_LOAD_FNO: {
+      g_rpc_stats.dgo_archives++;
+      // GOAL builds the name from a level's nickname, so it arrives lowercase and without a
+      // directory; the archives on disc are uppercase. This is the same kstrcpyup the C-driven
+      // load does.
+      char name[16];
+      memcpy(name, cmd.name, sizeof(cmd.name));
+      name[sizeof(name) - 1] = '\0';
+      char upper[16];
+      kstrcpyup(upper, name);
+      jak1::BeginLoadingDGO(upper, Ptr<u8>(cmd.buffer1), Ptr<u8>(cmd.buffer2),
+                            Ptr<u8>(cmd.buffer_heap_top));
+      answer_with_next_object(&cmd);
+      break;
+    }
+    case DGO_RPC_LOAD_NEXT_FNO:
+      jak1::ContinueLoadingDGO(Ptr<u8>(cmd.buffer_heap_top));
+      answer_with_next_object(&cmd);
+      break;
+    case DGO_RPC_CANCEL_FNO:
+      close_dgo();
+      cmd.result = DGO_RPC_RESULT_ABORTED;
+      break;
+    default:
+      set_error(fmt::format("the DGO RPC was called with function number {}", fno));
+      cmd.result = DGO_RPC_RESULT_ERROR;
+      break;
+  }
+
+  memcpy(Ptr<u8>(recv_buffer).c(), &cmd, sizeof(cmd));
+  return 0;
+}
+
+// ------------------------------------------------------------------------------------------------
+// The STR RPC, answered the same way
+//
+// Channel 4 loads a whole file, or one chunk of a chunked one, straight into GOAL memory. The game
+// uses it for the text and subtitle banks (`engine/ui/text.gc`, `pc/subtitle.gc`) and for spooled
+// art - the animations in `engine/load/loader.gc`, which links whatever comes back. That last one
+// is why this is implemented rather than stubbed: a stub that says nothing went wrong leaves the
+// spool buffer holding uninitialized memory and the linker is handed it as an object file.
+//
+// The chunked format is `StrFileHeaderJ1` in game/common/str_rpc_types.h: the first sector is a
+// table of each chunk's start sector and byte size. `chunk_id` of -1 means the file is not chunked
+// and the whole thing is wanted.
+// ------------------------------------------------------------------------------------------------
+
+/*!
+ * `load-chunk-msg` in engine/load/load-dgo.gc: 64 bytes, which is the RPC buffer's element size.
+ * `RPC_Str_Cmd_Jak1` in game/common/str_rpc_types.h declares a 64-byte name and so is larger; only
+ * these bytes are ever transferred.
+ */
+struct StrRpcCmd {
+  u16 rsvd;
+  u16 result;
+  u32 ee_addr;
+  s32 chunk_id;
+  u32 length;
+  char basename[48];
+};
+static_assert(sizeof(StrRpcCmd) == 64, "GOAL's STR RPC buffer element is 64 bytes");
+
+/*! GOAL only reads back the reply's result and length, and asks for 32 bytes of it. */
+constexpr int kStrRpcReplySize = 32;
+
+/*! "NDINTRO STR" -> "NDINTRO.STR": an ISO name is 8 space-padded name characters then 3 of
+ *  extension, and the files on disc are named the ordinary way. */
+std::string file_name_of_iso_name(const char* iso_name) {
+  std::string name(iso_name, 8);
+  while (!name.empty() && name.back() == ' ') {
+    name.pop_back();
+  }
+  std::string extension(iso_name + 8, 3);
+  while (!extension.empty() && extension.back() == ' ') {
+    extension.pop_back();
+  }
+  return name + "." + extension;
+}
+
+/*! Read `size` bytes at `offset` into GOAL memory. Returns what was read, or -1. */
+s32 read_data_file(const std::string& relative, u32 goal_address, s32 offset, s32 size) {
+  const s32 fd = ee::sceOpen(relative.c_str(), SCE_RDONLY);
+  if (fd < 0) {
+    return -1;
+  }
+  if (offset && ee::sceLseek(fd, offset, SCE_SEEK_SET) != offset) {
+    ee::sceClose(fd);
+    return -1;
+  }
+  const s32 read = ee::sceRead(fd, Ptr<u8>(goal_address).c(), size);
+  ee::sceClose(fd);
+  return read;
+}
+
+u64 str_rpc(u32 send_buffer, u32 recv_buffer) {
+  StrRpcCmd cmd;
+  memcpy(&cmd, Ptr<u8>(send_buffer).c(), sizeof(cmd));
+  cmd.basename[sizeof(cmd.basename) - 1] = '\0';
+  cmd.result = STR_RPC_RESULT_ERROR;
+
+  if (cmd.chunk_id < 0) {
+    // A whole ordinary file, named the way GOAL named it.
+    char upper[64];
+    kstrcpyup(upper, cmd.basename);
+    const s32 read = read_data_file(std::string("iso/") + upper, cmd.ee_addr, 0, (s32)cmd.length);
+    if (read > 0) {
+      cmd.length = (u32)read;
+      cmd.result = STR_RPC_RESULT_DONE;
+    } else {
+      cmd.length = 0;
+      lg::warn("[str-loader] could not read iso/{}", upper);
+    }
+  } else if (cmd.chunk_id >= SECTOR_TABLE_SIZE) {
+    set_error(fmt::format("the STR RPC was asked for chunk {} of '{}', and a chunked file has {}",
+                          cmd.chunk_id, cmd.basename, SECTOR_TABLE_SIZE));
+  } else {
+    // A chunk of an animation. Its file is named after the animation by a rule of its own.
+    char iso_name[16];
+    file_util::ISONameFromAnimationName(iso_name, cmd.basename);
+    const std::string relative = std::string("iso/") + file_name_of_iso_name(iso_name);
+
+    StrFileHeaderJ1 header;
+    const s32 fd = ee::sceOpen(relative.c_str(), SCE_RDONLY);
+    if (fd < 0) {
+      lg::warn("[str-loader] no animation file {} for '{}'", relative, cmd.basename);
+      cmd.length = 0;
+    } else {
+      const bool got_header = ee::sceRead(fd, &header, sizeof(header)) == (s32)sizeof(header);
+      ee::sceClose(fd);
+      const u32 size = got_header ? header.sizes[cmd.chunk_id] : 0;
+      const u32 sector = got_header ? header.sectors[cmd.chunk_id] : 0;
+      if (!size) {
+        lg::warn("[str-loader] {} has no chunk {}", relative, cmd.chunk_id);
+        cmd.length = 0;
+      } else if (size > cmd.length) {
+        set_error(fmt::format("chunk {} of {} is {} bytes and GOAL offered {}", cmd.chunk_id,
+                              relative, size, cmd.length));
+        cmd.length = 0;
+      } else if (read_data_file(relative, cmd.ee_addr, (s32)(sector * SECTOR_SIZE), (s32)size) !=
+                 (s32)size) {
+        lg::warn("[str-loader] short read of chunk {} of {}", cmd.chunk_id, relative);
+        cmd.length = 0;
+      } else {
+        cmd.length = size;
+        cmd.result = STR_RPC_RESULT_DONE;
+      }
+    }
+  }
+
+  if (cmd.result == STR_RPC_RESULT_DONE) {
+    g_rpc_stats.str_reads++;
+  } else {
+    g_rpc_stats.str_failures++;
+  }
+  memcpy(Ptr<u8>(recv_buffer).c(), &cmd, kStrRpcReplySize);
+  return 0;
+}
+
+/*!
+ * `rpc-call`: channel, function number, async flag, send buffer and size, receive buffer and size,
+ * as eight GOAL stack arguments.
+ *
+ * The two channels that read files are answered. The rest belong to subsystems this library does
+ * not contain - sound (0, 1), the ramdisk (2), and streamed-audio playback (5) - and a call on one
+ * is reported by the machine-layer stub path rather than quietly succeeding.
+ */
+u64 goal_rpc_call(u64* args) {
+  const s32 channel = (s32)args[0];
+  if (channel == DGO_RPC_CHANNEL) {
+    return dgo_rpc((u32)args[1], (u32)args[3], (u32)args[5]);
+  }
+  if (channel == STR_RPC_CHANNEL) {
+    return str_rpc((u32)args[3], (u32)args[5]);
+  }
+  return goal_kernel_core_machine_stub_report(channel == 0 || channel == 1 ? "rpc-call (sound)"
+                                              : channel == 2               ? "rpc-call (ramdisk)"
+                                              : channel == PLAY_RPC_CHANNEL
+                                                  ? "rpc-call (streamed audio)"
+                                                  : "rpc-call (unknown channel)");
+}
+
+/*!
+ * `rpc-busy?`: always 0. Every RPC this library answers is answered inside `rpc-call`, so nothing
+ * is ever still in flight. GOAL's `check-busy` and `sync` therefore always find the channel free,
+ * which is what makes its loader advance one object per frame instead of spinning.
+ */
+u64 goal_rpc_busy(s32 channel) {
+  (void)channel;
+  return 0;
+}
+
+/*!
+ * `link-begin`, with this platform's code/data rule applied.
+ *
+ * Upstream's `link_begin` (game/kernel/jak1/klink.cpp) hands every object to the linker, which for
+ * a v3 object copies x86-64 machine code into the heap and returns its entry point. That is the
+ * one thing this platform cannot do, so a v3 object takes the native translation instead - exactly
+ * as the C-driven loop above does - and reports itself finished in one call, because there is no
+ * incremental work left to spread over frames.
+ *
+ * Arguments are GOAL's: object data, name, size, heap, link flags.
+ *
+ * A code object with no translation cannot be reported through the return value: 0 means "call
+ * link-resume again" and 1 means "linked", and there is no third answer GOAL understands. It ends
+ * the run instead of letting the level load continue over a file that is not there.
+ */
+u64 goal_link_begin(u64* args) {
+  const Ptr<u8> object_data(args[0]);
+  const char* name = Ptr<char>(args[1]).c();
+  const u32 flags = (u32)args[4];
+
+  if (is_data_object(object_data)) {
+    g_rpc_stats.linked_data_objects++;
+    return jak1::link_begin(args);
+  }
+  g_rpc_stats.linked_code_objects++;
+  if (!load_code_object(name, flags, true)) {
+    lg::error("[dgo-loader] link-begin: {}", g_error);
+    ASSERT_NOT_REACHED_MSG("link-begin was given a code object this build cannot supply");
+  }
+  return 1;
+}
+
+/*! `link-resume`. Only a data object ever leaves work behind for it; see goal_link_begin. */
+u64 goal_link_resume() {
+  return jak1::link_resume();
+}
+
+}  // namespace
+
 extern "C" {
+
+/*!
+ * Give GOAL the loader entry points it drives a level DGO with. Called after the machine-layer
+ * stubs are installed, so these replace the stubs for `rpc-call` and `rpc-busy?`, and after
+ * `InitScheme`, so they replace upstream's `link-begin` and `link-resume`.
+ */
+void goal_dgo_goal_loader_stats(goal_dgo_rpc_stats* out) {
+  *out = g_rpc_stats;
+}
+
+void goal_dgo_install_goal_loader(void) {
+  g_rpc_stats = goal_dgo_rpc_stats();
+  jak1::make_stack_arg_function_symbol_from_c("rpc-call", (void*)stack_arg_shim<goal_rpc_call>);
+  jak1::make_function_symbol_from_c("rpc-busy?", (void*)goal_rpc_busy);
+  jak1::make_stack_arg_function_symbol_from_c("link-begin", (void*)stack_arg_shim<goal_link_begin>);
+  jak1::make_function_symbol_from_c("link-resume", (void*)goal_link_resume);
+}
 
 goal_kernel_core_status goal_dgo_load(const char* name,
                                       uint32_t link_flags,

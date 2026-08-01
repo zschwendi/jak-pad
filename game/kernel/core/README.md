@@ -104,10 +104,9 @@ stops before it; `JAK1_AOT_BOOT_FRONTIER` in `game/CMakeLists.txt` is the number
 how you find the next frontier. `jak1-data-boot-test` below loads the art and gets past it.
 
 Machine-layer functions are asked for along the way and reported by
-`goal_kernel_core_stub_machine_layer` rather than implemented - `cpad-open`, `rpc-call`,
-`rpc-busy?`, the `scf-get-*` settings readers, the `file-stream-*` and `pc-*` PC-port functions.
-Those files' top-levels ran to completion, but with those calls returning 0, so they are known to
-load rather than known to work.
+`goal_kernel_core_stub_machine_layer` rather than implemented - `cpad-open`, the `scf-get-*`
+settings readers, the `file-stream-*` and `pc-*` PC-port functions. Those files' top-levels ran to
+completion, but with those calls returning 0, so they are known to load rather than known to work.
 
 ```sh
 cmake --build build/Release/bin -j 4 --target jak1-data-boot-test
@@ -116,7 +115,7 @@ GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 ./build/Release/bin/game/jak1-data-boot-
 ```
 
 `jak1-data-boot-test` boots the game the way the game boots: `KERNEL.CGO`, then `GAME.CGO`, in DGO
-order. It is registered with CTest twice.
+order, and then runs the engine's own startup. It is registered with CTest three times.
 
 `--synthetic` writes a DGO archive of its own into a temporary directory and loads it. It needs no
 game data, so it always runs, and it checks the archive reader, the code/data rule, and that an
@@ -131,8 +130,24 @@ With data it loads all 8 objects of `KERNEL.CGO` and all 346 of `GAME.CGO` - 334
 the AOT path and 20 data objects linked out of the archives, including the texture-page directory,
 nine texture pages, and the `eichar`, `sidekick`, `fuel-cell` and `fuelcell-naked` art groups. The
 global heap ends at 32.9 MB with 5700 symbols, and `hud-classes-pc`, the file the probe above
-cannot reach, loads and runs. `--play` and `--frames` go further; see the file's comments for
-exactly where each one stops.
+cannot reach, loads and runs.
+
+```sh
+GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 \
+  ./build/Release/bin/game/jak1-data-boot-test --play --frames 60
+```
+
+`--play` calls the engine's own `play`, which is the last thing upstream's `InitMachineScheme`
+does. It allocates the level heaps and drives the whole title-level load itself, through GOAL's
+loader rather than the C one: the DGO RPC and `link-begin` below. `--frames N` then calls
+`kernel-dispatcher` N times, which is `KernelCheckAndDispatch`'s loop body without the listener
+half - the GOAL kernel's own frame, running processes, states and level streaming.
+
+With data, `--play --frames 60` loads `TIT.DGO` (15 objects) and then `VI1.DGO` (55 objects,
+including a 7.3 MB BSP) through the RPC, reaches `GAMEPLAY: enter title`, displays the title level,
+streams in `village1`, and swaps the visibility data. The global heap ends at 55.6 MB. The frame
+loop itself is not limited to 60: 1000 consecutive frames run the same way. The CTest entry uses 60
+so the suite stays quick.
 
 ## Code and data in a DGO
 
@@ -149,6 +164,28 @@ have run the object's. For a v2/v4 object the bytes are copied into the heap and
 `link_and_exec` exactly as upstream does, ending in the object type's own GOAL `login` method,
 which is itself AOT code. A v3 object with no registered translation fails the load; it is never
 skipped.
+
+## The two ways a DGO gets loaded
+
+`goal_dgo_load` is the C-driven load, and it is what the boot uses: it reads a whole archive and
+returns. GOAL's own level loader does not use it. `engine/load/load-dgo.gc` and
+`engine/level/level.gc` drive a DGO one object per frame through the overlord's RPC (`rpc-call` /
+`rpc-busy?`) and link each object with `link-begin` / `link-resume`.
+
+`goal_dgo_install_goal_loader` answers that RPC out of the same reader. There is no IOP, so the
+RPC is answered where it is sent: `rpc-call` does the work and returns, and `rpc-busy?` is
+therefore always 0. A whole object file arrives inside one `rpc-call` instead of streaming while
+the EE runs, but that is a difference in *when* the bytes arrive, not in what GOAL sees - GOAL
+still gets one object per frame, still toggles between its two load buffers, still gets the last
+object at the heap top, and still sees `more` until the archive is done. The same call installs a
+`link-begin` that applies the code/data rule above, so both ways in agree about what an object
+file is.
+
+Channel 4, the STR RPC, is answered too: it loads a whole file, or one chunk of a chunked one,
+straight into GOAL memory. The game uses it for the text and subtitle banks and for spooled art -
+the animations in `engine/load/loader.gc`, which link whatever comes back, which is why it is
+implemented rather than stubbed. The remaining channels - sound (0, 1), the ramdisk (2) and
+streamed-audio playback (5) - report themselves through the machine-layer stub path.
 
 Standalone static library for a device build:
 
@@ -231,20 +268,21 @@ the GOAL kernel routines that switch stacks.
   117 symbols so a call says which function was wanted instead of faulting in the guard page. Only
   the three that are not machine-specific at all are implemented in `desktop_seams.cpp`:
   `__mem-move` (the PC port's `ultimate-memcpy` is a call to it, so a stub there means every data
-  object in a DGO links against zeroes), `__read-ee-timer`, and `__pc-get-mips2c`. Everything else
-  - `cpad-open`, `file-stream-open`, `reset-graph`, the `scf-get-*` readers, `rpc-call`,
-  `rpc-busy?` - is a diagnostic and not an implementation.
-- **No IOP, so no GOAL-driven DGO load.** `goal_dgo_load` reads an archive synchronously, which is
-  what `InitHeapAndSymbol` and `InitMachineScheme` need. GOAL's own level loader
-  (`engine/load/load-dgo.gc`, `engine/level/level.gc`) does not use it: it drives the DGO RPC with
-  `rpc-call` / `rpc-busy?` and links with `link-begin` / `link-resume`. Both are missing, so
-  `(play)` spins in `(check-busy rpc-buffer-pair)` waiting for a level that never arrives.
-  Level loading needs the DGO RPC answered and the code/data rule moved into `link_begin`, where
-  GOAL-driven linking can reach it.
-- **Backup stacks are sized for the PS2.** `PROCESS_STACK_SAVE_SIZE` is 256 bytes and an ARM64
-  machine context alone is 176, so a process that suspends needs `stack-size-set!` with a larger
-  number than the game currently asks for. `thread-suspend` aborts with both numbers rather than
-  copying past the end of the thread object. See `docs/aot-stack-model.md`.
+  object in a DGO links against zeroes), `__read-ee-timer`, and `__pc-get-mips2c`. The loader half
+  of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`; everything else
+  - `cpad-open`, `file-stream-open`, `reset-graph`, the `scf-get-*` readers - is a diagnostic and
+  not an implementation. A frame runs with the display and DMA functions returning 0, so what a
+  frame *computes* is real and what it would have *shown* is not.
+- **The renderer is not here, so a frame is simulation only.** `reset-graph`, `syncv`, `sync-path`,
+  `put-display-env`, `dma-sync`, `flush-cache`, `__send-gfx-dma-chain`, `__pc-texture-upload-now`
+  and `__pc-texture-relocate` are the machine functions a frame calls and they all report and
+  return 0. GOAL builds its DMA chains and hands them to `__send-gfx-dma-chain`, which drops them;
+  nothing is drawn and nothing checks that what was built is right.
+- **Level code is loaded onto the global heap and never freed.** `link-begin` puts a level object's
+  native translation where every other AOT file goes rather than in the level heap, and a level
+  that is loaded a second time reuses it instead of relinking. That is correct for repeated loads
+  and wrong for memory: unloading a level frees its data and not its code. Upstream relinks into
+  the level heap each time.
 - **File access is data-directory-relative only.** `ee::sceOpen` and friends are real POSIX file
   descriptors, but every name is resolved under the configured data directory
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
