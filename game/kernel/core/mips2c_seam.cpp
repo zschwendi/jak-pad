@@ -70,7 +70,8 @@ struct Mips2CSlot {
   u32 goal_stack_size = 0;
 };
 
-constexpr int kMips2CSlotCount = 128;
+// Jak 1 registers 93 functions, Jak 2 registers 137; one game per process.
+constexpr int kMips2CSlotCount = 160;
 Mips2CSlot g_slots[kMips2CSlotCount];
 int g_slot_count = 0;
 

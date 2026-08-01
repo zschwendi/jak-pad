@@ -198,13 +198,19 @@ set(JAK2_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
     # synchronous DGO reader, in place of game/kernel/jak2/kdgo.cpp
     "${CMAKE_CURRENT_LIST_DIR}/dgo_loader_jak2.cpp"
-    # the mips2c seam; the jak2 function library is not ported yet, so lookups fail by name
+    # the mips2c seam, in place of game/mips2c/mips2c_table.cpp, plus the Jak 2 function library
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_seam.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/mips2c_jak2.cpp"
     # native implementations of the GOAL kernel routines that switch stacks
     "${CMAKE_CURRENT_LIST_DIR}/goal_native_kernel.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/goal_thread_arm64.s"
     # the ARM64 GOAL calling-convention trampolines
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/asm_funcs_arm64.s")
+
+# The Jak 2 half of game/mips2c, mirroring the jak1 glob above.
+file(GLOB JAK2_MIPS2C_SOURCES CONFIGURE_DEPENDS
+     "${JAK1_KERNEL_CORE_ROOT}/game/mips2c/jak2_functions/*.cpp")
+list(APPEND JAK2_KERNEL_CORE_SOURCES ${JAK2_MIPS2C_SOURCES})
 
 add_library(jak2-kernel-core STATIC ${JAK2_KERNEL_CORE_SOURCES})
 target_compile_features(jak2-kernel-core PUBLIC cxx_std_20)
