@@ -30,8 +30,6 @@ struct LoadedFile {
   std::string tag;
   std::vector<u32> static_addrs;
   std::vector<u32> function_addrs;
-  u32 heap = 0;   /*! the kheapinfo it was placed in */
-  u32 bytes = 0;  /*! what it took, so a caller can report what a level's code costs */
 };
 
 std::vector<LoadedFile> g_loaded;
@@ -147,8 +145,6 @@ goal_kernel_core_status goal_aot_load_into(const goal_aot_object_file* file, uin
 
   LoadedFile loaded;
   loaded.tag = file->tag;
-  loaded.heap = heap.offset;
-  const u32 heap_before = heap->current.offset;
 
   // One allocation for the whole file's static data, like link_control's "main-segment" copy.
   // kmalloc is 16-byte aligned, and no static asks for more than that.
@@ -218,7 +214,6 @@ goal_kernel_core_status goal_aot_load_into(const goal_aot_object_file* file, uin
 
   // Register before relocating: relocations and the file's own link step both resolve through the
   // tag-keyed tables above.
-  loaded.bytes = heap->current.offset - heap_before;
   g_loaded.push_back(std::move(loaded));
   const auto& placed = g_loaded.back();
 
@@ -297,20 +292,13 @@ int goal_aot_is_loaded(const char* tag) {
   return tag && find_file(tag) ? 1 : 0;
 }
 
-uint32_t goal_aot_loaded_heap(const char* tag) {
-  auto* loaded = tag ? find_file(tag) : nullptr;
-  return loaded ? loaded->heap : 0;
-}
-
-uint32_t goal_aot_forget(const char* tag) {
+void goal_aot_forget(const char* tag) {
   for (auto it = g_loaded.begin(); it != g_loaded.end(); ++it) {
     if (it->tag == tag) {
-      const u32 bytes = it->bytes;
       g_loaded.erase(it);
-      return bytes;
+      return;
     }
   }
-  return 0;
 }
 
 uint32_t goal_aot_function_object(const char* tag, int index) {

@@ -81,15 +81,11 @@ const goal_aot_object_file* goal_aot_registered_object(const char* object_name);
 /*! Non-zero if goal_aot_load has already placed `tag` in the heap. */
 int goal_aot_is_loaded(const char* tag);
 
-/*! The `kheapinfo` a loaded `tag` was placed in, or 0. */
-uint32_t goal_aot_loaded_heap(const char* tag);
-
 /*!
- * Forget that `tag` is loaded, so the next `goal_aot_load_into` places it again. Returns how many
- * heap bytes it had taken. Nothing is freed: the heap this is used for - a level's - is reset by
- * `(method unload! level)` all at once.
+ * Forget that `tag` is loaded, so the next `goal_aot_load_into` places it again. Nothing is freed:
+ * the heap this is used for - a level's - is reset by `(method unload! level)` all at once.
  */
-uint32_t goal_aot_forget(const char* tag);
+void goal_aot_forget(const char* tag);
 
 /*!
  * GOAL address of the function object for `index` in `tag`, or 0 if unknown.

@@ -57,10 +57,10 @@ typedef struct goal_dgo_rpc_stats {
   int linked_data_objects;   /*! link-begin calls given to the real linker */
   int str_reads;             /*! files and animation chunks the STR RPC delivered */
   int str_failures;          /*! STR requests that found nothing to read */
-  unsigned int level_code_bytes; /*! heap a level's own object files took, in the level's heap */
   int ramdisk_files;         /*! files the ramdisk RPC loaded (the .VIS of a level) */
   int ramdisk_reads;         /*! windows of one the ramdisk RPC handed back */
   int ramdisk_misses;        /*! ramdisk requests that found nothing to read */
+  unsigned level_code_bytes; /*! heap a level's own object files took, in the level's own heap */
 } goal_dgo_rpc_stats;
 
 void goal_dgo_goal_loader_stats(goal_dgo_rpc_stats* out);
