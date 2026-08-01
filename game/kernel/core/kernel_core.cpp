@@ -28,6 +28,7 @@
 #include "game/kernel/jak1/klisten.h"
 #include "game/kernel/jak1/kscheme.h"
 #include "game/runtime.h"
+#include "game/sce/libscf.h"
 
 // defined in desktop_seams.cpp, next to the machine-layer stubs it controls
 void goal_kernel_core_set_machine_stub_mode(bool abort_when_called);
@@ -110,6 +111,45 @@ void init_kernel_globals() {
 }
 
 /*!
+ * The boot configuration block from jak1::goal_main (game/kernel/jak1/kboot.cpp), which is the
+ * desktop entry point and is not part of this library. `scf-get-volume`, `scf-get-language` and
+ * `scf-get-aspect` read it, and GOAL reads those once, when it builds *setting-control*.
+ *
+ * The volume matters most. settings.gc derives every volume the game does not keep on the memory
+ * card from `(scf-get-volume)`: the ambient group, and the movie/hint volumes that ambient speech
+ * and cutscenes apply as a percentage. With this left at zero the ambient sound group is muted
+ * outright and every ambient-speech window multiplies the sfx, music and dialog volumes by zero.
+ */
+void init_boot_config() {
+  masterConfig.aspect = (u16)ee::sceScfGetAspect();
+  masterConfig.language = (u16)ee::sceScfGetLanguage();
+  masterConfig.inactive_timeout = 0;
+  masterConfig.timeout = 0;
+  masterConfig.volume = 100;
+
+  switch (masterConfig.language) {
+    case SCE_SPANISH_LANGUAGE:
+      masterConfig.language = (u16)Language::Spanish;
+      break;
+    case SCE_FRENCH_LANGUAGE:
+      masterConfig.language = (u16)Language::French;
+      break;
+    case SCE_GERMAN_LANGUAGE:
+      masterConfig.language = (u16)Language::German;
+      break;
+    case SCE_ITALIAN_LANGUAGE:
+      masterConfig.language = (u16)Language::Italian;
+      break;
+    case SCE_JAPANESE_LANGUAGE:
+      masterConfig.language = (u16)Language::Japanese;
+      break;
+    default:
+      masterConfig.language = (u16)Language::English;
+      break;
+  }
+}
+
+/*!
  * The equivalent of the heap setup at the top of jak1::InitMachine. The machine layer itself
  * (IOP, video, sound, listener) is not part of this library.
  */
@@ -142,6 +182,7 @@ goal_kernel_core_status goal_kernel_core_initialize(void) {
   }
 
   init_kernel_globals();
+  init_boot_config();
 
   // No compiler is connected and none can be: the listener transport is not part of this library.
   // MasterDebug drives the listener buffers and the debug-segment symbol, so it stays off.
