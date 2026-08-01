@@ -1,5 +1,4 @@
 add_library(compiler
-        aot/AOTWriter.cpp
         aot/CBackend.cpp
         emitter/CallingConvention.cpp
         emitter/CodeTester.cpp
@@ -7,7 +6,6 @@ add_library(compiler
         emitter/ObjectGenerator.cpp
         emitter/Register.cpp
         emitter/IGen.cpp
-        emitter/IGenARM64.cpp
         emitter/IGenX86.cpp
         debugger/disassemble.cpp
         build_level/common/build_level.cpp
@@ -75,7 +73,6 @@ add_library(compiler
         debugger/DebugInfo.cpp
         debugger/DebugServer.cpp
         emitter/IGenX86.cpp
-        emitter/IGenARM64.cpp
         listener/Listener.cpp
         listener/MemoryMap.cpp
         make/MakeSystem.cpp
@@ -95,7 +92,6 @@ endif ()
 
 add_executable(goalc main.cpp)
 add_executable(goalc-simple simple_main.cpp)
-add_executable(goalc-aot aot_main.cpp)
 add_executable(goalc-cbackend aot/c_backend_main.cpp)
 add_executable(goalc-cbackend-sweep aot/c_backend_sweep_main.cpp)
 
@@ -104,19 +100,10 @@ add_executable(build_actor build_actor/main.cpp)
 
 target_link_libraries(goalc common Zydis compiler)
 target_link_libraries(goalc-simple common Zydis compiler)
-target_link_libraries(goalc-aot common Zydis compiler)
 target_link_libraries(goalc-cbackend common Zydis compiler)
 target_link_libraries(goalc-cbackend-sweep common Zydis compiler)
 target_link_libraries(build_level common Zydis compiler)
 target_link_libraries(build_actor common Zydis compiler)
-
-add_test(
-        NAME goalc-aot-artifact-pair
-        COMMAND ${CMAKE_COMMAND}
-        -DGOALC_AOT=$<TARGET_FILE:goalc-aot>
-        -DPROJECT_ROOT=${CMAKE_SOURCE_DIR}
-        -DOUTPUT_DIR=${CMAKE_BINARY_DIR}/test-output/goalc-aot-artifact-pair
-        -P ${CMAKE_SOURCE_DIR}/test/goalc/test_arm64_aot_cli.cmake)
 
 add_test(
         NAME goalc-c-backend-gcommon

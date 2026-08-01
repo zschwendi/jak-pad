@@ -181,11 +181,7 @@ std::unique_ptr<FunctionEnv> Compiler::compile_top_level_function(const std::str
   if (!dynamic_cast<const None*>(result)) {
     auto* value = result->to_gpr(code, fe.get());
     const auto return_register = emitter::get_register_info(m_instr_set).get_gpr_ret_reg();
-    if (m_instr_set == emitter::InstructionSet::ARM64) {
-      fe->emit_ir<IR_Return>(code, value, value, return_register);
-    } else {
-      fe->emit_ir<IR_Return>(code, fe->make_gpr(result->type()), value, return_register);
-    }
+    fe->emit_ir<IR_Return>(code, fe->make_gpr(result->type()), value, return_register);
   }
 
   if (!fe->code().empty()) {
@@ -311,60 +307,6 @@ void Compiler::color_object_file(FileEnv* env) {
   }
 
   m_debug_stats.num_spills += num_spills_in_file;
-}
-
-std::vector<u8> Compiler::compile_top_level_source(const std::string& source,
-                                                   const std::string& object_name) {
-  return compile_arm64_aot_source(source, object_name, std::nullopt);
-}
-
-std::vector<u8> Compiler::compile_arm64_aot_source(
-    const std::string& source,
-    const std::string& object_name,
-    const std::optional<std::string>& function_name) {
-  if (m_instr_set != emitter::InstructionSet::ARM64) {
-    throw std::runtime_error("Raw AOT output is only available for the ARM64 instruction set.");
-  }
-
-  auto code = m_goos.reader.read_from_string(source, true);
-  auto* object_file = compile_object_file(object_name, std::move(code), true);
-  color_object_file(object_file);
-
-  try {
-    auto debug_info = &m_debugger.get_debug_info_for_object(object_file->name());
-    debug_info->clear();
-    CodeGenerator gen(object_file, debug_info, m_version, m_instr_set);
-    auto result = gen.run_arm64_aot_function(function_name);
-    m_debug_stats.num_moves_eliminated += gen.get_obj_stats().moves_eliminated;
-    object_file->cleanup_after_codegen();
-    return result;
-  } catch (std::exception& e) {
-    throw_compiler_error_no_code("Error during ARM64 AOT code generation: {}", e.what());
-  }
-  return {};
-}
-
-void Compiler::validate_arm64_aot_load_state_value_source(
-    const std::string& source,
-    const std::string& object_name,
-    const std::optional<std::string>& function_name) {
-  if (m_instr_set != emitter::InstructionSet::ARM64) {
-    throw std::runtime_error("ARM64 AOT load-state value proof requires the ARM64 instruction set.");
-  }
-
-  auto code = m_goos.reader.read_from_string(source, true);
-  auto* object_file = compile_object_file(object_name, std::move(code), true);
-  color_object_file(object_file);
-
-  try {
-    auto debug_info = &m_debugger.get_debug_info_for_object(object_file->name());
-    debug_info->clear();
-    CodeGenerator gen(object_file, debug_info, m_version, m_instr_set);
-    gen.validate_arm64_aot_load_state_value_function(function_name);
-    object_file->cleanup_after_codegen();
-  } catch (std::exception& e) {
-    throw_compiler_error_no_code("Error during ARM64 AOT load-state value validation: {}", e.what());
-  }
 }
 
 std::vector<u8> Compiler::codegen_object_file(FileEnv* env) {

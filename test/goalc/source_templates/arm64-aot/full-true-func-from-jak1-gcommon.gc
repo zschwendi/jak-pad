@@ -1,4 +1,0 @@
-;; Exact full definition from goal_src/jak1/kernel/gcommon.gc.
-(defun true-func ()
-  "Return true"
-  '#t)

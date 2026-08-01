@@ -1,25 +1,12 @@
-# Set a more convenient ARM flag
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
-    set(ARM64_ARCH TRUE)
-    message(STATUS "ARM64 architecture detected")
-else()
-    set(ARM64_ARCH FALSE)
-    message(STATUS "Non-ARM64 architecture detected")
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    message(FATAL_ERROR "The GOALPad runtime is ARM64-only.")
 endif()
+set(ARM64_ARCH TRUE)
 
-if(ARM64_ARCH)
-    # Add your ARM64-specific configuration or build options here
-    set(OG_ASM_FUNCS_FILE kernel/asm_funcs_arm64.s)
-    enable_language(ASM)
-    set(CMAKE_ASM_SOURCE_FILE_EXTENSIONS ${CMAKE_ASM_SOURCE_FILE_EXTENSIONS} s)
-    set_source_files_properties(${OG_ASM_FUNCS_FILE} PROPERTIES COMPILE_FLAGS "-arch arm64 -g")
-else()
-    set(OG_ASM_FUNCS_FILE kernel/asm_funcs_x86_64.asm)
-    enable_language(ASM_NASM)
-    set(CMAKE_ASM_NASM_SOURCE_FILE_EXTENSIONS ${CMAKE_ASM_NASM_SOURCE_FILE_EXTENSIONS} asm)
-    set(CMAKE_ASM_NASM_COMPILE_OBJECT "<CMAKE_ASM_NASM_COMPILER> <INCLUDES> -f ${CMAKE_ASM_NASM_OBJECT_FORMAT} -o <OBJECT> <SOURCE>")
-    set_source_files_properties(${OG_ASM_FUNCS_FILE} PROPERTIES COMPILE_FLAGS "-g")
-endif()
+set(OG_ASM_FUNCS_FILE kernel/asm_funcs_arm64.s)
+enable_language(ASM)
+set(CMAKE_ASM_SOURCE_FILE_EXTENSIONS ${CMAKE_ASM_SOURCE_FILE_EXTENSIONS} s)
+set_source_files_properties(${OG_ASM_FUNCS_FILE} PROPERTIES COMPILE_FLAGS "-arch arm64 -g")
 
 set(RUNTIME_SOURCE
         external/discord_jak1.cpp

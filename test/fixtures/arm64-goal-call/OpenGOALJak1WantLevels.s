@@ -1,7 +1,7 @@
 .section __TEXT,__text,regular,pure_instructions
 .p2align 2
-.globl _goalpad_aot_want_levels
-_goalpad_aot_want_levels:
+.globl _goalpad_aot_load_state_want_levels
+_goalpad_aot_load_state_want_levels:
   .long 0xca030063
   .long 0x1400001d
   .long 0xaa0303e4

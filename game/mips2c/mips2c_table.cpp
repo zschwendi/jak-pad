@@ -1,5 +1,7 @@
 #include "mips2c_table.h"
 
+#include <cstring>
+
 #include "common/log/log.h"
 #include "common/symbols.h"
 
@@ -9,15 +11,6 @@
 #include "game/kernel/jak2/kscheme.h"
 #include "game/kernel/jak3/kscheme.h"
 #include "game/runtime.h"
-
-extern "C" {
-#ifdef __linux__
-void _mips2c_call_systemv();
-#elif defined __APPLE__ && defined __x86_64__
-void _mips2c_call_systemv() asm("_mips2c_call_systemv");
-#endif
-void _mips2c_call_windows();
-}
 
 // clang-format off
 namespace Mips2C {
@@ -691,54 +684,14 @@ void LinkedFunctionTable::reg(const std::string& name, u64 (*exec)(void*), u32 s
 
   it.first->second.goal_trampoline = jump_to_asm;
 
-  u8* ptr = jump_to_asm.c();
-
-  {
-    // linux
-
-    // push the function
-    u64 addr = (u64)exec;
-    *ptr = 0x48;
-    ptr++;
-    *ptr = 0xb8;
-    ptr++;
-    memcpy(ptr, &addr, 8);
-    ptr += 8;
-    *ptr = 0x50;
-    ptr++;
-
-    // push the stack size
-    addr = stack_size;
-    *ptr = 0x48;
-    ptr++;
-    *ptr = 0xb8;
-    ptr++;
-    memcpy(ptr, &addr, 8);
-    ptr += 8;
-    *ptr = 0x50;
-    ptr++;
-
-    // call the other function
-#ifdef __linux__
-    addr = (u64)_mips2c_call_systemv;
-#elif defined __APPLE__ && defined __x86_64__
-    addr = (u64)_mips2c_call_systemv;
-#elif _WIN32
-    addr = (u64)_mips2c_call_windows;
-#endif
-
-    *ptr = 0x48;
-    ptr++;
-    *ptr = 0xb8;
-    ptr++;
-    memcpy(ptr, &addr, 8);
-    ptr += 8;
-
-    // jumps to the mips2c call, which will return to the caller of this stub.
-    *ptr = 0xff;
-    ptr++;
-    *ptr = 0xe0;
-  }
+  // Upstream writes an x86-64 stub here that pushes `exec` and `stack_size` and jumps to the
+  // assembly mips2c caller. GOALPad has no x86 runtime and no writable-executable GOAL memory, so
+  // there is no stub to write. The object gets the null entry point that ARM64 function objects
+  // hold (see game/kernel/core/aot_loader.h), which makes calling one fail immediately instead of
+  // running whatever the heap contains. mips2c dispatch is unimplemented on ARM64.
+  (void)stack_size;
+  void* no_entry_point = nullptr;
+  memcpy(jump_to_asm.c(), &no_entry_point, sizeof(no_entry_point));
 }
 
 u32 LinkedFunctionTable::get(const std::string& name) {

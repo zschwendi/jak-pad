@@ -1,16 +1,18 @@
 #include "IGen.h"
 
-#include "IGenARM64.h"
+#include <stdexcept>
+
 #include "IGenX86.h"
 #include "goalc/emitter/ObjectGenerator.h"
 
-#define IGEN_DISPATCH(name, ...)       \
-  switch (gen.instr_set()) {           \
-    case InstructionSet::X86:          \
-      return X86::name(__VA_ARGS__);   \
-    case InstructionSet::ARM64:        \
-      return ARM64::name(__VA_ARGS__); \
-  }
+#define IGEN_DISPATCH(name, ...)     \
+  switch (gen.instr_set()) {         \
+    case InstructionSet::X86:        \
+      return X86::name(__VA_ARGS__); \
+    default:                         \
+      break;                         \
+  }                                  \
+  throw std::runtime_error("IGen: unsupported instruction set")
 
 namespace emitter {
 namespace IGen {
