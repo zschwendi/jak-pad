@@ -14,6 +14,8 @@
  * implementation lives in metal_renderer.h/.mm and metal_pipeline.mm.
  */
 
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "common/common_types.h"
@@ -27,6 +29,7 @@ class TexturePool;
 
 namespace tfrag3 {
 struct Texture;
+struct Level;
 }
 
 namespace metal_renderer {
@@ -80,6 +83,18 @@ struct ChainStats {
   int sprites_distort = 0;  // DMA consumed; distort drawing is not ported
   int sprite_draws = 0;
   int sprite_missing_textures = 0;
+  // merc buckets, from the last chain frame
+  int merc_models = 0;
+  int merc_missing_models = 0;  // the model's level is not loaded
+  int merc_draws = 0;
+  int merc_triangles = 0;
+  int merc_envmap_draws = 0;
+  int merc_bone_vectors = 0;
+  int merc_mod_effects_deferred = 0;  // blerc / mod-vertex updates are not ported
+  int merc_eye_draws = 0;             // EyeRenderer is not ported: placeholder texture
+  int merc_missing_textures = 0;
+  int merc_bad_bone_pointers = 0;  // bone pointer outside EE memory
+  int merc_bad_draw_ranges = 0;    // draw range outside the level's index buffer
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets
@@ -141,5 +156,32 @@ u64 upload_texture_rgba8(const u8* data, int w, int h);
 
 // Mirror of the GL loader's add_texture against the pipeline's pool.
 u64 pool_add_texture(const tfrag3::Texture& tex, bool is_common);
+
+// --- merc model data (see metal_merc_model_pool.h) --------------------------
+
+// What one extracted level contributed to the merc model pool.
+struct MercLevelLoad {
+  std::string level_name;
+  int textures = 0;
+  int models = 0;
+  u32 vertices = 0;
+  u32 indices = 0;
+};
+
+// Loads an extracted level (.fr3): its textures go into the pool exactly as
+// pool_add_texture does, and its merc models/geometry become available to the
+// merc bucket renderers. Requires a created display. False on failure, with a
+// message in `error`.
+bool merc_load_fr3(const std::string& path,
+                   bool is_common,
+                   MercLevelLoad* out,
+                   std::string* error);
+
+// Same, for a level built in memory: the proof checks the merc path with a
+// synthetic level so it needs no game data.
+bool merc_add_level(std::unique_ptr<tfrag3::Level> level,
+                    bool is_common,
+                    MercLevelLoad* out,
+                    std::string* error);
 
 }  // namespace metal_renderer

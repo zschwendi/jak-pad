@@ -17,6 +17,7 @@
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 
+#include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -232,6 +233,38 @@ u64 pool_add_texture(const tfrag3::Texture& tex, bool is_common) {
   }
   return metal_add_texture(g_renderer->device(), g_renderer->queue(), *g_texture_pool, tex,
                            is_common);
+}
+
+bool merc_load_fr3(const std::string& path,
+                   bool is_common,
+                   MercLevelLoad* out,
+                   std::string* error) {
+  MetalMercModelPool::LoadResult result;
+  if (!metal_merc_models().load_fr3(path, is_common, &result, error)) {
+    return false;
+  }
+  out->level_name = result.level_name;
+  out->textures = result.textures;
+  out->models = result.models;
+  out->vertices = result.vertices;
+  out->indices = result.indices;
+  return true;
+}
+
+bool merc_add_level(std::unique_ptr<tfrag3::Level> level,
+                    bool is_common,
+                    MercLevelLoad* out,
+                    std::string* error) {
+  MetalMercModelPool::LoadResult result;
+  if (!metal_merc_models().add_level(std::move(level), is_common, &result, error)) {
+    return false;
+  }
+  out->level_name = result.level_name;
+  out->textures = result.textures;
+  out->models = result.models;
+  out->vertices = result.vertices;
+  out->indices = result.indices;
+  return true;
 }
 
 }  // namespace metal_renderer

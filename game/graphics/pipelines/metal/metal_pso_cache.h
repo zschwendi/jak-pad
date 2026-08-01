@@ -25,6 +25,8 @@ enum class MetalShaderId : u16 {
   DIRECT_BASIC = 3,     // DirectRenderer, untextured (direct_basic.{vert,frag})
   DIRECT_TEXTURED = 4,  // DirectRenderer, textured (direct_basic_textured.{vert,frag})
   SPRITE3 = 5,          // Sprite3 2D/HUD/3D sprites (sprite3_3d.{vert,frag})
+  MERC2 = 6,            // Merc2 skinned foreground models (merc2.{vert,frag})
+  EMERC = 7,            // Merc2 envmap pass (emerc.{vert,frag})
   COUNT,
 };
 

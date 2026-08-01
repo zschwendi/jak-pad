@@ -139,8 +139,10 @@ come from a `UIView`/SwiftUI instead of SDL.
    every structural assert holding.
 5. Background geometry — *Planned*: TFragment, Tie3, Shrub (+ time-of-day 1D LUTs,
    multidraw loops).
-6. Foreground — *Planned*: Merc2 (bones via buffer offsets), Generic2, ShadowRenderer,
-   EyeRenderer.
+6. Foreground — *Partially implemented*: Merc2 (both the merc2 and emerc passes, bones
+   via per-draw buffer offsets) is ported and verified (see §Current state); Generic2,
+   ShadowRenderer, EyeRenderer and merc's vertex-modification (blerc / mod-vtx) paths
+   remain *Planned*.
 7. Sprite/effects — *Partially implemented*: Sprite3's 2D / HUD / 3D sprite paths are
    ported and verified (see §Current state); the distorter's DMA is walked but its
    drawing, plus glow, DepthCue, ocean and post effects, remain *Planned*.
@@ -251,7 +253,7 @@ come from a `UIView`/SwiftUI instead of SDL.
     arm64; the Metal port uses portable scalar math with the same fixed-point
     semantics, so the sky actually blends on Apple silicon. The sky-blend buckets'
     trailing tfrag-trans content is stage-5 territory: consumed, counted, logged once.
-  - Verified by `metal-proof` (now 144 checks without arguments, 149 with an `.fr3`;
+  - Verified by `metal-proof` (now 163 checks without arguments, 168 with an `.fr3`;
     all previous checks still pass;
     `MTL_DEBUG_LAYER=1` clean): a constructed Jak 1-shaped chain (initial CALL,
     70-slot bucket array, empty-bucket CALL/RET structure, NOP+DIRECT vif transfers)
@@ -303,10 +305,11 @@ come from a `UIView`/SwiftUI instead of SDL.
       4 draws / 88 triangles per frame, 10 texture upload packets applied, ~160 k lit
       pixels. Consumed but not drawn (counted, logged once): ocean-mid-far 82.5 kB,
       ocean-near 38.9 kB, tie 5.6 kB, tfrag 5.8 kB, shrub, merc, generic, eyes, and
-      992 bytes of tfrag-trans inside the sky-blend bucket.
-    - frame 100 (14 kB): renders black, honestly. Its content is the merc logo and
-      character models (not ported) plus a 160-byte sky-draw that is a black quad
-      because nothing had been blended into the sky texture that frame.
+      992 bytes of tfrag-trans inside the sky-blend bucket. (merc is drawn now; see the
+      merc entry below for what those frames render today.)
+    - frame 100 (14 kB): originally rendered black - its content is merc models plus a
+      160-byte sky-draw that is a black quad because nothing had been blended into the
+      sky texture that frame. With the merc renderer (below) it draws Daxter.
     - the **sprite bucket carries no sprites in any of these captures**. Its 4416 bytes
       are exactly the per-frame setup (distorter GS setup 112 B + sine tables 2224 B +
       aspect 16 B + direct setup 48 B + frame data 656 B + 3D matrix 80 B + HUD matrix
@@ -343,10 +346,73 @@ come from a `UIView`/SwiftUI instead of SDL.
     scale says; two HUD sprites resolve their four texture quadrants correctly (which
     checks the `st_array`/vertex-id wiring end to end), and the second one moves by the
     `hud_hvdf_user[0]` entry its matrix index selects.
+- **Implemented** (stage 6 part 1, the merc renderer): `metal_merc.{h,mm}` +
+  `metal_merc_model_pool.{h,mm}` + `shaders/merc2.metal`, the Merc2 port for Jak 1.
+  All eight Jak 1 merc buckets route to one shared `MetalMerc2`, as in the GL table.
+  - The DMA walk (setup packet, per-model PC_PORT packets: name, `VuLights`, the Jak 1
+    water quadword, the matrix-slot string, EE pointers to bone matrices, flags, fades),
+    the level/draw/bone/light bookkeeping and the effect -> draw expansion are the GL
+    logic unchanged. `shaders/merc2.metal` is the MSL port of `merc2.{vert,frag}` and
+    `emerc.{vert,frag}` line for line, with the two deliberate target differences the
+    sprite port already uses: Metal's `[0,1]` clip z (`z / 8388608 - 1` becomes
+    `z / 16777216`) and HEIGHT_SCALE / SCISSOR_ADJUST as uniforms.
+  - **Bones**: the GL renderer keeps a persistent 512 kB `GL_UNIFORM_BUFFER` and binds a
+    per-draw window with `glBindBufferRange(..., 16 * draw.first_bone,
+    128 * sizeof(ShaderMercMat))` (`foreground/Merc2.cpp:1326`). Here each *flush* takes
+    one range out of the frame's stream buffer and each *draw* binds into it with
+    `setVertexBuffer:offset:` at the same `16 * first_bone`. Per-flush allocation (rather
+    than rewriting one buffer) is required because earlier draws in the same encoder still
+    reference the previous contents. The allocation is padded by `MAX_SKEL_BONES`
+    matrices so every draw's 128-matrix view stays inside it, exactly as it stays inside
+    the GL buffer, and `alloc_bones` rounds `first_bone` up to 16 bone vectors (256 bytes)
+    so every offset satisfies Metal's buffer-offset alignment. The `std140` padding of
+    the bone struct (mat3 columns padded to `vec4`, plus the trailing `vec4`) is
+    reproduced exactly, so the CPU-side layout is the GL one.
+  - **One deliberate divergence from the GL source**: the GL renderer resolves the bone
+    matrices with `setup.data - setup.data_offset + addr`, which works there only because
+    the GL pipeline renders from the *original* EE memory (`run_dma_copy = false` in
+    `pipelines/opengl.cpp:48`). The Metal pipeline renders from the
+    `FixedChunkDmaCopier` copy, whose chunk indices are compacted, so the Metal port
+    resolves bone pointers against `render_state->ee_memory` - the same thing the ported
+    texture-upload handler does with its `texture-page` pointers. Addresses are bounds-
+    checked before dereferencing and reported (`bad_bone_pointers`) rather than faulting.
+  - **Model geometry** does not travel in the chain. `metal_merc_model_pool.{h,mm}` is the
+    merc-scoped equivalent of what the GL loader's `MercLoaderStage` produces: it reads an
+    extracted level, uploads its textures the way `add_texture` does, puts
+    `merc_data.vertices` / `merc_data.indices` into two `MTLBuffer`s, keeps the per-level
+    texture handle array that `MercDraw::tree_tex_id` indexes, and answers
+    `get_merc_model(name)` with the GL `Loader::get_merc_model` semantics (first match
+    wins). The GL `Loader` itself is unusable here - its `LevelData` holds `GLuint`s and
+    it includes glad - and a general level-geometry loader is separate, larger work; this
+    duplication is deliberate and should be unified when that lands.
+  - Consumed and counted rather than silently dropped: merc's **vertex-modification paths**
+    (`blerc` and mod-vtx) - those effects draw from the level's unmodified vertices, which
+    is what `sidekick-lod0` (Daxter) does in the captures; **eye textures**, which need the
+    unported EyeRenderer and fall back to the pool placeholder; anim-slot textures (Jak
+    2/3 only). The Jak 1-dead color-mask double draw (`Merc2.cpp:1332-1342`) is not
+    ported: Jak 1 always forces `lights.w1` to 0, so the GL renderer never takes that
+    branch either.
+  - Verified by `metal-proof` pixel readback over a constructed merc bucket that matches
+    every packet `Merc2` asserts about a real chain, plus a synthetic level registered
+    with the model pool (so the check needs no game data): two instances of one model with
+    different bone matrices land on their computed screen positions with the expected
+    modulated color and edges, which is what proves the per-draw bone-buffer offset; a
+    non-zero fade adds the emerc pass and its `SRC_0_DST_DST` blend over the merc pass
+    reads back the predicted value.
+  - On the captured frames (`--replay`, with the level art named):
+    - **frame 838/839/840 now render the Jak & Daxter title logo** - `logo-english-lod0` from
+      `title.fr3`, 7 draws / 14 750 triangles (2 of them the emerc envmap pass) - above
+      the already-working "PRESS START". 62 007 lit pixels, up from 5 330.
+    - frame 100 renders **Daxter** (`sidekick-lod0`, 14 draws + 4 envmap draws, ~1 480
+      triangles), up from a completely black frame. The frame's other two models,
+      `ndi-lod0` (the Naughty Dog logo) and `ndi-cam-lod0`, are correctly *off camera*:
+      their bone matrices are clean rigid transforms placing them ~40 000 units to the
+      side, so they contribute no pixels. Daxter's eyes are the placeholder texture
+      (EyeRenderer), and his mod/blerc effects draw unmodified vertices.
 - **Experimental**: the validation scene still renders when no chain is pending (keeps
   the window alive and the scaffold checks meaningful); its draw region is a 4:3 fit
-  of the window. The Metal pipeline does not run the Loader yet, so nothing feeds
-  `metal_add_texture` outside the proof.
+  of the window. The Metal pipeline does not run the streaming Loader yet: level data
+  reaches the GPU only through the proof and the merc-scoped model pool.
 - **Planned**: MSAA render/resolve (PSO key already carries sample count), stencil ops in
   the depth-stencil key (for ShadowRenderer), a Metal loader upload stage (stage 5),
   eye-renderer and texture-animator paths of the upload handler, background renderers
@@ -359,13 +425,13 @@ come from a `UIView`/SwiftUI instead of SDL.
 - The OpenGL renderer is untouched and remains the default (`gfx.cpp` still selects
   `GfxPipeline::OpenGL`).
 
-## 5. Next targets: Ocean and Merc2 (scoped, not started)
+## 5. Next target: Ocean (scoped, not started)
 
-These are the two biggest payload carriers left in the captured title frames (ocean
-~121 kB/frame, merc ~4.5 kB/frame). Scoped from the GL sources; both are *Investigating*
-only in the sense that the work below is not started - the data flow itself is settled.
+Merc2 is done (see §4). Ocean is the biggest payload carrier left in the captured title
+frames (~121 kB/frame). Scoped from the GL sources; it is *Investigating* only in the
+sense that the work below is not started - the data flow itself is settled.
 
-**Ocean first.** It has *no* Loader or level-data dependency: nothing under
+**Ocean.** It has *no* Loader or level-data dependency: nothing under
 `game/graphics/opengl_renderer/ocean/` mentions `tfrag3`, `LevelData` or `Loader`.
 Everything is DMA plus VU1 emulation, and ~10k of its ~14k lines are the `*_PS2.cpp` /
 `*_PC.cpp` VU emulators, which contain no GL and port unchanged.
@@ -391,23 +457,21 @@ Everything is DMA plus VU1 emulation, and ~10k of its ~14k lines are the `*_PS2.
   to the same VRAM slot (8160 on Jak 1) and the last bucket wins, and
   `CommonOceanRenderer.cpp:433` compares against the Jak 2 slot with no Jak 1 branch.
 
-**Merc2 after a Metal Loader stage.** Merc's per-frame DMA is only control data: the
-setup packet, `VuLights`, the flags quadword, and *EE pointers* to bone matrices
-(`Merc2.cpp:514` dereferences EE main memory - which a replay can satisfy, since the
-capture carries the snapshot). The geometry is not in the chain at all: it comes from
-`render_state->loader->get_merc_model(name)` (`Merc2.cpp:419`) returning a
-`tfrag3::MercModel` plus the level's `merc_vertices` / `merc_indices` GPU buffers
-(`loader/common.h:27-28`, filled by `loader/LoaderStages.cpp:644-676`).
+### What merc left behind
 
-- So the blocking item is a Metal loader upload stage - `tfrag3::Level::merc_data`
-  into `MTLBuffer`s and a `Loader*` on `MetalSharedRenderState` - which is larger than
-  Merc2 itself and is the same prerequisite the background renderers need.
-- Merc2 itself: 1671 lines across `foreground/Merc2.*` + `Merc2BucketRenderer.*`, plus
-  `merc2.{vert,frag}` and `emerc.{vert,frag}`. Eight Jak 1 buckets route to one shared
-  instance. The defining GL feature is the bone UBO: a 512 kB `GL_UNIFORM_BUFFER` with
-  `glBindBufferRange(..., sizeof(vec4) * draw.first_bone, 128 * sizeof(ShaderMercMat))`
-  per draw (`Merc2.cpp:1326`), which maps to `setVertexBuffer:offset:` with the alignment
-  query replaced by `MTLDevice.minimumConstantBufferOffsetAlignment`. The `std140`
-  `mat3` padding must be reproduced exactly. Primitive restart maps for free.
-- The color-mask double draw (`Merc2.cpp:1332-1342`) is dead on Jak 1 and can be skipped;
-  `EyeRenderer` is not ported, so face textures fall back to the placeholder.
+Merc2 itself is ported (`metal_merc.{h,mm}`, `metal_merc_model_pool.{h,mm}`,
+`shaders/merc2.metal`); the details of the bone-buffer design and the one deliberate
+divergence from the GL source are in §4. What it did *not* do, in rough priority order:
+
+- **A real Metal loader stage.** `metal_merc_model_pool` loads whole levels eagerly for
+  merc only: no streaming, no unloading, no `Loader*` on `MetalSharedRenderState`, and
+  only `merc_data` reaches the GPU. The background renderers (TFragment/Tie3/Shrub) need
+  a general version of this, and it should absorb the merc pool when it lands.
+- **Vertex modification**: `Merc2::model_mod_draws` (reads the game's fragment data out of
+  EE memory and re-unpacks vertices) and `model_mod_blerc_draws` (blend shapes; note the
+  GL kernel is x86 SSE and would need portable math like SkyBlendCPU did). Those effects
+  currently draw the level's unmodified vertices and are counted as
+  `mod_effects_deferred`.
+- **EyeRenderer**, so faces draw the placeholder where the eye textures belong.
+- **Generic2**, whose buckets sit next to merc's in every level slot and are still
+  skipped.

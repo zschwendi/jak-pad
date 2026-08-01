@@ -1770,6 +1770,351 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
 }
 
 // ---------------------------------------------------------------------------
+// Section: the merc buckets. Builds the Jak 1 merc DMA the way the game does
+// (the 10-quadword setup packet, then PC_PORT model packets carrying the model
+// name, lights, the matrix-slot string, EE pointers to bone matrices, flags and
+// fades), registers a synthetic level with the merc model pool for the geometry
+// the chain does not carry, and verifies the result by pixel readback.
+//
+// Constructed data again: every packet matches what Merc2 asserts about a real
+// chain, and the VU constants are chosen so the transform reduces to the same
+// GS-space -> screen mapping the other chain tests use (gs_to_col/gs_to_row).
+// Two instances of one model with different bone matrices land at different
+// screen positions, which is what proves the per-draw bone-buffer offset.
+// ---------------------------------------------------------------------------
+
+constexpr const char* kMercModelName = "proof-merc";
+constexpr float kMercQuadHalf = 32.f;  // GS units
+constexpr float kMercZ = 8388608.f;    // depth 0.5 in Metal's [0, 1] clip range
+
+// A level with one solid texture and one two-triangle model, in the layout the
+// GL loader would have produced from an .fr3.
+std::unique_ptr<tfrag3::Level> make_merc_test_level(bool with_envmap) {
+  auto level = std::make_unique<tfrag3::Level>();
+  level->level_name = "metal-proof-merc";
+
+  tfrag3::Texture tex;
+  tex.w = 16;
+  tex.h = 16;
+  tex.debug_name = "merc-solid";
+  tex.debug_tpage_name = "merc-page";
+  tex.load_to_pool = false;  // merc indexes the level's own texture array
+  tex.data.resize(16 * 16, 0xff3264c8u);  // a=255 b=50 g=100 r=200
+  level->textures.push_back(tex);
+
+  // a quad as a triangle strip, in GS coordinates around the origin
+  auto& merc = level->merc_data;
+  merc.vertices.resize(4);
+  const float xs[4] = {-kMercQuadHalf, kMercQuadHalf, -kMercQuadHalf, kMercQuadHalf};
+  const float ys[4] = {-kMercQuadHalf, -kMercQuadHalf, kMercQuadHalf, kMercQuadHalf};
+  for (int i = 0; i < 4; i++) {
+    auto& v = merc.vertices[i];
+    memset(&v, 0, sizeof(v));
+    v.pos[0] = xs[i];
+    v.pos[1] = ys[i];
+    v.pos[2] = kMercZ;
+    v.normal[2] = 1.f;
+    v.weights[0] = 1.f;
+    v.st[0] = 0.5f;
+    v.st[1] = 0.5f;
+    for (int j = 0; j < 4; j++) {
+      v.rgba[j] = 128;
+    }
+    v.rgba[3] = 255;
+    v.mats[0] = v.mats[1] = v.mats[2] = 0;
+  }
+  merc.indices = {0, 1, 2, 3};
+
+  tfrag3::MercDraw draw;
+  draw.mode.set_depth_write_enable(true);
+  draw.mode.set_zt(true);
+  draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
+  draw.mode.set_ab(false);
+  draw.mode.set_at(false);
+  draw.mode.set_fog(false);
+  draw.mode.set_decal(false);
+  draw.mode.set_filt_enable(false);
+  draw.mode.set_clamp_s_enable(true);
+  draw.mode.set_clamp_t_enable(true);
+  draw.tree_tex_id = 0;
+  draw.eye_id = 0xff;
+  draw.first_index = 0;
+  draw.index_count = 4;
+  draw.num_triangles = 2;
+  draw.no_strip = false;
+
+  tfrag3::MercEffect effect;
+  effect.all_draws.push_back(draw);
+  effect.has_envmap = with_envmap;
+  effect.has_mod_draw = false;
+  effect.envmap_texture = 0;
+  if (with_envmap) {
+    effect.envmap_mode = draw.mode;
+    // the envmap pass is always this blend (Merc2::do_draws asserts it)
+    effect.envmap_mode.set_ab(true);
+    effect.envmap_mode.set_alpha_blend(DrawMode::AlphaBlend::SRC_0_DST_DST);
+  }
+
+  tfrag3::MercModel model;
+  model.name = kMercModelName;
+  model.effects.push_back(effect);
+  model.max_draws = 1;
+  model.max_bones = 1;
+  model.st_vif_add = 0;
+  model.xyz_scale = 1.f;
+  model.st_magic = 0.f;
+  merc.models.push_back(model);
+  return level;
+}
+
+// The 10-quadword merc setup packet. The low-memory block holds an identity
+// perspective matrix and an hvdf offset of 0, so a vertex position in GS
+// coordinates lands where gs_to_col/gs_to_row say it does.
+std::vector<u8> make_merc_setup_data() {
+  std::vector<u8> d;
+  // qw0: BASE, OFFSET, NOP, UNPACK_V4_32(8 qw to address 0)
+  push_i(d, (s32)vif_code(VifCode::Kind::BASE, 442));
+  push_i(d, (s32)vif_code(VifCode::Kind::OFFSET, (u16)(s16)-442));
+  push_i(d, 0);
+  push_i(d, (s32)vif_unpack_v4_32(8, 0, false));
+  // qw1..8: LowMemory
+  for (int i = 0; i < 8; i++) {  // tri_strip_tag + ad_gif_tag
+    push_i(d, 0);
+  }
+  push_f(d, 0.f);  // hvdf_offset
+  push_f(d, 0.f);
+  push_f(d, 0.f);
+  push_f(d, 0.f);
+  for (int col = 0; col < 4; col++) {  // perspective: identity, column-major
+    for (int row = 0; row < 4; row++) {
+      push_f(d, col == row ? 1.f : 0.f);
+    }
+  }
+  push_f(d, 1.f);    // fog: pfog0 = 1 so Q = 1
+  push_f(d, 0.f);    // fog min
+  push_f(d, 255.f);  // fog max
+  push_f(d, 0.f);
+  // qw9: FLUSHE, 0, 0, MSCAL 0
+  push_i(d, (s32)vif_code(VifCode::Kind::FLUSHE, 0));
+  push_i(d, 0);
+  push_i(d, 0);
+  push_i(d, (s32)vif_code(VifCode::Kind::MSCAL, 0));
+  ASSERT(d.size() == 10 * 16);
+  return d;
+}
+
+// One bone matrix, written into EE memory the way the game's `bones` does.
+// tmat is -identity with a -(tx, ty) translation, so the shader's
+// `-bones[i].X * p` is `p + (tx, ty, 0)`.
+void write_merc_bone(std::vector<u8>& mem, u32 addr, float tx, float ty) {
+  float m[7 * 4] = {};
+  m[0] = -1.f;   // tmat column 0
+  m[5] = -1.f;   // column 1
+  m[10] = -1.f;  // column 2
+  m[12] = -tx;   // column 3
+  m[13] = -ty;
+  m[15] = -1.f;
+  m[16] = 1.f;  // nmat column 0
+  m[21] = 1.f;  // column 1
+  m[26] = 1.f;  // column 2
+  memcpy(&mem[addr], m, sizeof(m));
+}
+
+// The PC_PORT model packet Merc2::handle_pc_model parses.
+std::vector<u8> make_merc_model_packet(u32 bone0_addr, u32 bone1_addr, const u8 fade[4]) {
+  std::vector<u8> d;
+  // name (128 bytes)
+  d.resize(128, 0);
+  memcpy(d.data(), kMercModelName, strlen(kMercModelName));
+  // lights (7 qw): directions and colors zero, ambient 0.5 -> light_color 0.5
+  for (int i = 0; i < 3; i++) {  // direction0/1/2 + w
+    push_f(d, 0.f);
+    push_f(d, 0.f);
+    push_f(d, 0.f);
+    push_i(d, 0);
+  }
+  for (int i = 0; i < 3; i++) {  // color0/1/2
+    for (int j = 0; j < 4; j++) {
+      push_f(d, 0.f);
+    }
+  }
+  for (int j = 0; j < 4; j++) {  // ambient
+    push_f(d, 0.5f);
+  }
+  // jak 1 water flag quadword
+  push_u64(d, 0);
+  push_u64(d, 0);
+  // matrix slot string (128 bytes): slots 0 and 1, then the 0xff terminator
+  size_t slot_string = d.size();
+  d.resize(slot_string + 128, 0);
+  d[slot_string + 0] = 0;
+  d[slot_string + 1] = 1;
+  d[slot_string + 2] = 0xff;
+  // matrix pointers: one quadword each, the EE address in the first word
+  push_i(d, (s32)bone0_addr);
+  push_i(d, 0);
+  push_i(d, 0);
+  push_i(d, 0);
+  push_i(d, (s32)bone1_addr);
+  push_i(d, 0);
+  push_i(d, 0);
+  push_i(d, 0);
+  // flags (32 bytes): one enabled effect, no ignore-alpha, no mod/blerc
+  push_u64(d, 1);  // enable_mask
+  push_u64(d, 0);  // ignore_alpha_mask
+  d.push_back(1);  // effect_count
+  d.push_back(0);  // bitflags
+  d.resize(d.size() + 14, 0);
+  // fades: one effect, padded to a quadword
+  for (int i = 0; i < 4; i++) {
+    d.push_back(fade[i]);
+  }
+  d.resize(d.size() + 12, 0);
+  ASSERT(d.size() % 16 == 0);
+  return d;
+}
+
+void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& display) {
+  printf("--- DMA chain: merc buckets -> MetalMerc2 ---\n");
+  using namespace jak1;
+
+  // model geometry does not travel in the chain: it comes from the level, the
+  // way the GL renderer gets it from the Loader
+  {
+    metal_renderer::MercLevelLoad load;
+    std::string error;
+    if (!metal_renderer::merc_add_level(make_merc_test_level(true), false, &load, &error)) {
+      printf("[FAIL] merc: could not register the test level: %s\n", error.c_str());
+      g_fail_count++;
+      return;
+    }
+    check(load.models == 1 && load.vertices == 4 && load.indices == 4,
+          "merc: test level registered with the model pool");
+  }
+
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+
+  // GS positions of the two model instances
+  constexpr float kX0 = 1920.f, kY0 = 1992.f;
+  constexpr float kX1 = 2176.f, kY1 = 2104.f;
+
+  // Builds one merc bucket. `two_models` adds a second instance with its own
+  // bone matrices; `fade` non-zero turns on the envmap (emerc) pass.
+  auto build_merc_bucket = [&](ChainBuilder& cb, bool two_models, const u8 fade[4]) {
+    u32 bone_a0 = cb.alloc(112), bone_a1 = cb.alloc(112);
+    write_merc_bone(mem, bone_a0, kX0, kY0);
+    write_merc_bone(mem, bone_a1, 0, 0);
+
+    // the bucket's own NEXT tag is the "nothing" transfer merc reads first, so
+    // the setup packet is the first transfer here
+    std::vector<ChainBuilder::Transfer> merc;
+    merc.push_back({vif_stcycl(4, 4), vif_code(VifCode::Kind::STMOD, 0), make_merc_setup_data(),
+                    false});
+    merc.push_back({0, 0, std::vector<u8>(32, 0), false});  // test register setup
+    merc.push_back({0, 0, {}, true});
+
+    merc.push_back({0, vif_code(VifCode::Kind::PC_PORT, 0),
+                    make_merc_model_packet(bone_a0, bone_a1, fade), false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
+
+    if (two_models) {
+      u32 bone_b0 = cb.alloc(112), bone_b1 = cb.alloc(112);
+      write_merc_bone(mem, bone_b0, kX1, kY1);
+      write_merc_bone(mem, bone_b1, 0, 0);
+      merc.push_back({0, vif_code(VifCode::Kind::PC_PORT, 0),
+                      make_merc_model_packet(bone_b0, bone_b1, fade), false});
+      merc.push_back({0, 0, {}, true});
+      merc.push_back({0, 0, {}, true});
+    }
+
+    // a transfer that is neither PC_PORT nor FLUSHA ends the model loop
+    merc.push_back({0, 0, {}, true});
+    return merc;
+  };
+
+  const u8 no_fade[4] = {0, 0, 0, 0};
+  const u8 half_fade[4] = {128, 128, 128, 255};
+
+  // ---- frame 1: two instances of one model, no envmap ---------------------
+  {
+    ChainBuilder cb(mem);
+    cb.set_bucket_content((int)BucketId::MERC_PRIS_LEVEL0, build_merc_bucket(cb, true, no_fade));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the merc frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    auto stats = metal_renderer::get_chain_stats();
+    printf("merc stats: %d models (%d missing), %d draws (%d envmap), %d tris, %d bone vectors, "
+           "%d deferred mod effects, %d eye draws, %d missing textures\n",
+           stats.merc_models, stats.merc_missing_models, stats.merc_draws,
+           stats.merc_envmap_draws, stats.merc_triangles, stats.merc_bone_vectors,
+           stats.merc_mod_effects_deferred, stats.merc_eye_draws, stats.merc_missing_textures);
+    check(stats.merc_models == 2, "merc: both model instances were built");
+    check(stats.merc_missing_models == 0, "merc: every model name resolved in the model pool");
+    check(stats.merc_draws == 2, "merc: one draw per instance");
+    check(stats.merc_envmap_draws == 0, "merc: no envmap draws with a zero fade");
+    check(stats.merc_triangles == 4, "merc: two triangles per instance");
+    // 2 bones per instance, 8 vectors each, rounded up to the 16-vector
+    // alignment the bone buffer views need
+    check(stats.merc_bone_vectors == 32, "merc: bones allocated with the view alignment");
+
+    // The shader path: vertex rgba 128/255 * ambient 0.5 = 0.251, times the
+    // (200, 100, 50) texel, times 2 -> (100, 50, 25).
+    const int col0 = gs_to_col(kX0), row0 = gs_to_row(kY0);
+    check_pixel(frame, col0, row0, 100, 50, 25, "merc: first instance center");
+    check_pixel(frame, col0 - 35, row0, 100, 50, 25, "merc: first instance left edge inside");
+    check_pixel(frame, col0 - 45, row0, 0, 0, 0, "merc: first instance left edge outside");
+    check_pixel(frame, col0, row0 - 60, 100, 50, 25, "merc: first instance top inside");
+    check_pixel(frame, col0, row0 - 75, 0, 0, 0, "merc: first instance top outside");
+
+    // the second instance only differs by its bone matrices, which is what the
+    // per-draw bone-buffer offset selects
+    const int col1 = gs_to_col(kX1), row1 = gs_to_row(kY1);
+    check_pixel(frame, col1, row1, 100, 50, 25, "merc: second instance at its own bone offset");
+    check_pixel(frame, col1, row0, 0, 0, 0, "merc: nothing between the two instances");
+  }
+
+  // ---- frame 2: one instance with the envmap (emerc) pass -----------------
+  {
+    ChainBuilder cb(mem);
+    cb.set_bucket_content((int)BucketId::MERC_PRIS_LEVEL0, build_merc_bucket(cb, false, half_fade));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the merc envmap frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    auto stats = metal_renderer::get_chain_stats();
+    printf("merc envmap stats: %d models, %d draws (%d envmap), %d tris\n", stats.merc_models,
+           stats.merc_draws, stats.merc_envmap_draws, stats.merc_triangles);
+    check(stats.merc_models == 1, "merc: one model instance in the envmap frame");
+    check(stats.merc_envmap_draws == 1, "merc: a non-zero fade adds one envmap draw");
+    check(stats.merc_draws == 2, "merc: the envmap effect draws twice (merc2 + emerc)");
+
+    // emerc adds T0 * fade * 2 = (0.787, 0.394, 0.197) on top of the merc pass,
+    // through the SRC_0_DST_DST blend (dst alpha is 1 after the first draw).
+    const int col0 = gs_to_col(kX0), row0 = gs_to_row(kY0);
+    check_pixel(frame, col0, row0, 255, 151, 75, "merc: envmap pass blended over the model");
+    check_pixel(frame, gs_to_col(kX1), gs_to_row(kY1), 0, 0, 0,
+                "merc: no second instance in the envmap frame");
+  }
+
+  g_ee_main_mem = nullptr;
+}
+
+// ---------------------------------------------------------------------------
 // Section (optional): real extracted Jak 1 textures from a user-supplied .fr3.
 // Never bundled; pass the path on the command line to enable.
 // ---------------------------------------------------------------------------
@@ -1833,36 +2178,23 @@ std::unique_ptr<tfrag3::Level> test_real_fr3(const char* path) {
 // so the replay is told which levels' art the frame used).
 // ---------------------------------------------------------------------------
 
-// Loads the textures of one extracted level into the pool the way the GL
-// loader's TextureLoaderStage does. Returns the number added, -1 on failure.
-int load_fr3_textures(const char* path, bool is_common) {
-  if (!fs::exists(path)) {
-    printf("[FAIL] fr3 file does not exist: %s\n", path);
+// Loads one extracted level: its textures go into the pool the way the GL
+// loader's TextureLoaderStage does, and its merc models/geometry become
+// available to the merc bucket renderers (the Metal path has no streaming
+// Loader yet). Returns the number of textures loaded, -1 on failure.
+int load_fr3_level(const char* path, bool is_common) {
+  metal_renderer::MercLevelLoad load;
+  std::string error;
+  if (!metal_renderer::merc_load_fr3(path, is_common, &load, &error)) {
+    printf("[FAIL] could not load %s: %s\n", path, error.c_str());
     g_fail_count++;
     return -1;
   }
-  auto compressed = file_util::read_binary_file(std::string(path));
-  auto decomp = compression::decompress_zstd(compressed.data(), compressed.size());
-  u16 version = 0;
-  memcpy(&version, decomp.data(), 2);
-  if (version != tfrag3::TFRAG3_VERSION) {
-    printf("[FAIL] fr3 version %d does not match this build's %d\n", version,
-           tfrag3::TFRAG3_VERSION);
-    g_fail_count++;
-    return -1;
-  }
-  tfrag3::Level level;
-  Serializer ser(decomp.data(), decomp.size());
-  level.serialize(ser);
-  int added = 0;
-  for (const auto& tex : level.textures) {
-    if (metal_renderer::pool_add_texture(tex, is_common)) {
-      added++;
-    }
-  }
-  printf("[PASS] loaded level '%s': %d/%d textures into the pool%s\n", level.level_name.c_str(),
-         added, (int)level.textures.size(), is_common ? " (common)" : "");
-  return added;
+  printf("[PASS] loaded level '%s': %d textures into the pool%s, %d merc models "
+         "(%u vertices, %u indices)\n",
+         load.level_name.c_str(), load.textures, is_common ? " (common)" : "", load.models,
+         load.vertices, load.indices);
+  return load.textures;
 }
 
 void run_chain_replay(const GfxRendererModule* mod,
@@ -1936,10 +2268,10 @@ void run_chain_replay(const GfxRendererModule* mod,
   // Loader yet, so the caller names the levels; without them the upload packets
   // resolve to the pool's placeholder, which is reported, never guessed.
   if (!common_fr3.empty()) {
-    load_fr3_textures(common_fr3.c_str(), true);
+    load_fr3_level(common_fr3.c_str(), true);
   }
   for (const auto& path : fr3_paths) {
-    load_fr3_textures(path.c_str(), false);
+    load_fr3_level(path.c_str(), false);
   }
 
   // A single frame only uploads the texture pages it touched, but the VRAM
@@ -1991,6 +2323,35 @@ void run_chain_replay(const GfxRendererModule* mod,
       stats.sprites_2d, stats.sprites_3d, stats.sprites_hud, stats.sprite_draws,
       stats.sprites_distort, stats.sprite_missing_textures);
   check(stats.direct_unsupported_blends == 0, "replay: no unsupported GS blend modes");
+  printf(
+      "merc buckets: %d models (%d missing), %d draws (%d envmap), %d tris, %d bone vectors, "
+      "%d deferred mod effects, %d eye draws (EyeRenderer not ported), %d missing textures, "
+      "%d bad bone pointers, %d bad draw ranges\n",
+      stats.merc_models, stats.merc_missing_models, stats.merc_draws, stats.merc_envmap_draws,
+      stats.merc_triangles, stats.merc_bone_vectors, stats.merc_mod_effects_deferred,
+      stats.merc_eye_draws, stats.merc_missing_textures, stats.merc_bad_bone_pointers,
+      stats.merc_bad_draw_ranges);
+  {
+    u64 merc_payload = 0;
+    for (auto& b : inv.buckets) {
+      const auto name = metal_chain_replay::jak1_bucket_name(b.bucket);
+      if (name.rfind("MERC_", 0) == 0 && name != "MERC_EYES_AFTER_PRIS") {
+        merc_payload += b.payload_bytes;
+      }
+    }
+    if (merc_payload > 0) {
+      printf("(the frame's merc buckets carried %d bytes of control data)\n", (int)merc_payload);
+      check(stats.merc_models > 0, "replay: the merc buckets built models from the chain");
+      check(stats.merc_missing_models == 0,
+            "replay: every merc model the frame named was in the loaded levels");
+      check(stats.merc_draws > 0, "replay: merc issued draws");
+      check(stats.merc_missing_textures == 0, "replay: every merc draw found its texture");
+      check(stats.merc_bad_bone_pointers == 0,
+            "replay: every merc bone pointer landed inside EE memory");
+      check(stats.merc_bad_draw_ranges == 0,
+            "replay: every merc draw range fit its level's index buffer");
+    }
+  }
 
   int lit = 0;
   for (int i = 0; i < frame.width * frame.height * 4; i += 4) {
@@ -2239,6 +2600,7 @@ int main(int argc, char** argv) {
   // ---- DMA chain path (stage 4) ----
   test_dma_chain(mod, display, level.get());
   test_sprite_chain(mod, display);
+  test_merc_chain(mod, display);
   g_ee_main_mem = nullptr;
 
   display.reset();
