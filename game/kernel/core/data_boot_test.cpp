@@ -1506,10 +1506,15 @@ int run_real_boot(const std::string& data_dir,
         snd_stats.loader_commands, snd_stats.player_commands, snd_stats.banks_loaded,
         snd_stats.bank_failures, snd_stats.music_loaded, snd_stats.music_failures);
     say("  sound: %d sounds started, %d music starts, %d play requests found no sound,"
-        " %d streamed-audio requests, %d unknown commands\n",
+        " %d unknown commands\n",
         snd_stats.sounds_started, snd_stats.music_starts, snd_stats.sounds_missing,
-        snd_stats.spool_requests + snd_stats.play_rpc_calls, snd_stats.unknown_commands);
+        snd_stats.unknown_commands);
     say("  sound: the music group ended at volume %d of 1024\n", snd_stats.music_group_volume);
+    say("  sound: %d streamed-audio requests (%d spool- names, %d on channel 5);"
+        " %d streams started, %d played out, %d buffers read, %d not in VAGDIR\n",
+        snd_stats.spool_requests + snd_stats.play_rpc_calls, snd_stats.spool_requests,
+        snd_stats.play_rpc_calls, snd_stats.streams_started, snd_stats.streams_played_out,
+        snd_stats.stream_buffers, snd_stats.streams_missing);
     const char* unhandled = goal_sound_unhandled_report();
     if (*unhandled) {
       say("  what this build could not play:\n%s", unhandled);
