@@ -18,12 +18,15 @@
  * repository.
  */
 
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
 #include "common/log/log.h"
+#include "common/util/FileUtil.h"
 #include "common/util/Serializer.h"
 
 #include "game/kernel/common/Ptr.h"
@@ -57,6 +60,16 @@ u64 send_gfx_dma_chain(u32 bank, u32 chain) {
   if (!g_capture_path.empty()) {
     Serializer serializer;
     g_copier->serialize_last_result(serializer);
+    // the caller names any path it likes, and a directory that is not there yet is not a reason
+    // to lose the one chain that was asked for
+    const auto parent = fs::path(g_capture_path).parent_path();
+    if (!parent.empty()) {
+      std::error_code ec;
+      fs::create_directories(parent, ec);
+      if (ec) {
+        lg::error("[dma-capture] cannot make {}: {}", parent.string(), ec.message());
+      }
+    }
     FILE* fp = std::fopen(g_capture_path.c_str(), "wb");
     if (fp) {
       std::fwrite(serializer.get_save_result().first, 1, serializer.get_save_result().second, fp);
@@ -65,7 +78,7 @@ u64 send_gfx_dma_chain(u32 bank, u32 chain) {
       lg::info("[dma-capture] wrote {} bytes of chain {} to {}", g_stats.captured_bytes,
                g_stats.chains, g_capture_path);
     } else {
-      lg::error("[dma-capture] cannot write {}", g_capture_path);
+      lg::error("[dma-capture] cannot write {}: {}", g_capture_path, std::strerror(errno));
     }
     // one chain is what the renderer track asked for; capturing every frame would just overwrite
     g_capture_path.clear();
