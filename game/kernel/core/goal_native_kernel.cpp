@@ -38,7 +38,7 @@
 #include "common/goal_constants.h"
 
 #include "game/kernel/core/kernel_core.h"
-#include "game/kernel/jak1/kscheme.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/runtime.h"
 #include "goalc/aot/goal_c_runtime.h"
 
@@ -71,11 +71,20 @@ static_assert(offsetof(GoalContext, saved_fpr) == 112, "goal_thread_arm64.s stor
  * offsets in kernel/gkernel-h.gc minus four. `type` therefore sits at -4.
  */
 namespace field {
-// process (kernel/gkernel-h.gc)
-constexpr int kProcessStatus = 32;
-constexpr int kProcessMainThread = 40;
-constexpr int kProcessTopThread = 44;
-constexpr int kProcessStackFrameTop = 88;
+// process (kernel/gkernel-h.gc): the process grew between the games, so these come from the
+// per-game seam (kernel_game.h)
+inline int process_status() {
+  return goal_game_process_offsets().status;
+}
+inline int process_main_thread() {
+  return goal_game_process_offsets().main_thread;
+}
+inline int process_top_thread() {
+  return goal_game_process_offsets().top_thread;
+}
+inline int process_stack_frame_top() {
+  return goal_game_process_offsets().stack_frame_top;
+}
 // thread / cpu-thread
 constexpr int kThreadName = 0;
 constexpr int kThreadProcess = 4;
@@ -160,16 +169,16 @@ uint32_t goal_address_of(const void* native, const char* what) {
  * touched it from the routines that now live here, so nothing else puts it in the symbol table.
  */
 uint32_t symbol_value(const char* name) {
-  return jak1::intern_from_c(name)->value;
+  return goal_game_symbol_value(name);
 }
 
 void set_symbol_value(const char* name, uint32_t value) {
-  jak1::intern_from_c(name)->value = value;
+  goal_game_set_symbol_value(name, value);
 }
 
 /*! GOAL address of a quoted symbol, which is what a symbol-valued field holds. */
 uint32_t symbol_object(const char* name) {
-  return jak1::intern_from_c(name).offset;
+  return goal_game_intern(name);
 }
 
 using GoalFunction = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
@@ -192,10 +201,7 @@ GoalFunction goal_function(uint32_t object, const char* what) {
 
 /*! The name of a GOAL symbol, or "" if the address does not look like one. */
 const char* goal_thread_stack_watermark_name(uint32_t symbol) {
-  if (!symbol || symbol >= EE_MAIN_MEM_SIZE || !g_ee_main_mem) {
-    return "";
-  }
-  return jak1::info(Ptr<jak1::Symbol>(symbol))->str->data();
+  return goal_game_symbol_name(symbol);
 }
 
 /*! The name of the GOAL type of a basic, for a diagnostic. "" when it does not look like one. */
@@ -365,7 +371,7 @@ void thread_suspend_body(GoalContext* ctx, uint64_t thread_u) {
   store32(thread, field::kThreadSp, sp);
 
   const uint32_t process = load32(thread, field::kThreadProcess);
-  store32(process, field::kProcessStatus, symbol_object("suspended"));
+  store32(process, field::process_status(), symbol_object("suspended"));
 
   const uint32_t backup_end = thread + (uint32_t)field::kCpuThreadStack + (uint32_t)backup_size;
   std::memcpy(mem() + backup_end - used, mem() + sp, (size_t)used);
@@ -396,8 +402,8 @@ void thread_resume_body(GoalContext* ctx, uint64_t thread_u) {
   std::memcpy(mem() + sp, mem() + backup_end - used, (size_t)used);
 
   const uint32_t process = load32(thread, field::kThreadProcess);
-  store32(process, field::kProcessTopThread, thread);
-  store32(process, field::kProcessStatus, symbol_object("running"));
+  store32(process, field::process_top_thread(), thread);
+  store32(process, field::process_status(), symbol_object("running"));
   g_goal_current_process = process;
 
   const uint32_t pc = load32(thread, field::kThreadPc);
@@ -441,8 +447,8 @@ void catch_frame_body(GoalContext* ctx, uint64_t argp) {
   store32(frame, field::kCatchFrameRa, 0);
 
   const uint32_t process = (uint32_t)g_goal_current_process;
-  store32(frame, field::kStackFrameNext, load32(process, field::kProcessStackFrameTop));
-  store32(process, field::kProcessStackFrameTop, frame);
+  store32(frame, field::kStackFrameNext, load32(process, field::process_stack_frame_top()));
+  store32(process, field::process_stack_frame_top(), frame);
 
   const uint32_t block = args->param_block;
   const uint64_t result = goal_function(args->func, "a catch frame's function")(
@@ -452,8 +458,8 @@ void catch_frame_body(GoalContext* ctx, uint64_t argp) {
   // Returned rather than thrown: pop the frame off whatever process is current now, exactly as the
   // GOAL version does, and hand the result back through the same path a throw would use.
   const uint32_t current = (uint32_t)g_goal_current_process;
-  const uint32_t top = load32(current, field::kProcessStackFrameTop);
-  store32(current, field::kProcessStackFrameTop, load32(top, field::kStackFrameNext));
+  const uint32_t top = load32(current, field::process_stack_frame_top());
+  store32(current, field::process_stack_frame_top(), load32(top, field::kStackFrameNext));
   goal_context_restore(ctx, result);
 }
 
@@ -502,8 +508,8 @@ uint64_t goal_native_reset_and_call(uint64_t this_thread,
                                     uint64_t) {
   const uint32_t thread = (uint32_t)this_thread;
   const uint32_t process = load32(thread, field::kThreadProcess);
-  store32(process, field::kProcessStatus, symbol_object("running"));
-  store32(process, field::kProcessTopThread, thread);
+  store32(process, field::process_status(), symbol_object("running"));
+  store32(process, field::process_top_thread(), thread);
   g_goal_current_process = process;
 
   ResetAndCallArgs args = {thread, (uint32_t)func};
@@ -564,7 +570,7 @@ uint64_t goal_native_throw_dispatch(uint64_t this_frame,
                                     uint64_t) {
   const uint32_t frame = (uint32_t)this_frame;
   const uint32_t process = (uint32_t)g_goal_current_process;
-  store32(process, field::kProcessStackFrameTop, load32(frame, field::kStackFrameNext));
+  store32(process, field::process_stack_frame_top(), load32(frame, field::kStackFrameNext));
   goal_context_restore(checked_context(load32(frame, field::kCatchFrameSp), "a catch frame's sp"),
                        value);
 }
@@ -582,7 +588,7 @@ uint64_t goal_native_enter_state_run_code(uint64_t code,
                                           uint64_t a3,
                                           uint64_t) {
   const uint32_t process = (uint32_t)g_goal_current_process;
-  const uint32_t main_thread = load32(process, field::kProcessMainThread);
+  const uint32_t main_thread = load32(process, field::process_main_thread());
   const uint32_t stack_top = goal_native_stack_top(main_thread);
   goal_call_on_stack_arm64(native_stack_pointer(stack_top), (void*)&state_code_trampoline, code, a0,
                            a1, a2, a3, 0);

@@ -4,6 +4,16 @@ The real OpenGOAL Jak 1 kernel subset, built as a static library for platforms t
 desktop windowing, no IOP/sound emulation, no DECI2 listener transport, and no runtime code
 generation. It is the library an iPadOS application links through an Objective-C++ bridge.
 
+The shared translation units here never name a game: everything game-specific goes through the
+per-game seam in `kernel_game.h`, implemented by `kernel_game_jak1.cpp` and
+`kernel_game_jak2.cpp`. One game per library, chosen at link time: `jak1-kernel-core` is
+everything documented below; `jak2-kernel-core` (**Experimental**) is the same core keyed to the
+Jak 2 kernel, with `dgo_loader_jak2.cpp` carrying only the C-driven DGO load and with no sound,
+pad, or graphics seams yet - the machine stubs report those loudly. `jak2-data-boot-test` loads
+the player's own jak2 KERNEL.CGO through the AOT path and runs the jak2 kernel dispatcher
+headless; `jak2-thread-switch-test` drives the native ARM64 thread routines through the jak2
+process and thread layouts.
+
 **Status: Experimental.** It initializes real kernel state, executes real Jak 1 GOAL code that was
 compiled ahead of time by goalc's AOT C backend, and loads the player's own extracted game data out
 of the game's DGO archives. No game data ships with it and none is ever written into the

@@ -10,8 +10,8 @@
  *     "the callee-saved registers survive the transfer" is the whole property and C cannot state it.
  *
  *  2. The GOAL routines built on them, driven through real GOAL. test/goalc/aot/thread_switch_test.gc
- *     is compiled on top of the real Jak 1 kernel by the AOT C backend and loaded into the real
- *     kernel, and it spawns processes, throws, goes to a state and suspends the way the game does.
+ *     is compiled on top of the real kernel of whichever game this binary is linked against
+ *     (jak1-kernel-core or jak2-kernel-core) and loaded into it, and it spawns processes, throws, goes to a state and suspends the way the game does.
  *     Between the two resumes of the suspended thread this file overwrites the thread's whole live
  *     stack, so a suspend that did not really copy it out cannot pass.
  *
@@ -34,7 +34,6 @@ extern "C" {
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/kernel_core.h"
-#include "game/kernel/jak1/kscheme.h"
 #include "game/runtime.h"
 
 extern "C" {
@@ -110,12 +109,12 @@ void check_saved_registers(const char* what, const u64* observed) {
 }
 
 u32 symbol_value(const char* name) {
-  auto sym = jak1::find_symbol_from_c(name);
-  if (!sym.offset) {
+  uint32_t value = 0;
+  if (goal_kernel_core_lookup(name, nullptr, &value) != GOAL_KERNEL_CORE_OK) {
     fail(name);
     return 0;
   }
-  return sym->value;
+  return value;
 }
 
 /*!
@@ -123,14 +122,14 @@ u32 symbol_value(const char* name) {
  * catch frames, which only work with a GOAL-memory stack pointer.
  */
 u64 call_on_goal_stack(const char* name) {
-  auto sym = jak1::find_symbol_from_c(name);
-  if (!sym.offset || !sym->value) {
+  uint32_t value = 0;
+  if (goal_kernel_core_lookup(name, nullptr, &value) != GOAL_KERNEL_CORE_OK || !value) {
     fail(name);
     return 0;
   }
   // call_goal_on_stack passes no arguments, so the fixture hands the process it is driving over in
   // *tsw-proc* instead.
-  return call_goal_on_stack(Ptr<Function>(sym->value), goal_kernel_stack_top(), s7.offset,
+  return call_goal_on_stack(Ptr<Function>(value), goal_kernel_stack_top(), s7.offset,
                             g_ee_main_mem);
 }
 

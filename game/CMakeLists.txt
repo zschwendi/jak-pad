@@ -793,6 +793,206 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_include_directories(jak1-thread-switch-test PRIVATE "${AOT_TSW_DIR}")
         target_link_libraries(jak1-thread-switch-test jak1-kernel-core)
         add_test(NAME jak1-thread-switch-test COMMAND jak1-thread-switch-test)
+
+        # The Jak 2 boot probe: every jak2 object file, emitted by the C backend for jak2 in
+        # game.gp build order, loaded into the jak2 kernel out of the player's own KERNEL.CGO,
+        # then the jak2 kernel dispatcher frame after frame. The whole game is emitted - like
+        # jak1's list above - so the exploratory GAME.CGO attempt (--with-game) can name any
+        # object the archive holds. Skips cleanly without GOALPAD_JAK2_DATA_DIR.
+        set(JAK2_AOT_BOOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-boot-jak2")
+        set(JAK2_AOT_BOOT_TAGS
+        gcommon gstring_h gkernel_h gkernel pskernel gstring dgo_h gstate types_h vu1_macros math
+        vector_h gravity_h bounding_box_h matrix_h quaternion_h euler_h transform_h geometry_h
+        trigonometry_h transformq_h bounding_box matrix transform quaternion euler trigonometry
+        gsound_h timer_h vif_h dma_h video_h vu1_user_h profile_h dma dma_buffer dma_bucket
+        dma_disasm statistics_h pc_cheats pckernel_h pckernel_impl pc_debug_common pad gs display_h
+        geometry timer vector file_io loader_h texture_h texture_anim_h lights_h mood_h level_h
+        capture_h math_camera_h math_camera font_h decomp_h profile display connect text_id_h
+        text_h camera_defs_h trail_h minimap_h bigmap_h settings_h capture memory_usage_h
+        blit_displays_h texture main_h mspace_h drawable_h drawable_group_h drawable_inline_array_h
+        draw_node_h drawable_tree_h drawable_actor_h region_h traffic_h game_task_h task_control_h
+        generic_h sky_h ocean_h ocean_trans_tables ocean_tables ocean_frames time_of_day_h art_h
+        generic_vu1_h merc_h generic_merc_h generic_tie_h generic_work_h shadow_cpu_h shadow_vu1_h
+        memcard_h game_info_h gui_h ambient_h speech_h wind_h prototype_h joint_h bones_h
+        foreground_h engines lightning_h res_h res lights dynamics_h surface_h pat_h fact_h
+        aligner_h penetrate_h game_h script_h scene_h sync_info_h pov_camera_h smush_control_h
+        debug_h joint_mod_h collide_func_h collide_mesh_h collide_shape_h generic_obs_h
+        trajectory_h collide_target_h collide_touch_h collide_edge_grab_h process_drawable_h
+        process_focusable process_taskable_h focus effect_control_h collide_frag_h collide_hash_h
+        chain_physics_h projectile_h find_nearest_h target_h stats_h bsp_h collide_cache_h
+        collide_h shrubbery_h tie_h tfrag_h background_h subdivide_h entity_h sprite_h
+        simple_sprite_h eye_h sparticle_launcher_h sparticle_h actor_link_h camera_h cam_debug_h
+        cam_interface_h cam_update_h hud_h progress_h progress_h_pc progress_generic_h_pc rpc_h
+        path_h nav_mesh_h nav_control_h spatial_hash_h actor_hash_h load_dgo ramdisk gsound
+        transformq collide_func joint joint_mod chain_physics cylinder wind_work wind bsp subdivide
+        sprite sprite_distort sprite_glow debug_sphere debug history merc_vu1 emerc_vu1
+        merc_blend_shape merc emerc ripple bones debug_foreground foreground generic_vu0
+        generic_vu1 generic_effect generic_merc generic_tie shadow_cpu shadow_vu1 warp texture_anim
+        texture_anim_funcs texture_anim_tables blit_displays font_data font decomp background
+        draw_node shrubbery shrub_work tfrag_near tfrag tfrag_methods tfrag_work tie etie_vu1
+        etie_near_vu1 tie_near tie_work tie_methods sync_info trajectory sparticle_launcher
+        sparticle entity_table loader game_info game_task game_save settings autosplit_h autosplit
+        popup_menu_h speedruns_h mood_tables mood_tables2 mood mood_funcs mood_funcs2 weather_part
+        time_of_day sky_data sky_tng load_state pc_debug_methods level_info level text collide_hash
+        collide_probe collide_frag collide_mesh collide_touch collide_edge_grab collide_shape
+        collide_shape_rider collide spatial_hash actor_hash merc_death water_flow water_h camera
+        cam_interface cam_master cam_states cam_states_dbg cam_combiner cam_update vol_h cam_layout
+        cam_debug cam_start process_drawable ambient speech region fma_sphere script generic_obs
+        lightning carry_h pilot_h gun_h board_h darkjak_h target_util target_part gun_part
+        collide_reaction_target logic_target sidekick effect_control voicebox collectables_part
+        debug_part find_nearest task_arrow projectile target_handler target_anim target target2
+        target_swim target_carry target_darkjak target_death target_gun gun_util gun_blue_shot
+        gun_yellow_shot gun_red_shot gun_dark_shot gun_states board_util target_board board_part
+        board_states mech_h menu popup_menu speedruns drawable drawable_group drawable_inline_array
+        drawable_tree prototype main_collide video capture_pc pckernel_common pckernel subtitle2_h
+        subtitle2 main collide_cache collide_debug relocate memory_usage entity path vol nav_mesh
+        nav_control aligner water collectables task_control scene pov_camera powerups crates hud
+        hud_classes progress_static progress_static_pc progress progress_pc progress_generic_pc
+        progress_draw progress_draw_pc progress_generic_draw_pc ocean ocean_vu0 ocean_texture
+        ocean_mid ocean_transition ocean_near minimap bigmap_data bigmap eye glist_h glist
+        anim_tester viewer part_tester editable_h editable editable_player mysql_nav_graph
+        nav_graph_editor sampler default_menu anim_tester_x vag_player default_menu_pc
+        texture_upload texture_finish los_control_h airlock water_anim blocking_plane idle_control
+        dark_eco_pool enemy_h nav_enemy_h rigid_body_h damage_number statistics enemy nav_enemy
+        base_plat plat basebutton bouncer conveyor elevator rigid_body rigid_body_queue
+        rigid_body_plat joint_exploder simple_focus simple_nav_sphere process_taskable scene_actor
+        scene_looper warp_gate guard_projectile metalhead_projectile los_control grunt flitter
+        battle elec_gate cty_guard_turret_button entity_debug nav_graph_h traffic_engine_h
+        vehicle_h citizen_h height_map_h ctywide_obs_h height_map traffic_height_map nav_graph
+        vehicle_rider vehicle_control vehicle_part vehicle_effects vehicle vehicle_util
+        vehicle_physics vehicle_states vehicle_guard transport bike car test_bike test_car citizen
+        civilian guard citizen_norm citizen_fat citizen_chick citizen_enemy metalhead_predator
+        metalhead_grunt metalhead_flitter traffic_engine trail_graph trail traffic_manager
+        ctywide_texture ctywide_part ctywide_obs ctywide_tasks ctywide_scenes ctywide_speech
+        ctyport_obs target_pilot pilot_states searchlight ai_task_h bot_h bot bot_states hal_h
+        hal_task hal kid_h kor_h hal3_course kid_task kid kid_states kor_task kor kor_states
+        kid3_course kor3_course ctysluma_part neon_baron_part ctyslumb_part ctyslumc_part
+        ctyinda_part ctyinda_obs ctyindb_part ctyindb_obs ctyport_part ctypal_part ctypal_obs
+        ctygena_part neon_praxis_part ctygenb_part ctygenc_part hopper stadiumb_texture
+        stadium_part stadiumb_part stadium_obs stadium_scenes ctymark_obs ctymarka_part
+        ctymarkb_part ash_h ash_task ash_shot ash ash_states juicer ctyasha_obs ash4_course
+        ctyfarm_obs ctyfarma_part ctyfarmb_part yakow hiphog_obs hiphog_part hiphog_scenes
+        hideout_scenes hideout_part hideout_obs gun_dummy gungame_data gungame_obs gungame_part
+        onintent_part onintent_scenes onin_game vinroom_part vinroom_scenes vinroom_obs kiosk_part
+        oracle_texture oracle_part oracle_scenes oracle_training ctywide_bbush meet_brutter
+        ctypower shuttle kidesc_h crocesc_h hal4_course kidesc_task kidesc kidesc_states
+        crocesc_task crocesc crocesc_states kidesc4_course crocesc4_course bombbot_h bombbot_path
+        bombbot race_h race_mesh race_part race_obs vehicle_racer race_info race_manager race_hud
+        pilot_recorder errol_chal_part errol_chal gun_buoy protect delivery_task portrun helldog
+        collection_task whack title_obs intro_ocean intro_scenes intro_obs vortex_data vortex
+        skatea_part skatea_obs racebike stadium_race_obs intro_texture prison_part prison_obs
+        crimson_guard_level guard_conversation transport_level forexita_part forexita_obs
+        target_tube fortress_obs forexitb_part fordumpa_part fordumpa_obs fordumpa_texture
+        fort_robotank_turret fort_robotank fort_turret fordumpb_obs fordumpb_part fort_floor_spike
+        fordumpc_part fordumpc_obs fortress_scenes hover_formation_h hover_nav_control_h
+        hover_enemy_h hover_nav_network hover_nav_control hover_enemy hover_enemy_battle
+        hover_formation hover_nav_edit wasp_part wasp crimson_guard_hover flamer forresca_part
+        forresca_obs forrescb_part forrescb_obs spydroid mech_part mech target_mech mech_states
+        grunt_mech ruins_ocean ruins_scenes mechtest_obs ruins_part breakable_wall pillar_collapse
+        ruins_obs rapid_gunner amphibian fodder grenadier atoll_part atoll_obs sig_h sig_task
+        sig_shot sig_plasma sig sig_states spyder sig0_course ash1_course atoll_tank atoll_scenes
+        sniper metalmonk ruf_h ruf_task ruf ruf_states jinx_h jinx_shot jinx_bomb jinx jinx_states
+        mog_h mog grim_h grim sewer_part sewer_ocean sewer_obs sewer_obs2 hosehead hosehead_fake
+        gator hal2_course mog2_course jinx2_course grim2_course sewer_scenes sew_gunturret rhino
+        rhino_wall mountain_ocean mountain_obs mountain_obs2 mountain_scenes mountain_part
+        centurion mincan_obs canyon_scenes tomb_part tomb_obs tomb_water tomb_beetle widow_part
+        widow_baron widow_extras widow_more_extras widow widow2 monster_frog tomb_scenes
+        tomb_baby_spider com_elevator target_indax tomb_boulder target_turret_shot target_turret
+        drill_turret drillmid_obs drill_part drill_part2 drill_mech_master drill_obs drill_panel
+        drill_obs2 drill_spool drill_baron drill_scenes ginsu palshaft_part palcab_part palcab_obs
+        pal_obs palroof_part palroof_obs palboss_texture palboss_part palboss_scenes throne_part
+        palace_scenes squid_part squid_setup squid_extras squid_states palent_part palace_ocean
+        metalkor_texture strip_scenes strip_part strip_ocean strip_rescue strip_drop strip_obs
+        chaincrate caspad_obs caspad_part castle_tasks roboguard_level castle_texture castle_obs
+        castle_part casboss_texture castle_baron castle_scenes casboss_part dig_digger dig_obs
+        dig1_obs dig2_obs dig3_obs dig_texture dig_scenes dig_part forest_part forest_obs pegasus
+        wren fish predator_h predator_graph predator forest_scenes under_shoot_block underb_master
+        under_obs under_sig_obs under_laser pipe_grunt jellyfish under_part centipede
+        sig5_cent1_path0 sig5_cent2_path0 sig5_course under_scenes sig_recorder consite_texture
+        consite_part consite_scenes consite_obs consiteb_part nest_obs mantis mammoth flying_spider
+        nest_ocean nest_scenes nest_part nest_texture metalkor_part metalkor_setup metalkor_states
+        metalkor_extras nestb_scenes nestb_part credits outro_scenes demo_obs test_zone_obs)
+        list(LENGTH JAK2_AOT_BOOT_TAGS JAK2_AOT_BOOT_FILE_COUNT)
+
+        set(JAK2_AOT_BOOT_OUTPUTS "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.c"
+                "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.h")
+        set(JAK2_AOT_BOOT_C_SOURCES "")
+        foreach(tag IN LISTS JAK2_AOT_BOOT_TAGS)
+            list(APPEND JAK2_AOT_BOOT_C_SOURCES "${JAK2_AOT_BOOT_DIR}/${tag}.c")
+            list(APPEND JAK2_AOT_BOOT_OUTPUTS "${JAK2_AOT_BOOT_DIR}/${tag}.c"
+                    "${JAK2_AOT_BOOT_DIR}/${tag}_generated.h")
+        endforeach()
+
+        file(GLOB_RECURSE JAK2_AOT_BOOT_GOAL_SOURCES CONFIGURE_DEPENDS
+                "${CMAKE_SOURCE_DIR}/goal_src/jak2/*.gc")
+        add_custom_command(
+                OUTPUT ${JAK2_AOT_BOOT_OUTPUTS}
+                COMMAND $<TARGET_FILE:goalc-cbackend-sweep>
+                        --game jak2
+                        --project-path "${CMAKE_SOURCE_DIR}"
+                        --limit ${JAK2_AOT_BOOT_FILE_COUNT}
+                        --c-output-dir "${JAK2_AOT_BOOT_DIR}"
+                        --report "${JAK2_AOT_BOOT_DIR}/coverage.tsv"
+                DEPENDS goalc-cbackend-sweep ${JAK2_AOT_BOOT_GOAL_SOURCES}
+                        "${CMAKE_SOURCE_DIR}/goal_src/goal-lib.gc"
+                        "${CMAKE_SOURCE_DIR}/goal_src/jak2/game.gp"
+                COMMENT
+                "Emitting C for the first ${JAK2_AOT_BOOT_FILE_COUNT} Jak 2 object files")
+
+        add_executable(jak2-data-boot-test
+                kernel/core/jak2_boot_test.cpp
+                "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.c"
+                ${JAK2_AOT_BOOT_C_SOURCES})
+        set_source_files_properties(
+                "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.c" ${JAK2_AOT_BOOT_C_SOURCES}
+                PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
+        target_include_directories(jak2-data-boot-test PRIVATE "${JAK2_AOT_BOOT_DIR}")
+        target_link_libraries(jak2-data-boot-test jak2-kernel-core)
+        add_test(NAME jak2-data-boot-test COMMAND jak2-data-boot-test --frames 100)
+
+        # The jak2 thread-switch test: the same fixture and driver as jak1's, compiled on top of
+        # the jak2 kernel prefix, driving the native ARM64 thread routines through the jak2
+        # process and thread layouts. Needs no game data, so it always runs.
+        set(JAK2_AOT_TSW_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-thread-switch-jak2")
+        set(JAK2_AOT_TSW_TAGS gcommon gstring_h gkernel_h gkernel pskernel gstring dgo_h gstate
+                thread_switch_test)
+        list(LENGTH JAK2_AOT_TSW_TAGS JAK2_AOT_TSW_KERNEL_COUNT)
+        math(EXPR JAK2_AOT_TSW_KERNEL_COUNT "${JAK2_AOT_TSW_KERNEL_COUNT} - 1")
+
+        set(JAK2_AOT_TSW_OUTPUTS "${JAK2_AOT_TSW_DIR}/aot_boot_manifest.c"
+                "${JAK2_AOT_TSW_DIR}/aot_boot_manifest.h")
+        set(JAK2_AOT_TSW_C_SOURCES "")
+        foreach(tag IN LISTS JAK2_AOT_TSW_TAGS)
+            list(APPEND JAK2_AOT_TSW_C_SOURCES "${JAK2_AOT_TSW_DIR}/${tag}.c")
+            list(APPEND JAK2_AOT_TSW_OUTPUTS "${JAK2_AOT_TSW_DIR}/${tag}.c"
+                    "${JAK2_AOT_TSW_DIR}/${tag}_generated.h")
+        endforeach()
+
+        add_custom_command(
+                OUTPUT ${JAK2_AOT_TSW_OUTPUTS}
+                COMMAND $<TARGET_FILE:goalc-cbackend-sweep>
+                        --game jak2
+                        --project-path "${CMAKE_SOURCE_DIR}"
+                        --limit ${JAK2_AOT_TSW_KERNEL_COUNT}
+                        --extra-source test/goalc/aot/thread_switch_test.gc
+                        --c-output-dir "${JAK2_AOT_TSW_DIR}"
+                        --report "${JAK2_AOT_TSW_DIR}/coverage.tsv"
+                DEPENDS goalc-cbackend-sweep ${JAK2_AOT_BOOT_GOAL_SOURCES} ${AOT_TSW_FIXTURE}
+                        "${CMAKE_SOURCE_DIR}/goal_src/goal-lib.gc"
+                        "${CMAKE_SOURCE_DIR}/goal_src/jak2/game.gp"
+                COMMENT "Emitting C for the jak2 GOAL kernel and the thread-switch fixture")
+
+        add_executable(jak2-thread-switch-test
+                kernel/core/thread_switch_test.cpp
+                kernel/core/goal_thread_test_arm64.s
+                "${JAK2_AOT_TSW_DIR}/aot_boot_manifest.c"
+                ${JAK2_AOT_TSW_C_SOURCES})
+        set_source_files_properties(
+                "${JAK2_AOT_TSW_DIR}/aot_boot_manifest.c" ${JAK2_AOT_TSW_C_SOURCES}
+                PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
+        target_include_directories(jak2-thread-switch-test PRIVATE "${JAK2_AOT_TSW_DIR}")
+        target_link_libraries(jak2-thread-switch-test jak2-kernel-core)
+        add_test(NAME jak2-thread-switch-test COMMAND jak2-thread-switch-test)
     endif()
 endif()
 

@@ -58,8 +58,10 @@ namespace {
  * The file tag is matched too, so a function elsewhere in the game that happens to share a name
  * with one of these cannot silently pick up the wrong implementation.
  *
- * These implementations were written against the Jak 1 kernel, so only Jak 1 uses this table.
- * Other games count the same functions as failures until their kernels are actually ported.
+ * These implementations read the thread and process fields through a per-game seam
+ * (game/kernel/core/goal_native_kernel_game.h), so the table applies to the games that seam has
+ * been written for: Jak 1 and Jak 2. Jak 3 counts the same functions as failures until its kernel
+ * is actually ported.
  */
 struct NativeImplementation {
   const char* file_tag;
@@ -80,7 +82,7 @@ constexpr NativeImplementation kNativeImplementations[] = {
 const char* native_implementation_for(GameVersion version,
                                       const std::string& file_tag,
                                       const std::string& goal_name) {
-  if (version != GameVersion::Jak1) {
+  if (version != GameVersion::Jak1 && version != GameVersion::Jak2) {
     return nullptr;
   }
   for (const auto& entry : kNativeImplementations) {

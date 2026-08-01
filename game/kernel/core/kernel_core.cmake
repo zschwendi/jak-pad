@@ -50,6 +50,8 @@ set(JAK1_KERNEL_CORE_SOURCES
     # portable entry point + the stubs for everything deliberately left out
     "${CMAKE_CURRENT_LIST_DIR}/kernel_core.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/desktop_seams.cpp"
+    # the per-game seam (kernel_game.h): jak1 symbols, types, machine-stub list, layouts
+    "${CMAKE_CURRENT_LIST_DIR}/kernel_game_jak1.cpp"
     # loader for object files produced by the AOT C backend
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
     # synchronous DGO reader, in place of game/kernel/jak1/kdgo.cpp
@@ -92,8 +94,9 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/gfx_host.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma_copy.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma.cpp"
-    # the Jak 1 mips2c function library, in place of game/mips2c/mips2c_table.cpp
+    # the mips2c seam, in place of game/mips2c/mips2c_table.cpp, plus the Jak 1 function library
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_seam.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/mips2c_jak1.cpp"
     # native implementations of the GOAL kernel routines that switch stacks
     "${CMAKE_CURRENT_LIST_DIR}/goal_native_kernel.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/goal_thread_arm64.s"
@@ -142,4 +145,81 @@ if(TARGET fmt)
 else()
   # Standalone builds (for example the iOS static library) compile the header-only fmt.
   target_compile_definitions(jak1-kernel-core PUBLIC FMT_HEADER_ONLY=1)
+endif()
+
+# jak2-kernel-core: the same portable kernel, keyed to Jak 2. One game per library: the shared
+# core translation units reach the game through kernel_game.h, and this target compiles the jak2
+# implementation of that seam next to the jak2 kernel translation units. Smaller than the jak1
+# library on purpose - no sound, pad, or graphics seams yet; the machine stubs report those
+# loudly. dgo_loader_jak2.cpp carries only the C-driven load so far.
+set(JAK2_KERNEL_CORE_SOURCES
+    # common support
+    "${JAK1_KERNEL_CORE_ROOT}/common/cross_os_debug/xdbg.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/log/log.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/util/Assert.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/util/crc32.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/util/diff.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/util/FileUtil.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/util/string_util.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/util/Timer.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/util/unicode_util.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/third-party/lzokay/lzokay.cpp"
+    # jak2's InitHeapAndSymbol wraps its kernel load in scoped_prof
+    "${JAK1_KERNEL_CORE_ROOT}/common/global_profiler/GlobalProfiler.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/util/compress.cpp"
+    # game-version-independent kernel
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/fileio.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/kboot.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/kdgo.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/kdsnetm.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/klink.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/klisten.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/kmalloc.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/kmemcard.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/kprint.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/kscheme.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/common/ksocket.cpp"
+    # Jak 2 kernel. game/kernel/jak2/kdgo.cpp is replaced by core/dgo_loader_jak2.cpp below, and
+    # kboot/kmachine by the seams in kernel_game_jak2.cpp, exactly as the jak1 library does it.
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak2/fileio.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak2/klink.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak2/klisten.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak2/kmalloc.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak2/kprint.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak2/kscheme.cpp"
+    # memory card backing store and the PS2 system configuration
+    "${JAK1_KERNEL_CORE_ROOT}/game/sce/sif_ee_memcard.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sce/libscf.cpp"
+    # portable entry point + the stubs for everything deliberately left out
+    "${CMAKE_CURRENT_LIST_DIR}/kernel_core.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/desktop_seams.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/kernel_game_jak2.cpp"
+    # loader for object files produced by the AOT C backend
+    "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
+    # synchronous DGO reader, in place of game/kernel/jak2/kdgo.cpp
+    "${CMAKE_CURRENT_LIST_DIR}/dgo_loader_jak2.cpp"
+    # the mips2c seam; the jak2 function library is not ported yet, so lookups fail by name
+    "${CMAKE_CURRENT_LIST_DIR}/mips2c_seam.cpp"
+    # native implementations of the GOAL kernel routines that switch stacks
+    "${CMAKE_CURRENT_LIST_DIR}/goal_native_kernel.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/goal_thread_arm64.s"
+    # the ARM64 GOAL calling-convention trampolines
+    "${JAK1_KERNEL_CORE_ROOT}/game/kernel/asm_funcs_arm64.s")
+
+add_library(jak2-kernel-core STATIC ${JAK2_KERNEL_CORE_SOURCES})
+target_compile_features(jak2-kernel-core PUBLIC cxx_std_20)
+target_include_directories(
+  jak2-kernel-core
+  PUBLIC "${JAK1_KERNEL_CORE_ROOT}" "${JAK1_KERNEL_CORE_ROOT}/third-party"
+         "${JAK1_KERNEL_CORE_ROOT}/third-party/fmt/include"
+         # same declaration-only SDL dependency as the jak1 library above
+         "${JAK1_KERNEL_CORE_ROOT}/third-party/SDL/include")
+if(TARGET fmt)
+  target_link_libraries(jak2-kernel-core PUBLIC fmt)
+else()
+  target_compile_definitions(jak2-kernel-core PUBLIC FMT_HEADER_ONLY=1)
+endif()
+if(TARGET libzstd_static)
+  # common/util/compress.cpp, which GlobalProfiler's dump uses
+  target_link_libraries(jak2-kernel-core PUBLIC libzstd_static)
 endif()
