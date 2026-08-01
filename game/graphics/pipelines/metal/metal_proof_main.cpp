@@ -3189,8 +3189,8 @@ void run_chain_replay(const GfxRendererModule* mod,
       stats.direct_unsupported_blends);
   check(stats.skipped_bucket_bytes == 0, "replay: no bucket content left unconsumed");
   printf(
-      "sprite bucket: %d 2d + %d 3d + %d hud sprites in %d draws, %d distort sprites consumed "
-      "(drawing not ported), %d missing textures\n",
+      "sprite bucket: %d 2d + %d 3d + %d hud sprites in %d draws, %d distort sprites, "
+      "%d missing textures\n",
       stats.sprites_2d, stats.sprites_3d, stats.sprites_hud, stats.sprite_draws,
       stats.sprites_distort, stats.sprite_missing_textures);
   printf(

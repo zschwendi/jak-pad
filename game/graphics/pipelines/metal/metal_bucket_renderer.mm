@@ -3,6 +3,7 @@
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
+#include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/texture/TexturePool.h"
 
 void* MetalStreamBuffer::alloc(u32 size, id<MTLBuffer>* out_buffer, u32* out_offset) {
@@ -23,6 +24,36 @@ void* MetalStreamBuffer::alloc(u32 size, id<MTLBuffer>* out_buffer, u32* out_off
   void* ptr = (u8*)m_pages[m_page].contents + m_offset;
   m_offset += size;
   return ptr;
+}
+
+void MetalFrameContext::resume_pass_with_framebuffer_copy(id<MTLTexture> snapshot) {
+  ASSERT(cmds && game_color && game_depth);
+  [enc endEncoding];
+
+  id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
+  [blit copyFromTexture:game_color
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake(game_color.width, game_color.height, 1)
+              toTexture:snapshot
+       destinationSlice:0
+       destinationLevel:0
+      destinationOrigin:MTLOriginMake(0, 0, 0)];
+  [blit endEncoding];
+
+  auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = game_color;
+  pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  pass.depthAttachment.texture = game_depth;
+  pass.depthAttachment.loadAction = MTLLoadActionLoad;
+  pass.depthAttachment.storeAction = MTLStoreActionStore;
+  pass.stencilAttachment.texture = game_depth;
+  pass.stencilAttachment.loadAction = MTLLoadActionLoad;
+  pass.stencilAttachment.storeAction = MTLStoreActionStore;
+  enc = [cmds renderCommandEncoderWithDescriptor:pass];
+  [enc setCullMode:MTLCullModeNone];
 }
 
 /*!
@@ -81,7 +112,14 @@ void MetalSkipRenderer::render(DmaFollower& dma,
 
 void MetalTextureBucketRenderer::render(DmaFollower& dma,
                                         MetalSharedRenderState* render_state,
-                                        MetalFrameContext& /*ctx*/) {
+                                        MetalFrameContext& ctx) {
+  std::function<void(DmaFollower&)> eye_dma_handler;
+  if (render_state->eye_renderer) {
+    eye_dma_handler = [&](DmaFollower& d) {
+      render_state->eye_renderer->render_from_texture_bucket(d, render_state, ctx);
+    };
+  }
   m_last_stats = m_handler.process(dma, render_state->next_bucket, *render_state->texture_pool,
-                                   render_state->ee_memory, render_state->offset_of_s7);
+                                   render_state->ee_memory, render_state->offset_of_s7,
+                                   eye_dma_handler);
 }

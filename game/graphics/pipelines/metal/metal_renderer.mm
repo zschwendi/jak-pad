@@ -620,6 +620,9 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     setup_frame(opts);
     // mirror of SharedRenderState::reset for the background state
     m_background.reset_frame();
+    if (m_shared_state.eye_renderer) {
+      m_shared_state.eye_renderer->start_frame();
+    }
     m_shared_state.background = &m_background;
     m_shared_state.texture_pool = m_texture_pool;
     m_shared_state.ee_memory = g_ee_main_mem;
@@ -638,11 +641,13 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     pass.depthAttachment.texture = m_game_depth;
     pass.depthAttachment.loadAction = MTLLoadActionClear;
-    pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+    // stored, not discarded: the sprite distorter may split the pass and
+    // reload depth/stencil (MetalFrameContext::resume_pass_with_framebuffer_copy)
+    pass.depthAttachment.storeAction = MTLStoreActionStore;
     pass.depthAttachment.clearDepth = 0.0;
     pass.stencilAttachment.texture = m_game_depth;
     pass.stencilAttachment.loadAction = MTLLoadActionClear;
-    pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+    pass.stencilAttachment.storeAction = MTLStoreActionStore;
     pass.stencilAttachment.clearStencil = 0;
 
     id<MTLRenderCommandEncoder> enc = [cmds renderCommandEncoderWithDescriptor:pass];
@@ -655,9 +660,12 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     ctx.stream = &m_stream;
     ctx.color_format = kColorFormat;
     ctx.depth_format = kDepthFormat;
+    ctx.cmds = cmds;
+    ctx.game_color = m_game_color;
+    ctx.game_depth = m_game_depth;
 
     dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset), ctx);
-    [enc endEncoding];
+    [ctx.enc endEncoding];
 
 #if TARGET_OS_OSX
     {

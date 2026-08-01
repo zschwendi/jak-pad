@@ -226,8 +226,8 @@ MetalSkyBlendHandler::MetalSkyBlendHandler(const std::string& name,
 
 /*!
  * Same DMA walk as SkyBlendHandler::render. The tfrag-trans content that
- * shares this bucket is stage-5 territory: it is consumed, counted and logged
- * once instead of rendered.
+ * shares this bucket is drawn by the child MetalTFragment (TRANS /
+ * LOWRES_TRANS trees), as the GL handler draws it with Tfrag3.
  */
 void MetalSkyBlendHandler::render(DmaFollower& dma,
                                   MetalSharedRenderState* render_state,

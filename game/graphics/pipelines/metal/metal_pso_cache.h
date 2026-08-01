@@ -37,6 +37,7 @@ enum class MetalShaderId : u16 {
   GENERIC = 15,         // Generic2 VU1 fallback path (generic.{vert,frag})
   SHADOW = 16,          // shadow volumes (shadow.{vert,frag})
   ETIE = 17,            // TIE envmap second draw (etie.{vert,frag})
+  SPRITE_DISTORT = 18,  // sprite distorter heat shimmer (sprite_distort.{vert,frag})
   COUNT,
 };
 

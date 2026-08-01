@@ -7,14 +7,17 @@
  * Mirror of TextureUploadHandler::render. The upload packets are 16 bytes of
  * data under a PC_PORT vifcode with vif1 == 3, produced by the PC-port GOAL
  * changes. Eye-renderer DMA (qwc == 8) and texture-animator packets (PC_PORT
- * immediate 12) flush pending uploads at the same points the GL handler does,
- * but their rendering is not ported yet and is skipped.
+ * immediate 12) flush pending uploads at the same points the GL handler does;
+ * the eye data then goes to eye_dma_handler (the animator is Jak 2/3 territory
+ * and is skipped).
  */
-MetalTextureUploadHandler::Stats MetalTextureUploadHandler::process(DmaFollower& dma,
-                                                                    u32 next_bucket,
-                                                                    TexturePool& pool,
-                                                                    const u8* ee_memory,
-                                                                    u32 s7_ptr) {
+MetalTextureUploadHandler::Stats MetalTextureUploadHandler::process(
+    DmaFollower& dma,
+    u32 next_bucket,
+    TexturePool& pool,
+    const u8* ee_memory,
+    u32 s7_ptr,
+    const std::function<void(DmaFollower&)>& eye_dma_handler) {
   Stats stats;
   std::vector<TextureUpload> uploads;
 
@@ -40,14 +43,19 @@ MetalTextureUploadHandler::Stats MetalTextureUploadHandler::process(DmaFollower&
 
     if (dma_tag.qwc == (128 / 16)) {
       // eye renderer data. flush first (its uploads may contain eye textures),
-      // like the GL handler; eye rendering itself is not ported yet.
+      // like the GL handler, then let the eye renderer consume its chunk.
       flush_uploads(uploads, pool, ee_memory, s7_ptr, stats);
       uploads.clear();
-      stats.skipped_eye_dma++;
-      static bool warned_eye = false;
-      if (!warned_eye) {
-        lg::warn("Metal TextureUploadHandler: eye renderer DMA not ported yet, skipping");
-        warned_eye = true;
+      if (eye_dma_handler) {
+        stats.eye_dma++;
+        eye_dma_handler(dma);
+      } else {
+        stats.skipped_eye_dma++;
+        static bool warned_eye = false;
+        if (!warned_eye) {
+          lg::warn("Metal TextureUploadHandler: no eye renderer attached, skipping eye DMA");
+          warned_eye = true;
+        }
       }
     }
 

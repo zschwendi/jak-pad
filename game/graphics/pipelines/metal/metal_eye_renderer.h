@@ -55,6 +55,16 @@ class MetalEyeRenderer : public MetalBucketRenderer {
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
 
+  // Eye DMA that rides in a texture bucket (the GL handler forwards it to
+  // EyeRenderer::handle_eye_dma2): decode and compose, dma left after the chunk.
+  void render_from_texture_bucket(DmaFollower& dma,
+                                  MetalSharedRenderState* render_state,
+                                  MetalFrameContext& ctx);
+
+  // Eyes are composed from the texture buckets as well as this renderer's own
+  // bucket, so the per-frame stats reset happens at frame start, not per bucket.
+  void start_frame() { m_stats = Stats(); }
+
   // Merc resolves its eye draws through these, like the GL renderer does.
   std::optional<u64> lookup_eye_texture(u8 eye_id);
   std::optional<u64> lookup_eye_texture_hash(u64 hash, bool lr);
