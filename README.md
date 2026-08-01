@@ -1,3 +1,11 @@
+> **This project is based on the incredible work of the [OpenGOAL](https://github.com/open-goal/jak-project)
+> team. This fork focuses on bringing Jak and Daxter to Apple's platforms,
+> including iPad, macOS, and visionOS.**
+>
+> This is the engine fork used by [GOALPad](https://github.com/zschwendi/GOALPad).
+> It adds an ARM64 ahead-of-time code path, a Metal renderer, and portable
+> runtime seams for Apple platform hosts. Everything else is OpenGOAL's work.
+
 <p align="center">
   <img width="500" height="100%" src="./docs/img/logo-text-colored-new.png">
 </p>

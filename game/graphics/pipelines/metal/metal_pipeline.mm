@@ -14,6 +14,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
+#include <thread>
 
 #include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
@@ -57,6 +58,10 @@ struct ChainSync {
   bool has_data_to_render = false;
   std::unique_ptr<FixedChunkDmaCopier> copier;
   float pmode_alp = 1.f;
+  // Which thread renders. A host that renders on the thread it sends from (the proof, and any
+  // single-threaded display-link driver) must not be made to wait for itself.
+  std::atomic<bool> render_thread_known{false};
+  std::atomic<std::thread::id> render_thread{};
 };
 ChainSync g_chain;
 
@@ -244,6 +249,8 @@ class MetalDisplay : public GfxDisplay {
 };
 
 void MetalDisplay::render() {
+  g_chain.render_thread = std::this_thread::get_id();
+  g_chain.render_thread_known = true;
   process_sdl_events();
   if (!g_renderer) {
     return;
@@ -667,11 +674,10 @@ static u32 metal_sync_path() {
   if (!g_renderer) {
     return 0;
   }
-  std::unique_lock<std::mutex> lock(g_chain.sync_mutex);
-  if (!g_chain.has_data_to_render) {
-    return 0;
-  }
-  g_chain.sync_cv.wait(lock, [] { return !g_chain.has_data_to_render; });
+  // `has_data_to_render` is written under dma_mutex, so it has to be waited on under dma_mutex:
+  // waiting under sync_mutex left the predicate unsynchronized with the thread that clears it.
+  std::unique_lock<std::mutex> lock(g_chain.dma_mutex);
+  g_chain.sync_cv.wait(lock, [] { return !g_chain.has_data_to_render || !g_renderer; });
   return 0;
 }
 
@@ -679,6 +685,19 @@ static u32 metal_sync_path() {
  * Send DMA to the renderer. Called from the game thread. Like gl_send_chain,
  * but the chain copy always runs: the renderer works from a stable snapshot
  * that is much smaller than the whole game memory.
+ *
+ * The copy is only *most* of the frame. Merc resolves its bone matrices by EE pointer out of live
+ * game memory - it has to, because the bone arrays are referenced from inside a packet rather than
+ * transferred by a DMA tag, so the copier never marked their chunks (`FixedChunkDmaCopier::run`
+ * only marks what the tags touch). The GL pipeline gets away with the same read because it does
+ * not copy at all (`run_dma_copy = false`): there, chain and bones are both read live, at the same
+ * moment, while the game waits.
+ *
+ * Here they were read at two different moments, and measurement showed the skeleton had already
+ * moved on by the time the frame was drawn - on about a third of frames, which is a character
+ * visibly shivering on a still pose. So the game waits here for the frame it just built to be
+ * consumed, which is the same guarantee GL has: nothing the renderer still needs is rewritten
+ * underneath it. The cost is the game thread no longer running ahead of the renderer.
  */
 static void metal_send_chain(const void* data, u32 offset) {
   if (!g_renderer || !g_chain.copier) {
@@ -695,6 +714,17 @@ static void metal_send_chain(const void* data, u32 offset) {
   g_chain.copier->set_input_data(data, offset, /*run_copy*/ true);
   g_chain.has_data_to_render = true;
   g_chain.dma_cv.notify_all();
+
+  // Hold the game here until the renderer has read the frame, so the bone matrices it resolves
+  // live are the ones that belong to this chain. Only when something else renders: a host that
+  // renders on this same thread already has the guarantee, and waiting would be waiting for
+  // itself. Bounded, so a renderer that has stopped never strands the game thread.
+  if (g_chain.render_thread_known.load() &&
+      g_chain.render_thread.load() != std::this_thread::get_id()) {
+    while (g_chain.has_data_to_render && MasterExit == RuntimeExitStatus::RUNNING) {
+      g_chain.sync_cv.wait_for(lock, std::chrono::milliseconds(50));
+    }
+  }
 }
 
 /*!

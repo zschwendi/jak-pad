@@ -107,10 +107,10 @@ stops before it; `JAK1_AOT_BOOT_FRONTIER` in `game/CMakeLists.txt` is the number
 how you find the next frontier. `jak1-data-boot-test` below loads the art and gets past it.
 
 Machine-layer functions are asked for along the way and reported by
-`goal_kernel_core_stub_machine_layer` rather than implemented - the `scf-get-*` settings readers,
-the `file-stream-*` and `pc-*` PC-port functions. Those files' top-levels ran to completion, but
-with those calls returning 0, so they are known to load rather than known to work. The pad is the
-exception; see **The controller** below.
+`goal_kernel_core_stub_machine_layer` rather than implemented - the `file-stream-*` and `pc-*`
+PC-port functions. Those files' top-levels ran to completion, but with those calls returning 0, so
+they are known to load rather than known to work. The pad is the exception; see **The controller**
+below, and so are the `scf-get-*` readers; see **The boot configuration** below.
 
 ```sh
 cmake --build build/Release/bin -j 4 --target jak1-data-boot-test
@@ -158,6 +158,39 @@ ramdisk RPC and checking, through `update-vis!`'s own check, that every swap dec
 the BSP allows. The global heap ends at 55.6 MB, and the 60 frames build 60 DMA chains, the largest
 640 kB. The frame loop itself is not limited to 60: 10000 consecutive frames run the same way. The
 CTest entry uses 60 so the suite stays quick.
+
+## The boot configuration
+
+Upstream, `jak1::goal_main` (`game/kernel/jak1/kboot.cpp`) fills in a `masterConfig` block from the
+PS2's system configuration before `InitMachine` runs - the aspect ratio, the console's language, and
+the console's master volume, which the PC port fixes at 100. That file is the desktop entry point
+and is not part of this library, so `kernel_core.cpp` does the same block itself, and the seven
+`scf-get-*` readers GOAL calls to read it are implemented in `desktop_seams.cpp` out of upstream's
+`Decode*` in `game/kernel/common/kmachine.cpp`.
+
+They used to be stubs, and a stub returning 0 was not a neutral answer here. `settings.gc` builds
+`*setting-control*`'s defaults from `(scf-get-volume)`, and the memory card only carries three of
+them back:
+
+| default | from `scf-get-volume` = 100 | from a stub returning 0 |
+| --- | --- | --- |
+| `sfx-volume`, `music-volume`, `dialog-volume` | overwritten by the memory card (`pckernel.gc`) | same |
+| `ambient-volume` | 75 | 0 |
+| `sfx-volume-movie`, `ambient-volume-movie` | 55 | 0 |
+| `music-volume-movie` | 65 | 0 |
+| `dialog-volume-hint` | 80 | 0 |
+
+`apply-settings` then derives the ambient group's volume as
+`0.01 * ambient-volume * sfx-volume`, so with a zero there the 989snd ambient group (the group a
+sound's `.SBK` entry names, not the one GOAL passes) sat at master volume 0 for the whole run: in
+Sandover Village that is `water-lap`, `bird-2` and `welding-loop`, the entire environmental bed.
+Worse, `ambient.gc` applies the `-movie` and `-hint` volumes *as a percentage of the current one*
+while ambient speech or a hint is up - `(add-setting! 'sfx-volume 'rel ... )` - so a zero there
+multiplied the sfx, music and dialog groups by zero for the duration.
+
+Measured on a 4000-frame scripted gameplay run with the music suppressed, the six seconds of
+standing in Sandover Village go from RMS 6-31 (peak 49-148, effectively silence) to RMS 56-165
+(peak 447-729), and the walking sections gain 20-40%.
 
 ## The controller
 
@@ -408,6 +441,11 @@ int goal_sound_sample_rate(void);                      /* 48000 */
 int goal_sound_pull_audio(int16_t* out, int frames);   /* interleaved stereo 16-bit */
 ```
 
+A sound's group is the one its `.SBK` entry names, and each group has a master volume the game
+sets. Those volumes come out of `*setting-control*`, which is built from the boot configuration -
+see **The boot configuration** above for why a stubbed `scf-get-volume` muted the ambient group and
+every group under ambient speech.
+
 `goal_sound_pull_audio` calls the same `snd::Player::Tick` the desktop port's audio callback calls,
 through `snd_PullAudio` in `game/sound/sndshim.cpp`. A CoreAudio or AVAudioEngine render callback
 can call it directly - 989snd takes its own lock, so the caller may be the device's thread - and the
@@ -577,12 +615,13 @@ with no case now fails to compile rather than returning garbage.
 - **Little machine layer.** Almost nothing from `kmachine.cpp` is here.
   `goal_kernel_core_stub_machine_layer` puts a loudly-failing GOAL function object in each of its
   117 symbols so a call says which function was wanted instead of faulting in the guard page. Only
-  the three that are not machine-specific at all are implemented in `desktop_seams.cpp`:
+  the ones that are not machine-specific at all are implemented in `desktop_seams.cpp`:
   `__mem-move` (the PC port's `ultimate-memcpy` is a call to it, so a stub there means every data
-  object in a DGO links against zeroes), `__read-ee-timer`, and `__pc-get-mips2c`. The loader half
-  of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the pad in
-  `pad.cpp`; everything else - `file-stream-open`, `reset-graph`, the `scf-get-*` readers - is a
-  diagnostic and not an implementation. A frame runs with the display and DMA functions returning
+  object in a DGO links against zeroes), `__read-ee-timer`, `__pc-get-mips2c`, and the seven
+  `scf-get-*` readers of the PS2 system configuration (see **The boot configuration**). The loader
+  half of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the
+  pad in `pad.cpp`; everything else - `file-stream-open`, `reset-graph` - is a diagnostic and not
+  an implementation. A frame runs with the display and DMA functions returning
   0, so what a frame *computes* is real and what it would have *shown* is not.
 - **Without a host renderer, a frame is simulation only.** When no host installs itself through
   `gfx_host.h` (see **The renderer** above), `reset-graph`, `syncv`, `sync-path`,

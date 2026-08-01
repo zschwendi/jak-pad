@@ -13,7 +13,8 @@
  *
  * The exceptions, each marked where it is defined, are the ones with nothing platform-specific
  * left in them once the PS2 hardware is gone: host file I/O (`ee::sceOpen` and friends, against
- * the configured data directory), `__mem-move`, `__read-ee-timer`, and `__pc-get-mips2c`.
+ * the configured data directory), `__mem-move`, `__read-ee-timer`, `__pc-get-mips2c`, and the
+ * `scf-get-*` readers of the PS2 system configuration.
  *
  * Subsystems intentionally not in this library:
  *   - game/kernel/{common,jak1}/kmachine.cpp   : IOP boot, video, pads, PC-port functions (SDL,
@@ -42,6 +43,7 @@
 #include "common/util/Timer.h"
 
 #include "game/kernel/common/Ptr.h"
+#include "game/kernel/common/kboot.h"
 #include "game/kernel/common/kmachine.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/kernel_core.h"
@@ -49,6 +51,7 @@
 #include "game/kernel/jak1/kscheme.h"
 #include "game/mips2c/mips2c_table.h"
 #include "game/sce/deci2.h"
+#include "game/sce/libscf.h"
 #include "game/sce/sif_ee.h"
 
 namespace {
@@ -85,7 +88,7 @@ namespace {
  * init_common_pc_port_functions in game/kernel/common/kmachine.cpp.
  *
  * They are stubs, and they exist so that GOAL calling one reports which function it wanted instead
- * of reading a symbol that holds 0 and faulting in the guard page with no name attached. The three
+ * of reading a symbol that holds 0 and faulting in the guard page with no name attached. The ones
  * that install_implemented_machine_functions overwrites below are the exception.
  */
 const char* const kMachineFunctionNames[] = {
@@ -238,11 +241,12 @@ void install_machine_function_stubs(std::integer_sequence<int, Index...>) {
 }
 
 /*!
- * The few functions in the list above that are not machine-specific at all: they move memory and
- * read a clock. They are implemented rather than stubbed because nothing loads without them - the
- * PC port's `ultimate-memcpy` is a call to `__mem-move`, so a stub there means every data object
- * in a DGO gets linked against zeroes - and because nothing platform-dependent is left in them
- * once the PS2 hardware is gone. Everything else in the list stays a stub.
+ * The few functions in the list above that are not machine-specific at all: they move memory, read
+ * a clock, and read the PS2's system configuration. They are implemented rather than stubbed
+ * because nothing loads without them - the PC port's `ultimate-memcpy` is a call to `__mem-move`,
+ * so a stub there means every data object in a DGO gets linked against zeroes - and because
+ * nothing platform-dependent is left in them once the PS2 hardware is gone. Everything else in the
+ * list stays a stub.
  */
 u64 pc_mem_move(u32 dst, u32 src, u32 size) {
   memmove(Ptr<u8>(dst).c(), Ptr<u8>(src).c(), size);
@@ -260,10 +264,55 @@ u64 pc_get_mips2c(u32 name) {
   return Mips2C::gLinkedFunctionTable.get(Ptr<String>(name).c()->data());
 }
 
+/*!
+ * The system-configuration readers, from game/kernel/common/kmachine.cpp's `Decode*`. They read
+ * the `masterConfig` block that kernel_core.cpp fills in on behalf of the absent
+ * game/kernel/jak1/kboot.cpp.
+ *
+ * These are not machine-specific: on any platform without a PS2 system configuration they are the
+ * boot defaults, which is exactly what upstream's desktop port returns. A stub here is worse than
+ * missing, because GOAL believes the zero it gets: `scf-get-volume` of 0 is what settings.gc turns
+ * into a muted ambient sound group and into ambient speech scaling every other group to zero.
+ */
+u64 decode_language() {
+  return masterConfig.language;
+}
+
+u64 decode_aspect() {
+  return masterConfig.aspect;
+}
+
+u64 decode_volume() {
+  return masterConfig.volume;
+}
+
+u64 decode_territory() {
+  return GAME_TERRITORY_SCEA;
+}
+
+u64 decode_timeout() {
+  return masterConfig.timeout;
+}
+
+u64 decode_inactive_timeout() {
+  return masterConfig.inactive_timeout;
+}
+
+void decode_time(u32 ptr) {
+  ee::sceCdReadClock(Ptr<ee::sceCdCLOCK>(ptr).c());
+}
+
 void install_implemented_machine_functions() {
   jak1::make_function_symbol_from_c("__mem-move", (void*)pc_mem_move);
   jak1::make_function_symbol_from_c("__read-ee-timer", (void*)read_ee_timer);
   jak1::make_function_symbol_from_c("__pc-get-mips2c", (void*)pc_get_mips2c);
+  jak1::make_function_symbol_from_c("scf-get-language", (void*)decode_language);
+  jak1::make_function_symbol_from_c("scf-get-time", (void*)decode_time);
+  jak1::make_function_symbol_from_c("scf-get-aspect", (void*)decode_aspect);
+  jak1::make_function_symbol_from_c("scf-get-volume", (void*)decode_volume);
+  jak1::make_function_symbol_from_c("scf-get-territory", (void*)decode_territory);
+  jak1::make_function_symbol_from_c("scf-get-timeout", (void*)decode_timeout);
+  jak1::make_function_symbol_from_c("scf-get-inactive-timeout", (void*)decode_inactive_timeout);
 }
 
 }  // namespace
