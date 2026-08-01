@@ -423,30 +423,32 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   }
   ASSERT(kBoneVectorAlignment + bone_count * 8 <= MAX_SHADER_BONE_VECTORS);
 
-  LevelDrawBucket* lev_bucket = nullptr;
-  for (u32 i = 0; i < m_next_free_level_bucket; i++) {
-    if (m_level_draw_buckets[i].level == lev) {
-      lev_bucket = &m_level_draw_buckets[i];
-      break;
+  // A flush retires every level bucket, so the bucket has to be (re)acquired
+  // after one: holding the old pointer would keep appending draws to a bucket
+  // that is no longer in the live range, and those draws would never be issued.
+  auto acquire_level_bucket = [&]() {
+    for (u32 i = 0; i < m_next_free_level_bucket; i++) {
+      if (m_level_draw_buckets[i].level == lev) {
+        return &m_level_draw_buckets[i];
+      }
     }
-  }
-  if (!lev_bucket) {
     if (m_next_free_level_bucket >= m_level_draw_buckets.size()) {
       flush_draw_buckets(render_state, ctx, stats);
     }
-    lev_bucket = &m_level_draw_buckets[m_next_free_level_bucket++];
-    lev_bucket->reset();
-    lev_bucket->level = lev;
-  }
+    LevelDrawBucket* b = &m_level_draw_buckets[m_next_free_level_bucket++];
+    b->reset();
+    b->level = lev;
+    return b;
+  };
 
-  if (lev_bucket->next_free_draw + model->max_draws >= lev_bucket->draws.size()) {
+  LevelDrawBucket* lev_bucket = acquire_level_bucket();
+
+  if (lev_bucket->next_free_draw + model->max_draws >= lev_bucket->draws.size() ||
+      lev_bucket->next_free_envmap_draw + model->max_draws >= lev_bucket->envmap_draws.size()) {
     lg::warn("Metal merc: out of draws, flushing");
     flush_draw_buckets(render_state, ctx, stats);
+    lev_bucket = acquire_level_bucket();
     ASSERT(model->max_draws < lev_bucket->draws.size());
-  }
-  if (lev_bucket->next_free_envmap_draw + model->max_draws >= lev_bucket->envmap_draws.size()) {
-    lg::warn("Metal merc: out of envmap draws, flushing");
-    flush_draw_buckets(render_state, ctx, stats);
     ASSERT(model->max_draws < lev_bucket->envmap_draws.size());
   }
 

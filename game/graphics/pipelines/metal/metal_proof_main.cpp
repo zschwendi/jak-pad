@@ -2051,25 +2051,33 @@ void write_merc_bone(std::vector<u8>& mem, u32 addr, float tx, float ty) {
 }
 
 // The PC_PORT model packet Merc2::handle_pc_model parses.
-std::vector<u8> make_merc_model_packet(u32 bone0_addr, u32 bone1_addr, const u8 fade[4]) {
+std::vector<u8> make_merc_model_packet(u32 bone0_addr,
+                                       u32 bone1_addr,
+                                       const u8 fade[4],
+                                       const char* model_name = kMercModelName,
+                                       // when set, light direction 2 is (0, 0, 1) with color
+                                       // `dir2_color` and this ambient, so the shaded color reads
+                                       // out the normal matrix's third row
+                                       float ambient = 0.5f,
+                                       float dir2_color = 0.f) {
   std::vector<u8> d;
   // name (128 bytes)
   d.resize(128, 0);
-  memcpy(d.data(), kMercModelName, strlen(kMercModelName));
-  // lights (7 qw): directions and colors zero, ambient 0.5 -> light_color 0.5
+  memcpy(d.data(), model_name, strlen(model_name));
+  // lights (7 qw): direction0/1 and color0/1 stay zero
   for (int i = 0; i < 3; i++) {  // direction0/1/2 + w
     push_f(d, 0.f);
     push_f(d, 0.f);
-    push_f(d, 0.f);
+    push_f(d, i == 2 && dir2_color != 0.f ? 1.f : 0.f);
     push_i(d, 0);
   }
   for (int i = 0; i < 3; i++) {  // color0/1/2
     for (int j = 0; j < 4; j++) {
-      push_f(d, 0.f);
+      push_f(d, i == 2 ? dir2_color : 0.f);
     }
   }
   for (int j = 0; j < 4; j++) {  // ambient
-    push_f(d, 0.5f);
+    push_f(d, ambient);
   }
   // jak 1 water flag quadword
   push_u64(d, 0);
@@ -2239,6 +2247,299 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
     check_pixel(frame, col0, row0, 255, 151, 75, "merc: envmap pass blended over the model");
     check_pixel(frame, gs_to_col(kX1), gs_to_row(kY1), 0, 0, 0,
                 "merc: no second instance in the envmap frame");
+  }
+
+  g_ee_main_mem = nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Section: the bone matrix under a Y-axis rotation sweep.
+//
+// The merc test above only ever uses diagonal bone matrices, so it cannot see a
+// bone whose rotation basis is read at the wrong stride, transposed, or short a
+// column: every such mistake still maps a diagonal matrix onto itself. A model
+// that keeps its width at some yaws and collapses to a line at others is the
+// signature of exactly that, so this sweeps one bone through a Y rotation and
+// measures the model on screen.
+//
+// The model is a cross of two quads - one in the model XY plane, one in the
+// model ZY plane - so its half width on screen is h * max(|cos|, |sin|), which
+// never drops below h/sqrt(2). Any lost basis vector makes it reach zero.
+// ---------------------------------------------------------------------------
+
+constexpr const char* kMercRotModelName = "proof-merc-rot";
+constexpr float kMercRotHalf = 48.f;  // GS units
+constexpr float kGsPerCol = 256.f / 320.f;
+constexpr float kGsPerRow = 112.f / 240.f;
+
+// A quad spanning model x above the origin and a quad spanning model z below it.
+// Stacking them vertically keeps the silhouette width the wider of the two at
+// every yaw while leaving each one its own band of rows to sample, so the same
+// frame checks the position matrix (width) and the normal matrix (shading).
+// Two draws, so no primitive restart is needed.
+std::unique_ptr<tfrag3::Level> make_merc_rot_test_level() {
+  auto level = std::make_unique<tfrag3::Level>();
+  level->level_name = "metal-proof-merc-rot";
+
+  tfrag3::Texture tex;
+  tex.w = 16;
+  tex.h = 16;
+  tex.debug_name = "merc-rot-solid";
+  tex.debug_tpage_name = "merc-rot-page";
+  tex.load_to_pool = false;
+  tex.data.resize(16 * 16, 0xff3264c8u);  // a=255 b=50 g=100 r=200
+  level->textures.push_back(tex);
+
+  const float h = kMercRotHalf;
+  // strip order for both quads: (-,-), (+,-), (-,+), (+,+)
+  // A spans model x, in the upper half; B spans model z, in the lower half.
+  const float quad_a[4][3] = {{-h, 0, 0}, {h, 0, 0}, {-h, h, 0}, {h, h, 0}};
+  const float quad_b[4][3] = {{0, -h, -h}, {0, -h, h}, {0, 0, -h}, {0, 0, h}};
+
+  auto& merc = level->merc_data;
+  merc.vertices.resize(8);
+  for (int i = 0; i < 8; i++) {
+    auto& v = merc.vertices[i];
+    memset(&v, 0, sizeof(v));
+    const float* p = i < 4 ? quad_a[i] : quad_b[i - 4];
+    v.pos[0] = p[0];
+    v.pos[1] = p[1];
+    v.pos[2] = p[2];
+    // A's normal is model +z, B's is model +x: between them the shading reads
+    // out two different columns of the normal matrix
+    v.normal[i < 4 ? 2 : 0] = 1.f;
+    v.weights[0] = 1.f;
+    v.st[0] = 0.5f;
+    v.st[1] = 0.5f;
+    for (int j = 0; j < 4; j++) {
+      v.rgba[j] = 128;
+    }
+    v.rgba[3] = 255;
+    v.mats[0] = v.mats[1] = v.mats[2] = 0;
+  }
+  merc.indices = {0, 1, 2, 3, 4, 5, 6, 7};
+
+  tfrag3::MercDraw draw;
+  draw.mode.set_depth_write_enable(true);
+  draw.mode.set_zt(true);
+  draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
+  draw.mode.set_ab(false);
+  draw.mode.set_at(false);
+  draw.mode.set_fog(false);
+  draw.mode.set_decal(false);
+  draw.mode.set_filt_enable(false);
+  draw.mode.set_clamp_s_enable(true);
+  draw.mode.set_clamp_t_enable(true);
+  draw.tree_tex_id = 0;
+  draw.eye_id = 0xff;
+  draw.num_triangles = 2;
+  draw.no_strip = false;
+
+  tfrag3::MercEffect effect;
+  draw.first_index = 0;
+  draw.index_count = 4;
+  effect.all_draws.push_back(draw);
+  draw.first_index = 4;
+  draw.index_count = 4;
+  effect.all_draws.push_back(draw);
+  effect.has_envmap = false;
+  effect.has_mod_draw = false;
+  effect.envmap_texture = 0;
+
+  tfrag3::MercModel model;
+  model.name = kMercRotModelName;
+  model.effects.push_back(effect);
+  model.max_draws = 2;
+  model.max_bones = 1;
+  model.st_vif_add = 0;
+  model.xyz_scale = 1.f;
+  model.st_magic = 0.f;
+  merc.models.push_back(model);
+  return level;
+}
+
+// One bone whose transform is translate(tx, ty, tz) * rotate_y(angle), written
+// into EE memory the way the game's `bones` does: tmat is the negated 4x4 (the
+// shader computes `-X * p`) in columns, nmat the un-negated 3x3 in columns.
+void write_merc_bone_yrot(std::vector<u8>& mem,
+                          u32 addr,
+                          float angle_rad,
+                          float tx,
+                          float ty,
+                          float tz) {
+  const float c = std::cos(angle_rad), s = std::sin(angle_rad);
+  // columns of translate * rotate_y
+  const float col[4][4] = {
+      {c, 0.f, -s, 0.f}, {0.f, 1.f, 0.f, 0.f}, {s, 0.f, c, 0.f}, {tx, ty, tz, 1.f}};
+  float m[7 * 4] = {};
+  for (int j = 0; j < 4; j++) {
+    for (int i = 0; i < 4; i++) {
+      m[j * 4 + i] = -col[j][i];
+    }
+  }
+  for (int j = 0; j < 3; j++) {
+    for (int i = 0; i < 3; i++) {
+      m[16 + j * 4 + i] = col[j][i];
+    }
+  }
+  memcpy(&mem[addr], m, sizeof(m));
+}
+
+// The lit span of one row / one column of the readback, in pixels.
+struct LitSpan {
+  int lo = -1;
+  int hi = -1;
+  bool empty() const { return lo < 0; }
+  int width() const { return empty() ? 0 : hi - lo + 1; }
+  float center() const { return empty() ? -1.f : 0.5f * (lo + hi); }
+};
+
+bool pixel_lit(const metal_renderer::FramePixels& frame, int x, int y) {
+  const u8* p = &frame.rgba[(y * frame.width + x) * 4];
+  return p[0] > 16 || p[1] > 16 || p[2] > 16;
+}
+
+// The widest lit row: the model's silhouette width.
+LitSpan lit_row(const metal_renderer::FramePixels& frame) {
+  LitSpan best;
+  for (int y = 0; y < (int)frame.height; y++) {
+    LitSpan s;
+    for (int x = 0; x < (int)frame.width; x++) {
+      if (pixel_lit(frame, x, y)) {
+        if (s.lo < 0) {
+          s.lo = x;
+        }
+        s.hi = x;
+      }
+    }
+    if (s.width() > best.width()) {
+      best = s;
+    }
+  }
+  return best;
+}
+
+LitSpan lit_col(const metal_renderer::FramePixels& frame, int x) {
+  LitSpan s;
+  for (int y = 0; y < (int)frame.height; y++) {
+    if (pixel_lit(frame, x, y)) {
+      if (s.lo < 0) {
+        s.lo = y;
+      }
+      s.hi = y;
+    }
+  }
+  return s;
+}
+
+void test_merc_bone_rotation(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& display) {
+  printf("--- merc: bone matrix under a Y-rotation sweep ---\n");
+  using namespace jak1;
+
+  {
+    metal_renderer::MercLevelLoad load;
+    std::string error;
+    if (!metal_renderer::merc_add_level(make_merc_rot_test_level(), false, &load, &error)) {
+      printf("[FAIL] merc rot: could not register the test level: %s\n", error.c_str());
+      g_fail_count++;
+      return;
+    }
+    check(load.models == 1 && load.vertices == 8 && load.indices == 8,
+          "merc rot: cross model registered with the model pool");
+  }
+
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+
+  constexpr float kTx = 2048.f, kTy = 2048.f;
+  // the lighting the sweep uses: ambient plus a light along +z, so a quad's
+  // brightness is a direct readout of its rotated normal's z
+  constexpr float kAmbient = 0.25f, kDir2Color = 0.5f;
+  const int center_col = gs_to_col(kTx);
+  const int row_a = gs_to_row(kTy + kMercRotHalf * 0.5f);  // inside quad A
+  const int row_b = gs_to_row(kTy - kMercRotHalf * 0.5f);  // inside quad B
+  const int degrees[] = {0, 30, 45, 60, 90, 135, 180, 225, 270};
+
+  for (int deg : degrees) {
+    const float rad = (float)deg * (float)M_PI / 180.f;
+    ChainBuilder cb(mem);
+    u32 bone0 = cb.alloc(112), bone1 = cb.alloc(112);
+    write_merc_bone_yrot(mem, bone0, rad, kTx, kTy, kMercZ);
+    write_merc_bone_yrot(mem, bone1, 0.f, 0.f, 0.f, 0.f);
+
+    const u8 no_fade[4] = {0, 0, 0, 0};
+    std::vector<ChainBuilder::Transfer> merc;
+    merc.push_back(
+        {vif_stcycl(4, 4), vif_code(VifCode::Kind::STMOD, 0), make_merc_setup_data(), false});
+    merc.push_back({0, 0, std::vector<u8>(32, 0), false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, vif_code(VifCode::Kind::PC_PORT, 0),
+                    make_merc_model_packet(bone0, bone1, no_fade, kMercRotModelName, kAmbient,
+                                           kDir2Color),
+                    false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
+    cb.set_bucket_content((int)BucketId::MERC_PRIS_LEVEL0, merc);
+
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] merc rot: could not read back the %d degree frame\n", deg);
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+
+    // The same transform, on the CPU: the cross spans model x and z, so the
+    // widest of the two quads decides the silhouette.
+    const float c = std::cos(rad), s = std::sin(rad);
+    const float expect_half_gs = kMercRotHalf * std::max(std::abs(c), std::abs(s));
+    const float expect_w = 2.f * expect_half_gs / kGsPerCol;
+    // a quad seen exactly edge-on has zero area and rasterizes nothing, so the
+    // lit column is one band at the axis-aligned yaws and two everywhere else
+    const int bands = (std::abs(c) > 1e-3f ? 1 : 0) + (std::abs(s) > 1e-3f ? 1 : 0);
+    const float expect_h = bands * kMercRotHalf / kGsPerRow;
+
+    const LitSpan row = lit_row(frame);
+    const LitSpan col = lit_col(frame, center_col);
+    printf("merc rot %3d deg: widest lit row %d..%d (w %d, expected %.1f), lit column span %d..%d "
+           "(h %d, expected %.1f)\n",
+           deg, row.lo, row.hi, row.width(), expect_w, col.lo, col.hi, col.width(), expect_h);
+
+    check(std::abs(row.width() - expect_w) <= 3.f,
+          fmt::format("merc rot: {} degrees keeps its width ({} px, expected {:.1f})", deg,
+                      row.width(), expect_w)
+              .c_str());
+    check(std::abs(col.width() - expect_h) <= 3.f,
+          fmt::format("merc rot: {} degrees keeps its height ({} px, expected {:.1f})", deg,
+                      col.width(), expect_h)
+              .c_str());
+    check(!row.empty() && std::abs(row.center() - center_col) <= 2.f,
+          fmt::format("merc rot: {} degrees stays centered (center {:.1f}, expected {})", deg,
+                      row.center(), center_col)
+              .c_str());
+
+    // Shading: quad A's normal rotates to (sin, 0, cos) and quad B's to
+    // (cos, 0, -sin), so each band's brightness reads back one column of the
+    // normal matrix. Only checked where both quads have real width.
+    if (std::abs(c) > 0.5f && std::abs(s) > 0.5f) {
+      auto shade = [&](float nz) {
+        const float l = kAmbient + std::max(nz, 0.f) * kDir2Color;
+        return math::Vector3f(200.78f * l, 100.39f * l, 50.20f * l);
+      };
+      const auto ca = shade(c), cb = shade(-s);
+      check_pixel(frame, center_col, row_a, (int)llround(ca.x()), (int)llround(ca.y()),
+                  (int)llround(ca.z()),
+                  fmt::format("merc rot: {} degrees shades quad A from the normal matrix", deg)
+                      .c_str());
+      check_pixel(frame, center_col, row_b, (int)llround(cb.x()), (int)llround(cb.y()),
+                  (int)llround(cb.z()),
+                  fmt::format("merc rot: {} degrees shades quad B from the normal matrix", deg)
+                      .c_str());
+    }
   }
 
   g_ee_main_mem = nullptr;
@@ -3307,6 +3608,7 @@ int main(int argc, char** argv) {
   test_dma_chain(mod, display, level.get());
   test_sprite_chain(mod, display);
   test_merc_chain(mod, display);
+  test_merc_bone_rotation(mod, display);
   test_generic2_chain(mod, display);
   g_ee_main_mem = nullptr;
 
