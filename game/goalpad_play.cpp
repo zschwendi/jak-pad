@@ -75,6 +75,7 @@ namespace {
 
 struct Options {
   std::string data_dir;
+  std::string saves_dir;  // set from data_dir unless --saves-dir overrides it
   int window_w = 1280;
   int window_h = 960;
   // The internal resolution the game renders at, as a multiple of the PS2's 640x480. Whole
@@ -716,6 +717,8 @@ int usage() {
       "\n"
       "  --data-dir <dir>        the player's prepared data (holds iso/ and fr3/).\n"
       "                          Defaults to $GOALPAD_JAK1_DATA_DIR.\n"
+      "  --saves-dir <dir>       where the game's save files live\n"
+      "                          (default <data-dir>/saves; created on the first save)\n"
       "  --window <w> <h>        window size (default 1280 960)\n"
       "  --scale <1-4>           internal render resolution, in multiples of 640x480 (default 2)\n"
       "  --game-res <w> <h>      internal render resolution, exactly\n"
@@ -756,6 +759,8 @@ int main(int argc, char** argv) {
     const std::string arg = argv[i];
     if (arg == "--data-dir" && i + 1 < argc) {
       opts.data_dir = argv[++i];
+    } else if (arg == "--saves-dir" && i + 1 < argc) {
+      opts.saves_dir = argv[++i];
     } else if (arg == "--window" && i + 2 < argc) {
       opts.window_w = std::atoi(argv[++i]);
       opts.window_h = std::atoi(argv[++i]);
@@ -854,6 +859,11 @@ int main(int argc, char** argv) {
     lg::error("data directory: {}", goal_kernel_core_last_error());
     return 1;
   }
+  if (opts.saves_dir.empty()) {
+    opts.saves_dir = opts.data_dir + "/saves";
+  }
+  goal_kernel_core_set_saves_directory(opts.saves_dir.c_str());
+  lg::info("saves: {}", opts.saves_dir);
   register_aot_objects();
 
   // Graphics first, exactly as exec_runtime does it: the game uploads textures while it boots and

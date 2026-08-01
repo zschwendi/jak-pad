@@ -107,7 +107,19 @@ const char* mc_get_filename_no_dir(GameVersion version, int ndx) {
   return filenames[ndx];
 }
 
+// Where the raw save files live. Empty means the desktop default; a host that keeps saves
+// somewhere else (the portable runtime keeps them next to the player's prepared data) sets this
+// once at startup, through goal_kernel_core_set_saves_directory.
+static std::string save_dir_override;
+
+void kmemcard_set_directory(const char* path) {
+  save_dir_override = path ? path : "";
+}
+
 inline fs::path mc_get_filename(GameVersion version, int ndx) {
+  if (!save_dir_override.empty()) {
+    return fs::path(save_dir_override) / mc_get_filename_no_dir(version, ndx);
+  }
   return file_util::get_user_memcard_dir(version) / mc_get_filename_no_dir(version, ndx);
 }
 

@@ -138,6 +138,16 @@ goal_kernel_core_status goal_kernel_core_set_data_directory(const char* path);
 const char* goal_kernel_core_data_directory(void);
 
 /*!
+ * Where the game's save files go. The directory is created on the first save; a missing or empty
+ * directory simply means there are no saves yet. Pass NULL or "" to fall back to the upstream
+ * desktop location (the OpenGOAL user config directory).
+ */
+goal_kernel_core_status goal_kernel_core_set_saves_directory(const char* path);
+
+/*! The configured saves directory, or "" if none has been set. Never NULL. */
+const char* goal_kernel_core_saves_directory(void);
+
+/*!
  * Resolve a data-relative name such as "iso/KERNEL.CGO" against the data directory. A name that
  * is already absolute is copied through unchanged. Returns GOAL_KERNEL_CORE_NOT_FOUND when no
  * data directory has been set.
