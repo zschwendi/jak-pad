@@ -29,6 +29,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -54,6 +55,7 @@ extern "C" {
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
+#include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
@@ -89,6 +91,11 @@ struct Options {
   // frame -> file. Written from the offscreen game target, which is exactly what the present pass
   // shows.
   std::map<int, std::string> screenshots;
+  // where the capture hotkeys write their .gpdma files. Outside any checkout, and never where the
+  // player's own game data lives.
+  std::string capture_dir = "/private/tmp/goalpad-dma-capture";
+  int capture_burst = 8;             // frames one burst capture writes
+  std::vector<int> capture_frames;   // chain indices to capture without a keypress
   // scripted input, so a run can be reproduced without a person at the keyboard. Same syntax as
   // jak1-data-boot-test's --press: buttons joined with '+', at a frame number.
   struct Press {
@@ -156,6 +163,10 @@ struct Shared {
   // the controller, read on the main thread and consumed by the game thread
   std::mutex pad_mutex;
   goal_pad_state pad;
+
+  // Capture requests: the hotkey is seen on the main thread, but the chain only exists on the
+  // game thread, inside send_chain. The counter is how one hands the request to the other.
+  std::atomic<int> captures_wanted{0};
 };
 Shared g_shared;
 
@@ -164,8 +175,44 @@ Shared g_shared;
 // ---------------------------------------------------------------------------------------------
 
 const GfxRendererModule* g_gfx = nullptr;
+std::string g_capture_dir;
+int g_chain_index = 0;  // 1-based, counts chains: what a capture file calls its frame
+// chain indices asked for on the command line, so a run can be reproduced without a keypress.
+// Written before the game thread starts and only read after.
+std::set<int> g_capture_frames;
+
+/*!
+ * Write the chain this frame built, before it is handed to the renderer, so the file holds exactly
+ * what the player is looking at. Called on the game thread; a capture stalls the frame for as long
+ * as the write takes, which is the intent - a frame worth keeping is worth waiting for.
+ */
+void capture_this_chain(const void* ee_base, uint32_t chain_offset) {
+  const std::string path =
+      fmt::format("{}/dma-frame-{}.gpdma", g_capture_dir, g_chain_index);
+  if (goal_gfx_dma_capture_chain_now(ee_base, chain_offset, g_chain_index, path.c_str())) {
+    // What the renderer made of the *previous* frame, which is the closest reading of this one
+    // available before it is drawn: it says which renderer the character geometry went through.
+    const auto chain = metal_renderer::get_chain_stats();
+    lg::warn("[capture] wrote {}", path);
+    lg::warn("[capture]   last frame's foreground: merc {} models / {} draws / {} tris, "
+             "generic {} draws / {} tris",
+             chain.merc_models, chain.merc_draws, chain.merc_triangles, chain.generic_draws,
+             chain.generic_triangles);
+  }
+}
 
 void host_send_chain(const void* ee_base, uint32_t chain_offset) {
+  g_chain_index++;
+  if (!g_capture_dir.empty()) {
+    bool wanted = g_capture_frames.count(g_chain_index) != 0;
+    if (!wanted && g_shared.captures_wanted.load() > 0) {
+      g_shared.captures_wanted--;
+      wanted = true;
+    }
+    if (wanted) {
+      capture_this_chain(ee_base, chain_offset);
+    }
+  }
   g_gfx->send_chain(ee_base, chain_offset);
 }
 uint32_t host_vsync(void) {
@@ -308,6 +355,27 @@ void read_pad(const Options& opts) {
   pad.left_y = axis_byte(key(SDL_SCANCODE_W), key(SDL_SCANCODE_S), axis(SDL_GAMEPAD_AXIS_LEFTY));
   pad.right_x = axis_byte(key(SDL_SCANCODE_L), key(SDL_SCANCODE_J), axis(SDL_GAMEPAD_AXIS_RIGHTX));
   pad.right_y = axis_byte(key(SDL_SCANCODE_I), key(SDL_SCANCODE_K), axis(SDL_GAMEPAD_AXIS_RIGHTY));
+
+  // Capture hotkeys. F9 asks for this frame, F10 for a burst - a thing that goes wrong *while*
+  // the character turns needs several frames to show the whole of it, not one. Both are on the
+  // key's edge, so holding the key does not queue hundreds of files.
+  {
+    static bool f9_was_down = false;
+    static bool f10_was_down = false;
+    const bool f9 = key(SDL_SCANCODE_F9);
+    const bool f10 = key(SDL_SCANCODE_F10);
+    if (f9 && !f9_was_down) {
+      g_shared.captures_wanted += 1;
+      lg::warn("[capture] F9: capturing the next frame into {}", g_capture_dir);
+    }
+    if (f10 && !f10_was_down) {
+      g_shared.captures_wanted += opts.capture_burst;
+      lg::warn("[capture] F10: capturing the next {} frames into {}", opts.capture_burst,
+               g_capture_dir);
+    }
+    f9_was_down = f9;
+    f10_was_down = f10;
+  }
 
   if (opts.report_pad) {
     static goal_pad_state last;
@@ -659,9 +727,20 @@ int usage() {
       "  --stick <x>,<y>@<when>[:<frames>]     hold the left stick; a byte per axis, 127 centred\n"
       "  --report-state          print each state the target enters, and where it is standing\n"
       "  --no-sound              boot without 989snd\n"
+      "  --capture-dma-dir <dir> where F9/F10 write .gpdma captures\n"
+      "                          (default /private/tmp/goalpad-dma-capture)\n"
+      "  --capture-burst <n>     frames one F10 press captures (default 8)\n"
+      "  --capture-dma-frames <a,b,c>  capture those chain indices without a keypress\n"
       "\n"
       "Keyboard: arrows/WASD move, Return = Start, Space = X, E = Circle, F = Square,\n"
-      "R = Triangle, Q/O = L1/R1, 1/P = L2/R2. A gamepad works too.\n");
+      "R = Triangle, Q/O = L1/R1, 1/P = L2/R2. A gamepad works too.\n"
+      "\n"
+      "F9  captures the next frame's DMA chain + EE snapshot to a .gpdma file.\n"
+      "F10 captures the next n frames (see --capture-burst): hold a turn and press it, so the\n"
+      "    whole of something that goes wrong mid-rotation is on disk, not one frame of it.\n"
+      "Each file's path is printed. Replay one with:\n"
+      "    metal-proof --replay <file.gpdma> --replay-png <out.png> \\\n"
+      "        --replay-fr3 <level>.fr3 --replay-common-fr3 GAME.fr3\n");
   return 1;
 }
 
@@ -694,6 +773,25 @@ int main(int argc, char** argv) {
     } else if (arg == "--screenshot" && i + 2 < argc) {
       const int frame = std::atoi(argv[++i]);
       opts.screenshots[frame] = argv[++i];
+    } else if (arg == "--capture-dma-dir" && i + 1 < argc) {
+      opts.capture_dir = argv[++i];
+    } else if (arg == "--capture-burst" && i + 1 < argc) {
+      opts.capture_burst = std::max(1, std::atoi(argv[++i]));
+    } else if (arg == "--capture-dma-frames" && i + 1 < argc) {
+      const std::string list = argv[++i];
+      size_t at = 0;
+      while (at <= list.size()) {
+        const size_t comma = list.find(',', at);
+        const int frame = std::atoi(list.substr(at, comma == std::string::npos ? comma : comma - at)
+                                        .c_str());
+        if (frame > 0) {
+          opts.capture_frames.push_back(frame);
+        }
+        if (comma == std::string::npos) {
+          break;
+        }
+        at = comma + 1;
+      }
     } else if ((arg == "--press" || arg == "--stick") && i + 1 < argc) {
       const std::string spec = argv[++i];
       const size_t at = spec.find('@');
@@ -828,6 +926,11 @@ int main(int argc, char** argv) {
   if (!g_gamepad) {
     lg::info("[pad] no controller found; the keyboard is the controller");
   }
+
+  g_capture_dir = opts.capture_dir;
+  g_capture_frames.insert(opts.capture_frames.begin(), opts.capture_frames.end());
+  lg::info("[capture] F9 captures the next frame, F10 the next {}, into {}", opts.capture_burst,
+           g_capture_dir);
 
   std::thread game(game_thread, std::cref(opts));
 

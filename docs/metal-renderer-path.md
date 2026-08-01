@@ -537,6 +537,27 @@ come from a `UIView`/SwiftUI instead of SDL.
     resolves bone pointers against `render_state->ee_memory` - the same thing the ported
     texture-upload handler does with its `texture-page` pointers. Addresses are bounds-
     checked before dereferencing and reported (`bad_bone_pointers`) rather than faulting.
+
+    That read is of **live** game memory while the rest of the frame is a snapshot, and the two
+    have to be taken at the same moment or the character is drawn with a skeleton that does not
+    belong to its own control data. The bone arrays are referenced from inside a packet rather
+    than transferred by a DMA tag, so `FixedChunkDmaCopier::run` - which marks only the chunks
+    the tags touch - never copies them, and there is nothing to resolve them against but live
+    memory. Measured on the Mac host, the region the bone pointers live in
+    (`0x5515c0`-`0xd26b80`, about 8 MB) had already changed between `send_chain` and the render
+    on **162 of 500 frames**: a character visibly shivering on a still pose. `send_chain` now
+    holds the game thread until the renderer has consumed the chain, which is the guarantee GL
+    has for free by rendering from original memory while the game waits. After the change the
+    same measurement is **0 of 500**, at an unchanged 59.9 fps / 16.69 ms +/- 0.01 - the game
+    thread was already blocking for that long in `sync-path`.
+
+    Two related fixes came with it: `sync_path` waited on `sync_mutex` for a predicate written
+    under `dma_mutex`, and now waits under the mutex that protects it; and the wait is skipped
+    when the host renders on the thread it sends from (the proof, and any single-threaded
+    display-link driver), which already has the guarantee and would otherwise wait for itself.
+    **A single-threaded host still has to render a chain in the same tick it was sent** - if it
+    renders the previous tick's chain, the bones are again from the wrong frame, and no waiting
+    in `send_chain` can fix that.
   - **Model geometry** does not travel in the chain. `metal_merc_model_pool.{h,mm}` is the
     merc-scoped equivalent of what the GL loader's `MercLoaderStage` produces: it reads an
     extracted level, uploads its textures the way `add_texture` does, puts

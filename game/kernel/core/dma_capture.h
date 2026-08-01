@@ -58,6 +58,20 @@ typedef struct goal_gfx_dma_bucket_summary {
 void goal_gfx_dma_install(void);
 
 /*!
+ * Write the chain a *host* is about to render to `path`, without owning `__send-gfx-dma-chain`.
+ * `ee_base` and `chain_offset` are the two arguments `goal_gfx_host::send_chain` received, and
+ * `frame` is whatever the host counts chains by; it is recorded in the file's header. The file is
+ * the format the measuring seam writes, so it replays the same way.
+ *
+ * This is what a capture hotkey in a playable host calls: the frame the player is looking at is
+ * the frame that lands on disk. Returns 0 if nothing was written.
+ */
+int goal_gfx_dma_capture_chain_now(const void* ee_base,
+                                   uint32_t chain_offset,
+                                   int frame,
+                                   const char* path);
+
+/*!
  * Write frame `frame`'s capture to exactly `path`. `frame` is 1-based and counts calls to
  * `__send-gfx-dma-chain`, so frame 1 is the first chain after boot - which draws almost nothing.
  * Pass NULL or "" to capture nothing.
