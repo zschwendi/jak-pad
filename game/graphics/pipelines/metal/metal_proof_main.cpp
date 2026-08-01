@@ -2882,10 +2882,11 @@ void run_chain_replay(const GfxRendererModule* mod,
         "replay: every sent chain was rendered");
   printf(
       "replay stats: %d draws, %d tris, %d uploads, sky d/b %d/%d, cloud d/b %d/%d, "
-      "skipped %d bucket + %d tfrag bytes, %d unsupported blends\n",
+      "skipped %d bucket bytes, %d unsupported blends\n",
       stats.draw_calls, stats.triangles, stats.tex_uploads, stats.sky_draws, stats.sky_blends,
       stats.cloud_draws, stats.cloud_blends, (int)stats.skipped_bucket_bytes,
-      (int)stats.skipped_tfrag_bytes, stats.direct_unsupported_blends);
+      stats.direct_unsupported_blends);
+  check(stats.skipped_bucket_bytes == 0, "replay: no bucket content left unconsumed");
   printf(
       "sprite bucket: %d 2d + %d 3d + %d hud sprites in %d draws, %d distort sprites consumed "
       "(drawing not ported), %d missing textures\n",

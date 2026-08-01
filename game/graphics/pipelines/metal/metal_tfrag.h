@@ -40,7 +40,11 @@ class MetalTFragment : public MetalBucketRenderer {
                  int my_id,
                  const std::vector<tfrag3::TFragmentTreeKind>& tree_kinds,
                  int level_id,
-                 bool does_vis_copy);
+                 bool does_vis_copy,
+                 // the sky-blend bucket's trailing tfrag-trans content: the
+                 // parent renderer already consumed the bucket's opening NEXT
+                 // (the GL renderer calls this "child mode")
+                 bool child_mode = false);
 
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
@@ -80,6 +84,7 @@ class MetalTFragment : public MetalBucketRenderer {
 
   std::vector<tfrag3::TFragmentTreeKind> m_tree_kinds;
   int m_level_id;
+  bool m_child_mode = false;
   bool m_does_vis_copy;
 
   MetalTfragPcPortData m_pc_port_data;

@@ -235,7 +235,7 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   {
     auto handler = std::make_unique<MetalSkyBlendHandler>(
         "l0-alpha-sky-blend-and-tfrag-trans",
-        (int)BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0, sky_cpu_blender);
+        (int)BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0, 0, sky_cpu_blender);
     m_sky_blend_handlers[0] = handler.get();
     set(BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0, std::move(handler));
   }
@@ -245,7 +245,7 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   {
     auto handler = std::make_unique<MetalSkyBlendHandler>(
         "l1-alpha-sky-blend-and-tfrag-trans",
-        (int)BucketId::TFRAG_TRANS1_AND_SKY_BLEND_LEVEL1, sky_cpu_blender);
+        (int)BucketId::TFRAG_TRANS1_AND_SKY_BLEND_LEVEL1, 1, sky_cpu_blender);
     m_sky_blend_handlers[1] = handler.get();
     set(BucketId::TFRAG_TRANS1_AND_SKY_BLEND_LEVEL1, std::move(handler));
   }
@@ -782,11 +782,6 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.cloud_draws = blend_stats.cloud_draws;
     m_chain_stats.cloud_blends = blend_stats.cloud_blends;
     m_chain_stats.skipped_tfrag_bytes = 0;
-    for (auto* handler : m_sky_blend_handlers) {
-      if (handler) {
-        m_chain_stats.skipped_tfrag_bytes += handler->skipped_tfrag_bytes();
-      }
-    }
   }
 }
 

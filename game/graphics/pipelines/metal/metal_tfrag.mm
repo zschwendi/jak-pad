@@ -36,10 +36,12 @@ MetalTFragment::MetalTFragment(const std::string& name,
                                int my_id,
                                const std::vector<tfrag3::TFragmentTreeKind>& tree_kinds,
                                int level_id,
-                               bool does_vis_copy)
+                               bool does_vis_copy,
+                               bool child_mode)
     : MetalBucketRenderer(name, my_id),
       m_tree_kinds(tree_kinds),
       m_level_id(level_id),
+      m_child_mode(child_mode),
       m_does_vis_copy(does_vis_copy) {
   // Fixed maximum so the shaders' color indices line up regardless of how many
   // colors a level actually has (same as the GL renderer).
@@ -104,13 +106,16 @@ void MetalTFragment::render(DmaFollower& dma,
     return metal_background_expect(ok, m_name, what, bg);
   };
 
-  // First thing should be a NEXT with two nops.
-  auto data0 = dma.read_and_advance();
-  if (!expect(data0.vifcode1().kind == VifCode::Kind::NOP && data0.size_bytes == 0 &&
-                  (data0.vif0() == 0 || data0.vifcode0().kind == VifCode::Kind::MARK),
-              "the bucket to open with an empty NEXT")) {
-    metal_finish_bucket(dma, *render_state);
-    return;
+  // First thing should be a NEXT with two nops - unless we are a child, in
+  // which case the parent renderer already took it.
+  if (!m_child_mode) {
+    auto data0 = dma.read_and_advance();
+    if (!expect(data0.vifcode1().kind == VifCode::Kind::NOP && data0.size_bytes == 0 &&
+                    (data0.vif0() == 0 || data0.vifcode0().kind == VifCode::Kind::MARK),
+                "the bucket to open with an empty NEXT")) {
+      metal_finish_bucket(dma, *render_state);
+      return;
+    }
   }
 
   if (dma.current_tag().kind == DmaTag::Kind::CALL) {
