@@ -2691,7 +2691,7 @@ void run_chain_replay(const GfxRendererModule* mod,
   check(stats.direct_unsupported_blends == 0, "replay: no unsupported GS blend modes");
   printf(
       "merc buckets: %d models (%d missing), %d draws (%d envmap), %d tris, %d bone vectors, "
-      "%d deferred mod effects, %d eye draws (EyeRenderer not ported), %d missing textures, "
+      "%d deferred mod effects, %d eye draws, %d missing textures, "
       "%d bad bone pointers, %d bad draw ranges\n",
       stats.merc_models, stats.merc_missing_models, stats.merc_draws, stats.merc_envmap_draws,
       stats.merc_triangles, stats.merc_bone_vectors, stats.merc_mod_effects_deferred,
@@ -2716,6 +2716,72 @@ void run_chain_replay(const GfxRendererModule* mod,
             "replay: every merc bone pointer landed inside EE memory");
       check(stats.merc_bad_draw_ranges == 0,
             "replay: every merc draw range fit its level's index buffer");
+    }
+  }
+
+  // --- eye renderer ---
+  {
+    u64 eye_payload = 0;
+    for (auto& b : inv.buckets) {
+      if (metal_chain_replay::jak1_bucket_name(b.bucket) == "MERC_EYES_AFTER_PRIS") {
+        eye_payload += b.payload_bytes;
+      }
+    }
+    printf("eye bucket: %d bytes of DMA, %d eyes composed, %d draws, %d tris, %d missing "
+           "textures, %d unexpected-DMA reports\n",
+           (int)eye_payload, stats.eyes_composed, stats.eye_draws, stats.eye_triangles,
+           stats.eye_missing_textures, stats.eye_unexpected_dma);
+    check(stats.eye_unexpected_dma == 0, "replay: the eye bucket matched its renderer");
+    // A frame with no eyes on screen still sends the bucket's fixed structure
+    // (the render-to-texture setup, the alpha setup and the GS restore), so the
+    // trigger for the drawing checks is merc asking for eye textures.
+    if (stats.merc_eye_draws > 0) {
+      check(stats.eyes_composed > 0, "replay: the eye bucket composed eyes");
+      check(stats.eye_draws > 0, "replay: the eye renderer issued draws");
+      check(stats.eye_missing_textures == 0, "replay: every eye source texture was in VRAM");
+
+      // the composed eye must be a real image: the pass clears to opaque-less
+      // red, so a texture that is still all (255,0,0) means nothing drew.
+      metal_renderer::FramePixels eye;
+      metal_renderer::TextureSampleSpec eye_spec;
+      eye_spec.texture = stats.eye_texture;
+      eye_spec.out_w = 64;
+      eye_spec.out_h = 64;
+      if (sample_tex(eye_spec, &eye, "replay: read back a composed eye texture")) {
+        int cleared = 0, lit = 0;
+        u8 lo_g = 255, hi_g = 0;
+        for (size_t i = 0; i < eye.rgba.size(); i += 4) {
+          const u8 r = eye.rgba[i], g = eye.rgba[i + 1], b = eye.rgba[i + 2];
+          if (r == 255 && g == 0 && b == 0) {
+            cleared++;
+          }
+          if (r || g || b) {
+            lit++;
+          }
+          lo_g = std::min(lo_g, g);
+          hi_g = std::max(hi_g, g);
+        }
+        const int total = eye.width * eye.height;
+        printf("composed eye texture: %d/%d texels drawn, %d still the debug clear, green %d-%d\n",
+               lit, total, cleared, lo_g, hi_g);
+        check(cleared == 0, "replay: the eye texture is fully covered (no debug-clear texels)");
+        check(hi_g - lo_g > 8, "replay: the eye texture has real image content, not one flat color");
+
+        if (!png_path.empty()) {
+          auto eye_png = fs::path(png_path).replace_extension("").string() + "-eye.png";
+          std::vector<u8> px = eye.rgba;
+          for (size_t i = 0; i < px.size(); i += 4) {
+            px[i + 3] = 255;
+          }
+          try {
+            file_util::write_rgba_png(fs::path(eye_png), px.data(), eye.width, eye.height);
+            printf("[PASS] wrote a composed eye texture to %s\n", eye_png.c_str());
+          } catch (const std::exception& e) {
+            printf("[FAIL] could not write %s: %s\n", eye_png.c_str(), e.what());
+            g_fail_count++;
+          }
+        }
+      }
     }
   }
 

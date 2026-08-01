@@ -47,7 +47,7 @@ class MetalMerc2 {
     int bone_vectors = 0;
     int lights = 0;
     int mod_effects_deferred = 0;  // blerc / mod-vertex updates are not ported
-    int eye_draws = 0;             // EyeRenderer is not ported: placeholder texture
+    int eye_draws = 0;             // draws whose texture the eye renderer composed
     int missing_textures = 0;
     int bad_bone_pointers = 0;  // bone address outside EE memory: identity used
     int bad_draw_ranges = 0;    // draw range outside the level's index buffer: skipped

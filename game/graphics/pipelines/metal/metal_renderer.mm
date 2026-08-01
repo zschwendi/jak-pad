@@ -7,6 +7,7 @@
 
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
+#include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
 #include "game/graphics/pipelines/metal/metal_shrub.h"
@@ -253,7 +254,15 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   tex(BucketId::PRIS_TEX_LEVEL1, "l1-pris-tex");
   merc_bucket(BucketId::MERC_PRIS_LEVEL1, "l1-pris-merc");
   skip(BucketId::GENERIC_PRIS_LEVEL1, "l1-pris-generic");
-  skip(BucketId::MERC_EYES_AFTER_PRIS, "common-pris-eyes");
+  {
+    // merc samples what this composes, so it is published on the shared state
+    // the same way the GL table publishes render_state->eye_renderer
+    auto eyes = std::make_unique<MetalEyeRenderer>(
+        "common-pris-eyes", (int)BucketId::MERC_EYES_AFTER_PRIS, m_device, m_queue);
+    eyes->init_textures(*m_texture_pool, GameVersion::Jak1);
+    m_shared_state.eye_renderer = eyes.get();
+    set(BucketId::MERC_EYES_AFTER_PRIS, std::move(eyes));
+  }
   merc_bucket(BucketId::MERC_AFTER_PRIS, "common-pris-merc");
   skip(BucketId::GENERIC_PRIS, "common-pris-generic");
 
@@ -707,6 +716,14 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         m_chain_stats.sprite_missing_textures = ss.missing_textures;
       } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {
         merc_stats.add(mc->stats());
+      } else if (auto* ey = dynamic_cast<MetalEyeRenderer*>(r.get())) {
+        const auto& es = ey->stats();
+        m_chain_stats.eyes_composed = es.eyes;
+        m_chain_stats.eye_draws = es.draw_calls;
+        m_chain_stats.eye_triangles = es.triangles;
+        m_chain_stats.eye_missing_textures = es.missing_textures;
+        m_chain_stats.eye_unexpected_dma = es.unexpected_dma;
+        m_chain_stats.eye_texture = es.first_texture;
       }
     }
     m_chain_stats.merc_models = merc_stats.models;

@@ -4,6 +4,7 @@
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
+#include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/texture/TexturePool.h"
 
 #include "fmt/format.h"
@@ -738,12 +739,19 @@ void MetalMerc2::do_draws(const Draw* draw_array,
     if (draw.texture >= 0 && draw.texture < (int)lev->textures.size()) {
       tex = metal_texture_lookup(lev->textures[draw.texture]);
     } else if ((draw.texture & 0xffffff00) == 0xefffff00) {
-      // eye textures come from the EyeRenderer, which is not ported yet
+      // eye textures are composed by the eye renderer (Jak 1 indexes by eye id;
+      // the hash form is Jak 3 only, like the GL renderer)
       stats->eye_draws++;
       use_mipmaps = false;
-      if (!m_warned_eyes) {
-        lg::warn("Metal merc: eye textures need the EyeRenderer, which is not ported; using the "
-                 "placeholder (logged once)");
+      if (render_state->eye_renderer) {
+        auto maybe_eye = render_state->eye_renderer->lookup_eye_texture(draw.texture & 0xff);
+        if (maybe_eye) {
+          tex = metal_texture_lookup(*maybe_eye);
+        }
+      }
+      if (!tex && !m_warned_eyes) {
+        lg::warn("Metal merc: no eye texture for draw {}; using the placeholder (logged once)",
+                 draw.texture & 0xff);
         m_warned_eyes = true;
       }
     } else {
