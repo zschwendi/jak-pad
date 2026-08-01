@@ -649,6 +649,7 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_executable(jak1-data-boot-test
                 kernel/core/data_boot_test.cpp
                 kernel/core/continue_warp.cpp
+                kernel/core/scripted_walk.cpp
                 "${AOT_BOOT_DIR}/aot_boot_manifest.c"
                 ${AOT_BOOT_C_SOURCES})
         target_include_directories(jak1-data-boot-test PRIVATE "${AOT_BOOT_DIR}")
@@ -863,6 +864,7 @@ if(APPLE)
             goalpad_play.cpp
             goalpad_audio.cpp
             kernel/core/continue_warp.cpp
+            kernel/core/scripted_walk.cpp
             "${AOT_BOOT_DIR}/aot_boot_manifest.c"
             ${AOT_BOOT_C_SOURCES})
         target_include_directories(goalpad-play PRIVATE "${AOT_BOOT_DIR}")

@@ -60,6 +60,7 @@ extern "C" {
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
+#include "game/kernel/core/scripted_walk.h"
 #include "game/kernel/core/sound_rpc.h"
 #include "game/kernel/jak1/klisten.h"
 #include "game/goalpad_audio.h"
@@ -87,6 +88,7 @@ struct Options {
   int exit_after_frames = 0;  // 0 = run until the window is closed
   bool sound = true;
   bool report_state = false;
+  bool report_levels = false;
   bool report_pad = false;
   bool present_pacing = true;
   // frame -> file. Written from the offscreen game target, which is exactly what the present pass
@@ -517,6 +519,14 @@ int frame_state_was_first_seen(const std::string& state) {
   return -1;
 }
 
+// the walk autopilot the headless test drives routes with, fed from the same state reader
+WalkScript g_walk;
+
+void install_walk_callbacks() {
+  g_walk.state_first_seen = frame_state_was_first_seen;
+  g_walk.log = [](const char* line) { lg::info("[game] {}", line); };
+}
+
 // ---------------------------------------------------------------------------------------------
 // the game thread: boot, then the GOAL kernel's own frame loop
 // ---------------------------------------------------------------------------------------------
@@ -646,6 +656,7 @@ void game_thread(const Options& opts) {
         std::lock_guard<std::mutex> lock(g_shared.pad_mutex);
         pad = g_shared.pad;
       }
+      g_walk.drive(frame, &pad);
       for (const auto& press : opts.presses) {
         int first = press.first_frame;
         if (!press.after_state.empty()) {
@@ -696,6 +707,15 @@ void game_thread(const Options& opts) {
     g_shared.game_frames = frame;
 
     const GameState now = read_game_state();
+    g_walk.set_target(now.position_known, now.x * 4096.0, now.z * 4096.0, now.target_state);
+    if (opts.report_levels) {
+      static LevelState last_levels;
+      const LevelState levels = read_level_state();
+      if (levels != last_levels) {
+        lg::info("[game] frame {}: {}", frame, level_state_text(levels));
+        last_levels = levels;
+      }
+    }
     if (!now.target_state.empty() && frame_state_was_first_seen(now.target_state) < 0) {
       g_state_first_frame.emplace_back(now.target_state, frame);
       if (opts.report_state) {
@@ -757,6 +777,9 @@ int usage() {
       "  --stick <x>,<y>@<when>[:<frames>]     hold the left stick; a byte per axis, 127 centred\n"
       "  --warp <continue>@<when>  start at one of the game's own continue points, the way a\n"
       "                          warp gate does, e.g. beach-start@target-stance+300\n"
+      "  --walk-to <x>,<z>@<when>[:<frames>]   walk the target to a place, in metres; legs\n"
+      "                          run in order, each until it arrives or the limit runs out\n"
+      "  --report-levels         print the level system's state whenever it changes\n"
       "  --report-state          print each state the target enters, and where it is standing\n"
       "  --no-sound              boot without 989snd\n"
       "  --capture-dma-dir <dir> where F9/F10 write .gpdma captures\n"
@@ -875,6 +898,31 @@ int main(int argc, char** argv) {
         warp.first_frame = std::atoi(when.c_str());
       }
       opts.warps.push_back(warp);
+    } else if (arg == "--walk-to" && i + 1 < argc) {
+      // --walk-to <x>,<z>@<frame|state[+delay]>[:<frames>], metres; legs run in order, each
+      // until it arrives or its frame limit runs out
+      const std::string spec = argv[++i];
+      WalkLeg leg;
+      const size_t at = spec.find('@');
+      if (!WalkScript::parse_place(spec, at, &leg)) {
+        return usage();
+      }
+      std::string when = spec.substr(at + 1);
+      const size_t colon = when.find(':');
+      if (colon != std::string::npos) {
+        leg.frames = std::max(1, std::atoi(when.substr(colon + 1).c_str()));
+        when = when.substr(0, colon);
+      }
+      const size_t plus = when.find('+');
+      if (plus != std::string::npos || !std::isdigit((unsigned char)when[0])) {
+        leg.after_state = when.substr(0, plus);
+        leg.first_frame = plus == std::string::npos ? 0 : std::atoi(when.substr(plus + 1).c_str());
+      } else {
+        leg.first_frame = std::atoi(when.c_str());
+      }
+      g_walk.legs.push_back(leg);
+    } else if (arg == "--report-levels") {
+      opts.report_levels = true;
     } else if (arg == "--report-state") {
       opts.report_state = true;
     } else if (arg == "--no-sound") {
@@ -894,6 +942,7 @@ int main(int argc, char** argv) {
 
   g_main_thread_id = std::this_thread::get_id();
   g_game_version = GameVersion::Jak1;
+  install_walk_callbacks();
 
   if (goal_kernel_core_initialize() != GOAL_KERNEL_CORE_OK) {
     lg::error("kernel init failed: {}", goal_kernel_core_last_error());

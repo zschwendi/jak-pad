@@ -257,6 +257,42 @@ on. And `sage-intro-sequence-a`, which does load, prints `could not find a maste
 from `link-art!`: the spooled animation arrives before its master art group is in a loaded level,
 so the intro conversation does not animate. Neither stops the game.
 
+### Level transitions
+
+Jak 1 is a connected world, and the two things that move a player between its levels are a
+continue point and a load boundary. Both are scriptable, in this test and in `goalpad-play`:
+
+- `--warp <continue>@<when>` runs `(start 'play (get-continue-by-name *game-info* <name>))`, the
+  same call a warp gate makes (`kernel/core/continue_warp.h`). `target-continue` then wants the
+  point's two levels, waits for them to reach `'active`, and puts the target there. The names are
+  the ones in `engine/level/level-info.gc` - `village1-hut`, `beach-start` and so on. Warping to a
+  continue point without the `intro` flag also turns the border machinery on through that state's
+  own exit, which starting a new game does not: `"intro-start"` carries `intro`, and the intro
+  cutscene that would normally hand over to a plain continue point does not play here.
+- `--walk-to <x>,<z>@<when>[:<frames>]` walks the target to a place, in metres
+  (`kernel/core/scripted_walk.h`). The stick is camera-relative and nothing here reads the camera,
+  so the autopilot measures what the camera contributes - the angle between the stick it pushed
+  and the way the target actually moved - and aims with the running mean of it. Legs run in order,
+  each until it arrives or its `:<frames>` limit runs out, so a route is a list of places.
+- `--report-levels` prints the level system whenever it changes: what `*load-state*` wants, each
+  level slot's name, status, display flag and heap use, and whether the target is on a border.
+- `--report-boundaries` (this test only) dumps `*load-boundary-list*`, the rings of vertices the
+  loaded levels define with a command for each crossing direction - which is how a route gets
+  aimed at the game's own boundary rather than guessed at.
+
+`jak1-level-boundary-test` walks a new game from the village hut across the village1/beach display
+boundary and fails unless `beach` reaches `'active`. `jak1-level-tour-test` warps through ten
+continue points - beach to training - and fails if any of their levels never reaches `'active` or
+the global heap grows more than 256 kB, since level code and data must live and die with the level
+heaps. Both run under CTest with `GOALPAD_JAK1_DATA_DIR` set.
+
+The same route runs under the renderer: `goalpad-play` with the new-game presses, a warp to
+`village1-hut`, and walk legs down the village stream, through the culvert at the west end, onto
+the Sentinel Beach sand and back, shows `beach` wanted, loaded, displayed and entered - and
+undisplayed again on the way home. The GOAL side discards what it leaves behind (the level slot
+that held `misty` is reused for `beach`); the Metal host currently keeps every level's art
+resident, which is bounded by the levels visited, not by the crossings made.
+
 ## The renderer
 
 `gfx_host.h` is the drawing seam, and it is the same shape as the controller seam above: a table of
