@@ -75,6 +75,7 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/Shader.cpp
         graphics/opengl_renderer/Shadow_PS2.cpp
         graphics/opengl_renderer/ShadowRenderer.cpp
+        graphics/opengl_renderer/ShadowVu.cpp
         graphics/opengl_renderer/SkyBlendCPU.cpp
         graphics/opengl_renderer/SkyBlendGPU.cpp
         graphics/opengl_renderer/SkyRenderer.cpp
@@ -358,6 +359,9 @@ if(APPLE)
     set(METAL_PIPELINE_SOURCES
         graphics/pipelines/metal/metal_bucket_renderer.mm
         graphics/pipelines/metal/metal_direct_renderer.mm
+        graphics/pipelines/metal/metal_eye_renderer.mm
+        graphics/pipelines/metal/metal_generic2.mm
+        graphics/pipelines/metal/metal_shadow_renderer.mm
         graphics/pipelines/metal/metal_level_data.mm
         graphics/pipelines/metal/metal_merc.mm
         graphics/pipelines/metal/metal_merc_model_pool.mm
@@ -394,7 +398,10 @@ if(APPLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/sprite.metal
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/background.metal
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/ocean.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/merc2.metal)
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/merc2.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/eye.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/generic.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/shadow.metal)
     set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad.metallib)
     add_custom_command(
         OUTPUT ${METAL_LIB}
@@ -764,7 +771,9 @@ if(APPLE)
             graphics/texture/jak3_tpage_dir.cpp
             graphics/texture/TextureConverter.cpp
             graphics/texture/TexturePool.cpp
-            # the ocean's VU1 emulators, shared with the GL renderer
+            # the VU1 emulators, shared with the GL renderer
+            graphics/opengl_renderer/Shadow_PS2.cpp
+            graphics/opengl_renderer/ShadowVu.cpp
             graphics/opengl_renderer/ocean/OceanMid_PS2.cpp
             graphics/opengl_renderer/ocean/OceanNear_PS2.cpp
             graphics/opengl_renderer/ocean/OceanTexture_VU.cpp

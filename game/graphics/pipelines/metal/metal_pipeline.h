@@ -105,10 +105,35 @@ struct ChainStats {
   int merc_envmap_draws = 0;
   int merc_bone_vectors = 0;
   int merc_mod_effects_deferred = 0;  // blerc / mod-vertex updates are not ported
-  int merc_eye_draws = 0;             // EyeRenderer is not ported: placeholder texture
+  int merc_eye_draws = 0;             // draws whose texture the eye renderer composed
   int merc_missing_textures = 0;
   int merc_bad_bone_pointers = 0;  // bone pointer outside EE memory
   int merc_bad_draw_ranges = 0;    // draw range outside the level's index buffer
+  // eye renderer, from the last chain frame
+  int eyes_composed = 0;
+  int eye_draws = 0;
+  int eye_triangles = 0;
+  int eye_missing_textures = 0;
+  int eye_unexpected_dma = 0;
+  // registry handle of the first eye composed this frame, so tests can read it
+  u64 eye_texture = 0;
+  // generic2 buckets, from the last chain frame
+  int generic_fragments = 0;
+  int generic_vertices = 0;
+  int generic_adgifs = 0;
+  int generic_draw_buckets = 0;
+  int generic_draws = 0;
+  int generic_triangles = 0;
+  int generic_missing_textures = 0;
+  int generic_unsupported_blends = 0;
+  int generic_unexpected_dma = 0;
+  int generic_overflow = 0;
+  // shadow renderer, from the last chain frame
+  int shadow_volumes = 0;
+  int shadow_vertices = 0;
+  int shadow_draws = 0;
+  int shadow_triangles = 0;
+  int shadow_unexpected_dma = 0;
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets
@@ -205,6 +230,9 @@ struct BackgroundStats {
   int missing_levels = 0;
   int missing_textures = 0;
   int anim_slot_draws = 0;
+  int tie_envmap_second_draws = 0;
+  int tie_envmap_second_tris = 0;
+  int tie_wind_draws_skipped = 0;
   int unexpected_dma = 0;
 };
 BackgroundStats get_background_stats();

@@ -29,6 +29,8 @@
 class TexturePool;
 // level-geometry frame state, owned by MetalRenderer (metal_level_data.h)
 struct MetalBackgroundState;
+// composes eye textures other renderers sample (metal_eye_renderer.h)
+class MetalEyeRenderer;
 
 /*!
  * Per-frame bump allocator for dynamic vertex data. The GL renderers stream
@@ -75,6 +77,8 @@ struct MetalSharedRenderState {
   // shared by the background (tfrag/tie/shrub) renderers: the occlusion
   // visibility strings one bucket copies out of the chain, plus their stats.
   MetalBackgroundState* background = nullptr;
+  // merc resolves its eye draws through this, like the GL renderer does
+  MetalEyeRenderer* eye_renderer = nullptr;
   const u8* ee_memory = nullptr;
   u32 offset_of_s7 = 0;
   GameVersion version = GameVersion::Jak1;

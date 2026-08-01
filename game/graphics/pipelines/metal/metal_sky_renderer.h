@@ -12,14 +12,16 @@
  * the sky actually blends on Apple silicon.
  *
  * MetalSkyRenderer draws the sky via the DirectRenderer port.
- * MetalSkyBlendHandler owns the sky-blend bucket; its trailing tfrag-trans
- * content belongs to the background renderers (stage 5) and is skipped with a
- * counted, once-logged warning.
+ * MetalSkyBlendHandler owns the sky-blend bucket. Its trailing content is the
+ * level's transparent tfrag trees, which it draws with its own MetalTFragment
+ * in "child mode" (the parent already consumed the bucket's opening NEXT),
+ * exactly as SkyBlendHandler does in GL.
  */
 
 #include "game/graphics/opengl_renderer/SkyBlendCommon.h"
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
+#include "game/graphics/pipelines/metal/metal_tfrag.h"
 
 class MetalSkyBlendCPU {
  public:
@@ -55,16 +57,16 @@ class MetalSkyBlendHandler : public MetalBucketRenderer {
  public:
   MetalSkyBlendHandler(const std::string& name,
                        int my_id,
+                       int level_id,
                        std::shared_ptr<MetalSkyBlendCPU> shared_blender);
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
   const SkyBlendStats& last_stats() const { return m_stats; }
-  u64 skipped_tfrag_bytes() const { return m_skipped_tfrag_bytes; }
+  const MetalTFragment::Stats& tfrag_trans_stats() const { return m_tfrag_renderer.stats(); }
 
  private:
   std::shared_ptr<MetalSkyBlendCPU> m_shared_blender;
   SkyBlendStats m_stats;
-  u64 m_skipped_tfrag_bytes = 0;
-  bool m_warned_tfrag = false;
+  MetalTFragment m_tfrag_renderer;
 };

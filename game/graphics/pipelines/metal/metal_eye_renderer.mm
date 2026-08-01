@@ -1,0 +1,672 @@
+#include "metal_eye_renderer.h"
+
+#include <unordered_map>
+
+#include "common/log/log.h"
+
+#include "game/graphics/opengl_renderer/AdgifHandler.h"
+#include "game/graphics/texture/TexturePool.h"
+
+#include "fmt/format.h"
+
+namespace {
+
+// A bucket that does not match is consumed whole and reported, never asserted
+// on: this renderer reads the player's own game data.
+bool eye_expect(bool condition, const char* what, int* counter, bool* warned) {
+  if (condition) {
+    return true;
+  }
+  (*counter)++;
+  if (!*warned) {
+    *warned = true;
+    lg::warn("Metal eyes: expected {}; the bucket is skipped (logged once)", what);
+  }
+  return false;
+}
+
+id<MTLTexture> make_eye_target(id<MTLDevice> device) {
+  auto* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                  width:METAL_EYE_TEX_SIZE
+                                                                 height:METAL_EYE_TEX_SIZE
+                                                              mipmapped:NO];
+  desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  desc.storageMode = MTLStorageModePrivate;
+  return [device newTextureWithDescriptor:desc];
+}
+
+}  // namespace
+
+MetalEyeRenderer::MetalEyeRenderer(const std::string& name,
+                                   int my_id,
+                                   id<MTLDevice> device,
+                                   id<MTLCommandQueue> queue)
+    : MetalBucketRenderer(name, my_id), m_device(device), m_queue(queue) {
+  for (auto& tex : m_gpu_eye_textures) {
+    tex.texture = make_eye_target(device);
+    tex.handle = metal_texture_register(tex.texture);
+  }
+  m_vertex_buffer = [device newBufferWithLength:VTX_BUFFER_FLOATS * sizeof(float)
+                                        options:MTLResourceStorageModeShared];
+}
+
+/*!
+ * Mirror of EyeRenderer::init_textures: each eye gets a VRAM slot so merc's
+ * adgifs and the pool's slot lookups resolve to the composed texture.
+ */
+void MetalEyeRenderer::init_textures(TexturePool& texture_pool, GameVersion version) {
+  for (int pair_idx = 0; pair_idx < METAL_NUM_EYE_PAIRS; pair_idx++) {
+    for (int lr = 0; lr < 2; lr++) {
+      u32 tidx = pair_idx * 2 + lr;
+      u32 tbp = pair_idx * 2 + lr;
+      if (version != GameVersion::Jak1) {
+        // the Metal bucket table is Jak 1 only; the other versions' base
+        // blocks arrive with their tables.
+        lg::warn("Metal eyes: only Jak 1 is supported; using the Jak 1 base block");
+      }
+      tbp += METAL_EYE_BASE_BLOCK_JAK1;
+
+      TextureInput in;
+      in.gpu_texture = m_gpu_eye_textures[tidx].handle;
+      in.w = 32;
+      in.h = 32;
+      in.debug_page_name = "PC-EYES";
+      in.debug_name = fmt::format("{}-eye-gpu-{}", lr ? "left" : "right", pair_idx);
+      in.id = texture_pool.allocate_pc_port_texture(version);
+      m_gpu_eye_textures[tidx].gpu_tex = texture_pool.give_texture_and_load_to_vram(in, tbp);
+      m_gpu_eye_textures[tidx].tbp = tbp;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DMA decode - the GL logic, with the asserts turned into reports
+// ---------------------------------------------------------------------------
+
+namespace {
+
+bool decode_scissor(const DmaTransfer& dma,
+                    MetalEyeRenderer::ScissorInfo* out,
+                    int* counter,
+                    bool* warned) {
+  if (!eye_expect(dma.vif0() == 0 && dma.vifcode1().kind == VifCode::Kind::DIRECT &&
+                      dma.size_bytes == 32,
+                  "a 32-byte DIRECT scissor transfer", counter, warned)) {
+    return false;
+  }
+  GifTag gif_tag(dma.data);
+  if (!eye_expect(gif_tag.nloop() == 1 && gif_tag.eop() && !gif_tag.pre() &&
+                      gif_tag.flg() == GifTag::Format::PACKED && gif_tag.nreg() == 1,
+                  "a 1-register PACKED scissor GIF tag", counter, warned)) {
+    return false;
+  }
+  u8 reg_addr;
+  memcpy(&reg_addr, dma.data + 24, 1);
+  if (!eye_expect((GsRegisterAddress)reg_addr == GsRegisterAddress::SCISSOR_1,
+                  "the scissor register", counter, warned)) {
+    return false;
+  }
+  u64 val;
+  memcpy(&val, dma.data + 16, 8);
+  GsScissor reg(val);
+  out->x0 = reg.x0();
+  out->x1 = reg.x1();
+  out->y0 = reg.y0();
+  out->y1 = reg.y1();
+  return true;
+}
+
+bool decode_sprite(const DmaTransfer& dma,
+                   MetalEyeRenderer::SpriteInfo* out,
+                   int* counter,
+                   bool* warned) {
+  if (!eye_expect(dma.vif0() == 0 && dma.vifcode1().kind == VifCode::Kind::DIRECT &&
+                      dma.size_bytes == 6 * 16,
+                  "a 6-quadword DIRECT sprite transfer", counter, warned)) {
+    return false;
+  }
+  GifTag gif_tag(dma.data);
+  if (!eye_expect(gif_tag.nloop() == 1 && gif_tag.eop() && gif_tag.pre() &&
+                      gif_tag.flg() == GifTag::Format::PACKED && gif_tag.nreg() == 5,
+                  "a 5-register PACKED sprite GIF tag", counter, warned)) {
+    return false;
+  }
+  if (!eye_expect(dma.data[16] == 128 && dma.data[16 + 4] == 128 && dma.data[16 + 8] == 128,
+                  "an unmodulated sprite color", counter, warned)) {
+    return false;
+  }
+  memcpy(&out->a, dma.data + 16 + 12, 1);
+  memcpy(&out->uv0, &dma.data[32], 8);
+  memcpy(&out->xyz0[0], &dma.data[48], 12);
+  out->xyz0[2] >>= 4;
+  memcpy(&out->uv1[0], &dma.data[64], 8);
+  memcpy(&out->xyz1[0], &dma.data[80], 12);
+  out->xyz1[2] >>= 4;
+  return true;
+}
+
+bool read_eye_draw(DmaFollower& dma,
+                   MetalEyeRenderer::EyeDraw* out,
+                   int* counter,
+                   bool* warned) {
+  if (!decode_scissor(dma.read_and_advance(), &out->scissor, counter, warned)) {
+    return false;
+  }
+  return decode_sprite(dma.read_and_advance(), &out->sprite, counter, warned);
+}
+
+}  // namespace
+
+/*!
+ * Resolves an adgif's TEX0 to a pool handle. The GL renderer dereferences
+ * lookup() unconditionally; here a slot with nothing in it is counted and the
+ * draw is dropped, which is what the GL renderer's pupil path already does.
+ */
+static u64 lookup_eye_source(TexturePool* pool, u32 tbp, bool* has_data, int* missing) {
+  auto handle = pool->lookup(tbp);
+  auto* gpu_tex = pool->lookup_gpu_texture(tbp);
+  *has_data = gpu_tex && gpu_tex->get_data_ptr();
+  if (!handle) {
+    (*missing)++;
+    return 0;
+  }
+  return *handle;
+}
+
+std::vector<MetalEyeRenderer::SingleEyeDraws> MetalEyeRenderer::get_draws(
+    DmaFollower& dma,
+    MetalSharedRenderState* render_state) {
+  std::vector<SingleEyeDraws> draws;
+  int* counter = &m_stats.unexpected_dma;
+  bool* warned = &m_warned_dma;
+  auto* pool = render_state->texture_pool;
+
+  // The end condition is the 8-quadword transfer that restores GS state. The
+  // eye DMA lives outside the bucket's own address range (the bucket chains
+  // to it), so the loop is bounded by the number of eye pairs the renderer
+  // has textures for rather than by the bucket's end offset.
+  while (dma.current_tag().qwc != 8) {
+    if ((int)draws.size() >= METAL_NUM_EYE_PAIRS * 2) {
+      eye_expect(false, "no more eyes than the renderer has textures for", counter, warned);
+      draws.clear();
+      return draws;
+    }
+    draws.emplace_back();
+    draws.emplace_back();
+
+    auto& l_draw = draws[draws.size() - 2];
+    auto& r_draw = draws[draws.size() - 1];
+    l_draw.lr = 0;
+    r_draw.lr = 1;
+
+    auto adgif0_dma = dma.read_and_advance();
+    if (!eye_expect(adgif0_dma.size_bytes == 96 && adgif0_dma.vif0() == 0 &&
+                        adgif0_dma.vifcode1().kind == VifCode::Kind::DIRECT,
+                    "the eye background adgif", counter, warned)) {
+      draws.clear();
+      return draws;
+    }
+    AdgifHelper adgif0(adgif0_dma.data + 16);
+    bool tex0_has_data = false;
+    const u64 tex0 =
+        lookup_eye_source(pool, adgif0.tex0().tbp0(), &tex0_has_data, &m_stats.missing_textures);
+
+    // first draw: the background. It reads 0,0 of the texture and uses that
+    // color everywhere. The eye index falls out of its coordinates.
+    bool using_64 = false;
+    {
+      EyeDraw draw0;
+      if (!read_eye_draw(dma, &draw0, counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+      l_draw.fnv_name_hash = draw0.sprite.uv0;
+      r_draw.fnv_name_hash = draw0.sprite.uv0;
+      if (draw0.scissor.y1 - draw0.scissor.y0 == 63) {
+        using_64 = true;
+        l_draw.using_64 = true;
+        r_draw.using_64 = true;
+      }
+      u32 y0 = (draw0.sprite.xyz0[1] - 512) >> 4;
+      if (using_64) {
+        y0 = (draw0.sprite.xyz0[1] - 1024) >> 5;
+        y0 *= 4;
+      }
+      u32 pair_idx = y0 / METAL_SINGLE_EYE_SIZE;
+      if (!eye_expect(pair_idx < (u32)METAL_NUM_EYE_PAIRS, "an in-range eye pair index", counter,
+                      warned)) {
+        draws.clear();
+        return draws;
+      }
+      l_draw.pair = (int)pair_idx;
+      r_draw.pair = (int)pair_idx;
+    }
+
+    // the iris
+    {
+      if (!read_eye_draw(dma, &l_draw.iris, counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+      l_draw.has_iris = tex0 != 0;
+      l_draw.iris_tex_handle = tex0;
+
+      if (dma.current_tag().qwc == 6) {
+        // the right eye changes adgif
+        auto r_iris_adgif = dma.read_and_advance();
+        if (!eye_expect(r_iris_adgif.size_bytes == 96 && r_iris_adgif.vif0() == 0 &&
+                            r_iris_adgif.vifcode1().kind == VifCode::Kind::DIRECT,
+                        "the right iris adgif", counter, warned)) {
+          draws.clear();
+          return draws;
+        }
+        AdgifHelper r_iris_helper(r_iris_adgif.data + 16);
+        bool has_data = false;
+        u64 handle = lookup_eye_source(pool, r_iris_helper.tex0().tbp0(), &has_data,
+                                       &m_stats.missing_textures);
+        if (!read_eye_draw(dma, &r_draw.iris, counter, warned)) {
+          draws.clear();
+          return draws;
+        }
+        r_draw.has_iris = handle != 0;
+        r_draw.iris_tex_handle = handle;
+      } else {
+        if (!read_eye_draw(dma, &r_draw.iris, counter, warned)) {
+          draws.clear();
+          return draws;
+        }
+        r_draw.has_iris = l_draw.has_iris;
+        r_draw.iris_tex_handle = l_draw.iris_tex_handle;
+      }
+    }
+
+    // the pupil, drawn on top
+    dma.read_and_advance();  // test register
+    auto adgif1_dma = dma.read_and_advance();
+    if (!eye_expect(adgif1_dma.size_bytes == 96 && adgif1_dma.vif0() == 0 &&
+                        adgif1_dma.vifcode1().kind == VifCode::Kind::DIRECT,
+                    "the pupil adgif", counter, warned)) {
+      draws.clear();
+      return draws;
+    }
+    AdgifHelper adgif1(adgif1_dma.data + 16);
+    bool tex1_has_data = false;
+    const u64 tex1 =
+        lookup_eye_source(pool, adgif1.tex0().tbp0(), &tex1_has_data, &m_stats.missing_textures);
+
+    if (tex1_has_data && tex1) {
+      if (!read_eye_draw(dma, &l_draw.pupil, counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+      l_draw.has_pupil = true;
+      l_draw.pupil_tex_handle = tex1;
+    }
+
+    if (dma.current_tag().qwc == 6) {
+      auto r_pupil_adgif = dma.read_and_advance();
+      if (!eye_expect(r_pupil_adgif.size_bytes == 96 && r_pupil_adgif.vif0() == 0 &&
+                          r_pupil_adgif.vifcode1().kind == VifCode::Kind::DIRECT,
+                      "the right pupil adgif", counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+      AdgifHelper r_pupil_helper(r_pupil_adgif.data + 16);
+      bool has_data = false;
+      u64 handle = lookup_eye_source(pool, r_pupil_helper.tex0().tbp0(), &has_data,
+                                     &m_stats.missing_textures);
+      if (!read_eye_draw(dma, &r_draw.pupil, counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+      r_draw.has_pupil = handle != 0;
+      r_draw.pupil_tex_handle = handle;
+    } else if (tex1_has_data && tex1) {
+      if (!read_eye_draw(dma, &r_draw.pupil, counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+      r_draw.has_pupil = true;
+      r_draw.pupil_tex_handle = tex1;
+    }
+
+    // and finally the eyelid
+    dma.read_and_advance();  // test register
+    auto adgif2_dma = dma.read_and_advance();
+    if (!eye_expect(adgif2_dma.size_bytes == 96 && adgif2_dma.vif0() == 0 &&
+                        adgif2_dma.vifcode1().kind == VifCode::Kind::DIRECT,
+                    "the eyelid adgif", counter, warned)) {
+      draws.clear();
+      return draws;
+    }
+    AdgifHelper adgif2(adgif2_dma.data + 16);
+    bool tex2_has_data = false;
+    const u64 tex2 =
+        lookup_eye_source(pool, adgif2.tex0().tbp0(), &tex2_has_data, &m_stats.missing_textures);
+
+    if (!read_eye_draw(dma, &l_draw.lid, counter, warned)) {
+      draws.clear();
+      return draws;
+    }
+    l_draw.has_lid = tex2 != 0;
+    l_draw.lid_tex_handle = tex2;
+
+    if (dma.current_tag().qwc == 6) {
+      auto r_lid_adgif = dma.read_and_advance();
+      if (!eye_expect(r_lid_adgif.size_bytes == 96 && r_lid_adgif.vif0() == 0 &&
+                          r_lid_adgif.vifcode1().kind == VifCode::Kind::DIRECT,
+                      "the right eyelid adgif", counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+      AdgifHelper r_lid_helper(r_lid_adgif.data + 16);
+      bool has_data = false;
+      u64 handle =
+          lookup_eye_source(pool, r_lid_helper.tex0().tbp0(), &has_data, &m_stats.missing_textures);
+      if (!read_eye_draw(dma, &r_draw.lid, counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+      r_draw.has_lid = handle != 0;
+      r_draw.lid_tex_handle = handle;
+    } else {
+      if (!read_eye_draw(dma, &r_draw.lid, counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+      r_draw.has_lid = l_draw.has_lid;
+      r_draw.lid_tex_handle = l_draw.lid_tex_handle;
+    }
+
+    if (render_state->version == GameVersion::Jak1) {
+      auto end = dma.read_and_advance();
+      if (!eye_expect(end.size_bytes == 0 && end.vif0() == 0 && end.vif1() == 0,
+                      "the per-eye terminator", counter, warned)) {
+        draws.clear();
+        return draws;
+      }
+    }
+  }
+  return draws;
+}
+
+bool MetalEyeRenderer::handle_eye_dma2(DmaFollower& dma, MetalSharedRenderState* render_state) {
+  int* counter = &m_stats.unexpected_dma;
+  bool* warned = &m_warned_dma;
+
+  // the GS setup for render-to-texture
+  auto offset_setup = dma.read_and_advance();
+  if (!eye_expect(offset_setup.size_bytes == 128 &&
+                      offset_setup.vifcode0().kind == VifCode::Kind::FLUSHA &&
+                      offset_setup.vifcode1().kind == VifCode::Kind::DIRECT,
+                  "the render-to-texture GS setup", counter, warned)) {
+    return false;
+  }
+
+  auto alpha_setup = dma.read_and_advance();
+  if (!eye_expect(alpha_setup.size_bytes == 32 &&
+                      alpha_setup.vifcode0().kind == VifCode::Kind::NOP &&
+                      alpha_setup.vifcode1().kind == VifCode::Kind::DIRECT,
+                  "the alpha setup", counter, warned)) {
+    return false;
+  }
+
+  if (render_state->version == GameVersion::Jak1) {
+    if (!eye_expect(dma.current_tag().kind == DmaTag::Kind::NEXT && dma.current_tag().qwc == 0 &&
+                        dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == 0,
+                    "the add-to-bucket tag", counter, warned)) {
+      return false;
+    }
+    dma.read_and_advance();
+  }
+  return true;
+}
+
+void MetalEyeRenderer::render(DmaFollower& dma,
+                              MetalSharedRenderState* render_state,
+                              MetalFrameContext& ctx) {
+  m_stats = Stats();
+
+  auto data0 = dma.read_and_advance();
+  if (!eye_expect(data0.vif1() == 0 && data0.vif0() == 0 && data0.size_bytes == 0,
+                  "the empty bucket-entry transfer", &m_stats.unexpected_dma, &m_warned_dma)) {
+    while (dma.current_tag_offset() != render_state->next_bucket) {
+      dma.read_and_advance();
+    }
+    return;
+  }
+
+  // an empty bucket: the renderer did not run this frame
+  if (dma.current_tag().kind == DmaTag::Kind::CALL) {
+    for (int i = 0; i < 4; i++) {
+      dma.read_and_advance();
+    }
+    return;
+  }
+
+  if (handle_eye_dma2(dma, render_state)) {
+    auto draws = get_draws(dma, render_state);
+    run_gpu(draws, render_state, ctx);
+  }
+
+  while (dma.current_tag_offset() != render_state->next_bucket) {
+    dma.read_and_advance();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+
+namespace {
+
+int add_draw_to_buffer_32(int idx,
+                          const MetalEyeRenderer::EyeDraw& draw,
+                          float* data,
+                          int pair,
+                          int lr) {
+  int x_off = lr * METAL_SINGLE_EYE_SIZE * 16;
+  int y_off = pair * METAL_SINGLE_EYE_SIZE * 16;
+
+  data[idx++] = draw.sprite.xyz0[0] - x_off;
+  data[idx++] = draw.sprite.xyz0[1] - y_off;
+  data[idx++] = 0;
+  data[idx++] = 0;
+
+  data[idx++] = draw.sprite.xyz1[0] - x_off;
+  data[idx++] = draw.sprite.xyz0[1] - y_off;
+  data[idx++] = 1;
+  data[idx++] = 0;
+
+  data[idx++] = draw.sprite.xyz0[0] - x_off;
+  data[idx++] = draw.sprite.xyz1[1] - y_off;
+  data[idx++] = 0;
+  data[idx++] = 1;
+
+  data[idx++] = draw.sprite.xyz1[0] - x_off;
+  data[idx++] = draw.sprite.xyz1[1] - y_off;
+  data[idx++] = 1;
+  data[idx++] = 1;
+  return idx;
+}
+
+int add_draw_to_buffer_64(int idx,
+                          const MetalEyeRenderer::EyeDraw& draw,
+                          float* data,
+                          int pair,
+                          int lr) {
+  int x_off = lr * METAL_SINGLE_EYE_SIZE * 32;
+  int y_off = (pair / 4) * METAL_SINGLE_EYE_SIZE * 32;
+
+  data[idx++] = (draw.sprite.xyz0[0] - x_off) / 2;
+  data[idx++] = (draw.sprite.xyz0[1] - y_off) / 2;
+  data[idx++] = 0;
+  data[idx++] = 0;
+
+  data[idx++] = (draw.sprite.xyz1[0] - x_off) / 2;
+  data[idx++] = (draw.sprite.xyz0[1] - y_off) / 2;
+  data[idx++] = 1;
+  data[idx++] = 0;
+
+  data[idx++] = (draw.sprite.xyz0[0] - x_off) / 2;
+  data[idx++] = (draw.sprite.xyz1[1] - y_off) / 2;
+  data[idx++] = 0;
+  data[idx++] = 1;
+
+  data[idx++] = (draw.sprite.xyz1[0] - x_off) / 2;
+  data[idx++] = (draw.sprite.xyz1[1] - y_off) / 2;
+  data[idx++] = 1;
+  data[idx++] = 1;
+  return idx;
+}
+
+// The whole eye texture is cleared with the 0,0 texel of the iris texture.
+int add_clear_draw_to_buffer(int idx, float* data) {
+  const float center = 768;
+  const float upper = center + 256;
+  const float lower = center - 256;
+  const float xy[4][2] = {{lower, lower}, {upper, lower}, {lower, upper}, {upper, upper}};
+  for (const auto& p : xy) {
+    data[idx++] = p[0];
+    data[idx++] = p[1];
+    data[idx++] = 0;
+    data[idx++] = 0;
+  }
+  return idx;
+}
+
+}  // namespace
+
+/*!
+ * The GL renderer composes each eye into an FBO with immediate-mode state
+ * changes. Here each eye is one render pass (its clear replaces
+ * glClearBufferfv) with four sub-draws, and the whole set runs on its own
+ * command buffer because the frame's encoder is open - the same structure the
+ * generated ocean texture uses.
+ */
+void MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
+                               MetalSharedRenderState* render_state,
+                               MetalFrameContext& ctx) {
+  if (draws.empty()) {
+    return;
+  }
+
+  int buffer_idx = 0;
+  for (const auto& draw : draws) {
+    buffer_idx = add_clear_draw_to_buffer(buffer_idx, m_cpu_vertex_buffer);
+    if (draw.using_64) {
+      buffer_idx = add_draw_to_buffer_64(buffer_idx, draw.iris, m_cpu_vertex_buffer, draw.pair,
+                                         draw.lr);
+      buffer_idx = add_draw_to_buffer_64(buffer_idx, draw.pupil, m_cpu_vertex_buffer, draw.pair,
+                                         draw.lr);
+      buffer_idx =
+          add_draw_to_buffer_64(buffer_idx, draw.lid, m_cpu_vertex_buffer, draw.pair, draw.lr);
+    } else {
+      buffer_idx = add_draw_to_buffer_32(buffer_idx, draw.iris, m_cpu_vertex_buffer, draw.pair,
+                                         draw.lr);
+      buffer_idx = add_draw_to_buffer_32(buffer_idx, draw.pupil, m_cpu_vertex_buffer, draw.pair,
+                                         draw.lr);
+      buffer_idx =
+          add_draw_to_buffer_32(buffer_idx, draw.lid, m_cpu_vertex_buffer, draw.pair, draw.lr);
+    }
+    if (buffer_idx > VTX_BUFFER_FLOATS) {
+      eye_expect(false, "no more eyes than the vertex buffer holds", &m_stats.unexpected_dma,
+                 &m_warned_dma);
+      return;
+    }
+  }
+  memcpy(m_vertex_buffer.contents, m_cpu_vertex_buffer, buffer_idx * sizeof(float));
+
+  MetalPsoKey opaque_key;
+  opaque_key.shader = MetalShaderId::EYE;
+  opaque_key.color_format = MTLPixelFormatRGBA8Unorm;
+  id<MTLRenderPipelineState> opaque_pso = ctx.pso_cache->get_pipeline(opaque_key);
+
+  MetalPsoKey blend_key = opaque_key;
+  blend_key.blend_enable = true;
+  blend_key.blend_src_rgb = MTLBlendFactorSourceAlpha;
+  blend_key.blend_dst_rgb = MTLBlendFactorOneMinusSourceAlpha;
+  blend_key.blend_src_alpha = MTLBlendFactorSourceAlpha;
+  blend_key.blend_dst_alpha = MTLBlendFactorOneMinusSourceAlpha;
+  id<MTLRenderPipelineState> blend_pso = ctx.pso_cache->get_pipeline(blend_key);
+
+  MetalSamplerKey sampler_key;
+  sampler_key.min_filter = MTLSamplerMinMagFilterLinear;
+  sampler_key.mag_filter = MTLSamplerMinMagFilterLinear;
+  id<MTLSamplerState> sampler = ctx.sampler_cache->get(sampler_key);
+
+  id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
+  buffer_idx = 0;
+  for (const auto& draw : draws) {
+    auto& out_tex = m_gpu_eye_textures[draw.tex_slot()];
+    out_tex.fnv_name_hash = draw.fnv_name_hash;
+    out_tex.lr = draw.lr;
+
+    auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = out_tex.texture;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    // the GL renderer's debugging clear: red where nothing draws
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(1.0, 0.0, 0.0, 0.0);
+    id<MTLRenderCommandEncoder> enc = [cmds renderCommandEncoderWithDescriptor:pass];
+    [enc setCullMode:MTLCullModeNone];
+    [enc setVertexBuffer:m_vertex_buffer offset:0 atIndex:0];
+    [enc setFragmentSamplerState:sampler atIndex:0];
+
+    auto quad = [&](id<MTLRenderPipelineState> pso, u64 handle) {
+      id<MTLTexture> tex = metal_texture_lookup(handle);
+      if (pso && tex) {
+        [enc setRenderPipelineState:pso];
+        [enc setFragmentTexture:tex atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                vertexStart:(NSUInteger)(buffer_idx / 4)
+                vertexCount:4];
+        m_stats.draw_calls++;
+        m_stats.triangles += 2;
+      }
+      buffer_idx += 4 * 4;
+    };
+
+    // background (the whole texture, from the iris texture's 0,0 texel), then
+    // the iris, the alpha-blended pupil, and the eyelid
+    quad(draw.has_iris ? opaque_pso : nil, draw.iris_tex_handle);
+    quad(draw.has_iris ? opaque_pso : nil, draw.iris_tex_handle);
+    quad(draw.has_pupil ? blend_pso : nil, draw.pupil_tex_handle);
+    quad(draw.has_lid ? opaque_pso : nil, draw.lid_tex_handle);
+
+    [enc endEncoding];
+    if (!m_stats.first_texture) {
+      m_stats.first_texture = out_tex.handle;
+    }
+    m_stats.eyes++;
+
+    // hand the composed texture to "VRAM" so merc's slot lookups find it
+    if (out_tex.gpu_tex) {
+      render_state->texture_pool->move_existing_to_vram(out_tex.gpu_tex, out_tex.tbp);
+    }
+  }
+
+  [cmds commit];
+  // the frame's command buffer is committed later; this wait keeps the shared
+  // vertex buffer safe to overwrite and matches the immediate ordering the GL
+  // renderer gets for free.
+  [cmds waitUntilCompleted];
+}
+
+std::optional<u64> MetalEyeRenderer::lookup_eye_texture(u8 eye_id) {
+  eye_id = (eye_id % 40);
+  if ((int)eye_id >= METAL_NUM_EYE_PAIRS * 2) {
+    return {};
+  }
+  const u64 handle = m_gpu_eye_textures[eye_id].handle;
+  return handle ? std::optional<u64>(handle) : std::optional<u64>();
+}
+
+std::optional<u64> MetalEyeRenderer::lookup_eye_texture_hash(u64 hash, bool lr) {
+  for (auto& slot : m_gpu_eye_textures) {
+    if (slot.fnv_name_hash == hash && slot.lr == lr) {
+      return slot.handle ? std::optional<u64>(slot.handle) : std::optional<u64>();
+    }
+  }
+  return {};
+}

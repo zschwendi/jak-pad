@@ -12,16 +12,16 @@
  * `.fr3` through the level-data stage (metal_level_data.h).
  *
  * TIE draws are grouped into categories (tfrag3::TieCategory). On Jak 1 the one
- * bucket per level draws the NORMAL category, then the base draw of the
- * envmapped category. This port covers those two:
+ * bucket per level draws the NORMAL category, the base draw of the envmapped
+ * category, then the envmap second draw. This port covers all three:
  *  - NORMAL uses the tfrag3 shader, exactly as GL does.
  *  - NORMAL_ENVMAP's base draw uses the etie_base shader, exactly as GL does
  *    (GL uses the envmap-style math for the base draw to avoid a rounding
  *    mismatch with the second draw).
+ *  - NORMAL_ENVMAP_SECOND_DRAW - the shiny reflective pass - uses the etie
+ *    shader, with the frame's envmap tint from the chain.
  *
  * Not ported, and honestly missing rather than faked:
- *  - the envmap *second* draw (the shiny reflective pass, ShaderId::ETIE). The
- *    surfaces still render, without their reflection layer.
  *  - wind-instanced draws (trees/flags that sway). They need the per-instance
  *    matrix rebuild the GL renderer does on the CPU each frame.
  *  - per-proto visibility toggles (Jak 2/3 only).
@@ -49,7 +49,8 @@ class MetalTie3 : public MetalBucketRenderer {
     int runs = 0;
     int triangles = 0;
     int wind_draws_skipped = 0;
-    int envmap_second_draws_skipped = 0;
+    int envmap_second_draws = 0;
+    int envmap_second_triangles = 0;
     bool level_missing = false;
     std::string level_name;
   };
@@ -95,6 +96,7 @@ class MetalTie3 : public MetalBucketRenderer {
   u64 m_load_id = 0;
 
   std::vector<math::Vector<u8, 4>> m_color_result;
+  math::Vector4f m_envmap_color{1.f, 1.f, 1.f, 1.f};
   Stats m_stats;
   bool m_warned_missing_level = false;
 };

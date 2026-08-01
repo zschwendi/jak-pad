@@ -212,8 +212,17 @@ void MetalSkyRenderer::render(DmaFollower& dma,
 
 MetalSkyBlendHandler::MetalSkyBlendHandler(const std::string& name,
                                            int my_id,
+                                           int level_id,
                                            std::shared_ptr<MetalSkyBlendCPU> shared_blender)
-    : MetalBucketRenderer(name, my_id), m_shared_blender(shared_blender) {}
+    : MetalBucketRenderer(name, my_id),
+      m_shared_blender(shared_blender),
+      m_tfrag_renderer(fmt::format("tfrag-{}", name),
+                       my_id,
+                       {tfrag3::TFragmentTreeKind::TRANS,
+                        tfrag3::TFragmentTreeKind::LOWRES_TRANS},
+                       level_id,
+                       /*does_vis_copy=*/false,
+                       /*child_mode=*/true) {}
 
 /*!
  * Same DMA walk as SkyBlendHandler::render. The tfrag-trans content that
@@ -222,23 +231,7 @@ MetalSkyBlendHandler::MetalSkyBlendHandler(const std::string& name,
  */
 void MetalSkyBlendHandler::render(DmaFollower& dma,
                                   MetalSharedRenderState* render_state,
-                                  MetalFrameContext& /*ctx*/) {
-  auto skip_tfrag_to_bucket_end = [&]() {
-    u64 bytes = 0;
-    while (dma.current_tag_offset() != render_state->next_bucket) {
-      bytes += dma.read_and_advance().size_bytes;
-    }
-    if (bytes > 0) {
-      m_skipped_tfrag_bytes += bytes;
-      if (!m_warned_tfrag) {
-        lg::warn("Metal: tfrag-trans content in bucket [{}] {} not ported yet; skipped {} bytes "
-                 "(logged once)",
-                 m_my_id, m_name, bytes);
-        m_warned_tfrag = true;
-      }
-    }
-  };
-
+                                  MetalFrameContext& ctx) {
   m_stats = {};
   // first thing should be a NEXT with two nops
   auto data0 = dma.read_and_advance();
@@ -257,7 +250,7 @@ void MetalSkyBlendHandler::render(DmaFollower& dma,
 
   if (dma.current_tag().qwc != 8) {
     // no sky blends this frame: the bucket contains only tfrag-trans
-    skip_tfrag_to_bucket_end();
+    m_tfrag_renderer.render(dma, render_state, ctx);
     return;
   }
 
@@ -279,7 +272,7 @@ void MetalSkyBlendHandler::render(DmaFollower& dma,
   ASSERT(empty.vif1() == 0);
 
   if (dma.current_tag().kind != DmaTag::Kind::CALL) {
-    skip_tfrag_to_bucket_end();
+    m_tfrag_renderer.render(dma, render_state, ctx);
   } else {
     dma.read_and_advance();
     dma.read_and_advance();  // cnt

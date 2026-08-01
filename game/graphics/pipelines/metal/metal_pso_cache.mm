@@ -24,6 +24,10 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"ocean_common_vs", "ocean_common_fs"},        // OCEAN_COMMON
     {"merc2_vs", "merc2_fs"},                      // MERC2
     {"emerc_vs", "emerc_fs"},                      // EMERC
+    {"eye_vs", "eye_fs"},                          // EYE
+    {"generic_vs", "generic_fs"},                  // GENERIC
+    {"shadow_vs", "shadow_fs"},                    // SHADOW
+    {"etie_vs", "tfrag3_fs"},                      // ETIE (etie.frag == tfrag3.frag)
 };
 
 size_t hash_combine(size_t seed, size_t v) {
@@ -45,7 +49,11 @@ size_t MetalPsoCache::PsoKeyHash::operator()(const MetalPsoKey& k) const {
 }
 
 size_t MetalPsoCache::DepthKeyHash::operator()(const MetalDepthStencilKey& k) const {
-  return ((size_t)k.depth_test << 9) | ((size_t)k.depth_write << 8) | k.compare;
+  size_t h = ((size_t)k.depth_test << 9) | ((size_t)k.depth_write << 8) | k.compare;
+  h = hash_combine(h, ((size_t)k.stencil_test << 24) | ((size_t)k.stencil_compare << 16) |
+                          ((size_t)k.stencil_depth_pass_op << 8));
+  h = hash_combine(h, ((size_t)k.stencil_read_mask << 8) | k.stencil_write_mask);
+  return h;
 }
 
 bool MetalPsoCache::init(id<MTLDevice> device, id<MTLLibrary> library) {
@@ -114,6 +122,19 @@ id<MTLDepthStencilState> MetalPsoCache::get_depth_stencil(const MetalDepthStenci
   desc.depthCompareFunction =
       key.depth_test ? (MTLCompareFunction)key.compare : MTLCompareFunctionAlways;
   desc.depthWriteEnabled = key.depth_write;
+  if (key.stencil_test) {
+    // the shadow volumes' glStencilFunc/glStencilOp: the same state on both
+    // faces, KEEP on stencil fail and depth fail, the key's op on depth pass
+    auto* stencil = [[MTLStencilDescriptor alloc] init];
+    stencil.stencilCompareFunction = (MTLCompareFunction)key.stencil_compare;
+    stencil.stencilFailureOperation = MTLStencilOperationKeep;
+    stencil.depthFailureOperation = MTLStencilOperationKeep;
+    stencil.depthStencilPassOperation = (MTLStencilOperation)key.stencil_depth_pass_op;
+    stencil.readMask = key.stencil_read_mask;
+    stencil.writeMask = key.stencil_write_mask;
+    desc.frontFaceStencil = stencil;
+    desc.backFaceStencil = stencil;
+  }
   id<MTLDepthStencilState> state = [m_device newDepthStencilStateWithDescriptor:desc];
   m_depth_states.emplace(key, state);
   return state;

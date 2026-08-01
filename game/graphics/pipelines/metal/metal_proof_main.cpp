@@ -1021,12 +1021,12 @@ void test_dma_chain(const GfxRendererModule* mod,
     chain.set_bucket_content((int)BucketId::TFRAG_TEX_LEVEL0, {t});
   }
 
-  // bucket 11 (GENERIC_TFRAG_TEX_LEVEL0, not ported): junk payload that must be
-  // counted rather than silently dropped
+  // DEPTH_CUE (not ported): junk payload that MetalSkipRenderer must count
+  // rather than silently drop
   {
     ChainBuilder::Transfer t;
     t.data.resize(64, 0xAB);
-    chain.set_bucket_content((int)BucketId::GENERIC_TFRAG_TEX_LEVEL0, {t});
+    chain.set_bucket_content((int)BucketId::DEPTH_CUE, {t});
   }
 
   // bucket 3 (SKY_DRAW): setup + qwc-5 draw setup + one draw packet
@@ -2245,6 +2245,214 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
 }
 
 // ---------------------------------------------------------------------------
+// Section: a constructed generic bucket -> MetalGeneric2.
+//
+// None of the available captures carries generic *geometry* (their generic
+// buckets hold only the 240-byte setup), so the drawing path is exercised with
+// a bucket built to match every packet Generic2 asserts about a real chain:
+// the 48-byte test/zbuf setup, the 160-byte VU constants unpack, the 32-byte
+// VU register setup, then one fragment whose single VIF transfer carries the
+// 7-quadword header, one adgif, and the STCYCL/UNPACK_V3_32 positions,
+// UNPACK_V4_8 colors and UNPACK_V2_16 texture coordinates the VU consumes.
+// ---------------------------------------------------------------------------
+
+constexpr u32 kVramGenericTex = 0x7e0;
+constexpr u32 kGenericTpage = kEeBase + 0x16000;
+
+void test_generic2_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& display) {
+  printf("--- DMA chain: generic bucket -> MetalGeneric2 ---\n");
+  using namespace jak1;
+
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+
+  auto pages = find_tpages(8);
+  if (pages.size() < 8) {
+    printf("[FAIL] not enough Jak 1 tpages for the generic2 test\n");
+    g_fail_count++;
+    g_ee_main_mem = nullptr;
+    return;
+  }
+
+  // quadrant texture: TL red, TR green, BL blue, BR white - so the check also
+  // proves the texture coordinates arrive in the right orientation
+  tfrag3::Texture quad;
+  quad.w = 16;
+  quad.h = 16;
+  quad.debug_name = "generic-quad";
+  quad.debug_tpage_name = "generic-page";
+  quad.data.resize(16 * 16);
+  for (int y = 0; y < 16; y++) {
+    for (int x = 0; x < 16; x++) {
+      bool right = x >= 8, bottom = y >= 8;
+      u32 r = (!right && !bottom) || (right && bottom) ? 255 : 0;
+      u32 g = right ? 255 : 0;
+      u32 b = bottom ? 255 : 0;
+      quad.data[y * 16 + x] = 0xff000000u | (b << 16) | (g << 8) | r;
+    }
+  }
+  give_and_link_texture(mod, mem, quad, pages[7], kGenericTpage, kVramGenericTex);
+
+  // The projection the fragment header carries: scale 1, mat_23 1, mat_32 0,
+  // mat_33 0 (which is what marks it as the projection rather than the HUD
+  // matrix). With a vertex z of -1 that reduces the shader's math to
+  // ndc = (-px / 256, py / 112), the same screen mapping gs_to_col/gs_to_row use.
+  auto ndc_col = [](double px) { return (int)llround((-px / 256.0 + 1.0) / 2.0 * 640.0); };
+  auto ndc_row = [](double py) { return (int)llround((1.0 - py / 112.0) / 2.0 * 480.0); };
+
+  auto build_generic_bucket = [&]() {
+    std::vector<ChainBuilder::Transfer> gen;
+
+    // setup packet 1: test + zbuf (zmsk 0 -> depth writes on)
+    gen.push_back({0, 0, std::vector<u8>(48, 0), false});
+
+    // setup packet 2: the VU constants. pfog0/fog_min/fog_max at 0/4/8,
+    // hvdf_offset at 48.
+    {
+      std::vector<u8> d(160, 0);
+      float pfog0 = 1.f, fog_min = 0.f, fog_max = 255.f;
+      memcpy(&d[0], &pfog0, 4);
+      memcpy(&d[4], &fog_min, 4);
+      memcpy(&d[8], &fog_max, 4);
+      float hvdf[4] = {2048.f, 2048.f, 8388607.f, 0.f};
+      memcpy(&d[48], hvdf, 16);
+      gen.push_back({vif_stcycl(4, 4), vif_unpack_v4_32(10, 0, true), d, false});
+    }
+
+    // setup packet 3: VU register setup
+    gen.push_back({0, 0, std::vector<u8>(32, 0), false});
+
+    // the fragment
+    std::vector<u8> d;
+    {
+      // 7 quadword header: the 4x4 matrix, a giftag, and the "bonus" adgifs
+      std::vector<u8> header(112, 0);
+      float mat[16] = {0};
+      mat[0] = 1.f;   // scale x
+      mat[5] = 1.f;   // scale y
+      mat[10] = 1.f;  // scale z
+      mat[11] = 1.f;  // mat_23
+      mat[14] = 0.f;  // mat_32
+      mat[15] = 0.f;  // mat_33 == 0 marks this as the projection matrix
+      memcpy(&header[0], mat, 64);
+      // giftag with pre set and prim 0, so fge is 0 and the fog vertex flag clears
+      u64 giftag_lo = ((u64)1 << 46);
+      memcpy(&header[64], &giftag_lo, 8);
+      // bonus adgifs: ALPHA then TEST
+      u64 bonus[4];
+      bonus[0] = 0;  // GsAlpha a=b=c=d=SOURCE -> SRC_SRC_SRC_SRC ("Cv = Cs")
+      bonus[1] = (u64)GsRegisterAddress::ALPHA_1;
+      bonus[2] = (1ull << 16) | ((u64)GsTest::ZTest::GEQUAL << 17);  // ate 0, zte 1, GEQUAL
+      bonus[3] = (u64)GsRegisterAddress::TEST_1;
+      memcpy(&header[80], bonus, 32);
+      d.insert(d.end(), header.begin(), header.end());
+    }
+    {
+      // one adgif. The game stores the fragment's vertex range in the unused
+      // upper halves of the register addresses (link_adgifs_back_to_frags).
+      AdGifData ad{};
+      ad.tex0_data = gs_tex0(kVramGenericTex, 1, 0, 4, 4, true, 0);
+      ad.tex0_addr = (u64)GsRegisterAddress::TEX0_1 | (0ull << 32);  // vertex offset * 3
+      ad.tex1_data = 0;                                              // mmag 0 -> nearest
+      ad.tex1_addr = (u64)GsRegisterAddress::TEX1_1 | (4ull << 32);  // 4 vertices
+      ad.mip_data = 0;
+      ad.mip_addr = (u64)GsRegisterAddress::MIPTBP1_1;
+      ad.clamp_data = 0b101;  // clamp s and t
+      ad.clamp_addr = (u64)GsRegisterAddress::CLAMP_1;
+      ad.alpha_data = 0;
+      ad.alpha_addr = (u64)GsRegisterAddress::MIPTBP2_1;  // alpha comes from the bonus adgif
+      size_t at = d.size();
+      d.resize(at + sizeof(AdGifData));
+      memcpy(&d[at], &ad, sizeof(AdGifData));
+    }
+    const u32 first_unpack_bytes = (u32)d.size();
+
+    // a 4-vertex triangle strip covering ndc x/y in [-0.5, 0.5]
+    const float px[4] = {128.f, -128.f, 128.f, -128.f};
+    const float py[4] = {56.f, 56.f, -56.f, -56.f};
+    const s16 s[4] = {0, 4096, 0, 4096};
+    const s16 t[4] = {0, 0, 4096, 4096};
+
+    push_i(d, (s32)vif_stcycl(3, 1));  // STCYCL immediate 0x103
+    push_i(d, (s32)vif_code(VifCode::Kind::UNPACK_V3_32, 0, 4));
+    for (int i = 0; i < 4; i++) {
+      push_f(d, px[i]);
+      push_f(d, py[i]);
+      push_f(d, -1.f);
+    }
+    push_i(d, (s32)vif_code(VifCode::Kind::UNPACK_V4_8, 0, 4));
+    for (int i = 0; i < 4; i++) {
+      d.push_back(128);
+      d.push_back(128);
+      d.push_back(128);
+      d.push_back(128);
+    }
+    push_i(d, (s32)vif_code(VifCode::Kind::UNPACK_V2_16, 0, 4));
+    for (int i = 0; i < 4; i++) {
+      size_t at = d.size();
+      d.resize(at + 4);
+      memcpy(&d[at], &s[i], 2);
+      memcpy(&d[at + 2], &t[i], 2);
+    }
+    push_i(d, (s32)vif_stcycl(4, 4));                          // the STCYCL reset
+    push_i(d, (s32)vif_code(VifCode::Kind::MSCAL, 0x24, 0));   // run the VU program
+    while (d.size() % 16) {
+      push_i(d, 0);  // NOP padding to a whole quadword
+    }
+    gen.push_back(
+        {vif_stcycl(4, 4), vif_unpack_v4_32(first_unpack_bytes / 16, 0, true), d, false});
+    return gen;
+  };
+
+  ChainBuilder cb(mem);
+  cb.set_bucket_content((int)BucketId::GENERIC_PRIS_LEVEL0, build_generic_bucket());
+  mod->send_chain(mem.data(), kChainStart);
+  display->render();
+
+  metal_renderer::FramePixels frame;
+  if (!metal_renderer::read_last_frame(&frame)) {
+    printf("[FAIL] could not read back the generic2 frame\n");
+    g_fail_count++;
+    g_ee_main_mem = nullptr;
+    return;
+  }
+  auto stats = metal_renderer::get_chain_stats();
+  printf("generic2 stats: %d fragments, %d vertices, %d adgifs, %d draw buckets, %d draws, "
+         "%d tris, %d missing textures, %d unsupported blends, %d unexpected-DMA, %d overflow\n",
+         stats.generic_fragments, stats.generic_vertices, stats.generic_adgifs,
+         stats.generic_draw_buckets, stats.generic_draws, stats.generic_triangles,
+         stats.generic_missing_textures, stats.generic_unsupported_blends,
+         stats.generic_unexpected_dma, stats.generic_overflow);
+  check(stats.generic_unexpected_dma == 0, "generic2: the constructed bucket matched the walk");
+  check(stats.generic_fragments == 1, "generic2: one fragment built from the chain");
+  check(stats.generic_vertices == 4, "generic2: four vertices unpacked");
+  check(stats.generic_adgifs == 1, "generic2: one adgif read from the fragment header");
+  check(stats.generic_draw_buckets == 1, "generic2: the adgif landed in one draw bucket");
+  check(stats.generic_draws == 1, "generic2: the draw bucket issued one draw");
+  check(stats.generic_triangles == 2, "generic2: the 4-vertex strip is two triangles");
+  check(stats.generic_missing_textures == 0, "generic2: the draw found its texture");
+
+  // The fragment shader's modulate + tcc path: fragment_color.rgb is the
+  // vertex color 128/255, times the texel, times 2 - so the quadrant colors
+  // come through nearly unchanged. Their placement is what proves the texture
+  // coordinates and the vertex order.
+  const int left = ndc_col(64.f), right = ndc_col(-64.f);
+  const int top = ndc_row(28.f), bottom = ndc_row(-28.f);
+  check_pixel(frame, left, top, 255, 0, 0, "generic2: top-left quadrant is red");
+  check_pixel(frame, right, top, 0, 255, 0, "generic2: top-right quadrant is green");
+  check_pixel(frame, left, bottom, 0, 0, 255, "generic2: bottom-left quadrant is blue");
+  check_pixel(frame, right, bottom, 255, 255, 255, "generic2: bottom-right quadrant is white");
+
+  // the quad's edges land where the projection says
+  check_pixel(frame, ndc_col(126.f), ndc_row(28.f), 255, 0, 0, "generic2: inside the left edge");
+  check_pixel(frame, ndc_col(132.f), ndc_row(28.f), 0, 0, 0, "generic2: outside the left edge");
+  check_pixel(frame, ndc_col(64.f), ndc_row(54.f), 255, 0, 0, "generic2: inside the top edge");
+  check_pixel(frame, ndc_col(64.f), ndc_row(60.f), 0, 0, 0, "generic2: outside the top edge");
+
+  g_ee_main_mem = nullptr;
+}
+
+// ---------------------------------------------------------------------------
 // Section (optional): real extracted Jak 1 textures from a user-supplied .fr3.
 // Never bundled; pass the path on the command line to enable.
 // ---------------------------------------------------------------------------
@@ -2674,10 +2882,11 @@ void run_chain_replay(const GfxRendererModule* mod,
         "replay: every sent chain was rendered");
   printf(
       "replay stats: %d draws, %d tris, %d uploads, sky d/b %d/%d, cloud d/b %d/%d, "
-      "skipped %d bucket + %d tfrag bytes, %d unsupported blends\n",
+      "skipped %d bucket bytes, %d unsupported blends\n",
       stats.draw_calls, stats.triangles, stats.tex_uploads, stats.sky_draws, stats.sky_blends,
       stats.cloud_draws, stats.cloud_blends, (int)stats.skipped_bucket_bytes,
-      (int)stats.skipped_tfrag_bytes, stats.direct_unsupported_blends);
+      stats.direct_unsupported_blends);
+  check(stats.skipped_bucket_bytes == 0, "replay: no bucket content left unconsumed");
   printf(
       "sprite bucket: %d 2d + %d 3d + %d hud sprites in %d draws, %d distort sprites consumed "
       "(drawing not ported), %d missing textures\n",
@@ -2691,7 +2900,7 @@ void run_chain_replay(const GfxRendererModule* mod,
   check(stats.direct_unsupported_blends == 0, "replay: no unsupported GS blend modes");
   printf(
       "merc buckets: %d models (%d missing), %d draws (%d envmap), %d tris, %d bone vectors, "
-      "%d deferred mod effects, %d eye draws (EyeRenderer not ported), %d missing textures, "
+      "%d deferred mod effects, %d eye draws, %d missing textures, "
       "%d bad bone pointers, %d bad draw ranges\n",
       stats.merc_models, stats.merc_missing_models, stats.merc_draws, stats.merc_envmap_draws,
       stats.merc_triangles, stats.merc_bone_vectors, stats.merc_mod_effects_deferred,
@@ -2719,12 +2928,119 @@ void run_chain_replay(const GfxRendererModule* mod,
     }
   }
 
+  // --- shadow ---
+  {
+    u64 shadow_payload = 0;
+    for (auto& b : inv.buckets) {
+      if (metal_chain_replay::jak1_bucket_name(b.bucket) == "SHADOW") {
+        shadow_payload += b.payload_bytes;
+      }
+    }
+    printf("shadow bucket: %d bytes of DMA, %d volumes, %d vertices, %d draws, %d tris, "
+           "%d unexpected-DMA reports\n",
+           (int)shadow_payload, stats.shadow_volumes, stats.shadow_vertices, stats.shadow_draws,
+           stats.shadow_triangles, stats.shadow_unexpected_dma);
+    check(stats.shadow_unexpected_dma == 0, "replay: the shadow bucket matched its renderer");
+  }
+
+  // --- generic2 ---
+  {
+    u64 generic_payload = 0;
+    for (auto& b : inv.buckets) {
+      if (metal_chain_replay::jak1_bucket_name(b.bucket).rfind("GENERIC", 0) == 0 ||
+          metal_chain_replay::jak1_bucket_name(b.bucket) == "SHRUB_GENERIC_LEVEL0" ||
+          metal_chain_replay::jak1_bucket_name(b.bucket) == "SHRUB_GENERIC_LEVEL1") {
+        generic_payload += b.payload_bytes;
+      }
+    }
+    printf("generic2 buckets: %d bytes of DMA, %d fragments, %d vertices, %d adgifs, "
+           "%d draw buckets, %d draws, %d tris, %d missing textures, %d unsupported blends, "
+           "%d unexpected-DMA reports, %d overflows\n",
+           (int)generic_payload, stats.generic_fragments, stats.generic_vertices,
+           stats.generic_adgifs, stats.generic_draw_buckets, stats.generic_draws,
+           stats.generic_triangles, stats.generic_missing_textures,
+           stats.generic_unsupported_blends, stats.generic_unexpected_dma,
+           stats.generic_overflow);
+    check(stats.generic_unexpected_dma == 0, "replay: every generic bucket matched its renderer");
+    check(stats.generic_overflow == 0, "replay: generic2's buffers held the frame's data");
+    check(stats.generic_missing_textures == 0, "replay: every generic2 draw found its texture");
+    check(stats.generic_unsupported_blends == 0, "replay: no unsupported generic2 blend modes");
+  }
+
+  // --- eye renderer ---
+  {
+    u64 eye_payload = 0;
+    for (auto& b : inv.buckets) {
+      if (metal_chain_replay::jak1_bucket_name(b.bucket) == "MERC_EYES_AFTER_PRIS") {
+        eye_payload += b.payload_bytes;
+      }
+    }
+    printf("eye bucket: %d bytes of DMA, %d eyes composed, %d draws, %d tris, %d missing "
+           "textures, %d unexpected-DMA reports\n",
+           (int)eye_payload, stats.eyes_composed, stats.eye_draws, stats.eye_triangles,
+           stats.eye_missing_textures, stats.eye_unexpected_dma);
+    check(stats.eye_unexpected_dma == 0, "replay: the eye bucket matched its renderer");
+    // A frame with no eyes on screen still sends the bucket's fixed structure
+    // (the render-to-texture setup, the alpha setup and the GS restore), so the
+    // trigger for the drawing checks is merc asking for eye textures.
+    if (stats.merc_eye_draws > 0) {
+      check(stats.eyes_composed > 0, "replay: the eye bucket composed eyes");
+      check(stats.eye_draws > 0, "replay: the eye renderer issued draws");
+      check(stats.eye_missing_textures == 0, "replay: every eye source texture was in VRAM");
+
+      // the composed eye must be a real image: the pass clears to opaque-less
+      // red, so a texture that is still all (255,0,0) means nothing drew.
+      metal_renderer::FramePixels eye;
+      metal_renderer::TextureSampleSpec eye_spec;
+      eye_spec.texture = stats.eye_texture;
+      eye_spec.out_w = 64;
+      eye_spec.out_h = 64;
+      if (sample_tex(eye_spec, &eye, "replay: read back a composed eye texture")) {
+        int cleared = 0, lit = 0;
+        u8 lo_g = 255, hi_g = 0;
+        for (size_t i = 0; i < eye.rgba.size(); i += 4) {
+          const u8 r = eye.rgba[i], g = eye.rgba[i + 1], b = eye.rgba[i + 2];
+          if (r == 255 && g == 0 && b == 0) {
+            cleared++;
+          }
+          if (r || g || b) {
+            lit++;
+          }
+          lo_g = std::min(lo_g, g);
+          hi_g = std::max(hi_g, g);
+        }
+        const int total = eye.width * eye.height;
+        printf("composed eye texture: %d/%d texels drawn, %d still the debug clear, green %d-%d\n",
+               lit, total, cleared, lo_g, hi_g);
+        check(cleared == 0, "replay: the eye texture is fully covered (no debug-clear texels)");
+        check(hi_g - lo_g > 8, "replay: the eye texture has real image content, not one flat color");
+
+        if (!png_path.empty()) {
+          auto eye_png = fs::path(png_path).replace_extension("").string() + "-eye.png";
+          std::vector<u8> px = eye.rgba;
+          for (size_t i = 0; i < px.size(); i += 4) {
+            px[i + 3] = 255;
+          }
+          try {
+            file_util::write_rgba_png(fs::path(eye_png), px.data(), eye.width, eye.height);
+            printf("[PASS] wrote a composed eye texture to %s\n", eye_png.c_str());
+          } catch (const std::exception& e) {
+            printf("[FAIL] could not write %s: %s\n", eye_png.c_str(), e.what());
+            g_fail_count++;
+          }
+        }
+      }
+    }
+  }
+
   auto bg = metal_renderer::get_background_stats();
   printf(
-      "level geometry: tfrag %d draws / %d tris, tie %d draws / %d tris, "
+      "level geometry: tfrag %d draws / %d tris, tie %d draws / %d tris "
+      "(%d envmap-second draws / %d tris, %d wind draws deferred), "
       "shrub %d draws / %d tris; %d bucket(s) named an unloaded level, "
       "%d missing textures, %d animator-slot draws, %d unexpected-DMA reports\n",
-      bg.tfrag_draws, bg.tfrag_tris, bg.tie_draws, bg.tie_tris, bg.shrub_draws, bg.shrub_tris,
+      bg.tfrag_draws, bg.tfrag_tris, bg.tie_draws, bg.tie_tris, bg.tie_envmap_second_draws,
+      bg.tie_envmap_second_tris, bg.tie_wind_draws_skipped, bg.shrub_draws, bg.shrub_tris,
       bg.missing_levels, bg.missing_textures, bg.anim_slot_draws, bg.unexpected_dma);
   check(bg.unexpected_dma == 0, "replay: every level-geometry bucket matched its renderer");
   if (!fr3_paths.empty()) {
@@ -2991,6 +3307,7 @@ int main(int argc, char** argv) {
   test_dma_chain(mod, display, level.get());
   test_sprite_chain(mod, display);
   test_merc_chain(mod, display);
+  test_generic2_chain(mod, display);
   g_ee_main_mem = nullptr;
 
   display.reset();

@@ -100,6 +100,11 @@ bool MetalTie3::set_up_common_data_from_dma(DmaFollower& dma,
   if (!expect(envmap_color.size_bytes == 16, "a one-quadword envmap color")) {
     return false;
   }
+  // Tie3::set_up_common_data_from_dma, Jak 1 branch: /128, then *2, then the
+  // debug envmap-strength slider (1.0 here, as it is by default in GL).
+  memcpy(m_envmap_color.data(), envmap_color.data, 16);
+  m_envmap_color /= 128.f;
+  m_envmap_color *= 2.f;
 
   m_settings.camera = m_pc_port_data.camera;
   m_settings.tree_idx = 0;
@@ -153,15 +158,17 @@ void MetalTie3::render(DmaFollower& dma,
     }
     m_stats.trees_rendered++;
     m_stats.wind_draws_skipped += (int)tree.wind_draws->size();
-    const int second = (int)tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW;
-    m_stats.envmap_second_draws_skipped +=
-        (int)(tree.category_draw_indices[second + 1] - tree.category_draw_indices[second]);
+    if (bg) {
+      bg->tie_wind_draws_skipped += (int)tree.wind_draws->size();
+    }
   }
 
   // Jak 1's TIE bucket draws the plain category, then the base draw of the
-  // envmapped one (Tie3WithEnvmapJak1::render).
+  // envmapped one, then the envmap second draw (Tie3WithEnvmapJak1::render and
+  // Tie3::envmap_second_pass_draw).
   render_all_trees(geom, tfrag3::TieCategory::NORMAL, render_state, ctx);
   render_all_trees(geom, tfrag3::TieCategory::NORMAL_ENVMAP, render_state, ctx);
+  render_all_trees(geom, tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW, render_state, ctx);
 }
 
 bool MetalTie3::setup_for_level(const std::string& level) {
@@ -236,8 +243,10 @@ void MetalTie3::render_tree(int geom,
   auto* bg = render_state->background;
   id<MTLRenderCommandEncoder> enc = ctx.enc;
 
-  const bool use_envmap = tfrag3::is_envmap_first_draw_category(category);
-  const auto shader = use_envmap ? MetalShaderId::ETIE_BASE : MetalShaderId::TFRAG3;
+  const bool second_draw = category == tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW;
+  const bool use_envmap = second_draw || tfrag3::is_envmap_first_draw_category(category);
+  const auto shader = second_draw ? MetalShaderId::ETIE
+                                  : (use_envmap ? MetalShaderId::ETIE_BASE : MetalShaderId::TFRAG3);
 
   const u32 first_draw = tree.category_draw_indices[(int)category];
   const u32 end_draw = tree.category_draw_indices[(int)category + 1];
@@ -253,6 +262,9 @@ void MetalTie3::render_tree(int geom,
   if (use_envmap) {
     MetalEtieVsParams vs_params;
     metal_fill_etie_vs_params(m_settings.camera, render_state->version, &vs_params);
+    if (second_draw) {
+      memcpy(vs_params.envmap_tod_tint, m_envmap_color.data(), sizeof(vs_params.envmap_tod_tint));
+    }
     [enc setVertexBytes:&vs_params length:sizeof(vs_params) atIndex:1];
   } else {
     MetalBackgroundVsParams vs_params;
@@ -307,6 +319,14 @@ void MetalTie3::render_tree(int geom,
     tris_this_tree += (int)tree.draw_tris[draw_idx];
   }
 
+  if (second_draw) {
+    m_stats.envmap_second_draws += draws_this_tree;
+    m_stats.envmap_second_triangles += tris_this_tree;
+    if (bg) {
+      bg->tie_envmap_second_draws += draws_this_tree;
+      bg->tie_envmap_second_tris += tris_this_tree;
+    }
+  }
   m_stats.draws += draws_this_tree;
   m_stats.triangles += tris_this_tree;
   ctx.draw_calls += draws_this_tree;
