@@ -53,6 +53,7 @@ extern "C" {
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/aot_loader.h"
+#include "game/kernel/core/continue_warp.h"
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/kernel_core.h"
@@ -101,6 +102,14 @@ struct Options {
     std::string after_state;
   };
   std::vector<Press> presses;
+  // Start the game at one of its own continue points, the way a warp gate does, so a run can be
+  // in a level without playing the whole game to it. See kernel/core/continue_warp.h.
+  struct Warp {
+    std::string name;
+    int first_frame = 0;
+    std::string after_state;
+  };
+  std::vector<Warp> warps;
 };
 
 const struct {
@@ -590,6 +599,27 @@ void game_thread(const Options& opts) {
       }
       goal_pad_set_state(0, &pad);
     }
+    for (const auto& warp : opts.warps) {
+      int when = warp.first_frame;
+      if (!warp.after_state.empty()) {
+        const int seen = frame_state_was_first_seen(warp.after_state);
+        if (seen < 0) {
+          continue;
+        }
+        when = seen + warp.first_frame;
+      }
+      if (frame == when) {
+        goal_continue_point_info point;
+        if (!goal_continue_point_describe(warp.name.c_str(), &point) ||
+            !goal_warp_to_continue(warp.name.c_str())) {
+          lg::error("[game] no continue point is named \"{}\"", warp.name);
+        } else {
+          lg::info("[game] warping to \"{}\" in '{}, wanting '{} and '{}, vis '{}", warp.name,
+                   point.level, point.want0, point.want1, point.vis_nick);
+          drain_goal_print_buffer();
+        }
+      }
+    }
     call_goal_on_stack(Ptr<Function>(dispatcher->value), goal_kernel_stack_top(), s7.offset,
                        g_ee_main_mem);
     drain_goal_print_buffer();
@@ -657,6 +687,8 @@ int usage() {
       "                          frame number or a target state plus an offset, e.g.\n"
       "                          start@target-title-wait+60\n"
       "  --stick <x>,<y>@<when>[:<frames>]     hold the left stick; a byte per axis, 127 centred\n"
+      "  --warp <continue>@<when>  start at one of the game's own continue points, the way a\n"
+      "                          warp gate does, e.g. beach-start@target-stance+300\n"
       "  --report-state          print each state the target enters, and where it is standing\n"
       "  --no-sound              boot without 989snd\n"
       "\n"
@@ -728,6 +760,23 @@ int main(int argc, char** argv) {
         press.first_frame = std::atoi(when.c_str());
       }
       opts.presses.push_back(press);
+    } else if (arg == "--warp" && i + 1 < argc) {
+      const std::string spec = argv[++i];
+      const size_t at = spec.find('@');
+      if (at == std::string::npos) {
+        return usage();
+      }
+      Options::Warp warp;
+      warp.name = spec.substr(0, at);
+      const std::string when = spec.substr(at + 1);
+      const size_t plus = when.find('+');
+      if (plus != std::string::npos || !std::isdigit((unsigned char)when[0])) {
+        warp.after_state = when.substr(0, plus);
+        warp.first_frame = plus == std::string::npos ? 0 : std::atoi(when.substr(plus + 1).c_str());
+      } else {
+        warp.first_frame = std::atoi(when.c_str());
+      }
+      opts.warps.push_back(warp);
     } else if (arg == "--report-state") {
       opts.report_state = true;
     } else if (arg == "--no-sound") {

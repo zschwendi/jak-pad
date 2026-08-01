@@ -50,6 +50,7 @@ extern "C" {
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/aot_loader.h"
+#include "game/kernel/core/continue_warp.h"
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/kernel_core.h"
@@ -219,10 +220,184 @@ bool parse_when(const std::string& arg, size_t at, PadHold& hold) {
   return true;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Walking somewhere. `--stick` holds a direction, which is enough to prove the target moves but
+// not enough to get it anywhere: the stick is camera-relative and the camera turns behind the
+// player, so a fixed direction curves. This drives the same stick toward a place instead.
+//
+// Nothing here reads the camera. Which way "forward" points in the world is measured: the angle
+// between the stick that was pushed and the direction the target actually moved is what the camera
+// contributes, and a decaying circular mean of it is enough to aim. Two hypotheses are carried,
+// one for each handedness of that mapping, and the one whose prediction has been closer wins.
+// ---------------------------------------------------------------------------------------------
+
+constexpr double kMetre = 4096.0;
+
+double angle_between(double a, double b) {
+  double d = a - b;
+  while (d > M_PI) {
+    d -= 2 * M_PI;
+  }
+  while (d < -M_PI) {
+    d += 2 * M_PI;
+  }
+  return d;
+}
+
+struct StickAim {
+  double sin_a = 0, cos_a = 0;  // circular mean of world-minus-stick
+  double sin_b = 0, cos_b = 0;  // ... and of world-plus-stick
+  double residual_a = 0, residual_b = 0;
+  double stick_angle = 0;
+  bool aiming = false;
+  bool have_last = false;
+  double last_x = 0, last_z = 0;
+
+  bool trust_first_hypothesis() const { return residual_a <= residual_b; }
+
+  double yaw() const {
+    return trust_first_hypothesis() ? std::atan2(sin_a, cos_a) : std::atan2(sin_b, cos_b);
+  }
+
+  /*! What the last frame's stick actually did, if the target moved far enough to say. */
+  void observe(double x, double z) {
+    const bool had = have_last && aiming;
+    const double dx = x - last_x, dz = z - last_z;
+    last_x = x;
+    last_z = z;
+    have_last = true;
+    if (!had || std::sqrt(dx * dx + dz * dz) < 0.05 * kMetre) {
+      return;
+    }
+    const double world = std::atan2(dx, dz);
+    const double decay = 0.97;
+    residual_a = decay * residual_a + std::fabs(angle_between(world, stick_angle + yaw_a()));
+    residual_b = decay * residual_b + std::fabs(angle_between(world, yaw_b() - stick_angle));
+    sin_a = decay * sin_a + std::sin(world - stick_angle);
+    cos_a = decay * cos_a + std::cos(world - stick_angle);
+    sin_b = decay * sin_b + std::sin(world + stick_angle);
+    cos_b = decay * cos_b + std::cos(world + stick_angle);
+  }
+
+  /*! The stick that should send the target off in `world`, as a unit vector (right, forward). */
+  void aim(double world, double* u, double* v) {
+    stick_angle = trust_first_hypothesis() ? world - yaw_a() : yaw_b() - world;
+    aiming = true;
+    *u = std::sin(stick_angle);
+    *v = std::cos(stick_angle);
+  }
+
+ private:
+  double yaw_a() const { return std::atan2(sin_a, cos_a); }
+  double yaw_b() const { return std::atan2(sin_b, cos_b); }
+};
+
+struct WalkLeg {
+  double x = 0, z = 0;  //! where to walk to, in metres
+  int first_frame = 1;
+  std::string after_state;
+  int frames = 6000;
+  double stop_radius = 10.0;
+
+  int began = 0;         //! the frame it actually started on, once known
+  bool arrived = false;  //! set when the target got inside stop_radius, so it stops there
+  double closest = 1e30;
+  int closest_frame = 0;
+  int stuck_since = 0;
+  int nudge = 0;
+};
+
+std::vector<WalkLeg> g_walk_script;
+StickAim g_aim;
+double g_target_x = 0, g_target_z = 0;
+bool g_target_known = false;
+std::string g_target_state;
+
+/*!
+ * The leg that should be driving this frame, or nullptr. Legs run in the order they were given and
+ * a leg that has arrived hands over to the next one, so a route is a list of places.
+ */
+WalkLeg* active_walk_leg(int frame) {
+  for (auto& leg : g_walk_script) {
+    int first = leg.first_frame;
+    if (!leg.after_state.empty()) {
+      const int entered = frame_state_was_first_seen(leg.after_state);
+      if (!entered) {
+        return nullptr;  // the route has not started yet
+      }
+      first += entered;
+    }
+    if (frame < first) {
+      return nullptr;
+    }
+    if (leg.arrived || (leg.began && frame >= leg.began + leg.frames)) {
+      continue;
+    }
+    if (!leg.began) {
+      leg.began = frame;
+    }
+    return &leg;
+  }
+  return nullptr;
+}
+
+/*! Point the stick at the active leg's destination. Returns false if nothing is walking. */
+bool drive_walk(int frame, goal_pad_state* pad) {
+  WalkLeg* leg = active_walk_leg(frame);
+  if (!leg || !g_target_known) {
+    return false;
+  }
+  g_aim.observe(g_target_x, g_target_z);
+  const double dx = leg->x * kMetre - g_target_x;
+  const double dz = leg->z * kMetre - g_target_z;
+  const double distance = std::sqrt(dx * dx + dz * dz) / kMetre;
+  if (distance < leg->closest - 0.5) {
+    leg->closest = distance;
+    leg->closest_frame = frame;
+    leg->stuck_since = 0;
+    leg->nudge = 0;
+  } else if (++leg->stuck_since > 180) {
+    // Cornered on the geometry. Try a wider line each time, and jump, the way a player would;
+    // once the whole sweep has been tried, take where it is now as the new best and start over.
+    leg->stuck_since = 0;
+    if (++leg->nudge > 8) {
+      leg->nudge = 0;
+      leg->closest = distance;
+    }
+  }
+  if (distance <= leg->stop_radius) {
+    leg->arrived = true;
+    say("  frame %5d: walked to within %.1f m of (%.1f %.1f)\n", frame, distance, leg->x, leg->z);
+    return false;
+  }
+  if ((frame - leg->began) % 300 == 0) {
+    say("  frame %5d: walking to (%.0f %.0f), at (%.1f %.1f), %.0f m to go\n", frame, leg->x, leg->z,
+        g_target_x / kMetre, g_target_z / kMetre, distance);
+  }
+  double heading = std::atan2(dx, dz);
+  if (leg->nudge) {
+    heading += (leg->nudge % 2 ? 1 : -1) * (M_PI / 6) * ((leg->nudge + 1) / 2);
+    if (frame % 90 < 3 && g_target_state.compare(0, 12, "target-swim-") != 0) {
+      pad->buttons |= GOAL_PAD_X;
+    }
+  }
+  double u = 0, v = 0;
+  g_aim.aim(heading, &u, &v);
+  const auto to_byte = [](double value) {
+    const int byte = (int)std::lround(127.0 + 127.0 * value);
+    return (uint8_t)(byte < 0 ? 0 : byte > 255 ? 255 : byte);
+  };
+  pad->left_x = to_byte(u);
+  pad->left_y = to_byte(-v);
+  return true;
+}
+
 /*! Push what the script says port 0 is holding on this frame. Frames are 1-based. */
 void drive_pad(int frame) {
   goal_pad_state pad;
   goal_pad_state_neutral(&pad);
+  const bool walking = drive_walk(frame, &pad);
+  (void)walking;
   for (const auto& hold : g_pad_script) {
     int first = hold.first_frame;
     if (!hold.after_state.empty()) {
@@ -390,6 +565,269 @@ GameState read_game_state(Position* out_position) {
     }
   }
   return now;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Which levels the game has. A transition between two Jak 1 levels is the level system moving one
+// of its two slots from one level to another, so what a transition *is* can be read out of
+// `*level*` and `*load-state*`: what the load state wants, what each of the two level slots holds,
+// what status it is in, and which one is displayed. Reported when it changes, which is what says a
+// boundary was crossed.
+//
+// The offsets are the types' own from engine/level/level-h.gc and engine/level/load-boundary-h.gc,
+// less the 4 bytes of basic type tag.
+// ---------------------------------------------------------------------------------------------
+
+constexpr uint32_t kLevelGroupBorderOffset = 20 - 4;
+constexpr uint32_t kLevelGroupLoadingLevelOffset = 12 - 4;
+// An inline basic field's declared offset names its type tag, so the object is 4 bytes on.
+constexpr uint32_t kLevelGroupLevel0Offset = 96;
+constexpr uint32_t kLevelStride = 2704 - 96;
+constexpr int kLevelSlots = 3;  // level0, level1 and level-default
+
+constexpr uint32_t kLevelNameOffset = 4 - 4;
+constexpr uint32_t kLevelStatusOffset = 20 - 4;
+constexpr uint32_t kLevelHeapOffset = 32 - 4;  // kheap: base, current, top, top-base
+constexpr uint32_t kLevelDisplayOffset = 376 - 4;
+
+constexpr uint32_t kLoadStateWantOffset = 4 - 4;
+constexpr uint32_t kLoadStateWantStride = 16;
+constexpr uint32_t kLoadStateVisNickOffset = 36 - 4;
+
+struct LevelSlot {
+  std::string name;
+  std::string status;
+  bool displayed = false;
+  uint32_t heap_used = 0;
+
+  bool same_as(const LevelSlot& other) const {
+    return name == other.name && status == other.status && displayed == other.displayed;
+  }
+};
+
+struct LevelState {
+  std::string want0, want1, vis_nick, loading;
+  bool border = false;
+  LevelSlot slot[kLevelSlots];
+
+  bool operator!=(const LevelState& other) const {
+    if (want0 != other.want0 || want1 != other.want1 || vis_nick != other.vis_nick ||
+        loading != other.loading || border != other.border) {
+      return true;
+    }
+    for (int i = 0; i < kLevelSlots; i++) {
+      if (!slot[i].same_as(other.slot[i])) {
+        return true;
+      }
+    }
+    return false;
+  }
+};
+
+LevelState read_level_state() {
+  LevelState now;
+  const uint32_t load_state = symbol_value("*load-state*");
+  if (load_state && load_state != s7.offset) {
+    now.want0 = symbol_name(goal_u32(load_state + kLoadStateWantOffset));
+    now.want1 = symbol_name(goal_u32(load_state + kLoadStateWantOffset + kLoadStateWantStride));
+    now.vis_nick = symbol_name(goal_u32(load_state + kLoadStateVisNickOffset));
+  }
+  const uint32_t group = symbol_value("*level*");
+  if (!group || group == s7.offset) {
+    return now;
+  }
+  now.border = goal_u32(group + kLevelGroupBorderOffset) != s7.offset;
+  const uint32_t loading = goal_u32(group + kLevelGroupLoadingLevelOffset);
+  if (loading && loading != s7.offset) {
+    now.loading = symbol_name(goal_u32(loading + kLevelNameOffset));
+  }
+  for (int i = 0; i < kLevelSlots; i++) {
+    const uint32_t level = group + kLevelGroupLevel0Offset + (uint32_t)i * kLevelStride;
+    now.slot[i].name = symbol_name(goal_u32(level + kLevelNameOffset));
+    now.slot[i].status = symbol_name(goal_u32(level + kLevelStatusOffset));
+    now.slot[i].displayed = goal_u32(level + kLevelDisplayOffset) != s7.offset;
+    const uint32_t base = goal_u32(level + kLevelHeapOffset);
+    const uint32_t current = goal_u32(level + kLevelHeapOffset + 4);
+    now.slot[i].heap_used = current > base ? current - base : 0;
+  }
+  return now;
+}
+
+void say_level_state(int frame, const LevelState& now) {
+  say("  frame %5d: levels want %s+%s vis '%s%s", frame,
+      now.want0.empty() ? "#f" : now.want0.c_str(), now.want1.empty() ? "#f" : now.want1.c_str(),
+      now.vis_nick.c_str(), now.border ? ", on a border" : "");
+  if (!now.loading.empty()) {
+    say(", loading '%s", now.loading.c_str());
+  }
+  for (int i = 0; i < kLevelSlots; i++) {
+    if (now.slot[i].name.empty() || now.slot[i].name == "#f") {
+      continue;
+    }
+    say(" | %s '%s%s %u kB", now.slot[i].name.c_str(), now.slot[i].status.c_str(),
+        now.slot[i].displayed ? " shown" : "", now.slot[i].heap_used / 1024);
+  }
+  say("\n");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Where the transitions are. `*load-boundary-list*` is the linked list `load-boundary-data` in
+// engine/level/load-boundary.gc builds out of the loaded levels' own data: a ring of vertices with
+// a command to run when the player crosses it forwards and another for backwards. Dumping it turns
+// "walk toward the beach" into a coordinate, so a scripted run can be aimed at the game's own
+// boundary rather than guessed at.
+// ---------------------------------------------------------------------------------------------
+
+constexpr uint32_t kBoundaryNumPoints = 4 - 4;
+constexpr uint32_t kBoundaryFlags = 6 - 4;
+constexpr uint32_t kBoundaryTopPlane = 8 - 4;
+constexpr uint32_t kBoundaryBotPlane = 12 - 4;
+constexpr uint32_t kBoundaryNext = 20 - 4;
+constexpr uint32_t kBoundaryCmdFwd = 24 - 4;
+constexpr uint32_t kBoundaryCmdBwd = 36 - 4;
+constexpr uint32_t kBoundaryData = 64 - 4;
+constexpr uint32_t kBoundaryVertexSize = 16;
+
+float goal_f32(uint32_t address) {
+  const uint32_t word = goal_u32(address);
+  float value;
+  std::memcpy(&value, &word, sizeof(value));
+  return value;
+}
+
+/*! The `load-boundary-cmd` enum of load-boundary-h.gc. */
+const char* boundary_cmd_name(int cmd) {
+  switch (cmd) {
+    case 1:
+      return "load";
+    case 2:
+      return "cmd2";
+    case 3:
+      return "display";
+    case 4:
+      return "vis";
+    case 5:
+      return "force-vis";
+    case 6:
+      return "checkpt";
+    default:
+      return "invalid";
+  }
+}
+
+std::string boundary_cmd_text(uint32_t command) {
+  const int cmd = (int)(goal_u32(command) & 0xff);
+  if (cmd == 0) {
+    return "";
+  }
+  std::string out = boundary_cmd_name(cmd);
+  for (int parm = 0; parm < 2; parm++) {
+    const uint32_t value = goal_u32(command + 4 + 4 * (uint32_t)parm);
+    const char* as_symbol = symbol_name(value);
+    if (as_symbol[0]) {
+      out += " '";
+      out += as_symbol;
+    } else if (std::string(type_name_of(value)) == "string") {
+      out += " \"";
+      out += (const char*)((uint8_t*)g_ee_main_mem + value + 4);
+      out += "\"";
+    } else if (value) {
+      out += " #x" + std::to_string(value);
+    }
+  }
+  return out;
+}
+
+void report_load_boundaries() {
+  uint32_t boundary = symbol_value("*load-boundary-list*");
+  say("\n=== *load-boundary-list*: the transitions the loaded levels define\n");
+  int count = 0;
+  while (boundary && boundary != s7.offset && count < 256) {
+    const int points = (int)(goal_u32(boundary + kBoundaryNumPoints) & 0xffff);
+    const int flags = (int)(goal_u32(boundary + kBoundaryFlags) & 0xff);
+    double cx = 0, cy = 0, cz = 0;
+    for (int i = 0; i < points; i++) {
+      const uint32_t vertex = boundary + kBoundaryData + (uint32_t)i * kBoundaryVertexSize;
+      cx += goal_f32(vertex);
+      cy += goal_f32(vertex + 4);
+      cz += goal_f32(vertex + 8);
+    }
+    if (points) {
+      cx /= points;
+      cy /= points;
+      cz /= points;
+    }
+    const std::string forward = boundary_cmd_text(boundary + kBoundaryCmdFwd);
+    const std::string backward = boundary_cmd_text(boundary + kBoundaryCmdBwd);
+    say("  %2d: %2d points%s, centre (%.1f %.1f %.1f)m, y %.1f..%.1f m\n", count, points,
+        (flags & 1) ? ", closed" : "", cx / 4096.0, cy / 4096.0, cz / 4096.0,
+        goal_f32(boundary + kBoundaryBotPlane) / 4096.0,
+        goal_f32(boundary + kBoundaryTopPlane) / 4096.0);
+    if (!forward.empty()) {
+      say("      crossing it forwards:  %s\n", forward.c_str());
+    }
+    if (!backward.empty()) {
+      say("      crossing it backwards: %s\n", backward.c_str());
+    }
+    for (int i = 0; i < points && i < 16; i++) {
+      const uint32_t vertex = boundary + kBoundaryData + (uint32_t)i * kBoundaryVertexSize;
+      say("      vertex %d (%.1f %.1f %.1f)m\n", i, goal_f32(vertex) / 4096.0,
+          goal_f32(vertex + 4) / 4096.0, goal_f32(vertex + 8) / 4096.0);
+    }
+    boundary = goal_u32(boundary + kBoundaryNext);
+    count++;
+  }
+  say("  %d boundaries\n", count);
+}
+
+/*! `(start 'play (get-continue-by-name *game-info* <name>))`, the way a warp gate does it. */
+bool warp_to_continue(const std::string& name) {
+  goal_continue_point_info point;
+  if (!goal_continue_point_describe(name.c_str(), &point)) {
+    say("FAILED: no continue point is named \"%s\"\n", name.c_str());
+    return false;
+  }
+  say("  warping the way a warp gate does: \"%s\" in '%s, wanting '%s and '%s, vis '%s\n",
+      name.c_str(), point.level, point.want0, point.want1, point.vis_nick);
+  if (!goal_warp_to_continue(name.c_str())) {
+    say("FAILED: start holds nothing\n");
+    return false;
+  }
+  drain_goal_print_buffer();
+  return true;
+}
+
+struct WarpStep {
+  std::string name;
+  std::string after_state;
+  int frame = 1;
+};
+
+/*!
+ * Hold the debug menu's own `border-mode` flag on.
+ *
+ * `render-boundaries` (engine/level/load-boundary.gc) returns immediately unless
+ * `(-> *level* border?)` is set, and that field is refreshed every frame from
+ * `(-> *setting-control* default border-mode)` by `apply-settings`. `play` sets it, and `start`
+ * clears it and leaves it to `target-continue`'s `:exit` to put back - which that state only does
+ * for a continue point without the `intro`, `sage-intro` or `title` flag. Starting a new game uses
+ * `"intro-start"`, which has `intro`, so the flag stays clear until the intro cutscene has run.
+ *
+ * This writes the same field the debug menu's `border-mode` flag writes
+ * (pc/debug/default-menu-pc.gc), and writes `default` rather than `current` so a cutscene's own
+ * `set-setting!` override still wins while it is up.
+ */
+constexpr uint32_t kSettingControlDefault = 432 - 4;
+constexpr uint32_t kSettingDataBorderMode = 0;
+
+void hold_border_mode_on() {
+  const uint32_t control = symbol_value("*setting-control*");
+  if (!control || control == s7.offset) {
+    return;
+  }
+  const uint32_t field = control + kSettingControlDefault + kSettingDataBorderMode;
+  const uint32_t on = jak1::intern_from_c("#t").offset;
+  std::memcpy((uint8_t*)g_ee_main_mem + field, &on, sizeof(on));
 }
 
 /*! The DGO object name for a GOAL source: its base name without the extension. */
@@ -1259,8 +1697,14 @@ int run_real_boot(const std::string& data_dir,
                   const std::vector<std::string>& level_cycle,
                   int level_cycle_frames,
                   bool report_state,
+                  bool report_levels,
+                  bool report_boundaries,
+                  bool border_mode,
+                  const std::vector<WarpStep>& warp_script,
                   const std::vector<std::string>& expected_states,
+                  const std::vector<std::string>& expected_levels,
                   double expected_travel,
+                  int expected_heap_growth,
                   bool with_sound,
                   const std::string& audio_path,
                   bool require_audio) {
@@ -1355,12 +1799,18 @@ int run_real_boot(const std::string& data_dir,
     return 1;
   }
   say("\n=== kernel-dispatcher: %d frames\n", dispatch_frames);
+  goal_kernel_core_state heap_at_start;
+  goal_kernel_core_get_state(&heap_at_start);
   int frame_number = 0;
   GameState last_state;
   Position last_position;
   double target_travel = 0;
   std::vector<std::string> states_seen;
-  bool watch_target = report_state || !expected_states.empty() || expected_travel > 0;
+  LevelState last_levels;
+  std::vector<std::string> levels_seen;
+  const bool watch_levels = report_levels || !expected_levels.empty();
+  bool watch_target =
+      report_state || !expected_states.empty() || expected_travel > 0 || !g_walk_script.empty();
   for (const auto& hold : g_pad_script) {
     watch_target = watch_target || !hold.after_state.empty();
   }
@@ -1372,9 +1822,26 @@ int run_real_boot(const std::string& data_dir,
     return 1;
   }
   bool audio_failed = false;
+  bool warp_failed = false;
   auto run_frames = [&](int count) {
     for (int i = 0; i < count; i++) {
       frame_number++;
+      for (const auto& warp : warp_script) {
+        const int entered =
+            warp.after_state.empty() ? 1 : frame_state_was_first_seen(warp.after_state);
+        if (entered && frame_number == entered + warp.frame - 1) {
+          if (!warp_to_continue(warp.name)) {
+            warp_failed = true;
+          }
+          report_heap(("after warping to " + warp.name).c_str());
+        }
+      }
+      // Once the game is being played, not before: during the title the target is the camera's
+      // stand-in and `*load-boundary-target*` holds positions that jumped, so a boundary would be
+      // reported as crossed by a teleport rather than by walking.
+      if (border_mode && frame_state_was_first_seen("target-stance")) {
+        hold_border_mode_on();
+      }
       drive_pad(frame_number);
       call_goal_on_stack(Ptr<Function>(dispatcher->value), goal_kernel_stack_top(), s7.offset,
                          g_ee_main_mem);
@@ -1386,6 +1853,21 @@ int run_real_boot(const std::string& data_dir,
       if (!audio.pull_one_game_frame()) {
         audio_failed = true;
       }
+      if (watch_levels) {
+        const LevelState levels = read_level_state();
+        for (const auto& slot : levels.slot) {
+          // 'active is the status a level reaches once it is loaded, logged in and running.
+          if (slot.status == "active" && !slot.name.empty() && slot.name != "#f" &&
+              std::find(levels_seen.begin(), levels_seen.end(), slot.name) == levels_seen.end()) {
+            levels_seen.push_back(slot.name);
+            say("  frame %5d: level '%s reached 'active\n", frame_number, slot.name.c_str());
+          }
+        }
+        if (report_levels && levels != last_levels) {
+          say_level_state(frame_number, levels);
+          last_levels = levels;
+        }
+      }
       if (!watch_target) {
         continue;
       }
@@ -1396,6 +1878,12 @@ int run_real_boot(const std::string& data_dir,
               states_seen.end()) {
         states_seen.push_back(now.target_state);
         g_state_first_frame.emplace_back(now.target_state, frame_number);
+      }
+      g_target_state = now.target_state;
+      g_target_known = position.known;
+      if (position.known) {
+        g_target_x = position.x;
+        g_target_z = position.z;
       }
       if (position.known && last_position.known) {
         const double dx = position.x - last_position.x;
@@ -1422,7 +1910,13 @@ int run_real_boot(const std::string& data_dir,
     }
   };
   run_frames(dispatch_frames);
+  if (warp_failed) {
+    return 1;
+  }
   report_heap("after the dispatcher");
+  if (report_boundaries) {
+    report_load_boundaries();
+  }
   if (watch_target && target_travel > 0) {
     say("  the target travelled %.1f meters across the frames, ending at (%.1f %.1f %.1f)m\n",
         target_travel / 4096.0, last_position.x / 4096.0, last_position.y / 4096.0,
@@ -1567,6 +2061,34 @@ int run_real_boot(const std::string& data_dir,
     const bool seen = std::find(states_seen.begin(), states_seen.end(), wanted) != states_seen.end();
     expect(seen, ("the target entered '" + wanted).c_str());
   }
+  {
+    // What a long traversal costs. A level's code and data are linked into the level's own heap
+    // and freed with it, so what is left in the global heap after levels have come and gone is
+    // what a device with a memory ceiling has to pay for having been everywhere.
+    goal_kernel_core_state heap_at_end;
+    goal_kernel_core_get_state(&heap_at_end);
+    const int growth =
+        (int)heap_at_end.global_heap_used_bytes - (int)heap_at_start.global_heap_used_bytes;
+    say("  the global heap grew %d bytes across the run, and the symbol table by %d symbols\n",
+        growth, heap_at_end.symbol_count - heap_at_start.symbol_count);
+    if (expected_heap_growth > 0) {
+      expect(growth <= expected_heap_growth,
+             ("the global heap grew no more than " + std::to_string(expected_heap_growth) +
+              " bytes")
+                 .c_str());
+    }
+  }
+  if (watch_levels) {
+    say("  the levels that reached 'active, in order:");
+    for (const auto& name : levels_seen) {
+      say(" %s", name.c_str());
+    }
+    say("\n");
+  }
+  for (const auto& wanted : expected_levels) {
+    const bool seen = std::find(levels_seen.begin(), levels_seen.end(), wanted) != levels_seen.end();
+    expect(seen, ("the level '" + wanted + " became active").c_str());
+  }
   if (expected_travel > 0) {
     say("  the target's states, in the order they were first entered:");
     for (const auto& name : states_seen) {
@@ -1613,9 +2135,15 @@ int main(int argc, char** argv) {
   bool synthetic = false;
   bool run_play = false;
   bool report_state = false;
+  bool report_levels = false;
+  bool report_boundaries = false;
+  bool border_mode = false;
+  std::vector<WarpStep> warp_script;
   bool pad_seam = false;
   std::vector<std::string> expected_states;
+  std::vector<std::string> expected_levels;
   double expected_travel = 0;
+  int expected_heap_growth = 0;
   std::string data_dir;
   DmaCaptureRequest capture;
   std::vector<std::string> level_cycle;
@@ -1696,10 +2224,53 @@ int main(int argc, char** argv) {
       g_pad_script.push_back(hold);
     } else if (arg == "--report-state") {
       report_state = true;
+    } else if (arg == "--report-levels") {
+      report_levels = true;
+    } else if (arg == "--report-boundaries") {
+      report_boundaries = true;
+    } else if (arg == "--border-mode") {
+      border_mode = true;
+    } else if (arg == "--warp" && i + 1 < argc) {
+      // --warp <continue-point-name>@<frame|state[+delay]>
+      const std::string spec = argv[++i];
+      const size_t at = spec.find('@');
+      PadHold when;
+      if (at == std::string::npos || !parse_when(spec, at, when)) {
+        say("--warp: '%s' needs <continue-point>@<frame> or @<state>[+<delay>]\n", spec.c_str());
+        return 2;
+      }
+      warp_script.push_back({spec.substr(0, at), when.after_state, when.first_frame});
+    } else if (arg == "--walk-to" && i + 1 < argc) {
+      // --walk-to <x>,<z>@<frame|state[+delay]>[:<frames>], metres, and how long to keep trying
+      const std::string spec = argv[++i];
+      WalkLeg leg;
+      const size_t comma = spec.find(',');
+      const size_t at = spec.find('@');
+      if (comma == std::string::npos || at == std::string::npos || comma > at) {
+        say("--walk-to: '%s' is not <x>,<z>@<when>\n", spec.c_str());
+        return 2;
+      }
+      leg.x = std::atof(spec.substr(0, comma).c_str());
+      leg.z = std::atof(spec.substr(comma + 1, at - comma - 1).c_str());
+      PadHold when;
+      if (!parse_when(spec, at, when)) {
+        say("--walk-to: '%s' needs @<frame> or @<state>[+<delay>]\n", spec.c_str());
+        return 2;
+      }
+      leg.first_frame = when.first_frame;
+      leg.after_state = when.after_state;
+      // Unlike a button hold, a leg runs until it arrives; `:<frames>` is a limit, not a duration.
+      leg.frames = spec.find(':', at) == std::string::npos ? 1 << 30
+                                                           : when.last_frame - when.first_frame + 1;
+      g_walk_script.push_back(leg);
+    } else if (arg == "--expect-level" && i + 1 < argc) {
+      expected_levels.push_back(argv[++i]);
     } else if (arg == "--expect-state" && i + 1 < argc) {
       expected_states.push_back(argv[++i]);
     } else if (arg == "--expect-travel" && i + 1 < argc) {
       expected_travel = std::atof(argv[++i]);
+    } else if (arg == "--expect-heap-growth" && i + 1 < argc) {
+      expected_heap_growth = std::atoi(argv[++i]);
     } else if (arg == "--pad-seam") {
       pad_seam = true;
     } else if (arg == "--levels" && i + 1 < argc) {
@@ -1755,7 +2326,9 @@ int main(int argc, char** argv) {
     result = run_synthetic();
   } else {
     result = run_real_boot(data_dir, dispatch_frames, run_play, capture, level_cycle,
-                           level_cycle_frames, report_state, expected_states, expected_travel,
+                           level_cycle_frames, report_state, report_levels, report_boundaries,
+                           border_mode, warp_script, expected_states,
+                           expected_levels, expected_travel, expected_heap_growth,
                            with_sound, audio_path, require_audio);
   }
 
