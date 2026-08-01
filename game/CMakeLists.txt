@@ -672,11 +672,14 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         # always runs.
         add_test(NAME jak1-pad-seam-test COMMAND jak1-data-boot-test --pad-seam)
         # Play the game with a scripted controller: leave the title screen, start a new game
-        # through the progress menu, and then walk and jump in Sandover Village. Every press is
-        # scheduled off a state the target entered rather than off a frame number, so the game's
-        # own load timing decides when each input lands.
+        # through the progress menu, sit through the whole intro - whose length the streamed
+        # dialogue now decides - and then walk and jump on Geyser Rock. Every press is scheduled
+        # off a state the target entered rather than off a frame number, so the game's own load
+        # and scene timing decides when each input lands. `target-hit-ground` is the warp drop
+        # onto Geyser Rock, the first state that only exists once the intro has handed control
+        # over.
         add_test(NAME jak1-gameplay-test
-                COMMAND jak1-data-boot-test --play --frames 2400
+                COMMAND jak1-data-boot-test --play --frames 24800
                         --press start@target-title-wait+60
                         --press x@target-title-wait+160
                         --press down@target-title-wait+240
@@ -684,13 +687,15 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
                         --press down@target-title-wait+280
                         --press down@target-title-wait+300
                         --press x@target-title-wait+340
-                        --stick 127,0@target-stance+600:400
+                        --stick 127,0@target-hit-ground+120:400
                         --press x@target-walk+700
                         --expect-state target-title-wait
-                        --expect-state target-stance
+                        --expect-state target-clone-anim
+                        --expect-state target-hit-ground
                         --expect-state target-walk
                         --expect-state target-jump
                         --expect-travel 10)
+        set_tests_properties(jak1-gameplay-test PROPERTIES TIMEOUT 900)
 
         # The thread-switch test: the same GOAL kernel, plus a fixture that drives the routines
         # that had to be written in native ARM64 - catch frames, throw, state entry, temporary
