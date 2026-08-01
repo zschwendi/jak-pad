@@ -51,6 +51,8 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
     # synchronous DGO reader, in place of game/kernel/jak1/kdgo.cpp
     "${CMAKE_CURRENT_LIST_DIR}/dgo_loader.cpp"
+    # cpad-open / cpad-get-data, over controller state the host pushes in
+    "${CMAKE_CURRENT_LIST_DIR}/pad.cpp"
     # __send-gfx-dma-chain: measure and optionally capture the chain a frame built
     "${CMAKE_CURRENT_LIST_DIR}/dma_capture.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma_copy.cpp"

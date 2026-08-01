@@ -20,7 +20,9 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cctype>
 #include <cinttypes>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -43,6 +45,7 @@ extern "C" {
 
 #include "game/kernel/common/kboot.h"
 #include "game/kernel/common/klink.h"
+#include "game/kernel/common/kernel_types.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
@@ -50,6 +53,7 @@ extern "C" {
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/kernel_core.h"
+#include "game/kernel/core/pad.h"
 #include "game/kernel/jak1/klisten.h"
 #include "game/kernel/jak1/kscheme.h"
 #include "game/runtime.h"
@@ -111,6 +115,280 @@ void report_heap(const char* what) {
     say("  %s: global heap at #x%x (%u bytes used), %d symbols\n", what,
         state.global_heap_current_offset, state.global_heap_used_bytes, state.symbol_count);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The scripted controller. The kernel has no input library: the host pushes pad state in, and
+// here the host is a script given on the command line, so a run that presses Start at frame 900
+// and then holds the stick forward is exactly reproducible.
+// ---------------------------------------------------------------------------------------------
+
+struct PadHold {
+  int first_frame = 0;
+  int last_frame = 0;
+  uint32_t buttons = 0;
+  bool stick = false;
+  uint8_t stick_x = GOAL_PAD_ANALOG_NEUTRAL;
+  uint8_t stick_y = GOAL_PAD_ANALOG_NEUTRAL;
+  //! When set, `first_frame` is a delay counted from the frame the target first entered this state
+  //! rather than an absolute frame. The game's own timing decides when the title sequence ends, so
+  //! a script that says "press Start once the title is waiting" says what it means.
+  std::string after_state;
+};
+
+std::vector<PadHold> g_pad_script;
+
+/*! The frame each target state was first seen on, filled in by the frame loop. */
+std::vector<std::pair<std::string, int>> g_state_first_frame;
+
+int frame_state_was_first_seen(const std::string& state) {
+  for (const auto& entry : g_state_first_frame) {
+    if (entry.first == state) {
+      return entry.second;
+    }
+  }
+  return 0;
+}
+
+const struct {
+  const char* name;
+  uint32_t bit;
+} kPadButtonNames[] = {
+    {"select", GOAL_PAD_SELECT},     {"l3", GOAL_PAD_L3},
+    {"r3", GOAL_PAD_R3},             {"start", GOAL_PAD_START},
+    {"up", GOAL_PAD_UP},             {"right", GOAL_PAD_RIGHT},
+    {"down", GOAL_PAD_DOWN},         {"left", GOAL_PAD_LEFT},
+    {"l2", GOAL_PAD_L2},             {"r2", GOAL_PAD_R2},
+    {"l1", GOAL_PAD_L1},             {"r1", GOAL_PAD_R1},
+    {"triangle", GOAL_PAD_TRIANGLE}, {"circle", GOAL_PAD_CIRCLE},
+    {"x", GOAL_PAD_X},               {"square", GOAL_PAD_SQUARE},
+};
+
+/*! "start" or "up+x" -> the button bits, or 0 with `bad` set to the name that was not a button. */
+uint32_t parse_buttons(const std::string& names, std::string& bad) {
+  uint32_t bits = 0;
+  size_t at = 0;
+  while (at <= names.size()) {
+    const size_t plus = names.find('+', at);
+    const std::string one = names.substr(at, plus == std::string::npos ? plus : plus - at);
+    bool found = false;
+    for (const auto& button : kPadButtonNames) {
+      if (one == button.name) {
+        bits |= button.bit;
+        found = true;
+      }
+    }
+    if (!found) {
+      bad = one;
+      return 0;
+    }
+    if (plus == std::string::npos) {
+      break;
+    }
+    at = plus + 1;
+  }
+  return bits;
+}
+
+/*!
+ * The "when" half of a script entry, off the end of an argument: `@<frame>`, or `@<state>+<delay>`
+ * to count from when the target first entered a state, each optionally followed by `:<frames>`.
+ * The default hold is two frames, which is one frame of `button0-rel` for `cpad-pressed?`.
+ */
+bool parse_when(const std::string& arg, size_t at, PadHold& hold) {
+  if (at == std::string::npos || arg[at] != '@') {
+    return false;
+  }
+  const size_t colon = arg.find(':', at);
+  const std::string when =
+      arg.substr(at + 1, colon == std::string::npos ? colon : colon - at - 1);
+  const int frames = colon == std::string::npos ? 2 : std::atoi(arg.substr(colon + 1).c_str());
+
+  if (!when.empty() && !std::isdigit((unsigned char)when[0])) {
+    const size_t plus = when.find('+');
+    hold.after_state = when.substr(0, plus);
+    hold.first_frame = plus == std::string::npos ? 1 : std::atoi(when.substr(plus + 1).c_str());
+  } else {
+    hold.first_frame = std::atoi(when.c_str());
+    if (hold.first_frame <= 0) {
+      return false;
+    }
+  }
+  hold.last_frame = hold.first_frame + (frames > 0 ? frames : 1) - 1;
+  return true;
+}
+
+/*! Push what the script says port 0 is holding on this frame. Frames are 1-based. */
+void drive_pad(int frame) {
+  goal_pad_state pad;
+  goal_pad_state_neutral(&pad);
+  for (const auto& hold : g_pad_script) {
+    int first = hold.first_frame;
+    if (!hold.after_state.empty()) {
+      const int entered = frame_state_was_first_seen(hold.after_state);
+      if (!entered) {
+        continue;
+      }
+      first += entered;
+    }
+    if (frame < first || frame > first + (hold.last_frame - hold.first_frame)) {
+      continue;
+    }
+    pad.buttons |= hold.buttons;
+    if (hold.stick) {
+      pad.left_x = hold.stick_x;
+      pad.left_y = hold.stick_y;
+    }
+  }
+  goal_pad_set_state(0, &pad);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Where the game is. The GOAL side of a Jak 1 frame is a process running a state, so what the
+// game is doing is the name of the state `*target*` is in - and whether the progress menu owns
+// the screen. This reads those out of the real heap and reports them when they change, which is
+// what says an input did something.
+// ---------------------------------------------------------------------------------------------
+
+uint32_t goal_u32(uint32_t address) {
+  uint32_t value = 0;
+  if (address && address + 4 <= (uint32_t)EE_MAIN_MEM_SIZE) {
+    std::memcpy(&value, (uint8_t*)g_ee_main_mem + address, sizeof(value));
+  }
+  return value;
+}
+
+/*! The name of a GOAL symbol, or "" for anything that is not one. */
+const char* symbol_name(uint32_t symbol) {
+  static uint32_t symbol_type = 0;
+  if (!symbol_type) {
+    auto type = jak1::find_symbol_from_c("symbol");
+    symbol_type = type.offset ? type->value : 0;
+  }
+  if (!symbol || symbol < 4 || goal_u32(symbol - 4) != symbol_type) {
+    return "";
+  }
+  return jak1::info(Ptr<jak1::Symbol>(symbol))->str->data();
+}
+
+/*! The name of the GOAL type of a basic object, or "" if it does not look like one. */
+const char* type_name_of(uint32_t object) {
+  const uint32_t type = goal_u32(object - 4);
+  return type ? symbol_name(goal_u32(type)) : "";
+}
+
+/*! The state a process is running, by name. `state` is at offset 52 and its name at offset 0. */
+const char* process_state_name(uint32_t process) {
+  if (!process || process == s7.offset) {
+    return "";
+  }
+  return symbol_name(goal_u32(goal_u32(process + 52)));
+}
+
+uint32_t symbol_value(const char* name) {
+  auto symbol = jak1::find_symbol_from_c(name);
+  return symbol.offset ? symbol->value : 0;
+}
+
+/*!
+ * Where the target is standing. `root` is `process-drawable`'s at offset 112 and `trans` is
+ * `trs`'s at 16, both less the 4 bytes of basic type tag. One meter is 4096.0.
+ */
+constexpr uint32_t kProcessDrawableRootOffset = 112 - 4;
+constexpr uint32_t kTrsTransOffset = 16 - 4;
+
+struct Position {
+  bool known = false;
+  float x = 0, y = 0, z = 0;
+};
+
+Position read_position(uint32_t process) {
+  Position out;
+  const uint32_t root = goal_u32(process + kProcessDrawableRootOffset);
+  if (!root || root == s7.offset) {
+    return out;
+  }
+  const uint32_t trans = root + kTrsTransOffset;
+  const uint32_t words[3] = {goal_u32(trans), goal_u32(trans + 4), goal_u32(trans + 8)};
+  std::memcpy(&out.x, &words[0], 4);
+  std::memcpy(&out.y, &words[1], 4);
+  std::memcpy(&out.z, &words[2], 4);
+  out.known = true;
+  return out;
+}
+
+struct GameState {
+  std::string master_mode;
+  std::string target_type;
+  std::string target_state;
+  std::string progress_state;
+  int progress_screen = -1;
+  int progress_option = -1;
+
+  bool operator!=(const GameState& other) const {
+    return master_mode != other.master_mode || target_type != other.target_type ||
+           target_state != other.target_state || progress_state != other.progress_state ||
+           progress_screen != other.progress_screen || progress_option != other.progress_option;
+  }
+};
+
+/*!
+ * `*progress-process*` is a `(pointer progress)`, so the process is one dereference away. Its
+ * `display-state` says which menu is up and `option-index` which line is selected. The offsets are
+ * the `progress` type's, less the 4 bytes of basic type tag.
+ */
+constexpr uint32_t kProgressDisplayStateOffset = 128 - 4;
+constexpr uint32_t kProgressOptionIndexOffset = 144 - 4;
+
+/*! The `progress-screen` enum of progress-h.gc, for the screens this port can reach. */
+const char* progress_screen_name(int screen) {
+  switch (screen) {
+    case -1:
+      return "invalid";
+    case 3:
+      return "settings";
+    case 8:
+      return "memcard-not-inserted";
+    case 12:
+      return "memcard-loading";
+    case 16:
+      return "load-game";
+    case 19:
+      return "memcard-insert";
+    case 23:
+      return "memcard-no-data";
+    case 27:
+      return "title";
+    case 28:
+      return "settings-title";
+    case 34:
+      return "quit";
+    default:
+      return "";
+  }
+}
+
+GameState read_game_state(Position* out_position) {
+  GameState now;
+  now.master_mode = symbol_name(symbol_value("*master-mode*"));
+  const uint32_t target = symbol_value("*target*");
+  if (target && target != s7.offset) {
+    now.target_type = type_name_of(target);
+    now.target_state = process_state_name(target);
+    if (out_position) {
+      *out_position = read_position(target);
+    }
+  }
+  const uint32_t progress_pointer = symbol_value("*progress-process*");
+  if (progress_pointer && progress_pointer != s7.offset) {
+    const uint32_t progress = goal_u32(progress_pointer);
+    if (progress && progress != s7.offset) {
+      now.progress_state = process_state_name(progress);
+      now.progress_screen = (int)goal_u32(progress + kProgressDisplayStateOffset);
+      now.progress_option = (int)goal_u32(progress + kProgressOptionIndexOffset);
+    }
+  }
+  return now;
 }
 
 /*! The DGO object name for a GOAL source: its base name without the extension. */
@@ -583,6 +861,107 @@ int run_synthetic() {
 }
 
 /*!
+ * The pad seam's contract, checked against the real `cpad-info` bytes without any game data: the
+ * host pushes a controller in, GOAL's two pad functions are called the way `service-cpads` calls
+ * them, and the structure they leave behind is compared with what `engine/ps2/pad.gc` reads.
+ *
+ * `pad.gc` is not loaded here - this is the C half of the seam - so the offsets are the ones in
+ * `game/kernel/common/kernel_types.h`, which mirror the GOAL type.
+ */
+int run_pad_seam() {
+  int failures = 0;
+  auto expect = [&](bool ok, const char* what) {
+    say("%s %s\n", ok ? "ok  " : "FAIL", what);
+    if (!ok) {
+      failures++;
+    }
+  };
+
+  if (goal_pad_install() != GOAL_KERNEL_CORE_OK) {
+    say("FAIL: could not install the pad seam\n");
+    return 1;
+  }
+  auto open = jak1::find_symbol_from_c("cpad-open");
+  auto get_data = jak1::find_symbol_from_c("cpad-get-data");
+  if (!open.offset || !open->value || !get_data.offset || !get_data->value) {
+    say("FAIL: cpad-open or cpad-get-data holds nothing after the install\n");
+    return 1;
+  }
+
+  uint32_t pad_offset = 0;
+  if (goal_kernel_core_global_alloc(sizeof(CPadInfo), "cpad-info", &pad_offset) !=
+      GOAL_KERNEL_CORE_OK) {
+    say("FAIL: %s\n", goal_kernel_core_last_error());
+    return 1;
+  }
+  auto* pad = Ptr<CPadInfo>(pad_offset).c();
+  std::memset(pad, 0, sizeof(CPadInfo));
+  const int port = 0;
+  pad->number = port;
+
+  expect(goal_aot_call(open->value, pad_offset, port, 0) == pad_offset,
+         "cpad-open returns the cpad-info it was given");
+  expect(pad->cpad_file == port + 1 && pad->new_pad == 1 && pad->state == 0,
+         "cpad-open opened the port and marked the pad new");
+
+  // Nothing pushed yet: the port has no controller, and GOAL is told so rather than told that a
+  // controller with no buttons pressed is attached.
+  goal_aot_call(get_data->value, pad_offset, 0, 0);
+  expect((pad->valid & 0x80) != 0, "a port the host never set reads as disconnected");
+
+  goal_pad_state host;
+  goal_pad_state_neutral(&host);
+  goal_pad_set_state(port, &host);
+  // The pad state machine walks 0 -> 70 -> 75 -> 99 before it reads a button; upstream's does the
+  // same, one frame per step.
+  int frames_to_live = 0;
+  for (int frame = 1; frame <= 8 && !frames_to_live; frame++) {
+    goal_aot_call(get_data->value, pad_offset, 0, 0);
+    if ((pad->valid & 0x80) == 0) {
+      frames_to_live = frame;
+    }
+  }
+  say("  the pad became live on frame %d, in state %d\n", frames_to_live, pad->state);
+  expect(frames_to_live == 4 && pad->state == 99, "the pad state machine reached its running state");
+  expect((pad->status >> 4) == 7, "the pad reports itself as a dualshock, which is what pad.gc"
+                                  " requires before it will read the analog sticks");
+  expect(pad->leftx == GOAL_PAD_ANALOG_NEUTRAL && pad->lefty == GOAL_PAD_ANALOG_NEUTRAL,
+         "a centered stick arrives centered");
+
+  // The bit numbering is the `pad-buttons` enum of pad.gc: start is bit 3, x is bit 14.
+  host.buttons = GOAL_PAD_START;
+  goal_pad_set_state(port, &host);
+  goal_aot_call(get_data->value, pad_offset, 0, 0);
+  expect(pad->button0 == (1 << 3), "start arrives as pad-buttons bit 3");
+  host.buttons = GOAL_PAD_X | GOAL_PAD_UP;
+  host.left_x = 200;
+  host.left_y = 0;
+  goal_pad_set_state(port, &host);
+  goal_aot_call(get_data->value, pad_offset, 0, 0);
+  expect(pad->button0 == ((1 << 14) | (1 << 4)), "x and up arrive as bits 14 and 4");
+  expect(pad->leftx == 200 && pad->lefty == 0, "the left stick arrives as the host set it");
+
+  // Vibration goes the other way: GOAL writes the two motors into `direct` and the pad reader
+  // hands them to the hardware, which here is the host.
+  pad->direct[0] = 1;
+  pad->direct[1] = 200;
+  goal_aot_call(get_data->value, pad_offset, 0, 0);
+  uint8_t large = 0;
+  uint8_t small = 0;
+  goal_pad_get_rumble(port, &large, &small);
+  expect(large == 1 && small == 200, "what GOAL asked the vibration motors to do reaches the host");
+
+  host.connected = 0;
+  goal_pad_set_state(port, &host);
+  goal_aot_call(get_data->value, pad_offset, 0, 0);
+  expect((pad->valid & 0x80) != 0 && pad->state == 0,
+         "unplugging the controller is reported and resets the pad");
+
+  expect(goal_pad_read_count(port) > 0, "the reads went through the host seam");
+  return failures ? 1 : 0;
+}
+
+/*!
  * The boot sequence itself, in the order jak1::InitHeapAndSymbol and jak1::InitMachineScheme run
  * it. Every step says what it is standing in for.
  */
@@ -747,7 +1126,10 @@ int run_real_boot(const std::string& data_dir,
                   bool run_play,
                   const DmaCaptureRequest& capture,
                   const std::vector<std::string>& level_cycle,
-                  int level_cycle_frames) {
+                  int level_cycle_frames,
+                  bool report_state,
+                  const std::vector<std::string>& expected_states,
+                  double expected_travel) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
 
@@ -779,6 +1161,11 @@ int run_real_boot(const std::string& data_dir,
   // linker entry points GOAL's own level loader drives are real, and replace the stubs.
   jak1::InitListener();
   goal_kernel_core_stub_machine_layer(0);
+  // Before GAME.CGO, because pad.gc's top-level builds `*cpad-list*`, which calls `cpad-open`.
+  if (goal_pad_install() != GOAL_KERNEL_CORE_OK) {
+    say("FAILED: could not install the pad seam\n");
+    return 1;
+  }
   goal_dgo_install_goal_loader();
   goal_gfx_dma_install();
   capture.install();
@@ -825,15 +1212,64 @@ int run_real_boot(const std::string& data_dir,
     return 1;
   }
   say("\n=== kernel-dispatcher: %d frames\n", dispatch_frames);
+  int frame_number = 0;
+  GameState last_state;
+  Position last_position;
+  double target_travel = 0;
+  std::vector<std::string> states_seen;
+  bool watch_target = report_state || !expected_states.empty() || expected_travel > 0;
+  for (const auto& hold : g_pad_script) {
+    watch_target = watch_target || !hold.after_state.empty();
+  }
   auto run_frames = [&](int count) {
-    for (int frame = 0; frame < count; frame++) {
+    for (int i = 0; i < count; i++) {
+      frame_number++;
+      drive_pad(frame_number);
       call_goal_on_stack(Ptr<Function>(dispatcher->value), goal_kernel_stack_top(), s7.offset,
                          g_ee_main_mem);
       drain_goal_print_buffer();
+      if (!watch_target) {
+        continue;
+      }
+      Position position;
+      const GameState now = read_game_state(&position);
+      if (!now.target_state.empty() &&
+          std::find(states_seen.begin(), states_seen.end(), now.target_state) ==
+              states_seen.end()) {
+        states_seen.push_back(now.target_state);
+        g_state_first_frame.emplace_back(now.target_state, frame_number);
+      }
+      if (position.known && last_position.known) {
+        const double dx = position.x - last_position.x;
+        const double dy = position.y - last_position.y;
+        const double dz = position.z - last_position.z;
+        target_travel += std::sqrt(dx * dx + dy * dy + dz * dz);
+      }
+      last_position = position;
+      if (report_state && now != last_state) {
+        say("  frame %5d: master-mode '%s, %s in state '%s", frame_number, now.master_mode.c_str(),
+            now.target_type.empty() ? "(no target)" : now.target_type.c_str(),
+            now.target_state.c_str());
+        if (position.known) {
+          say(" at (%.1f %.1f %.1f)m", position.x / 4096.0, position.y / 4096.0,
+              position.z / 4096.0);
+        }
+        if (!now.progress_state.empty()) {
+          say(", progress in state '%s on screen %d %s option %d", now.progress_state.c_str(),
+              now.progress_screen, progress_screen_name(now.progress_screen), now.progress_option);
+        }
+        say("\n");
+        last_state = now;
+      }
     }
   };
   run_frames(dispatch_frames);
   report_heap("after the dispatcher");
+  if (watch_target && target_travel > 0) {
+    say("  the target travelled %.1f meters across the frames, ending at (%.1f %.1f %.1f)m\n",
+        target_travel / 4096.0, last_position.x / 4096.0, last_position.y / 4096.0,
+        last_position.z / 4096.0);
+  }
 
   // Ask the level system for one level at a time. The point is the global heap: a level's object
   // files are linked into the level's own heap, which `(method unload! level)` resets, so cycling
@@ -945,6 +1381,22 @@ int run_real_boot(const std::string& data_dir,
       expect(dma.captures == capture.count(), "every requested frame was captured");
     }
   }
+  // What the scripted controller was supposed to make the game do. A state the target never entered
+  // means the input did not land, or the game went somewhere else - either way the run did not do
+  // what it claimed, so it fails rather than printing a state list nobody reads.
+  for (const auto& wanted : expected_states) {
+    const bool seen = std::find(states_seen.begin(), states_seen.end(), wanted) != states_seen.end();
+    expect(seen, ("the target entered '" + wanted).c_str());
+  }
+  if (expected_travel > 0) {
+    say("  the target's states, in the order they were first entered:");
+    for (const auto& name : states_seen) {
+      say(" '%s", name.c_str());
+    }
+    say("\n");
+    expect(target_travel / 4096.0 >= expected_travel,
+           "the target moved at least as far as the run asked it to");
+  }
   if (!level_cycle.empty()) {
     // The whole point of linking level code into the level's own heap: unloading a level has to
     // give the memory back. Each pass through the cycle relinks the level's object files, so the
@@ -963,6 +1415,10 @@ int run_real_boot(const std::string& data_dir,
 int main(int argc, char** argv) {
   bool synthetic = false;
   bool run_play = false;
+  bool report_state = false;
+  bool pad_seam = false;
+  std::vector<std::string> expected_states;
+  double expected_travel = 0;
   std::string data_dir;
   DmaCaptureRequest capture;
   std::vector<std::string> level_cycle;
@@ -996,6 +1452,48 @@ int main(int argc, char** argv) {
       capture.over_count = std::atoi(argv[++i]);
     } else if (arg == "--dma-frame-report") {
       capture.per_frame_report = true;
+    } else if (arg == "--press" && i + 1 < argc) {
+      // --press <button>[+<button>...]@<frame>[:<frames>]
+      const std::string spec = argv[++i];
+      PadHold hold;
+      std::string bad;
+      const size_t at = spec.find('@');
+      hold.buttons = parse_buttons(spec.substr(0, at), bad);
+      if (!bad.empty()) {
+        say("--press: '%s' is not a button name\n", bad.c_str());
+        return 2;
+      }
+      if (!parse_when(spec, at, hold)) {
+        say("--press: '%s' needs @<frame> or @<state>[+<delay>]\n", spec.c_str());
+        return 2;
+      }
+      g_pad_script.push_back(hold);
+    } else if (arg == "--stick" && i + 1 < argc) {
+      // --stick <x>,<y>@<frame>[:<frames>], both axes 0-255, 127 centered
+      const std::string spec = argv[++i];
+      PadHold hold;
+      hold.stick = true;
+      const size_t comma = spec.find(',');
+      const size_t at = spec.find('@');
+      if (comma == std::string::npos || at == std::string::npos || comma > at) {
+        say("--stick: '%s' is not <x>,<y>@<frame>\n", spec.c_str());
+        return 2;
+      }
+      hold.stick_x = (uint8_t)std::atoi(spec.substr(0, comma).c_str());
+      hold.stick_y = (uint8_t)std::atoi(spec.substr(comma + 1, at - comma - 1).c_str());
+      if (!parse_when(spec, at, hold)) {
+        say("--stick: '%s' needs @<frame> or @<state>[+<delay>]\n", spec.c_str());
+        return 2;
+      }
+      g_pad_script.push_back(hold);
+    } else if (arg == "--report-state") {
+      report_state = true;
+    } else if (arg == "--expect-state" && i + 1 < argc) {
+      expected_states.push_back(argv[++i]);
+    } else if (arg == "--expect-travel" && i + 1 < argc) {
+      expected_travel = std::atof(argv[++i]);
+    } else if (arg == "--pad-seam") {
+      pad_seam = true;
     } else if (arg == "--levels" && i + 1 < argc) {
       level_cycle = split_commas(argv[++i]);
     } else if (arg == "--level-frames" && i + 1 < argc) {
@@ -1018,7 +1516,7 @@ int main(int argc, char** argv) {
     data_dir = env ? env : "";
   }
 
-  if (!synthetic && data_dir.empty()) {
+  if (!synthetic && !pad_seam && data_dir.empty()) {
     say("SKIPPED: no Jak 1 data directory.\n"
         "This test loads the player's own extracted game data, which is not part of the\n"
         "repository. Set GOALPAD_JAK1_DATA_DIR (or pass --data-dir) to the directory that\n"
@@ -1038,9 +1536,15 @@ int main(int argc, char** argv) {
   register_aot_objects();
   say("%d AOT translation units registered by object name\n", goal_aot_boot_file_count);
 
-  const int result = synthetic ? run_synthetic()
-                               : run_real_boot(data_dir, dispatch_frames, run_play, capture,
-                                               level_cycle, level_cycle_frames);
+  int result;
+  if (pad_seam) {
+    result = run_pad_seam();
+  } else if (synthetic) {
+    result = run_synthetic();
+  } else {
+    result = run_real_boot(data_dir, dispatch_frames, run_play, capture, level_cycle,
+                           level_cycle_frames, report_state, expected_states, expected_travel);
+  }
 
   goal_aot_reset();
   goal_kernel_core_shutdown();

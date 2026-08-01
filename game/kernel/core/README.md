@@ -104,9 +104,10 @@ stops before it; `JAK1_AOT_BOOT_FRONTIER` in `game/CMakeLists.txt` is the number
 how you find the next frontier. `jak1-data-boot-test` below loads the art and gets past it.
 
 Machine-layer functions are asked for along the way and reported by
-`goal_kernel_core_stub_machine_layer` rather than implemented - `cpad-open`, the `scf-get-*`
-settings readers, the `file-stream-*` and `pc-*` PC-port functions. Those files' top-levels ran to
-completion, but with those calls returning 0, so they are known to load rather than known to work.
+`goal_kernel_core_stub_machine_layer` rather than implemented - the `scf-get-*` settings readers,
+the `file-stream-*` and `pc-*` PC-port functions. Those files' top-levels ran to completion, but
+with those calls returning 0, so they are known to load rather than known to work. The pad is the
+exception; see **The controller** below.
 
 ```sh
 cmake --build build/Release/bin -j 4 --target jak1-data-boot-test
@@ -154,6 +155,71 @@ ramdisk RPC and checking, through `update-vis!`'s own check, that every swap dec
 the BSP allows. The global heap ends at 55.6 MB, and the 60 frames build 60 DMA chains, the largest
 640 kB. The frame loop itself is not limited to 60: 10000 consecutive frames run the same way. The
 CTest entry uses 60 so the suite stays quick.
+
+## The controller
+
+There is no input library here, so the host reads a controller and pushes what it read in, once per
+frame, before the frame runs. `pad.h` is that seam:
+
+```c
+goal_pad_install();                       /* implements cpad-open and cpad-get-data */
+goal_pad_state pad;
+goal_pad_state_neutral(&pad);             /* connected, nothing held, sticks centered */
+pad.buttons |= GOAL_PAD_START;
+goal_pad_set_state(0, &pad);              /* before each frame */
+goal_pad_get_rumble(0, &large, &small);   /* what GOAL asked the motors to do */
+```
+
+`goal_pad_install` replaces the two machine-layer stubs with `CPadOpen` and `CPadGetData`, copied
+from `game/kernel/common/kmachine.cpp` - see the note at the top of `pad.cpp` for why they are
+copied rather than compiled - over an EE pad library written against the pushed state instead of
+against SDL. GOAL sees the PS2 `cpad-info` structure exactly as `engine/ps2/pad.gc` expects it, so
+`service-cpads`, `cpad-pressed?` and the analog sticks work with no GOAL change. Nothing in the
+library knows about SDL, GameController, a keyboard, or a window. `--pad-seam` checks that contract
+against the real structure and needs no game data; it is registered with CTest.
+
+The boot test's own host is a script on the command line:
+
+```sh
+GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 ./build/Release/bin/game/jak1-data-boot-test \
+  --play --frames 2400 --report-state \
+  --press start@target-title-wait+60 --press x@target-title-wait+160 \
+  --press down@target-title-wait+240 --press down@target-title-wait+260 \
+  --press down@target-title-wait+280 --press down@target-title-wait+300 \
+  --press x@target-title-wait+340 \
+  --stick 127,0@target-stance+600:400 --press x@target-walk+700
+```
+
+`--press <buttons>@<when>[:<frames>]` and `--stick <x>,<y>@<when>[:<frames>]` hold something for a
+few frames; buttons are the `pad-buttons` names joined with `+`, and a stick axis is a byte with
+127 centered. `<when>` is either a frame number or the name of a target state plus an offset, which
+is what the example uses: the game's own loading decides when the title sequence ends, so a script
+that says "sixty frames after the title starts waiting" runs the same on a slow machine as a fast
+one. `--report-state` prints `*master-mode*`, the state `*target*` is in, where it is standing, and
+the progress menu's screen and selected option, whenever any of them changes.
+
+That script is what the `jak1-gameplay-test` CTest entry runs, and it is the game being played:
+Start opens the title menu (`progress-screen title`), X on *new game* moves to `save-game-title`,
+four downs reach *do not save*, and X there runs `(initialize! *game-info* 'game #f "intro-start")`
+and returns to `'game`. The title level is discarded, `village1` becomes the displayed level, and
+`target` respawns in Sandover Village at (40.1 3.7 827.8) metres. The stick then walks it, and X
+jumps. `--expect-state <name>` fails the run if the target never entered a state, and
+`--expect-travel <metres>` fails it if the target never moved, so the entry is a check rather than
+a log.
+
+A longer run with the stick pointed in eighteen directions in turn reaches, in this order:
+`target-continue`, `target-title`, `target-title-play`, `target-title-wait`, `target-stance`,
+`target-clone-anim`, `target-walk`, `target-falling`, `target-jump`, `target-hit-ground`,
+`target-duck-stance`, `target-duck-walk`, `target-wade-walk`, `target-swim-stance`,
+`target-swim-walk`, `target-swim-jump`, `target-swim-jump-jump` and `target-death` - and after the
+drowning, `target-continue` again and back to walking. 14000 frames, 6.1 km travelled, no crash.
+
+Two things in that run are reported and are not the runtime's doing. The spooled animation
+`sage-intro-sequence-b` asks for `SAISB.STR`, which no Jak 1 extraction contains - `copy-strs` in
+`goal_src/jak1/game.gp` does not name it - so the STR RPC reports a miss and the sequence carries
+on. And `sage-intro-sequence-a`, which does load, prints `could not find a master slot to link`
+from `link-art!`: the spooled animation arrives before its master art group is in a loaded level,
+so the intro conversation does not animate. Neither stops the game.
 
 ## Capturing a frame
 
@@ -208,10 +274,9 @@ Measured with the player's own data, `--play --frames 1000`:
 
 The title sequence is driven by the spooled animations `ndi-intro` and `logo-intro`
 (`levels/title/title-obs.gc`), whose `command-list` brings `village1` in behind the logo. It
-streams through the STR RPC and it runs: by frame ~520 the background is being drawn every frame.
-It then sits in `target-title-wait` forever, because that state waits on `(cpad-pressed? 0 start)`
-and there is no pad here - `cpad-get-data` is one of the machine-layer stubs. Nothing else about
-the title screen is gated by a stub.
+streams through the STR RPC and it runs: by frame ~520 the background is being drawn every frame,
+and the target reaches `target-title-wait`, the state that waits on `(cpad-pressed? 0 start)`.
+Pressing Start there leaves the title screen; see **The controller** below.
 
 The bucket walk reports 72 buckets for Jak 1. Seventy of them are buckets; the walk cannot know
 that number, so it keeps going to the end of the chain and the last two entries are the chain's
@@ -346,6 +411,14 @@ trampolines, and it is the seam the compiler/AOT track needs. So are
 `game/kernel/core/goal_thread_arm64.s` and `goal_native_kernel.cpp`, the native implementations of
 the GOAL kernel routines that switch stacks.
 
+`Mips2C::ExecutionContext::jalr` - a hand-translated PS2 function calling back into GOAL - has an
+ARM64 case too, in `game/mips2c/mips2c_private.h`. It loads the function object's 64-bit native
+entry point the way `call_goal` does, sets `g_goal_current_process` the way the trampolines do, and
+calls through `_call_goal8_asm_arm64`. Without it the call returned whatever was in `v0`:
+`ocean-generate-verts` uses it on every frame that draws water, which is every frame of the title
+screen, and collision uses it throughout `collide_func.cpp` and `collide_edge_grab.cpp`. A platform
+with no case now fails to compile rather than returning garbage.
+
 ## Known limitations
 
 - **No executable GOAL heap.** `mmap` refuses `PROT_EXEC` for anonymous memory on ARM64 macOS, the
@@ -359,16 +432,16 @@ the GOAL kernel routines that switch stacks.
   argument array from the C arguments.
 - **Only Jak 1 was converted.** `game/kernel/{jak2,jak3,jakx}/kscheme.cpp` still write x86-64
   trampolines, so those kernels remain non-functional on ARM64.
-- **Almost no machine layer.** Nothing from `kmachine.cpp` is here.
+- **Little machine layer.** Almost nothing from `kmachine.cpp` is here.
   `goal_kernel_core_stub_machine_layer` puts a loudly-failing GOAL function object in each of its
   117 symbols so a call says which function was wanted instead of faulting in the guard page. Only
   the three that are not machine-specific at all are implemented in `desktop_seams.cpp`:
   `__mem-move` (the PC port's `ultimate-memcpy` is a call to it, so a stub there means every data
   object in a DGO links against zeroes), `__read-ee-timer`, and `__pc-get-mips2c`. The loader half
-  of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`; everything else
-  - `cpad-open`, `file-stream-open`, `reset-graph`, the `scf-get-*` readers - is a diagnostic and
-  not an implementation. A frame runs with the display and DMA functions returning 0, so what a
-  frame *computes* is real and what it would have *shown* is not.
+  of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the pad in
+  `pad.cpp`; everything else - `file-stream-open`, `reset-graph`, the `scf-get-*` readers - is a
+  diagnostic and not an implementation. A frame runs with the display and DMA functions returning
+  0, so what a frame *computes* is real and what it would have *shown* is not.
 - **The renderer is not here, so a frame is simulation only.** `reset-graph`, `syncv`, `sync-path`,
   `put-display-env`, `dma-sync`, `flush-cache`, `__pc-texture-upload-now` and `__pc-texture-relocate`
   are the machine functions a frame calls and they all report and return 0. `__send-gfx-dma-chain`
@@ -381,8 +454,9 @@ the GOAL kernel routines that switch stacks.
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
   names - what `file-stream-open` would be given - are not translated yet, because nothing calls
   `file-stream-open` here.
-- **mips2c calls back into GOAL do not work on ARM64.** `ExecutionContext::jalr` in
-  `game/mips2c/mips2c_private.h` has no ARM64 case. Nothing on the art-group login path uses it.
+- **The sound RPC is dropped, so the game is silent.** Channels 0 and 1 report themselves through
+  the machine-layer stub, which is why `gsound.gc` prints `IRX version 0.0` and `ERROR: IRX is the
+  wrong version - need 2.0` once during boot. Nothing else depends on it.
 - `game/kernel/common/kmachine.h` transitively includes `<SDL3/SDL.h>` through
   `game/graphics/gfx.h`, so the vendored SDL headers are on the include path. No SDL code is
   compiled and no SDL library is linked; removing that include from the header is a follow-up.
