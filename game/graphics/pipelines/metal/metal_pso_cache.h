@@ -34,6 +34,7 @@ enum class MetalShaderId : u16 {
   MERC2 = 12,           // Merc2 skinned foreground models (merc2.{vert,frag})
   EMERC = 13,           // Merc2 envmap pass (emerc.{vert,frag})
   EYE = 14,             // EyeRenderer's eye composition (eye.{vert,frag})
+  GENERIC = 15,         // Generic2 VU1 fallback path (generic.{vert,frag})
   COUNT,
 };
 

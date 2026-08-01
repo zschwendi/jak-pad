@@ -359,6 +359,7 @@ if(APPLE)
         graphics/pipelines/metal/metal_bucket_renderer.mm
         graphics/pipelines/metal/metal_direct_renderer.mm
         graphics/pipelines/metal/metal_eye_renderer.mm
+        graphics/pipelines/metal/metal_generic2.mm
         graphics/pipelines/metal/metal_level_data.mm
         graphics/pipelines/metal/metal_merc.mm
         graphics/pipelines/metal/metal_merc_model_pool.mm
@@ -396,7 +397,8 @@ if(APPLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/background.metal
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/ocean.metal
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/merc2.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/eye.metal)
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/eye.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/generic.metal)
     set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad.metallib)
     add_custom_command(
         OUTPUT ${METAL_LIB}

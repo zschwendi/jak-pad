@@ -25,6 +25,7 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"merc2_vs", "merc2_fs"},                      // MERC2
     {"emerc_vs", "emerc_fs"},                      // EMERC
     {"eye_vs", "eye_fs"},                          // EYE
+    {"generic_vs", "generic_fs"},                  // GENERIC
 };
 
 size_t hash_combine(size_t seed, size_t v) {

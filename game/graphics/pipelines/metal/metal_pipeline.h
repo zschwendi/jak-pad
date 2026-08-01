@@ -117,6 +117,17 @@ struct ChainStats {
   int eye_unexpected_dma = 0;
   // registry handle of the first eye composed this frame, so tests can read it
   u64 eye_texture = 0;
+  // generic2 buckets, from the last chain frame
+  int generic_fragments = 0;
+  int generic_vertices = 0;
+  int generic_adgifs = 0;
+  int generic_draw_buckets = 0;
+  int generic_draws = 0;
+  int generic_triangles = 0;
+  int generic_missing_textures = 0;
+  int generic_unsupported_blends = 0;
+  int generic_unexpected_dma = 0;
+  int generic_overflow = 0;
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets

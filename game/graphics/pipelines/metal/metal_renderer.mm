@@ -8,6 +8,7 @@
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
+#include "game/graphics/pipelines/metal/metal_generic2.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
 #include "game/graphics/pipelines/metal/metal_shrub.h"
@@ -192,6 +193,12 @@ void MetalRenderer::init_bucket_renderers_jak1() {
     set(id, std::make_unique<MetalMercBucketRenderer>(name, (int)id, merc));
   };
 
+  // every generic bucket shares one Generic2, as in the GL table
+  auto generic = std::make_shared<MetalGeneric2>();
+  auto generic_bucket = [&](BucketId id, const std::string& name) {
+    set(id, std::make_unique<MetalGeneric2BucketRenderer>(name, (int)id, generic));
+  };
+
   set(BucketId::SKY_DRAW, std::make_unique<MetalSkyRenderer>("sky", (int)BucketId::SKY_DRAW));
   {
     auto ocean = std::make_unique<MetalOceanMidAndFar>("ocean-mid-far",
@@ -206,22 +213,22 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   set(BucketId::TIE_LEVEL0,
       std::make_unique<MetalTie3>("l0-tfrag-tie", (int)BucketId::TIE_LEVEL0, 0));
   merc_bucket(BucketId::MERC_TFRAG_TEX_LEVEL0, "l0-tfrag-merc");
-  skip(BucketId::GENERIC_TFRAG_TEX_LEVEL0, "l0-tfrag-generic");
+  generic_bucket(BucketId::GENERIC_TFRAG_TEX_LEVEL0, "l0-tfrag-generic");
   tex(BucketId::TFRAG_TEX_LEVEL1, "l1-tfrag-tex");
   tfrag(BucketId::TFRAG_LEVEL1, "l1-tfrag-tfrag", normal_tfrags, 1);
   set(BucketId::TIE_LEVEL1,
       std::make_unique<MetalTie3>("l1-tfrag-tie", (int)BucketId::TIE_LEVEL1, 1));
   merc_bucket(BucketId::MERC_TFRAG_TEX_LEVEL1, "l1-tfrag-merc");
-  skip(BucketId::GENERIC_TFRAG_TEX_LEVEL1, "l1-tfrag-generic");
+  generic_bucket(BucketId::GENERIC_TFRAG_TEX_LEVEL1, "l1-tfrag-generic");
 
   tex(BucketId::SHRUB_TEX_LEVEL0, "l0-shrub-tex");
   set(BucketId::SHRUB_NORMAL_LEVEL0,
       std::make_unique<MetalShrub>("l0-shrub", (int)BucketId::SHRUB_NORMAL_LEVEL0));
-  skip(BucketId::SHRUB_GENERIC_LEVEL0, "l0-shrub-generic");
+  generic_bucket(BucketId::SHRUB_GENERIC_LEVEL0, "l0-shrub-generic");
   tex(BucketId::SHRUB_TEX_LEVEL1, "l1-shrub-tex");
   set(BucketId::SHRUB_NORMAL_LEVEL1,
       std::make_unique<MetalShrub>("l1-shrub", (int)BucketId::SHRUB_NORMAL_LEVEL1));
-  skip(BucketId::SHRUB_GENERIC_LEVEL1, "l1-shrub-generic");
+  generic_bucket(BucketId::SHRUB_GENERIC_LEVEL1, "l1-shrub-generic");
 
   tex(BucketId::ALPHA_TEX_LEVEL0, "l0-alpha-tex");
   {
@@ -245,15 +252,15 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   tfrag(BucketId::TFRAG_ICE_LEVEL1, "l1-alpha-tfrag-ice", ice_tfrags, 1);
 
   merc_bucket(BucketId::MERC_AFTER_ALPHA, "common-alpha-merc");
-  skip(BucketId::GENERIC_ALPHA, "common-alpha-generic");
+  generic_bucket(BucketId::GENERIC_ALPHA, "common-alpha-generic");
   skip(BucketId::SHADOW, "shadow");
 
   tex(BucketId::PRIS_TEX_LEVEL0, "l0-pris-tex");
   merc_bucket(BucketId::MERC_PRIS_LEVEL0, "l0-pris-merc");
-  skip(BucketId::GENERIC_PRIS_LEVEL0, "l0-pris-generic");
+  generic_bucket(BucketId::GENERIC_PRIS_LEVEL0, "l0-pris-generic");
   tex(BucketId::PRIS_TEX_LEVEL1, "l1-pris-tex");
   merc_bucket(BucketId::MERC_PRIS_LEVEL1, "l1-pris-merc");
-  skip(BucketId::GENERIC_PRIS_LEVEL1, "l1-pris-generic");
+  generic_bucket(BucketId::GENERIC_PRIS_LEVEL1, "l1-pris-generic");
   {
     // merc samples what this composes, so it is published on the shared state
     // the same way the GL table publishes render_state->eye_renderer
@@ -264,14 +271,14 @@ void MetalRenderer::init_bucket_renderers_jak1() {
     set(BucketId::MERC_EYES_AFTER_PRIS, std::move(eyes));
   }
   merc_bucket(BucketId::MERC_AFTER_PRIS, "common-pris-merc");
-  skip(BucketId::GENERIC_PRIS, "common-pris-generic");
+  generic_bucket(BucketId::GENERIC_PRIS, "common-pris-generic");
 
   tex(BucketId::WATER_TEX_LEVEL0, "l0-water-tex");
   merc_bucket(BucketId::MERC_WATER_LEVEL0, "l0-water-merc");
-  skip(BucketId::GENERIC_WATER_LEVEL0, "l0-water-generic");
+  generic_bucket(BucketId::GENERIC_WATER_LEVEL0, "l0-water-generic");
   tex(BucketId::WATER_TEX_LEVEL1, "l1-water-tex");
   merc_bucket(BucketId::MERC_WATER_LEVEL1, "l1-water-merc");
-  skip(BucketId::GENERIC_WATER_LEVEL1, "l1-water-generic");
+  generic_bucket(BucketId::GENERIC_WATER_LEVEL1, "l1-water-generic");
   {
     auto ocean =
         std::make_unique<MetalOceanNear>("ocean-near", (int)BucketId::OCEAN_NEAR, m_device, m_queue);
@@ -679,6 +686,7 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.ocean_triangles = 0;
     m_chain_stats.ocean_missing_textures = 0;
     MetalMerc2::Stats merc_stats;
+    MetalGeneric2::Stats generic_stats;
     for (auto& r : m_bucket_renderers) {
       if (auto* t = dynamic_cast<MetalTextureBucketRenderer*>(r.get())) {
         uploads += t->last_stats().uploads;
@@ -716,6 +724,8 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         m_chain_stats.sprite_missing_textures = ss.missing_textures;
       } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {
         merc_stats.add(mc->stats());
+      } else if (auto* gn = dynamic_cast<MetalGeneric2BucketRenderer*>(r.get())) {
+        generic_stats.add(gn->stats());
       } else if (auto* ey = dynamic_cast<MetalEyeRenderer*>(r.get())) {
         const auto& es = ey->stats();
         m_chain_stats.eyes_composed = es.eyes;
@@ -726,6 +736,16 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         m_chain_stats.eye_texture = es.first_texture;
       }
     }
+    m_chain_stats.generic_fragments = generic_stats.fragments;
+    m_chain_stats.generic_vertices = generic_stats.vertices;
+    m_chain_stats.generic_adgifs = generic_stats.adgifs;
+    m_chain_stats.generic_draw_buckets = generic_stats.draw_buckets;
+    m_chain_stats.generic_draws = generic_stats.draw_calls;
+    m_chain_stats.generic_triangles = generic_stats.triangles;
+    m_chain_stats.generic_missing_textures = generic_stats.missing_textures;
+    m_chain_stats.generic_unsupported_blends = generic_stats.unsupported_blends;
+    m_chain_stats.generic_unexpected_dma = generic_stats.unexpected_dma;
+    m_chain_stats.generic_overflow = generic_stats.overflow;
     m_chain_stats.merc_models = merc_stats.models;
     m_chain_stats.merc_missing_models = merc_stats.missing_models;
     m_chain_stats.merc_draws = merc_stats.draws;
