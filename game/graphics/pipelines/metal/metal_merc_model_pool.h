@@ -83,6 +83,12 @@ class MetalMercModelPool {
   // Mirror of Loader::get_merc_model: first match wins.
   std::optional<Ref> get_merc_model(const char* name) const;
 
+  // Releases one level: its model refs leave the lookup, its pool textures are
+  // unloaded, and its buffers go with the MetalMercLevel. Must be called on the
+  // thread that loads and draws, between frames. Returns false when no such
+  // level is loaded.
+  bool remove_level(const std::string& name);
+
   size_t level_count() const { return m_levels.size(); }
   size_t model_count() const { return m_by_name.size(); }
 

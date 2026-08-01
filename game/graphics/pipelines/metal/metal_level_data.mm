@@ -204,6 +204,36 @@ size_t level_count() {
   return level_map().size();
 }
 
+bool unload(TexturePool& pool, const std::string& name) {
+  auto it = level_map().find(name);
+  if (it == level_map().end()) {
+    return false;
+  }
+  MetalLevelData& data = *it->second;
+  {
+    // The pool's contract: give/unload run under its published mutex, never
+    // across a GPU wait. unload_texture repoints any slot still holding this
+    // texture at the placeholder.
+    std::lock_guard<std::mutex> pool_lock(pool.mutex());
+    for (size_t i = 0; i < data.level->textures.size() && i < data.textures.size(); i++) {
+      const auto& tex = data.level->textures[i];
+      if (tex.load_to_pool && data.textures[i]) {
+        pool.unload_texture(PcTextureId::from_combo_id(tex.combo_id), data.textures[i]);
+      }
+    }
+  }
+  for (u64 handle : data.textures) {
+    if (handle) {
+      metal_texture_release(handle);
+    }
+  }
+  // The buffers and time-of-day textures go with the MetalLevelData. Command
+  // buffers already committed retain what they reference, so an in-flight
+  // frame keeps its resources alive until the GPU is done with them.
+  level_map().erase(it);
+  return true;
+}
+
 void clear() {
   level_map().clear();
 }

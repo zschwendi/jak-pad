@@ -1101,9 +1101,10 @@ int main(int argc, char** argv) {
   const auto chain = metal_renderer::get_chain_stats();
   lg::info(
       "{} game frames, {} chains sent, {} presented, {} syncv, {} texture uploads; "
-      "levels: {} requests, {} loaded ({}), {} failures",
+      "levels: {} requests, {} loaded, {} evicted (resident: {}), {} failures",
       (int)g_shared.game_frames, stats.chains, (int)chain.chains_rendered, stats.vsyncs,
-      stats.texture_uploads, art.requests, art.levels_loaded, art.loaded, art.load_failures);
+      stats.texture_uploads, art.requests, art.levels_loaded, art.levels_evicted, art.loaded,
+      art.load_failures);
 
   if (opts.report_state && !g_state_first_frame.empty()) {
     std::string states;

@@ -182,6 +182,13 @@ MetalLevelData* get(const std::string& name);
 // Number of levels currently loaded.
 size_t level_count();
 
+// Releases one level: its pool textures are unloaded (the pool repoints any
+// VRAM slot still naming them at the placeholder, exactly what the GL Loader's
+// unload path does), its registry textures are released, and its buffers go
+// with the MetalLevelData. Must be called on the thread that loads and draws
+// levels, between frames. Returns false when no such level is loaded.
+bool unload(TexturePool& pool, const std::string& name);
+
 // Releases every loaded level (buffers, textures stay in the pool's registry
 // exactly like the GL loader's unload path leaves them to the pool).
 void clear();

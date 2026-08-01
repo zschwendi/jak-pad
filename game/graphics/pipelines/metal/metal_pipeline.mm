@@ -67,12 +67,18 @@ ChainSync g_chain;
 
 // The level art the running game asks for through __pc-set-levels, and what is
 // on the GPU because of it. The game thread writes `wanted`; the render thread
-// reads it and does the loading, at the top of a frame, before that frame's
-// render pass opens. Doing the load there rather than on a loader thread is
-// what keeps this correct with no locking around the level registry or the
-// texture pool: nothing is drawing while a level appears. The cost is that the
-// renderer stalls for the length of the load, which the game sees as one very
-// long frame, the same way it sees any slow frame.
+// reads it and does the loading and evicting, at the top of a frame, before
+// that frame's render pass opens. Doing both there rather than on a loader
+// thread is what keeps this correct with no locking around the level registry
+// or the texture pool: nothing is drawing while a level appears or disappears.
+// The cost is that the renderer stalls for the length of a load, which the
+// game sees as one very long frame, the same way it sees any slow frame.
+struct LoadedLevelArt {
+  std::string name;
+  bool ok = false;                // failed loads stay listed so they are not retried
+  int frames_since_wanted = 0;    // 0 while __pc-set-levels names the level
+};
+
 struct LevelArt {
   std::mutex mutex;
   std::string directory;
@@ -80,10 +86,19 @@ struct LevelArt {
   bool wanted_changed = false;
   bool reported_no_directory = false;
   bool common_loaded = false;
-  std::vector<std::string> loaded;  // in load order, including ones that failed
+  std::vector<LoadedLevelArt> loaded;  // in load order, including ones that failed
   metal_renderer::LevelArtStats stats;
 };
 LevelArt g_level_art;
+
+// The GL Loader's residency rule (Loader::update / get_most_unloadable_level),
+// with the same numbers: art is evicted only once the game has not wanted the
+// level for 180 frames and at least as many levels are resident as the game
+// has level slots (fr3_level_count, jak1::LEVEL_TOTAL). The wanted set is the
+// load state's own slots, so residency is bounded by those slots plus this
+// small cache, not by how many levels a session visits.
+constexpr int kMaxResidentLevels = jak1::LEVEL_TOTAL;
+constexpr int kEvictAfterFrames = 180;
 
 // Frame pacing and its measurement. `g_present_min_duration` is what the render
 // thread asks Metal to hold each drawable for; the samples are the intervals
@@ -100,6 +115,17 @@ std::string join_plus(const std::vector<std::string>& names) {
       out += '+';
     }
     out += name;
+  }
+  return out;
+}
+
+std::string join_plus(const std::vector<LoadedLevelArt>& levels) {
+  std::string out;
+  for (const auto& level : levels) {
+    if (!out.empty()) {
+      out += '+';
+    }
+    out += level.name;
   }
   return out;
 }
@@ -132,14 +158,59 @@ bool load_level_art(const std::string& name, bool is_common) {
   return true;
 }
 
+// Ages every loaded level against the wanted set and evicts at most one per
+// frame, the way the GL Loader's update does. Runs on the render thread
+// between frames, before anything draws, so no draw can be reading a level
+// that disappears; command buffers already committed retain what they
+// reference, so in-flight GPU work keeps its resources until it retires.
+void evict_unwanted_level_art(const std::vector<std::string>& wanted) {
+  std::string victim;
+  int victim_age = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_level_art.mutex);
+    int resident = 0;
+    for (auto& entry : g_level_art.loaded) {
+      const bool is_wanted =
+          std::find(wanted.begin(), wanted.end(), entry.name) != wanted.end();
+      entry.frames_since_wanted = is_wanted ? 0 : entry.frames_since_wanted + 1;
+      if (entry.ok) {
+        resident++;
+      }
+    }
+    if (resident < kMaxResidentLevels) {
+      return;
+    }
+    auto oldest = g_level_art.loaded.end();
+    for (auto it = g_level_art.loaded.begin(); it != g_level_art.loaded.end(); ++it) {
+      if (it->ok && it->frames_since_wanted > kEvictAfterFrames &&
+          (oldest == g_level_art.loaded.end() ||
+           it->frames_since_wanted > oldest->frames_since_wanted)) {
+        oldest = it;
+      }
+    }
+    if (oldest == g_level_art.loaded.end()) {
+      return;
+    }
+    victim = oldest->name;
+    victim_age = oldest->frames_since_wanted;
+    g_level_art.loaded.erase(oldest);
+    g_level_art.stats.levels_evicted++;
+    g_level_art.stats.loaded = join_plus(g_level_art.loaded);
+  }
+
+  // Outside the bookkeeping lock: the unloads take the texture pool's own
+  // mutex, and hold no GPU wait under it.
+  metal_level_data::unload(*g_texture_pool, victim);
+  metal_merc_models().remove_level(victim);
+  lg::info("Metal: evicted level art {} after {} frames unwanted", victim, victim_age);
+}
+
 // Render-thread half of __pc-set-levels. Loads whatever the game has asked for
-// and does not have yet. Levels are not unloaded: nothing here knows when the
-// last draw referencing a level's buffers has retired, and the texture pool's
-// VRAM slots outlive the frame that filled them - which is what the GL
-// loader's reference counting is for. Memory therefore grows with the number
-// of distinct levels a session visits.
+// and does not have yet, and evicts what the game has stopped asking for (see
+// evict_unwanted_level_art). Runs at the top of every frame.
 void service_level_requests() {
   std::vector<std::string> wanted;
+  bool load_pass = false;
   {
     std::lock_guard<std::mutex> lock(g_level_art.mutex);
     if (g_level_art.directory.empty()) {
@@ -152,33 +223,38 @@ void service_level_requests() {
       }
       return;
     }
-    if (!g_level_art.wanted_changed && g_level_art.common_loaded) {
-      return;
-    }
-    g_level_art.wanted_changed = false;
     wanted = g_level_art.wanted;
+    if (g_level_art.wanted_changed || !g_level_art.common_loaded) {
+      g_level_art.wanted_changed = false;
+      load_pass = true;
+    }
   }
 
-  for (const auto& name : wanted) {
-    {
+  if (load_pass) {
+    for (const auto& name : wanted) {
+      {
+        std::lock_guard<std::mutex> lock(g_level_art.mutex);
+        if (std::find_if(g_level_art.loaded.begin(), g_level_art.loaded.end(),
+                         [&](const LoadedLevelArt& l) { return l.name == name; }) !=
+            g_level_art.loaded.end()) {
+          continue;
+        }
+      }
+      const bool ok = load_level_art(name, false);
       std::lock_guard<std::mutex> lock(g_level_art.mutex);
-      if (std::find(g_level_art.loaded.begin(), g_level_art.loaded.end(), name) !=
-          g_level_art.loaded.end()) {
-        continue;
+      // Remembered either way, so a level whose art will not load is reported
+      // once rather than retried every frame.
+      g_level_art.loaded.push_back({name, ok, 0});
+      if (ok) {
+        g_level_art.stats.levels_loaded++;
+        g_level_art.stats.loaded = join_plus(g_level_art.loaded);
+      } else {
+        g_level_art.stats.load_failures++;
       }
     }
-    const bool ok = load_level_art(name, false);
-    std::lock_guard<std::mutex> lock(g_level_art.mutex);
-    // Remembered either way, so a level whose art will not load is reported
-    // once rather than retried every frame.
-    g_level_art.loaded.push_back(name);
-    if (ok) {
-      g_level_art.stats.levels_loaded++;
-      g_level_art.stats.loaded = join_plus(g_level_art.loaded);
-    } else {
-      g_level_art.stats.load_failures++;
-    }
   }
+
+  evict_unwanted_level_art(wanted);
 }
 
 // Largest centered region with the game's 4:3 aspect that fits the window.

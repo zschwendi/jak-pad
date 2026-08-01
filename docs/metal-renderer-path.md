@@ -833,10 +833,17 @@ way it sees any slow frame. **This is the frame-hitch source, and it is where a
 time-budgeted loader should go next.**
 
 `GAME.fr3` is loaded once as the common level, exactly as the GL loader's `load_common`
-does. Levels are **not unloaded**: nothing here knows when the last draw referencing a
-level's buffers has retired, and the texture pool's VRAM slots outlive the frame that
-filled them - which is what the GL loader's reference counting is for. Memory therefore
-grows with the number of distinct levels a session visits.
+does. Level art is **evicted** with the GL Loader's own rule (`Loader::update` /
+`get_most_unloadable_level`, same numbers): once the game has not named a level in
+`__pc-set-levels` for 180 frames and at least `jak1::LEVEL_TOTAL` (3) levels are
+resident, the longest-unwanted one is released - its pool textures are unloaded (VRAM
+slots repoint at the placeholder), its registry textures and geometry buffers dropped,
+and its merc level removed. This runs where the loads run: on the render thread at the
+top of a frame, before anything draws, so no draw can be reading a level that
+disappears; command buffers already committed retain their resources, so in-flight GPU
+work is unaffected. Residency is therefore bounded by the load state's slots plus that
+small cache, not by how many levels a session visits; a level the player returns to is
+simply loaded again.
 
 What the game asks for, in a real run: `title+village1` while the title plays,
 `village1` once the title level is discarded, and `misty+village1` as soon as the player
