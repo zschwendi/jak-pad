@@ -1601,7 +1601,7 @@
            ;; run the trans function.
           ;;  (format 0 "Trans | Proc '~A' | C1: ~X C2: ~X C3: ~X~%" (-> arg0 name) (-> *canary-1*) (-> *canary-2*) (-> *canary-3*))
            (when (-> arg0 trans-hook)
-             (let ((s4-0 (new 'process 'cpu-thread arg0 'trans 256 (-> arg0 main-thread stack-top))))
+             (let ((s4-0 (new 'process 'cpu-thread arg0 'trans PROCESS_STACK_SAVE_SIZE (-> arg0 main-thread stack-top))))
                (with-pc-profiler "trans"
                   (reset-and-call s4-0 (-> arg0 trans-hook))
                   )
@@ -1636,7 +1636,7 @@
                ;; NOTE: post always runs on the dram stack, so you can use ja-post and use the scratchpad for anims.
               ;;  (format 0 "Post | Proc '~A' | C1: ~X C2: ~X C3: ~X~%" (-> arg0 name) (-> *canary-1*) (-> *canary-2*) (-> *canary-3*))
                (when (-> arg0 post-hook)
-                 (let ((s4-1 (new 'process 'cpu-thread arg0 'post 256 *kernel-dram-stack*)))
+                 (let ((s4-1 (new 'process 'cpu-thread arg0 'post PROCESS_STACK_SAVE_SIZE *kernel-dram-stack*)))
                    (with-pc-profiler "post"
                      (reset-and-call s4-1 (-> arg0 post-hook))
                      )
@@ -2180,8 +2180,9 @@
     )
   (set! (-> this connection-list next1) #f)
   (set! (-> this connection-list prev1) #f)
-  ;; set up main thread that can be suspended.
-  (set! (-> this main-thread) (new 'process 'cpu-thread this 'code 256 arg2))
+  ;; set up main thread that can be suspended. 256 is the PS2 measurement; this build's code
+  ;; generator needs more, so it goes through the same conversion as every other backup stack.
+  (set! (-> this main-thread) (new 'process 'cpu-thread this 'code PROCESS_STACK_SAVE_SIZE arg2))
   ;; move to the active pool
   (change-parent this arg0)
   )
