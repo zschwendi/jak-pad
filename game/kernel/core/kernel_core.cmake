@@ -51,6 +51,10 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
     # synchronous DGO reader, in place of game/kernel/jak1/kdgo.cpp
     "${CMAKE_CURRENT_LIST_DIR}/dgo_loader.cpp"
+    # __send-gfx-dma-chain: measure and optionally capture the chain a frame built
+    "${CMAKE_CURRENT_LIST_DIR}/dma_capture.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma_copy.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma.cpp"
     # the Jak 1 mips2c function library, in place of game/mips2c/mips2c_table.cpp
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_seam.cpp"
     # native implementations of the GOAL kernel routines that switch stacks

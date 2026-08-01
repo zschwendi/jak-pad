@@ -137,6 +137,11 @@ GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 \
   ./build/Release/bin/game/jak1-data-boot-test --play --frames 60
 ```
 
+`--capture-dma <file>` writes one of those frames' DMA chains to a file, in
+`FixedChunkDmaCopier::serialize_last_result` format, so a renderer can replay one real frame of
+Jak 1 DMA without the rest of the runtime. A captured chain is derived from the player's own game
+data: it goes where the caller says and never into the repository.
+
 `--play` calls the engine's own `play`, which is the last thing upstream's `InitMachineScheme`
 does. It allocates the level heaps and drives the whole title-level load itself, through GOAL's
 loader rather than the C one: the DGO RPC and `link-begin` below. `--frames N` then calls
@@ -145,9 +150,9 @@ half - the GOAL kernel's own frame, running processes, states and level streamin
 
 With data, `--play --frames 60` loads `TIT.DGO` (15 objects) and then `VI1.DGO` (55 objects,
 including a 7.3 MB BSP) through the RPC, reaches `GAMEPLAY: enter title`, displays the title level,
-streams in `village1`, and swaps the visibility data. The global heap ends at 55.6 MB. The frame
-loop itself is not limited to 60: 1000 consecutive frames run the same way. The CTest entry uses 60
-so the suite stays quick.
+streams in `village1`, and swaps the visibility data. The global heap ends at 55.6 MB, and the 60
+frames build 60 DMA chains, the largest 640 kB. The frame loop itself is not limited to 60: 1000
+consecutive frames run the same way. The CTest entry uses 60 so the suite stays quick.
 
 ## Code and data in a DGO
 
@@ -274,10 +279,10 @@ the GOAL kernel routines that switch stacks.
   not an implementation. A frame runs with the display and DMA functions returning 0, so what a
   frame *computes* is real and what it would have *shown* is not.
 - **The renderer is not here, so a frame is simulation only.** `reset-graph`, `syncv`, `sync-path`,
-  `put-display-env`, `dma-sync`, `flush-cache`, `__send-gfx-dma-chain`, `__pc-texture-upload-now`
-  and `__pc-texture-relocate` are the machine functions a frame calls and they all report and
-  return 0. GOAL builds its DMA chains and hands them to `__send-gfx-dma-chain`, which drops them;
-  nothing is drawn and nothing checks that what was built is right.
+  `put-display-env`, `dma-sync`, `flush-cache`, `__pc-texture-upload-now` and `__pc-texture-relocate`
+  are the machine functions a frame calls and they all report and return 0. `__send-gfx-dma-chain`
+  is the exception: `dma_capture.cpp` follows the chain with the same `FixedChunkDmaCopier` the
+  renderer uses, records its size, and drops it. Nothing is drawn.
 - **Level code is loaded onto the global heap and never freed.** `link-begin` puts a level object's
   native translation where every other AOT file goes rather than in the level heap, and a level
   that is loaded a second time reuses it instead of relinking. That is correct for repeated loads

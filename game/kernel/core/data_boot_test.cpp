@@ -46,6 +46,7 @@ extern "C" {
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
+#include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/jak1/klisten.h"
 #include "game/kernel/jak1/kscheme.h"
@@ -265,7 +266,10 @@ int run_synthetic() {
  * The boot sequence itself, in the order jak1::InitHeapAndSymbol and jak1::InitMachineScheme run
  * it. Every step says what it is standing in for.
  */
-int run_real_boot(const std::string& data_dir, int dispatch_frames, bool run_play) {
+int run_real_boot(const std::string& data_dir,
+                  int dispatch_frames,
+                  bool run_play,
+                  const std::string& dma_capture_path) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
 
@@ -298,6 +302,8 @@ int run_real_boot(const std::string& data_dir, int dispatch_frames, bool run_pla
   jak1::InitListener();
   goal_kernel_core_stub_machine_layer(0);
   goal_dgo_install_goal_loader();
+  goal_gfx_dma_install();
+  goal_gfx_dma_set_capture_path(dma_capture_path.c_str());
   jak1::intern_from_c("*kernel-boot-message*")->value =
       jak1::intern_from_c(DebugBootMessage).offset;
   jak1::intern_from_c("*kernel-boot-mode*")->value = jak1::intern_from_c("boot").offset;
@@ -349,6 +355,13 @@ int run_real_boot(const std::string& data_dir, int dispatch_frames, bool run_pla
   report_heap("after the dispatcher");
   report_stack_watermark();
 
+  goal_gfx_dma_stats dma;
+  goal_gfx_dma_get_stats(&dma);
+  say("  DMA: %d chains built, largest %u bytes, last %u bytes%s. Nothing was drawn: there is no\n"
+      "  renderer here, so the chains are followed, measured and dropped.\n",
+      dma.chains, dma.largest_bytes, dma.last_bytes,
+      dma.captured_bytes ? " (one captured)" : "");
+
   goal_dgo_rpc_stats rpc;
   goal_dgo_goal_loader_stats(&rpc);
   say("  GOAL's own loader: %d DGO loads, %d objects (%d code from the AOT path, %d data linked),"
@@ -378,6 +391,14 @@ int run_real_boot(const std::string& data_dir, int dispatch_frames, bool run_pla
     goal_thread_stack_watermark(&w);
     expect(w.suspends > 0, "processes suspended and resumed across the frames");
     expect(w.fullest_used <= w.fullest_size, "no backup stack was overrun");
+    if (run_play) {
+      // Following a chain means reading every tag in it, so a chain that came back with a size is
+      // a chain that was well-formed.
+      expect(dma.chains > 0 && dma.largest_bytes > 0, "the frames built real DMA chains");
+    }
+    if (!dma_capture_path.empty()) {
+      expect(dma.captured_bytes > 0, "a DMA chain was written to the capture file");
+    }
   }
 
   say("\nBOOT: KERNEL.CGO and GAME.CGO are loaded and the GOAL kernel dispatcher ran %d frames.\n",
@@ -391,6 +412,7 @@ int main(int argc, char** argv) {
   bool synthetic = false;
   bool run_play = false;
   std::string data_dir;
+  std::string dma_capture_path;
   int dispatch_frames = 0;
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
@@ -404,6 +426,8 @@ int main(int argc, char** argv) {
       goal_dgo_set_verbose(1);
     } else if (arg == "--frames" && i + 1 < argc) {
       dispatch_frames = std::atoi(argv[++i]);
+    } else if (arg == "--capture-dma" && i + 1 < argc) {
+      dma_capture_path = argv[++i];
     } else {
       say("unknown argument %s\n", arg.c_str());
       return 2;
@@ -434,7 +458,9 @@ int main(int argc, char** argv) {
   register_aot_objects();
   say("%d AOT translation units registered by object name\n", goal_aot_boot_file_count);
 
-  const int result = synthetic ? run_synthetic() : run_real_boot(data_dir, dispatch_frames, run_play);
+  const int result = synthetic ? run_synthetic()
+                               : run_real_boot(data_dir, dispatch_frames, run_play,
+                                               dma_capture_path);
 
   goal_aot_reset();
   goal_kernel_core_shutdown();
