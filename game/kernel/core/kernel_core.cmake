@@ -150,8 +150,9 @@ endif()
 # jak2-kernel-core: the same portable kernel, keyed to Jak 2. One game per library: the shared
 # core translation units reach the game through kernel_game.h, and this target compiles the jak2
 # implementation of that seam next to the jak2 kernel translation units. Smaller than the jak1
-# library on purpose - no sound, pad, or graphics seams yet; the machine stubs report those
-# loudly. dgo_loader_jak2.cpp carries only the C-driven load so far.
+# library on purpose - only the sound-loader version handshake exists; banks, playback, pad, and
+# graphics remain machine stubs that report loudly. dgo_loader_jak2.cpp carries only the C-driven
+# load so far.
 set(JAK2_KERNEL_CORE_SOURCES
     # common support
     "${JAK1_KERNEL_CORE_ROOT}/common/cross_os_debug/xdbg.cpp"
@@ -198,6 +199,8 @@ set(JAK2_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
     # synchronous DGO reader, in place of game/kernel/jak2/kdgo.cpp
     "${CMAKE_CURRENT_LIST_DIR}/dgo_loader_jak2.cpp"
+    # only the Jak 2 sound loader's 4.0 version handshake; no banks, player, streams, or mixer
+    "${CMAKE_CURRENT_LIST_DIR}/sound_rpc_jak2.cpp"
     # the mips2c seam, in place of game/mips2c/mips2c_table.cpp, plus the Jak 2 function library
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_seam.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_jak2.cpp"
