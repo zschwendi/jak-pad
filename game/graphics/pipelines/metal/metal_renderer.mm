@@ -620,6 +620,9 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     setup_frame(opts);
     // mirror of SharedRenderState::reset for the background state
     m_background.reset_frame();
+    if (m_shared_state.eye_renderer) {
+      m_shared_state.eye_renderer->start_frame();
+    }
     m_shared_state.background = &m_background;
     m_shared_state.texture_pool = m_texture_pool;
     m_shared_state.ee_memory = g_ee_main_mem;

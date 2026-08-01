@@ -422,11 +422,18 @@ bool MetalEyeRenderer::handle_eye_dma2(DmaFollower& dma, MetalSharedRenderState*
   return true;
 }
 
+void MetalEyeRenderer::render_from_texture_bucket(DmaFollower& dma,
+                                                  MetalSharedRenderState* render_state,
+                                                  MetalFrameContext& ctx) {
+  if (handle_eye_dma2(dma, render_state)) {
+    auto draws = get_draws(dma, render_state);
+    run_gpu(draws, render_state, ctx);
+  }
+}
+
 void MetalEyeRenderer::render(DmaFollower& dma,
                               MetalSharedRenderState* render_state,
                               MetalFrameContext& ctx) {
-  m_stats = Stats();
-
   auto data0 = dma.read_and_advance();
   if (!eye_expect(data0.vif1() == 0 && data0.vif0() == 0 && data0.size_bytes == 0,
                   "the empty bucket-entry transfer", &m_stats.unexpected_dma, &m_warned_dma)) {

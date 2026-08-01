@@ -3,6 +3,7 @@
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
+#include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/texture/TexturePool.h"
 
 void* MetalStreamBuffer::alloc(u32 size, id<MTLBuffer>* out_buffer, u32* out_offset) {
@@ -81,7 +82,14 @@ void MetalSkipRenderer::render(DmaFollower& dma,
 
 void MetalTextureBucketRenderer::render(DmaFollower& dma,
                                         MetalSharedRenderState* render_state,
-                                        MetalFrameContext& /*ctx*/) {
+                                        MetalFrameContext& ctx) {
+  std::function<void(DmaFollower&)> eye_dma_handler;
+  if (render_state->eye_renderer) {
+    eye_dma_handler = [&](DmaFollower& d) {
+      render_state->eye_renderer->render_from_texture_bucket(d, render_state, ctx);
+    };
+  }
   m_last_stats = m_handler.process(dma, render_state->next_bucket, *render_state->texture_pool,
-                                   render_state->ee_memory, render_state->offset_of_s7);
+                                   render_state->ee_memory, render_state->offset_of_s7,
+                                   eye_dma_handler);
 }
