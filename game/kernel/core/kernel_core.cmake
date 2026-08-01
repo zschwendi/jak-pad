@@ -51,6 +51,34 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
     # synchronous DGO reader, in place of game/kernel/jak1/kdgo.cpp
     "${CMAKE_CURRENT_LIST_DIR}/dgo_loader.cpp"
+    # the sound RPC channels, in place of game/overlord/jak1/srpc.cpp's two IOP threads, plus the
+    # seam a host pulls mixed audio out of
+    "${CMAKE_CURRENT_LIST_DIR}/sound_rpc.cpp"
+    # the overlord's sound tables, used unchanged: the 64 sound slots with their falloff/pan math,
+    # the 6 bank slots, and the globals both share. Everything else in game/overlord is the IOP.
+    "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/sbank.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/soundcommon.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/srpc.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/ssound.cpp"
+    # 989snd: the sequencer, the SPU voice model and the mixer, used unchanged. Built without an
+    # output backend (GOALPAD_SND_NO_CUBEB below); goal_sound_pull_audio is the seam instead.
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/sdshim.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/sndshim.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/common/envelope.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/common/synth.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/common/voice.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/ame_handler.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/blocksound_handler.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/lfo.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/loader.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/midi_handler.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/musicbank.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/player.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/plugin.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/sfxblock.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/sfxgrain.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/vagvoice.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/util.cpp"
     # __send-gfx-dma-chain: measure and optionally capture the chain a frame built
     "${CMAKE_CURRENT_LIST_DIR}/dma_capture.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma_copy.cpp"
@@ -74,6 +102,23 @@ set(CMAKE_ASM_SOURCE_FILE_EXTENSIONS ${CMAKE_ASM_SOURCE_FILE_EXTENSIONS} s)
 
 add_library(jak1-kernel-core STATIC ${JAK1_KERNEL_CORE_SOURCES})
 target_compile_features(jak1-kernel-core PUBLIC cxx_std_20)
+
+# The same warnings game/sound/CMakeLists.txt turns off for these files upstream. Scoped to them so
+# this library's own code keeps every warning.
+if(NOT MSVC)
+  set(JAK1_KERNEL_CORE_SOUND_SOURCES ${JAK1_KERNEL_CORE_SOURCES})
+  list(FILTER JAK1_KERNEL_CORE_SOUND_SOURCES INCLUDE REGEX "/game/(sound|overlord)/")
+  set_source_files_properties(
+    ${JAK1_KERNEL_CORE_SOUND_SOURCES} TARGET_DIRECTORY jak1-kernel-core
+    PROPERTIES COMPILE_OPTIONS
+               "-Wno-unknown-warning-option;-Wno-unused-private-field;-Wno-unused-parameter;-Wno-shadow;-Wno-deprecated-declarations"
+  )
+endif()
+
+# 989snd's own output backend is cubeb, which needs a desktop audio device and a third-party build.
+# This library has no device: goal_sound_pull_audio hands the host the frames instead. See
+# game/sound/989snd/player.h.
+target_compile_definitions(jak1-kernel-core PUBLIC GOALPAD_SND_NO_CUBEB=1)
 target_include_directories(
   jak1-kernel-core
   PUBLIC "${JAK1_KERNEL_CORE_ROOT}" "${JAK1_KERNEL_CORE_ROOT}/third-party"

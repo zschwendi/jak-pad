@@ -90,3 +90,9 @@ s32 snd_GetSoundUserData(snd::BankHandle block_handle,
 void snd_SetSoundReg(s32 sound_handle, s32 which, u8 val);
 s8 snd_GetSoundGroup(s32 sound_handle);
 void snd_RegisterPluginHandler(snd::PluginHandler handler);
+
+//! Render `frames` interleaved stereo 16-bit frames at 48 kHz into `out`, advancing the sequencer.
+//! On a platform with an output device this is what the device's callback does; on one where the
+//! host owns the device (see GOALPAD_SND_NO_CUBEB in 989snd/player.h) it is the only way out.
+//! Returns the frames written, or 0 when no sound system is running.
+int snd_PullAudio(s16* out, int frames);

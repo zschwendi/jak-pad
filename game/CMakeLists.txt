@@ -586,6 +586,13 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_test(NAME jak1-dgo-synthetic-test COMMAND jak1-data-boot-test --synthetic)
         add_test(NAME jak1-data-boot-test COMMAND jak1-data-boot-test)
         add_test(NAME jak1-play-frames-test COMMAND jak1-data-boot-test --play --frames 60)
+        # Sound. The title screen mutes music while the intro plays and puts it back in
+        # target-title-wait, so this needs enough frames to get that far before it can ask whether
+        # the mixer produced anything. It measures the audio rather than writing it: the suite
+        # never produces a file of the player's own game audio. --capture-audio does that, on
+        # request, wherever the caller says.
+        add_test(NAME jak1-title-audio-test
+                COMMAND jak1-data-boot-test --play --frames 1400 --require-audio)
         # Unload and reload a level through the level system's own load state. Level code is linked
         # into the level's heap, which unloading resets, so the global heap has to stand still while
         # the level's object files are linked over again.

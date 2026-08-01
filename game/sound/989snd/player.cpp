@@ -27,6 +27,14 @@ Player::~Player() {
   DestroyCubeb();
 }
 
+#ifdef GOALPAD_SND_NO_CUBEB
+
+// No output backend: the host owns the device and calls Tick itself.
+void Player::InitCubeb() {}
+void Player::DestroyCubeb() {}
+
+#else
+
 void Player::InitCubeb() {
 #ifdef _WIN32
   HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -93,6 +101,8 @@ long Player::sound_callback([[maybe_unused]] cubeb_stream* stream,
 void Player::state_callback([[maybe_unused]] cubeb_stream* stream,
                             [[maybe_unused]] void* user,
                             [[maybe_unused]] cubeb_state state) {}
+
+#endif  // GOALPAD_SND_NO_CUBEB
 
 void Player::Tick(s16Output* stream, int samples) {
   std::scoped_lock lock(mTickLock);

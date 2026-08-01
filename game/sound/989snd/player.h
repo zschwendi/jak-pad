@@ -18,7 +18,12 @@
 #include "../common/synth.h"
 #include "game/sound/989snd/vagvoice.h"
 
+// GOALPAD_SND_NO_CUBEB builds the sequencer and mixer without an output backend, for platforms
+// where the host owns the audio device and pulls frames itself (see Tick below). Everything else in
+// this class is unchanged and backend-independent.
+#ifndef GOALPAD_SND_NO_CUBEB
 #include "third-party/cubeb/cubeb/include/cubeb/cubeb.h"
+#endif
 
 namespace snd {
 
@@ -63,6 +68,11 @@ class Player {
   void InitCubeb();
   void DestroyCubeb();
   s32 GetTick() { return mTick; };
+
+  //! Render `samples` interleaved stereo frames at 48 kHz, advancing the 240 Hz sequencer as it
+  //! goes. Called by the output backend's callback, or directly by a host that owns the device.
+  void Tick(s16Output* stream, int samples);
+
   void StopAllSounds();
   s32 GetSoundUserData(BankHandle block_handle,
                        char* block_name,
@@ -75,8 +85,6 @@ class Player {
   IdAllocator mHandleAllocator;
   std::map<u32, std::unique_ptr<SoundHandler>> mHandlers;
 
-  void Tick(s16Output* stream, int samples);
-
 #ifdef _WIN32
   bool m_coinitialized = false;
 #endif
@@ -86,6 +94,7 @@ class Player {
   VoiceManager mVmanager;
   s32 mTick{0};
 
+#ifndef GOALPAD_SND_NO_CUBEB
   cubeb* mCtx{nullptr};
   cubeb_stream* mStream{nullptr};
 
@@ -95,5 +104,6 @@ class Player {
                              void* output_buffer,
                              long len);
   static void state_callback(cubeb_stream* stream, void* user, cubeb_state state);
+#endif
 };
 }  // namespace snd
