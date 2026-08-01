@@ -9,6 +9,7 @@
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_sky_renderer.h"
+#include "game/graphics/pipelines/metal/metal_sprite_renderer.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/runtime.h"
 
@@ -18,6 +19,14 @@
 // shaders/*.metal (see game/CMakeLists.txt and embed_metallib.cmake).
 extern "C" const unsigned char g_goalpad_metallib[];
 extern "C" const unsigned long g_goalpad_metallib_size;
+
+// Replay/test only: a capture carries the s7 its frame ran with, and a replay
+// has no booted GOAL kernel to ask.
+static u32 g_s7_override = 0;
+
+void metal_set_s7_override(u32 s7_ptr) {
+  g_s7_override = s7_ptr;
+}
 
 namespace {
 
@@ -224,7 +233,7 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   skip(BucketId::DEPTH_CUE, "depth-cue");
 
   tex(BucketId::PRE_SPRITE_TEX, "common-tex");
-  skip(BucketId::SPRITE, "sprite");
+  set(BucketId::SPRITE, std::make_unique<MetalSpriteRenderer>("sprite", (int)BucketId::SPRITE));
 
   set(BucketId::DEBUG,
       std::make_unique<MetalDirectRenderer>("debug", (int)BucketId::DEBUG, 0x20000));
@@ -551,7 +560,7 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     setup_frame(opts);
     m_shared_state.texture_pool = m_texture_pool;
     m_shared_state.ee_memory = g_ee_main_mem;
-    m_shared_state.offset_of_s7 = metal_offset_of_s7();
+    m_shared_state.offset_of_s7 = g_s7_override ? g_s7_override : metal_offset_of_s7();
     m_shared_state.game_res_w = opts.game_res_w;
     m_shared_state.game_res_h = opts.game_res_h;
 
@@ -624,6 +633,14 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         unsupported_blends += d->stats().unsupported_blends;
       } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
         unsupported_blends += sky->direct_stats().unsupported_blends;
+      } else if (auto* sp = dynamic_cast<MetalSpriteRenderer*>(r.get())) {
+        const auto& ss = sp->stats();
+        m_chain_stats.sprites_2d = ss.count_2d_grp0 - ss.sprites_3d;
+        m_chain_stats.sprites_3d = ss.sprites_3d;
+        m_chain_stats.sprites_hud = ss.count_2d_grp1;
+        m_chain_stats.sprites_distort = ss.distort_sprites;
+        m_chain_stats.sprite_draws = ss.draw_calls;
+        m_chain_stats.sprite_missing_textures = ss.missing_textures;
       }
     }
     m_chain_stats.tex_uploads = uploads;

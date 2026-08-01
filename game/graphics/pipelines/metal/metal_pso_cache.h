@@ -24,6 +24,7 @@ enum class MetalShaderId : u16 {
   SAMPLE = 2,           // textured quad with an API-supplied sampler state
   DIRECT_BASIC = 3,     // DirectRenderer, untextured (direct_basic.{vert,frag})
   DIRECT_TEXTURED = 4,  // DirectRenderer, textured (direct_basic_textured.{vert,frag})
+  SPRITE3 = 5,          // Sprite3 2D/HUD/3D sprites (sprite3_3d.{vert,frag})
   COUNT,
 };
 

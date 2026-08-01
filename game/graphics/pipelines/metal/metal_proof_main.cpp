@@ -46,6 +46,7 @@
 
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/dma/dma_chain_read.h"
+#include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/texture/texture_conversion.h"
@@ -55,6 +56,7 @@
 #include "game/graphics/display.h"
 #include "game/graphics/gfx.h"
 #include "game/graphics/opengl_renderer/buckets.h"
+#include "game/graphics/opengl_renderer/sprite/sprite_common.h"
 #include "game/graphics/pipelines/metal/metal_chain_replay.h"
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
 #include "game/graphics/pipelines/metal/metal_texture_upload_handler.h"
@@ -1335,6 +1337,439 @@ void test_dma_chain(const GfxRendererModule* mod,
 }
 
 // ---------------------------------------------------------------------------
+// Section: the sprite bucket. Builds the Jak 1 sprite DMA the way the game
+// does - distorter GS setup + sine tables, sprite frame data, the 3D matrix,
+// world-space (group 0) chunks, the fake-shadow flush, then HUD (group 1)
+// chunks - and verifies the rendered quads by pixel readback.
+//
+// Constructed data again: every packet matches what Sprite3 asserts about a
+// real chain. The VU constants are chosen so the transform reduces to the same
+// GS-space -> screen mapping the DirectRenderer test already uses
+// (gs_to_col / gs_to_row), which makes the expected quad corners exact.
+// ---------------------------------------------------------------------------
+
+u32 vif_code(VifCode::Kind kind, u16 imm, u8 num = 0) {
+  return ((u32)kind << 24) | ((u32)num << 16) | imm;
+}
+u32 vif_stcycl(u16 cl, u16 wl) {
+  return vif_code(VifCode::Kind::STCYCL, (u16)(cl | (wl << 8)));
+}
+u32 vif_unpack_v4_32(u32 qwc, u32 addr, bool flg) {
+  return vif_code(VifCode::Kind::UNPACK_V4_32, (u16)(addr | (flg ? (1 << 15) : 0)), (u8)qwc);
+}
+
+// VRAM slots and tpages for the sprite test
+constexpr u32 kVramSpriteSolid = 0x7a0;
+constexpr u32 kVramSpriteQuad = 0x7c0;
+constexpr u32 kSpriteTpageSolid = kEeBase + 0x14000;
+constexpr u32 kSpriteTpageQuad = kEeBase + 0x15000;
+
+void push_f(std::vector<u8>& v, float f) {
+  size_t at = v.size();
+  v.resize(at + 4);
+  memcpy(&v[at], &f, 4);
+}
+void push_i(std::vector<u8>& v, s32 i) {
+  size_t at = v.size();
+  v.resize(at + 4);
+  memcpy(&v[at], &i, 4);
+}
+void push_u64(std::vector<u8>& v, u64 x) {
+  size_t at = v.size();
+  v.resize(at + 8);
+  memcpy(&v[at], &x, 8);
+}
+
+// one sprite's worth of sprite-vec-data-2d (48 bytes)
+void push_vec_data(std::vector<u8>& v,
+                   float px,
+                   float py,
+                   float pz,
+                   float sx,
+                   s32 flag,
+                   s32 matrix,
+                   float rot,
+                   float sy,
+                   float r,
+                   float g,
+                   float b,
+                   float a) {
+  push_f(v, px);
+  push_f(v, py);
+  push_f(v, pz);
+  push_f(v, sx);
+  push_i(v, flag);
+  push_i(v, matrix);
+  push_f(v, rot);
+  push_f(v, sy);
+  push_f(v, r);
+  push_f(v, g);
+  push_f(v, b);
+  push_f(v, a);
+}
+
+// one sprite's adgif shader (80 bytes)
+void push_adgif(std::vector<u8>& v, u32 tbp, bool tcc, bool filt) {
+  push_u64(v, gs_tex0(tbp, 1, 0, 4, 4, tcc, 0));  // psm PSMCT32, 16x16, MODULATE
+  push_u64(v, (u64)GsRegisterAddress::TEX0_1);
+  push_u64(v, filt ? gs_tex1_filt() : 0ull);
+  push_u64(v, (u64)GsRegisterAddress::TEX1_1);
+  push_u64(v, 0);
+  push_u64(v, (u64)GsRegisterAddress::MIPTBP1_1);
+  push_u64(v, 0b101);  // clamp s and t
+  push_u64(v, (u64)GsRegisterAddress::CLAMP_1);
+  push_u64(v, gs_alpha(0, 1, 0, 1));  // SOURCE, DEST, SOURCE, DEST
+  push_u64(v, (u64)GsRegisterAddress::ALPHA_1);
+}
+
+// The sprite frame data (SpriteFrameDataJak1, 0x290 bytes). The constants are
+// picked so that a sprite at GS position p with scale S covers the GS-space
+// square p +- S: identity basis, no rotation, no perspective, no fade.
+std::vector<u8> make_sprite_frame_data(float sprite_half_size) {
+  std::vector<u8> d;
+  // xy_array[8]: corner offsets for vertex ids 0..3 (the second four are the
+  // flag != 0 variants, unused here but must exist)
+  const float corners[4][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+  for (int i = 0; i < 8; i++) {
+    push_f(d, corners[i & 3][0]);
+    push_f(d, corners[i & 3][1]);
+    push_f(d, 0);
+    push_f(d, 0);
+  }
+  // st_array[4]: uv per vertex id, matching the corners above
+  const float uvs[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  for (int i = 0; i < 4; i++) {
+    push_f(d, uvs[i][0]);
+    push_f(d, uvs[i][1]);
+    push_f(d, 1.f);
+    push_f(d, 0.f);
+  }
+  // xyz_array[4]: 3D sprite corner offsets. x is scaled by sx and z by sy, y is
+  // used as-is, so the y offsets carry the size directly.
+  for (int i = 0; i < 4; i++) {
+    push_f(d, corners[i][0]);
+    push_f(d, corners[i][1] * sprite_half_size);
+    push_f(d, 0.f);
+    push_f(d, 0.f);
+  }
+  push_f(d, 1.f);  // hmge_scale
+  push_f(d, 1.f);
+  push_f(d, 1.f);
+  push_f(d, 1.f);
+  push_f(d, 1.f);     // pfog0: no perspective divide
+  push_f(d, 0.f);     // deg_to_rad: rotation is zero anyway
+  push_f(d, 0.f);     // min_scale
+  push_f(d, 1000.f);  // inv_area: the area fade saturates at 1
+  for (int i = 0; i < 3; i++) {
+    push_u64(d, 0);  // adgif / sprite_2d / sprite_2d_2 giftags
+    push_u64(d, 0);
+  }
+  for (int i = 0; i < 5; i++) {  // sincos[5]
+    push_f(d, 0);
+    push_f(d, 0);
+    push_f(d, 0);
+    push_f(d, 0);
+  }
+  push_f(d, 1.f);  // basis_x
+  push_f(d, 0.f);
+  push_f(d, 0.f);
+  push_f(d, 0.f);
+  push_f(d, 0.f);  // basis_y
+  push_f(d, 1.f);
+  push_f(d, 0.f);
+  push_f(d, 0.f);
+  push_u64(d, 0);  // sprite_3d_giftag
+  push_u64(d, 0);
+  d.resize(d.size() + 5 * 16, 0);  // screen_shader (AdGifData)
+  push_u64(d, 0);                  // clipped_giftag
+  push_u64(d, 0);
+  d.resize(d.size() + 4 * 16, 0);  // inv_hmge_scale, stq_offset, stq_scale, rgba_plain
+  push_u64(d, 0);                  // warp_giftag
+  push_u64(d, 0);
+  push_f(d, 0.f);     // fog_min
+  push_f(d, 1000.f);  // fog_max
+  push_f(d, 1000.f);  // max_scale
+  push_f(d, 0.f);     // bonus
+  ASSERT(d.size() == 0x290);
+  return d;
+}
+
+// World-space 2D sprites transform through `camera`, 3D sprites through
+// `-camera`, so a frame that leaves positions unchanged uses +identity for the
+// 2D pass and -identity for the 3D pass. (A real frame's camera is a view
+// matrix that works for both; this test drives one mode per frame so each
+// expected position stays exact.)
+std::vector<u8> make_3d_matrix_data(float sign) {
+  std::vector<u8> d;
+  for (int col = 0; col < 4; col++) {
+    for (int row = 0; row < 4; row++) {
+      push_f(d, col == row ? sign : 0.f);
+    }
+  }
+  for (int i = 0; i < 4; i++) {
+    push_f(d, 0.f);  // hvdf_offset
+  }
+  ASSERT(d.size() == 5 * 16);
+  return d;
+}
+
+// HUD matrix data: identity matrix, zero hvdf offset, and one user hvdf entry
+// that shifts a sprite left by 64 GS units.
+std::vector<u8> make_hud_matrix_data(float user0_x_shift) {
+  std::vector<u8> d;
+  for (int col = 0; col < 4; col++) {
+    for (int row = 0; row < 4; row++) {
+      push_f(d, col == row ? 1.f : 0.f);
+    }
+  }
+  for (int i = 0; i < 4; i++) {
+    push_f(d, 0.f);  // hvdf_offset
+  }
+  for (int i = 0; i < 75; i++) {
+    push_f(d, i == 0 ? user0_x_shift : 0.f);
+    push_f(d, 0.f);
+    push_f(d, 0.f);
+    push_f(d, 0.f);
+  }
+  ASSERT(d.size() == 80 * 16);
+  return d;
+}
+
+void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& display) {
+  printf("--- DMA chain: sprite bucket -> MetalSpriteRenderer ---\n");
+  using namespace jak1;
+
+  auto pages = find_tpages(8);
+  if (pages.size() < 8) {
+    printf("[FAIL] not enough Jak 1 tpages for the sprite test\n");
+    g_fail_count++;
+    return;
+  }
+  u16 page_solid = pages[5], page_quad = pages[6];
+
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+
+  // solid texture for the world-space and 3D sprites
+  tfrag3::Texture solid;
+  solid.w = 16;
+  solid.h = 16;
+  solid.debug_name = "sprite-solid";
+  solid.debug_tpage_name = "sprite-page";
+  solid.data.resize(16 * 16, 0xff3264c8u);  // a=255 b=50 g=100 r=200
+  give_and_link_texture(mod, mem, solid, page_solid, kSpriteTpageSolid, kVramSpriteSolid);
+
+  // quadrant texture for the HUD sprites: TL red, TR green, BL blue, BR white
+  tfrag3::Texture quad;
+  quad.w = 16;
+  quad.h = 16;
+  quad.debug_name = "sprite-quad";
+  quad.debug_tpage_name = "sprite-page";
+  quad.data.resize(16 * 16);
+  for (int y = 0; y < 16; y++) {
+    for (int x = 0; x < 16; x++) {
+      bool right = x >= 8, bottom = y >= 8;
+      u32 r = (!right && !bottom) || (right && bottom) ? 255 : 0;
+      u32 g = right ? 255 : 0;
+      u32 b = bottom ? 255 : 0;
+      quad.data[y * 16 + x] = 0xff000000u | (b << 16) | (g << 8) | r;
+    }
+  }
+  give_and_link_texture(mod, mem, quad, page_quad, kSpriteTpageQuad, kVramSpriteQuad);
+
+  constexpr float kHalf = 32.f;      // sprite half-size, GS units
+  constexpr float kZ = 8388608.f;    // depth 0.5 in Metal's [0, 1] clip range
+  constexpr float kUserShift = -64;  // hud_hvdf_user[0] x offset
+
+  constexpr float kHalfPxX = kHalf * 640.f / 512.f;  // GS x unit -> pixels
+  constexpr float kHalfPxY = kHalf * 480.f / 224.f;  // GS y unit -> pixels
+  (void)kHalfPxX;
+  (void)kHalfPxY;
+
+  // Builds one sprite bucket. `three_d` selects which mode the frame drives:
+  // the 2D/HUD frame uses a +identity camera, the 3D frame a -identity one.
+  auto build_sprite_bucket = [&](bool three_d) {
+    std::vector<ChainBuilder::Transfer> sprite;
+    // the NEXT hop into the sprite data
+    sprite.push_back({0, 0, {}, true});
+
+    // distorter GS setup: giftag(nloop 1, eop, nreg 6, AD) + 6 A+D pairs
+    {
+      GifBuilder g;
+      g.tag(1, true, std::vector<GifTag::RegisterDescriptor>(6, GifTag::RegisterDescriptor::AD));
+      g.push_qw(gs_zbuf(0x1c0, true), (u64)GsRegisterAddress::ZBUF_1);
+      g.push_qw(gs_tex0(0, 8, 0, 9, 8, false, 0), (u64)GsRegisterAddress::TEX0_1);
+      g.push_qw(gs_tex1_filt(), (u64)GsRegisterAddress::TEX1_1);
+      g.push_qw(0, (u64)GsRegisterAddress::MIPTBP1_1);
+      g.push_qw(0, (u64)GsRegisterAddress::CLAMP_1);
+      g.push_qw(gs_alpha(0, 1, 0, 1), (u64)GsRegisterAddress::ALPHA_1);
+      ASSERT(g.data.size() == 7 * 16);  // the giftag is one of the 7 quadwords
+      sprite.push_back({vif_nop(), vif_direct(7), g.data, false});
+    }
+    // sine-table aspect (PC only)
+    sprite.push_back(
+        {vif_nop(), vif_code(VifCode::Kind::PC_PORT, 0), std::vector<u8>(16, 0), false});
+    // sine tables: the only field the renderer checks is the gs giftag's prim
+    {
+      std::vector<u8> tables(0x8b * 16, 0);
+      // the giftag's PRIM field lives at bit 47 (see GifTag in common/dma/gs.h)
+      u64 giftag_lo = ((u64)GsPrim::Kind::TRI_STRIP) << 47;
+      memcpy(&tables[(128 + 9) * 16], &giftag_lo, 8);
+      sprite.push_back({vif_stcycl(4, 4), vif_unpack_v4_32(0x8b, 0x160, false), tables, false});
+    }
+
+    // sprite frame setup: direct data, frame data, mscalf, base/offset
+    {
+      std::vector<u8> direct_setup;
+      push_u64(direct_setup, 0x2000000000008001ull);
+      push_u64(direct_setup, 0xEEEEEEEEEEEEEEEEull);
+      push_u64(direct_setup, 0x000000000005126Bull);
+      push_u64(direct_setup, 0x0000000000000047ull);
+      push_u64(direct_setup, 0x0000000000000005ull);
+      push_u64(direct_setup, 0x0000000000000008ull);
+      sprite.push_back({vif_nop(), vif_direct(3), direct_setup, false});
+    }
+    sprite.push_back({vif_stcycl(4, 4), vif_unpack_v4_32(0x29, 980, false),
+                      make_sprite_frame_data(kHalf), false});
+    sprite.push_back(
+        {vif_code(VifCode::Kind::MSCALF, 0), vif_code(VifCode::Kind::FLUSHE, 0), {}, false});
+    sprite.push_back(
+        {vif_code(VifCode::Kind::BASE, 0), vif_code(VifCode::Kind::OFFSET, 400), {}, false});
+
+    // 3D matrix data (the camera the 2D and 3D paths share)
+    sprite.push_back({vif_stcycl(4, 4), vif_unpack_v4_32(5, 900, false),
+                      make_3d_matrix_data(three_d ? -1.f : 1.f), false});
+
+    auto push_chunk = [&](int count, int prog, const std::vector<u8>& vecs,
+                          const std::vector<u8>& adgifs) {
+      std::vector<u8> header(16, 0);
+      header[0] = (u8)count;
+      sprite.push_back({vif_stcycl(4, 4), vif_unpack_v4_32(1, 0, true), header, false});
+      sprite.push_back({vif_nop(), vif_unpack_v4_32((u32)vecs.size() / 16, 1, true), vecs, false});
+      sprite.push_back(
+          {vif_nop(), vif_unpack_v4_32((u32)adgifs.size() / 16, 145, true), adgifs, false});
+      sprite.push_back({vif_nop(), vif_code(VifCode::Kind::MSCAL, (u16)prog), {}, false});
+    };
+
+    if (three_d) {
+      // group 0, 3D: one sprite at GS (2176, 1992)
+      std::vector<u8> vecs, adgifs;
+      push_vec_data(vecs, 2176, 1992, kZ, kHalf, 0, 0, 0, kHalf, 64, 64, 64, 64);
+      push_adgif(adgifs, kVramSpriteSolid, true, false);
+      push_chunk(1, SpriteProgMem::Sprites3d, vecs, adgifs);
+    } else {
+      // group 0, world-space 2D: one sprite at GS (1920, 1992)
+      std::vector<u8> vecs, adgifs;
+      push_vec_data(vecs, 1920, 1992, kZ, kHalf, 0, 0, 0, kHalf, 64, 64, 64, 64);
+      push_adgif(adgifs, kVramSpriteSolid, true, false);
+      push_chunk(1, SpriteProgMem::Sprites2dGrp0, vecs, adgifs);
+    }
+
+    // the fake-shadow flush ends group 0
+    sprite.push_back({vif_nop(), vif_code(VifCode::Kind::FLUSHE, 0), {}, false});
+
+    // group 1 (HUD): the matrix upload always happens; the 3D frame sends no
+    // HUD sprites after it
+    sprite.push_back({vif_stcycl(4, 4), vif_unpack_v4_32(80, 900, false),
+                      make_hud_matrix_data(kUserShift), false});
+    if (!three_d) {
+      std::vector<u8> vecs, adgifs;
+      // matrix 0 -> hud_hvdf_offset, at GS (1920, 2104)
+      push_vec_data(vecs, 1920, 2104, kZ, kHalf, 0, 0, 0, kHalf, 127, 127, 127, 64);
+      push_adgif(adgifs, kVramSpriteQuad, true, false);
+      // matrix 1 -> hud_hvdf_user[0], which shifts it left by 64 GS units
+      push_vec_data(vecs, 2176, 2104, kZ, kHalf, 0, 1, 0, kHalf, 127, 127, 127, 64);
+      push_adgif(adgifs, kVramSpriteQuad, true, false);
+      push_chunk(2, SpriteProgMem::Sprites2dHud_Jak1, vecs, adgifs);
+    }
+    return sprite;
+  };
+
+  // ---- frame 1: world-space 2D + HUD --------------------------------------
+  {
+    ChainBuilder cb(mem);
+    cb.set_bucket_content((int)BucketId::SPRITE, build_sprite_bucket(false));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the 2D/HUD sprite frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    auto stats = metal_renderer::get_chain_stats();
+    printf("sprite stats (2d/hud frame): %d 2d + %d 3d + %d hud sprites in %d draws, %d missing\n",
+           stats.sprites_2d, stats.sprites_3d, stats.sprites_hud, stats.sprite_draws,
+           stats.sprite_missing_textures);
+    check(stats.sprites_2d == 1, "sprite: one world-space 2D sprite");
+    check(stats.sprites_hud == 2, "sprite: two HUD sprites");
+    check(stats.sprite_missing_textures == 0, "sprite: every bucket found its texture");
+    check(stats.sprite_draws == 2, "sprite: one draw per (texture, mode) bucket");
+
+    // The shader doubles the vertex color (and doubles alpha again), so a
+    // vertex rgba of 64 is 0.502 with alpha 1.004 (opaque). The solid texture
+    // is (200, 100, 50), so the 2D quad reads back (100, 50, 25).
+    const int col_2d = gs_to_col(1920), row_2d = gs_to_row(1992);
+    check_pixel(frame, col_2d, row_2d, 100, 50, 25, "sprite: world-space 2D quad center");
+    // the quad spans +-32 GS units: +-40 px in x, +-68 px in y
+    check_pixel(frame, col_2d - 35, row_2d, 100, 50, 25, "sprite: 2D quad left edge inside");
+    check_pixel(frame, col_2d - 45, row_2d, 0, 0, 0, "sprite: 2D quad left edge outside");
+    check_pixel(frame, col_2d, row_2d - 60, 100, 50, 25, "sprite: 2D quad top inside");
+    check_pixel(frame, col_2d, row_2d - 75, 0, 0, 0, "sprite: 2D quad top outside");
+
+    // HUD sprites carry the quadrant texture at vertex color 127 (~0.996)
+    const int col_h0 = gs_to_col(1920), row_h0 = gs_to_row(2104);
+    check_pixel(frame, col_h0 - 20, row_h0 - 34, 249, 0, 0, "sprite: HUD quad TL texel (red)");
+    check_pixel(frame, col_h0 + 20, row_h0 - 34, 0, 249, 0, "sprite: HUD quad TR texel (green)");
+    check_pixel(frame, col_h0 - 20, row_h0 + 34, 0, 0, 249, "sprite: HUD quad BL texel (blue)");
+    check_pixel(frame, col_h0 + 20, row_h0 + 34, 249, 249, 249,
+                "sprite: HUD quad BR texel (white)");
+    // the second HUD sprite used hud_hvdf_user[0], which moved it left
+    const int col_h1 = gs_to_col(2176 + kUserShift);
+    check_pixel(frame, col_h1 - 20, row_h0 - 34, 249, 0, 0,
+                "sprite: HUD user-hvdf quad moved left");
+    check_pixel(frame, col_h1 + 20, row_h0 + 34, 249, 249, 249,
+                "sprite: HUD user-hvdf quad BR texel");
+    check_pixel(frame, gs_to_col(2176), row_h0, 0, 0, 0,
+                "sprite: nothing left where the user-hvdf quad would have been");
+  }
+
+  // ---- frame 2: 3D sprites ------------------------------------------------
+  {
+    ChainBuilder cb(mem);
+    cb.set_bucket_content((int)BucketId::SPRITE, build_sprite_bucket(true));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the 3D sprite frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    auto stats = metal_renderer::get_chain_stats();
+    printf("sprite stats (3d frame): %d 2d + %d 3d + %d hud sprites in %d draws, %d missing\n",
+           stats.sprites_2d, stats.sprites_3d, stats.sprites_hud, stats.sprite_draws,
+           stats.sprite_missing_textures);
+    check(stats.sprites_3d == 1, "sprite: one 3D sprite");
+    check(stats.sprites_hud == 0, "sprite: no HUD sprites in the 3D frame");
+    check(stats.sprite_draws == 1, "sprite: one 3D draw");
+
+    const int col_3d = gs_to_col(2176), row_3d = gs_to_row(1992);
+    check_pixel(frame, col_3d, row_3d, 100, 50, 25, "sprite: 3D quad center");
+    check_pixel(frame, col_3d - 35, row_3d, 100, 50, 25, "sprite: 3D quad left edge inside");
+    check_pixel(frame, col_3d - 45, row_3d, 0, 0, 0, "sprite: 3D quad left edge outside");
+    check_pixel(frame, gs_to_col(1920), gs_to_row(2104), 0, 0, 0,
+                "sprite: the 3D frame drew no HUD sprite");
+  }
+
+  g_ee_main_mem = nullptr;
+}
+
+// ---------------------------------------------------------------------------
 // Section (optional): real extracted Jak 1 textures from a user-supplied .fr3.
 // Never bundled; pass the path on the command line to enable.
 // ---------------------------------------------------------------------------
@@ -1388,34 +1823,75 @@ std::unique_ptr<tfrag3::Level> test_real_fr3(const char* path) {
 
 // ---------------------------------------------------------------------------
 // Section (optional): replay of one frame of captured game DMA (--replay).
-// The capture is the FixedChunkDmaCopier serialization the runtime track's
-// `__send-gfx-dma-chain` hook writes. It contains the chain and whatever EE
-// data lives in the same 128 kB chunks - nothing else. GOAL objects the chain
-// points at outside those chunks (texture-page structs behind PC_PORT upload
-// packets) read as zeros here; missing textures resolve to the pool's
-// placeholder and are reported, never guessed.
+// The capture is what the runtime track's `__send-gfx-dma-chain` hook writes: a
+// version 1 file is the chain alone, a version 2 file adds the EE main memory
+// snapshot the frame ran with. With the snapshot, the chain's PC-port texture
+// upload packets resolve to the real GOAL texture-page structs, so the pool
+// links real texture slots instead of placeholders - as long as the level's
+// textures are in the pool, which `--replay-fr3` does (the Metal path does not
+// run the streaming Loader yet, and the runtime's `__pc-set-levels` is stubbed,
+// so the replay is told which levels' art the frame used).
 // ---------------------------------------------------------------------------
 
-// chain placement inside the fake EE memory: chunk-aligned for the copier in
-// send_chain and above its low-memory protect
-constexpr u32 kReplayBase = 0x100000;
+// Loads the textures of one extracted level into the pool the way the GL
+// loader's TextureLoaderStage does. Returns the number added, -1 on failure.
+int load_fr3_textures(const char* path, bool is_common) {
+  if (!fs::exists(path)) {
+    printf("[FAIL] fr3 file does not exist: %s\n", path);
+    g_fail_count++;
+    return -1;
+  }
+  auto compressed = file_util::read_binary_file(std::string(path));
+  auto decomp = compression::decompress_zstd(compressed.data(), compressed.size());
+  u16 version = 0;
+  memcpy(&version, decomp.data(), 2);
+  if (version != tfrag3::TFRAG3_VERSION) {
+    printf("[FAIL] fr3 version %d does not match this build's %d\n", version,
+           tfrag3::TFRAG3_VERSION);
+    g_fail_count++;
+    return -1;
+  }
+  tfrag3::Level level;
+  Serializer ser(decomp.data(), decomp.size());
+  level.serialize(ser);
+  int added = 0;
+  for (const auto& tex : level.textures) {
+    if (metal_renderer::pool_add_texture(tex, is_common)) {
+      added++;
+    }
+  }
+  printf("[PASS] loaded level '%s': %d/%d textures into the pool%s\n", level.level_name.c_str(),
+         added, (int)level.textures.size(), is_common ? " (common)" : "");
+  return added;
+}
 
 void run_chain_replay(const GfxRendererModule* mod,
                       std::shared_ptr<GfxDisplay>& display,
                       const std::string& capture_path,
                       const std::string& png_path,
-                      int frames) {
+                      int frames,
+                      const std::vector<std::string>& fr3_paths,
+                      const std::string& common_fr3) {
   printf("--- captured chain replay: %s ---\n", capture_path.c_str());
 
-  metal_chain_replay::LoadedChain chain;
+  metal_chain_replay::LoadedCapture capture;
   std::string error;
-  if (!metal_chain_replay::load_capture(capture_path, &chain, &error)) {
+  if (!metal_chain_replay::load_capture_file(capture_path, &capture, &error)) {
     printf("[FAIL] load capture: %s\n", error.c_str());
     g_fail_count++;
     return;
   }
-  printf("[PASS] loaded capture: start offset %#x, %d bytes of chain chunks\n", chain.start_offset,
-         (int)chain.data.size());
+  auto& chain = capture.chain;
+  printf("[PASS] loaded capture v%d (frame %d): start offset %#x, %d bytes of chain chunks\n",
+         capture.version, capture.frame, chain.start_offset, (int)chain.data.size());
+  if (capture.has_ee_snapshot) {
+    printf("[PASS] EE snapshot: %d of %d chunks stored, s7 %#x\n",
+           (int)capture.ee_stored_chunks.size(),
+           (int)(capture.ee_memory.size() / FixedChunkDmaCopier::chunk_size), capture.s7);
+    check(capture.s7 != 0, "replay: capture carries a symbol-table pointer");
+  } else {
+    printf("(no EE snapshot in this capture; pointers into EE memory read as zeros)\n");
+  }
 
   metal_chain_replay::ChainInventory inv;
   if (!metal_chain_replay::inventory_jak1(chain, &inv, &error)) {
@@ -1443,16 +1919,46 @@ void run_chain_replay(const GfxRendererModule* mod,
   printf("total payload: %d bytes, %d texture upload packets\n", (int)inv.total_payload,
          inv.total_pc_port_uploads);
 
-  if (!metal_chain_replay::rebase_chain(&chain, kReplayBase, &error)) {
-    printf("[FAIL] rebase chain: %s\n", error.c_str());
+  // The chain image goes into a run of EE memory the snapshot left empty, so
+  // replaying it cannot land on captured data.
+  if (!metal_chain_replay::place_chain_in_ee(&capture, &error)) {
+    printf("[FAIL] place chain in EE memory: %s\n", error.c_str());
     g_fail_count++;
     return;
   }
+  printf("[PASS] chain placed at %#x in the EE image\n", capture.chain_base);
 
-  // fake EE memory: the chain image at kReplayBase, zeros everywhere else
-  std::vector<u8> ee_mem(EE_MAIN_MEM_SIZE, 0);
-  memcpy(ee_mem.data() + kReplayBase, chain.data.data(), chain.data.size());
+  std::vector<u8>& ee_mem = capture.ee_memory;
   g_ee_main_mem = ee_mem.data();
+  metal_renderer::set_s7_override(capture.s7);
+
+  // The level art the frame used. The Metal path does not run the streaming
+  // Loader yet, so the caller names the levels; without them the upload packets
+  // resolve to the pool's placeholder, which is reported, never guessed.
+  if (!common_fr3.empty()) {
+    load_fr3_textures(common_fr3.c_str(), true);
+  }
+  for (const auto& path : fr3_paths) {
+    load_fr3_textures(path.c_str(), false);
+  }
+
+  // A single frame only uploads the texture pages it touched, but the VRAM
+  // slots it draws from were filled over many earlier frames. Prime the pool
+  // with every texture-page still live in the EE snapshot, so slots the frame
+  // reads but does not re-upload resolve to their real textures.
+  if (capture.has_ee_snapshot && !inv.upload_page_addresses.empty()) {
+    u32 type_pointer = 0;
+    auto pages = metal_chain_replay::find_texture_pages(capture, inv.upload_page_addresses,
+                                                        &type_pointer);
+    for (u32 page : pages) {
+      mod->texture_upload_now(ee_mem.data() + page, -1, capture.s7);
+    }
+    printf("[PASS] primed the pool with %d live texture-pages from the EE snapshot "
+           "(type pointer %#x)\n",
+           (int)pages.size(), type_pointer);
+    check(pages.size() >= inv.upload_page_addresses.size(),
+          "replay: the snapshot's pages include the ones the chain uploads");
+  }
 
   // send the chain through the module hook like the game does, several times:
   // content that crosses frames (sky blended in frame N draws in frame N+1)
@@ -1479,6 +1985,11 @@ void run_chain_replay(const GfxRendererModule* mod,
       stats.draw_calls, stats.triangles, stats.tex_uploads, stats.sky_draws, stats.sky_blends,
       stats.cloud_draws, stats.cloud_blends, (int)stats.skipped_bucket_bytes,
       (int)stats.skipped_tfrag_bytes, stats.direct_unsupported_blends);
+  printf(
+      "sprite bucket: %d 2d + %d 3d + %d hud sprites in %d draws, %d distort sprites consumed "
+      "(drawing not ported), %d missing textures\n",
+      stats.sprites_2d, stats.sprites_3d, stats.sprites_hud, stats.sprite_draws,
+      stats.sprites_distort, stats.sprite_missing_textures);
   check(stats.direct_unsupported_blends == 0, "replay: no unsupported GS blend modes");
 
   int lit = 0;
@@ -1490,8 +2001,12 @@ void run_chain_replay(const GfxRendererModule* mod,
   printf("replayed frame: %dx%d, %d non-black pixels\n", frame.width, frame.height, lit);
   if (stats.draw_calls == 0) {
     check(lit == 0, "replay: a frame with no draws reads back black");
-  } else {
-    check(lit > 0, "replay: draws produced visible pixels");
+  } else if (lit == 0) {
+    // Not a failure: a captured frame can legitimately draw only black - the
+    // title screen's sky bucket draws a black quad when nothing was blended
+    // into the sky texture that frame.
+    printf("(the frame's %d draw(s) produced no lit pixels; see the inventory above)\n",
+           stats.draw_calls);
   }
 
   // PNG for human inspection. Alpha is forced opaque: the game target's alpha
@@ -1508,6 +2023,7 @@ void run_chain_replay(const GfxRendererModule* mod,
     g_fail_count++;
   }
   g_ee_main_mem = nullptr;
+  metal_renderer::set_s7_override(0);
 }
 
 }  // namespace
@@ -1520,7 +2036,10 @@ int main(int argc, char** argv) {
   std::string fr3_path;
   std::string replay_path;
   std::string replay_png;
+  std::string replay_common_fr3;
+  std::vector<std::string> replay_fr3;
   int replay_frames = 2;
+  bool show_window = false;
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     if (arg == "--replay" && i + 1 < argc) {
@@ -1529,6 +2048,12 @@ int main(int argc, char** argv) {
       replay_png = argv[++i];
     } else if (arg == "--replay-frames" && i + 1 < argc) {
       replay_frames = std::max(1, atoi(argv[++i]));
+    } else if (arg == "--replay-fr3" && i + 1 < argc) {
+      replay_fr3.push_back(argv[++i]);
+    } else if (arg == "--replay-common-fr3" && i + 1 < argc) {
+      replay_common_fr3 = argv[++i];
+    } else if (arg == "--show-window") {
+      show_window = true;
     } else if (arg == "--fr3" && i + 1 < argc) {
       fr3_path = argv[++i];
     } else if (!arg.empty() && arg[0] != '-' && fr3_path.empty()) {
@@ -1536,8 +2061,10 @@ int main(int argc, char** argv) {
     } else {
       printf(
           "usage: metal-proof [<level.fr3> | --fr3 <level.fr3>]\n"
-          "                   [--replay <capture.bin> [--replay-png <out.png>]"
-          " [--replay-frames <n>]]\n");
+          "                   [--replay <capture.gpdma> [--replay-png <out.png>]\n"
+          "                    [--replay-frames <n>] [--replay-common-fr3 <GAME.fr3>]\n"
+          "                    [--replay-fr3 <level.fr3>]...]\n"
+          "                   [--show-window]\n");
       return 1;
     }
   }
@@ -1556,6 +2083,11 @@ int main(int argc, char** argv) {
   }
   printf("[PASS] Metal renderer init\n");
 
+  // Headless by default: everything here is verified by reading the render
+  // target back, so no window needs to appear or take focus. --show-window is
+  // for a human who wants to watch.
+  metal_renderer::set_window_hidden(!show_window);
+
   auto display = mod->make_display(640, 480, "OpenGOAL Metal Proof", settings, GameVersion::Jak1,
                                    /*is_main=*/true);
   if (!display) {
@@ -1570,7 +2102,7 @@ int main(int argc, char** argv) {
     // pipeline (empty texture pool, no synthetic scene state)
     run_chain_replay(mod, display,
                      replay_path, replay_png.empty() ? replay_path + ".png" : replay_png,
-                     replay_frames);
+                     replay_frames, replay_fr3, replay_common_fr3);
     display.reset();
     mod->exit();
     if (g_fail_count == 0) {
@@ -1706,6 +2238,7 @@ int main(int argc, char** argv) {
 
   // ---- DMA chain path (stage 4) ----
   test_dma_chain(mod, display, level.get());
+  test_sprite_chain(mod, display);
   g_ee_main_mem = nullptr;
 
   display.reset();

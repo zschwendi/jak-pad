@@ -92,4 +92,8 @@ _new-all-types.gc
 # game data and must never be committed
 *.dma-capture.bin
 *.dma-capture.bin.png
+*.gpdma
+*.gpdma.png
+dma-frame-*
+replay-*.png
 title-chain.bin

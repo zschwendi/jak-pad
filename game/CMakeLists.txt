@@ -361,6 +361,7 @@ if(APPLE)
         graphics/pipelines/metal/metal_pso_cache.mm
         graphics/pipelines/metal/metal_renderer.mm
         graphics/pipelines/metal/metal_sky_renderer.mm
+        graphics/pipelines/metal/metal_sprite_renderer.mm
         graphics/pipelines/metal/metal_texture.mm)
     list(APPEND RUNTIME_SOURCE ${METAL_PIPELINE_SOURCES})
     set_source_files_properties(${METAL_PIPELINE_SOURCES}
@@ -381,7 +382,8 @@ if(APPLE)
     endif()
     set(METAL_SHADER_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/scaffold.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/direct.metal)
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/direct.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/sprite.metal)
     set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad.metallib)
     add_custom_command(
         OUTPUT ${METAL_LIB}

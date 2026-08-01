@@ -31,6 +31,10 @@ namespace {
 
 MetalRenderer* g_renderer = nullptr;
 
+// When set, make_display creates a hidden window (see metal_renderer::
+// set_window_hidden). Must be set before make_display.
+bool g_hidden_window = false;
+
 // texture pool for the Metal pipeline (the analog of GraphicsData::texture_pool
 // in the GL pipeline). Created with the display, once the device exists.
 std::shared_ptr<TexturePool> g_texture_pool;
@@ -199,6 +203,14 @@ ChainStats get_chain_stats() {
   return g_renderer ? g_renderer->chain_stats() : ChainStats{};
 }
 
+void set_s7_override(u32 s7_ptr) {
+  metal_set_s7_override(s7_ptr);
+}
+
+void set_window_hidden(bool hidden) {
+  g_hidden_window = hidden;
+}
+
 bool read_texture_sample(const TextureSampleSpec& spec, FramePixels* out) {
   return g_renderer && g_renderer->read_texture_sample(spec, out);
 }
@@ -240,8 +252,15 @@ static std::shared_ptr<GfxDisplay> metal_make_display(int width,
                                                       GfxGlobalSettings& /*settings*/,
                                                       GameVersion version,
                                                       bool is_main) {
-  SDL_Window* window = SDL_CreateWindow(
-      title, width, height, SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+  SDL_WindowFlags flags =
+      SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+  if (g_hidden_window) {
+    // headless: the CAMetalLayer still renders and can be read back, but no
+    // window appears or takes focus. Used by the proof/replay tools, which
+    // verify by readback rather than by looking at the screen.
+    flags |= SDL_WINDOW_HIDDEN;
+  }
+  SDL_Window* window = SDL_CreateWindow(title, width, height, flags);
   if (!window) {
     lg::error("Metal pipeline could not create window: {}", SDL_GetError());
     return NULL;

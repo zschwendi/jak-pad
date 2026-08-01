@@ -24,7 +24,7 @@ to a renderer (`game/graphics/opengl_renderer/OpenGLRenderer.h:66-76`).
 | `foreground/Merc2` | skinned character meshes + envmap ("merc"/"emerc") | yes |
 | `foreground/Generic2` | VU1 "generic" fallback path | yes |
 | `foreground/Shadow2`, `ShadowRenderer` | shadow volumes (Shadow2 = Jak 2/3, ShadowRenderer = Jak 1) | ShadowRenderer |
-| `sprite/Sprite3` (+`_Distort`, `_Glow`, `GlowRenderer`) | particles, screen distortion, glow probes | yes |
+| `sprite/Sprite3` (+`_Distort`, `_Glow`, `GlowRenderer`) | particles, screen distortion, glow probes | yes (Sprite3 ported; distort/glow pending) |
 | `ocean/*` | ocean surface near/mid/far, generated ocean texture, envmap | yes |
 | `SkyRenderer`, `SkyBlendCPU`/`SkyBlendGPU` | sky texture blending (CPU and GPU variants) | yes (CPU variant suffices initially) |
 | `EyeRenderer` | renders eyes into small textures | yes |
@@ -141,7 +141,9 @@ come from a `UIView`/SwiftUI instead of SDL.
    multidraw loops).
 6. Foreground — *Planned*: Merc2 (bones via buffer offsets), Generic2, ShadowRenderer,
    EyeRenderer.
-7. Sprite/effects — *Planned*: Sprite3, distort, glow, DepthCue, ocean, post effects.
+7. Sprite/effects — *Partially implemented*: Sprite3's 2D / HUD / 3D sprite paths are
+   ported and verified (see §Current state); the distorter's DMA is walked but its
+   drawing, plus glow, DepthCue, ocean and post effects, remain *Planned*.
 8. iPad presentation — *Planned*: drive the same backend from a `CAMetalLayer` provided by
    the SwiftUI app instead of SDL; controller/input wiring; simulator first, then physical
    device per AGENTS.md gates.
@@ -249,7 +251,8 @@ come from a `UIView`/SwiftUI instead of SDL.
     arm64; the Metal port uses portable scalar math with the same fixed-point
     semantics, so the sky actually blends on Apple silicon. The sky-blend buckets'
     trailing tfrag-trans content is stage-5 territory: consumed, counted, logged once.
-  - Verified by `metal-proof` (117 checks; all previous checks still pass;
+  - Verified by `metal-proof` (now 144 checks without arguments, 149 with an `.fr3`;
+    all previous checks still pass;
     `MTL_DEBUG_LAYER=1` clean): a constructed Jak 1-shaped chain (initial CALL,
     70-slot bucket array, empty-bucket CALL/RET structure, NOP+DIRECT vif transfers)
     goes through the real `send_chain` module hook and is verified by readback -
@@ -262,36 +265,84 @@ come from a `UIView`/SwiftUI instead of SDL.
     (`vil1-sky-00` verified) end to end. Evidence level: constructed chains matching
     the asserted real-chain structure — upstream has no DMA capture/replay mechanism
     in this tree, and the live game does not yet drive this branch.
-- **Implemented** (captured-chain replay): `metal-proof --replay <capture.bin>
-  [--replay-png <out.png>] [--replay-frames <n>]` replays a frame of real game DMA
-  captured by the runtime track's `__send-gfx-dma-chain` hook
-  (`game/kernel/core/dma_capture.cpp` on the runtime branch, which serializes the
-  chain in `FixedChunkDmaCopier::serialize_last_result` form: u32 start offset +
-  POD vector of the copied 128 kB chunks with tag addresses rewritten to buffer
-  offsets). `metal_chain_replay.{h,cpp}` loads the file, relocates every DMA tag
-  address to a chunk-aligned base (1 MB) inside a fake EE memory (the copier
-  rejects addresses under its 512 kB low-memory protect), prints a per-bucket
-  payload inventory, and the proof then drives the chain through the real
-  `send_chain` module hook and saves the rendered frame as a PNG. Capture files
-  and replay PNGs derive from the player's game data: they stay outside the
-  repository (`.gitignore` carries guard patterns).
-  - Findings from the first real capture (title boot, frame 1): the chain is the
-    full 70-bucket Jak 1 frame structure with fog color set, but carries only
-    48 bytes of payload - one GIF A+D packet in DEBUG_NO_ZBUF (ZBUF_1 `zbp` 448 /
-    PSMZ24 / `zmsk`, TEST_1 ztest ALWAYS), which the Metal DirectRenderer consumes
-    as GS state. Every other bucket is empty-bucket structure. The frame renders
-    (honestly) black; all dispatch/DirectRenderer asserts held and the readback
-    verifies a no-draw frame stays black.
-  - Gaps this exposed for the capture format (runtime-track follow-up): the hook
-    can only write the *first* chain after boot, which precedes any visible
-    title drawing (the same 120-frame run reports later chains up to 5 chunks vs
-    frame 1's 3, so content grows once the title/level load settles) - it needs a
-    frame-selectable capture. And PC_PORT texture-upload packets embed EE pointers
-    to GOAL texture-page structs whose memory is *not* part of the copied chunks;
-    replaying texture uploads faithfully needs the capture to carry an EE memory
-    snapshot (or at least the referenced tpage structs) so slots can link, plus
-    fr3 textures loaded into the pool. Until then missing textures resolve to the
-    pool placeholder and are reported, never guessed.
+- **Implemented** (captured-chain replay, version 2 captures): `metal-proof --replay
+  <capture.gpdma> [--replay-png <out.png>] [--replay-frames <n>]
+  [--replay-common-fr3 <GAME.fr3>] [--replay-fr3 <level.fr3>]...` replays one frame of
+  real game DMA captured by the runtime track's `__send-gfx-dma-chain` hook
+  (`game/kernel/core/dma_capture.cpp` on the runtime branch, which documents the file
+  format byte for byte).
+  - `metal_chain_replay.{h,cpp}` reads both capture versions. Version 1 is the chain
+    alone (`FixedChunkDmaCopier::serialize_last_result` form); version 2 adds an 80-byte
+    `GPDMACAP` header, the same chain section unchanged, and a snapshot of EE main memory
+    stored as the copier's 128 kB chunks with the all-zero ones omitted and each stored
+    chunk LZO-compressed (lzokay, already vendored). The snapshot is what makes the
+    chain's *pointers* resolve: the PC-port texture-upload packets carry EE addresses of
+    GOAL `texture-page` structs that live in the level and global heaps, not in the chain.
+  - The chain image is placed in the longest run of chunks the snapshot left empty
+    (`place_chain_in_ee`), so replaying it cannot land on captured data, and the header's
+    `s7` is installed with `metal_renderer::set_s7_override` because a replay has no
+    booted GOAL kernel to ask.
+  - `--replay-fr3` / `--replay-common-fr3` load extracted level textures into the pool
+    the way the GL loader's `TextureLoaderStage` does. The Metal path does not run the
+    streaming Loader yet and the runtime's `__pc-set-levels` is stubbed, so the caller
+    names the levels the frame used.
+  - The pool is then primed with every `texture-page` still live in the EE snapshot
+    (`find_texture_pages`). A single frame only uploads the pages *that* frame touched,
+    but the VRAM slots it draws from were filled over many earlier frames - the debug
+    font among them. The pages are found without any symbol-table knowledge: a GOAL basic
+    object stores its type pointer in the word before it, so one page address from the
+    chain yields the `texture-page` type pointer and every other occurrence of that word
+    marks another page. Candidates are validated (plausible texture count, in-range name
+    and per-texture pointers) before the pool follows them.
+  - Results on the runtime track's title-screen captures (Jak 1, title + Sandover
+    village), all rendered through the real `send_chain` module hook:
+    - frame 838/839/840 (~154 kB of payload each): the sky renders for real - the
+      Sandover sunset, blended by the ported SkyBlendCPU and drawn by the ported
+      SkyRenderer/DirectRenderer - and the title's **"PRESS START" draws in the game's
+      own font**, as DEBUG-bucket DirectRenderer content sampling the real font texture.
+      4 draws / 88 triangles per frame, 10 texture upload packets applied, ~160 k lit
+      pixels. Consumed but not drawn (counted, logged once): ocean-mid-far 82.5 kB,
+      ocean-near 38.9 kB, tie 5.6 kB, tfrag 5.8 kB, shrub, merc, generic, eyes, and
+      992 bytes of tfrag-trans inside the sky-blend bucket.
+    - frame 100 (14 kB): renders black, honestly. Its content is the merc logo and
+      character models (not ported) plus a 160-byte sky-draw that is a black quad
+      because nothing had been blended into the sky texture that frame.
+    - the **sprite bucket carries no sprites in any of these captures**. Its 4416 bytes
+      are exactly the per-frame setup (distorter GS setup 112 B + sine tables 2224 B +
+      aspect 16 B + direct setup 48 B + frame data 656 B + 3D matrix 80 B + HUD matrix
+      1280 B); the title text is DirectRenderer content, not sprites. The sprite
+      renderer consumes all of it and reports zero sprites.
+  - Capture files and replay PNGs derive from the player's game data: they stay outside
+    the repository (`.gitignore` carries guard patterns).
+- **Implemented** (stage 7 part 1, the sprite renderer): `metal_sprite_renderer.{h,mm}`
+  + `shaders/sprite.metal`, the Sprite3 port for Jak 1.
+  - The DMA walk, the GS state machine (adgif -> `DrawMode`), the per-(texture, mode)
+    bucketing and the four-vertices-per-sprite expansion are the GL logic unchanged. At
+    the flush boundary the `DrawMode` becomes a PSO key, a depth-stencil key and a
+    sampler key - the Metal analog of `setup_opengl_from_draw_mode`, including all seven
+    GS blend mappings, the constant-blend factor, the atest-NEVER depth-write trick and
+    the alpha-fail double draw. Strips are drawn with one indexed draw per bucket;
+    Metal restarts on the GL renderer's `0xFFFFFFFF` index natively.
+  - `shaders/sprite.metal` is the MSL port of `sprite3_3d.{vert,frag}`, line for line,
+    with two deliberate differences: Metal's clip-space z is `[0,1]`, so the GL
+    `z / 8388608 - 1` becomes `z / 16777216`, and the GL `HEIGHT_SCALE`/`SCISSOR_ADJUST`
+    text substitutions arrive as uniforms.
+  - Flushes are bounded by one stream-buffer page (8192 sprites) rather than the GL
+    renderer's 23040; the GL renderer already flushes mid-block at its own limit, so this
+    is the same behaviour with a different threshold.
+  - Not ported, counted and logged rather than dropped: the distorter's *drawing* (its
+    DMA is walked exactly like `Sprite3::distort_dma`, so the chain stays in sync and the
+    sprite count is reported); glow; the Jak 2/3 paths. View-frustum culling is skipped
+    because the Metal path receives no PC vis data yet - the GL renderer skips it in
+    exactly that case too.
+  - Verified by `metal-proof` pixel readback over a constructed sprite bucket that
+    matches every packet `Sprite3` asserts about a real chain (distorter GS setup + sine
+    tables, frame data, 3D matrix, group-0 chunks, the fake-shadow flush, the HUD matrix
+    and group-1 chunks): a world-space 2D quad and a 3D quad land on their computed
+    screen positions with the expected modulated color and their edges fall where the
+    scale says; two HUD sprites resolve their four texture quadrants correctly (which
+    checks the `st_array`/vertex-id wiring end to end), and the second one moves by the
+    `hud_hvdf_user[0]` entry its matrix index selects.
 - **Experimental**: the validation scene still renders when no chain is pending (keeps
   the window alive and the scaffold checks meaningful); its draw region is a 4:3 fit
   of the window. The Metal pipeline does not run the Loader yet, so nothing feeds
@@ -301,5 +352,62 @@ come from a `UIView`/SwiftUI instead of SDL.
   eye-renderer and texture-animator paths of the upload handler, background renderers
   (TFragment/Tie3/Shrub) for the skipped buckets, live-game validation once the ARM64
   runtime branch and this renderer branch meet.
+- **Headless by default**: `metal-proof` (and therefore every replay) creates its SDL
+  window with `SDL_WINDOW_HIDDEN` via `metal_renderer::set_window_hidden`. The
+  `CAMetalLayer` still renders and is read back, so nothing about the checks changes,
+  but no window appears or steals focus. Pass `--show-window` to watch.
 - The OpenGL renderer is untouched and remains the default (`gfx.cpp` still selects
   `GfxPipeline::OpenGL`).
+
+## 5. Next targets: Ocean and Merc2 (scoped, not started)
+
+These are the two biggest payload carriers left in the captured title frames (ocean
+~121 kB/frame, merc ~4.5 kB/frame). Scoped from the GL sources; both are *Investigating*
+only in the sense that the work below is not started - the data flow itself is settled.
+
+**Ocean first.** It has *no* Loader or level-data dependency: nothing under
+`game/graphics/opengl_renderer/ocean/` mentions `tfrag3`, `LevelData` or `Loader`.
+Everything is DMA plus VU1 emulation, and ~10k of its ~14k lines are the `*_PS2.cpp` /
+`*_PC.cpp` VU emulators, which contain no GL and port unchanged.
+
+- Entry points: `OceanMidAndFar` (`ocean/OceanMidAndFar.cpp:25`, jak1 path `:48`,
+  `BucketId::OCEAN_MID_AND_FAR`) and `OceanNear` (`ocean/OceanNear.cpp:25`, jak1 `:48`,
+  `BucketId::OCEAN_NEAR`). They own `OceanTexture`, `OceanMid` and
+  `CommonOceanRenderer`; `OceanEnvmap` is Jak 2/3 only.
+- Real GL surface: `CommonOceanRenderer.cpp` (1 VAO, 3 index buffers, 5 draws across
+  `flush_near`/`flush_mid`) + `OceanTexture.cpp` (a 128x128 render target with 8 mip
+  levels generated by a custom 8-pass chain, *not* `glGenerateMipmap`, with a deliberate
+  `max(0, 1 - 0.51*i)` alpha fade per level) + ~60 GL lines in `OceanTexture_PC.cpp`.
+- Suggested order and first proofs: (1) ocean-far only - it is plain GIF forwarded to the
+  already-ported DirectRenderer, so the horizon band renders with no new code;
+  (2) `OceanTexture`, whose 128x128 result can be read back and compared level by level,
+  the strongest readback proof available here; (3) `CommonOceanRenderer` + `OceanMid`;
+  (4) `OceanNear`.
+- The one architectural decision: `MetalFrameContext` currently hands bucket renderers an
+  already-open render encoder, and `OceanTexture` needs 1 + 8 separate offscreen passes.
+  Either expose the `MTLCommandBuffer` on the context, or run ocean-texture generation
+  before the game encoder opens. The latter is cleaner.
+- Faithfulness notes to preserve rather than "fix": both `OceanTexture` instances publish
+  to the same VRAM slot (8160 on Jak 1) and the last bucket wins, and
+  `CommonOceanRenderer.cpp:433` compares against the Jak 2 slot with no Jak 1 branch.
+
+**Merc2 after a Metal Loader stage.** Merc's per-frame DMA is only control data: the
+setup packet, `VuLights`, the flags quadword, and *EE pointers* to bone matrices
+(`Merc2.cpp:514` dereferences EE main memory - which a replay can satisfy, since the
+capture carries the snapshot). The geometry is not in the chain at all: it comes from
+`render_state->loader->get_merc_model(name)` (`Merc2.cpp:419`) returning a
+`tfrag3::MercModel` plus the level's `merc_vertices` / `merc_indices` GPU buffers
+(`loader/common.h:27-28`, filled by `loader/LoaderStages.cpp:644-676`).
+
+- So the blocking item is a Metal loader upload stage - `tfrag3::Level::merc_data`
+  into `MTLBuffer`s and a `Loader*` on `MetalSharedRenderState` - which is larger than
+  Merc2 itself and is the same prerequisite the background renderers need.
+- Merc2 itself: 1671 lines across `foreground/Merc2.*` + `Merc2BucketRenderer.*`, plus
+  `merc2.{vert,frag}` and `emerc.{vert,frag}`. Eight Jak 1 buckets route to one shared
+  instance. The defining GL feature is the bone UBO: a 512 kB `GL_UNIFORM_BUFFER` with
+  `glBindBufferRange(..., sizeof(vec4) * draw.first_bone, 128 * sizeof(ShaderMercMat))`
+  per draw (`Merc2.cpp:1326`), which maps to `setVertexBuffer:offset:` with the alignment
+  query replaced by `MTLDevice.minimumConstantBufferOffsetAlignment`. The `std140`
+  `mat3` padding must be reproduced exactly. Primitive restart maps for free.
+- The color-mask double draw (`Merc2.cpp:1332-1342`) is dead on Jak 1 and can be skipped;
+  `EyeRenderer` is not ported, so face textures fall back to the placeholder.

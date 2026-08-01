@@ -32,6 +32,9 @@
 class TexturePool;
 class MetalSkyBlendHandler;
 
+// Backs metal_renderer::set_s7_override (see metal_pipeline.h).
+void metal_set_s7_override(u32 s7_ptr);
+
 // Vertex layout for the scaffold shader. Must match ScaffoldVertexIn in
 // shaders/scaffold.metal.
 struct ScaffoldVertex {

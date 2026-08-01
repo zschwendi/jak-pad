@@ -73,6 +73,13 @@ struct ChainStats {
   int sky_blends = 0;
   int cloud_draws = 0;
   int cloud_blends = 0;
+  // sprite bucket, from the last chain frame
+  int sprites_2d = 0;
+  int sprites_3d = 0;
+  int sprites_hud = 0;
+  int sprites_distort = 0;  // DMA consumed; distort drawing is not ported
+  int sprite_draws = 0;
+  int sprite_missing_textures = 0;
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets
@@ -90,6 +97,17 @@ bool read_last_frame(FramePixels* out);
 bool read_present_frame(const PresentTestOptions& opts, FramePixels* out);
 
 ScaffoldStats get_stats();
+
+// Replay/test hook: use this GOAL symbol-table pointer instead of the live
+// kernel's `offset_of_s7()`. A replay runs without a booted GOAL kernel, so the
+// kernel's value has no meaning there, while a capture carries the value its
+// frame actually ran with. 0 restores the kernel's value.
+void set_s7_override(u32 s7_ptr);
+
+// Create the next display's window hidden. The CAMetalLayer still renders and
+// can be read back, so the proof and the chain replay run headless: no window
+// appears and nothing steals focus. Must be called before make_display.
+void set_window_hidden(bool hidden);
 
 // --- texture path (plain C++ mirror of the Objective-C++ API in
 // metal_texture.h, so tests can drive it) ----------------------------------
