@@ -44,6 +44,9 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${JAK1_KERNEL_CORE_ROOT}/game/kernel/jak1/kscheme.cpp"
     # memory card backing store (portable, uses only the C++ filesystem)
     "${JAK1_KERNEL_CORE_ROOT}/game/sce/sif_ee_memcard.cpp"
+    # the PS2 system configuration the boot code reads: aspect, language and the clock. Portable
+    # already - it is what upstream's desktop port answers sceScfGet* with.
+    "${JAK1_KERNEL_CORE_ROOT}/game/sce/libscf.cpp"
     # portable entry point + the stubs for everything deliberately left out
     "${CMAKE_CURRENT_LIST_DIR}/kernel_core.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/desktop_seams.cpp"
