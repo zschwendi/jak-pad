@@ -793,6 +793,50 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_include_directories(jak1-thread-switch-test PRIVATE "${AOT_TSW_DIR}")
         target_link_libraries(jak1-thread-switch-test jak1-kernel-core)
         add_test(NAME jak1-thread-switch-test COMMAND jak1-thread-switch-test)
+
+        # The Jak 2 boot probe: the jak2 GOAL kernel prefix - the eight object files KERNEL.CGO
+        # holds (goal_src/jak2/dgos/kernel.gd) - emitted by the C backend for jak2 and loaded
+        # into the jak2 kernel out of the player's own KERNEL.CGO, then the jak2 kernel
+        # dispatcher frame after frame. Skips cleanly without GOALPAD_JAK2_DATA_DIR.
+        set(JAK2_AOT_BOOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-boot-jak2")
+        set(JAK2_AOT_BOOT_TAGS gcommon gstring_h gkernel_h gkernel pskernel gstring dgo_h gstate)
+        list(LENGTH JAK2_AOT_BOOT_TAGS JAK2_AOT_BOOT_FILE_COUNT)
+
+        set(JAK2_AOT_BOOT_OUTPUTS "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.c"
+                "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.h")
+        set(JAK2_AOT_BOOT_C_SOURCES "")
+        foreach(tag IN LISTS JAK2_AOT_BOOT_TAGS)
+            list(APPEND JAK2_AOT_BOOT_C_SOURCES "${JAK2_AOT_BOOT_DIR}/${tag}.c")
+            list(APPEND JAK2_AOT_BOOT_OUTPUTS "${JAK2_AOT_BOOT_DIR}/${tag}.c"
+                    "${JAK2_AOT_BOOT_DIR}/${tag}_generated.h")
+        endforeach()
+
+        file(GLOB_RECURSE JAK2_AOT_BOOT_GOAL_SOURCES CONFIGURE_DEPENDS
+                "${CMAKE_SOURCE_DIR}/goal_src/jak2/*.gc")
+        add_custom_command(
+                OUTPUT ${JAK2_AOT_BOOT_OUTPUTS}
+                COMMAND $<TARGET_FILE:goalc-cbackend-sweep>
+                        --game jak2
+                        --project-path "${CMAKE_SOURCE_DIR}"
+                        --limit ${JAK2_AOT_BOOT_FILE_COUNT}
+                        --c-output-dir "${JAK2_AOT_BOOT_DIR}"
+                        --report "${JAK2_AOT_BOOT_DIR}/coverage.tsv"
+                DEPENDS goalc-cbackend-sweep ${JAK2_AOT_BOOT_GOAL_SOURCES}
+                        "${CMAKE_SOURCE_DIR}/goal_src/goal-lib.gc"
+                        "${CMAKE_SOURCE_DIR}/goal_src/jak2/game.gp"
+                COMMENT
+                "Emitting C for the first ${JAK2_AOT_BOOT_FILE_COUNT} Jak 2 object files")
+
+        add_executable(jak2-data-boot-test
+                kernel/core/jak2_boot_test.cpp
+                "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.c"
+                ${JAK2_AOT_BOOT_C_SOURCES})
+        set_source_files_properties(
+                "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.c" ${JAK2_AOT_BOOT_C_SOURCES}
+                PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
+        target_include_directories(jak2-data-boot-test PRIVATE "${JAK2_AOT_BOOT_DIR}")
+        target_link_libraries(jak2-data-boot-test jak2-kernel-core)
+        add_test(NAME jak2-data-boot-test COMMAND jak2-data-boot-test --frames 100)
     endif()
 endif()
 

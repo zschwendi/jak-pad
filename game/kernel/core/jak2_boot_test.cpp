@@ -1,0 +1,222 @@
+/*!
+ * @file jak2_boot_test.cpp
+ * Boot the Jak 2 GOAL kernel the way the game boots it: KERNEL.CGO out of the player's own data,
+ * in DGO order, with the code of every object supplied by the AOT path and the data of every
+ * object read off the disc, then the GOAL kernel dispatcher frame after frame.
+ *
+ * This is the jak2 analogue of data_boot_test.cpp's first act and is a progress probe: it reports
+ * how far the boot got and what stopped it. Nothing here may skip a step to get further. The
+ * machine layer is the loudly-failing stub set - every machine function GOAL touches is named on
+ * stdout - so a run that passes is measuring the kernel, not claiming the game works.
+ *
+ * Needs a data directory, given by --data-dir or GOALPAD_JAK2_DATA_DIR, and reports that it was
+ * skipped when there is none. --with-game goes on to attempt GAME.CGO and reports honestly where
+ * that stops; it is an exploration flag, not a passing test.
+ */
+
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <string>
+
+extern "C" {
+#include "aot_boot_manifest.h"
+}
+
+#include "common/goal_constants.h"
+#include "common/link_types.h"
+#include "common/log/log.h"
+
+#include "game/kernel/common/kboot.h"
+#include "game/kernel/common/klink.h"
+#include "game/kernel/common/kprint.h"
+#include "game/kernel/common/kscheme.h"
+#include "game/kernel/common/kernel_types.h"
+#include "game/kernel/core/aot_loader.h"
+#include "game/kernel/core/dgo_loader.h"
+#include "game/kernel/core/kernel_core.h"
+#include "game/kernel/jak2/klisten.h"
+#include "game/kernel/jak2/kscheme.h"
+#include "game/runtime.h"
+
+namespace {
+
+void say(const char* format, ...) __attribute__((format(printf, 1, 2)));
+void say(const char* format, ...) {
+  va_list args;
+  va_start(args, format);
+  std::vfprintf(stdout, format, args);
+  va_end(args);
+  std::fflush(stdout);
+}
+
+/*! Anything GOAL printed since the last call, so a failing top-level's own message is visible. */
+void drain_goal_print_buffer() {
+  const char* printed = Ptr<char>(PrintBufArea.offset + sizeof(ListenerMessageHeader)).c();
+  if (printed[0]) {
+    say("GOAL said: %s\n", printed);
+    clear_print();
+  }
+}
+
+void report_heap(const char* what) {
+  goal_kernel_core_state state;
+  if (goal_kernel_core_get_state(&state) == GOAL_KERNEL_CORE_OK) {
+    say("  %s: global heap at #x%x (%u bytes used), %d symbols\n", what,
+        state.global_heap_current_offset, state.global_heap_used_bytes, state.symbol_count);
+  }
+}
+
+std::string object_name_of(const char* source) {
+  std::string path = source;
+  const auto slash = path.find_last_of('/');
+  if (slash != std::string::npos) {
+    path = path.substr(slash + 1);
+  }
+  const auto dot = path.find_last_of('.');
+  if (dot != std::string::npos) {
+    path = path.substr(0, dot);
+  }
+  return path;
+}
+
+/*! Tell the DGO loader which native translation unit stands in for each object it will meet. */
+void register_aot_objects() {
+  for (int i = 0; i < goal_aot_boot_file_count; i++) {
+    const auto& entry = goal_aot_boot_files[i];
+    goal_aot_object_file file = {entry.tag,       entry.statics,         *entry.static_count,
+                                 entry.functions, *entry.function_count, entry.link};
+    goal_aot_register_object(object_name_of(entry.source).c_str(), &file);
+  }
+}
+
+int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
+  goal_kernel_core_set_data_directory(data_dir.c_str());
+  say("data directory: %s\n", data_dir.c_str());
+
+  // keep the harness hermetic: saves go to a scratch directory, never to the player's own
+  const std::string saves_dir =
+      (std::filesystem::temp_directory_path() / "goalpad-jak2-boot-saves").string();
+  std::filesystem::remove_all(saves_dir);
+  goal_kernel_core_set_saves_directory(saves_dir.c_str());
+
+  goal_dgo_load_stats stats;
+  const u32 boot_flags = LINK_FLAG_OUTPUT_LOAD | LINK_FLAG_EXECUTE | LINK_FLAG_PRINT_LOGIN;
+
+  // InitHeapAndSymbol's kernel load
+  say("\n=== KERNEL.CGO\n");
+  if (goal_dgo_load("KERNEL", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
+    say("FAILED: %s\n", goal_dgo_last_error());
+    drain_goal_print_buffer();
+    say("  got through %d of KERNEL.CGO's objects (%d code, %d data)\n", stats.objects,
+        stats.code_objects, stats.data_objects);
+    return 1;
+  }
+  drain_goal_print_buffer();
+  say("  %d objects: %d code, %d data; heap use %u -> %u bytes\n", stats.objects,
+      stats.code_objects, stats.data_objects, stats.heap_used_before, stats.heap_used_after);
+  report_heap("after KERNEL.CGO");
+
+  uint32_t kernel_version = 0;
+  goal_kernel_core_lookup("*kernel-version*", nullptr, &kernel_version);
+  if (!kernel_version) {
+    say("FAILED: the GOAL kernel did not set *kernel-version*\n");
+    return 1;
+  }
+  say("  GOAL kernel version %u.%u\n", kernel_version >> 0x13, (kernel_version >> 3) & 0xffff);
+
+  // InitListener, then InitMachineScheme: the machine layer is not in this library, so the stubs
+  // stand in for it and name themselves the first time GOAL calls one.
+  jak2::InitListener();
+  goal_kernel_core_stub_machine_layer(0);
+
+  if (with_game) {
+    say("\n=== GAME.CGO (exploratory; expected to stop at the first missing subsystem)\n");
+    if (goal_dgo_load("GAME", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
+      say("STOPPED: %s\n", goal_dgo_last_error());
+      drain_goal_print_buffer();
+      say("  got through %d of GAME.CGO's objects (%d code, %d data)\n", stats.objects,
+          stats.code_objects, stats.data_objects);
+      return 1;
+    }
+    drain_goal_print_buffer();
+    say("  %d objects: %d code, %d data; heap use %u -> %u bytes\n", stats.objects,
+        stats.code_objects, stats.data_objects, stats.heap_used_before, stats.heap_used_after);
+    report_heap("after GAME.CGO");
+  }
+
+  // KernelCheckAndDispatch's loop body, without the listener half: the GOAL kernel's own frame,
+  // running processes and states.
+  uint32_t dispatcher = 0;
+  if (goal_kernel_core_lookup("kernel-dispatcher", nullptr, &dispatcher) != GOAL_KERNEL_CORE_OK ||
+      !dispatcher) {
+    say("FAILED: kernel-dispatcher holds nothing\n");
+    return 1;
+  }
+  say("\n=== kernel-dispatcher: %d frames\n", dispatch_frames);
+  for (int frame = 1; frame <= dispatch_frames; frame++) {
+    call_goal_on_stack(Ptr<Function>(dispatcher), goal_kernel_stack_top(), s7.offset,
+                       g_ee_main_mem);
+    drain_goal_print_buffer();
+  }
+  report_heap("after the dispatcher");
+
+  say("\nBOOT: KERNEL.CGO is loaded and the Jak 2 GOAL kernel dispatcher ran %d frames.\n",
+      dispatch_frames);
+  return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  std::string data_dir;
+  int dispatch_frames = 100;
+  bool with_game = false;
+  for (int i = 1; i < argc; i++) {
+    const std::string arg = argv[i];
+    if (arg == "--data-dir" && i + 1 < argc) {
+      data_dir = argv[++i];
+    } else if (arg == "--frames" && i + 1 < argc) {
+      dispatch_frames = std::atoi(argv[++i]);
+    } else if (arg == "--verbose") {
+      goal_dgo_set_verbose(1);
+    } else if (arg == "--with-game") {
+      with_game = true;
+    } else {
+      std::fprintf(stderr, "unknown argument %s\n", arg.c_str());
+      return 2;
+    }
+  }
+  if (data_dir.empty()) {
+    const char* env = std::getenv("GOALPAD_JAK2_DATA_DIR");
+    data_dir = env ? env : "";
+  }
+  if (data_dir.empty()) {
+    std::printf(
+        "SKIPPED: no Jak 2 data directory.\n"
+        "This test loads the player's own extracted game data, which is not part of the\n"
+        "repository. Set GOALPAD_JAK2_DATA_DIR (or pass --data-dir) to the directory that\n"
+        "holds iso/ - what goal_src/jak2/game.gp calls $OUT - to run it.\n");
+    return 0;
+  }
+
+  lg::set_stdout_level(lg::level::warn);
+  lg::set_flush_level(lg::level::warn);
+  lg::initialize();
+
+  if (goal_kernel_core_initialize() != GOAL_KERNEL_CORE_OK) {
+    std::printf("FAIL: %s\n", goal_kernel_core_last_error());
+    return 1;
+  }
+  clear_print();
+  register_aot_objects();
+  std::printf("%d AOT translation units registered by object name\n", goal_aot_boot_file_count);
+
+  const int result = run_boot(data_dir, dispatch_frames, with_game);
+
+  goal_aot_reset();
+  goal_kernel_core_shutdown();
+  return result;
+}
