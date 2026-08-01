@@ -1,5 +1,7 @@
 #include "metal_merc_model_pool.h"
 
+#include <algorithm>
+
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 #include "common/util/FileUtil.h"
@@ -91,6 +93,44 @@ bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
     m_by_name[model.name].push_back(Ref{&model, lev});
   }
   m_levels.push_back(std::move(entry));
+  return true;
+}
+
+bool MetalMercModelPool::remove_level(const std::string& name) {
+  auto it = std::find_if(m_levels.begin(), m_levels.end(),
+                         [&](const auto& lev) { return lev->name == name; });
+  if (it == m_levels.end()) {
+    return false;
+  }
+  MetalMercLevel* lev = it->get();
+  for (const auto& model : lev->level->merc_data.models) {
+    auto refs = m_by_name.find(model.name);
+    if (refs == m_by_name.end()) {
+      continue;
+    }
+    auto& list = refs->second;
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&](const Ref& ref) { return ref.level == lev; }),
+               list.end());
+    if (list.empty()) {
+      m_by_name.erase(refs);
+    }
+  }
+  {
+    std::lock_guard<std::mutex> pool_lock(m_texture_pool->mutex());
+    for (size_t i = 0; i < lev->level->textures.size() && i < lev->textures.size(); i++) {
+      const auto& tex = lev->level->textures[i];
+      if (tex.load_to_pool && lev->textures[i]) {
+        m_texture_pool->unload_texture(PcTextureId::from_combo_id(tex.combo_id), lev->textures[i]);
+      }
+    }
+  }
+  for (u64 handle : lev->textures) {
+    if (handle) {
+      metal_texture_release(handle);
+    }
+  }
+  m_levels.erase(it);
   return true;
 }
 

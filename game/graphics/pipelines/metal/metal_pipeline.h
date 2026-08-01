@@ -311,6 +311,7 @@ void set_level_art_directory(const std::string& path);
 struct LevelArtStats {
   int requests = 0;         // set_levels calls whose list changed
   int levels_loaded = 0;    // levels loaded because the game asked for them
+  int levels_evicted = 0;   // levels released after the game stopped asking for them
   int load_failures = 0;    // levels the game asked for that would not load
   double last_load_ms = 0;  // how long the last load took
   std::string wanted;       // the last list the game asked for, joined with '+'
