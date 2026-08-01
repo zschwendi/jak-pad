@@ -55,6 +55,7 @@
 
 #include "game/graphics/display.h"
 #include "game/graphics/gfx.h"
+#include "game/graphics/opengl_renderer/background/background_common.h"
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/opengl_renderer/sprite/sprite_common.h"
 #include "game/graphics/pipelines/metal/metal_chain_replay.h"
@@ -1020,11 +1021,12 @@ void test_dma_chain(const GfxRendererModule* mod,
     chain.set_bucket_content((int)BucketId::TFRAG_TEX_LEVEL0, {t});
   }
 
-  // bucket 6 (TFRAG_LEVEL0, not ported): junk payload that must be counted
+  // bucket 11 (GENERIC_TFRAG_TEX_LEVEL0, not ported): junk payload that must be
+  // counted rather than silently dropped
   {
     ChainBuilder::Transfer t;
     t.data.resize(64, 0xAB);
-    chain.set_bucket_content((int)BucketId::TFRAG_LEVEL0, {t});
+    chain.set_bucket_content((int)BucketId::GENERIC_TFRAG_TEX_LEVEL0, {t});
   }
 
   // bucket 3 (SKY_DRAW): setup + qwc-5 draw setup + one draw packet
@@ -1770,6 +1772,134 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
 }
 
 // ---------------------------------------------------------------------------
+// Section: the level-geometry stage's portable ports of background_common.
+//
+// The Metal background renderers cannot include the GL background_common.h
+// (it pulls in the whole OpenGL renderer header chain), so the pure
+// computations are re-implemented in metal_level_data.mm. This section runs the
+// GL originals and the ports side by side on constructed data and requires
+// byte-identical results, which is what keeps the ports honest. Note that the
+// GL interp_time_of_day is hand-written SSE that reaches arm64 through
+// sse2neon, so this also checks the portable version against real SIMD output.
+// ---------------------------------------------------------------------------
+
+void test_background_common_parity() {
+  printf("--- level-geometry stage: background_common parity ---\n");
+
+  // The DMA control block is duplicated by layout, so its size must match.
+  check(metal_renderer::sizeof_pc_port_data_mirror() == sizeof(TfragPcPortData),
+        "TfragPcPortData layout mirror has the same size as the GL struct");
+  check(metal_renderer::sizeof_camera_data_mirror() == sizeof(GoalBackgroundCameraData),
+        "GoalBackgroundCameraData layout mirror has the same size as the GL struct");
+
+  // --- time of day ---
+  // A packed palette is groups of 4 colors x 8 palettes x 4 channels. Fill one
+  // with a spread of values, including the extremes that exercise the
+  // saturating accumulation.
+  constexpr u32 kColors = 256;
+  tfrag3::PackedTimeOfDay packed;
+  packed.color_count = kColors;
+  packed.data.resize((kColors / 4) * 128);
+  for (size_t i = 0; i < packed.data.size(); i++) {
+    packed.data[i] = (u8)((i * 37 + (i >> 3) * 11) & 0xff);
+  }
+
+  // itimes pack 8 palette weights x 4 channels into 4 quadwords of s32.
+  auto run_itimes = [&](const char* label, const math::Vector<s32, 4> itimes[4]) {
+    std::vector<math::Vector<u8, 4>> gl_out(kColors), metal_out(kColors);
+    memset(gl_out.data(), 0xcd, gl_out.size() * 4);
+    memset(metal_out.data(), 0xcd, metal_out.size() * 4);
+    interp_time_of_day(itimes, packed, gl_out.data());
+    metal_renderer::interp_time_of_day_for_test(itimes, packed, metal_out.data());
+    bool same = memcmp(gl_out.data(), metal_out.data(), kColors * 4) == 0;
+    check(same, fmt::format("interp_time_of_day matches the GL/SSE version ({})", label).c_str());
+    if (!same) {
+      for (u32 i = 0; i < kColors; i++) {
+        if (memcmp(&gl_out[i], &metal_out[i], 4) != 0) {
+          printf("  first difference at color %d: GL %d,%d,%d,%d vs Metal %d,%d,%d,%d\n", i,
+                 gl_out[i][0], gl_out[i][1], gl_out[i][2], gl_out[i][3], metal_out[i][0],
+                 metal_out[i][1], metal_out[i][2], metal_out[i][3]);
+          break;
+        }
+      }
+    }
+  };
+
+  {
+    // a plausible mid-blend: two palettes at half weight
+    math::Vector<s32, 4> itimes[4];
+    memset(itimes, 0, sizeof(itimes));
+    itimes[0][0] = 0x00400040;
+    itimes[0][1] = 0x00400040;
+    itimes[1][0] = 0x00400040;
+    itimes[1][1] = 0x00400040;
+    run_itimes("half blend of two palettes", itimes);
+  }
+  {
+    // every palette at full weight: the accumulation saturates
+    math::Vector<s32, 4> itimes[4];
+    for (int i = 0; i < 4; i++) {
+      for (int j = 0; j < 4; j++) {
+        itimes[i][j] = (s32)0x00ff00ff;
+      }
+    }
+    run_itimes("all palettes saturated", itimes);
+  }
+  {
+    // one palette only, and an odd set of weights per channel
+    math::Vector<s32, 4> itimes[4];
+    memset(itimes, 0, sizeof(itimes));
+    itimes[2][0] = 0x0011007f;
+    itimes[2][1] = 0x00030025;
+    run_itimes("single palette, uneven channels", itimes);
+  }
+
+  // --- culling ---
+  std::vector<tfrag3::VisNode> nodes(64);
+  for (size_t i = 0; i < nodes.size(); i++) {
+    auto& n = nodes[i];
+    n.bsphere = math::Vector4f((float)(i % 8) * 3000.f - 12000.f, (float)(i / 8) * 2500.f,
+                               (float)(i * 700) - 4000.f, 1500.f + (i % 5) * 400.f);
+    n.my_id = (u16)(i * 3);  // sparse ids, like a real BVH
+    n.child_id = 0;
+    n.num_kids = 0;
+    n.flags = 0;
+  }
+  nodes[7].my_id = 0xffff;  // the "no occlusion id" case
+
+  math::Vector4f planes[4] = {
+      math::Vector4f(0.6f, 0.1f, 0.79f, 0.f), math::Vector4f(-0.6f, 0.1f, 0.79f, 0.f),
+      math::Vector4f(0.f, 0.75f, 0.66f, 0.f), math::Vector4f(0.f, -0.75f, 0.66f, 0.f)};
+  // the fourth entry of the GL plane math is a per-plane offset row
+  planes[3] = math::Vector4f(500.f, -500.f, 250.f, -250.f);
+
+  std::vector<u8> occlusion(2048);
+  for (size_t i = 0; i < occlusion.size(); i++) {
+    occlusion[i] = (u8)((i * 73) & 0xff);
+  }
+
+  for (int with_occlusion = 0; with_occlusion < 2; with_occlusion++) {
+    const u8* occ = with_occlusion ? occlusion.data() : nullptr;
+    std::vector<u8> gl_out(nodes.size(), 0xcd), metal_out(nodes.size(), 0xcd);
+    cull_check_all_slow(planes, nodes, occ, gl_out.data());
+    metal_renderer::cull_check_all_slow_for_test(planes, nodes, occ, metal_out.data());
+    check(gl_out == metal_out,
+          fmt::format("cull_check_all_slow matches the GL version ({} occlusion string)",
+                      with_occlusion ? "with" : "without")
+              .c_str());
+    int visible = 0;
+    for (u8 v : metal_out) {
+      visible += v ? 1 : 0;
+    }
+    // a meaningless test if everything (or nothing) passes
+    check(visible > 0 && visible < (int)nodes.size(),
+          fmt::format("cull test actually culls ({} of {} nodes visible)", visible,
+                      (int)nodes.size())
+              .c_str());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Section (optional): real extracted Jak 1 textures from a user-supplied .fr3.
 // Never bundled; pass the path on the command line to enable.
 // ---------------------------------------------------------------------------
@@ -1821,6 +1951,86 @@ std::unique_ptr<tfrag3::Level> test_real_fr3(const char* path) {
   return level;
 }
 
+// The level-geometry stage on real data: load the same .fr3 through the Metal
+// loader and check what it reports against the level the test parsed itself,
+// then run the culling / time-of-day ports on the level's real BVH and palettes.
+void test_real_fr3_geometry(const char* path, const tfrag3::Level* parsed) {
+  printf("--- level-geometry stage: real fr3 (%s) ---\n", path);
+  auto result = metal_renderer::load_level_fr3(path, false);
+  check(result.ok, "Metal level loader accepted the fr3");
+  if (!result.ok) {
+    printf("  error: %s\n", result.error.c_str());
+    return;
+  }
+  printf("uploaded: %d tfrag + %d tie + %d shrub trees (lod 0), %.1f MB verts, %.1f MB indices\n",
+         result.tfrag_trees, result.tie_trees, result.shrub_trees,
+         result.vertex_bytes / (1024.f * 1024.f), result.index_bytes / (1024.f * 1024.f));
+  check(result.level_name == parsed->level_name, "loaded level keeps its name");
+  check(result.textures == (int)parsed->textures.size(), "every texture reached the pool");
+  check(result.tfrag_trees == (int)parsed->tfrag_trees[0].size(), "tfrag tree count matches");
+  check(result.tie_trees == (int)parsed->tie_trees[0].size(), "tie tree count matches");
+  check(result.shrub_trees == (int)parsed->shrub_trees.size(), "shrub tree count matches");
+  check(result.vertex_bytes > 0 && result.index_bytes > 0, "geometry buffers are not empty");
+
+  // The index list StripDraws point into is built by tfrag3's unpack(); verify
+  // the offsets the draw-run builder relies on are consistent with it.
+  {
+    tfrag3::TfragTree tree_copy;
+    bool checked = false;
+    for (const auto& tree : parsed->tfrag_trees[0]) {
+      tree_copy = tree;
+      tree_copy.unpack();
+      u32 expected = 0;
+      bool ok = true;
+      for (const auto& draw : tree_copy.draws) {
+        ok = ok && draw.unpacked.idx_of_first_idx_in_full_buffer == expected;
+        for (const auto& grp : draw.vis_groups) {
+          expected += grp.num_inds;
+        }
+      }
+      check(ok, "tfrag draws tile the tree's index buffer without gaps");
+      check(expected == tree_copy.unpacked.indices.size(),
+            "tfrag vis groups cover the whole index buffer");
+      checked = true;
+      break;
+    }
+    if (!checked) {
+      printf("(level has no tfrag trees; index-layout check skipped)\n");
+    }
+  }
+
+  // Real palettes and a real BVH through both implementations.
+  for (const auto& tree : parsed->tfrag_trees[0]) {
+    math::Vector<s32, 4> itimes[4];
+    memset(itimes, 0, sizeof(itimes));
+    itimes[0][0] = 0x00300030;
+    itimes[0][1] = 0x00300030;
+    itimes[3][2] = 0x00100010;
+    std::vector<math::Vector<u8, 4>> gl_out(tree.colors.color_count + 4);
+    std::vector<math::Vector<u8, 4>> metal_out(tree.colors.color_count + 4);
+    memset(gl_out.data(), 0xcd, gl_out.size() * 4);
+    memset(metal_out.data(), 0xcd, metal_out.size() * 4);
+    interp_time_of_day(itimes, tree.colors, gl_out.data());
+    metal_renderer::interp_time_of_day_for_test(itimes, tree.colors, metal_out.data());
+    check(memcmp(gl_out.data(), metal_out.data(), gl_out.size() * 4) == 0,
+          "interp_time_of_day matches on the level's real palettes");
+
+    math::Vector4f planes[4] = {
+        math::Vector4f(0.6f, 0.f, 0.8f, 0.f), math::Vector4f(-0.6f, 0.f, 0.8f, 0.f),
+        math::Vector4f(0.f, 0.6f, 0.8f, 0.f), math::Vector4f(0.f, -0.6f, 0.8f, 0.f)};
+    planes[3] = math::Vector4f(0.f, 0.f, 0.f, 0.f);
+    std::vector<u8> gl_vis(tree.bvh.vis_nodes.size(), 0xcd);
+    std::vector<u8> metal_vis(tree.bvh.vis_nodes.size(), 0xcd);
+    cull_check_all_slow(planes, tree.bvh.vis_nodes, nullptr, gl_vis.data());
+    metal_renderer::cull_check_all_slow_for_test(planes, tree.bvh.vis_nodes, nullptr,
+                                                 metal_vis.data());
+    check(gl_vis == metal_vis, "cull_check_all_slow matches on the level's real BVH");
+    break;
+  }
+
+  metal_renderer::unload_all_levels();
+}
+
 // ---------------------------------------------------------------------------
 // Section (optional): replay of one frame of captured game DMA (--replay).
 // The capture is what the runtime track's `__send-gfx-dma-chain` hook writes: a
@@ -1833,36 +2043,24 @@ std::unique_ptr<tfrag3::Level> test_real_fr3(const char* path) {
 // so the replay is told which levels' art the frame used).
 // ---------------------------------------------------------------------------
 
-// Loads the textures of one extracted level into the pool the way the GL
-// loader's TextureLoaderStage does. Returns the number added, -1 on failure.
-int load_fr3_textures(const char* path, bool is_common) {
-  if (!fs::exists(path)) {
-    printf("[FAIL] fr3 file does not exist: %s\n", path);
+// Loads one extracted level into the Metal renderer: textures into the pool the
+// way the GL loader's TextureLoaderStage does, and tfrag / tie / shrub geometry
+// into GPU buffers the way its Tfrag/Tie/ShrubLoadStage do. Returns false on
+// failure.
+bool load_fr3_level(const char* path, bool is_common) {
+  auto result = metal_renderer::load_level_fr3(path, is_common);
+  if (!result.ok) {
+    printf("[FAIL] load level %s: %s\n", path, result.error.c_str());
     g_fail_count++;
-    return -1;
+    return false;
   }
-  auto compressed = file_util::read_binary_file(std::string(path));
-  auto decomp = compression::decompress_zstd(compressed.data(), compressed.size());
-  u16 version = 0;
-  memcpy(&version, decomp.data(), 2);
-  if (version != tfrag3::TFRAG3_VERSION) {
-    printf("[FAIL] fr3 version %d does not match this build's %d\n", version,
-           tfrag3::TFRAG3_VERSION);
-    g_fail_count++;
-    return -1;
-  }
-  tfrag3::Level level;
-  Serializer ser(decomp.data(), decomp.size());
-  level.serialize(ser);
-  int added = 0;
-  for (const auto& tex : level.textures) {
-    if (metal_renderer::pool_add_texture(tex, is_common)) {
-      added++;
-    }
-  }
-  printf("[PASS] loaded level '%s': %d/%d textures into the pool%s\n", level.level_name.c_str(),
-         added, (int)level.textures.size(), is_common ? " (common)" : "");
-  return added;
+  printf(
+      "[PASS] loaded level '%s'%s: %d textures, geometry: %d tfrag + %d tie + %d shrub trees, "
+      "%.1f MB verts + %.1f MB indices\n",
+      result.level_name.c_str(), is_common ? " (common)" : "", result.textures,
+      result.tfrag_trees, result.tie_trees, result.shrub_trees,
+      result.vertex_bytes / (1024.f * 1024.f), result.index_bytes / (1024.f * 1024.f));
+  return true;
 }
 
 void run_chain_replay(const GfxRendererModule* mod,
@@ -1936,10 +2134,10 @@ void run_chain_replay(const GfxRendererModule* mod,
   // Loader yet, so the caller names the levels; without them the upload packets
   // resolve to the pool's placeholder, which is reported, never guessed.
   if (!common_fr3.empty()) {
-    load_fr3_textures(common_fr3.c_str(), true);
+    load_fr3_level(common_fr3.c_str(), true);
   }
   for (const auto& path : fr3_paths) {
-    load_fr3_textures(path.c_str(), false);
+    load_fr3_level(path.c_str(), false);
   }
 
   // A single frame only uploads the texture pages it touched, but the VRAM
@@ -1991,6 +2189,21 @@ void run_chain_replay(const GfxRendererModule* mod,
       stats.sprites_2d, stats.sprites_3d, stats.sprites_hud, stats.sprite_draws,
       stats.sprites_distort, stats.sprite_missing_textures);
   check(stats.direct_unsupported_blends == 0, "replay: no unsupported GS blend modes");
+
+  auto bg = metal_renderer::get_background_stats();
+  printf(
+      "level geometry: tfrag %d draws / %d tris, tie %d draws / %d tris, "
+      "shrub %d draws / %d tris; %d bucket(s) named an unloaded level, "
+      "%d missing textures, %d animator-slot draws, %d unexpected-DMA reports\n",
+      bg.tfrag_draws, bg.tfrag_tris, bg.tie_draws, bg.tie_tris, bg.shrub_draws, bg.shrub_tris,
+      bg.missing_levels, bg.missing_textures, bg.anim_slot_draws, bg.unexpected_dma);
+  check(bg.unexpected_dma == 0, "replay: every level-geometry bucket matched its renderer");
+  if (!fr3_paths.empty()) {
+    // the named levels are loaded, so nothing should fall back
+    check(bg.missing_levels == 0, "replay: every bucket's level was loaded");
+    check(bg.missing_textures == 0, "replay: every level-geometry draw found its texture");
+    check(bg.anim_slot_draws == 0, "replay: no Jak 2/3 texture-animator slots requested");
+  }
 
   int lit = 0;
   for (int i = 0; i < frame.width * frame.height * 4; i += 4) {
@@ -2234,6 +2447,12 @@ int main(int argc, char** argv) {
     level = test_real_fr3(fr3_path.c_str());
   } else {
     printf("(no .fr3 path given; skipping optional real-texture test)\n");
+  }
+
+  // ---- level-geometry stage (stage 5) ----
+  test_background_common_parity();
+  if (level) {
+    test_real_fr3_geometry(fr3_path.c_str(), level.get());
   }
 
   // ---- DMA chain path (stage 4) ----

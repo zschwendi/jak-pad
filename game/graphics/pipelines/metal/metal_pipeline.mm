@@ -17,6 +17,7 @@
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 
+#include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -232,6 +233,72 @@ u64 pool_add_texture(const tfrag3::Texture& tex, bool is_common) {
   }
   return metal_add_texture(g_renderer->device(), g_renderer->queue(), *g_texture_pool, tex,
                            is_common);
+}
+
+LevelLoadResult load_level_fr3(const std::string& path, bool is_common) {
+  LevelLoadResult result;
+  if (!g_renderer || !g_texture_pool) {
+    result.error = "no Metal display has been created";
+    return result;
+  }
+  auto* level = metal_level_data::load_fr3(g_renderer->device(), g_renderer->queue(),
+                                           *g_texture_pool, path, is_common, &result.error);
+  if (!level) {
+    return result;
+  }
+  result.ok = true;
+  result.level_name = level->level->level_name;
+  result.textures = (int)level->textures.size();
+  result.tfrag_trees = (int)level->tfrag[0].size();
+  result.tie_trees = (int)level->tie[0].size();
+  result.shrub_trees = (int)level->shrub.size();
+  result.vertex_bytes = level->vertex_bytes;
+  result.index_bytes = level->index_bytes;
+  return result;
+}
+
+void unload_all_levels() {
+  metal_level_data::clear();
+}
+
+BackgroundStats get_background_stats() {
+  BackgroundStats out;
+  if (!g_renderer) {
+    return out;
+  }
+  const auto& bg = g_renderer->background_state();
+  out.tfrag_draws = bg.tfrag_draws;
+  out.tfrag_tris = bg.tfrag_tris;
+  out.tie_draws = bg.tie_draws;
+  out.tie_tris = bg.tie_tris;
+  out.shrub_draws = bg.shrub_draws;
+  out.shrub_tris = bg.shrub_tris;
+  out.missing_levels = bg.missing_levels;
+  out.missing_textures = bg.missing_textures;
+  out.anim_slot_draws = bg.anim_slot_draws;
+  out.unexpected_dma = bg.unexpected_dma;
+  return out;
+}
+
+void interp_time_of_day_for_test(const math::Vector<s32, 4> itimes[4],
+                                 const tfrag3::PackedTimeOfDay& colors,
+                                 math::Vector<u8, 4>* out) {
+  metal_interp_time_of_day(itimes, colors, out);
+}
+
+void cull_check_all_slow_for_test(const math::Vector4f* planes,
+                                  const std::vector<tfrag3::VisNode>& nodes,
+                                  const u8* level_occlusion_string,
+                                  u8* out) {
+  metal_cull_check_all_slow(planes, nodes, level_occlusion_string, out);
+}
+
+size_t sizeof_pc_port_data_mirror() {
+  return sizeof(MetalTfragPcPortData);
+}
+
+size_t sizeof_camera_data_mirror() {
+  return sizeof(MetalGoalBackgroundCameraData);
 }
 
 }  // namespace metal_renderer

@@ -16,6 +16,9 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"direct_basic_vs", "direct_basic_fs"},    // DIRECT_BASIC
     {"direct_textured_vs", "direct_textured_fs"},  // DIRECT_TEXTURED
     {"sprite3_vs", "sprite3_fs"},                  // SPRITE3
+    {"tfrag3_vs", "tfrag3_fs"},                    // TFRAG3
+    {"etie_base_vs", "tfrag3_fs"},                 // ETIE_BASE
+    {"shrub_vs", "shrub_fs"},                      // SHRUB
 };
 
 size_t hash_combine(size_t seed, size_t v) {

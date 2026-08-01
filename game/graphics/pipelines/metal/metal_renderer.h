@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
+#include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
@@ -93,6 +94,9 @@ class MetalRenderer {
   metal_renderer::ScaffoldStats stats();
   metal_renderer::ChainStats chain_stats();
 
+  // Background (tfrag/tie/shrub) counters from the last chain frame.
+  const MetalBackgroundState& background_state() const { return m_background; }
+
   // Renders a quad sampling the given registry texture with the requested
   // sampler state into a small offscreen target and reads it back. Verifies
   // the texture path (upload, mips, sampler modes) by pixel readback.
@@ -143,5 +147,7 @@ class MetalRenderer {
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
   TexturePool* m_texture_pool = nullptr;
   MetalSkyBlendHandler* m_sky_blend_handlers[2] = {nullptr, nullptr};
+  // level-geometry frame state, shared with the tfrag/tie/shrub renderers
+  MetalBackgroundState m_background;
   metal_renderer::ChainStats m_chain_stats;
 };

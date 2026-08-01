@@ -357,12 +357,16 @@ if(APPLE)
     set(METAL_PIPELINE_SOURCES
         graphics/pipelines/metal/metal_bucket_renderer.mm
         graphics/pipelines/metal/metal_direct_renderer.mm
+        graphics/pipelines/metal/metal_level_data.mm
         graphics/pipelines/metal/metal_pipeline.mm
         graphics/pipelines/metal/metal_pso_cache.mm
         graphics/pipelines/metal/metal_renderer.mm
+        graphics/pipelines/metal/metal_shrub.mm
         graphics/pipelines/metal/metal_sky_renderer.mm
         graphics/pipelines/metal/metal_sprite_renderer.mm
-        graphics/pipelines/metal/metal_texture.mm)
+        graphics/pipelines/metal/metal_texture.mm
+        graphics/pipelines/metal/metal_tfrag.mm
+        graphics/pipelines/metal/metal_tie.mm)
     list(APPEND RUNTIME_SOURCE ${METAL_PIPELINE_SOURCES})
     set_source_files_properties(${METAL_PIPELINE_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -383,7 +387,8 @@ if(APPLE)
     set(METAL_SHADER_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/scaffold.metal
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/direct.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/sprite.metal)
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/sprite.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/background.metal)
     set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad.metallib)
     add_custom_command(
         OUTPUT ${METAL_LIB}

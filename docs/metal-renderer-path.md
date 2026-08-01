@@ -17,9 +17,9 @@ to a renderer (`game/graphics/opengl_renderer/OpenGLRenderer.h:66-76`).
 | `OpenGLRenderer` | top-level: FBO/MSAA state, bucket dispatch per game, post/PCRTC effects, screenshots | yes |
 | `DirectRenderer` / `DirectRenderer2` | GS-style immediate emulation (sky pre-draw, progress, HUD, debug) | yes (DR1) |
 | `TextureUploadHandler` + `texture/TexturePool` | GS VRAM texture upload emulation | yes |
-| `background/TFragment` | static terrain ("tfrag") | yes |
-| `background/Tie3` | instanced environment geometry incl. wind ("tie") | yes |
-| `background/Shrub` | vegetation | yes |
+| `background/TFragment` | static terrain ("tfrag") | yes (ported) |
+| `background/Tie3` | instanced environment geometry incl. wind ("tie") | yes (base draws ported) |
+| `background/Shrub` | vegetation | yes (ported) |
 | `background/Hfrag` | heightmap terrain | no (Jak 3) |
 | `foreground/Merc2` | skinned character meshes + envmap ("merc"/"emerc") | yes |
 | `foreground/Generic2` | VU1 "generic" fallback path | yes |
@@ -137,8 +137,11 @@ come from a `UIView`/SwiftUI instead of SDL.
    frame of DMA the ARM64 runtime's engine main loop built from the player's own
    game data went through the full send_chain → dispatch → DirectRenderer path with
    every structural assert holding.
-5. Background geometry — *Planned*: TFragment, Tie3, Shrub (+ time-of-day 1D LUTs,
-   multidraw loops).
+5. **Background geometry** — *Implemented* (see §Current state): the level-data
+   stage (fr3 → MTLBuffers) plus TFragment, Tie3 (base draws) and Shrub, with the
+   time-of-day 1D palette textures and the visibility → draw-run conversion that
+   replaces GL's multidraw. TIE's envmap second draw and wind instancing remain
+   *Planned*.
 6. Foreground — *Planned*: Merc2 (bones via buffer offsets), Generic2, ShadowRenderer,
    EyeRenderer.
 7. Sprite/effects — *Partially implemented*: Sprite3's 2D / HUD / 3D sprite paths are
@@ -303,7 +306,8 @@ come from a `UIView`/SwiftUI instead of SDL.
       4 draws / 88 triangles per frame, 10 texture upload packets applied, ~160 k lit
       pixels. Consumed but not drawn (counted, logged once): ocean-mid-far 82.5 kB,
       ocean-near 38.9 kB, tie 5.6 kB, tfrag 5.8 kB, shrub, merc, generic, eyes, and
-      992 bytes of tfrag-trans inside the sky-blend bucket.
+      992 bytes of tfrag-trans inside the sky-blend bucket. (tfrag, tie and shrub
+      have since been ported - see the stage-5 entry below.)
     - frame 100 (14 kB): renders black, honestly. Its content is the merc logo and
       character models (not ported) plus a 160-byte sky-draw that is a black quad
       because nothing had been blended into the sky texture that frame.
@@ -347,11 +351,78 @@ come from a `UIView`/SwiftUI instead of SDL.
   the window alive and the scaffold checks meaningful); its draw region is a 4:3 fit
   of the window. The Metal pipeline does not run the Loader yet, so nothing feeds
   `metal_add_texture` outside the proof.
+- **Implemented** (stage 5, level geometry): `metal_level_data.{h,mm}` +
+  `metal_tfrag.{h,mm}` + `metal_tie.{h,mm}` + `metal_shrub.{h,mm}` +
+  `shaders/background.metal`. This is what makes a level's *world* appear:
+  frame 838 goes from the sky and "PRESS START" over a black band to Sandover
+  village - terrain, huts, walkways, palms and shrubs - drawn from the player's
+  own extracted `.fr3` data.
+  - **The level-data stage** is the Metal analog of `loader/Loader` +
+    `LoaderStages`: an `.fr3` is decompressed and deserialized with the shared
+    `common/loader` / `common/custom_data/Tfrag3Data` code, `tfrag3`'s own
+    `unpack()` turns packed vertices and index runs into the GPU forms, and each
+    tree becomes one static vertex `MTLBuffer`, one static index `MTLBuffer` and
+    one 1D `MTLTexture` for its time-of-day palette. Textures go into the pool
+    through the existing `metal_add_texture`, and the per-level handle vector is
+    kept parallel to `level->textures` exactly like `LevelData::textures`, so a
+    draw's `tree_tex_id` resolves the same way it does in GL. Levels live in a
+    name-keyed registry; `metal_level_data::get(name)` is the analog of
+    `Loader::get_tfrag3_level(name)`, and a bucket that names a level which is
+    not loaded is counted and logged, never drawn from stale data. What is *not*
+    ported is the streaming: a level loads in one call instead of in
+    time-budgeted chunks across frames (village1: 667 textures, 57 MB of
+    vertices, 7.4 MB of indices, ~150 ms).
+  - **`background_common` analogs** live in the same file because the GL one
+    pulls in the entire OpenGL renderer header chain. The camera math
+    (`make_new_cam_mat`, `init_etie_cam_uniforms`) is transcribed verbatim; the
+    `DrawMode` → PSO/depth/sampler mapping is the same seven-blend-mode table
+    the DirectRenderer and sprite ports use. The two pure computations that
+    could silently drift - `interp_time_of_day` (hand-written SSE upstream,
+    reaching arm64 through the vendored sse2neon) and `cull_check_all_slow` -
+    are re-implemented portably *and diffed against the GL originals by
+    metal-proof*, byte for byte, on constructed data (including a case that
+    saturates the 16-bit accumulator) and on a real level's palettes and BVH.
+  - **Visibility and culling match GL, with no relaxation.** The occlusion
+    strings the game hangs off `TFRAG_LEVEL0` are copied out of the chain by the
+    Metal TFragment exactly as `SharedRenderState::bucket_for_vis_copy`
+    prescribes, and TIE reads them for its level. Every frame runs the BVH
+    frustum test plus the occlusion string, then converts the per-vis-group
+    result into runs of the tree's static index buffer - the same runs GL packs
+    into one `glMultiDrawElements`, issued here as one `drawIndexedPrimitives`
+    each (Metal has no multidraw; indirect command buffers are a later, measured
+    change). `debug_all_visible` exists, mirroring the GL debug toggle, and is
+    off.
+  - **`shaders/background.metal`** is the MSL port of `tfrag3.{vert,frag}`,
+    `etie_base.{vert,frag}` and `shrub.{vert,frag}`, line for line. The
+    deliberate differences are the target conventions: Metal's `[0,1]` clip
+    depth (GL's post-divide `[-1,1]` z becomes `(z + w) / 2`, and etie's
+    `z / 8388608 - 1` becomes `z / 16777216`, the same rule the sprite port
+    uses), `sampler1D` + `texelFetch` becomes `texture1d` + `read()` (both
+    unfiltered integer lookups, so the palette colors are identical), and
+    HEIGHT_SCALE / SCISSOR_ADJUST arrive as uniforms instead of text
+    substitutions. Vertices are read from a device buffer by `vertex_id`, so the
+    `tfrag3` vertex structs are used with their exact on-disk layout.
+  - **TIE covers the two draws Jak 1's bucket issues**: the NORMAL category
+    through the tfrag3 shader and the base draw of NORMAL_ENVMAP through
+    etie_base - the same shader split, for the same reason, as
+    `Tie3::draw_matching_draws_for_tree`. Not ported and honestly missing rather
+    than faked, each counted per frame: the envmap **second** draw (the shiny
+    reflective pass), wind-instanced draws, and per-proto visibility (Jak 2/3).
+  - Results on frame 838 (Sandover title screen), through the real `send_chain`
+    hook: **4 draws / 88 triangles / 160 210 lit pixels → 243 draws / 350 085
+    triangles / 245 516 lit pixels**, with tfrag 101 draws / 55 806 tris, tie
+    117 draws / 192 772 tris and shrub 21 draws / 101 419 tris. Frames 839 and
+    840 behave the same; frame 100 (no level buckets) is unchanged. The water is
+    still black - that is the ocean renderer, not this stage.
+  - These renderers consume user-supplied game data, so a bucket whose DMA does
+    not match is reported (logged once, counted in the frame stats as
+    `unexpected_dma`) and skipped whole, rather than aborting the process. The
+    replay checks that counter is zero.
 - **Planned**: MSAA render/resolve (PSO key already carries sample count), stencil ops in
-  the depth-stencil key (for ShadowRenderer), a Metal loader upload stage (stage 5),
-  eye-renderer and texture-animator paths of the upload handler, background renderers
-  (TFragment/Tie3/Shrub) for the skipped buckets, live-game validation once the ARM64
-  runtime branch and this renderer branch meet.
+  the depth-stencil key (for ShadowRenderer), streaming (time-budgeted) level loads and
+  level unloading, TIE envmap second draw and wind, tfrag-trans inside the sky-blend
+  buckets, eye-renderer and texture-animator paths of the upload handler,
+  live-game validation once the ARM64 runtime branch and this renderer branch meet.
 - **Headless by default**: `metal-proof` (and therefore every replay) creates its SDL
   window with `SDL_WINDOW_HIDDEN` via `metal_renderer::set_window_hidden`. The
   `CAMetalLayer` still renders and is read back, so nothing about the checks changes,

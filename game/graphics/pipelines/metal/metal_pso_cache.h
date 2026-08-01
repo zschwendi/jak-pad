@@ -25,6 +25,9 @@ enum class MetalShaderId : u16 {
   DIRECT_BASIC = 3,     // DirectRenderer, untextured (direct_basic.{vert,frag})
   DIRECT_TEXTURED = 4,  // DirectRenderer, textured (direct_basic_textured.{vert,frag})
   SPRITE3 = 5,          // Sprite3 2D/HUD/3D sprites (sprite3_3d.{vert,frag})
+  TFRAG3 = 6,           // tfrag terrain + TIE base draw (tfrag3.{vert,frag})
+  ETIE_BASE = 7,        // base draw of an envmapped TIE (etie_base.{vert,frag})
+  SHRUB = 8,            // shrub vegetation (shrub.{vert,frag})
   COUNT,
 };
 

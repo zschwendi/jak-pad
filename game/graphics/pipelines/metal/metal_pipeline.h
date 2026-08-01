@@ -14,9 +14,12 @@
  * implementation lives in metal_renderer.h/.mm and metal_pipeline.mm.
  */
 
+#include <string>
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/custom_data/Tfrag3Data.h"
+#include "common/math/Vector.h"
 
 #include "game/graphics/display.h"
 #include "game/graphics/gfx.h"
@@ -141,5 +144,60 @@ u64 upload_texture_rgba8(const u8* data, int w, int h);
 
 // Mirror of the GL loader's add_texture against the pipeline's pool.
 u64 pool_add_texture(const tfrag3::Texture& tex, bool is_common);
+
+// --- level data (plain C++ mirror of metal_level_data.h) -------------------
+
+// What load_level_fr3 uploaded, for reporting and tests.
+struct LevelLoadResult {
+  bool ok = false;
+  std::string error;
+  std::string level_name;
+  int textures = 0;
+  int tfrag_trees = 0;  // in the first geometry level of detail
+  int tie_trees = 0;
+  int shrub_trees = 0;
+  u64 vertex_bytes = 0;  // across every geometry level of detail
+  u64 index_bytes = 0;
+};
+
+// Loads one extracted level (.fr3) into the Metal renderer: textures into the
+// pool and tfrag / tie / shrub geometry into GPU buffers. This is what the GL
+// streaming Loader does for a level, in one call. Requires a created display.
+LevelLoadResult load_level_fr3(const std::string& path, bool is_common);
+
+// Frees every loaded level.
+void unload_all_levels();
+
+// Per-frame background-renderer counters from the last chain frame.
+struct BackgroundStats {
+  int tfrag_draws = 0;
+  int tfrag_tris = 0;
+  int tie_draws = 0;
+  int tie_tris = 0;
+  int shrub_draws = 0;
+  int shrub_tris = 0;
+  int missing_levels = 0;
+  int missing_textures = 0;
+  int anim_slot_draws = 0;
+  int unexpected_dma = 0;
+};
+BackgroundStats get_background_stats();
+
+// Test hooks for the portable ports of background_common's pure computations
+// (metal_level_data.h). Exposed here because the GL originals live behind the
+// OpenGL renderer's header chain, which Objective-C++ translation units in the
+// Metal path do not include - so the two can only be diffed from plain C++.
+void interp_time_of_day_for_test(const math::Vector<s32, 4> itimes[4],
+                                 const tfrag3::PackedTimeOfDay& colors,
+                                 math::Vector<u8, 4>* out);
+void cull_check_all_slow_for_test(const math::Vector4f* planes,
+                                  const std::vector<tfrag3::VisNode>& nodes,
+                                  const u8* level_occlusion_string,
+                                  u8* out);
+
+// Sizes of the layout mirrors in metal_level_data.h, so the proof can check
+// them against the GL definitions they duplicate.
+size_t sizeof_pc_port_data_mirror();
+size_t sizeof_camera_data_mirror();
 
 }  // namespace metal_renderer

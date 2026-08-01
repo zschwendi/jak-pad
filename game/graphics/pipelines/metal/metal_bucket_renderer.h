@@ -27,6 +27,8 @@
 #import <Metal/Metal.h>
 
 class TexturePool;
+// level-geometry frame state, owned by MetalRenderer (metal_level_data.h)
+struct MetalBackgroundState;
 
 /*!
  * Per-frame bump allocator for dynamic vertex data. The GL renderers stream
@@ -70,6 +72,9 @@ struct MetalSharedRenderState {
   math::Vector<u8, 4> fog_color = math::Vector<u8, 4>{0, 0, 0, 0};
   float fog_intensity = 1.f;
   TexturePool* texture_pool = nullptr;
+  // shared by the background (tfrag/tie/shrub) renderers: the occlusion
+  // visibility strings one bucket copies out of the chain, plus their stats.
+  MetalBackgroundState* background = nullptr;
   const u8* ee_memory = nullptr;
   u32 offset_of_s7 = 0;
   GameVersion version = GameVersion::Jak1;

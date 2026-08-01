@@ -8,8 +8,11 @@
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
+#include "game/graphics/pipelines/metal/metal_shrub.h"
 #include "game/graphics/pipelines/metal/metal_sky_renderer.h"
 #include "game/graphics/pipelines/metal/metal_sprite_renderer.h"
+#include "game/graphics/pipelines/metal/metal_tfrag.h"
+#include "game/graphics/pipelines/metal/metal_tie.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/runtime.h"
 
@@ -163,6 +166,19 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   auto tex = [&](BucketId id, const std::string& name) {
     set(id, std::make_unique<MetalTextureBucketRenderer>(name, (int)id));
   };
+  // --- level geometry (see metal_level_data.h) ---
+  const std::vector<tfrag3::TFragmentTreeKind> normal_tfrags = {
+      tfrag3::TFragmentTreeKind::NORMAL, tfrag3::TFragmentTreeKind::LOWRES};
+  const std::vector<tfrag3::TFragmentTreeKind> dirt_tfrags = {tfrag3::TFragmentTreeKind::DIRT};
+  const std::vector<tfrag3::TFragmentTreeKind> ice_tfrags = {tfrag3::TFragmentTreeKind::ICE};
+  auto tfrag = [&](BucketId id, const std::string& name,
+                   const std::vector<tfrag3::TFragmentTreeKind>& kinds, int level_id) {
+    // the game hangs the occlusion strings for every level off TFRAG_LEVEL0
+    // (SharedRenderState::bucket_for_vis_copy)
+    const bool vis_copy = id == BucketId::TFRAG_LEVEL0;
+    set(id, std::make_unique<MetalTFragment>(name, (int)id, kinds, level_id, vis_copy));
+  };
+  // --- end level geometry ---
 
   auto sky_cpu_blender = std::make_shared<MetalSkyBlendCPU>(m_device);
   sky_cpu_blender->init_textures(*m_texture_pool, GameVersion::Jak1);
@@ -171,21 +187,25 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   skip(BucketId::OCEAN_MID_AND_FAR, "ocean-mid-far");
 
   tex(BucketId::TFRAG_TEX_LEVEL0, "l0-tfrag-tex");
-  skip(BucketId::TFRAG_LEVEL0, "l0-tfrag-tfrag");
-  skip(BucketId::TIE_LEVEL0, "l0-tfrag-tie");
+  tfrag(BucketId::TFRAG_LEVEL0, "l0-tfrag-tfrag", normal_tfrags, 0);
+  set(BucketId::TIE_LEVEL0,
+      std::make_unique<MetalTie3>("l0-tfrag-tie", (int)BucketId::TIE_LEVEL0, 0));
   skip(BucketId::MERC_TFRAG_TEX_LEVEL0, "l0-tfrag-merc");
   skip(BucketId::GENERIC_TFRAG_TEX_LEVEL0, "l0-tfrag-generic");
   tex(BucketId::TFRAG_TEX_LEVEL1, "l1-tfrag-tex");
-  skip(BucketId::TFRAG_LEVEL1, "l1-tfrag-tfrag");
-  skip(BucketId::TIE_LEVEL1, "l1-tfrag-tie");
+  tfrag(BucketId::TFRAG_LEVEL1, "l1-tfrag-tfrag", normal_tfrags, 1);
+  set(BucketId::TIE_LEVEL1,
+      std::make_unique<MetalTie3>("l1-tfrag-tie", (int)BucketId::TIE_LEVEL1, 1));
   skip(BucketId::MERC_TFRAG_TEX_LEVEL1, "l1-tfrag-merc");
   skip(BucketId::GENERIC_TFRAG_TEX_LEVEL1, "l1-tfrag-generic");
 
   tex(BucketId::SHRUB_TEX_LEVEL0, "l0-shrub-tex");
-  skip(BucketId::SHRUB_NORMAL_LEVEL0, "l0-shrub");
+  set(BucketId::SHRUB_NORMAL_LEVEL0,
+      std::make_unique<MetalShrub>("l0-shrub", (int)BucketId::SHRUB_NORMAL_LEVEL0));
   skip(BucketId::SHRUB_GENERIC_LEVEL0, "l0-shrub-generic");
   tex(BucketId::SHRUB_TEX_LEVEL1, "l1-shrub-tex");
-  skip(BucketId::SHRUB_NORMAL_LEVEL1, "l1-shrub");
+  set(BucketId::SHRUB_NORMAL_LEVEL1,
+      std::make_unique<MetalShrub>("l1-shrub", (int)BucketId::SHRUB_NORMAL_LEVEL1));
   skip(BucketId::SHRUB_GENERIC_LEVEL1, "l1-shrub-generic");
 
   tex(BucketId::ALPHA_TEX_LEVEL0, "l0-alpha-tex");
@@ -196,8 +216,8 @@ void MetalRenderer::init_bucket_renderers_jak1() {
     m_sky_blend_handlers[0] = handler.get();
     set(BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0, std::move(handler));
   }
-  skip(BucketId::TFRAG_DIRT_LEVEL0, "l0-alpha-tfrag-dirt");
-  skip(BucketId::TFRAG_ICE_LEVEL0, "l0-alpha-tfrag-ice");
+  tfrag(BucketId::TFRAG_DIRT_LEVEL0, "l0-alpha-tfrag-dirt", dirt_tfrags, 0);
+  tfrag(BucketId::TFRAG_ICE_LEVEL0, "l0-alpha-tfrag-ice", ice_tfrags, 0);
   tex(BucketId::ALPHA_TEX_LEVEL1, "l1-alpha-tex");
   {
     auto handler = std::make_unique<MetalSkyBlendHandler>(
@@ -206,8 +226,8 @@ void MetalRenderer::init_bucket_renderers_jak1() {
     m_sky_blend_handlers[1] = handler.get();
     set(BucketId::TFRAG_TRANS1_AND_SKY_BLEND_LEVEL1, std::move(handler));
   }
-  skip(BucketId::TFRAG_DIRT_LEVEL1, "l1-alpha-tfrag-dirt");
-  skip(BucketId::TFRAG_ICE_LEVEL1, "l1-alpha-tfrag-ice");
+  tfrag(BucketId::TFRAG_DIRT_LEVEL1, "l1-alpha-tfrag-dirt", dirt_tfrags, 1);
+  tfrag(BucketId::TFRAG_ICE_LEVEL1, "l1-alpha-tfrag-ice", ice_tfrags, 1);
 
   skip(BucketId::MERC_AFTER_ALPHA, "common-alpha-merc");
   skip(BucketId::GENERIC_ALPHA, "common-alpha-generic");
@@ -558,6 +578,9 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_stream.reset();
 
     setup_frame(opts);
+    // mirror of SharedRenderState::reset for the background state
+    m_background.reset_frame();
+    m_shared_state.background = &m_background;
     m_shared_state.texture_pool = m_texture_pool;
     m_shared_state.ee_memory = g_ee_main_mem;
     m_shared_state.offset_of_s7 = g_s7_override ? g_s7_override : metal_offset_of_s7();
