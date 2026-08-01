@@ -169,9 +169,31 @@
   this
   )
 
+(defun process-heap-overrun-check ((proc process) (what symbol))
+  "og:preserve-this Report a process whose heap pointer has passed the end of its allocation.
+
+   A process heap holds the main thread's cpu-thread and its backup stack before anything else, and
+   nothing checked that those fit. They do not always: the backup stack a thread needs depends on
+   the code generator (see process-stack-save-size in gkernel-h.gc), and the fixed-size dead pools
+   were sized for the PS2's. When they do not fit, every suspend copies the live stack over
+   whatever the pool put after this process, and the damage only shows up somewhere else."
+  (when (> (the-as int (-> proc heap-cur)) (the-as int (-> proc heap-top)))
+    (format 0
+            "ERROR: the ~A of the ~A '~A overran its ~D-byte process heap by ~D bytes.~%"
+            what
+            (-> proc type)
+            (-> proc name)
+            (-> proc allocated-length)
+            (&- (-> proc heap-cur) (the-as uint (-> proc heap-top))))
+    (crash!))
+  (none))
+
 (defmethod stack-size-set! ((this thread) (arg0 int))
   "Modify the backup stack size of a thread. Must be called from the main thread, before any
-   allocations have been done on the process heap."
+   allocations have been done on the process heap.
+   The size asked for is a PS2 measurement; process-stack-save-size converts it for this build's
+   code generator. That macro's comment in gkernel-h.gc says why."
+  (set! arg0 (process-stack-save-size arg0))
   (let ((a2-0 (-> this process)))
     (cond
       ((!= this (-> a2-0 main-thread))
@@ -182,6 +204,7 @@
       ((= (-> a2-0 heap-cur) (+ (+ (-> this stack-size) -4 (-> this type size)) (the-as int this)))
        (set! (-> a2-0 heap-cur) (the-as pointer (+ (+ arg0 -4 (-> this type size)) (the-as int this))))
        (set! (-> this stack-size) arg0)
+       (process-heap-overrun-check a2-0 'stack-size-set!)
        )
       (else
         (format 0 "ERROR: illegal attempt change stack size of ~A after more heap allocation has occured.~%" a2-0)
@@ -207,6 +230,11 @@
                   ;; this is the main thread, allocate it from the process heap.
                   (let ((v1-2 (logand -16 (&+ (-> parent-process heap-cur) 15))))
                     (set! (-> parent-process heap-cur) (&+ (&+ v1-2 (-> type-to-make size)) arg2))
+                    ;; og:preserve-this the backup stack is the first thing in a process heap and
+                    ;; nothing checked that it fit. A thread whose buffer runs past heap-top writes
+                    ;; over whatever the pool put after this process every time it suspends, which
+                    ;; is silent until something far away breaks.
+                    (process-heap-overrun-check parent-process 'main-thread)
                     (the cpu-thread (&+ v1-2 4))
                     )
                   )
@@ -1063,6 +1091,11 @@
 
 (defmethod get-process ((this dead-pool-heap) (arg0 type) (arg1 int))
   "Get a process!"
+  ;; og:preserve-this Every process's backup stack comes out of its own process heap, and
+  ;; process-stack-save-size (gkernel-h.gc) makes those larger than the PS2's. The sizes callers
+  ;; ask for here were measured on the PS2, so each one grows by the most that conversion can add,
+  ;; the same way the fixed-size pools below do.
+  (set! arg1 (+ arg1 PROCESS_STACK_SAVE_GROWTH))
   (let ((s4-0 (-> this dead-list next))
         (s3-0 (the-as process #f))
         )
@@ -2376,10 +2409,11 @@
 (kmemopen global "process-buffers")
 
 ;; set up the listener process to run functions sent from the REPL.
-(let ((this (define *listener-process* (new 'global 'process "listener" 2048))))
+;; the process heap holds the main thread's backup stack, so it grew with PROCESS_STACK_SAVE_SIZE.
+(let ((this (define *listener-process* (new 'global 'process "listener" (+ 2048 PROCESS_STACK_SAVE_SIZE)))))
   (set! (-> this status) 'ready)
   (set! (-> this pid) 1)
-  (set! (-> this main-thread) (new 'process 'cpu-thread this 'main 256 *kernel-dram-stack*))
+  (set! (-> this main-thread) (new 'process 'cpu-thread this 'main PROCESS_STACK_SAVE_SIZE *kernel-dram-stack*))
   )
 
 ;; an always dead process used as a placeholder
@@ -2390,13 +2424,17 @@
 ;; the default clock
 (define *kernel-clock* (new 'static 'clock))
 ;; fixed size dead-pools.
-(define *16k-dead-pool* (new 'global 'dead-pool 2 #x4000 "*16k-dead-pool*"))
-(define *8k-dead-pool* (new 'global 'dead-pool 2 8192 "*8k-dead-pool*"))
-(define *4k-dead-pool* (new 'global 'dead-pool 4 4096 "*4k-dead-pool*"))
+;; og:preserve-this each fixed size grows by PROCESS_STACK_SAVE_GROWTH - the most a single
+;; process's backup-stack conversion (process-stack-save-size, gkernel-h.gc) can add. A pool that
+;; is still too small is reported by process-heap-overrun-check rather than quietly overwriting
+;; the process after it.
+(define *16k-dead-pool* (new 'global 'dead-pool 2 (+ #x4000 PROCESS_STACK_SAVE_GROWTH) "*16k-dead-pool*"))
+(define *8k-dead-pool* (new 'global 'dead-pool 2 (+ 8192 PROCESS_STACK_SAVE_GROWTH) "*8k-dead-pool*"))
+(define *4k-dead-pool* (new 'global 'dead-pool 4 (+ 4096 PROCESS_STACK_SAVE_GROWTH) "*4k-dead-pool*"))
 ;; special dead pools
-(define *target-dead-pool* (new 'global 'dead-pool 2 #xc000 "*target-dead-pool*"))
-(define *camera-dead-pool* (new 'global 'dead-pool 7 4096 "*camera-dead-pool*"))
-(define *camera-master-dead-pool* (new 'global 'dead-pool 1 8192 "*camera-master-dead-pool*"))
+(define *target-dead-pool* (new 'global 'dead-pool 2 (+ #xc000 PROCESS_STACK_SAVE_GROWTH) "*target-dead-pool*"))
+(define *camera-dead-pool* (new 'global 'dead-pool 7 (+ 4096 PROCESS_STACK_SAVE_GROWTH) "*camera-dead-pool*"))
+(define *camera-master-dead-pool* (new 'global 'dead-pool 1 (+ 8192 PROCESS_STACK_SAVE_GROWTH) "*camera-master-dead-pool*"))
 ;; heap dead pools
 (when *debug-segment*
   (define *debug-dead-pool* (new 'debug 'dead-pool-heap "*debug-dead-pool*" 768 #x100000))

@@ -13,6 +13,28 @@
 (defconstant DPROCESS_STACK_SIZE (#if PC_PORT #x8000 #x3800))
 (defconstant PROCESS_STACK_SIZE (#if PC_PORT #x4000 #x1c00))
 
+;; Every backup-stack size in this game was measured on the PS2, where a saved machine context was
+;; 48 bytes and a MIPS frame was small. Ahead-of-time compiled GOAL saves a 176-byte ARM64 context
+;; and clang's frames are wider, so a PS2 number is converted here rather than believed. This is
+;; the one place the conversion lives: `stack-size-set!` applies it to whatever a process asks for,
+;; and PROCESS_STACK_SAVE_SIZE below is the PS2 default put through the same rule.
+;; `thread-suspend` still aborts with both numbers if a converted size is too small, so a wrong
+;; conversion is a loud failure and never a silent overwrite. See docs/aot-stack-model.md.
+(defconstant PROCESS_STACK_SAVE_BASE 512)
+
+(defconstant PROCESS_STACK_SAVE_SCALE 3)
+
+(defmacro process-stack-save-size (ps2-size)
+  "Convert a PS2-measured backup-stack size into the size this build's code generator needs."
+  `(+ PROCESS_STACK_SAVE_BASE (* PROCESS_STACK_SAVE_SCALE ,ps2-size)))
+
+;; default size of stack to backup for a process
+(defconstant PROCESS_STACK_SAVE_SIZE (process-stack-save-size 256))
+
+;; The most the conversion above can add to one process's heap use: the largest backup stack any
+;; process in this game asks for is 3072. The fixed-size process pools in gkernel.gc grow by this.
+(defconstant PROCESS_STACK_SAVE_GROWTH (- (process-stack-save-size 3072) 3072))
+
 ;; the size of the shared heap used by dynamically sized processes
 (#if PC_BIG_MEMORY
   (defconstant PROCESS_HEAP_MULT 4) ;; 4x actors

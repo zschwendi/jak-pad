@@ -85,7 +85,7 @@
   (process-spawn process
                  :init tsw-catch-init
                  :to *active-pool*
-                 :name 'tsw-catch
+                 :name "tsw-catch"
                  :stack-size 8192)
   0)
 
@@ -125,7 +125,7 @@
   (set! *tsw-proc* (the process (ppointer->process (process-spawn process
                                                                    :init tsw-state-init
                                                                    :to *active-pool*
-                                                                   :name 'tsw-state
+                                                                   :name "tsw-state"
                                                                    :stack-size 8192))))
   (if *tsw-proc* 1 0))
 

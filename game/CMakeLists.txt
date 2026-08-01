@@ -837,6 +837,47 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_include_directories(jak2-data-boot-test PRIVATE "${JAK2_AOT_BOOT_DIR}")
         target_link_libraries(jak2-data-boot-test jak2-kernel-core)
         add_test(NAME jak2-data-boot-test COMMAND jak2-data-boot-test --frames 100)
+
+        # The jak2 thread-switch test: the same fixture and driver as jak1's, compiled on top of
+        # the jak2 kernel prefix, driving the native ARM64 thread routines through the jak2
+        # process and thread layouts. Needs no game data, so it always runs.
+        set(JAK2_AOT_TSW_DIR "${CMAKE_CURRENT_BINARY_DIR}/aot-thread-switch-jak2")
+        set(JAK2_AOT_TSW_TAGS ${JAK2_AOT_BOOT_TAGS} thread_switch_test)
+
+        set(JAK2_AOT_TSW_OUTPUTS "${JAK2_AOT_TSW_DIR}/aot_boot_manifest.c"
+                "${JAK2_AOT_TSW_DIR}/aot_boot_manifest.h")
+        set(JAK2_AOT_TSW_C_SOURCES "")
+        foreach(tag IN LISTS JAK2_AOT_TSW_TAGS)
+            list(APPEND JAK2_AOT_TSW_C_SOURCES "${JAK2_AOT_TSW_DIR}/${tag}.c")
+            list(APPEND JAK2_AOT_TSW_OUTPUTS "${JAK2_AOT_TSW_DIR}/${tag}.c"
+                    "${JAK2_AOT_TSW_DIR}/${tag}_generated.h")
+        endforeach()
+
+        add_custom_command(
+                OUTPUT ${JAK2_AOT_TSW_OUTPUTS}
+                COMMAND $<TARGET_FILE:goalc-cbackend-sweep>
+                        --game jak2
+                        --project-path "${CMAKE_SOURCE_DIR}"
+                        --limit ${JAK2_AOT_BOOT_FILE_COUNT}
+                        --extra-source test/goalc/aot/thread_switch_test.gc
+                        --c-output-dir "${JAK2_AOT_TSW_DIR}"
+                        --report "${JAK2_AOT_TSW_DIR}/coverage.tsv"
+                DEPENDS goalc-cbackend-sweep ${JAK2_AOT_BOOT_GOAL_SOURCES} ${AOT_TSW_FIXTURE}
+                        "${CMAKE_SOURCE_DIR}/goal_src/goal-lib.gc"
+                        "${CMAKE_SOURCE_DIR}/goal_src/jak2/game.gp"
+                COMMENT "Emitting C for the jak2 GOAL kernel and the thread-switch fixture")
+
+        add_executable(jak2-thread-switch-test
+                kernel/core/thread_switch_test.cpp
+                kernel/core/goal_thread_test_arm64.s
+                "${JAK2_AOT_TSW_DIR}/aot_boot_manifest.c"
+                ${JAK2_AOT_TSW_C_SOURCES})
+        set_source_files_properties(
+                "${JAK2_AOT_TSW_DIR}/aot_boot_manifest.c" ${JAK2_AOT_TSW_C_SOURCES}
+                PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
+        target_include_directories(jak2-thread-switch-test PRIVATE "${JAK2_AOT_TSW_DIR}")
+        target_link_libraries(jak2-thread-switch-test jak2-kernel-core)
+        add_test(NAME jak2-thread-switch-test COMMAND jak2-thread-switch-test)
     endif()
 endif()
 
