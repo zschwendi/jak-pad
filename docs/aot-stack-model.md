@@ -165,6 +165,14 @@ whose main thread later failed `thread-resume` with a `stack-size` of 1. `proces
 in `gkernel.gc` now reports and stops on that, and the fixed-size dead pools grow by
 `PROCESS_STACK_SAVE_GROWTH`, the most the conversion can add to one process.
 
+The variable-sized pool needed the same growth, and gameplay is where that showed. Actor process
+heap sizes are PS2 measurements too - `*entity-info*` in `engine/entity/entity-table.gc` is a table
+of them - and the tight ones stopped fitting. Entering Sandover Village, `babak` asked for its
+`#x2800`, ran out 480 bytes into `(method new joint-control)`, and `object-new` returned 0, which
+GOAL then wrote through. `(method get-process dead-pool-heap)` grows the size it is given by
+`PROCESS_STACK_SAVE_GROWTH` before it looks for a gap, so the gap and the process heap agree, and
+so does every caller that never sees the number.
+
 **Reading `rsp` had to become a read, not a copy.** The C backend lowered an `rlet` binding of
 `rsp` to a local seeded once by `GOAL_STACK_POINTER()`. GOAL's compiler emits one `:reset-here` per
 function no matter how many `(suspend)` sites it has - on x86-64 the binding *is* the register, so

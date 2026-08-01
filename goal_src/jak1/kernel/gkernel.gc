@@ -981,6 +981,13 @@
 
 (defmethod get-process ((this dead-pool-heap) (type-to-make type) (stack-size int))
   "Allocate a process"
+  ;; og:preserve-this Every process's backup stack comes out of its own process heap, and
+  ;; process-stack-save-size (gkernel-h.gc) makes those larger than the PS2's. The sizes callers ask
+  ;; for here were measured on the PS2 - *entity-info* in engine/entity/entity-table.gc is a table
+  ;; of them - so each one grows by the most that conversion can add, the same way the fixed-size
+  ;; pools below do. Without this an actor whose PS2 size was tight, such as babak at #x2800, runs
+  ;; its heap out mid-spawn and object-new hands GOAL a zero.
+  (set! stack-size (+ stack-size PROCESS_STACK_SAVE_GROWTH))
   ;; get a record for the new process
   (let ((rec (-> this dead-list next))
         ;; will eventually hold our new process
