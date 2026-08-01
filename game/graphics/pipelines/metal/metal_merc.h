@@ -35,8 +35,7 @@
 
 class MetalMerc2 {
  public:
-  // Counters the replay/proof reads. `deferred` entries are content the port
-  // consumes and reports rather than silently dropping.
+  // Counters the replay/proof reads.
   struct Stats {
     int models = 0;
     int missing_models = 0;
@@ -46,8 +45,9 @@ class MetalMerc2 {
     int envmap_draws = 0;
     int bone_vectors = 0;
     int lights = 0;
-    int mod_effects_deferred = 0;  // blerc / mod-vertex updates are not ported
-    int eye_draws = 0;             // draws whose texture the eye renderer composed
+    int mod_vtx_uploads = 0;  // effects whose blerc / mod-vertex update was uploaded
+    int mod_vtx_skipped = 0;  // effects that asked for one but could not be updated (reported)
+    int eye_draws = 0;        // draws whose texture the eye renderer composed
     int missing_textures = 0;
     int bad_bone_pointers = 0;  // bone address outside EE memory: identity used
     int bad_draw_ranges = 0;    // draw range outside the level's index buffer: skipped
@@ -106,6 +106,8 @@ class MetalMerc2 {
   };
 
   static constexpr int kMaxEffect = 64;
+  static constexpr int kMaxBlerc = 40;  // blend-shape weights per model in the DMA
+  static constexpr int MAX_MOD_VTX = UINT16_MAX;
   static constexpr int MAX_SKEL_BONES = 128;
   static constexpr int MAX_SHADER_BONE_VECTORS = 1024 * 32;
   static constexpr int MAX_LEVELS = 3;
@@ -118,7 +120,15 @@ class MetalMerc2 {
 
   enum DrawFlags {
     IGNORE_ALPHA = 1,
+    MOD_VTX = 2,
     NO_TEXTURE = 4,
+  };
+
+  // The Metal form of the GL renderer's per-effect mod-vertex GL buffer: a
+  // range of the frame's stream buffer holding this frame's updated vertices.
+  struct ModBuffers {
+    id<MTLBuffer> buffer = nil;
+    u32 offset = 0;
   };
 
   struct Draw {
@@ -132,6 +142,7 @@ class MetalMerc2 {
     u8 flags;
     u8 fade[4];
     u8 no_strip;
+    ModBuffers mod_vtx;  // vertices for this draw when MOD_VTX is set
   };
 
   struct LevelDrawBucket {
@@ -172,6 +183,29 @@ class MetalMerc2 {
                        MetalFrameContext& ctx,
                        Stats* stats);
 
+  // Sub-allocates this frame's vertices for one modified effect out of the
+  // stream buffer, returning the CPU-writable pointer. Null (and a reported
+  // skip) if the effect cannot be updated; the caller then draws the
+  // unmodified vertices instead.
+  void* alloc_mod_vtx_buffer(size_t vertex_count,
+                             const char* model_name,
+                             MetalFrameContext& ctx,
+                             ModBuffers* out,
+                             Stats* stats);
+  void model_mod_blerc_draws(int num_effects,
+                             const tfrag3::MercModel* model,
+                             MetalFrameContext& ctx,
+                             ModBuffers* mod_buffers,
+                             const float* blerc_weights,
+                             Stats* stats);
+  void model_mod_draws(int num_effects,
+                       const tfrag3::MercModel* model,
+                       const u8* input_data,
+                       const u8* ee0,
+                       MetalFrameContext& ctx,
+                       ModBuffers* mod_buffers,
+                       Stats* stats);
+
   u32 alloc_lights(const VuLights& lights);
   u32 alloc_bones(int count, ShaderMercMat* data);
   Draw* alloc_normal_draw(const tfrag3::MercDraw& mdraw, const DrawArgs& args);
@@ -196,10 +230,17 @@ class MetalMerc2 {
   math::Vector4f m_shader_bone_vector_buffer[MAX_SHADER_BONE_VECTORS];
   VuLights m_lights_buffer[MAX_LIGHTS];
   std::vector<LevelDrawBucket> m_level_draw_buckets;
+  // scratch for the mod-vertex unpack, mirroring the GL renderer's
+  struct UnpackTempVtx {
+    float pos[4];
+    float nrm[4];
+    float uv[2];
+  };
+  std::vector<UnpackTempVtx> m_mod_vtx_unpack_temp;
   u32 m_next_free_light = 0;
   u32 m_next_free_bone_vector = 0;
   u32 m_next_free_level_bucket = 0;
-  bool m_warned_mod = false;
+  bool m_warned_mod_skip = false;
   bool m_warned_eyes = false;
   bool m_warned_no_ee = false;
   bool m_warned_bad_bone = false;

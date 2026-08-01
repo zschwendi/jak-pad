@@ -2059,7 +2059,10 @@ std::vector<u8> make_merc_model_packet(u32 bone0_addr,
                                        // `dir2_color` and this ambient, so the shaded color reads
                                        // out the normal matrix's third row
                                        float ambient = 0.5f,
-                                       float dir2_color = 0.f) {
+                                       float dir2_color = 0.f,
+                                       // when set, the pc-blerc flag bit and these 40 blend-shape
+                                       // weights follow the flags quadword, as bones.gc sends them
+                                       const float* blerc_weights = nullptr) {
   std::vector<u8> d;
   // name (128 bytes)
   d.resize(128, 0);
@@ -2097,12 +2100,18 @@ std::vector<u8> make_merc_model_packet(u32 bone0_addr,
   push_i(d, 0);
   push_i(d, 0);
   push_i(d, 0);
-  // flags (32 bytes): one enabled effect, no ignore-alpha, no mod/blerc
+  // flags (32 bytes): one enabled effect, no ignore-alpha, pc-blerc if requested
   push_u64(d, 1);  // enable_mask
   push_u64(d, 0);  // ignore_alpha_mask
   d.push_back(1);  // effect_count
-  d.push_back(0);  // bitflags
+  d.push_back(blerc_weights ? 4 : 0);  // bitflags
   d.resize(d.size() + 14, 0);
+  // blend-shape weights (40 floats), between the flags and the fades
+  if (blerc_weights) {
+    for (int i = 0; i < 40; i++) {
+      push_f(d, blerc_weights[i]);
+    }
+  }
   // fades: one effect, padded to a quadword
   for (int i = 0; i < 4; i++) {
     d.push_back(fade[i]);
@@ -2191,10 +2200,11 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
     }
     auto stats = metal_renderer::get_chain_stats();
     printf("merc stats: %d models (%d missing), %d draws (%d envmap), %d tris, %d bone vectors, "
-           "%d deferred mod effects, %d eye draws, %d missing textures\n",
+           "%d mod-vtx uploads (%d skipped), %d eye draws, %d missing textures\n",
            stats.merc_models, stats.merc_missing_models, stats.merc_draws,
            stats.merc_envmap_draws, stats.merc_triangles, stats.merc_bone_vectors,
-           stats.merc_mod_effects_deferred, stats.merc_eye_draws, stats.merc_missing_textures);
+           stats.merc_mod_vtx_uploads, stats.merc_mod_vtx_skipped, stats.merc_eye_draws,
+           stats.merc_missing_textures);
     check(stats.merc_models == 2, "merc: both model instances were built");
     check(stats.merc_missing_models == 0, "merc: every model name resolved in the model pool");
     check(stats.merc_draws == 2, "merc: one draw per instance");
@@ -2247,6 +2257,143 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
     check_pixel(frame, col0, row0, 255, 151, 75, "merc: envmap pass blended over the model");
     check_pixel(frame, gs_to_col(kX1), gs_to_row(kY1), 0, 0, 0,
                 "merc: no second instance in the envmap frame");
+  }
+
+  g_ee_main_mem = nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Section: blerc (blend-shape) vertex updates.
+//
+// The model's one effect is marked modifiable, with one blend target that
+// moves every vertex +kMercBlercShift in GS x. The model packet carries the
+// pc-blerc flag and the 40 weights, exactly as bones.gc sends them. With a
+// zero weight the quad must land where the unmodified model does; with weight
+// one it must land a whole shift to the right - which is only possible if the
+// draw really read this frame's updated vertex buffer.
+// ---------------------------------------------------------------------------
+
+constexpr const char* kMercBlercModelName = "proof-merc-blerc";
+constexpr float kMercBlercShift = 64.f;  // GS units; 80 pixels at 640 wide
+
+std::unique_ptr<tfrag3::Level> make_merc_blerc_test_level() {
+  auto level = make_merc_test_level(false);
+  level->level_name = "metal-proof-blerc";
+  auto& merc = level->merc_data;
+  auto& model = merc.models[0];
+  model.name = kMercBlercModelName;
+  auto& effect = model.effects[0];
+  effect.has_mod_draw = true;
+  // every draw of the effect is modifiable; the mod vertices are the same
+  // four, in the same order, so the level indices address them directly
+  effect.mod.vertices = merc.vertices;
+  effect.mod.mod_draw = effect.all_draws;
+  auto& blerc = effect.mod.blerc;
+  for (u32 vi = 0; vi < merc.vertices.size(); vi++) {
+    const auto& v = merc.vertices[vi];
+    tfrag3::BlercFloatData base = {};
+    base.v[0] = v.pos[0];
+    base.v[1] = v.pos[1];
+    base.v[2] = v.pos[2];
+    base.v[4] = v.normal[0];
+    base.v[5] = v.normal[1];
+    base.v[6] = v.normal[2];
+    blerc.float_data.push_back(base);
+    tfrag3::BlercFloatData target = {};
+    target.v[0] = kMercBlercShift;
+    blerc.float_data.push_back(target);
+    blerc.int_data.push_back(0);  // the one target uses weight 0
+    blerc.int_data.push_back(tfrag3::Blerc::kTargetIdxTerminator);
+    blerc.int_data.push_back(vi);  // destination vertex
+  }
+  return level;
+}
+
+void test_merc_blerc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& display) {
+  printf("--- DMA chain: merc blerc (blend-shape) vertex updates ---\n");
+  using namespace jak1;
+
+  {
+    metal_renderer::MercLevelLoad load;
+    std::string error;
+    if (!metal_renderer::merc_add_level(make_merc_blerc_test_level(), false, &load, &error)) {
+      printf("[FAIL] blerc: could not register the test level: %s\n", error.c_str());
+      g_fail_count++;
+      return;
+    }
+    check(load.models == 1, "blerc: test level registered with the model pool");
+  }
+
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+
+  constexpr float kX0 = 1920.f, kY0 = 1992.f;
+  const u8 no_fade[4] = {0, 0, 0, 0};
+
+  auto run_blerc_frame = [&](float weight0) {
+    float weights[40] = {};
+    weights[0] = weight0;
+    ChainBuilder cb(mem);
+    u32 bone0 = cb.alloc(112), bone1 = cb.alloc(112);
+    write_merc_bone(mem, bone0, kX0, kY0);
+    write_merc_bone(mem, bone1, 0, 0);
+
+    std::vector<ChainBuilder::Transfer> merc;
+    merc.push_back({vif_stcycl(4, 4), vif_code(VifCode::Kind::STMOD, 0), make_merc_setup_data(),
+                    false});
+    merc.push_back({0, 0, std::vector<u8>(32, 0), false});  // test register setup
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, vif_code(VifCode::Kind::PC_PORT, 0),
+                    make_merc_model_packet(bone0, bone1, no_fade, kMercBlercModelName, 0.5f, 0.f,
+                                           weights),
+                    false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
+    cb.set_bucket_content((int)BucketId::MERC_PRIS_LEVEL0, merc);
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+  };
+
+  const int col0 = gs_to_col(kX0), row0 = gs_to_row(kY0);
+  const int col1 = gs_to_col(kX0 + kMercBlercShift);
+
+  // ---- frame 1: zero weight, the quad must sit at the unmodified position --
+  {
+    run_blerc_frame(0.f);
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the blerc frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    auto stats = metal_renderer::get_chain_stats();
+    printf("blerc stats: %d models, %d draws, %d mod-vtx uploads (%d skipped)\n",
+           stats.merc_models, stats.merc_draws, stats.merc_mod_vtx_uploads,
+           stats.merc_mod_vtx_skipped);
+    check(stats.merc_mod_vtx_uploads == 1, "blerc: the effect's vertices were uploaded");
+    check(stats.merc_mod_vtx_skipped == 0, "blerc: nothing was skipped");
+    check_pixel(frame, col0, row0, 100, 50, 25, "blerc: zero weight keeps the base position");
+    check_pixel(frame, col0 + 80 + 40, row0, 0, 0, 0,
+                "blerc: nothing right of the quad at zero weight");
+  }
+
+  // ---- frame 2: weight one, the quad must move a whole shift right ---------
+  {
+    run_blerc_frame(1.f);
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the second blerc frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    auto stats = metal_renderer::get_chain_stats();
+    check(stats.merc_mod_vtx_uploads == 1, "blerc: the moved frame uploaded once too");
+    check_pixel(frame, col1, row0, 100, 50, 25, "blerc: weight one moves the quad by the target");
+    check_pixel(frame, col0 - 20, row0, 0, 0, 0,
+                "blerc: the base position is empty at weight one");
   }
 
   g_ee_main_mem = nullptr;
@@ -3201,12 +3348,12 @@ void run_chain_replay(const GfxRendererModule* mod,
   check(stats.direct_unsupported_blends == 0, "replay: no unsupported GS blend modes");
   printf(
       "merc buckets: %d models (%d missing), %d draws (%d envmap), %d tris, %d bone vectors, "
-      "%d deferred mod effects, %d eye draws, %d missing textures, "
+      "%d mod-vtx uploads (%d skipped), %d eye draws, %d missing textures, "
       "%d bad bone pointers, %d bad draw ranges\n",
       stats.merc_models, stats.merc_missing_models, stats.merc_draws, stats.merc_envmap_draws,
-      stats.merc_triangles, stats.merc_bone_vectors, stats.merc_mod_effects_deferred,
-      stats.merc_eye_draws, stats.merc_missing_textures, stats.merc_bad_bone_pointers,
-      stats.merc_bad_draw_ranges);
+      stats.merc_triangles, stats.merc_bone_vectors, stats.merc_mod_vtx_uploads,
+      stats.merc_mod_vtx_skipped, stats.merc_eye_draws, stats.merc_missing_textures,
+      stats.merc_bad_bone_pointers, stats.merc_bad_draw_ranges);
   {
     u64 merc_payload = 0;
     for (auto& b : inv.buckets) {
@@ -3226,6 +3373,8 @@ void run_chain_replay(const GfxRendererModule* mod,
             "replay: every merc bone pointer landed inside EE memory");
       check(stats.merc_bad_draw_ranges == 0,
             "replay: every merc draw range fit its level's index buffer");
+      check(stats.merc_mod_vtx_skipped == 0,
+            "replay: every requested blerc / mod-vertex update was applied");
     }
   }
 
@@ -3608,6 +3757,7 @@ int main(int argc, char** argv) {
   test_dma_chain(mod, display, level.get());
   test_sprite_chain(mod, display);
   test_merc_chain(mod, display);
+  test_merc_blerc_chain(mod, display);
   test_merc_bone_rotation(mod, display);
   test_generic2_chain(mod, display);
   g_ee_main_mem = nullptr;

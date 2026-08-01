@@ -193,6 +193,43 @@ void* alloc_aligned(MetalStreamBuffer* stream,
   return base + pad;
 }
 
+/*!
+ * Modify vertices for blerc: the GL renderer's blerc_avx (Merc2.cpp), as the
+ * plain four-lane loop the SSE intrinsics compute. Per vertex, the int data is
+ * [tgt0_idx, tgt1_idx, ..., terminator, dest] and the float data is
+ * [base, tgt0, tgt1, ...]; the result is base + sum(tgtN * weights[tgtN_idx]).
+ */
+void blerc_vertices(const u32* i_data,
+                    const u32* i_data_end,
+                    const tfrag3::BlercFloatData* floats,
+                    const float* weights,
+                    tfrag3::MercVertex* out) {
+  while (i_data != i_data_end) {
+    float pos[4];
+    float nrm[4];
+    memcpy(pos, floats->v, sizeof(pos));
+    memcpy(nrm, floats->v + 4, sizeof(nrm));
+    floats++;
+
+    while (*i_data != tfrag3::Blerc::kTargetIdxTerminator) {
+      const float w = weights[*i_data];
+      for (int i = 0; i < 4; i++) {
+        pos[i] += floats->v[i] * w;
+        nrm[i] += floats->v[4 + i] * w;
+      }
+      floats++;
+      i_data++;
+    }
+    i_data++;
+
+    // 16-byte stores, exactly like the GL renderer's: the fourth lane lands in
+    // the vertex padding after pos / normal
+    memcpy(out[*i_data].pos, pos, sizeof(pos));
+    memcpy(out[*i_data].normal, nrm, sizeof(nrm));
+    i_data++;
+  }
+}
+
 }  // namespace
 
 void MetalMerc2::Stats::add(const Stats& o) {
@@ -204,7 +241,8 @@ void MetalMerc2::Stats::add(const Stats& o) {
   envmap_draws += o.envmap_draws;
   bone_vectors += o.bone_vectors;
   lights += o.lights;
-  mod_effects_deferred += o.mod_effects_deferred;
+  mod_vtx_uploads += o.mod_vtx_uploads;
+  mod_vtx_skipped += o.mod_vtx_skipped;
   eye_draws += o.eye_draws;
   missing_textures += o.missing_textures;
   bad_bone_pointers += o.bad_bone_pointers;
@@ -218,6 +256,7 @@ MetalMerc2::MetalMerc2(id<MTLDevice> device, id<MTLCommandQueue> queue, TextureP
     draws.draws.resize(MAX_DRAWS_PER_LEVEL);
     draws.envmap_draws.resize(MAX_DRAWS_PER_LEVEL);
   }
+  m_mod_vtx_unpack_temp.resize(MAX_MOD_VTX * 2);
 }
 
 void MetalMerc2::render(DmaFollower& dma,
@@ -358,6 +397,247 @@ void MetalMerc2::handle_merc_chain(DmaFollower& dma,
     }
     ASSERT(num_skipped < 4);
     return;
+  }
+}
+
+void* MetalMerc2::alloc_mod_vtx_buffer(size_t vertex_count,
+                                       const char* model_name,
+                                       MetalFrameContext& ctx,
+                                       ModBuffers* out,
+                                       Stats* stats) {
+  const size_t bytes = vertex_count * sizeof(tfrag3::MercVertex);
+  if (vertex_count == 0 || bytes > MetalStreamBuffer::kPageSize) {
+    stats->mod_vtx_skipped++;
+    if (!m_warned_mod_skip) {
+      lg::warn("Metal merc: model '{}' has {} modifiable vertices, which does not fit a stream "
+               "page; drawing the unmodified vertices (logged once)",
+               model_name, vertex_count);
+      m_warned_mod_skip = true;
+    }
+    return nullptr;
+  }
+  id<MTLBuffer> buffer = nil;
+  u32 offset = 0;
+  void* data = ctx.stream->alloc((u32)bytes, &buffer, &offset);
+  out->buffer = buffer;
+  out->offset = offset;
+  return data;
+}
+
+/*!
+ * Update vertices from the DMA's blend-shape weights: the GL renderer's
+ * model_mod_blerc_draws, with the per-effect GL buffer replaced by a range of
+ * the frame's stream buffer, written in place.
+ */
+void MetalMerc2::model_mod_blerc_draws(int num_effects,
+                                       const tfrag3::MercModel* model,
+                                       MetalFrameContext& ctx,
+                                       ModBuffers* mod_buffers,
+                                       const float* blerc_weights,
+                                       Stats* stats) {
+  for (int ei = 0; ei < num_effects; ei++) {
+    const auto& effect = model->effects[ei];
+    // some effects might have no mod draw info, and no modifiable vertices
+    if (effect.mod.mod_draw.empty()) {
+      continue;
+    }
+
+    auto* verts = (tfrag3::MercVertex*)alloc_mod_vtx_buffer(effect.mod.vertices.size(),
+                                                            model->name.c_str(), ctx,
+                                                            &mod_buffers[ei], stats);
+    if (!verts) {
+      continue;
+    }
+
+    // start with the correct vertices from the model data, then blerc in place
+    memcpy(verts, effect.mod.vertices.data(),
+           sizeof(tfrag3::MercVertex) * effect.mod.vertices.size());
+    const u32* i_data = effect.mod.blerc.int_data.data();
+    blerc_vertices(i_data, i_data + effect.mod.blerc.int_data.size(),
+                   effect.mod.blerc.float_data.data(), blerc_weights, verts);
+    stats->mod_vtx_uploads++;
+  }
+}
+
+/*!
+ * Update vertices from the merc fragment data the game modified in EE memory
+ * (texture scrolling, ripple): the GL renderer's model_mod_draws. The GL code
+ * reaches EE memory through `setup.data - setup.data_offset`; here the chain
+ * is the copier's compacted copy, so the game's addresses are resolved against
+ * EE memory directly, like the bone matrices above. Every address comes from
+ * the chain or from game-written memory, so it is bounded before it is
+ * dereferenced: a malformed frame reports and keeps the unmodified vertices.
+ */
+void MetalMerc2::model_mod_draws(int num_effects,
+                                 const tfrag3::MercModel* model,
+                                 const u8* input_data,
+                                 const u8* ee0,
+                                 MetalFrameContext& ctx,
+                                 ModBuffers* mod_buffers,
+                                 Stats* stats) {
+  const u8* ee_end = ee0 + EE_MAIN_MEM_SIZE;
+  // headroom covering every in-fragment read below: the u8 quadword counts
+  // bound offsets to mm_qwc_off * 16 + 12 < 4096
+  constexpr size_t kFragReadSpan = 4096;
+  constexpr size_t kFragCtrlReadSpan = 4 + 2 * 255;
+
+  for (int ei = 0; ei < num_effects; ei++) {
+    const auto& effect = model->effects[ei];
+    if (effect.mod.mod_draw.empty()) {
+      continue;
+    }
+
+    auto report_skip = [&](const char* why) {
+      stats->mod_vtx_skipped++;
+      if (!m_warned_mod_skip) {
+        lg::warn("Metal merc: model '{}' mod-vertex update skipped ({}); drawing the unmodified "
+                 "vertices (logged once)",
+                 model->name, why);
+        m_warned_mod_skip = true;
+      }
+      mod_buffers[ei] = {};
+    };
+
+    if (effect.mod.expect_vidx_end > MAX_MOD_VTX) {
+      report_skip("more mod vertices than MAX_MOD_VTX");
+      continue;
+    }
+
+    auto* verts = (tfrag3::MercVertex*)alloc_mod_vtx_buffer(effect.mod.vertices.size(),
+                                                            model->name.c_str(), ctx,
+                                                            &mod_buffers[ei], stats);
+    if (!verts) {
+      continue;
+    }
+
+    // start with the "correct" vertices from the model data
+    memcpy(verts, effect.mod.vertices.data(),
+           sizeof(tfrag3::MercVertex) * effect.mod.vertices.size());
+
+    // get pointers to the fragment and fragment control data
+    u32 goal_addr;
+    memcpy(&goal_addr, input_data + 4 * ei, 4);
+    if (goal_addr == 0 || goal_addr + 22 > EE_MAIN_MEM_SIZE) {
+      report_skip("effect pointer outside EE memory");
+      continue;
+    }
+    const u8* merc_effect = ee0 + goal_addr;
+    u16 frag_cnt;
+    memcpy(&frag_cnt, merc_effect + 18, 2);
+    if (frag_cnt < effect.mod.fragment_mask.size()) {
+      report_skip("fewer fragments than the model expects");
+      continue;
+    }
+    u32 frag_goal;
+    memcpy(&frag_goal, merc_effect, 4);
+    u32 frag_ctrl_goal;
+    memcpy(&frag_ctrl_goal, merc_effect + 4, 4);
+    if (frag_goal >= EE_MAIN_MEM_SIZE || frag_ctrl_goal >= EE_MAIN_MEM_SIZE) {
+      report_skip("fragment pointer outside EE memory");
+      continue;
+    }
+    const u8* frag = ee0 + frag_goal;
+    const u8* frag_ctrl = ee0 + frag_ctrl_goal;
+
+    // loop over frags
+    u32 vidx = 0;
+    const float xyz_scale = model->xyz_scale;
+    bool walked = true;
+    for (u32 fi = 0; fi < effect.mod.fragment_mask.size(); fi++) {
+      if (frag + kFragReadSpan > ee_end || frag_ctrl + kFragCtrlReadSpan > ee_end) {
+        report_skip("fragment walk left EE memory");
+        walked = false;
+        break;
+      }
+      u8 mat_xfer_count = frag_ctrl[3];
+
+      // we have a mask of fragments to skip because they have no vertices;
+      // the indexing data assumes we skip the other fragments
+      if (effect.mod.fragment_mask[fi]) {
+        // read fragment metadata
+        u8 unsigned_four_count = frag_ctrl[0];
+        u8 lump_four_count = frag_ctrl[1];
+        u32 mm_qwc_off = frag[10];
+        float float_offsets[3];
+        memcpy(float_offsets, &frag[mm_qwc_off * 16], 12);
+        u32 my_u4_count = ((unsigned_four_count + 3) / 4) * 16;
+        u32 my_l4_count = my_u4_count + ((lump_four_count + 3) / 4) * 16;
+
+        // loop over vertices in the fragment and unpack. The GL loop's
+        // `w < my_l4_count / 4 - 2` is compared signed here so an empty
+        // fragment cannot underflow it.
+        for (u32 w = my_u4_count / 4; (s64)w + 2 < (s64)(my_l4_count / 4); w += 3) {
+          if (vidx >= m_mod_vtx_unpack_temp.size()) {
+            break;  // expect_vidx_end mismatch, reported after the walk
+          }
+          // positions
+          u32 q0w = 0x4b010000 + frag[w * 4 + (0 * 4) + 3];
+          u32 q1w = 0x4b010000 + frag[w * 4 + (1 * 4) + 3];
+          u32 q2w = 0x4b010000 + frag[w * 4 + (2 * 4) + 3];
+
+          // normals
+          u32 q0z = 0x47800000 + frag[w * 4 + (0 * 4) + 2];
+          u32 q1z = 0x47800000 + frag[w * 4 + (1 * 4) + 2];
+          u32 q2z = 0x47800000 + frag[w * 4 + (2 * 4) + 2];
+
+          // uvs
+          u32 q2x = model->st_vif_add + frag[w * 4 + (2 * 4) + 0];
+          u32 q2y = model->st_vif_add + frag[w * 4 + (2 * 4) + 1];
+
+          auto* pos_array = m_mod_vtx_unpack_temp[vidx].pos;
+          memcpy(&pos_array[0], &q0w, 4);
+          memcpy(&pos_array[1], &q1w, 4);
+          memcpy(&pos_array[2], &q2w, 4);
+          pos_array[0] += float_offsets[0];
+          pos_array[1] += float_offsets[1];
+          pos_array[2] += float_offsets[2];
+          pos_array[0] *= xyz_scale;
+          pos_array[1] *= xyz_scale;
+          pos_array[2] *= xyz_scale;
+
+          auto* nrm_array = m_mod_vtx_unpack_temp[vidx].nrm;
+          memcpy(&nrm_array[0], &q0z, 4);
+          memcpy(&nrm_array[1], &q1z, 4);
+          memcpy(&nrm_array[2], &q2z, 4);
+          nrm_array[0] += -65537;
+          nrm_array[1] += -65537;
+          nrm_array[2] += -65537;
+
+          auto* uv_array = m_mod_vtx_unpack_temp[vidx].uv;
+          memcpy(&uv_array[0], &q2x, 4);
+          memcpy(&uv_array[1], &q2y, 4);
+          uv_array[0] += model->st_magic;
+          uv_array[1] += model->st_magic;
+
+          vidx++;
+        }
+      }
+
+      // next control
+      frag_ctrl += 4 + 2 * mat_xfer_count;
+
+      // next frag
+      u32 mm_qwc_count = frag[11];
+      frag += mm_qwc_count * 16;
+    }
+    if (!walked) {
+      continue;
+    }
+    if (effect.mod.expect_vidx_end != vidx) {
+      report_skip("unpacked vertex count does not match the model");
+      continue;
+    }
+
+    // now copy the data in merc original vertex order to the output
+    for (u32 vi = 0; vi < effect.mod.vertices.size(); vi++) {
+      u32 addr = effect.mod.vertex_lump4_addr[vi];
+      if (addr < vidx) {
+        memcpy(&verts[vi], &m_mod_vtx_unpack_temp[addr], 32);
+        verts[vi].st[0] = m_mod_vtx_unpack_temp[addr].uv[0];
+        verts[vi].st[1] = m_mod_vtx_unpack_temp[addr].uv[1];
+      }
+    }
+    stats->mod_vtx_uploads++;
   }
 }
 
@@ -506,8 +786,10 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   bool model_disables_envmap = flags->bitflags & 8;
   input_data += 32;
 
+  float blerc_weights[kMaxBlerc];
   if (model_uses_pc_blerc) {
-    input_data += 40 * sizeof(float);  // Merc2::kMaxBlerc weights
+    memcpy(blerc_weights, input_data, kMaxBlerc * sizeof(float));
+    input_data += kMaxBlerc * sizeof(float);
   }
 
   u8 fade_buffer[4 * kMaxEffect];
@@ -518,25 +800,18 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   }
   input_data += (((num_effects * 4) + 15) / 16) * 16;
 
-  // Vertex modification (blerc and the mod-vertex path) is not ported: those
-  // effects are drawn from the level's unmodified vertices instead of the
-  // updated copy. Counted here and logged once, never silently dropped.
-  bool model_wants_mod = model_uses_pc_blerc || model_uses_mod;
+  // input_data is now at the per-effect EE pointers the mod-vertex path reads.
+  // Vertex modification: blerc updates come from the weights in the chain,
+  // mod-vertex updates from the fragment data the game modified in EE memory.
+  ModBuffers mod_buffers[kMaxEffect];
+  if (model_uses_pc_blerc) {
+    model_mod_blerc_draws(num_effects, model, ctx, mod_buffers, blerc_weights, stats);
+  } else if (model_uses_mod) {
+    model_mod_draws(num_effects, model, input_data, ee0, ctx, mod_buffers, stats);
+  }
 
   stats->models++;
-  for (const auto& effect : model->effects) {
-    stats->effects++;
-    if (model_wants_mod && effect.has_mod_draw) {
-      stats->mod_effects_deferred++;
-    }
-  }
-  if (model_wants_mod && !m_warned_mod) {
-    lg::warn(
-        "Metal merc: model '{}' asks for vertex modification (blerc/mod-vtx), which is not "
-        "ported; drawing the unmodified vertices (logged once)",
-        model->name);
-    m_warned_mod = true;
-  }
+  stats->effects += (int)model->effects.size();
 
   u32 first_bone = alloc_bones(bone_count, skel_matrix_buffer);
 
@@ -564,12 +839,46 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
     args.ignore_alpha = !!(current_ignore_alpha_bits & (1ull << ei));
     auto& effect = model->effects[ei];
     bool should_envmap = effect.has_envmap && !model_disables_envmap;
+    bool should_mod = (model_uses_pc_blerc || model_uses_mod) && effect.has_mod_draw;
+    if (should_mod && !effect.mod.mod_draw.empty() && mod_buffers[ei].buffer == nil) {
+      // the update was skipped (reported): the unmodified all_draws are the
+      // safe fallback, since mod draws index the per-effect vertex buffer
+      should_mod = false;
+    }
 
-    for (auto& draw : effect.all_draws) {
-      if (should_envmap) {
-        try_alloc_envmap_draw(draw, effect.envmap_mode, effect.envmap_texture, args);
+    if (should_mod) {
+      // draw as two parts, fixed and mod
+
+      // do fixed draws:
+      for (auto& fdraw : effect.mod.fix_draw) {
+        alloc_normal_draw(fdraw, args);
+        if (should_envmap) {
+          try_alloc_envmap_draw(fdraw, effect.envmap_mode, effect.envmap_texture, args);
+        }
       }
-      alloc_normal_draw(draw, args);
+
+      // do mod draws:
+      for (auto& mdraw : effect.mod.mod_draw) {
+        auto* n = alloc_normal_draw(mdraw, args);
+        // modify the draw, set the mod flag and point it at this frame's vertices
+        n->flags |= MOD_VTX;
+        n->mod_vtx = mod_buffers[ei];
+        if (should_envmap) {
+          auto* e = try_alloc_envmap_draw(mdraw, effect.envmap_mode, effect.envmap_texture, args);
+          if (e) {
+            e->flags |= MOD_VTX;
+            e->mod_vtx = mod_buffers[ei];
+          }
+        }
+      }
+    } else {
+      // no mod, just do all_draws
+      for (auto& draw : effect.all_draws) {
+        if (should_envmap) {
+          try_alloc_envmap_draw(draw, effect.envmap_mode, effect.envmap_texture, args);
+        }
+        alloc_normal_draw(draw, args);
+      }
     }
   }
 }
@@ -612,6 +921,7 @@ MetalMerc2::Draw* MetalMerc2::alloc_normal_draw(const tfrag3::MercDraw& mdraw,
                                                 const DrawArgs& args) {
   Draw* draw = &args.lev_bucket->draws[args.lev_bucket->next_free_draw++];
   draw->flags = 0;
+  draw->mod_vtx = {};
   draw->first_index = mdraw.first_index;
   draw->index_count = mdraw.index_count;
   draw->mode = mdraw.mode;
@@ -653,6 +963,7 @@ MetalMerc2::Draw* MetalMerc2::try_alloc_envmap_draw(const tfrag3::MercDraw& mdra
 
   Draw* draw = &args.lev_bucket->envmap_draws[args.lev_bucket->next_free_envmap_draw++];
   draw->flags = 0;
+  draw->mod_vtx = {};
   draw->first_index = mdraw.first_index;
   draw->index_count = mdraw.index_count;
   draw->mode = envmap_mode;
@@ -722,6 +1033,7 @@ void MetalMerc2::do_draws(const Draw* draw_array,
   }
   id<MTLRenderCommandEncoder> enc = ctx.enc;
   [enc setVertexBuffer:lev->vertices offset:0 atIndex:0];
+  bool normal_vtx_buffer_bound = true;
 
   const u64 placeholder = render_state->texture_pool->get_placeholder_texture();
 
@@ -734,6 +1046,16 @@ void MetalMerc2::do_draws(const Draw* draw_array,
       // of handing the GPU an out-of-range range
       stats->bad_draw_ranges++;
       continue;
+    }
+
+    // mod draws read this frame's updated vertices; their index ranges index
+    // into the per-effect buffer, the level's index buffer stays bound
+    if (draw.flags & MOD_VTX) {
+      [enc setVertexBuffer:draw.mod_vtx.buffer offset:draw.mod_vtx.offset atIndex:0];
+      normal_vtx_buffer_bound = false;
+    } else if (!normal_vtx_buffer_bound) {
+      [enc setVertexBuffer:lev->vertices offset:0 atIndex:0];
+      normal_vtx_buffer_bound = true;
     }
 
     bool use_mipmaps = true;
