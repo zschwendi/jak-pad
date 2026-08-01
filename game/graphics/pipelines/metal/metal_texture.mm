@@ -93,8 +93,14 @@ u64 metal_add_texture(id<MTLDevice> device,
                       TexturePool& pool,
                       const tfrag3::Texture& tex,
                       bool is_common) {
+  // The upload runs outside the pool's lock. TexturePool does not lock inside give_texture - it
+  // publishes its mutex and expects the caller to hold it (the GL loader does exactly this in
+  // LoaderStages.cpp and Loader.cpp), while the game thread takes the same lock from
+  // handle_upload_now and relocate. Holding it across the GPU wait below would put the game
+  // thread behind every texture upload, so the lock is taken only for the registration.
   u64 handle = metal_upload_texture_rgba8(device, queue, (const u8*)tex.data.data(), tex.w, tex.h);
   if (handle && tex.load_to_pool) {
+    std::lock_guard<std::mutex> pool_lock(pool.mutex());
     TextureInput in;
     in.debug_page_name = tex.debug_tpage_name;
     in.debug_name = tex.debug_name;
@@ -115,6 +121,7 @@ bool metal_setup_placeholder(id<MTLDevice> device, id<MTLCommandQueue> queue, Te
   if (!handle) {
     return false;
   }
+  std::lock_guard<std::mutex> pool_lock(pool.mutex());
   pool.set_placeholder(handle);
   return true;
 }

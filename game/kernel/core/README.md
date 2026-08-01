@@ -224,6 +224,41 @@ on. And `sage-intro-sequence-a`, which does load, prints `could not find a maste
 from `link-art!`: the spooled animation arrives before its master art group is in a loaded level,
 so the intro conversation does not animate. Neither stops the game.
 
+## The renderer
+
+`gfx_host.h` is the drawing seam, and it is the same shape as the controller seam above: a table of
+plain C function pointers that a host fills in. Nothing in this library knows about Metal, SDL, a
+window or a display link.
+
+```c
+goal_gfx_host host = {0};
+host.send_chain        = ...;  /* __send-gfx-dma-chain: the frame's DMA chain */
+host.vsync             = ...;  /* syncv: block until the renderer presented   */
+host.sync_path         = ...;  /* sync-path                                   */
+host.texture_upload_now = ...; /* __pc-texture-upload-now                     */
+host.texture_relocate  = ...;  /* __pc-texture-relocate                       */
+host.set_levels        = ...;  /* __pc-set-levels: which levels' art to have  */
+host.set_pmode_alp     = ...;  /* put-display-env's blackout alpha            */
+goal_gfx_host_install(&host);
+```
+
+`goal_gfx_host_install` also implements the PS2 graphics calls that have nothing left to do once
+the hardware is gone - `reset-path`, `reset-graph`, `dma-sync`, `flush-cache` and the GS IMR pair -
+returning 0, which is what upstream's desktop port does. Every entry may be left NULL, in which
+case that function keeps the machine layer's reporting stub.
+
+`__pc-set-levels` is the one that is more than a forward. GOAL calls it every frame from
+`(method 15 load-state)` in `engine/level/level.gc` with the two levels the load state is holding,
+and the seam drops the game's `"none"` placeholders and hands the host the names that are left. It
+is how the renderer learns which levels' `.fr3` art to have on the GPU without anything being
+hardcoded: the game says `title+village1` while the title screen plays, `village1` once the title
+level is discarded, and `misty+village1` as soon as the player walks toward the water.
+
+The signatures the host sees are the renderer's, not GOAL's: `send_chain` takes EE main memory and
+the chain's GOAL pointer, which are exactly `GfxRendererModule::send_chain`'s two arguments.
+`game/goalpad_play.cpp` is the desktop host that fills this in from the Metal renderer; an iPadOS
+bridge fills in the same seven entries from a `CAMetalLayer`.
+
 ## Capturing a frame
 
 `__send-gfx-dma-chain` is where a frame's work leaves GOAL. `dma_capture.cpp` follows the chain
@@ -432,6 +467,23 @@ than changing it.
 `--no-sound` boots without starting 989snd at all, which puts the sound channels back on the
 machine-layer stub path.
 
+## Playing it
+
+`goalpad-play` (`game/goalpad_play.cpp`) is this library and the Metal renderer in one process: the
+game boots, runs its own frame loop on its own thread, and the frames it builds are drawn in a
+window. See **The renderer** above for the seam, and `docs/metal-renderer-path.md` for the
+threading and the results.
+
+```sh
+cmake --build build/Release/bin -j 4 --target goalpad-play
+./build/Release/bin/game/goalpad-play --data-dir /path/to/out/jak1
+```
+
+Return or the controller's Start leaves the title screen. The keyboard layout is the PC port's own
+default (`game/system/hid/input_bindings.cpp`): WASD and the arrows, Space for X, E/F/R for
+circle/square/triangle, Q/O and 1/P for the shoulders. Any SDL-recognised controller works, and
+`goal_pad_get_rumble` drives its motors.
+
 Standalone static library for a device build:
 
 ```sh
@@ -532,13 +584,12 @@ with no case now fails to compile rather than returning garbage.
   `pad.cpp`; everything else - `file-stream-open`, `reset-graph`, the `scf-get-*` readers - is a
   diagnostic and not an implementation. A frame runs with the display and DMA functions returning
   0, so what a frame *computes* is real and what it would have *shown* is not.
-- **The renderer is not here, so a frame is simulation only.** `reset-graph`, `syncv`, `sync-path`,
-  `put-display-env`, `dma-sync`, `flush-cache`, `__pc-texture-upload-now` and `__pc-texture-relocate`
-  are the machine functions a frame calls and they all report and return 0. `__send-gfx-dma-chain`
-  is the exception: `dma_capture.cpp` follows the chain with the same `FixedChunkDmaCopier` the
-  renderer uses, measures it bucket by bucket, writes chosen frames to a file, and drops the rest.
-  Nothing is drawn. `__pc-set-levels`, the call that would tell a renderer's loader which levels'
-  `fr3` art to have ready, is a stub too, so a replayed capture has to decide that for itself.
+- **Without a host renderer, a frame is simulation only.** When no host installs itself through
+  `gfx_host.h` (see **The renderer** above), `reset-graph`, `syncv`, `sync-path`,
+  `put-display-env`, `dma-sync`, `flush-cache`, `__pc-texture-upload-now`, `__pc-texture-relocate`
+  and `__pc-set-levels` all report and return 0, and `__send-gfx-dma-chain` goes to
+  `dma_capture.cpp`, which measures the chain and drops it. That is what the boot and gameplay
+  tests run as, and it is why they measure what a frame *computes* rather than what it shows.
 - **File access is data-directory-relative only.** `ee::sceOpen` and friends are real POSIX file
   descriptors, but every name is resolved under the configured data directory
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file

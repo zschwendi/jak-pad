@@ -742,4 +742,55 @@ if(APPLE)
         graphics/pipelines/metal/metal_proof_main.cpp
         graphics/pipelines/metal/metal_chain_replay.cpp)
     target_link_libraries(metal-proof runtime)
+
+    # goalpad-play: the game and the renderer in one process.
+    #
+    # It cannot link `runtime`: that library carries a second copy of the Jak 1 kernel (kmachine,
+    # kdgo, the IOP, the listener) which jak1-kernel-core replaces, so the two collide at link
+    # time by design. `goalpad-metal-gfx` is therefore the Metal renderer plus the graphics
+    # support it needs, compiled from the same sources `runtime` uses, without the desktop
+    # runtime. The only file that is not shared is metal_host_seams.cpp, which defines the three
+    # runtime globals the renderer reads.
+    if(TARGET jak1-kernel-core AND GOAL_HOST_TESTS_ENABLED)
+        add_library(goalpad-metal-gfx STATIC
+            ${METAL_PIPELINE_SOURCES}
+            ${METAL_LIB_EMBED}
+            graphics/pipelines/metal/metal_host_seams.cpp
+            graphics/pipelines/metal/metal_kernel_bridge.cpp
+            graphics/pipelines/metal/metal_texture_upload_handler.cpp
+            graphics/opengl_renderer/dma_helpers.cpp
+            graphics/texture/jak1_tpage_dir.cpp
+            graphics/texture/jak2_tpage_dir.cpp
+            graphics/texture/jak3_tpage_dir.cpp
+            graphics/texture/TextureConverter.cpp
+            graphics/texture/TexturePool.cpp
+            # the ocean's VU1 emulators, shared with the GL renderer
+            graphics/opengl_renderer/ocean/OceanMid_PS2.cpp
+            graphics/opengl_renderer/ocean/OceanNear_PS2.cpp
+            graphics/opengl_renderer/ocean/OceanTexture_VU.cpp
+            # common pieces jak1-kernel-core does not already compile
+            "${CMAKE_SOURCE_DIR}/common/custom_data/TFrag3Data.cpp"
+            "${CMAKE_SOURCE_DIR}/common/custom_data/pack_helpers.cpp"
+            "${CMAKE_SOURCE_DIR}/common/dma/gs.cpp"
+            "${CMAKE_SOURCE_DIR}/common/global_profiler/GlobalProfiler.cpp"
+            "${CMAKE_SOURCE_DIR}/common/texture/texture_slots.cpp"
+            "${CMAKE_SOURCE_DIR}/common/util/compress.cpp"
+            "${CMAKE_SOURCE_DIR}/common/util/FrameLimiter.cpp"
+            "${CMAKE_SOURCE_DIR}/common/versions/versions.cpp")
+        set_source_files_properties(${METAL_PIPELINE_SOURCES}
+            TARGET_DIRECTORY goalpad-metal-gfx
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        # imgui: TexturePool's debug view calls it. No debug UI is created here, but the
+        # translation unit is shared with the GL renderer, which has one.
+        target_link_libraries(goalpad-metal-gfx PUBLIC jak1-kernel-core SDL3::SDL3 imgui
+            libzstd_static
+            "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+
+        add_executable(goalpad-play
+            goalpad_play.cpp
+            "${AOT_BOOT_DIR}/aot_boot_manifest.c"
+            ${AOT_BOOT_C_SOURCES})
+        target_include_directories(goalpad-play PRIVATE "${AOT_BOOT_DIR}")
+        target_link_libraries(goalpad-play goalpad-metal-gfx)
+    endif()
 endif()

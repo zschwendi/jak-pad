@@ -83,6 +83,8 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/util.cpp"
     # __send-gfx-dma-chain: measure and optionally capture the chain a frame built
     "${CMAKE_CURRENT_LIST_DIR}/dma_capture.cpp"
+    # the rest of the machine layer's graphics functions, answered by a host's renderer
+    "${CMAKE_CURRENT_LIST_DIR}/gfx_host.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma_copy.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma.cpp"
     # the Jak 1 mips2c function library, in place of game/mips2c/mips2c_table.cpp

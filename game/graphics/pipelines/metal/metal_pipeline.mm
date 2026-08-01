@@ -10,12 +10,15 @@
 
 #include "metal_pipeline.h"
 
+#include <algorithm>
 #include <condition_variable>
 #include <mutex>
 
 #include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
 #include "common/log/log.h"
+#include "common/util/FrameLimiter.h"
+#include "common/util/Timer.h"
 
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
@@ -23,8 +26,6 @@
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/runtime.h"
-#include "game/system/hid/display_manager.h"
-#include "game/system/hid/input_manager.h"
 
 #include "third-party/SDL/include/SDL3/SDL.h"
 #include "third-party/SDL/include/SDL3/SDL_metal.h"
@@ -58,6 +59,124 @@ struct ChainSync {
 };
 ChainSync g_chain;
 
+// The level art the running game asks for through __pc-set-levels, and what is
+// on the GPU because of it. The game thread writes `wanted`; the render thread
+// reads it and does the loading, at the top of a frame, before that frame's
+// render pass opens. Doing the load there rather than on a loader thread is
+// what keeps this correct with no locking around the level registry or the
+// texture pool: nothing is drawing while a level appears. The cost is that the
+// renderer stalls for the length of the load, which the game sees as one very
+// long frame, the same way it sees any slow frame.
+struct LevelArt {
+  std::mutex mutex;
+  std::string directory;
+  std::vector<std::string> wanted;
+  bool wanted_changed = false;
+  bool reported_no_directory = false;
+  bool common_loaded = false;
+  std::vector<std::string> loaded;  // in load order, including ones that failed
+  metal_renderer::LevelArtStats stats;
+};
+LevelArt g_level_art;
+
+std::string join_plus(const std::vector<std::string>& names) {
+  std::string out;
+  for (const auto& name : names) {
+    if (!out.empty()) {
+      out += '+';
+    }
+    out += name;
+  }
+  return out;
+}
+
+// Loads one level's art into both places it has to go: the background
+// renderers' level registry (tfrag / tie / shrub geometry plus the level's
+// textures) and the merc model pool (the same level's character geometry).
+// A level that will not load is reported, never treated as loaded.
+bool load_level_art(const std::string& name, bool is_common) {
+  const std::string path = g_level_art.directory + "/" + name + ".fr3";
+  Timer timer;
+  auto result = metal_renderer::load_level_fr3(path, is_common);
+  if (!result.ok) {
+    lg::error("Metal: could not load level art {}: {}", path, result.error);
+    return false;
+  }
+  metal_renderer::MercLevelLoad merc;
+  std::string error;
+  if (!metal_renderer::merc_load_fr3(path, is_common, &merc, &error)) {
+    lg::error("Metal: could not load merc models from {}: {}", path, error);
+    return false;
+  }
+  const double ms = timer.getMs();
+  lg::info(
+      "Metal: loaded level art {} in {:.0f} ms - {} textures, {}/{}/{} tfrag/tie/shrub trees, "
+      "{} merc models, {:.1f} MB vertices",
+      name, ms, result.textures, result.tfrag_trees, result.tie_trees, result.shrub_trees,
+      merc.models, result.vertex_bytes / (1024.0 * 1024.0));
+  g_level_art.stats.last_load_ms = ms;
+  return true;
+}
+
+// Render-thread half of __pc-set-levels. Loads whatever the game has asked for
+// and does not have yet. Levels are not unloaded: nothing here knows when the
+// last draw referencing a level's buffers has retired, and the texture pool's
+// VRAM slots outlive the frame that filled them - which is what the GL
+// loader's reference counting is for. Memory therefore grows with the number
+// of distinct levels a session visits.
+void service_level_requests() {
+  std::vector<std::string> wanted;
+  {
+    std::lock_guard<std::mutex> lock(g_level_art.mutex);
+    if (g_level_art.directory.empty()) {
+      if (!g_level_art.wanted.empty() && !g_level_art.reported_no_directory) {
+        g_level_art.reported_no_directory = true;
+        lg::error(
+            "Metal: the game asked for level art ({}) but no level art directory is set; "
+            "frames will draw with placeholder textures and no world geometry",
+            join_plus(g_level_art.wanted));
+      }
+      return;
+    }
+    if (!g_level_art.wanted_changed && g_level_art.common_loaded) {
+      return;
+    }
+    g_level_art.wanted_changed = false;
+    wanted = g_level_art.wanted;
+  }
+
+  // The shared level every other level's textures sit beside. The GL loader
+  // calls this one "common" and loads it once at startup.
+  if (!g_level_art.common_loaded) {
+    g_level_art.common_loaded = true;
+    if (!load_level_art("GAME", true)) {
+      std::lock_guard<std::mutex> lock(g_level_art.mutex);
+      g_level_art.stats.load_failures++;
+    }
+  }
+
+  for (const auto& name : wanted) {
+    {
+      std::lock_guard<std::mutex> lock(g_level_art.mutex);
+      if (std::find(g_level_art.loaded.begin(), g_level_art.loaded.end(), name) !=
+          g_level_art.loaded.end()) {
+        continue;
+      }
+    }
+    const bool ok = load_level_art(name, false);
+    std::lock_guard<std::mutex> lock(g_level_art.mutex);
+    // Remembered either way, so a level whose art will not load is reported
+    // once rather than retried every frame.
+    g_level_art.loaded.push_back(name);
+    if (ok) {
+      g_level_art.stats.levels_loaded++;
+      g_level_art.stats.loaded = join_plus(g_level_art.loaded);
+    } else {
+      g_level_art.stats.load_failures++;
+    }
+  }
+}
+
 // Largest centered region with the game's 4:3 aspect that fits the window.
 // The real game supplies its own draw region sizes; this stands in until the
 // DMA chain drives frames.
@@ -74,51 +193,55 @@ void compute_draw_region(int fb_w, int fb_h, int* w, int* h) {
 }  // namespace
 
 /*!
- * Display for the Metal pipeline. Mirrors GLDisplay's structure (SDL window plus
- * display/input managers) without the imgui integration.
+ * Display for the Metal pipeline: an SDL window and its CAMetalLayer.
+ *
+ * Unlike GLDisplay this owns no DisplayManager and no InputManager. Those two read and *write*
+ * the PC port's own display and input settings files, and their window management (saved display
+ * mode, saved monitor and window position) belongs to a launcher rather than to a renderer
+ * backend. A host reads its own input - `game/goalpad_play.cpp` does, straight from SDL, and the
+ * iPadOS bridge will do it from GameController - so nothing here needs them. `get_*_manager`
+ * therefore answer null, which is what "this display does not manage input" has to look like
+ * through the GfxDisplay interface.
  */
 class MetalDisplay : public GfxDisplay {
  public:
   MetalDisplay(SDL_Window* window, SDL_MetalView view, CAMetalLayer* layer, bool is_main)
-      : m_window(window),
-        m_view(view),
-        m_layer(layer),
-        m_display_manager(std::make_shared<DisplayManager>(window)),
-        m_input_manager(std::make_shared<InputManager>(window)) {
+      : m_window(window), m_view(view), m_layer(layer) {
     m_main = is_main;
-    m_display_manager->set_input_manager(m_input_manager);
   }
 
   virtual ~MetalDisplay() {
-    m_display_manager.reset();
-    m_input_manager.reset();
     SDL_Metal_DestroyView(m_view);
     SDL_DestroyWindow(m_window);
   }
 
-  std::shared_ptr<DisplayManager> get_display_manager() const override {
-    return m_display_manager;
-  }
-  std::shared_ptr<InputManager> get_input_manager() const override { return m_input_manager; }
+  std::shared_ptr<DisplayManager> get_display_manager() const override { return nullptr; }
+  std::shared_ptr<InputManager> get_input_manager() const override { return nullptr; }
 
   void render() override;
   void init_splash() override {}
   void draw_splash(int /*fb_w*/, int /*fb_h*/) override {}
 
  private:
+  // Drains the queue so SDL keeps its keyboard and gamepad state current (which is what the host
+  // reads) and so the window stays responsive. Closing the window asks the game to stop, the same
+  // way GLDisplay::process_sdl_events does.
   void process_sdl_events() {
     SDL_Event evt;
     while (SDL_PollEvent(&evt) != 0) {
-      m_display_manager->process_sdl_event(evt);
-      m_input_manager->process_sdl_event(evt);
+      if (evt.type == SDL_EVENT_QUIT ||
+          (evt.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+           evt.window.windowID == SDL_GetWindowID(m_window))) {
+        MasterExit = RuntimeExitStatus::EXIT;
+        std::unique_lock<std::mutex> lock(g_chain.sync_mutex);
+        g_chain.sync_cv.notify_all();
+      }
     }
   }
 
   SDL_Window* m_window;
   SDL_MetalView m_view;
   CAMetalLayer* m_layer;
-  std::shared_ptr<DisplayManager> m_display_manager;
-  std::shared_ptr<InputManager> m_input_manager;
 };
 
 void MetalDisplay::render() {
@@ -129,6 +252,10 @@ void MetalDisplay::render() {
   int fb_w = 0;
   int fb_h = 0;
   SDL_GetWindowSizeInPixels(m_window, &fb_w, &fb_h);
+
+  // Whatever level art the game has asked for since the last frame, before
+  // anything starts drawing from it.
+  service_level_requests();
 
   // wait briefly for a copied chain, like GLDisplay's render_game_frame; if
   // none arrives, render the validation scene so the window stays responsive
@@ -148,8 +275,12 @@ void MetalDisplay::render() {
       opts.game_res_w = 640;
       opts.game_res_h = 480;
     }
-    opts.draw_region_w = Gfx::g_global_settings.lbox_w;
-    opts.draw_region_h = Gfx::g_global_settings.lbox_h;
+    // The largest centred 4:3 region that fits the window, in drawable pixels. Upstream the game
+    // sets this itself through `pc-set-letterbox`, which this machine layer does not implement;
+    // until it does, the window decides, which is what a host with no settings menu should do.
+    // The game frame is scaled into it, so the internal resolution and the window size are
+    // independent - exactly the pair the iPad app needs.
+    compute_draw_region(fb_w, fb_h, &opts.draw_region_w, &opts.draw_region_h);
     opts.pmode_alp = g_chain.pmode_alp;
     opts.brightness_contrast_color = Gfx::g_global_settings.brightness_contrast_color;
     opts.brightness_contrast_alpha = Gfx::g_global_settings.brightness_contrast_alpha;
@@ -160,6 +291,16 @@ void MetalDisplay::render() {
     MetalRenderOptions opts;
     compute_draw_region(fb_w, fb_h, &opts.draw_region_w, &opts.draw_region_h);
     g_renderer->render_frame(opts, m_layer);
+  }
+
+  // Hold the frame to the target rate before releasing the game thread, exactly where the GL
+  // pipeline runs it: the game's clock is `syncv` returning, so pacing here is what makes the
+  // game run at its own speed on a display of any refresh rate. Without it a 120 Hz display runs
+  // Jak at twice speed.
+  if (Gfx::g_global_settings.framelimiter) {
+    static FrameLimiter limiter;
+    limiter.run(Gfx::g_global_settings.target_fps, Gfx::g_global_settings.experimental_accurate_lag,
+                Gfx::g_global_settings.sleep_in_frame_limiter, 1.0 / 60.0);
   }
 
   // mark the chain as rendered so sync_path can return (GL does this under the
@@ -334,6 +475,16 @@ bool merc_add_level(std::unique_ptr<tfrag3::Level> level,
   return true;
 }
 
+void set_level_art_directory(const std::string& path) {
+  std::lock_guard<std::mutex> lock(g_level_art.mutex);
+  g_level_art.directory = path;
+}
+
+LevelArtStats get_level_art_stats() {
+  std::lock_guard<std::mutex> lock(g_level_art.mutex);
+  return g_level_art.stats;
+}
+
 }  // namespace metal_renderer
 
 static int metal_init(GfxGlobalSettings& /*settings*/) {
@@ -499,7 +650,21 @@ static void metal_texture_relocate(u32 dst, u32 src, u32 format) {
     g_texture_pool->relocate(dst, src, format);
   }
 }
-static void metal_set_levels(const std::vector<std::string>& /*levels*/) {}
+/*!
+ * The levels whose art the renderer should have ready, from the game's own
+ * `__pc-set-levels`. Called from the game thread every frame; the loading
+ * happens on the render thread (see service_level_requests).
+ */
+static void metal_set_levels(const std::vector<std::string>& levels) {
+  std::lock_guard<std::mutex> lock(g_level_art.mutex);
+  if (levels == g_level_art.wanted) {
+    return;
+  }
+  g_level_art.wanted = levels;
+  g_level_art.wanted_changed = true;
+  g_level_art.stats.requests++;
+  g_level_art.stats.wanted = join_plus(levels);
+}
 static void metal_set_active_levels(const std::vector<std::string>& /*levels*/) {}
 static void metal_force_reload_all() {}
 static void metal_force_reload_level(const std::string& /*level*/) {}

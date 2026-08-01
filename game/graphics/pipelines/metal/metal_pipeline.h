@@ -252,4 +252,22 @@ bool merc_add_level(std::unique_ptr<tfrag3::Level> level,
                     MercLevelLoad* out,
                     std::string* error);
 
+// --- the level art the running game asks for (__pc-set-levels) --------------
+
+// Where the extracted `.fr3` level art lives: the `fr3` directory of the
+// player's own prepared data. Until this is set, `set_levels` has nothing to
+// load from and says so once. The analog of the GL Loader's base path.
+void set_level_art_directory(const std::string& path);
+
+// What the game's own level requests did.
+struct LevelArtStats {
+  int requests = 0;         // set_levels calls whose list changed
+  int levels_loaded = 0;    // levels loaded because the game asked for them
+  int load_failures = 0;    // levels the game asked for that would not load
+  double last_load_ms = 0;  // how long the last load took
+  std::string wanted;       // the last list the game asked for, joined with '+'
+  std::string loaded;       // every level currently on the GPU, joined with '+'
+};
+LevelArtStats get_level_art_stats();
+
 }  // namespace metal_renderer

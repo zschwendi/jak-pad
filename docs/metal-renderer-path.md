@@ -150,10 +150,12 @@ come from a `UIView`/SwiftUI instead of SDL.
    the whole Jak 1 ocean path (ocean-mid-and-far, ocean-near, the generated ocean
    texture) are ported and verified (see §Current state); the distorter's drawing,
    glow, DepthCue and post effects remain *Planned*.
-8. iPad presentation — *Planned*: drive the same backend from a `CAMetalLayer` provided by
+8. **Live game** — *Implemented* (see §6): the ARM64 runtime's frame loop drives this
+   renderer in a window, at 60 fps, with sound and a controller.
+9. iPad presentation — *Planned*: drive the same backend from a `CAMetalLayer` provided by
    the SwiftUI app instead of SDL; controller/input wiring; simulator first, then physical
    device per AGENTS.md gates.
-9. Performance pass — measured on hardware only after correctness.
+10. Performance pass — measured on hardware only after correctness.
 
 **Major risks**
 - GS blend/alpha-test/fog fidelity: the GL renderers encode PS2 semantics in state +
@@ -562,8 +564,7 @@ come from a `UIView`/SwiftUI instead of SDL.
 - **Planned**: MSAA render/resolve (PSO key already carries sample count), stencil ops in
   the depth-stencil key (for ShadowRenderer), streaming (time-budgeted) level loads and
   level unloading, TIE envmap second draw and wind, tfrag-trans inside the sky-blend
-  buckets, eye-renderer and texture-animator paths of the upload handler,
-  live-game validation once the ARM64 runtime branch and this renderer branch meet.
+  buckets, eye-renderer and texture-animator paths of the upload handler.
 - **Headless by default**: `metal-proof` (and therefore every replay) creates its SDL
   window with `SDL_WINDOW_HIDDEN` via `metal_renderer::set_window_hidden`. The
   `CAMetalLayer` still renders and is read back, so nothing about the checks changes,
@@ -648,3 +649,142 @@ divergence from the GL source are in §4. What it did *not* do, in rough priorit
 - **EyeRenderer**, so faces draw the placeholder where the eye textures belong.
 - **Generic2**, whose buckets sit next to merc's in every level slot and are still
   skipped.
+
+## 6. The live game
+
+*Implemented.* `goalpad-play` (`game/goalpad_play.cpp`) runs the portable Jak 1 kernel
+and this renderer in one process. It is the first time the two have met: before it, the
+engine's DMA chains had only ever been read by a capture tool, and this renderer had only
+ever replayed captures.
+
+### Threading
+
+Upstream's structure, from `game/runtime.cpp` plus `Gfx::Loop`, kept as-is:
+
+- The **game thread** boots (`KERNEL.CGO`, `GAME.CGO`, `play`) and then calls
+  `kernel-dispatcher` in a loop - the GOAL kernel's own frame. Inside that frame GOAL
+  calls `__send-gfx-dma-chain` and then `syncv`.
+- The **main thread** is the graphics thread: it owns the SDL window, the event queue and
+  the renderer, and calls `GfxDisplay::render()` in a loop.
+- They meet only at `GfxRendererModule`. The game side reaches it through
+  `game/kernel/core/gfx_host.h`, a table of plain C function pointers - the kernel library
+  still names no window, no SDL and no Metal, which is what keeps it usable from an iPadOS
+  application.
+- The handoff is the `ChainSync` block in `metal_pipeline.mm`, which was already a mirror
+  of the GL pipeline's `GraphicsData`: `send_chain` snapshots the chain under `dma_mutex`
+  and signals; the render thread consumes it, presents, and bumps `frame_idx` under
+  `sync_mutex`, which is what releases the game thread out of `syncv`.
+
+Two things had to be added for a live game:
+
+- **A frame limiter.** The game's clock *is* `syncv` returning. Without a limiter the game
+  runs at the display's refresh rate: measured 120.0 fps on a 120 Hz MacBook display, so
+  Jak moved at double speed. `MetalDisplay::render` now runs the same `FrameLimiter` the
+  GL pipeline runs, at the same point (after the frame is built, before the game thread is
+  released), and the measured rate is 59.9-60.0 fps.
+- **A real `__pc-set-levels`.** See below.
+
+### `__pc-set-levels`
+
+The seam has two halves.
+
+In the kernel (`gfx_host.cpp`), `__pc-set-levels` is a copy of upstream's
+`jak1::pc_set_levels`: GOAL calls it every frame from `(method 15 load-state)` in
+`engine/level/level.gc` with the two levels the load state is holding, the game's `"none"`
+placeholders are dropped, and what is left goes to the host as an array of C strings.
+
+In the renderer (`metal_pipeline.mm`), `metal_set_levels` only *records* the wanted list,
+under a mutex, and the loading happens on the **render thread**, at the top of a frame,
+before that frame's render pass opens (`service_level_requests`). That placement is the
+design decision: nothing is drawing while a level appears, so the level registry, the merc
+model pool and the per-level texture arrays need no locking at all. A level is loaded in
+one call - the streaming, time-budgeted `LoaderStages` of the GL loader are still not
+ported - so the cost is that the renderer stalls for the length of the load. That is
+`village1` 297 ms, `misty` 365 ms, and the game sees it as one very long frame, the same
+way it sees any slow frame. **This is the frame-hitch source, and it is where a
+time-budgeted loader should go next.**
+
+`GAME.fr3` is loaded once as the common level, exactly as the GL loader's `load_common`
+does. Levels are **not unloaded**: nothing here knows when the last draw referencing a
+level's buffers has retired, and the texture pool's VRAM slots outlive the frame that
+filled them - which is what the GL loader's reference counting is for. Memory therefore
+grows with the number of distinct levels a session visits.
+
+What the game asks for, in a real run: `title+village1` while the title plays,
+`village1` once the title level is discarded, and `misty+village1` as soon as the player
+moves toward the water. All three loaded live, with no level named anywhere in the host.
+
+### The concurrency bug this found
+
+`TexturePool` does **not** lock inside its own methods that the loader calls. It publishes
+its mutex (`TexturePool::mutex()`) and expects the caller to hold it; upstream's GL loader
+does that in `Loader.cpp` and `LoaderStages.cpp`. `handle_upload_now` and `relocate` *do*
+lock internally, because the game thread calls those.
+
+The fused build put both sides in play for the first time: the game thread calls
+`__pc-texture-relocate` while `setup-font-texture!` runs during the `GAME.CGO` boot, and the
+render thread was inside `metal_add_texture` registering `GAME.fr3`'s textures. That is a
+genuine data race, and it showed up as `TexturePool::move_existing_to_vram` asserting.
+
+Fixed in `metal_texture.mm`: `metal_add_texture` takes `pool.mutex()` around
+`pool.give_texture` only. The GPU upload and its `waitUntilCompleted` stay **outside** the
+lock deliberately - holding it across the upload would put the game thread behind every
+texture the loader touches. `metal_setup_placeholder` takes the same lock.
+
+Any host that drives this renderer from a second thread - including the iPadOS app - has to
+respect the same contract.
+
+### Input, sound and resolution
+
+- **Input** is read straight from SDL on the graphics thread (keyboard state plus
+  `SDL_Gamepad`), turned into a `goal_pad_state` and pushed through `goal_pad_set_state`
+  before each game frame. `PadData::ButtonIndex` and `goal_pad_button` are the same PS2
+  digital button word in the same order, so the mapping is a copy rather than a
+  translation. The stick sign convention is checked against `engine/ps2/pad.gc`, which
+  computes `(- 127 lefty)`: byte 0 is forward, which is SDL's negative Y.
+  `MetalDisplay` deliberately owns no `DisplayManager` or `InputManager` - those read and
+  *write* the PC port's settings files and manage window state, which belongs to a
+  launcher, and neither will exist on iPadOS.
+- **Sound** comes out of the same `goal_sound_pull_audio` seam an `AVAudioEngine` source
+  node will use on the iPad, here driven by an SDL audio device callback at 48 kHz.
+- **Resolution.** The internal render target and the window are independent. `--scale N`
+  sets the internal resolution to N x 640x480 (default 2, i.e. 1280x960, matching the iPad
+  app shell's default), and the present pass scales that into the largest centred 4:3
+  region that fits the window's backing store. Measured cost, title screen with Sandover
+  behind it, on an M-series MacBook: **59.9-60.0 fps at every scale from 1x to 4x**
+  (640x480 through 2560x1920) - the frame limiter is the ceiling at all four, so the
+  renderer has headroom left at 4x on this machine. That number is a Mac number; the iPad
+  needs its own.
+
+### How far it gets
+
+With the player's own data, `goalpad-play --data-dir <dir>`:
+
+| what | frame | evidence |
+| --- | --- | --- |
+| boot, `play`, first chain | 1 | 1 chain sent, 1 rendered |
+| the Jak & Daxter logo over Sandover | ~700 | screenshot |
+| "PRESS START", title music playing | ~1150 | screenshot |
+| Start -> progress menu -> new game | ~880 | `target-stance` at (40.1 3.7 827.8)m, Sandover Village |
+| the opening scene on the beach | ~1500 | screenshot: Jak and Daxter, torches, eco vents |
+| walking, falling, jumping | 1482 / 1579 / 1783 | `target-walk`, `target-falling`, `target-jump` |
+| `misty` streamed in from the shore | ~1000 | `__pc-set-levels` asked for it and it loaded |
+
+A scripted run of 3600 frames enters, in order: `target-continue`, `target-title`,
+`target-title-play`, `target-title-wait`, `target-stance`, `target-clone-anim`,
+`target-walk`, `target-falling`, `target-jump`. A run played by hand on a DualSense reaches
+`target-edge-grab-off` in Sandover.
+
+Steady 60.0 fps throughout, 1:1 between chains sent, chains rendered and frames presented.
+
+### What is still missing, in the live game
+
+Everything §4 lists as not ported is still not ported, and now it is visible rather than
+theoretical:
+
+- **EyeRenderer**: Jak's and Daxter's eyes draw the pool's placeholder.
+- **tfrag-trans inside the sky-blend buckets** (992 bytes/frame) and the **sprite
+  distorter's drawing** are consumed and counted, not drawn.
+- **Generic2, ShadowRenderer, DepthCue, glow** are skipped buckets.
+- **Streaming and unloading level art** (above).
+- **Streamed VAG audio**: the spooled dialogue is silent; see the kernel README.
