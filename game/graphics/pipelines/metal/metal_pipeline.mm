@@ -272,6 +272,9 @@ BackgroundStats get_background_stats() {
   out.tfrag_tris = bg.tfrag_tris;
   out.tie_draws = bg.tie_draws;
   out.tie_tris = bg.tie_tris;
+  out.tie_envmap_second_draws = bg.tie_envmap_second_draws;
+  out.tie_envmap_second_tris = bg.tie_envmap_second_tris;
+  out.tie_wind_draws_skipped = bg.tie_wind_draws_skipped;
   out.shrub_draws = bg.shrub_draws;
   out.shrub_tris = bg.shrub_tris;
   out.missing_levels = bg.missing_levels;

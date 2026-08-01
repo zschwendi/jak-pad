@@ -230,6 +230,9 @@ struct BackgroundStats {
   int missing_levels = 0;
   int missing_textures = 0;
   int anim_slot_draws = 0;
+  int tie_envmap_second_draws = 0;
+  int tie_envmap_second_tris = 0;
+  int tie_wind_draws_skipped = 0;
   int unexpected_dma = 0;
 };
 BackgroundStats get_background_stats();

@@ -27,6 +27,7 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"eye_vs", "eye_fs"},                          // EYE
     {"generic_vs", "generic_fs"},                  // GENERIC
     {"shadow_vs", "shadow_fs"},                    // SHADOW
+    {"etie_vs", "tfrag3_fs"},                      // ETIE (etie.frag == tfrag3.frag)
 };
 
 size_t hash_combine(size_t seed, size_t v) {

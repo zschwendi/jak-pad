@@ -107,6 +107,9 @@ void MetalBackgroundState::reset_frame() {
   tfrag_tris = 0;
   tie_draws = 0;
   tie_tris = 0;
+  tie_envmap_second_draws = 0;
+  tie_envmap_second_tris = 0;
+  tie_wind_draws_skipped = 0;
   shrub_draws = 0;
   shrub_tris = 0;
   missing_levels = 0;

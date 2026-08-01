@@ -104,6 +104,9 @@ struct MetalBackgroundState {
   int tfrag_tris = 0;
   int tie_draws = 0;
   int tie_tris = 0;
+  int tie_envmap_second_draws = 0;  // the shiny reflective pass
+  int tie_envmap_second_tris = 0;
+  int tie_wind_draws_skipped = 0;   // wind instancing is not ported
   int shrub_draws = 0;
   int shrub_tris = 0;
   int missing_levels = 0;   // a bucket named a level that is not loaded
@@ -213,8 +216,10 @@ struct MetalEtieVsParams {
   float fog_max = 0.f;
   float height_scale = 1.f;
   float scissor_adjust = 1.f;
+  // only the envmap second draw uses this (Tie3's envmap_tod_tint)
+  float envmap_tod_tint[4] = {1.f, 1.f, 1.f, 1.f};
 };
-static_assert(sizeof(MetalEtieVsParams) == 192, "MetalEtieVsParams size");
+static_assert(sizeof(MetalEtieVsParams) == 208, "MetalEtieVsParams size");
 
 // The GL `decal` uniform, set per draw.
 struct MetalBackgroundDrawParams {

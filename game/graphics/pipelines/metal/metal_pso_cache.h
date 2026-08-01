@@ -36,6 +36,7 @@ enum class MetalShaderId : u16 {
   EYE = 14,             // EyeRenderer's eye composition (eye.{vert,frag})
   GENERIC = 15,         // Generic2 VU1 fallback path (generic.{vert,frag})
   SHADOW = 16,          // shadow volumes (shadow.{vert,frag})
+  ETIE = 17,            // TIE envmap second draw (etie.{vert,frag})
   COUNT,
 };
 

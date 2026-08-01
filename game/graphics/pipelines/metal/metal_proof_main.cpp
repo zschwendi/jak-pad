@@ -3034,10 +3034,12 @@ void run_chain_replay(const GfxRendererModule* mod,
 
   auto bg = metal_renderer::get_background_stats();
   printf(
-      "level geometry: tfrag %d draws / %d tris, tie %d draws / %d tris, "
+      "level geometry: tfrag %d draws / %d tris, tie %d draws / %d tris "
+      "(%d envmap-second draws / %d tris, %d wind draws deferred), "
       "shrub %d draws / %d tris; %d bucket(s) named an unloaded level, "
       "%d missing textures, %d animator-slot draws, %d unexpected-DMA reports\n",
-      bg.tfrag_draws, bg.tfrag_tris, bg.tie_draws, bg.tie_tris, bg.shrub_draws, bg.shrub_tris,
+      bg.tfrag_draws, bg.tfrag_tris, bg.tie_draws, bg.tie_tris, bg.tie_envmap_second_draws,
+      bg.tie_envmap_second_tris, bg.tie_wind_draws_skipped, bg.shrub_draws, bg.shrub_tris,
       bg.missing_levels, bg.missing_textures, bg.anim_slot_draws, bg.unexpected_dma);
   check(bg.unexpected_dma == 0, "replay: every level-geometry bucket matched its renderer");
   if (!fr3_paths.empty()) {
