@@ -355,15 +355,21 @@ set(RUNTIME_SOURCE
 if(APPLE)
     # experimental Metal graphics pipeline (see game/graphics/pipelines/metal/)
     set(METAL_PIPELINE_SOURCES
+        graphics/pipelines/metal/metal_bucket_renderer.mm
+        graphics/pipelines/metal/metal_direct_renderer.mm
         graphics/pipelines/metal/metal_pipeline.mm
         graphics/pipelines/metal/metal_pso_cache.mm
         graphics/pipelines/metal/metal_renderer.mm
+        graphics/pipelines/metal/metal_sky_renderer.mm
         graphics/pipelines/metal/metal_texture.mm)
     list(APPEND RUNTIME_SOURCE ${METAL_PIPELINE_SOURCES})
     set_source_files_properties(${METAL_PIPELINE_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-    # plain C++ part of the Metal texture path (testable without Objective-C++)
-    list(APPEND RUNTIME_SOURCE graphics/pipelines/metal/metal_texture_upload_handler.cpp)
+    # plain C++ parts of the Metal path (testable / kernel-header-safe without
+    # Objective-C++)
+    list(APPEND RUNTIME_SOURCE
+        graphics/pipelines/metal/metal_kernel_bridge.cpp
+        graphics/pipelines/metal/metal_texture_upload_handler.cpp)
 
     # MSL shaders are checked-in source compiled at build time to a metallib and
     # embedded in the runtime as a byte array. No shader compilation happens at
@@ -374,7 +380,8 @@ if(APPLE)
         set(METAL_SDK macosx)
     endif()
     set(METAL_SHADER_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/scaffold.metal)
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/scaffold.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/direct.metal)
     set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad.metallib)
     add_custom_command(
         OUTPUT ${METAL_LIB}

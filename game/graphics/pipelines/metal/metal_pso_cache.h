@@ -19,9 +19,11 @@
 // Shader programs available in the embedded metallib. Every PSO is built from
 // one of these vertex/fragment function pairs.
 enum class MetalShaderId : u16 {
-  SCAFFOLD = 0,  // colored/textured validation geometry
-  PRESENT = 1,   // PCRTC-style final blit
-  SAMPLE = 2,    // textured quad with an API-supplied sampler state
+  SCAFFOLD = 0,         // colored/textured validation geometry
+  PRESENT = 1,          // PCRTC-style final blit
+  SAMPLE = 2,           // textured quad with an API-supplied sampler state
+  DIRECT_BASIC = 3,     // DirectRenderer, untextured (direct_basic.{vert,frag})
+  DIRECT_TEXTURED = 4,  // DirectRenderer, textured (direct_basic_textured.{vert,frag})
   COUNT,
 };
 

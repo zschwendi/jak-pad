@@ -26,10 +26,13 @@
  *    texel against the CPU-side data. No game data is required or bundled.
  */
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <unordered_map>
 
 #include "common/custom_data/Tfrag3Data.h"
@@ -41,6 +44,7 @@
 
 #include "game/graphics/display.h"
 #include "game/graphics/gfx.h"
+#include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
 #include "game/graphics/pipelines/metal/metal_texture_upload_handler.h"
 #include "game/graphics/texture/TextureConverter.h"
@@ -468,7 +472,13 @@ constexpr u32 kVramMt4hh = 0x500;
 constexpr u32 kVramDma = 0x600;
 
 // writes a GoalTexturePage with three textures: [given, #f, never-given]
-void write_fake_tpage(std::vector<u8>& ee, u32 tpage_addr, u16 page_id, u32 dest0, u32 dest2) {
+void write_fake_tpage(std::vector<u8>& ee,
+                      u32 tpage_addr,
+                      u16 page_id,
+                      u32 dest0,
+                      u32 dest2,
+                      s16 w = 16,
+                      s16 h = 16) {
   GoalTexturePage page;
   memset(&page, 0, sizeof(page));
   page.id = page_id;
@@ -481,8 +491,8 @@ void write_fake_tpage(std::vector<u8>& ee, u32 tpage_addr, u16 page_id, u32 dest
 
   GoalTexture tex;
   memset(&tex, 0, sizeof(tex));
-  tex.w = 16;
-  tex.h = 16;
+  tex.w = w;
+  tex.h = h;
   tex.num_mips = 1;
   tex.name_ptr = kNameAddr;
   tex.dest[0] = (u16)dest0;
@@ -620,15 +630,709 @@ void test_pool_and_hooks(const GfxRendererModule* mod, std::vector<u8>& ee_mem) 
 }
 
 // ---------------------------------------------------------------------------
+// Section: the DMA chain path. Builds a Jak 1-shaped frame chain (initial CALL
+// to a default-registers buffer, 70 bucket slots, empty-bucket structure with
+// CALL/RET bounces) carrying DirectRenderer GS packets, sky-blend packets, a
+// sky draw, a texture upload packet and un-ported bucket content, sends it
+// through the module's send_chain like the game does, and verifies the
+// rendered frame by pixel readback plus the chain counters.
+//
+// This is constructed data (no captured retail chain is replayed): the packet
+// patterns mirror what SkyRenderer / SkyBlendCPU / DirectRenderer assert about
+// real Jak 1 chains, and every expected value is computed with the same math
+// the GL shaders use.
+// ---------------------------------------------------------------------------
+
+// the chain must live above the copier's low-memory protect (512 kB); one
+// full copier chunk starting at 1 MB holds everything
+constexpr u32 kEeBase = 0x100000;
+constexpr u32 kEeSize = kEeBase + 0x20000;
+constexpr u32 kChainStart = kEeBase + 0x100;
+constexpr u32 kBucketsBase = kChainStart + 16;
+constexpr int kNumBuckets = 70;  // jak1::BucketId::MAX_BUCKETS
+constexpr u32 kChainEnd = kBucketsBase + 16 * kNumBuckets;
+constexpr u32 kDefaultRegs = kEeBase + 0x2000;
+constexpr u32 kHeapStart = kEeBase + 0x3000;
+constexpr u32 kHeapEnd = kEeBase + 0xF000;
+// EE-side objects referenced by the chain (same buffer acts as EE memory)
+constexpr u32 kChainTpageDirectTex = kEeBase + 0x10000;
+constexpr u32 kChainTpageSkySrc = kEeBase + 0x11000;
+constexpr u32 kChainTpageCloudSrc = kEeBase + 0x12000;
+constexpr u32 kChainTpageDmaUpload = kEeBase + 0x13000;
+// VRAM slots used by the chain test
+constexpr u32 kVramDirectTex = 0x700;
+constexpr u32 kVramSkySrc = 0x740;
+constexpr u32 kVramCloudSrc = 0x760;
+constexpr u32 kVramChainUpload = 0x780;
+
+struct ChainBuilder {
+  std::vector<u8>& mem;
+  u32 cursor = kHeapStart;
+
+  explicit ChainBuilder(std::vector<u8>& m) : mem(m) {
+    // initial CALL to the default-registers chain (vifs must be nops)
+    tag(kChainStart, DmaTag::Kind::CALL, 0, kDefaultRegs, 0, 0);
+    // default regs: CNT with 10 quadwords (fog color at data byte 144) + RET
+    tag(kDefaultRegs, DmaTag::Kind::CNT, 10, 0, 0, 0);
+    mem[kDefaultRegs + 16 + 144 + 0] = 42;
+    mem[kDefaultRegs + 16 + 144 + 1] = 43;
+    mem[kDefaultRegs + 16 + 144 + 2] = 44;
+    tag(kDefaultRegs + 16 + 160, DmaTag::Kind::RET, 0, 0, 0, 0);
+    // chain terminator after the last bucket slot
+    tag(kChainEnd, DmaTag::Kind::END, 0, 0, 0, 0);
+    for (int i = 0; i < kNumBuckets; i++) {
+      make_empty_bucket(i);
+    }
+  }
+
+  u32 slot(int i) const { return kBucketsBase + 16 * i; }
+  u32 next_of(int i) const { return i + 1 < kNumBuckets ? slot(i + 1) : kChainEnd; }
+
+  void tag(u32 at, DmaTag::Kind kind, u16 qwc, u32 addr, u32 vif0, u32 vif1) {
+    u64 t = (u64)qwc | ((u64)kind << 28) | ((u64)addr << 32);
+    memcpy(&mem[at], &t, 8);
+    memcpy(&mem[at + 8], &vif0, 4);
+    memcpy(&mem[at + 12], &vif1, 4);
+  }
+
+  u32 alloc(u32 bytes) {
+    u32 a = cursor;
+    cursor += bytes;
+    if (cursor > kHeapEnd) {
+      printf("[FAIL] chain heap exhausted\n");
+      exit(1);
+    }
+    return a;
+  }
+
+  // NEXT into the bucket, CALL to default regs, NEXT to the next bucket - the
+  // structure MetalEmptyBucketRenderer asserts
+  void make_empty_bucket(int i) {
+    u32 c = alloc(32);
+    tag(slot(i), DmaTag::Kind::NEXT, 0, c, 0, 0);
+    tag(c, DmaTag::Kind::CALL, 0, kDefaultRegs, 0, 0);
+    tag(c + 16, DmaTag::Kind::NEXT, 0, next_of(i), 0, 0);
+  }
+
+  struct Transfer {
+    u32 vif0 = 0;
+    u32 vif1 = 0;
+    std::vector<u8> data;
+    bool empty_next = false;  // a 0-qwc NEXT hop (the game's "empty" transfers)
+  };
+
+  // bucket content: the listed transfers, then the CALL default-regs tail
+  void set_bucket_content(int i, const std::vector<Transfer>& transfers) {
+    u32 total = 32;  // CALL + trailing NEXT
+    for (auto& t : transfers) {
+      total += 16 + (u32)t.data.size();
+    }
+    u32 c = alloc(total);
+    tag(slot(i), DmaTag::Kind::NEXT, 0, c, 0, 0);
+    u32 p = c;
+    for (auto& t : transfers) {
+      if (t.empty_next) {
+        tag(p, DmaTag::Kind::NEXT, 0, p + 16, 0, 0);
+      } else {
+        tag(p, DmaTag::Kind::CNT, (u16)(t.data.size() / 16), 0, t.vif0, t.vif1);
+        memcpy(&mem[p + 16], t.data.data(), t.data.size());
+      }
+      p += 16 + (u32)t.data.size();
+    }
+    tag(p, DmaTag::Kind::CALL, 0, kDefaultRegs, 0, 0);
+    tag(p + 16, DmaTag::Kind::NEXT, 0, next_of(i), 0, 0);
+  }
+};
+
+u32 vif_nop() {
+  return 0;
+}
+u32 vif_direct(u32 qwc) {
+  return ((u32)VifCode::Kind::DIRECT << 24) | (qwc & 0xffff);
+}
+
+// --- GIF payload builders ---------------------------------------------------
+
+struct GifBuilder {
+  std::vector<u8> data;
+
+  void push_qw(u64 lo, u64 hi) {
+    size_t at = data.size();
+    data.resize(at + 16);
+    memcpy(&data[at], &lo, 8);
+    memcpy(&data[at + 8], &hi, 8);
+  }
+
+  void tag(u32 nloop,
+           bool eop,
+           const std::vector<GifTag::RegisterDescriptor>& regs,
+           bool pre = false,
+           u16 prim = 0) {
+    u64 lo = (nloop & 0x7fff) | ((u64)(eop ? 1 : 0) << 15) | ((u64)(pre ? 1 : 0) << 46) |
+             ((u64)(prim & 0x7ff) << 47) | ((u64)(regs.size() & 0xf) << 60);
+    u64 hi = 0;
+    for (size_t i = 0; i < regs.size(); i++) {
+      hi |= (u64)regs[i] << (4 * i);
+    }
+    push_qw(lo, hi);
+  }
+
+  void ad(GsRegisterAddress addr, u64 val) { push_qw(val, (u64)addr); }
+
+  void rgbaq(u8 r, u8 g, u8 b, u8 a) {
+    u8 qw[16] = {};
+    qw[0] = r;
+    qw[4] = g;
+    qw[8] = b;
+    qw[12] = a;
+    size_t at = data.size();
+    data.resize(at + 16);
+    memcpy(&data[at], qw, 16);
+  }
+
+  void st(float s, float t, float q) {
+    u8 qw[16] = {};
+    memcpy(qw, &s, 4);
+    memcpy(qw + 4, &t, 4);
+    memcpy(qw + 8, &q, 4);
+    size_t at = data.size();
+    data.resize(at + 16);
+    memcpy(&data[at], qw, 16);
+  }
+
+  void uv(u32 u, u32 v) {  // 12.4 fixed
+    u8 qw[16] = {};
+    memcpy(qw, &u, 4);
+    memcpy(qw + 4, &v, 4);
+    size_t at = data.size();
+    data.resize(at + 16);
+    memcpy(&data[at], qw, 16);
+  }
+
+  void xyzf2(u32 x, u32 y, u32 z, u8 f = 0) {  // x/y are 12.4 fixed
+    u64 upper = ((u64)z << 4) | ((u64)f << 36);
+    push_qw((u64)x | ((u64)y << 32), upper);
+  }
+};
+
+// --- GS register encoders (bit layouts from common/dma/gs.h) ----------------
+
+u64 gs_test(bool ate,
+            GsTest::AlphaTest atst,
+            u8 aref,
+            GsTest::AlphaFail afail,
+            bool zte,
+            GsTest::ZTest ztst) {
+  return (ate ? 1ull : 0) | ((u64)atst << 1) | ((u64)aref << 4) | ((u64)afail << 12) |
+         ((zte ? 1ull : 0) << 16) | ((u64)ztst << 17);
+}
+u64 gs_zbuf(u32 zbp, bool zmsk) {
+  return zbp | (0b0001ull << 24) | ((zmsk ? 1ull : 0) << 32);  // PSMZ24
+}
+u64 gs_alpha(u32 a, u32 b, u32 c, u32 d, u8 fix = 0) {
+  return a | (b << 2) | (c << 4) | (d << 6) | ((u64)fix << 32);
+}
+u16 gs_prim(GsPrim::Kind kind, bool iip, bool tme, bool abe, bool fst, bool fge = false) {
+  return (u16)((u32)kind | ((iip ? 1 : 0) << 3) | ((tme ? 1 : 0) << 4) | ((fge ? 1 : 0) << 5) |
+               ((abe ? 1 : 0) << 6) | ((fst ? 1 : 0) << 8));
+}
+u64 gs_tex0(u32 tbp, u32 tbw, u32 psm, u32 tw, u32 th, bool tcc, u32 tfx) {
+  return tbp | ((u64)tbw << 14) | ((u64)psm << 20) | ((u64)tw << 26) | ((u64)th << 30) |
+         ((tcc ? 1ull : 0) << 34) | ((u64)tfx << 35);
+}
+u64 gs_tex1_filt() {
+  return (1ull << 5) | (1ull << 6);  // mmag/mmin = linear
+}
+
+// --- coordinate mapping (Jak 1, 640x480 game target) ------------------------
+// The direct shader maps GS x 2048+-256 to full width and (half-height) GS y
+// 2048+-112 to full height (see direct_basic.vert and shaders/direct.metal).
+
+u32 fx(double px) {
+  return (u32)llround(px * 16.0);  // 12.4 fixed
+}
+int gs_to_col(double gs_x) {
+  double ndc = (gs_x - 2048.0) / 256.0;
+  return (int)llround((ndc + 1.0) / 2.0 * 640.0);
+}
+int gs_to_row(double gs_y) {
+  double ndc = -(gs_y - 2048.0) / 112.0;
+  return (int)llround((1.0 - ndc) / 2.0 * 480.0);
+}
+
+// registers a solid-color texture with the pool and links it to a VRAM slot
+// through the module's texture_upload_now, like the game does. The tfrag3
+// texture is kept alive by the caller (the pool references its pixels).
+u64 give_and_link_texture(const GfxRendererModule* mod,
+                          std::vector<u8>& ee,
+                          tfrag3::Texture& tex,
+                          u16 page_id,
+                          u32 tpage_addr,
+                          u32 vram_slot) {
+  tex.combo_id = ((u32)page_id << 16) | 0;
+  tex.load_to_pool = true;
+  u64 handle = metal_renderer::pool_add_texture(tex, false);
+  check(handle != 0, "chain: texture given to pool");
+  write_fake_tpage(ee, tpage_addr, page_id, vram_slot, vram_slot + 0x20, (s16)tex.w, (s16)tex.h);
+  mod->texture_upload_now(ee.data() + tpage_addr, -1, kS7);
+  auto linked = metal_renderer::get_texture_pool()->lookup(vram_slot);
+  check(linked.has_value() && *linked == handle, "chain: VRAM slot linked");
+  return handle;
+}
+
+// finds distinct Jak 1 tpages with at least 3 texture slots
+std::vector<u16> find_tpages(size_t count) {
+  const auto& dir = get_jak1_tpage_dir();
+  std::vector<u16> pages;
+  for (u16 i = 0; i < (u16)dir.size() && pages.size() < count; i++) {
+    if (dir[i] >= 3) {
+      pages.push_back(i);
+    }
+  }
+  return pages;
+}
+
+void test_dma_chain(const GfxRendererModule* mod,
+                    std::shared_ptr<GfxDisplay>& display,
+                    const tfrag3::Level* level) {
+  printf("--- DMA chain: send_chain -> bucket dispatch -> Direct/Sky ---\n");
+  using namespace jak1;
+
+  TexturePool* pool = metal_renderer::get_texture_pool();
+  auto pages = find_tpages(5);
+  if (pages.size() < 5) {
+    printf("[FAIL] not enough Jak 1 tpages for the chain test\n");
+    g_fail_count++;
+    return;
+  }
+  // the pool tests used pages[0]; use fresh pages here
+  u16 page_direct = pages[1], page_sky = pages[2], page_cloud = pages[3], page_upload = pages[4];
+
+  // chain memory doubles as EE memory
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+
+  // --- textures the chain references ---------------------------------------
+  // direct-renderer texture: 16x16 quadrants (TL red, TR green, BL blue,
+  // BR white), alpha 255 on the left half and 32 on the right half
+  tfrag3::Texture direct_tex;
+  direct_tex.w = 16;
+  direct_tex.h = 16;
+  direct_tex.debug_name = "chain-direct";
+  direct_tex.debug_tpage_name = "chain-page";
+  direct_tex.data.resize(16 * 16);
+  for (int y = 0; y < 16; y++) {
+    for (int x = 0; x < 16; x++) {
+      bool right = x >= 8;
+      bool bottom = y >= 8;
+      u32 r = (!right && !bottom) || (right && bottom) ? 255 : 0;
+      u32 g = right ? 255 : 0;
+      u32 b = bottom ? 255 : 0;
+      u32 a = right ? 32 : 255;
+      direct_tex.data[y * 16 + x] = (a << 24) | (b << 16) | (g << 8) | r;
+    }
+  }
+  give_and_link_texture(mod, mem, direct_tex, page_direct, kChainTpageDirectTex, kVramDirectTex);
+
+  // sky source: 32x32. Solid by default; with an .fr3 given, real texels from
+  // an extracted sky texture drive the same path.
+  tfrag3::Texture sky_src;
+  sky_src.w = 32;
+  sky_src.h = 32;
+  sky_src.debug_name = "chain-sky-src";
+  sky_src.debug_tpage_name = "chain-page";
+  sky_src.data.resize(32 * 32, 0xff00c864u | (100u));  // a=255 b=0 g=200... set below
+  for (auto& px : sky_src.data) {
+    px = 0xffc82864u;  // a=255, b=200, g=40, r=100
+  }
+  bool used_real_sky = false;
+  if (level) {
+    for (const auto& t : level->textures) {
+      if (t.debug_name.find("sky") != std::string::npos && t.w >= 32 && t.h >= 32) {
+        for (int y = 0; y < 32; y++) {
+          for (int x = 0; x < 32; x++) {
+            sky_src.data[y * 32 + x] = t.data[y * t.w + x];
+          }
+        }
+        printf("chain: sky-blend source uses real texture '%s' (%dx%d)\n", t.debug_name.c_str(),
+               t.w, t.h);
+        used_real_sky = true;
+        break;
+      }
+    }
+  }
+  if (!used_real_sky) {
+    printf("chain: sky-blend source uses synthetic texels\n");
+  }
+  give_and_link_texture(mod, mem, sky_src, page_sky, kChainTpageSkySrc, kVramSkySrc);
+
+  // cloud source: 64x64 solid
+  tfrag3::Texture cloud_src;
+  cloud_src.w = 64;
+  cloud_src.h = 64;
+  cloud_src.debug_name = "chain-cloud-src";
+  cloud_src.debug_tpage_name = "chain-page";
+  cloud_src.data.resize(64 * 64, 0xff5ac81eu);  // a=255 b=90 g=200 r=30
+  give_and_link_texture(mod, mem, cloud_src, page_cloud, kChainTpageCloudSrc, kVramCloudSrc);
+
+  // a texture for the in-chain upload packet (links kVramChainUpload during
+  // the chain walk itself)
+  tfrag3::Texture upload_tex;
+  upload_tex.w = 16;
+  upload_tex.h = 16;
+  upload_tex.debug_name = "chain-upload";
+  upload_tex.debug_tpage_name = "chain-page";
+  upload_tex.data.resize(16 * 16, 0xff112233u);
+  upload_tex.combo_id = ((u32)page_upload << 16) | 0;
+  upload_tex.load_to_pool = true;
+  u64 upload_handle = metal_renderer::pool_add_texture(upload_tex, false);
+  check(upload_handle != 0, "chain: upload-packet texture given to pool");
+  write_fake_tpage(mem, kChainTpageDmaUpload, page_upload, kVramChainUpload,
+                   kVramChainUpload + 0x20);
+
+  // --- build the chain ------------------------------------------------------
+  ChainBuilder chain(mem);
+
+  // bucket 5 (TFRAG_TEX_LEVEL0): one PC-port texture upload packet
+  {
+    ChainBuilder::Transfer t;
+    t.vif0 = (u32)VifCode::Kind::PC_PORT << 24;
+    t.vif1 = 3;
+    t.data.resize(16, 0);
+    struct {
+      u64 page;
+      s64 mode;
+    } packet{kChainTpageDmaUpload, -1};
+    memcpy(t.data.data(), &packet, sizeof(packet));
+    chain.set_bucket_content((int)BucketId::TFRAG_TEX_LEVEL0, {t});
+  }
+
+  // bucket 6 (TFRAG_LEVEL0, not ported): junk payload that must be counted
+  {
+    ChainBuilder::Transfer t;
+    t.data.resize(64, 0xAB);
+    chain.set_bucket_content((int)BucketId::TFRAG_LEVEL0, {t});
+  }
+
+  // bucket 3 (SKY_DRAW): setup + qwc-5 draw setup + one draw packet
+  {
+    GifBuilder setup;  // 4 qw
+    setup.tag(3, true, {GifTag::RegisterDescriptor::AD});
+    setup.ad(GsRegisterAddress::TEST_1,
+             gs_test(false, GsTest::AlphaTest::ALWAYS, 0, GsTest::AlphaFail::KEEP, true,
+                     GsTest::ZTest::ALWAYS));
+    setup.ad(GsRegisterAddress::ZBUF_1, gs_zbuf(448, true));  // no depth writes
+    setup.ad(GsRegisterAddress::ALPHA_1, gs_alpha(0, 1, 0, 1));
+
+    u16 sky_prim = gs_prim(GsPrim::Kind::TRI_STRIP, true, true, false, false);
+    GifBuilder draw_setup;  // 5 qw
+    draw_setup.tag(4, true, {GifTag::RegisterDescriptor::AD});
+    draw_setup.ad(GsRegisterAddress::TEX0_1,
+                  gs_tex0(SKY_TEXTURE_VRAM_ADDRS[0], 1, 0, 5, 5, true, 0));
+    draw_setup.ad(GsRegisterAddress::TEX1_1, gs_tex1_filt());
+    draw_setup.ad(GsRegisterAddress::CLAMP_1, 0b101);
+    draw_setup.ad(GsRegisterAddress::PRIM, sky_prim);
+
+    GifBuilder draw;  // 13 qw: full sky quad as a 4-vertex strip
+    draw.tag(4, true,
+             {GifTag::RegisterDescriptor::ST, GifTag::RegisterDescriptor::RGBAQ,
+              GifTag::RegisterDescriptor::XYZF2},
+             true, sky_prim);
+    const u32 z_sky = 0x100000;
+    struct V {
+      double x, y;
+      float s, t;
+    } verts[4] = {{1936, 1980, 0.f, 0.f},
+                  {2160, 1980, 1.f, 0.f},
+                  {1936, 2120, 0.f, 1.f},
+                  {2160, 2120, 1.f, 1.f}};
+    for (auto& v : verts) {
+      draw.st(v.s, v.t, 1.f);
+      draw.rgbaq(0x80, 0x80, 0x80, 0x80);
+      draw.xyzf2(fx(v.x), fx(v.y), z_sky);
+    }
+
+    std::vector<ChainBuilder::Transfer> transfers;
+    transfers.push_back({0, 0, setup.data, false});
+    transfers.push_back({0, 0, draw_setup.data, false});
+    transfers.push_back({vif_nop(), vif_direct((u32)draw.data.size() / 16), draw.data, false});
+    transfers.push_back({0, 0, {}, true});  // the "empty" hop before the CALL tail
+    chain.set_bucket_content((int)BucketId::SKY_DRAW, transfers);
+  }
+
+  // bucket 32 (sky blend): set-display, sky draw+blend, cloud draw, resets
+  {
+    auto adgif_pair = [&](u32 src_tbp, bool abe, u32 intensity,
+                          u32 coord) -> std::vector<ChainBuilder::Transfer> {
+      GifBuilder setup;  // 6 qw: giftag prefix + 5 qw adgif
+      setup.tag(5, true, {GifTag::RegisterDescriptor::AD});
+      setup.ad(GsRegisterAddress::TEX0_1, gs_tex0(src_tbp, 1, 0, 5, 5, true, 0));
+      setup.ad(GsRegisterAddress::TEX1_1, gs_tex1_filt());
+      setup.ad(GsRegisterAddress::MIPTBP1_1, 0);
+      setup.ad(GsRegisterAddress::CLAMP_1, 0b101);
+      setup.ad(GsRegisterAddress::ALPHA_1, 0x8000000068);  // Cs + Cd
+
+      GifBuilder draw;  // 6 qw; only the fields SkyBlendCPU reads matter
+      draw.tag(5, true, {GifTag::RegisterDescriptor::AD}, true,
+               gs_prim(GsPrim::Kind::SPRITE, false, true, abe, true));
+      draw.ad((GsRegisterAddress)0, intensity);  // data+16: intensity
+      draw.ad((GsRegisterAddress)0, 0);
+      draw.ad((GsRegisterAddress)0, 0);
+      draw.ad((GsRegisterAddress)0, 0);
+      draw.ad((GsRegisterAddress)0, coord);  // data+80: draw coordinate
+      return {{0, 0, setup.data, false}, {0, 0, draw.data, false}};
+    };
+
+    std::vector<ChainBuilder::Transfer> transfers;
+    transfers.push_back({0, 0, std::vector<u8>(8 * 16, 0), false});  // set-display-gs-state
+    for (auto& t : adgif_pair(kVramSkySrc, false, 128, 0x200)) {
+      transfers.push_back(t);  // sky first draw
+    }
+    for (auto& t : adgif_pair(kVramSkySrc, true, 64, 0x200)) {
+      transfers.push_back(t);  // sky blend, same source at half intensity
+    }
+    for (auto& t : adgif_pair(kVramCloudSrc, false, 128, 0x400)) {
+      transfers.push_back(t);  // cloud first draw
+    }
+    transfers.push_back({0, 0, std::vector<u8>(2 * 16, 0), false});  // reset alpha
+    transfers.push_back({0, 0, std::vector<u8>(8 * 16, 0), false});  // reset gs
+    transfers.push_back({0, 0, {}, true});                           // empty hop
+    chain.set_bucket_content((int)BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0, transfers);
+  }
+
+  // bucket 67 (DEBUG, DirectRenderer): state setup, strips, sprites, alpha
+  // test, scissor
+  {
+    u16 strip_prim = gs_prim(GsPrim::Kind::TRI_STRIP, true, false, false, false);
+    u16 strip_prim_abe = gs_prim(GsPrim::Kind::TRI_STRIP, true, false, true, false);
+    u16 sprite_prim = gs_prim(GsPrim::Kind::SPRITE, false, true, false, true);
+
+    auto strip_quad = [&](GifBuilder& g, u16 prim, double x0, double y0, double x1, double y1,
+                          u32 z, u8 r, u8 gg, u8 b, u8 a) {
+      g.tag(4, true, {GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2}, true,
+            prim);
+      const double xs[4] = {x0, x1, x0, x1};
+      const double ys[4] = {y0, y0, y1, y1};
+      for (int i = 0; i < 4; i++) {
+        g.rgbaq(r, gg, b, a);
+        g.xyzf2(fx(xs[i]), fx(ys[i]), z);
+      }
+    };
+
+    // T1: AD state: GEQUAL depth, depth writes on, standard alpha regs, and
+    // the GS scissor (set up front - the per-vertex scissor is captured when
+    // vertices are pushed, exactly like the GL renderer)
+    GifBuilder t1;
+    t1.tag(4, true, {GifTag::RegisterDescriptor::AD});
+    t1.ad(GsRegisterAddress::TEST_1,
+          gs_test(false, GsTest::AlphaTest::ALWAYS, 0, GsTest::AlphaFail::KEEP, true,
+                  GsTest::ZTest::GEQUAL));
+    t1.ad(GsRegisterAddress::ZBUF_1, gs_zbuf(448, false));
+    t1.ad(GsRegisterAddress::ALPHA_1, gs_alpha(0, 1, 0, 1));
+    // scax 0..511, scay 0..335 (full-height GS coordinates)
+    t1.ad(GsRegisterAddress::SCISSOR_1, 0ull | (511ull << 16) | (0ull << 32) | (335ull << 48));
+
+    // T2: quad A, opaque
+    GifBuilder t2;
+    strip_quad(t2, strip_prim, 1920, 1992, 2176, 2104, 0x600000, 200, 60, 20, 0x80);
+    // T3: quad B behind A (GEQUAL rejects it)
+    GifBuilder t3;
+    strip_quad(t3, strip_prim, 1984, 2020, 2112, 2076, 0x200000, 0, 255, 0, 0x80);
+    // T4: alpha-blended quad over A
+    GifBuilder t4;
+    strip_quad(t4, strip_prim_abe, 2080, 2010, 2160, 2060, 0x700000, 0, 0, 255, 0x40);
+
+    // T5: texture state for the sprites
+    GifBuilder t5;
+    t5.tag(3, true, {GifTag::RegisterDescriptor::AD});
+    t5.ad(GsRegisterAddress::TEX0_1, gs_tex0(kVramDirectTex, 1, 0, 4, 4, true, 0));
+    t5.ad(GsRegisterAddress::TEX1_1, gs_tex1_filt());
+    t5.ad(GsRegisterAddress::CLAMP_1, 0b101);
+
+    auto sprite = [&](GifBuilder& g, double x0, double y0, double x1, double y1, u32 z) {
+      g.tag(2, true,
+            {GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::UV,
+             GifTag::RegisterDescriptor::XYZF2},
+            true, sprite_prim);
+      g.rgbaq(0x80, 0x80, 0x80, 0x80);
+      g.uv(0, 0);
+      g.xyzf2(fx(x0), fx(y0), z);
+      g.rgbaq(0x80, 0x80, 0x80, 0x80);
+      g.uv(fx(16), fx(16));  // full 16x16 texture in 12.4 texels
+      g.xyzf2(fx(x1), fx(y1), z);
+    };
+
+    // T6: textured sprite, no alpha test (top right)
+    GifBuilder t6;
+    sprite(t6, 2176, 1936, 2288, 1992, 0x680000);
+
+    // T7: enable alpha test GREATER aref 0x40 (keep on fail)
+    GifBuilder t7;
+    t7.tag(1, true, {GifTag::RegisterDescriptor::AD});
+    t7.ad(GsRegisterAddress::TEST_1,
+          gs_test(true, GsTest::AlphaTest::GREATER, 0x40, GsTest::AlphaFail::KEEP, true,
+                  GsTest::ZTest::GEQUAL));
+
+    // T8: alpha-tested sprite over A: left half kept, right half discarded
+    GifBuilder t8;
+    sprite(t8, 1936, 2080, 2064, 2100, 0x780000);
+
+    // T9: a strip crossing scay1 - the scissor from T1 clips its bottom
+    GifBuilder t9;
+    strip_quad(t9, strip_prim, 1824, 2048, 1888, 2148, 0x600000, 250, 240, 10, 0x80);
+
+    // T10+T11+T12: afail FB_ONLY (the double-draw path): alpha-failing
+    // fragments write color but not depth. The sprite draws on both halves;
+    // the following lower-z quad only lands where depth was not written.
+    GifBuilder t10;
+    t10.tag(1, true, {GifTag::RegisterDescriptor::AD});
+    t10.ad(GsRegisterAddress::TEST_1,
+           gs_test(true, GsTest::AlphaTest::GEQUAL, 0xFF, GsTest::AlphaFail::FB_ONLY, true,
+                   GsTest::ZTest::GEQUAL));
+    GifBuilder t11;
+    sprite(t11, 2200, 1990, 2264, 2010, 0x600000);
+    GifBuilder t12;
+    strip_quad(t12, strip_prim, 2200, 1990, 2264, 2010, 0x300000, 20, 180, 220, 0x80);
+
+    std::vector<ChainBuilder::Transfer> transfers;
+    for (GifBuilder* g : {&t1, &t2, &t3, &t4, &t5, &t6, &t7, &t8, &t9, &t10, &t11, &t12}) {
+      transfers.push_back({vif_nop(), vif_direct((u32)g->data.size() / 16), g->data, false});
+    }
+    chain.set_bucket_content((int)BucketId::DEBUG, transfers);
+  }
+
+  // --- send the chain like the game does, twice (the sky texture blended in
+  // frame N is drawn in frame N+1, since the sky-draw bucket precedes the
+  // blend bucket) ------------------------------------------------------------
+  for (int frame = 0; frame < 2; frame++) {
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+  }
+
+  metal_renderer::FramePixels frame;
+  if (!metal_renderer::read_last_frame(&frame)) {
+    printf("[FAIL] could not read back chain frame\n");
+    g_fail_count++;
+    return;
+  }
+  printf("[PASS] read back %dx%d chain frame\n", frame.width, frame.height);
+
+  // --- expected sky blend, computed with the GL SkyBlendCPU semantics -------
+  auto blend_expect = [](const std::vector<u32>& src, int n) {
+    std::vector<u8> out(n * 4);
+    const u8* in = (const u8*)src.data();
+    for (int i = 0; i < n * 4; i++) {
+      u32 first = ((u32)in[i] * 128) >> 7;
+      u32 second = std::min<u32>(255, ((u32)in[i] * 64) >> 7);
+      out[i] = (u8)std::min<u32>(255, std::min<u32>(first, 255) + second);
+    }
+    return out;
+  };
+  auto cloud_expect = [](const std::vector<u32>& src, int n) {
+    std::vector<u8> out(n * 4);
+    const u8* in = (const u8*)src.data();
+    for (int i = 0; i < n * 4; i++) {
+      out[i] = (u8)std::min<u32>(255, ((u32)in[i] * 128) >> 7);
+    }
+    return out;
+  };
+
+  // the pool's sky slots hold the blended textures
+  auto sky_out = pool->lookup(SKY_TEXTURE_VRAM_ADDRS[0]);
+  check(sky_out.has_value(), "chain: blended sky texture is in the sky VRAM slot");
+  if (sky_out) {
+    check_gpu_matches(*sky_out, blend_expect(sky_src.data, 32 * 32), 32, 32,
+                      "chain: sky blend (draw + accumulate)");
+  }
+  auto cloud_out = pool->lookup(SKY_TEXTURE_VRAM_ADDRS[1]);
+  check(cloud_out.has_value(), "chain: blended cloud texture is in the cloud VRAM slot");
+  if (cloud_out) {
+    check_gpu_matches(*cloud_out, cloud_expect(cloud_src.data, 64 * 64), 64, 64,
+                      "chain: cloud blend (draw)");
+  }
+
+  // --- frame pixel checks ---------------------------------------------------
+  // sky draw: modulate by rgba 0x80 leaves the texture color; sample points
+  // outside the quads drawn on top of it
+  std::vector<u8> sky_px = blend_expect(sky_src.data, 32 * 32);
+  // texel sampled at (300,100): u ~ (300-250)/250 of the quad; with a solid
+  // synthetic source every texel matches. With a real sky texture, compute the
+  // exact texel: quad covers cols 250..500, rows 94..394, mapped to 32x32.
+  auto sky_texel_at = [&](int col, int row, int* r, int* g, int* b) {
+    int c0 = gs_to_col(1936), c1 = gs_to_col(2160);
+    int r0 = gs_to_row(1980), r1 = gs_to_row(2120);
+    double u = (col + 0.5 - c0) / double(c1 - c0);
+    double v = (row + 0.5 - r0) / double(r1 - r0);
+    // linear-filtered lookup is approximated by the nearest texel; solid
+    // sources are exact, real sources get pixel tolerance
+    int tx = std::clamp((int)(u * 32.0), 0, 31);
+    int ty = std::clamp((int)(v * 32.0), 0, 31);
+    const u8* px = &sky_px[(ty * 32 + tx) * 4];
+    *r = px[0];
+    *g = px[1];
+    *b = px[2];
+  };
+  {
+    int r, g, b;
+    sky_texel_at(300, 100, &r, &g, &b);
+    check_pixel(frame, 300, 100, r, g, b, "chain: sky draw above quad A");
+    sky_texel_at(300, 380, &r, &g, &b);
+    check_pixel(frame, 300, 380, r, g, b, "chain: sky draw below quad A");
+  }
+
+  // direct renderer content
+  check_pixel(frame, 5, 5, 0, 0, 0, "chain: clear color outside all geometry");
+  check_pixel(frame, 200, 240, 200, 60, 20, "chain: opaque quad A");
+  check_pixel(frame, 300, 240, 200, 60, 20, "chain: quad B rejected by GEQUAL depth");
+  check_pixel(frame, 400, 200, 100, 30, 137, "chain: alpha-blended quad over A");
+  check_pixel(frame, 510, 30, 255, 0, 0, "chain: sprite TL texel (red)");
+  check_pixel(frame, 590, 30, 0, 255, 0, "chain: sprite TR texel (green)");
+  check_pixel(frame, 510, 90, 0, 0, 255, "chain: sprite BL texel (blue)");
+  check_pixel(frame, 220, 340, 0, 0, 255, "chain: alpha-tested sprite left half kept (blue)");
+  check_pixel(frame, 300, 340, 200, 60, 20, "chain: alpha-tested sprite right half discarded");
+  check_pixel(frame, 60, 300, 250, 240, 10, "chain: scissored strip inside scissor");
+  check_pixel(frame, 60, 420, 0, 0, 0, "chain: scissored strip clipped below scay1");
+  // FB_ONLY double draw: sprite covers cols 510..590, rows 116..159; the
+  // alpha-passing left half wrote depth (cover quad rejected), the failing
+  // right half wrote only color (cover quad wins)
+  check_pixel(frame, 525, 140, 0, 0, 255, "chain: FB_ONLY pass half keeps sprite + depth");
+  check_pixel(frame, 575, 140, 20, 180, 220, "chain: FB_ONLY fail half has no depth (covered)");
+
+  // in-chain texture upload packet linked its VRAM slot
+  auto upload_slot = pool->lookup(kVramChainUpload);
+  check(upload_slot.has_value() && *upload_slot == upload_handle,
+        "chain: texture bucket upload packet linked the VRAM slot");
+
+  // chain counters
+  auto stats = metal_renderer::get_chain_stats();
+  printf(
+      "chain stats: %llu chains, %d draws, %d tris, %d uploads, sky d/b %d/%d, cloud d/b %d/%d, "
+      "skipped %llu bucket + %llu tfrag bytes, %d unsupported blends\n",
+      (unsigned long long)stats.chains_rendered, stats.draw_calls, stats.triangles,
+      stats.tex_uploads, stats.sky_draws, stats.sky_blends, stats.cloud_draws, stats.cloud_blends,
+      (unsigned long long)stats.skipped_bucket_bytes, (unsigned long long)stats.skipped_tfrag_bytes,
+      stats.direct_unsupported_blends);
+  check(stats.chains_rendered == 2, "chain: two chains rendered");
+  check(stats.draw_calls >= 6, "chain: bucket draws were encoded");
+  check(stats.tex_uploads == 1, "chain: texture bucket found one upload packet");
+  check(stats.sky_draws == 1 && stats.sky_blends == 1, "chain: sky blended once per frame");
+  check(stats.cloud_draws == 1 && stats.cloud_blends == 0, "chain: cloud drawn once per frame");
+  check(stats.skipped_bucket_bytes == 2 * 64, "chain: un-ported bucket content counted (64B x2)");
+  check(stats.direct_unsupported_blends == 0, "chain: no unsupported blend modes hit");
+
+  g_ee_main_mem = nullptr;
+}
+
+// ---------------------------------------------------------------------------
 // Section (optional): real extracted Jak 1 textures from a user-supplied .fr3.
 // Never bundled; pass the path on the command line to enable.
 // ---------------------------------------------------------------------------
-void test_real_fr3(const char* path) {
+std::unique_ptr<tfrag3::Level> test_real_fr3(const char* path) {
   printf("--- texture path: real fr3 textures (%s) ---\n", path);
   if (!fs::exists(path)) {
     printf("[FAIL] fr3 file does not exist: %s\n", path);
     g_fail_count++;
-    return;
+    return nullptr;
   }
   auto compressed = file_util::read_binary_file(std::string(path));
   auto decomp = compression::decompress_zstd(compressed.data(), compressed.size());
@@ -637,7 +1341,7 @@ void test_real_fr3(const char* path) {
   if (version != tfrag3::TFRAG3_VERSION) {
     printf("[SKIP] fr3 version %d does not match this build's %d; skipping real-data test\n",
            version, tfrag3::TFRAG3_VERSION);
-    return;
+    return nullptr;
   }
   auto level = std::make_unique<tfrag3::Level>();
   Serializer ser(decomp.data(), decomp.size());
@@ -668,6 +1372,7 @@ void test_real_fr3(const char* path) {
     verified++;
   }
   check(verified > 0, "verified at least one real texture through the Metal path");
+  return level;
 }
 
 }  // namespace
@@ -816,11 +1521,15 @@ int main(int argc, char** argv) {
   test_ps2_formats();
   std::vector<u8> fake_ee_mem(1 << 20, 0);
   test_pool_and_hooks(mod, fake_ee_mem);
+  std::unique_ptr<tfrag3::Level> level;
   if (argc > 1) {
-    test_real_fr3(argv[1]);
+    level = test_real_fr3(argv[1]);
   } else {
     printf("(no .fr3 path given; skipping optional real-texture test)\n");
   }
+
+  // ---- DMA chain path (stage 4) ----
+  test_dma_chain(mod, display, level.get());
   g_ee_main_mem = nullptr;
 
   display.reset();

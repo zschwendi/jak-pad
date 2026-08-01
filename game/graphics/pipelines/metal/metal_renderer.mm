@@ -3,6 +3,14 @@
 #include <algorithm>
 
 #include "common/log/log.h"
+#include "common/util/Assert.h"
+
+#include "game/graphics/opengl_renderer/buckets.h"
+#include "game/graphics/pipelines/metal/metal_direct_renderer.h"
+#include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
+#include "game/graphics/pipelines/metal/metal_sky_renderer.h"
+#include "game/graphics/texture/TexturePool.h"
+#include "game/runtime.h"
 
 #include <TargetConditionals.h>
 
@@ -125,9 +133,131 @@ int add_quad(std::vector<ScaffoldVertex>& out,
 
 }  // namespace
 
+/*!
+ * Build the Jak 1 bucket renderer table. Ported renderers: TextureUploadHandler
+ * for the texture buckets, SkyRenderer / SkyBlendHandler + SkyBlendCPU for the
+ * sky, DirectRenderer for the debug/subtitle buckets. Buckets whose GL
+ * renderer is not ported yet get a MetalSkipRenderer named after it, which
+ * counts and logs the content it consumes. Buckets the GL table leaves empty
+ * get the asserting empty renderer.
+ */
+void MetalRenderer::init_bucket_renderers_jak1() {
+  using namespace jak1;
+  m_bucket_renderers.resize((int)BucketId::MAX_BUCKETS);
+
+  auto set = [&](BucketId id, std::unique_ptr<MetalBucketRenderer> r) {
+    m_bucket_renderers[(int)id] = std::move(r);
+  };
+  auto skip = [&](BucketId id, const std::string& name) {
+    set(id, std::make_unique<MetalSkipRenderer>(name, (int)id));
+  };
+  auto tex = [&](BucketId id, const std::string& name) {
+    set(id, std::make_unique<MetalTextureBucketRenderer>(name, (int)id));
+  };
+
+  auto sky_cpu_blender = std::make_shared<MetalSkyBlendCPU>(m_device);
+  sky_cpu_blender->init_textures(*m_texture_pool, GameVersion::Jak1);
+
+  set(BucketId::SKY_DRAW, std::make_unique<MetalSkyRenderer>("sky", (int)BucketId::SKY_DRAW));
+  skip(BucketId::OCEAN_MID_AND_FAR, "ocean-mid-far");
+
+  tex(BucketId::TFRAG_TEX_LEVEL0, "l0-tfrag-tex");
+  skip(BucketId::TFRAG_LEVEL0, "l0-tfrag-tfrag");
+  skip(BucketId::TIE_LEVEL0, "l0-tfrag-tie");
+  skip(BucketId::MERC_TFRAG_TEX_LEVEL0, "l0-tfrag-merc");
+  skip(BucketId::GENERIC_TFRAG_TEX_LEVEL0, "l0-tfrag-generic");
+  tex(BucketId::TFRAG_TEX_LEVEL1, "l1-tfrag-tex");
+  skip(BucketId::TFRAG_LEVEL1, "l1-tfrag-tfrag");
+  skip(BucketId::TIE_LEVEL1, "l1-tfrag-tie");
+  skip(BucketId::MERC_TFRAG_TEX_LEVEL1, "l1-tfrag-merc");
+  skip(BucketId::GENERIC_TFRAG_TEX_LEVEL1, "l1-tfrag-generic");
+
+  tex(BucketId::SHRUB_TEX_LEVEL0, "l0-shrub-tex");
+  skip(BucketId::SHRUB_NORMAL_LEVEL0, "l0-shrub");
+  skip(BucketId::SHRUB_GENERIC_LEVEL0, "l0-shrub-generic");
+  tex(BucketId::SHRUB_TEX_LEVEL1, "l1-shrub-tex");
+  skip(BucketId::SHRUB_NORMAL_LEVEL1, "l1-shrub");
+  skip(BucketId::SHRUB_GENERIC_LEVEL1, "l1-shrub-generic");
+
+  tex(BucketId::ALPHA_TEX_LEVEL0, "l0-alpha-tex");
+  {
+    auto handler = std::make_unique<MetalSkyBlendHandler>(
+        "l0-alpha-sky-blend-and-tfrag-trans",
+        (int)BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0, sky_cpu_blender);
+    m_sky_blend_handlers[0] = handler.get();
+    set(BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0, std::move(handler));
+  }
+  skip(BucketId::TFRAG_DIRT_LEVEL0, "l0-alpha-tfrag-dirt");
+  skip(BucketId::TFRAG_ICE_LEVEL0, "l0-alpha-tfrag-ice");
+  tex(BucketId::ALPHA_TEX_LEVEL1, "l1-alpha-tex");
+  {
+    auto handler = std::make_unique<MetalSkyBlendHandler>(
+        "l1-alpha-sky-blend-and-tfrag-trans",
+        (int)BucketId::TFRAG_TRANS1_AND_SKY_BLEND_LEVEL1, sky_cpu_blender);
+    m_sky_blend_handlers[1] = handler.get();
+    set(BucketId::TFRAG_TRANS1_AND_SKY_BLEND_LEVEL1, std::move(handler));
+  }
+  skip(BucketId::TFRAG_DIRT_LEVEL1, "l1-alpha-tfrag-dirt");
+  skip(BucketId::TFRAG_ICE_LEVEL1, "l1-alpha-tfrag-ice");
+
+  skip(BucketId::MERC_AFTER_ALPHA, "common-alpha-merc");
+  skip(BucketId::GENERIC_ALPHA, "common-alpha-generic");
+  skip(BucketId::SHADOW, "shadow");
+
+  tex(BucketId::PRIS_TEX_LEVEL0, "l0-pris-tex");
+  skip(BucketId::MERC_PRIS_LEVEL0, "l0-pris-merc");
+  skip(BucketId::GENERIC_PRIS_LEVEL0, "l0-pris-generic");
+  tex(BucketId::PRIS_TEX_LEVEL1, "l1-pris-tex");
+  skip(BucketId::MERC_PRIS_LEVEL1, "l1-pris-merc");
+  skip(BucketId::GENERIC_PRIS_LEVEL1, "l1-pris-generic");
+  skip(BucketId::MERC_EYES_AFTER_PRIS, "common-pris-eyes");
+  skip(BucketId::MERC_AFTER_PRIS, "common-pris-merc");
+  skip(BucketId::GENERIC_PRIS, "common-pris-generic");
+
+  tex(BucketId::WATER_TEX_LEVEL0, "l0-water-tex");
+  skip(BucketId::MERC_WATER_LEVEL0, "l0-water-merc");
+  skip(BucketId::GENERIC_WATER_LEVEL0, "l0-water-generic");
+  tex(BucketId::WATER_TEX_LEVEL1, "l1-water-tex");
+  skip(BucketId::MERC_WATER_LEVEL1, "l1-water-merc");
+  skip(BucketId::GENERIC_WATER_LEVEL1, "l1-water-generic");
+  skip(BucketId::OCEAN_NEAR, "ocean-near");
+  skip(BucketId::DEPTH_CUE, "depth-cue");
+
+  tex(BucketId::PRE_SPRITE_TEX, "common-tex");
+  skip(BucketId::SPRITE, "sprite");
+
+  set(BucketId::DEBUG,
+      std::make_unique<MetalDirectRenderer>("debug", (int)BucketId::DEBUG, 0x20000));
+  set(BucketId::DEBUG_NO_ZBUF,
+      std::make_unique<MetalDirectRenderer>("debug-no-zbuf", (int)BucketId::DEBUG_NO_ZBUF, 0x8000));
+  set(BucketId::SUBTITLE,
+      std::make_unique<MetalDirectRenderer>("subtitle", (int)BucketId::SUBTITLE, 6000));
+
+  for (size_t i = 0; i < m_bucket_renderers.size(); i++) {
+    if (!m_bucket_renderers[i]) {
+      m_bucket_renderers[i] =
+          std::make_unique<MetalEmptyBucketRenderer>(fmt::format("bucket-{}", i), (int)i);
+    }
+  }
+}
+
+void MetalRenderer::init_bucket_renderers(TexturePool* pool, GameVersion version) {
+  m_texture_pool = pool;
+  m_shared_state.version = version;
+  switch (version) {
+    case GameVersion::Jak1:
+      init_bucket_renderers_jak1();
+      break;
+    default:
+      // Jak 2/3 tables arrive with their renderers; only Jak 1 is in scope
+      ASSERT_MSG(false, "Metal bucket renderers only support Jak 1");
+  }
+}
+
 bool MetalRenderer::init(id<MTLDevice> device) {
   m_device = device;
   m_queue = [device newCommandQueue];
+  m_stream.init(device);
 
   dispatch_data_t lib_data = dispatch_data_create(g_goalpad_metallib, g_goalpad_metallib_size,
                                                   nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
@@ -356,6 +486,173 @@ void MetalRenderer::render_frame(const MetalRenderOptions& opts, CAMetalLayer* l
       m_frame_count++;
     }
   }
+}
+
+/*!
+ * Walk the frame's DMA chain and dispatch each bucket. Mirror of
+ * OpenGLRenderer::dispatch_buckets_jak1: the chain starts with a CALL to the
+ * common default-registers chain (which carries the fog color), then the
+ * bucket array follows.
+ */
+void MetalRenderer::dispatch_buckets_jak1(DmaFollower dma, MetalFrameContext& ctx) {
+  m_shared_state.buckets_base = dma.current_tag_offset() + 16;  // 1 qw for the initial call
+  m_shared_state.next_bucket = m_shared_state.buckets_base;
+
+  // find the default regs buffer
+  auto initial_call_tag = dma.current_tag();
+  ASSERT(initial_call_tag.kind == DmaTag::Kind::CALL);
+  auto initial_call_default_regs = dma.read_and_advance();
+  ASSERT(initial_call_default_regs.transferred_tag == 0);  // should be a nop
+  m_shared_state.default_regs_buffer = dma.current_tag_offset();
+  auto default_regs_tag = dma.current_tag();
+  ASSERT(default_regs_tag.kind == DmaTag::Kind::CNT);
+  ASSERT(default_regs_tag.qwc == 10);
+  auto default_data = dma.read_and_advance();
+  ASSERT(default_data.size_bytes > 148);
+  memcpy(m_shared_state.fog_color.data(), default_data.data + 144, 4);
+  auto default_ret_tag = dma.current_tag();
+  ASSERT(default_ret_tag.qwc == 0);
+  ASSERT(default_ret_tag.kind == DmaTag::Kind::RET);
+  dma.read_and_advance();
+
+  // now we should point to the first bucket!
+  ASSERT(dma.current_tag_offset() == m_shared_state.next_bucket);
+  m_shared_state.next_bucket += 16;
+
+  for (size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
+    auto& renderer = m_bucket_renderers[bucket_id];
+    renderer->render(dma, &m_shared_state, ctx);
+    // should have ended at the start of the next bucket
+    ASSERT(dma.current_tag_offset() == m_shared_state.next_bucket);
+    m_shared_state.next_bucket += 16;
+    metal_vif_interrupt_callback((int)bucket_id);
+  }
+}
+
+void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
+                                       CAMetalLayer* layer,
+                                       const u8* chain_data,
+                                       u32 chain_offset) {
+  @autoreleasepool {
+    ASSERT_MSG(!m_bucket_renderers.empty(), "init_bucket_renderers was not called");
+    // the stream buffer pages are reused in place, so the previous frame's GPU
+    // work must be done with them (correctness first; pipelining is a later,
+    // measured change)
+    id<MTLCommandBuffer> prev;
+    {
+      std::lock_guard<std::mutex> lock(m_frame_mutex);
+      prev = m_last_frame_cmds;
+    }
+    if (prev) {
+      [prev waitUntilCompleted];
+    }
+    m_stream.reset();
+
+    setup_frame(opts);
+    m_shared_state.texture_pool = m_texture_pool;
+    m_shared_state.ee_memory = g_ee_main_mem;
+    m_shared_state.offset_of_s7 = metal_offset_of_s7();
+    m_shared_state.game_res_w = opts.game_res_w;
+    m_shared_state.game_res_h = opts.game_res_h;
+
+    id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
+
+    // one render pass over the game target for all buckets, cleared like
+    // Jak 1's setup_frame (color 0, depth 0, PS2 reversed depth)
+    auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = m_game_color;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    pass.depthAttachment.texture = m_game_depth;
+    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+    pass.depthAttachment.clearDepth = 0.0;
+    pass.stencilAttachment.texture = m_game_depth;
+    pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+    pass.stencilAttachment.clearStencil = 0;
+
+    id<MTLRenderCommandEncoder> enc = [cmds renderCommandEncoderWithDescriptor:pass];
+    [enc setCullMode:MTLCullModeNone];
+
+    MetalFrameContext ctx;
+    ctx.enc = enc;
+    ctx.pso_cache = &m_pso_cache;
+    ctx.sampler_cache = &m_sampler_cache;
+    ctx.stream = &m_stream;
+    ctx.color_format = kColorFormat;
+    ctx.depth_format = kDepthFormat;
+
+    dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset), ctx);
+    [enc endEncoding];
+
+#if TARGET_OS_OSX
+    {
+      id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
+      [blit synchronizeResource:m_game_color];
+      [blit endEncoding];
+    }
+#endif
+
+    id<CAMetalDrawable> drawable = [layer nextDrawable];
+    if (drawable) {
+      encode_present_pass(cmds, drawable.texture, opts);
+      [cmds presentDrawable:drawable];
+    }
+
+    [cmds commit];
+    {
+      std::lock_guard<std::mutex> lock(m_frame_mutex);
+      m_last_frame_cmds = cmds;
+      m_frame_count++;
+    }
+
+    // frame stats for tests / debugging
+    m_chain_stats.chains_rendered++;
+    m_chain_stats.draw_calls = ctx.draw_calls;
+    m_chain_stats.triangles = ctx.triangles;
+    int uploads = 0;
+    u64 skipped = 0;
+    int unsupported_blends = 0;
+    for (auto& r : m_bucket_renderers) {
+      if (auto* t = dynamic_cast<MetalTextureBucketRenderer*>(r.get())) {
+        uploads += t->last_stats().uploads;
+      } else if (auto* s = dynamic_cast<MetalSkipRenderer*>(r.get())) {
+        skipped += s->skipped_bytes();
+      } else if (auto* d = dynamic_cast<MetalDirectRenderer*>(r.get())) {
+        unsupported_blends += d->stats().unsupported_blends;
+      } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
+        unsupported_blends += sky->direct_stats().unsupported_blends;
+      }
+    }
+    m_chain_stats.tex_uploads = uploads;
+    m_chain_stats.skipped_bucket_bytes = skipped;
+    m_chain_stats.direct_unsupported_blends = unsupported_blends;
+    SkyBlendStats blend_stats;
+    for (auto* handler : m_sky_blend_handlers) {
+      if (handler) {
+        blend_stats.sky_draws += handler->last_stats().sky_draws;
+        blend_stats.sky_blends += handler->last_stats().sky_blends;
+        blend_stats.cloud_draws += handler->last_stats().cloud_draws;
+        blend_stats.cloud_blends += handler->last_stats().cloud_blends;
+      }
+    }
+    m_chain_stats.sky_draws = blend_stats.sky_draws;
+    m_chain_stats.sky_blends = blend_stats.sky_blends;
+    m_chain_stats.cloud_draws = blend_stats.cloud_draws;
+    m_chain_stats.cloud_blends = blend_stats.cloud_blends;
+    m_chain_stats.skipped_tfrag_bytes = 0;
+    for (auto* handler : m_sky_blend_handlers) {
+      if (handler) {
+        m_chain_stats.skipped_tfrag_bytes += handler->skipped_tfrag_bytes();
+      }
+    }
+  }
+}
+
+metal_renderer::ChainStats MetalRenderer::chain_stats() {
+  return m_chain_stats;
 }
 
 bool MetalRenderer::read_color_target(id<MTLTexture> tex, metal_renderer::FramePixels* out) {

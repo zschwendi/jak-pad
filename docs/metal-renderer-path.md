@@ -128,8 +128,12 @@ come from a `UIView`/SwiftUI instead of SDL.
    cache, the `texture_upload_now` / `texture_relocate` module hooks, and the
    TextureUploadHandler DMA walk. The handler's eye-renderer and texture-animator
    sub-paths ride with their renderers in later stages.
-4. First game visuals — *Planned*: DirectRenderer + SkyRenderer (+ SkyBlendCPU) → boot
-   splash/title screen content renders under Metal on macOS using the existing DMA chain.
+4. First game visuals — *Implemented* (see §Current state): `send_chain` consumes the
+   game's DMA chain (copied per frame like the GL pipeline), the Jak 1 bucket table
+   dispatches all 70 buckets, and DirectRenderer + SkyRenderer + SkyBlendCPU render
+   title-screen-class content. Verified with constructed chains that follow the real
+   Jak 1 chain structure, including real extracted sky texels; not yet with a live
+   game or captured retail chain (none exists in this tree).
 5. Background geometry — *Planned*: TFragment, Tie3, Shrub (+ time-of-day 1D LUTs,
    multidraw loops).
 6. Foreground — *Planned*: Merc2 (bones via buffer offsets), Generic2, ShadowRenderer,
@@ -208,12 +212,61 @@ come from a `UIView`/SwiftUI instead of SDL.
     walk over a synthetic chain. Optionally (`metal-proof <file.fr3>`) real extracted
     level textures are uploaded and verified byte-exact against their CPU data; no game
     data is bundled or required.
-- **Experimental**: the Metal pipeline ignores `send_chain` (logs once); it renders a
-  fixed validation scene, no game content yet. The stand-in draw region is a 4:3 fit of
-  the window until the game supplies real sizes. The Metal pipeline does not run the
-  Loader yet, so nothing feeds `metal_add_texture` outside the proof.
+- **Implemented** (stage 4, DMA chain consumption and first bucket renderers):
+  - `send_chain` is real: the chain is snapshotted with the shared
+    `FixedChunkDmaCopier` under the same dma/sync mutex + condition-variable model as
+    the GL pipeline (`metal_vsync` / `metal_sync_path` mirror `gl_vsync` /
+    `gl_sync_path`, including the `MasterExit` wakeup). The display consumes the copy:
+    `MetalRenderer::render_chain_frame` waits out the previous frame (stream-buffer
+    pages are reused in place; pipelining is a later, measured change), opens one
+    render pass over the game target, and walks the chain exactly like
+    `OpenGLRenderer::dispatch_buckets_jak1` (initial CALL to the default-registers
+    chain, fog color pickup, per-bucket `next_bucket` asserts,
+    `vif_interrupt_callback` per bucket via a plain-C++ kernel bridge).
+  - `metal_bucket_renderer.{h,mm}` — the bucket framework: `MetalSharedRenderState` /
+    `MetalFrameContext` (encoder + PSO/sampler caches + per-frame `MetalStreamBuffer`
+    vertex bump allocator), the asserting empty-bucket renderer, the texture-bucket
+    adapter, and `MetalSkipRenderer`, which consumes buckets whose renderer is not
+    ported yet while counting payload bytes and logging once — deferred content
+    (tfrag, tie, shrub, merc, generic, ocean, sprite, shadow, eyes, depth-cue) is
+    visible, never silently dropped.
+  - `metal_direct_renderer.{h,mm}` + `shaders/direct.metal` — the DirectRenderer port.
+    The GS state machine (GIF PACKED/REGLIST walk, A+D registers, strip/sprite/tri/
+    fan/line assembly) is byte-for-byte the GL logic; at the flush boundary the GS
+    state becomes a PSO key (all six GL blend mappings incl. the fix-value constant
+    blend via `setBlendColor`, color write mask), a depth-stencil key (ztest,
+    depth-write, the NEVER+FB_ONLY write trick) and shader uniforms (alpha test
+    min/max/greater, ta0, fog, GS scissor, color/alpha mult). The afail
+    FB_ONLY/RGB_ONLY double-draw (depth-writing pass for alpha-passing fragments,
+    non-writing pass for the rest) is ported as two encoder draws. Unsupported GS
+    blend modes are counted and logged once; states the GL renderer asserts on
+    (AA1, CTXT, DATE, GS blits) assert here too so divergence is loud.
+  - `metal_sky_renderer.{h,mm}` — SkyRenderer (both DMA layouts), SkyBlendHandler, and
+    SkyBlendCPU. Note: the GL SkyBlendCPU kernels are x86 SSE and compile to no-ops on
+    arm64; the Metal port uses portable scalar math with the same fixed-point
+    semantics, so the sky actually blends on Apple silicon. The sky-blend buckets'
+    trailing tfrag-trans content is stage-5 territory: consumed, counted, logged once.
+  - Verified by `metal-proof` (117 checks; all previous checks still pass;
+    `MTL_DEBUG_LAYER=1` clean): a constructed Jak 1-shaped chain (initial CALL,
+    70-slot bucket array, empty-bucket CALL/RET structure, NOP+DIRECT vif transfers)
+    goes through the real `send_chain` module hook and is verified by readback -
+    opaque/blended strips, GEQUAL depth rejection, textured sprites through the
+    TexturePool VRAM slots, alpha test (GREATER discard and the FB_ONLY double-draw
+    with its depth-write split), GS scissor clipping, an in-chain PC-port texture
+    upload packet, sky blend (draw + accumulate, clouds) with byte-exact CPU/GPU
+    comparison, and the sky-draw bucket sampling the blended texture. With a real
+    `.fr3` (optional argument), the sky path runs on real extracted sky texels
+    (`vil1-sky-00` verified) end to end. Evidence level: constructed chains matching
+    the asserted real-chain structure — upstream has no DMA capture/replay mechanism
+    in this tree, and the live game does not yet drive this branch.
+- **Experimental**: the validation scene still renders when no chain is pending (keeps
+  the window alive and the scaffold checks meaningful); its draw region is a 4:3 fit
+  of the window. The Metal pipeline does not run the Loader yet, so nothing feeds
+  `metal_add_texture` outside the proof.
 - **Planned**: MSAA render/resolve (PSO key already carries sample count), stencil ops in
-  the depth-stencil key (for ShadowRenderer), a Metal loader upload stage (stage 4/5),
-  eye-renderer and texture-animator paths of the upload handler.
+  the depth-stencil key (for ShadowRenderer), a Metal loader upload stage (stage 5),
+  eye-renderer and texture-animator paths of the upload handler, background renderers
+  (TFragment/Tie3/Shrub) for the skipped buckets, live-game validation once the ARM64
+  runtime branch and this renderer branch meet.
 - The OpenGL renderer is untouched and remains the default (`gfx.cpp` still selects
   `GfxPipeline::OpenGL`).

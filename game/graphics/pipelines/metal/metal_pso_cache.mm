@@ -10,9 +10,11 @@ struct ShaderFunctionNames {
 };
 
 constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
-    {"scaffold_vs", "scaffold_fs"},  // SCAFFOLD
-    {"present_vs", "present_fs"},    // PRESENT
-    {"scaffold_vs", "sample_fs"},    // SAMPLE
+    {"scaffold_vs", "scaffold_fs"},            // SCAFFOLD
+    {"present_vs", "present_fs"},              // PRESENT
+    {"scaffold_vs", "sample_fs"},              // SAMPLE
+    {"direct_basic_vs", "direct_basic_fs"},    // DIRECT_BASIC
+    {"direct_textured_vs", "direct_textured_fs"},  // DIRECT_TEXTURED
 };
 
 size_t hash_combine(size_t seed, size_t v) {

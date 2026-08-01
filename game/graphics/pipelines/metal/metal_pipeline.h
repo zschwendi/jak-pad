@@ -61,6 +61,26 @@ struct PresentTestOptions {
   int brightness_contrast_alpha = 128;
 };
 
+// Counters for the DMA-chain path, used by tests to verify that send_chain
+// frames really dispatched buckets and that deferred content is counted.
+struct ChainStats {
+  u64 chains_rendered = 0;
+  // from the last chain frame
+  int draw_calls = 0;
+  int triangles = 0;
+  int tex_uploads = 0;
+  int sky_draws = 0;
+  int sky_blends = 0;
+  int cloud_draws = 0;
+  int cloud_blends = 0;
+  // cumulative
+  u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
+  u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets
+  int direct_unsupported_blends = 0;
+};
+
+ChainStats get_chain_stats();
+
 // Blocks until the last submitted frame finishes on the GPU, then reads back
 // the offscreen game render target. Returns false if no frame has been rendered.
 bool read_last_frame(FramePixels* out);

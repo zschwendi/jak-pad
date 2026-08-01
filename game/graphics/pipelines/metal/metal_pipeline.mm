@@ -10,6 +10,11 @@
 
 #include "metal_pipeline.h"
 
+#include <condition_variable>
+#include <mutex>
+
+#include "common/dma/dma_copy.h"
+#include "common/goal_constants.h"
 #include "common/log/log.h"
 
 #include "game/graphics/pipelines/metal/metal_renderer.h"
@@ -29,6 +34,23 @@ MetalRenderer* g_renderer = nullptr;
 // texture pool for the Metal pipeline (the analog of GraphicsData::texture_pool
 // in the GL pipeline). Created with the display, once the device exists.
 std::shared_ptr<TexturePool> g_texture_pool;
+
+// DMA chain handoff between the game thread (send_chain / vsync / sync_path)
+// and the render thread. Mirrors the GraphicsData sync model in
+// game/graphics/pipelines/opengl.cpp: dma_mutex/dma_cv guard the copied chain,
+// sync_mutex/sync_cv guard the frame counter for vsync.
+struct ChainSync {
+  std::mutex dma_mutex;
+  std::condition_variable dma_cv;
+  std::mutex sync_mutex;
+  std::condition_variable sync_cv;
+  u64 frame_idx = 0;
+  u64 frame_idx_of_input_data = 0;
+  bool has_data_to_render = false;
+  std::unique_ptr<FixedChunkDmaCopier> copier;
+  float pmode_alp = 1.f;
+};
+ChainSync g_chain;
 
 // Largest centered region with the game's 4:3 aspect that fits the window.
 // The real game supplies its own draw region sizes; this stands in until the
@@ -102,9 +124,52 @@ void MetalDisplay::render() {
   int fb_h = 0;
   SDL_GetWindowSizeInPixels(m_window, &fb_w, &fb_h);
 
-  MetalRenderOptions opts;
-  compute_draw_region(fb_w, fb_h, &opts.draw_region_w, &opts.draw_region_h);
-  g_renderer->render_frame(opts, m_layer);
+  // wait briefly for a copied chain, like GLDisplay's render_game_frame; if
+  // none arrives, render the validation scene so the window stays responsive
+  bool got_chain = false;
+  {
+    std::unique_lock<std::mutex> lock(g_chain.dma_mutex);
+    got_chain = g_chain.dma_cv.wait_for(lock, std::chrono::milliseconds(40),
+                                        [] { return g_chain.has_data_to_render; });
+  }
+
+  if (got_chain) {
+    g_chain.frame_idx_of_input_data = g_chain.frame_idx;
+    MetalRenderOptions opts;
+    opts.game_res_w = Gfx::g_global_settings.game_res_w;
+    opts.game_res_h = Gfx::g_global_settings.game_res_h;
+    if (opts.game_res_w <= 0 || opts.game_res_h <= 0) {
+      opts.game_res_w = 640;
+      opts.game_res_h = 480;
+    }
+    opts.draw_region_w = Gfx::g_global_settings.lbox_w;
+    opts.draw_region_h = Gfx::g_global_settings.lbox_h;
+    opts.pmode_alp = g_chain.pmode_alp;
+    opts.brightness_contrast_color = Gfx::g_global_settings.brightness_contrast_color;
+    opts.brightness_contrast_alpha = Gfx::g_global_settings.brightness_contrast_alpha;
+
+    const auto& chain = g_chain.copier->get_last_result();
+    g_renderer->render_chain_frame(opts, m_layer, chain.data.data(), chain.start_offset);
+  } else {
+    MetalRenderOptions opts;
+    compute_draw_region(fb_w, fb_h, &opts.draw_region_w, &opts.draw_region_h);
+    g_renderer->render_frame(opts, m_layer);
+  }
+
+  // mark the chain as rendered so sync_path can return (GL does this under the
+  // dma mutex with the sync cv; mirrored here)
+  {
+    std::unique_lock<std::mutex> lock(g_chain.dma_mutex);
+    g_chain.has_data_to_render = false;
+    g_chain.sync_cv.notify_all();
+  }
+
+  // toggle even/odd and wake up the engine waiting on vsync
+  {
+    std::unique_lock<std::mutex> lock(g_chain.sync_mutex);
+    g_chain.frame_idx++;
+    g_chain.sync_cv.notify_all();
+  }
 }
 
 namespace metal_renderer {
@@ -128,6 +193,10 @@ bool read_present_frame(const PresentTestOptions& opts, FramePixels* out) {
 
 ScaffoldStats get_stats() {
   return g_renderer ? g_renderer->stats() : ScaffoldStats{};
+}
+
+ChainStats get_chain_stats() {
+  return g_renderer ? g_renderer->chain_stats() : ChainStats{};
 }
 
 bool read_texture_sample(const TextureSampleSpec& spec, FramePixels* out) {
@@ -222,6 +291,10 @@ static std::shared_ptr<GfxDisplay> metal_make_display(int width,
       SDL_DestroyWindow(window);
       return NULL;
     }
+    g_renderer->init_bucket_renderers(g_texture_pool.get(), version);
+  }
+  if (!g_chain.copier) {
+    g_chain.copier = std::make_unique<FixedChunkDmaCopier>(EE_MAIN_MEM_SIZE);
   }
 
   return std::make_shared<MetalDisplay>(window, view, layer, is_main);
@@ -229,24 +302,64 @@ static std::shared_ptr<GfxDisplay> metal_make_display(int width,
 
 static void metal_exit() {
   g_texture_pool.reset();
+  g_chain.copier.reset();
+  g_chain.has_data_to_render = false;
   delete g_renderer;
   g_renderer = nullptr;
 }
 
+/*!
+ * Wait for the next vsync. Returns 0 or 1 depending on if frame is even or odd.
+ * Called from the game thread. Mirror of gl_vsync.
+ */
 static u32 metal_vsync() {
-  return 0;
-}
-
-static u32 metal_sync_path() {
-  return 0;
-}
-
-static void metal_send_chain(const void* /*data*/, u32 /*offset*/) {
-  static bool warned = false;
-  if (!warned) {
-    lg::warn("Metal pipeline does not render DMA chains yet; ignoring send_chain");
-    warned = true;
+  if (!g_renderer) {
+    return 0;
   }
+  std::unique_lock<std::mutex> lock(g_chain.sync_mutex);
+  auto init_frame = g_chain.frame_idx_of_input_data;
+  g_chain.sync_cv.wait(lock, [=] {
+    return (MasterExit != RuntimeExitStatus::RUNNING) || g_chain.frame_idx > init_frame;
+  });
+  return g_chain.frame_idx & 1;
+}
+
+/*!
+ * Mirror of gl_sync_path: block the game thread until the renderer consumed
+ * the pending chain.
+ */
+static u32 metal_sync_path() {
+  if (!g_renderer) {
+    return 0;
+  }
+  std::unique_lock<std::mutex> lock(g_chain.sync_mutex);
+  if (!g_chain.has_data_to_render) {
+    return 0;
+  }
+  g_chain.sync_cv.wait(lock, [] { return !g_chain.has_data_to_render; });
+  return 0;
+}
+
+/*!
+ * Send DMA to the renderer. Called from the game thread. Like gl_send_chain,
+ * but the chain copy always runs: the renderer works from a stable snapshot
+ * that is much smaller than the whole game memory.
+ */
+static void metal_send_chain(const void* data, u32 offset) {
+  if (!g_renderer || !g_chain.copier) {
+    return;
+  }
+  std::unique_lock<std::mutex> lock(g_chain.dma_mutex);
+  if (g_chain.has_data_to_render) {
+    lg::error(
+        "Gfx::send_chain called when the Metal renderer has pending data. Was this called "
+        "multiple times per frame?");
+    return;
+  }
+
+  g_chain.copier->set_input_data(data, offset, /*run_copy*/ true);
+  g_chain.has_data_to_render = true;
+  g_chain.dma_cv.notify_all();
 }
 
 /*!
@@ -272,7 +385,9 @@ static void metal_set_active_levels(const std::vector<std::string>& /*levels*/) 
 static void metal_force_reload_all() {}
 static void metal_force_reload_level(const std::string& /*level*/) {}
 static void metal_force_reload_common() {}
-static void metal_set_pmode_alp(float /*alp*/) {}
+static void metal_set_pmode_alp(float alp) {
+  g_chain.pmode_alp = alp;
+}
 
 const GfxRendererModule gRendererMetal = {
     metal_init,                // init

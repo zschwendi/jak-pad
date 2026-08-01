@@ -17,15 +17,20 @@
  * will replace it in later stages.
  */
 
+#include <memory>
 #include <mutex>
 #include <vector>
 
+#include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+
+class TexturePool;
+class MetalSkyBlendHandler;
 
 // Vertex layout for the scaffold shader. Must match ScaffoldVertexIn in
 // shaders/scaffold.metal.
@@ -54,9 +59,21 @@ class MetalRenderer {
   id<MTLDevice> device() const { return m_device; }
   id<MTLCommandQueue> queue() const { return m_queue; }
 
+  // Builds the Jak 1 bucket renderer table. Must be called once the texture
+  // pool exists (the sky blender registers its output textures with it).
+  void init_bucket_renderers(TexturePool* pool, GameVersion version);
+
   // Renders one frame: game passes into the offscreen target, then the present
   // pass into the layer's next drawable, all in one command buffer.
   void render_frame(const MetalRenderOptions& opts, CAMetalLayer* layer);
+
+  // Renders one frame from the game's DMA chain (the copied chain from
+  // send_chain): walks the chain like OpenGLRenderer::dispatch_buckets_jak1
+  // and hands each bucket to its renderer, then runs the present pass.
+  void render_chain_frame(const MetalRenderOptions& opts,
+                          CAMetalLayer* layer,
+                          const u8* chain_data,
+                          u32 chain_offset);
 
   // Waits for the last committed frame, then reads back the offscreen game
   // target. Returns false if no frame has been rendered yet.
@@ -71,6 +88,7 @@ class MetalRenderer {
                           metal_renderer::FramePixels* out);
 
   metal_renderer::ScaffoldStats stats();
+  metal_renderer::ChainStats chain_stats();
 
   // Renders a quad sampling the given registry texture with the requested
   // sampler state into a small offscreen target and reads it back. Verifies
@@ -90,6 +108,8 @@ class MetalRenderer {
 
   void setup_frame(const MetalRenderOptions& opts);
   void encode_game_passes(id<MTLCommandBuffer> cmds);
+  void init_bucket_renderers_jak1();
+  void dispatch_buckets_jak1(DmaFollower dma, MetalFrameContext& ctx);
   void encode_present_pass(id<MTLCommandBuffer> cmds,
                            id<MTLTexture> target,
                            const MetalRenderOptions& opts);
@@ -113,4 +133,12 @@ class MetalRenderer {
   id<MTLCommandBuffer> m_last_frame_cmds;
   std::mutex m_frame_mutex;
   u64 m_frame_count = 0;
+
+  // --- DMA chain path (stage 4) ---------------------------------------------
+  MetalStreamBuffer m_stream;
+  MetalSharedRenderState m_shared_state;
+  std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
+  TexturePool* m_texture_pool = nullptr;
+  MetalSkyBlendHandler* m_sky_blend_handlers[2] = {nullptr, nullptr};
+  metal_renderer::ChainStats m_chain_stats;
 };
