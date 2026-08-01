@@ -55,9 +55,11 @@
  * ways in agree about what an object file is.
  */
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "common/link_types.h"
 #include "common/log/log.h"
@@ -66,6 +68,7 @@
 
 #include "game/common/dgo_rpc_types.h"
 #include "game/common/play_rpc_types.h"
+#include "game/common/ramdisk_rpc_types.h"
 #include "game/common/str_rpc_types.h"
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kdgo.h"
@@ -610,13 +613,146 @@ u64 str_rpc(u32 send_buffer, u32 recv_buffer) {
   return 0;
 }
 
+// ------------------------------------------------------------------------------------------------
+// The ramdisk RPC, answered the same way
+//
+// Channel 2 is the overlord's "server": upstream keeps a whole file in the IOP's spare RAM and
+// hands the EE 2 kB windows of it on request (game/overlord/jak1/ramdisk.cpp). Only one file is
+// ever in it, and only visibility uses it: `vis-load` in engine/level/level.gc sends fno 1 to load
+// `<nickname>.VIS`, and `update-vis!` in engine/load/decomp.gc then sends fno 0 for the compressed
+// vis string of the camera's current BSP leaf.
+//
+// This is implemented rather than stubbed because a stub that reports nothing wrong leaves the
+// level's vis buffer holding zeroes, and `unpack-comp-huf` is then handed an all-zero bitstream:
+// it walks the dictionary's zero branch until it happens to reach the terminator symbol, which for
+// village1 is 7066 bytes into a 2 kB scratchpad buffer and for the title level 16472. The
+// decompressed visibility is wrong (`update-vis!`'s own check reports it) and the overrun runs off
+// the end of the fake scratchpad's decompression buffers and into the scratchpad process stacks.
+//
+// There is no IOP, so the file lives in host memory here and the RPC is answered where it is sent.
+// ------------------------------------------------------------------------------------------------
+
+/*!
+ * `ramdisk-rpc-fill` and `ramdisk-rpc-load` in engine/load/ramdisk.gc, which are the same 32 bytes
+ * as `RPC_Ramdisk_LoadCmd` in game/common/ramdisk_rpc_types.h. `id` is the ramdisk file id for
+ * both; `offset` and `length` are only meaningful to fno 0 and `name` only to fno 1.
+ */
+struct RamdiskRpcCmd {
+  u32 rsvd;
+  u32 id;
+  u32 offset;
+  u32 length;
+  char name[16];
+};
+static_assert(sizeof(RamdiskRpcCmd) == 32, "GOAL's ramdisk RPC buffer element is 32 bytes");
+
+/*! Upstream's `gReturnBuffer` is this big and a larger request is refused. */
+constexpr u32 kRamdiskMaxRead = 0x2000;
+
+/*! The one file the ramdisk holds. Upstream's fno 1 resets it before loading, and so does this. */
+struct {
+  std::vector<u8> bytes;
+  u32 id = 0;
+} g_ramdisk;
+
+void ramdisk_reset_and_load(const RamdiskRpcCmd& cmd) {
+  g_ramdisk.bytes.clear();
+  g_ramdisk.id = 0;
+
+  char name[17];
+  memcpy(name, cmd.name, sizeof(cmd.name));
+  name[sizeof(cmd.name)] = '\0';
+  char upper[17];
+  kstrcpyup(upper, name);
+  const std::string relative = std::string("iso/") + upper;
+
+  const s32 fd = ee::sceOpen(relative.c_str(), SCE_RDONLY);
+  if (fd < 0) {
+    lg::warn("[ramdisk] cannot open {}", relative);
+    g_rpc_stats.ramdisk_misses++;
+    return;
+  }
+  const s32 size = ee::sceLseek(fd, 0, SCE_SEEK_END);
+  ee::sceLseek(fd, 0, SCE_SEEK_SET);
+  if (size <= 0) {
+    ee::sceClose(fd);
+    lg::warn("[ramdisk] {} is {} bytes", relative, size);
+    g_rpc_stats.ramdisk_misses++;
+    return;
+  }
+  g_ramdisk.bytes.resize((size_t)size);
+  const s32 read = ee::sceRead(fd, g_ramdisk.bytes.data(), size);
+  ee::sceClose(fd);
+  if (read != size) {
+    g_ramdisk.bytes.clear();
+    lg::warn("[ramdisk] short read of {}: {} of {}", relative, read, size);
+    g_rpc_stats.ramdisk_misses++;
+    return;
+  }
+  g_ramdisk.id = cmd.id;
+  g_rpc_stats.ramdisk_files++;
+  lg::debug("[ramdisk] loaded {} ({} bytes) as id {}", relative, size, cmd.id);
+}
+
+/*! fno 0: hand back `length` bytes at `offset`. Upstream replies through the RPC's receive
+ *  buffer, which is the EE address GOAL passed to `call`. */
+void ramdisk_get_data(const RamdiskRpcCmd& cmd, u32 recv_buffer, u32 recv_size) {
+  const u32 length = std::min(cmd.length, recv_size);
+  if (!recv_buffer || !length) {
+    return;
+  }
+  if (length > kRamdiskMaxRead) {
+    set_error(fmt::format("the ramdisk was asked for {} bytes and its buffer is {}", length,
+                          kRamdiskMaxRead));
+    g_rpc_stats.ramdisk_misses++;
+    return;
+  }
+  if (g_ramdisk.bytes.empty() || cmd.id != g_ramdisk.id) {
+    lg::warn("[ramdisk] no file {} is loaded", cmd.id);
+    g_rpc_stats.ramdisk_misses++;
+    return;
+  }
+  if (cmd.offset >= g_ramdisk.bytes.size()) {
+    lg::warn("[ramdisk] offset {} is past the end of a {}-byte file", cmd.offset,
+             g_ramdisk.bytes.size());
+    g_rpc_stats.ramdisk_misses++;
+    return;
+  }
+  // `ramdisk-load` always asks for 2 kB, which decomp.gc calls "a worst case if the string can't
+  // be compressed". A vis string near the end of the file is shorter than that, and upstream's
+  // overlord hands back whatever follows it in the ramdisk. Give it the file and nothing else.
+  const u32 available = (u32)std::min<size_t>(length, g_ramdisk.bytes.size() - cmd.offset);
+  memcpy(Ptr<u8>(recv_buffer).c(), g_ramdisk.bytes.data() + cmd.offset, available);
+  if (available < length) {
+    memset(Ptr<u8>(recv_buffer).c() + available, 0, length - available);
+  }
+  g_rpc_stats.ramdisk_reads++;
+}
+
+u64 ramdisk_rpc(u32 fno, u32 send_buffer, u32 recv_buffer, u32 recv_size) {
+  RamdiskRpcCmd cmd;
+  memcpy(&cmd, Ptr<u8>(send_buffer).c(), sizeof(cmd));
+  switch (fno) {
+    case RAMDISK_RESET_AND_LOAD_FNO:
+      ramdisk_reset_and_load(cmd);
+      break;
+    case RAMDISK_GET_DATA_FNO:
+      ramdisk_get_data(cmd, recv_buffer, recv_size);
+      break;
+    default:
+      // fno 4 loads a file straight to the EE; nothing in Jak 1's GOAL sends it.
+      return goal_kernel_core_machine_stub_report("rpc-call (ramdisk, unimplemented fno)");
+  }
+  return 0;
+}
+
 /*!
  * `rpc-call`: channel, function number, async flag, send buffer and size, receive buffer and size,
  * as eight GOAL stack arguments.
  *
- * The two channels that read files are answered. The rest belong to subsystems this library does
- * not contain - sound (0, 1), the ramdisk (2), and streamed-audio playback (5) - and a call on one
- * is reported by the machine-layer stub path rather than quietly succeeding.
+ * The three channels that read files are answered. The rest belong to subsystems this library does
+ * not contain - sound (0, 1) and streamed-audio playback (5) - and a call on one is reported by the
+ * machine-layer stub path rather than quietly succeeding.
  */
 u64 goal_rpc_call(u64* args) {
   const s32 channel = (s32)args[0];
@@ -626,8 +762,10 @@ u64 goal_rpc_call(u64* args) {
   if (channel == STR_RPC_CHANNEL) {
     return str_rpc((u32)args[3], (u32)args[5]);
   }
+  if (channel == RAMDISK_RPC_CHANNEL) {
+    return ramdisk_rpc((u32)args[1], (u32)args[3], (u32)args[5], (u32)args[6]);
+  }
   return goal_kernel_core_machine_stub_report(channel == 0 || channel == 1 ? "rpc-call (sound)"
-                                              : channel == 2               ? "rpc-call (ramdisk)"
                                               : channel == PLAY_RPC_CHANNEL
                                                   ? "rpc-call (streamed audio)"
                                                   : "rpc-call (unknown channel)");

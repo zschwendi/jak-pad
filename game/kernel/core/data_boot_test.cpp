@@ -63,10 +63,22 @@ void say(const char* format, ...) {
   std::fflush(stdout);
 }
 
+/*!
+ * `(method update-vis! level)` in engine/load/decomp.gc checks its own decompressed visibility
+ * against the BSP's all-visible list and prints this when a bit names a drawable that does not
+ * exist. Nothing stops when it happens - the game only reports it - so the report is counted here
+ * and failed on at the end. It is the one signal that says the visibility a frame computed is
+ * wrong.
+ */
+int g_illegal_vis_reports = 0;
+
 /*! Anything GOAL printed since the last call, so a failing top-level's own message is visible. */
 void drain_goal_print_buffer() {
   const char* printed = Ptr<char>(PrintBufArea.offset + sizeof(ListenerMessageHeader)).c();
   if (printed[0]) {
+    for (const char* at = printed; (at = std::strstr(at, "illegal vis bits set")) != nullptr; at++) {
+      g_illegal_vis_reports++;
+    }
     say("GOAL said: %s\n", printed);
     clear_print();
   }
@@ -368,6 +380,9 @@ int run_real_boot(const std::string& data_dir,
       " %d STR reads, %d STR misses\n",
       rpc.dgo_archives, rpc.dgo_objects, rpc.linked_code_objects, rpc.linked_data_objects,
       rpc.str_reads, rpc.str_failures);
+  say("  visibility: %d .VIS files in the ramdisk, %d vis strings read, %d misses,"
+      " %d illegal-vis reports\n",
+      rpc.ramdisk_files, rpc.ramdisk_reads, rpc.ramdisk_misses, g_illegal_vis_reports);
 
   int failures = 0;
   auto expect = [&](bool ok, const char* what) {
@@ -391,6 +406,14 @@ int run_real_boot(const std::string& data_dir,
     goal_thread_stack_watermark(&w);
     expect(w.suspends > 0, "processes suspended and resumed across the frames");
     expect(w.fullest_used <= w.fullest_size, "no backup stack was overrun");
+    if (run_play) {
+      // A level's own visibility comes out of its .VIS file through the ramdisk RPC, and
+      // `update-vis!` checks its own decompressed output. Both halves have to hold: no read may
+      // fail, and no swap may produce a bit for a drawable the BSP does not have.
+      expect(rpc.ramdisk_reads > 0 && rpc.ramdisk_misses == 0,
+             "every vis string a level asked for was read");
+      expect(g_illegal_vis_reports == 0, "every visibility swap decompressed to legal bits");
+    }
     if (run_play) {
       // Following a chain means reading every tag in it, so a chain that came back with a size is
       // a chain that was well-formed.

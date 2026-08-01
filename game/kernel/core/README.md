@@ -150,9 +150,11 @@ half - the GOAL kernel's own frame, running processes, states and level streamin
 
 With data, `--play --frames 60` loads `TIT.DGO` (15 objects) and then `VI1.DGO` (55 objects,
 including a 7.3 MB BSP) through the RPC, reaches `GAMEPLAY: enter title`, displays the title level,
-streams in `village1`, and swaps the visibility data. The global heap ends at 55.6 MB, and the 60
-frames build 60 DMA chains, the largest 640 kB. The frame loop itself is not limited to 60: 1000
-consecutive frames run the same way. The CTest entry uses 60 so the suite stays quick.
+streams in `village1`, and swaps the visibility data - reading each level's `.VIS` through the
+ramdisk RPC and checking, through `update-vis!`'s own check, that every swap decompressed to bits
+the BSP allows. The global heap ends at 55.6 MB, and the 60 frames build 60 DMA chains, the largest
+640 kB. The frame loop itself is not limited to 60: 10000 consecutive frames run the same way. The
+CTest entry uses 60 so the suite stays quick.
 
 ## Code and data in a DGO
 
@@ -189,8 +191,19 @@ file is.
 Channel 4, the STR RPC, is answered too: it loads a whole file, or one chunk of a chunked one,
 straight into GOAL memory. The game uses it for the text and subtitle banks and for spooled art -
 the animations in `engine/load/loader.gc`, which link whatever comes back, which is why it is
-implemented rather than stubbed. The remaining channels - sound (0, 1), the ramdisk (2) and
-streamed-audio playback (5) - report themselves through the machine-layer stub path.
+implemented rather than stubbed.
+
+Channel 2, the ramdisk RPC, is answered as well. Upstream's overlord keeps one whole file in the
+IOP's spare RAM and hands the EE 2 kB windows of it; only visibility uses it. `vis-load` in
+`engine/level/level.gc` asks for `<nickname>.VIS`, and `(method update-vis! level)` in
+`engine/load/decomp.gc` then asks for the compressed vis string of the camera's current BSP leaf.
+Here the file lives in host memory instead of the IOP's. A vis string near the end of the file is
+shorter than the 2 kB GOAL always asks for - `decomp.gc` calls that "a worst case if the string
+can't be compressed" - so a short read is normal and the rest of the window is zeroed rather than
+being filled with whatever follows.
+
+The remaining channels - sound (0, 1) and streamed-audio playback (5) - report themselves through
+the machine-layer stub path.
 
 Standalone static library for a device build:
 
@@ -293,14 +306,6 @@ the GOAL kernel routines that switch stacks.
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
   names - what `file-stream-open` would be given - are not translated yet, because nothing calls
   `file-stream-open` here.
-- **Visibility decompression produces bits the BSP says cannot be set.** Every time the level
-  system swaps in a new VIS, `(method update-vis! level)` in `engine/load/decomp.gc` reports
-  `ERROR: illegal vis bits set` for a handful of bytes - its own check that the huffman decoder's
-  output only names drawables that exist. `unpack-comp-huf` is ordinary AOT-translated GOAL full of
-  `b! ... :delay` branch-delay slots, and it decompresses into the fake scratchpad, which is the
-  same memory the scratchpad process stacks use. Either is a plausible cause and neither has been
-  ruled out. Nothing stops, because the game only reports it, but what a frame would draw is wrong
-  until this is found.
 - **mips2c calls back into GOAL do not work on ARM64.** `ExecutionContext::jalr` in
   `game/mips2c/mips2c_private.h` has no ARM64 case. Nothing on the art-group login path uses it.
 - `game/kernel/common/kmachine.h` transitively includes `<SDL3/SDL.h>` through
