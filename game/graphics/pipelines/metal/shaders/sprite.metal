@@ -204,3 +204,59 @@ fragment float4 sprite3_fs(SpriteVSOut in [[stage_in]],
   }
   return color;
 }
+
+// ---------------------------------------------------------------------------
+// Sprite distorter (heat shimmer): MSL port of sprite_distort.{vert,frag}.
+// The sprites resample a snapshot of the frame rendered so far through
+// sine-table-warped texture coordinates.
+// ---------------------------------------------------------------------------
+
+// Must match MetalSpriteRenderer::SpriteDistortVertex (20 bytes, same layout
+// as the GL Sprite3::SpriteDistortVertex).
+struct SpriteDistortVertexIn {
+  packed_float3 xyz;
+  packed_float2 st;
+};
+
+struct SpriteDistortParams {
+  float4 color;       // sine-table color / 255
+  float height_scale; // 1.0 for Jak 1
+  float fb_v_offset;  // (1 - SCISSOR_HEIGHT / 512) / 2, in Metal's top-down v
+};
+
+struct SpriteDistortVSOut {
+  float4 pos [[position]];
+  float4 fragment_color [[flat]];
+  float2 tex_coord;
+};
+
+vertex SpriteDistortVSOut sprite_distort_vs(uint vid [[vertex_id]],
+                                            const device SpriteDistortVertexIn* verts
+                                            [[buffer(0)]],
+                                            constant SpriteDistortParams& params [[buffer(1)]]) {
+  SpriteDistortVertexIn v = verts[vid];
+  SpriteDistortVSOut out;
+  out.fragment_color = params.color;
+  out.tex_coord = float2(v.st);
+  float4 transformed = float4(float3(v.xyz), 1.0);
+  transformed.xy -= 2048.0;
+  // GL: z / 8388608 - 1 into [-1, 1]; the same depth in Metal's [0, 1] range
+  transformed.z /= 16777216.0;
+  transformed.x /= 256.0;
+  transformed.y /= -128.0;
+  transformed.y *= params.height_scale;
+  out.pos = transformed;
+  return out;
+}
+
+fragment float4 sprite_distort_fs(SpriteDistortVSOut in [[stage_in]],
+                                  constant SpriteDistortParams& params [[buffer(0)]],
+                                  texture2d<float> fb_tex [[texture(0)]],
+                                  sampler fb_sampler [[sampler(0)]]) {
+  float4 color = in.fragment_color * 2.0;
+  // The GL shader samples at (x, (1 - y) - (1 - SCISSOR_HEIGHT/512)/2) with a
+  // bottom-up texture; the Metal snapshot is top-down, so the same texel sits
+  // at y + offset.
+  float2 tc = float2(in.tex_coord.x, in.tex_coord.y + params.fb_v_offset);
+  return color * fb_tex.sample(fb_sampler, tc);
+}

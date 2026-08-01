@@ -19,6 +19,18 @@ constexpr int kMaxSpritesPerFlush = 8192;
 
 constexpr float kGameHeightJak1 = 448.f;
 
+// size of sprite-aux-list in GOAL code * SPRITE_MAX_AMOUNT_MULT (as in GL)
+constexpr int kMaxDistortSprites = 256 * 12;
+
+// Must match SpriteDistortParams in shaders/sprite.metal.
+struct SpriteDistortParams {
+  float color[4];
+  float height_scale;
+  float fb_v_offset;
+  float pad[2];
+};
+static_assert(sizeof(SpriteDistortParams) == 32);
+
 /*!
  * Does the next DMA transfer look like the start of a 2D group?
  */
@@ -227,6 +239,7 @@ MetalSpriteRenderer::MetalSpriteRenderer(const std::string& name, int my_id)
     : MetalBucketRenderer(name, my_id), m_direct(name, my_id, 1024) {
   m_vertices_3d.resize(kMaxSpritesPerFlush * 4);
   m_index_buffer_data.resize(kMaxSpritesPerFlush * 5);
+  m_distort_frame_data.resize(kMaxDistortSprites);
 
   m_default_mode.disable_depth_write();
   m_default_mode.set_depth_test(GsTest::ZTest::GEQUAL);
@@ -270,7 +283,11 @@ void MetalSpriteRenderer::render(DmaFollower& dma,
     return;
   }
 
+  // the distorter: DMA, vertex build and draw, like Sprite3::render_distorter
   distort_dma(dma);
+  distort_setup();
+  distort_draw(render_state, ctx);
+
   handle_sprite_frame_setup(dma);
   render_3d(dma);
 
@@ -304,9 +321,8 @@ bool MetalSpriteRenderer::render_direct(DmaFollower& dma,
 }
 
 /*!
- * Walks the distorter's DMA exactly like Sprite3::distort_dma so the chain
- * stays in sync, and counts the sprites. The distort *drawing* (a snapshot of
- * the framebuffer resampled through sine tables) is not ported yet.
+ * Mirror of Sprite3::distort_dma (Jak 1 values): walks the distorter's DMA,
+ * keeping the sine tables and the per-sprite frame data for distort_setup.
  */
 void MetalSpriteRenderer::distort_dma(DmaFollower& dma) {
   // GS setup
@@ -355,29 +371,31 @@ void MetalSpriteRenderer::distort_dma(DmaFollower& dma) {
   ASSERT(tables_aspect.vifcode1().kind == VifCode::Kind::PC_PORT);
 
   // sine tables
-  struct SineTables {
-    math::Vector4f entry[128];
-    math::Vector<u32, 4> ientry[9];
-    GifTag gs_gif_tag;
-    math::Vector<u32, 4> color;
-  } sine_tables;
-  static_assert(sizeof(SineTables) == 0x8b * 16);
   auto tables = dma.read_and_advance();
-  unpack_to_stcycl(&sine_tables, tables, VifCode::Kind::UNPACK_V4_32, 4, 4, 0x8b * 16, 0x160, false,
-                   false);
-  ASSERT(GsPrim(sine_tables.gs_gif_tag.prim()).kind() == GsPrim::Kind::TRI_STRIP);
+  unpack_to_stcycl(&m_distort_sine_tables, tables, VifCode::Kind::UNPACK_V4_32, 4, 4, 0x8b * 16,
+                   0x160, false, false);
+  ASSERT(GsPrim(m_distort_sine_tables.gs_gif_tag.prim()).kind() == GsPrim::Kind::TRI_STRIP);
 
   // frame data packets
+  int sprite_idx = 0;
+  m_distort_sprite_count = 0;
   while (looks_like_distort_frame_data(dma)) {
     math::Vector<u32, 4> num_sprites_vec{0, 0, 0, 0};
     do {
+      int qwc = dma.current_tag().qwc;
       int dest = dma.current_tag_vifcode1().immediate;
       auto distort_data = dma.read_and_advance();
       if (dest == 511) {
+        // VU address 511 specifies the number of sprites
         unpack_to_no_stcycl(&num_sprites_vec, distort_data, VifCode::Kind::UNPACK_V4_32, 16, dest,
                             false, false);
       } else {
+        // VU address >= 512 is the actual vertex data
         ASSERT(dest >= 512);
+        ASSERT(sprite_idx + (qwc / 3) <= (int)m_distort_frame_data.size());
+        unpack_to_no_stcycl(&m_distort_frame_data.at(sprite_idx), distort_data,
+                            VifCode::Kind::UNPACK_V4_32, qwc * 16, dest, false, false);
+        sprite_idx += qwc / 3;
       }
     } while (looks_like_distort_frame_data(dma));
 
@@ -386,14 +404,190 @@ void MetalSpriteRenderer::distort_dma(DmaFollower& dma) {
     ASSERT(dma.current_tag_vifcode1().kind == VifCode::Kind::FLUSH);
     dma.read_and_advance();
 
-    m_stats.distort_sprites += num_sprites_vec.x();
+    m_distort_sprite_count += num_sprites_vec.x();
   }
 
-  if (m_stats.distort_sprites && !m_warned_distort) {
-    lg::warn("Metal sprite {}: distort drawing not ported yet; {} distort sprites consumed",
-             m_name, m_stats.distort_sprites);
-    m_warned_distort = true;
+  ASSERT(m_distort_sprite_count <= kMaxDistortSprites);
+  m_stats.distort_sprites += m_distort_sprite_count;
+}
+
+/*!
+ * Mirror of Sprite3::distort_setup (the non-instanced path): expands each
+ * sprite through the sine tables into triangle-strip slices, sharing the
+ * center vertex and separating sprites with the restart index.
+ */
+void MetalSpriteRenderer::distort_setup() {
+  m_distort_tri_count = 0;
+  m_distort_vertices.clear();
+  m_distort_indices.clear();
+
+  int sprite_idx = 0;
+  int sprites_left = m_distort_sprite_count;
+
+  while (sprites_left != 0) {
+    // flag is the 'resolution' of the circle sprite: that many pie slices
+    u32 flag = m_distort_frame_data.at(sprite_idx).flag;
+    u32 slices_left = flag;
+
+    // flag has a minimum value of 3, which selects the first ientry; the
+    // ientry indices carry the +352 start of the entry array in VU memory
+    int entry_index = m_distort_sine_tables.ientry[flag - 3].x() - 352;
+
+    SpriteDistortFrameData frame_data = m_distort_frame_data.at(sprite_idx);
+    sprite_idx++;
+
+    math::Vector2f vf03 = frame_data.st;
+    math::Vector3f vf14 = frame_data.xyz;
+
+    // each slice shares the center vertex
+    u32 center_vert_idx = (u32)m_distort_vertices.size();
+    m_distort_vertices.push_back({vf14, vf03});
+
+    do {
+      math::Vector3f vf06 = m_distort_sine_tables.entry[entry_index++].xyz();
+      math::Vector2f vf07 = m_distort_sine_tables.entry[entry_index++].xy();
+      math::Vector3f vf08 = m_distort_sine_tables.entry[entry_index + 0].xyz();
+      math::Vector2f vf09 = m_distort_sine_tables.entry[entry_index + 1].xy();
+
+      slices_left--;
+
+      math::Vector2f vf11 = (vf07 * frame_data.rgba.z()) + frame_data.st;
+      math::Vector2f vf13 = (vf09 * frame_data.rgba.z()) + frame_data.st;
+      math::Vector3f vf06_2 = (vf06 * frame_data.rgba.x()) + frame_data.xyz;
+      math::Vector2f vf07_2 = (vf07 * frame_data.rgba.x()) + frame_data.st;
+      math::Vector3f vf08_2 = (vf08 * frame_data.rgba.x()) + frame_data.xyz;
+      math::Vector2f vf09_2 = (vf09 * frame_data.rgba.x()) + frame_data.st;
+      math::Vector3f vf10 = (vf06 * frame_data.rgba.y()) + frame_data.xyz;
+      math::Vector3f vf12 = (vf08 * frame_data.rgba.y()) + frame_data.xyz;
+
+      m_distort_indices.push_back((u32)m_distort_vertices.size());
+      m_distort_vertices.push_back({vf06_2, vf07_2});
+
+      m_distort_indices.push_back((u32)m_distort_vertices.size());
+      m_distort_vertices.push_back({vf08_2, vf09_2});
+
+      m_distort_indices.push_back((u32)m_distort_vertices.size());
+      m_distort_vertices.push_back({vf10, vf11});
+
+      m_distort_indices.push_back((u32)m_distort_vertices.size());
+      m_distort_vertices.push_back({vf12, vf13});
+
+      // the shared center vertex closes the slice
+      m_distort_indices.push_back(center_vert_idx);
+
+      m_distort_tri_count += 2;
+    } while (slices_left != 0);
+
+    // end of this sprite's strip
+    m_distort_indices.push_back(UINT32_MAX);
+
+    sprites_left--;
   }
+}
+
+/*!
+ * Mirror of Sprite3::distort_draw + distort_draw_common. GL blits the frame so
+ * far into a texture; here the game pass is split around a blit into
+ * m_distort_snapshot, and the sprites are drawn sampling it. The GS state is
+ * the one distort_dma's asserts pin: standard alpha blend, no depth write,
+ * linear filtering, clamped sampling; the depth test is the sprite default
+ * (GEQUAL), as in the GL mode bookkeeping.
+ */
+void MetalSpriteRenderer::distort_draw(MetalSharedRenderState* render_state,
+                                       MetalFrameContext& ctx) {
+  (void)render_state;
+  if (m_distort_tri_count == 0) {
+    return;
+  }
+  if (!ctx.cmds || !ctx.game_color || !ctx.game_depth) {
+    // a context that cannot split the pass (not the game's frame path)
+    return;
+  }
+
+  const u32 vtx_bytes = (u32)(m_distort_vertices.size() * sizeof(SpriteDistortVertex));
+  const u32 idx_bytes = (u32)(m_distort_indices.size() * sizeof(u32));
+  if (vtx_bytes > 2 * 1024 * 1024 || idx_bytes > 2 * 1024 * 1024) {
+    // more distort data than one stream page holds; never seen in practice
+    if (!m_warned_distort_overflow) {
+      lg::warn("Metal sprite {}: distort data too large ({} verts), skipping the effect",
+               m_name, m_distort_vertices.size());
+      m_warned_distort_overflow = true;
+    }
+    return;
+  }
+
+  // the snapshot must match the game target
+  if (!m_distort_snapshot || m_distort_snapshot.width != ctx.game_color.width ||
+      m_distort_snapshot.height != ctx.game_color.height ||
+      m_distort_snapshot.pixelFormat != ctx.game_color.pixelFormat) {
+    auto* desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:ctx.game_color.pixelFormat
+                                                           width:ctx.game_color.width
+                                                          height:ctx.game_color.height
+                                                       mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead;
+    desc.storageMode = MTLStorageModePrivate;
+    m_distort_snapshot = [ctx.game_color.device newTextureWithDescriptor:desc];
+  }
+
+  // GL's glBlitFramebuffer into the distort fbo
+  ctx.resume_pass_with_framebuffer_copy(m_distort_snapshot);
+
+  id<MTLBuffer> vbuf;
+  u32 voffset;
+  memcpy(ctx.stream->alloc(vtx_bytes, &vbuf, &voffset), m_distort_vertices.data(), vtx_bytes);
+  id<MTLBuffer> ibuf;
+  u32 ioffset;
+  memcpy(ctx.stream->alloc(idx_bytes, &ibuf, &ioffset), m_distort_indices.data(), idx_bytes);
+
+  MetalPsoKey pso_key;
+  pso_key.shader = MetalShaderId::SPRITE_DISTORT;
+  pso_key.color_format = ctx.color_format;
+  pso_key.depth_format = ctx.depth_format;
+  pso_key.blend_enable = true;
+  pso_key.blend_src_rgb = MTLBlendFactorSourceAlpha;
+  pso_key.blend_dst_rgb = MTLBlendFactorOneMinusSourceAlpha;
+  pso_key.blend_src_alpha = MTLBlendFactorOne;
+  pso_key.blend_dst_alpha = MTLBlendFactorZero;
+
+  MetalDepthStencilKey depth_key;
+  depth_key.depth_test = true;
+  depth_key.compare = MTLCompareFunctionGreaterEqual;
+  depth_key.depth_write = false;
+
+  MetalSamplerKey sampler_key;
+  sampler_key.min_filter = MTLSamplerMinMagFilterLinear;
+  sampler_key.mag_filter = MTLSamplerMinMagFilterLinear;
+  sampler_key.wrap_s = MTLSamplerAddressModeClampToEdge;
+  sampler_key.wrap_t = MTLSamplerAddressModeClampToEdge;
+
+  SpriteDistortParams params = {};
+  for (int i = 0; i < 4; i++) {
+    params.color[i] = (float)m_distort_sine_tables.color[i] / 255.0f;
+  }
+  params.height_scale = 1.f;  // Jak 1
+  params.fb_v_offset = (1.f - kGameHeightJak1 / 512.f) / 2.f;
+
+  id<MTLRenderCommandEncoder> enc = ctx.enc;
+  id<MTLRenderPipelineState> pso = ctx.pso_cache->get_pipeline(pso_key);
+  ASSERT(pso);
+  [enc setRenderPipelineState:pso];
+  [enc setDepthStencilState:ctx.pso_cache->get_depth_stencil(depth_key)];
+  [enc setVertexBuffer:vbuf offset:voffset atIndex:0];
+  [enc setVertexBytes:&params length:sizeof(params) atIndex:1];
+  [enc setFragmentBytes:&params length:sizeof(params) atIndex:0];
+  [enc setFragmentTexture:m_distort_snapshot atIndex:0];
+  [enc setFragmentSamplerState:ctx.sampler_cache->get(sampler_key) atIndex:0];
+  [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
+                  indexCount:(NSUInteger)m_distort_indices.size()
+                   indexType:MTLIndexTypeUInt32
+                 indexBuffer:ibuf
+           indexBufferOffset:ioffset];
+
+  ctx.draw_calls++;
+  ctx.triangles += m_distort_tri_count;
+  m_stats.draw_calls++;
+  m_stats.triangles += m_distort_tri_count;
 }
 
 /*!

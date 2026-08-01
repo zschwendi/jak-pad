@@ -26,6 +26,36 @@ void* MetalStreamBuffer::alloc(u32 size, id<MTLBuffer>* out_buffer, u32* out_off
   return ptr;
 }
 
+void MetalFrameContext::resume_pass_with_framebuffer_copy(id<MTLTexture> snapshot) {
+  ASSERT(cmds && game_color && game_depth);
+  [enc endEncoding];
+
+  id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
+  [blit copyFromTexture:game_color
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake(game_color.width, game_color.height, 1)
+              toTexture:snapshot
+       destinationSlice:0
+       destinationLevel:0
+      destinationOrigin:MTLOriginMake(0, 0, 0)];
+  [blit endEncoding];
+
+  auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = game_color;
+  pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  pass.depthAttachment.texture = game_depth;
+  pass.depthAttachment.loadAction = MTLLoadActionLoad;
+  pass.depthAttachment.storeAction = MTLStoreActionStore;
+  pass.stencilAttachment.texture = game_depth;
+  pass.stencilAttachment.loadAction = MTLLoadActionLoad;
+  pass.stencilAttachment.storeAction = MTLStoreActionStore;
+  enc = [cmds renderCommandEncoderWithDescriptor:pass];
+  [enc setCullMode:MTLCullModeNone];
+}
+
 /*!
  * Same walk as the GL EmptyBucketRenderer's Jak 1 branch: NEXT into the
  * bucket, CALL to the default-registers chain, CNT + RET inside it, NEXT to

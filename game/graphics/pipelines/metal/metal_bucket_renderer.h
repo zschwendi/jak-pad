@@ -98,9 +98,21 @@ struct MetalFrameContext {
   MetalStreamBuffer* stream = nullptr;
   u32 color_format = 0;  // MTLPixelFormat of the game target
   u32 depth_format = 0;
+  // the frame's command buffer and game targets, for renderers that must
+  // split the game pass (sprite distort's framebuffer snapshot). nil in
+  // contexts that never dispatch such buckets (the validation scene).
+  id<MTLCommandBuffer> cmds;
+  id<MTLTexture> game_color;
+  id<MTLTexture> game_depth;
   // frame stats (mirror of the GL profiler counters the tests read)
   int draw_calls = 0;
   int triangles = 0;
+
+  // The Metal analog of the GL distorter's glBlitFramebuffer: ends the open
+  // game pass, copies the color target into `snapshot`, and reopens the pass
+  // loading color/depth/stencil, replacing `enc`. Requires cmds/game_color/
+  // game_depth to be set and the first pass to store its depth.
+  void resume_pass_with_framebuffer_copy(id<MTLTexture> snapshot);
 };
 
 class MetalBucketRenderer {

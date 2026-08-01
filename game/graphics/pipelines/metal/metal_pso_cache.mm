@@ -28,6 +28,7 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"generic_vs", "generic_fs"},                  // GENERIC
     {"shadow_vs", "shadow_fs"},                    // SHADOW
     {"etie_vs", "tfrag3_fs"},                      // ETIE (etie.frag == tfrag3.frag)
+    {"sprite_distort_vs", "sprite_distort_fs"},    // SPRITE_DISTORT
 };
 
 size_t hash_combine(size_t seed, size_t v) {
