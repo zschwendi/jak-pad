@@ -1,0 +1,105 @@
+#include "metal_merc_model_pool.h"
+
+#include "common/log/log.h"
+#include "common/util/Assert.h"
+#include "common/util/FileUtil.h"
+#include "common/util/compress.h"
+
+#include "game/graphics/pipelines/metal/metal_texture.h"
+#include "game/graphics/texture/TexturePool.h"
+
+#include "fmt/format.h"
+
+MetalMercModelPool& metal_merc_models() {
+  static MetalMercModelPool pool;
+  return pool;
+}
+
+void MetalMercModelPool::init(id<MTLDevice> device, id<MTLCommandQueue> queue, TexturePool* pool) {
+  m_device = device;
+  m_queue = queue;
+  m_texture_pool = pool;
+}
+
+bool MetalMercModelPool::load_fr3(const std::string& path,
+                                  bool is_common,
+                                  LoadResult* out,
+                                  std::string* error) {
+  if (!ready() || !m_texture_pool) {
+    *error = "merc model pool has no device yet (make_display must run first)";
+    return false;
+  }
+  if (!fs::exists(path)) {
+    *error = fmt::format("{} does not exist", path);
+    return false;
+  }
+
+  auto compressed = file_util::read_binary_file(path);
+  auto decomp = compression::decompress_zstd(compressed.data(), compressed.size());
+  u16 version = 0;
+  memcpy(&version, decomp.data(), 2);
+  if (version != tfrag3::TFRAG3_VERSION) {
+    *error = fmt::format("fr3 version {} does not match this build's {}", version,
+                         tfrag3::TFRAG3_VERSION);
+    return false;
+  }
+
+  auto level = std::make_unique<tfrag3::Level>();
+  Serializer ser(decomp.data(), decomp.size());
+  level->serialize(ser);
+  return add_level(std::move(level), is_common, out, error);
+}
+
+bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
+                                   bool is_common,
+                                   LoadResult* out,
+                                   std::string* error) {
+  if (!ready() || !m_texture_pool) {
+    *error = "merc model pool has no device yet (make_display must run first)";
+    return false;
+  }
+
+  auto entry = std::make_unique<MetalMercLevel>();
+  entry->level = std::move(level);
+  entry->name = entry->level->level_name;
+
+  // textures, the way the GL loader's TextureLoaderStage / load_common do
+  for (const auto& tex : entry->level->textures) {
+    entry->textures.push_back(
+        metal_add_texture(m_device, m_queue, *m_texture_pool, tex, is_common));
+  }
+
+  // merc geometry: the GL MercLoaderStage's two buffers
+  const auto& merc = entry->level->merc_data;
+  if (!merc.vertices.empty()) {
+    entry->vertices = [m_device newBufferWithBytes:merc.vertices.data()
+                                            length:merc.vertices.size() * sizeof(tfrag3::MercVertex)
+                                           options:MTLResourceStorageModeShared];
+  }
+  if (!merc.indices.empty()) {
+    entry->indices = [m_device newBufferWithBytes:merc.indices.data()
+                                           length:merc.indices.size() * sizeof(u32)
+                                          options:MTLResourceStorageModeShared];
+  }
+
+  out->level_name = entry->name;
+  out->textures = (int)entry->textures.size();
+  out->models = (int)merc.models.size();
+  out->vertices = (u32)merc.vertices.size();
+  out->indices = (u32)merc.indices.size();
+
+  const MetalMercLevel* lev = entry.get();
+  for (const auto& model : entry->level->merc_data.models) {
+    m_by_name[model.name].push_back(Ref{&model, lev});
+  }
+  m_levels.push_back(std::move(entry));
+  return true;
+}
+
+std::optional<MetalMercModelPool::Ref> MetalMercModelPool::get_merc_model(const char* name) const {
+  auto it = m_by_name.find(name);
+  if (it == m_by_name.end() || it->second.empty()) {
+    return std::nullopt;
+  }
+  return it->second.front();
+}

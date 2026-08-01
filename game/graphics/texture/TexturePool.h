@@ -15,8 +15,6 @@
 #include "game/graphics/texture/TextureConverter.h"
 #include "game/graphics/texture/TextureID.h"
 
-#include "third-party/glad/include/glad/glad.h"
-
 // verify all texture lookups.
 // will make texture lookups slower and likely caused dropped frames when loading
 constexpr bool EXTRA_TEX_DEBUG = false;
@@ -129,9 +127,12 @@ class TextureMap {
 
 /*!
  * The lowest level reference to texture data.
+ * The handle is backend-defined: a GL texture name for the OpenGL renderer, or a
+ * Metal texture-registry handle for the Metal renderer. The pool only stores and
+ * hands these back; it never interprets them.
  */
 struct TextureData {
-  GLuint gl = -1;            // the OpenGL texture ID
+  u64 gl = (u64)-1;          // the graphics-backend texture handle
   const u8* data = nullptr;  // pointer to texture data (owned by the loader)
 };
 
@@ -187,7 +188,7 @@ struct GpuTexture {
  * source will be non-null and the gpu_texture will be a placeholder that is safe to use.
  */
 struct TextureVRAMReference {
-  GLuint gpu_texture = -1;  // the OpenGL texture to use when rendering.
+  u64 gpu_texture = (u64)-1;  // the backend texture handle to use when rendering.
   GpuTexture* source = nullptr;
 };
 
@@ -200,7 +201,7 @@ struct TextureInput {
 
   PcTextureId id;
 
-  GLuint gpu_texture = -1;
+  u64 gpu_texture = (u64)-1;
   bool common = false;
   const u8* src_data = nullptr;
   u16 w, h;
@@ -297,7 +298,13 @@ class TexturePool {
   GpuTexture* give_texture(const TextureInput& in);
   GpuTexture* give_texture_and_load_to_vram(const TextureInput& in, u32 vram_slot);
   void unload_texture(PcTextureId tex_id, u64 gpu_id);
-  void update_gl_texture(GpuTexture* texture, u32 new_w, u32 new_h, GLuint new_gl_texture);
+  void update_gl_texture(GpuTexture* texture, u32 new_w, u32 new_h, u64 new_gl_texture);
+
+  // The pool does not talk to the graphics API. The backend creates the shared
+  // placeholder texture from placeholder_data() (16x16 RGBA8888) and registers
+  // its handle here before the pool is used.
+  const std::vector<u32>& placeholder_data() const { return m_placeholder_data; }
+  void set_placeholder(u64 handle) { m_placeholder_texture_id = handle; }
 
   /*!
    * Look up an OpenGL texture by vram address. Return std::nullopt if the game hasn't loaded

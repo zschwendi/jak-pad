@@ -1,6 +1,6 @@
-#include "OceanNear.h"
+#include "OceanVu.h"
 
-void OceanNear::run_call0_vu2c() {
+void OceanNearVu::run_call0_vu2c() {
   bool bc;
   // lq.xyzw vf01, 951(vi00)    |  nop                            0
   lq_buffer(Mask::xyzw, vu.vf01, 951);
@@ -110,7 +110,7 @@ L4:
   // nop                        |  nop                            38
 }
 
-void OceanNear::run_call39_vu2c() {
+void OceanNearVu::run_call39_vu2c() {
   bool bc;
   // xtop vi02                  |  nop                            39
   vu.vi02 = xtop();
@@ -557,7 +557,7 @@ L14:
   // nop                        |  nop                            206
 }
 
-void OceanNear::run_call0_vu2c_jak2() {
+void OceanNearVu::run_call0_vu2c_jak2() {
   bool bc;
   // lq.xyzw vf01, 951(vi00)    |  nop                            0
   lq_buffer(Mask::xyzw, vu.vf01, 951);
@@ -667,7 +667,7 @@ L4:
   // nop                        |  nop                            38
 }
 
-void OceanNear::run_call39_vu2c_jak2() {
+void OceanNearVu::run_call39_vu2c_jak2() {
   bool bc;
   // xtop vi02                  |  nop                            39
   vu.vi02 = xtop();
@@ -1169,7 +1169,7 @@ void fcor(u16& dest, u32 imm, u32 cf) {
 }
 }  // namespace
 
-void OceanNear::run_L15_vu2c() {
+void OceanNearVu::run_L15_vu2c() {
   u32 cf;
   bool bc;
   // iaddi vi01, vi05, 0x9      |  nop                            207
@@ -1750,7 +1750,7 @@ L20:
   // nop                        |  nop                            397
 }
 
-void OceanNear::run_L15_vu2c_jak2() {
+void OceanNearVu::run_L15_vu2c_jak2() {
   u32 cf;
   bool bc;
   // iaddi vi01, vi05, 0x9      |  nop                            207
@@ -2331,7 +2331,7 @@ L20:
   // nop                        |  nop                            397
 }
 
-void OceanNear::run_L21_vu2c() {
+void OceanNearVu::run_L21_vu2c() {
   bool bc;
   // iaddi vi06, vi00, 0x5      |  nop                            398
   vu.vi06 = 5;
@@ -2436,7 +2436,7 @@ L22:
   // nop                        |  nop                            442
 }
 
-void OceanNear::run_L21_vu2c_jak2() {
+void OceanNearVu::run_L21_vu2c_jak2() {
   bool bc;
   // lq.xyzw vf05, 955(vi00)    |  nop                            398
   lq_buffer(Mask::xyzw, vu.vf05, 955);
@@ -2543,7 +2543,7 @@ L22:
   // nop                        |  nop                            442
 }
 
-void OceanNear::run_L23_vu2c() {
+void OceanNearVu::run_L23_vu2c() {
   bool bc;
   // iaddi vi06, vi00, 0x4      |  nop                            443
   vu.vi06 = 4;
@@ -2607,7 +2607,7 @@ L24:
   // nop                        |  nop                            468
 }
 
-void OceanNear::run_L25_vu2c() {
+void OceanNearVu::run_L25_vu2c() {
   bool bc;
   // lq.xyzw vf31, 952(vi00)    |  nop                            469
   lq_buffer(Mask::xyzw, vu.vf31, 952);
@@ -2845,7 +2845,7 @@ L29:
   lq_buffer(Mask::xyzw, vu.vf10, vu.vi02 + 2);
 }
 
-void OceanNear::run_L25_vu2c_jak2() {
+void OceanNearVu::run_L25_vu2c_jak2() {
   bool bc;
   // lq.xyzw vf31, 952(vi00)    |  nop                            469
   lq_buffer(Mask::xyzw, vu.vf31, 952);
@@ -3083,7 +3083,7 @@ L29:
   lq_buffer(Mask::xyzw, vu.vf10, vu.vi02 + 2);
 }
 
-void OceanNear::run_L30_vu2c() {
+void OceanNearVu::run_L30_vu2c() {
   bool bc;
   // sq.xyzw vf07, -1(vi08)     |  nop                            564
   sq_buffer(Mask::xyzw, vu.vf07, vu.vi08 + -1);
@@ -3177,7 +3177,7 @@ L31:
   // nop                        |  nop                            605
 }
 
-void OceanNear::run_L32_vu2c() {
+void OceanNearVu::run_L32_vu2c() {
   bool bc;
   u32 cf = 0;
   // ior vi04, vi03, vi00       |  nop                            606

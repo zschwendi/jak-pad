@@ -88,3 +88,12 @@ unifont-15.0.03.ttf
 *.diff
 goalc-report.html
 _new-all-types.gc
+# DMA captures and frames replayed from them are derived from the player's own
+# game data and must never be committed
+*.dma-capture.bin
+*.dma-capture.bin.png
+*.gpdma
+*.gpdma.png
+dma-frame-*
+replay-*.png
+title-chain.bin

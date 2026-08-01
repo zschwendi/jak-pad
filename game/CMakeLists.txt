@@ -66,6 +66,7 @@ set(RUNTIME_SOURCE
         graphics/opengl_renderer/ocean/OceanNear_PS2.cpp
         graphics/opengl_renderer/ocean/OceanNear.cpp
         graphics/opengl_renderer/ocean/OceanTexture_PC.cpp
+        graphics/opengl_renderer/ocean/OceanTexture_VU.cpp
         graphics/opengl_renderer/ocean/OceanTexture.cpp
         graphics/opengl_renderer/opengl_utils.cpp
         graphics/opengl_renderer/OpenGLRenderer.cpp
@@ -351,6 +352,67 @@ set(RUNTIME_SOURCE
         tools/subtitle_editor/subtitle_editor_repl_client.cpp
         tools/subtitle_editor/subtitle_editor.cpp
         )
+
+if(APPLE)
+    # experimental Metal graphics pipeline (see game/graphics/pipelines/metal/)
+    set(METAL_PIPELINE_SOURCES
+        graphics/pipelines/metal/metal_bucket_renderer.mm
+        graphics/pipelines/metal/metal_direct_renderer.mm
+        graphics/pipelines/metal/metal_level_data.mm
+        graphics/pipelines/metal/metal_merc.mm
+        graphics/pipelines/metal/metal_merc_model_pool.mm
+        graphics/pipelines/metal/metal_ocean_renderer.mm
+        graphics/pipelines/metal/metal_pipeline.mm
+        graphics/pipelines/metal/metal_pso_cache.mm
+        graphics/pipelines/metal/metal_renderer.mm
+        graphics/pipelines/metal/metal_shrub.mm
+        graphics/pipelines/metal/metal_sky_renderer.mm
+        graphics/pipelines/metal/metal_sprite_renderer.mm
+        graphics/pipelines/metal/metal_texture.mm
+        graphics/pipelines/metal/metal_tfrag.mm
+        graphics/pipelines/metal/metal_tie.mm)
+    list(APPEND RUNTIME_SOURCE ${METAL_PIPELINE_SOURCES})
+    set_source_files_properties(${METAL_PIPELINE_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    # plain C++ parts of the Metal path (testable / kernel-header-safe without
+    # Objective-C++)
+    list(APPEND RUNTIME_SOURCE
+        graphics/pipelines/metal/metal_kernel_bridge.cpp
+        graphics/pipelines/metal/metal_texture_upload_handler.cpp)
+
+    # MSL shaders are checked-in source compiled at build time to a metallib and
+    # embedded in the runtime as a byte array. No shader compilation happens at
+    # runtime, which keeps the app signing-clean for iPadOS.
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(METAL_SDK iphoneos)
+    else()
+        set(METAL_SDK macosx)
+    endif()
+    set(METAL_SHADER_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/scaffold.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/direct.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/sprite.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/background.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/ocean.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/merc2.metal)
+    set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad.metallib)
+    add_custom_command(
+        OUTPUT ${METAL_LIB}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders
+        COMMAND xcrun -sdk ${METAL_SDK} metal -Wall -Werror -o ${METAL_LIB} ${METAL_SHADER_SOURCES}
+        DEPENDS ${METAL_SHADER_SOURCES}
+        COMMENT "Compiling MSL shaders to ${METAL_LIB}")
+    set(METAL_LIB_EMBED ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad_metallib_embed.c)
+    set(METAL_EMBED_SCRIPT
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/embed_metallib.cmake)
+    add_custom_command(
+        OUTPUT ${METAL_LIB_EMBED}
+        COMMAND ${CMAKE_COMMAND} -DINPUT=${METAL_LIB} -DOUTPUT=${METAL_LIB_EMBED}
+                -DSYMBOL=g_goalpad_metallib -P ${METAL_EMBED_SCRIPT}
+        DEPENDS ${METAL_LIB} ${METAL_EMBED_SCRIPT}
+        COMMENT "Embedding ${METAL_LIB}")
+    list(APPEND RUNTIME_SOURCE ${METAL_LIB_EMBED})
+endif()
 
 add_subdirectory(sound)
 
@@ -668,4 +730,16 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak1-thread-switch-test jak1-kernel-core)
         add_test(NAME jak1-thread-switch-test COMMAND jak1-thread-switch-test)
     endif()
+endif()
+
+if(APPLE)
+    target_link_libraries(runtime "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+
+    # renders a textured, depth-tested frame through the Metal GfxRendererModule
+    # and verifies the output pixels; --replay renders a captured game DMA
+    # chain. see game/graphics/pipelines/metal/
+    add_executable(metal-proof
+        graphics/pipelines/metal/metal_proof_main.cpp
+        graphics/pipelines/metal/metal_chain_replay.cpp)
+    target_link_libraries(metal-proof runtime)
 endif()

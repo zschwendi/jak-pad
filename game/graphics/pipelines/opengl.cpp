@@ -52,6 +52,33 @@ constexpr PerGameVersion<int> fr3_level_count(jak1::LEVEL_TOTAL,
                                               jak3::LEVEL_TOTAL,
                                               jakx::LEVEL_TOTAL);
 
+/*!
+ * Upload the texture pool's placeholder texture. Requires a current GL context
+ * (previously done inside the TexturePool constructor; the pool is now
+ * backend-neutral, so each backend uploads the placeholder itself).
+ */
+static u64 gl_upload_placeholder(const std::vector<u32>& data) {
+  GLuint tex_id;
+  glGenTextures(1, &tex_id);
+  GLint old_tex;
+  glGetIntegerv(GL_ACTIVE_TEXTURE, &old_tex);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, tex_id);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 16, 16, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV,
+               data.data());
+  glGenerateMipmap(GL_TEXTURE_2D);
+  float aniso = 0.0f;
+  glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &aniso);
+  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, aniso);
+
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glActiveTexture(old_tex);
+  return tex_id;
+}
+
 struct GraphicsData {
   // vsync
   std::mutex sync_mutex;
@@ -91,7 +118,9 @@ struct GraphicsData {
             fr3_level_count[version])),
         ogl_renderer(texture_pool, loader, version),
         debug_gui(),
-        version(version) {}
+        version(version) {
+    texture_pool->set_placeholder(gl_upload_placeholder(texture_pool->placeholder_data()));
+  }
 };
 
 std::unique_ptr<GraphicsData> g_gfx_data;
