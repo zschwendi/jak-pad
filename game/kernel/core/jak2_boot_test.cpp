@@ -34,11 +34,13 @@ extern "C" {
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/common/kernel_types.h"
+#include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/jak2/klisten.h"
 #include "game/kernel/jak2/kscheme.h"
+#include "game/mips2c/mips2c_table.h"
 #include "game/runtime.h"
 
 namespace {
@@ -80,6 +82,80 @@ std::string object_name_of(const char* source) {
     path = path.substr(0, dot);
   }
   return path;
+}
+
+/*!
+ * Behavioral check of one registered Jak 2 mips2c function, through the real seam path: the name
+ * lookup GOAL's `__pc-get-mips2c` uses, the trampoline function object, the mips2c scratch stack
+ * and the ExecutionContext. `adgif-shader<-texture-with-update!` is the first mips2c function
+ * GAME.CGO asks for (the `texture` object's top-level), and it is a pure transform: it packs a
+ * texture's fields into the shader's GS TEX0/TEX1/MIPTBP1 registers. The expected words below are
+ * that packing computed by hand from the GS register layout for one synthetic texture.
+ */
+int check_adgif_shader_mips2c() {
+  const u32 fn = Mips2C::gLinkedFunctionTable.get("adgif-shader<-texture-with-update!");
+
+  // the texture fields the function reads, at the offsets the translated code uses:
+  // a 16x16 PSMCT32 texture with one mip, uv-dist 1.0, and distinct vram addresses per level
+  auto tex = kmalloc(kglobalheap, 48, KMALLOC_MEMSET, "adgif-check-texture");
+  auto shader = kmalloc(kglobalheap, 96, KMALLOC_MEMSET, "adgif-check-shader");
+  if (!tex.offset || !shader.offset) {
+    say("FAILED: no room for the adgif check buffers\n");
+    return 1;
+  }
+  u8* t = tex.c();
+  const u16 w = 16, h = 16;
+  const u16 dests[7] = {0x100, 0x120, 0x140, 0x160, 0x180, 0x1a0, 0x1c0};
+  const u16 clutdest = 0x1e0;
+  const u8 widths[7] = {2, 1, 1, 1, 1, 1, 1};
+  const float uv_dist = 1.0f;
+  memcpy(t + 0, &w, 2);
+  memcpy(t + 2, &h, 2);
+  t[4] = 1;  // num-mips
+  t[5] = 0;  // tex1-control
+  t[6] = 0;  // psm = PSMCT32
+  t[7] = 0;  // mip-shift
+  memcpy(t + 10, dests, sizeof(dests));
+  memcpy(t + 24, &clutdest, 2);
+  memcpy(t + 26, widths, sizeof(widths));
+  memcpy(t + 44, &uv_dist, 4);
+
+  const u64 result =
+      call_goal(Ptr<Function>(fn), shader.offset, tex.offset, 0, s7.offset, g_ee_main_mem);
+
+  // TEX0: CLD=1 | CBP=0x1e0 | TCC=1 | TH=log2(16) | TW=log2(16) | TBW=2 | TBP0=0x100
+  // TEX1: K = 16*(log2(256/uv-dist)) - 175 = -47, as a signed 12-bit field at bit 32
+  // MIPTBP1: (0x160,1) (0x140,1) (0x120,1)
+  struct Expected {
+    int offset;
+    u64 value;
+    const char* what;
+  } expected[] = {
+      {0, 0x20003C0510008100ull, "TEX0"},
+      {16, 0x00000FD100000000ull, "TEX1"},
+      {32, 0x0041600414004120ull, "MIPTBP1"},
+      {48, 0, "MIPTBP2 (untouched: one mip)"},
+      {64, 0, "CLAMP (untouched: one mip)"},
+  };
+  int failures = 0;
+  for (const auto& e : expected) {
+    u64 got;
+    memcpy(&got, shader.c() + e.offset, 8);
+    if (got != e.value) {
+      say("FAILED: adgif %s: got #x%016llx, expected #x%016llx\n", e.what,
+          (unsigned long long)got, (unsigned long long)e.value);
+      failures++;
+    }
+  }
+  if (result != shader.offset) {
+    say("FAILED: adgif-shader<-texture-with-update! returned #x%llx, not the shader #x%x\n",
+        (unsigned long long)result, shader.offset);
+    failures++;
+  }
+  if (!failures) {
+    say("  adgif-shader<-texture-with-update! packed TEX0/TEX1/MIPTBP1 correctly\n");
+  }
+  return failures;
 }
 
 /*! Tell the DGO loader which native translation unit stands in for each object it will meet. */
@@ -126,6 +202,11 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
     return 1;
   }
   say("  GOAL kernel version %u.%u\n", kernel_version >> 0x13, (kernel_version >> 3) & 0xffff);
+
+  say("\n=== mips2c seam\n");
+  if (check_adgif_shader_mips2c() != 0) {
+    return 1;
+  }
 
   // InitListener, then InitMachineScheme: the machine layer is not in this library, so the stubs
   // stand in for it and name themselves the first time GOAL calls one.

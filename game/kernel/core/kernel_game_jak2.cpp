@@ -34,12 +34,6 @@
 #include "game/kernel/jak2/kscheme.h"
 #include "game/runtime.h"
 
-namespace Mips2C {
-// mips2c_seam.cpp
-void reserve_mips2c_stack();
-void forget_mips2c_registrations();
-}  // namespace Mips2C
-
 namespace {
 
 /*!
@@ -339,10 +333,7 @@ void goal_game_init_machine_scheme() {
 }
 
 void goal_game_register_mips2c() {
-  // The jak2 mips2c function library has not been ported into this build. The seam is still
-  // reserved so a `__pc-get-mips2c` lookup fails loudly by name instead of faulting.
-  Mips2C::forget_mips2c_registrations();
-  Mips2C::reserve_mips2c_stack();
+  goal_mips2c_register_jak2();
 }
 
 uint32_t goal_game_intern(const char* name) {

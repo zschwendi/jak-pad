@@ -17,6 +17,12 @@ extern "C" {
 void goal_mips2c_register_jak1(void);
 
 /*!
+ * The same, for the Jak 2 function library. Only one game's library is compiled into a kernel
+ * core library, so a runtime calls exactly one of these.
+ */
+void goal_mips2c_register_jak2(void);
+
+/*!
  * Forget every registration. The trampolines are GOAL function objects in the heap the kernel is
  * about to unmap, so they cannot outlive it.
  */
