@@ -776,7 +776,8 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.merc_triangles = merc_stats.triangles;
     m_chain_stats.merc_envmap_draws = merc_stats.envmap_draws;
     m_chain_stats.merc_bone_vectors = merc_stats.bone_vectors;
-    m_chain_stats.merc_mod_effects_deferred = merc_stats.mod_effects_deferred;
+    m_chain_stats.merc_mod_vtx_uploads = merc_stats.mod_vtx_uploads;
+    m_chain_stats.merc_mod_vtx_skipped = merc_stats.mod_vtx_skipped;
     m_chain_stats.merc_eye_draws = merc_stats.eye_draws;
     m_chain_stats.merc_missing_textures = merc_stats.missing_textures;
     m_chain_stats.merc_bad_bone_pointers = merc_stats.bad_bone_pointers;

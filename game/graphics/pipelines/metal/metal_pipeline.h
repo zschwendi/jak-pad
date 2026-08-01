@@ -104,8 +104,9 @@ struct ChainStats {
   int merc_triangles = 0;
   int merc_envmap_draws = 0;
   int merc_bone_vectors = 0;
-  int merc_mod_effects_deferred = 0;  // blerc / mod-vertex updates are not ported
-  int merc_eye_draws = 0;             // draws whose texture the eye renderer composed
+  int merc_mod_vtx_uploads = 0;  // effects whose blerc / mod-vertex update was uploaded
+  int merc_mod_vtx_skipped = 0;  // effects that asked for one but could not be updated
+  int merc_eye_draws = 0;        // draws whose texture the eye renderer composed
   int merc_missing_textures = 0;
   int merc_bad_bone_pointers = 0;  // bone pointer outside EE memory
   int merc_bad_draw_ranges = 0;    // draw range outside the level's index buffer

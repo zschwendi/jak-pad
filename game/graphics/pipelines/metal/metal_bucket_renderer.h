@@ -41,6 +41,9 @@ class MetalEyeRenderer;
  */
 class MetalStreamBuffer {
  public:
+  // largest single allocation; callers with data-driven sizes check against it
+  static constexpr u32 kPageSize = 2 * 1024 * 1024;
+
   void init(id<MTLDevice> device) { m_device = device; }
 
   // start of frame; only call once the previous frame's command buffer has
@@ -55,7 +58,6 @@ class MetalStreamBuffer {
   void* alloc(u32 size, id<MTLBuffer>* out_buffer, u32* out_offset);
 
  private:
-  static constexpr u32 kPageSize = 2 * 1024 * 1024;
   id<MTLDevice> m_device;
   std::vector<id<MTLBuffer>> m_pages;
   size_t m_page = 0;
