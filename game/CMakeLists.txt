@@ -635,6 +635,8 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         # startup, which drives a level DGO through the RPC and runs the GOAL kernel's frame loop.
         add_executable(jak1-data-boot-test
                 kernel/core/data_boot_test.cpp
+                kernel/core/continue_warp.cpp
+                kernel/core/scripted_walk.cpp
                 "${AOT_BOOT_DIR}/aot_boot_manifest.c"
                 ${AOT_BOOT_C_SOURCES})
         target_include_directories(jak1-data-boot-test PRIVATE "${AOT_BOOT_DIR}")
@@ -683,6 +685,69 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
                         --expect-state target-jump
                         --expect-travel 10)
         set_tests_properties(jak1-gameplay-test PROPERTIES TIMEOUT 900)
+
+        # Level transitions. Jak 1 is a connected world, and the two things that move a player
+        # between its levels are a load boundary and a continue point. Both are exercised here
+        # against the player's own data.
+        #
+        # The boundary test is the walk: it starts a new game, warps to the village hut the way a
+        # warp gate does, holds the debug menu's own border-mode flag on so `render-boundaries`
+        # runs, and then walks south with the stick until the target crosses the village1/beach
+        # display boundary. `beach` is only 'loaded when the walk begins - the hut's continue point
+        # asks for it without displaying it - so it reaching 'active is the boundary crossing and
+        # nothing else. The route is aimed by measuring which way the camera-relative stick moved
+        # the target, so it needs no camera knowledge and survives the camera turning.
+        add_test(NAME jak1-level-boundary-test
+                COMMAND jak1-data-boot-test --play --frames 9000 --no-sound --border-mode
+                        --press start@target-title-wait+60
+                        --press x@target-title-wait+160
+                        --press down@target-title-wait+240
+                        --press down@target-title-wait+260
+                        --press down@target-title-wait+280
+                        --press down@target-title-wait+300
+                        --press x@target-title-wait+340
+                        --warp village1-hut@target-stance+300
+                        --walk-to -120,170@target-stance+400
+                        --walk-to -135,60@target-stance+400
+                        --walk-to -135,10@target-stance+400
+                        --expect-state target-walk
+                        --expect-level beach
+                        --expect-travel 100)
+        # The tour: every level a continue point names, loaded and displayed through the level
+        # system, one after another. It is the level heap that this is about - a level's code and
+        # data are linked into it and freed with it - so the global heap must stay nearly still
+        # while 2 MB of level code is linked over and over. The limit is what a device with a
+        # memory ceiling has to pay for having been everywhere.
+        add_test(NAME jak1-level-tour-test
+                COMMAND jak1-data-boot-test --play --frames 9000 --no-sound --report-levels
+                        --press start@target-title-wait+60
+                        --press x@target-title-wait+160
+                        --press down@target-title-wait+240
+                        --press down@target-title-wait+260
+                        --press down@target-title-wait+280
+                        --press down@target-title-wait+300
+                        --press x@target-title-wait+340
+                        --warp beach-start@target-stance+300
+                        --warp jungle-start@target-stance+1000
+                        --warp firecanyon-start@target-stance+1700
+                        --warp village2-start@target-stance+2400
+                        --warp sunken-start@target-stance+3100
+                        --warp village3-start@target-stance+3800
+                        --warp lavatube-start@target-stance+4500
+                        --warp citadel-start@target-stance+5200
+                        --warp finalboss-start@target-stance+5900
+                        --warp training-start@target-stance+6600
+                        --expect-level beach
+                        --expect-level jungle
+                        --expect-level firecanyon
+                        --expect-level village2
+                        --expect-level sunken
+                        --expect-level village3
+                        --expect-level lavatube
+                        --expect-level citadel
+                        --expect-level finalboss
+                        --expect-level training
+                        --expect-heap-growth 262144)
 
         # The thread-switch test: the same GOAL kernel, plus a fixture that drives the routines
         # that had to be written in native ARM64 - catch frames, throw, state entry, temporary
@@ -790,6 +855,8 @@ if(APPLE)
         add_executable(goalpad-play
             goalpad_play.cpp
             goalpad_audio.cpp
+            kernel/core/continue_warp.cpp
+            kernel/core/scripted_walk.cpp
             "${AOT_BOOT_DIR}/aot_boot_manifest.c"
             ${AOT_BOOT_C_SOURCES})
         target_include_directories(goalpad-play PRIVATE "${AOT_BOOT_DIR}")
