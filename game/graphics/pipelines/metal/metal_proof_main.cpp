@@ -24,6 +24,15 @@
  *  - optionally (argv[1] = path to an .fr3 file): real extracted level
  *    textures uploaded through the loader-mirror path and verified texel by
  *    texel against the CPU-side data. No game data is required or bundled.
+ *
+ * With `--replay <capture.bin>` it instead replays one frame of real Jak 1 DMA
+ * captured by the runtime track's `__send-gfx-dma-chain` hook: the capture is
+ * relocated into a fake EE memory, sent through the module's send_chain like
+ * the game does, rendered by the bucket dispatch, verified by readback, and
+ * saved as a PNG (`--replay-png <path>`, default `<capture>.png`). The
+ * per-bucket payload inventory of the capture is printed so it is explicit
+ * what the frame carried and what was skipped. Capture files come from the
+ * player's own game data and must never be committed.
  */
 
 #include <algorithm>
@@ -37,6 +46,7 @@
 
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/dma/dma_chain_read.h"
+#include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/texture/texture_conversion.h"
 #include "common/util/FileUtil.h"
@@ -45,6 +55,7 @@
 #include "game/graphics/display.h"
 #include "game/graphics/gfx.h"
 #include "game/graphics/opengl_renderer/buckets.h"
+#include "game/graphics/pipelines/metal/metal_chain_replay.h"
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
 #include "game/graphics/pipelines/metal/metal_texture_upload_handler.h"
 #include "game/graphics/texture/TextureConverter.h"
@@ -1375,12 +1386,161 @@ std::unique_ptr<tfrag3::Level> test_real_fr3(const char* path) {
   return level;
 }
 
+// ---------------------------------------------------------------------------
+// Section (optional): replay of one frame of captured game DMA (--replay).
+// The capture is the FixedChunkDmaCopier serialization the runtime track's
+// `__send-gfx-dma-chain` hook writes. It contains the chain and whatever EE
+// data lives in the same 128 kB chunks - nothing else. GOAL objects the chain
+// points at outside those chunks (texture-page structs behind PC_PORT upload
+// packets) read as zeros here; missing textures resolve to the pool's
+// placeholder and are reported, never guessed.
+// ---------------------------------------------------------------------------
+
+// chain placement inside the fake EE memory: chunk-aligned for the copier in
+// send_chain and above its low-memory protect
+constexpr u32 kReplayBase = 0x100000;
+
+void run_chain_replay(const GfxRendererModule* mod,
+                      std::shared_ptr<GfxDisplay>& display,
+                      const std::string& capture_path,
+                      const std::string& png_path,
+                      int frames) {
+  printf("--- captured chain replay: %s ---\n", capture_path.c_str());
+
+  metal_chain_replay::LoadedChain chain;
+  std::string error;
+  if (!metal_chain_replay::load_capture(capture_path, &chain, &error)) {
+    printf("[FAIL] load capture: %s\n", error.c_str());
+    g_fail_count++;
+    return;
+  }
+  printf("[PASS] loaded capture: start offset %#x, %d bytes of chain chunks\n", chain.start_offset,
+         (int)chain.data.size());
+
+  metal_chain_replay::ChainInventory inv;
+  if (!metal_chain_replay::inventory_jak1(chain, &inv, &error)) {
+    printf("[FAIL] chain inventory: %s\n", error.c_str());
+    g_fail_count++;
+    return;
+  }
+  printf("[PASS] chain has the Jak 1 frame structure (70 buckets, fog (%d, %d, %d))\n",
+         inv.fog_color[0], inv.fog_color[1], inv.fog_color[2]);
+  printf("bucket payload inventory:\n");
+  bool any_payload = false;
+  for (auto& b : inv.buckets) {
+    if (b.payload_bytes > 0) {
+      any_payload = true;
+      printf("  [%2d] %-34s %8d bytes in %3d transfers%s\n", b.bucket,
+             metal_chain_replay::jak1_bucket_name(b.bucket).c_str(), (int)b.payload_bytes,
+             b.transfers,
+             b.pc_port_uploads ? fmt::format(", {} texture uploads", b.pc_port_uploads).c_str()
+                               : "");
+    }
+  }
+  if (!any_payload) {
+    printf("  (every bucket carries only the empty-bucket structure)\n");
+  }
+  printf("total payload: %d bytes, %d texture upload packets\n", (int)inv.total_payload,
+         inv.total_pc_port_uploads);
+
+  if (!metal_chain_replay::rebase_chain(&chain, kReplayBase, &error)) {
+    printf("[FAIL] rebase chain: %s\n", error.c_str());
+    g_fail_count++;
+    return;
+  }
+
+  // fake EE memory: the chain image at kReplayBase, zeros everywhere else
+  std::vector<u8> ee_mem(EE_MAIN_MEM_SIZE, 0);
+  memcpy(ee_mem.data() + kReplayBase, chain.data.data(), chain.data.size());
+  g_ee_main_mem = ee_mem.data();
+
+  // send the chain through the module hook like the game does, several times:
+  // content that crosses frames (sky blended in frame N draws in frame N+1)
+  // needs at least two
+  auto before = metal_renderer::get_chain_stats();
+  for (int i = 0; i < frames; i++) {
+    mod->send_chain(ee_mem.data(), chain.start_offset);
+    display->render();
+  }
+
+  metal_renderer::FramePixels frame;
+  if (!metal_renderer::read_last_frame(&frame)) {
+    printf("[FAIL] could not read back the replayed frame\n");
+    g_fail_count++;
+    g_ee_main_mem = nullptr;
+    return;
+  }
+  auto stats = metal_renderer::get_chain_stats();
+  check(stats.chains_rendered == before.chains_rendered + frames,
+        "replay: every sent chain was rendered");
+  printf(
+      "replay stats: %d draws, %d tris, %d uploads, sky d/b %d/%d, cloud d/b %d/%d, "
+      "skipped %d bucket + %d tfrag bytes, %d unsupported blends\n",
+      stats.draw_calls, stats.triangles, stats.tex_uploads, stats.sky_draws, stats.sky_blends,
+      stats.cloud_draws, stats.cloud_blends, (int)stats.skipped_bucket_bytes,
+      (int)stats.skipped_tfrag_bytes, stats.direct_unsupported_blends);
+  check(stats.direct_unsupported_blends == 0, "replay: no unsupported GS blend modes");
+
+  int lit = 0;
+  for (int i = 0; i < frame.width * frame.height * 4; i += 4) {
+    if (frame.rgba[i] || frame.rgba[i + 1] || frame.rgba[i + 2]) {
+      lit++;
+    }
+  }
+  printf("replayed frame: %dx%d, %d non-black pixels\n", frame.width, frame.height, lit);
+  if (stats.draw_calls == 0) {
+    check(lit == 0, "replay: a frame with no draws reads back black");
+  } else {
+    check(lit > 0, "replay: draws produced visible pixels");
+  }
+
+  // PNG for human inspection. Alpha is forced opaque: the game target's alpha
+  // channel is GS framebuffer-alpha data, not image transparency.
+  std::vector<u8> png_pixels = frame.rgba;
+  for (size_t i = 3; i < png_pixels.size(); i += 4) {
+    png_pixels[i] = 255;
+  }
+  try {
+    file_util::write_rgba_png(fs::path(png_path), png_pixels.data(), frame.width, frame.height);
+    printf("[PASS] wrote replayed frame to %s\n", png_path.c_str());
+  } catch (const std::exception& e) {
+    printf("[FAIL] could not write %s: %s\n", png_path.c_str(), e.what());
+    g_fail_count++;
+  }
+  g_ee_main_mem = nullptr;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   lg::initialize();
   // this proof needs no game data; any existing directory works as the project path
   file_util::setup_project_path(fs::current_path());
+
+  std::string fr3_path;
+  std::string replay_path;
+  std::string replay_png;
+  int replay_frames = 2;
+  for (int i = 1; i < argc; i++) {
+    std::string arg = argv[i];
+    if (arg == "--replay" && i + 1 < argc) {
+      replay_path = argv[++i];
+    } else if (arg == "--replay-png" && i + 1 < argc) {
+      replay_png = argv[++i];
+    } else if (arg == "--replay-frames" && i + 1 < argc) {
+      replay_frames = std::max(1, atoi(argv[++i]));
+    } else if (arg == "--fr3" && i + 1 < argc) {
+      fr3_path = argv[++i];
+    } else if (!arg.empty() && arg[0] != '-' && fr3_path.empty()) {
+      fr3_path = arg;  // original positional .fr3 argument
+    } else {
+      printf(
+          "usage: metal-proof [<level.fr3> | --fr3 <level.fr3>]\n"
+          "                   [--replay <capture.bin> [--replay-png <out.png>]"
+          " [--replay-frames <n>]]\n");
+      return 1;
+    }
+  }
 
   const GfxRendererModule* mod = Gfx::GetRenderer(GfxPipeline::Metal);
   if (!mod) {
@@ -1404,6 +1564,22 @@ int main(int argc, char** argv) {
     return 1;
   }
   printf("[PASS] Metal display created\n");
+
+  if (!replay_path.empty()) {
+    // replay mode: only the captured chain runs, on an otherwise untouched
+    // pipeline (empty texture pool, no synthetic scene state)
+    run_chain_replay(mod, display,
+                     replay_path, replay_png.empty() ? replay_path + ".png" : replay_png,
+                     replay_frames);
+    display.reset();
+    mod->exit();
+    if (g_fail_count == 0) {
+      printf("METAL REPLAY PASSED\n");
+      return 0;
+    }
+    printf("METAL REPLAY FAILED: %d check(s) failed\n", g_fail_count);
+    return 1;
+  }
 
   // render frames through the GfxDisplay interface, like Gfx::Loop does
   for (int i = 0; i < 30; i++) {
@@ -1522,8 +1698,8 @@ int main(int argc, char** argv) {
   std::vector<u8> fake_ee_mem(1 << 20, 0);
   test_pool_and_hooks(mod, fake_ee_mem);
   std::unique_ptr<tfrag3::Level> level;
-  if (argc > 1) {
-    level = test_real_fr3(argv[1]);
+  if (!fr3_path.empty()) {
+    level = test_real_fr3(fr3_path.c_str());
   } else {
     printf("(no .fr3 path given; skipping optional real-texture test)\n");
   }

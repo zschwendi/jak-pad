@@ -432,7 +432,10 @@ if(APPLE)
     target_link_libraries(runtime "-framework Metal" "-framework QuartzCore" "-framework Foundation")
 
     # renders a textured, depth-tested frame through the Metal GfxRendererModule
-    # and verifies the output pixels. see game/graphics/pipelines/metal/
-    add_executable(metal-proof graphics/pipelines/metal/metal_proof_main.cpp)
+    # and verifies the output pixels; --replay renders a captured game DMA
+    # chain. see game/graphics/pipelines/metal/
+    add_executable(metal-proof
+        graphics/pipelines/metal/metal_proof_main.cpp
+        graphics/pipelines/metal/metal_chain_replay.cpp)
     target_link_libraries(metal-proof runtime)
 endif()

@@ -132,8 +132,11 @@ come from a `UIView`/SwiftUI instead of SDL.
    game's DMA chain (copied per frame like the GL pipeline), the Jak 1 bucket table
    dispatches all 70 buckets, and DirectRenderer + SkyRenderer + SkyBlendCPU render
    title-screen-class content. Verified with constructed chains that follow the real
-   Jak 1 chain structure, including real extracted sky texels; not yet with a live
-   game or captured retail chain (none exists in this tree).
+   Jak 1 chain structure, including real extracted sky texels, **and** by replaying a
+   real captured game chain (`metal-proof --replay`, see §Current state) - the first
+   frame of DMA the ARM64 runtime's engine main loop built from the player's own
+   game data went through the full send_chain → dispatch → DirectRenderer path with
+   every structural assert holding.
 5. Background geometry — *Planned*: TFragment, Tie3, Shrub (+ time-of-day 1D LUTs,
    multidraw loops).
 6. Foreground — *Planned*: Merc2 (bones via buffer offsets), Generic2, ShadowRenderer,
@@ -259,6 +262,36 @@ come from a `UIView`/SwiftUI instead of SDL.
     (`vil1-sky-00` verified) end to end. Evidence level: constructed chains matching
     the asserted real-chain structure — upstream has no DMA capture/replay mechanism
     in this tree, and the live game does not yet drive this branch.
+- **Implemented** (captured-chain replay): `metal-proof --replay <capture.bin>
+  [--replay-png <out.png>] [--replay-frames <n>]` replays a frame of real game DMA
+  captured by the runtime track's `__send-gfx-dma-chain` hook
+  (`game/kernel/core/dma_capture.cpp` on the runtime branch, which serializes the
+  chain in `FixedChunkDmaCopier::serialize_last_result` form: u32 start offset +
+  POD vector of the copied 128 kB chunks with tag addresses rewritten to buffer
+  offsets). `metal_chain_replay.{h,cpp}` loads the file, relocates every DMA tag
+  address to a chunk-aligned base (1 MB) inside a fake EE memory (the copier
+  rejects addresses under its 512 kB low-memory protect), prints a per-bucket
+  payload inventory, and the proof then drives the chain through the real
+  `send_chain` module hook and saves the rendered frame as a PNG. Capture files
+  and replay PNGs derive from the player's game data: they stay outside the
+  repository (`.gitignore` carries guard patterns).
+  - Findings from the first real capture (title boot, frame 1): the chain is the
+    full 70-bucket Jak 1 frame structure with fog color set, but carries only
+    48 bytes of payload - one GIF A+D packet in DEBUG_NO_ZBUF (ZBUF_1 `zbp` 448 /
+    PSMZ24 / `zmsk`, TEST_1 ztest ALWAYS), which the Metal DirectRenderer consumes
+    as GS state. Every other bucket is empty-bucket structure. The frame renders
+    (honestly) black; all dispatch/DirectRenderer asserts held and the readback
+    verifies a no-draw frame stays black.
+  - Gaps this exposed for the capture format (runtime-track follow-up): the hook
+    can only write the *first* chain after boot, which precedes any visible
+    title drawing (the same 120-frame run reports later chains up to 5 chunks vs
+    frame 1's 3, so content grows once the title/level load settles) - it needs a
+    frame-selectable capture. And PC_PORT texture-upload packets embed EE pointers
+    to GOAL texture-page structs whose memory is *not* part of the copied chunks;
+    replaying texture uploads faithfully needs the capture to carry an EE memory
+    snapshot (or at least the referenced tpage structs) so slots can link, plus
+    fr3 textures loaded into the pool. Until then missing textures resolve to the
+    pool placeholder and are reported, never guessed.
 - **Experimental**: the validation scene still renders when no chain is pending (keeps
   the window alive and the scaffold checks meaningful); its draw region is a 4:3 fit
   of the window. The Metal pipeline does not run the Loader yet, so nothing feeds
