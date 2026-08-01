@@ -137,10 +137,9 @@ GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 \
   ./build/Release/bin/game/jak1-data-boot-test --play --frames 60
 ```
 
-`--capture-dma <file>` writes one of those frames' DMA chains to a file, in
-`FixedChunkDmaCopier::serialize_last_result` format, so a renderer can replay one real frame of
-Jak 1 DMA without the rest of the runtime. A captured chain is derived from the player's own game
-data: it goes where the caller says and never into the repository.
+`--capture-dma <file>` writes one of those frames to a file so a renderer can replay one real frame
+of Jak 1 DMA without the rest of the runtime. See **Capturing a frame** below. A capture is derived
+from the player's own game data: it goes where the caller says and never into the repository.
 
 `--play` calls the engine's own `play`, which is the last thing upstream's `InitMachineScheme`
 does. It allocates the level heaps and drives the whole title-level load itself, through GOAL's
@@ -155,6 +154,68 @@ ramdisk RPC and checking, through `update-vis!`'s own check, that every swap dec
 the BSP allows. The global heap ends at 55.6 MB, and the 60 frames build 60 DMA chains, the largest
 640 kB. The frame loop itself is not limited to 60: 10000 consecutive frames run the same way. The
 CTest entry uses 60 so the suite stays quick.
+
+## Capturing a frame
+
+`__send-gfx-dma-chain` is where a frame's work leaves GOAL. `dma_capture.cpp` follows the chain
+with the same `FixedChunkDmaCopier` the renderer uses, then walks the copy again the way the
+renderer's bucket dispatch does, so every frame is reported as what each bucket was actually given
+rather than only as a size. `--dma-frame-report` prints that table, one line per frame.
+
+Two numbers matter and they are not the same. *Payload* is what the chain's tags transfer, which is
+what says whether a frame drew anything. *Copied* is chunk-granular - how far apart in EE memory
+the chain was spread - and it moves for reasons that have nothing to do with content.
+
+```sh
+GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 ./build/Release/bin/game/jak1-data-boot-test \
+  --play --frames 1000 --capture-dma-dir /tmp/goalpad-dma-capture \
+  --capture-dma-frames 100 --capture-dma-min-payload 150000 --capture-dma-count 3
+```
+
+- `--capture-dma <file>` with `--capture-dma-frame N` writes frame N (1-based; the default is 1).
+- `--capture-dma-dir <dir>` with `--capture-dma-frames a,b,c` writes each frame as
+  `dma-frame-<N>.gpdma`.
+- `--capture-dma-min-payload <bytes>` with `--capture-dma-count <k>` writes the next `k` frames
+  whose payload reaches that size, into the same directory. Which frame the game draws a given
+  thing on is not fixed - the level loader runs off the wall clock, so the frame numbers move
+  between runs - so asking by content is how a caller gets the frame it meant.
+
+A frame that was asked for and never arrived fails the run rather than leaving no file and saying
+nothing.
+
+The file format is version 2, `GPDMACAP`, and is documented byte for byte at the top of
+`dma_capture.cpp`. In outline: an 80-byte header (frame number, chunk size, EE memory size, `s7`,
+the EE base GOAL address, and the offset and length of each section), then the chain exactly as
+version 1 wrote it (`FixedChunkDmaCopier::serialize_last_result`), then a snapshot of EE main
+memory as the same fixed chunks with the all-zero ones left out and each of the rest compressed on
+its own with LZO.
+
+The EE snapshot is there because the chain alone cannot be replayed. The PC port's texture-upload
+packets in it carry EE addresses of GOAL `texture-page` structures, which live in the level and
+global heaps; `TexturePool::handle_upload_now` reads them, and the texture names, out of EE memory.
+`s7` is in the header for the same reason: that upload path does GOAL-pointer arithmetic against
+it. The capture checks that every texture-page address the frame names is inside a chunk it kept.
+
+### What the frames hold
+
+Measured with the player's own data, `--play --frames 1000`:
+
+| frame | payload | what is in it |
+| --- | --- | --- |
+| 1 | 48 bytes | GS state and nothing else - the first chain after boot draws nothing |
+| ~100 | 14 kB | title level only: the logo and Jak and Daxter in the merc buckets, "Press Start" in the sprite bucket |
+| ~840 | 154 kB | the title screen with Sandover Village behind it: ocean near/mid/far, tie, tfrag, shrub, sky, sprite, merc |
+
+The title sequence is driven by the spooled animations `ndi-intro` and `logo-intro`
+(`levels/title/title-obs.gc`), whose `command-list` brings `village1` in behind the logo. It
+streams through the STR RPC and it runs: by frame ~520 the background is being drawn every frame.
+It then sits in `target-title-wait` forever, because that state waits on `(cpad-pressed? 0 start)`
+and there is no pad here - `cpad-get-data` is one of the machine-layer stubs. Nothing else about
+the title screen is gated by a stub.
+
+The bucket walk reports 72 buckets for Jak 1. Seventy of them are buckets; the walk cannot know
+that number, so it keeps going to the end of the chain and the last two entries are the chain's
+ending data, which the renderer's own bucket dispatch also walks past.
 
 ## Code and data in a DGO
 
@@ -312,7 +373,9 @@ the GOAL kernel routines that switch stacks.
   `put-display-env`, `dma-sync`, `flush-cache`, `__pc-texture-upload-now` and `__pc-texture-relocate`
   are the machine functions a frame calls and they all report and return 0. `__send-gfx-dma-chain`
   is the exception: `dma_capture.cpp` follows the chain with the same `FixedChunkDmaCopier` the
-  renderer uses, records its size, and drops it. Nothing is drawn.
+  renderer uses, measures it bucket by bucket, writes chosen frames to a file, and drops the rest.
+  Nothing is drawn. `__pc-set-levels`, the call that would tell a renderer's loader which levels'
+  `fr3` art to have ready, is a stub too, so a replayed capture has to decide that for itself.
 - **File access is data-directory-relative only.** `ee::sceOpen` and friends are real POSIX file
   descriptors, but every name is resolved under the configured data directory
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
