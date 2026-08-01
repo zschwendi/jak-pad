@@ -8,6 +8,7 @@
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
+#include "game/graphics/pipelines/metal/metal_merc.h"
 #include "game/graphics/pipelines/metal/metal_shrub.h"
 #include "game/graphics/pipelines/metal/metal_ocean_renderer.h"
 #include "game/graphics/pipelines/metal/metal_sky_renderer.h"
@@ -184,6 +185,12 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   auto sky_cpu_blender = std::make_shared<MetalSkyBlendCPU>(m_device);
   sky_cpu_blender->init_textures(*m_texture_pool, GameVersion::Jak1);
 
+  // eight buckets share one Merc2, as in the GL table
+  auto merc = std::make_shared<MetalMerc2>(m_device, m_queue, m_texture_pool);
+  auto merc_bucket = [&](BucketId id, const std::string& name) {
+    set(id, std::make_unique<MetalMercBucketRenderer>(name, (int)id, merc));
+  };
+
   set(BucketId::SKY_DRAW, std::make_unique<MetalSkyRenderer>("sky", (int)BucketId::SKY_DRAW));
   {
     auto ocean = std::make_unique<MetalOceanMidAndFar>("ocean-mid-far",
@@ -197,13 +204,13 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   tfrag(BucketId::TFRAG_LEVEL0, "l0-tfrag-tfrag", normal_tfrags, 0);
   set(BucketId::TIE_LEVEL0,
       std::make_unique<MetalTie3>("l0-tfrag-tie", (int)BucketId::TIE_LEVEL0, 0));
-  skip(BucketId::MERC_TFRAG_TEX_LEVEL0, "l0-tfrag-merc");
+  merc_bucket(BucketId::MERC_TFRAG_TEX_LEVEL0, "l0-tfrag-merc");
   skip(BucketId::GENERIC_TFRAG_TEX_LEVEL0, "l0-tfrag-generic");
   tex(BucketId::TFRAG_TEX_LEVEL1, "l1-tfrag-tex");
   tfrag(BucketId::TFRAG_LEVEL1, "l1-tfrag-tfrag", normal_tfrags, 1);
   set(BucketId::TIE_LEVEL1,
       std::make_unique<MetalTie3>("l1-tfrag-tie", (int)BucketId::TIE_LEVEL1, 1));
-  skip(BucketId::MERC_TFRAG_TEX_LEVEL1, "l1-tfrag-merc");
+  merc_bucket(BucketId::MERC_TFRAG_TEX_LEVEL1, "l1-tfrag-merc");
   skip(BucketId::GENERIC_TFRAG_TEX_LEVEL1, "l1-tfrag-generic");
 
   tex(BucketId::SHRUB_TEX_LEVEL0, "l0-shrub-tex");
@@ -236,25 +243,25 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   tfrag(BucketId::TFRAG_DIRT_LEVEL1, "l1-alpha-tfrag-dirt", dirt_tfrags, 1);
   tfrag(BucketId::TFRAG_ICE_LEVEL1, "l1-alpha-tfrag-ice", ice_tfrags, 1);
 
-  skip(BucketId::MERC_AFTER_ALPHA, "common-alpha-merc");
+  merc_bucket(BucketId::MERC_AFTER_ALPHA, "common-alpha-merc");
   skip(BucketId::GENERIC_ALPHA, "common-alpha-generic");
   skip(BucketId::SHADOW, "shadow");
 
   tex(BucketId::PRIS_TEX_LEVEL0, "l0-pris-tex");
-  skip(BucketId::MERC_PRIS_LEVEL0, "l0-pris-merc");
+  merc_bucket(BucketId::MERC_PRIS_LEVEL0, "l0-pris-merc");
   skip(BucketId::GENERIC_PRIS_LEVEL0, "l0-pris-generic");
   tex(BucketId::PRIS_TEX_LEVEL1, "l1-pris-tex");
-  skip(BucketId::MERC_PRIS_LEVEL1, "l1-pris-merc");
+  merc_bucket(BucketId::MERC_PRIS_LEVEL1, "l1-pris-merc");
   skip(BucketId::GENERIC_PRIS_LEVEL1, "l1-pris-generic");
   skip(BucketId::MERC_EYES_AFTER_PRIS, "common-pris-eyes");
-  skip(BucketId::MERC_AFTER_PRIS, "common-pris-merc");
+  merc_bucket(BucketId::MERC_AFTER_PRIS, "common-pris-merc");
   skip(BucketId::GENERIC_PRIS, "common-pris-generic");
 
   tex(BucketId::WATER_TEX_LEVEL0, "l0-water-tex");
-  skip(BucketId::MERC_WATER_LEVEL0, "l0-water-merc");
+  merc_bucket(BucketId::MERC_WATER_LEVEL0, "l0-water-merc");
   skip(BucketId::GENERIC_WATER_LEVEL0, "l0-water-generic");
   tex(BucketId::WATER_TEX_LEVEL1, "l1-water-tex");
-  skip(BucketId::MERC_WATER_LEVEL1, "l1-water-merc");
+  merc_bucket(BucketId::MERC_WATER_LEVEL1, "l1-water-merc");
   skip(BucketId::GENERIC_WATER_LEVEL1, "l1-water-generic");
   {
     auto ocean =
@@ -662,6 +669,7 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.ocean_draws = 0;
     m_chain_stats.ocean_triangles = 0;
     m_chain_stats.ocean_missing_textures = 0;
+    MetalMerc2::Stats merc_stats;
     for (auto& r : m_bucket_renderers) {
       if (auto* t = dynamic_cast<MetalTextureBucketRenderer*>(r.get())) {
         uploads += t->last_stats().uploads;
@@ -697,8 +705,21 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         m_chain_stats.sprites_distort = ss.distort_sprites;
         m_chain_stats.sprite_draws = ss.draw_calls;
         m_chain_stats.sprite_missing_textures = ss.missing_textures;
+      } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {
+        merc_stats.add(mc->stats());
       }
     }
+    m_chain_stats.merc_models = merc_stats.models;
+    m_chain_stats.merc_missing_models = merc_stats.missing_models;
+    m_chain_stats.merc_draws = merc_stats.draws;
+    m_chain_stats.merc_triangles = merc_stats.triangles;
+    m_chain_stats.merc_envmap_draws = merc_stats.envmap_draws;
+    m_chain_stats.merc_bone_vectors = merc_stats.bone_vectors;
+    m_chain_stats.merc_mod_effects_deferred = merc_stats.mod_effects_deferred;
+    m_chain_stats.merc_eye_draws = merc_stats.eye_draws;
+    m_chain_stats.merc_missing_textures = merc_stats.missing_textures;
+    m_chain_stats.merc_bad_bone_pointers = merc_stats.bad_bone_pointers;
+    m_chain_stats.merc_bad_draw_ranges = merc_stats.bad_draw_ranges;
     m_chain_stats.tex_uploads = uploads;
     m_chain_stats.skipped_bucket_bytes = skipped;
     m_chain_stats.direct_unsupported_blends = unsupported_blends;

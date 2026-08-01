@@ -18,6 +18,7 @@
 #include "common/log/log.h"
 
 #include "game/graphics/pipelines/metal/metal_level_data.h"
+#include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -299,6 +300,38 @@ size_t sizeof_pc_port_data_mirror() {
 
 size_t sizeof_camera_data_mirror() {
   return sizeof(MetalGoalBackgroundCameraData);
+}
+
+bool merc_load_fr3(const std::string& path,
+                   bool is_common,
+                   MercLevelLoad* out,
+                   std::string* error) {
+  MetalMercModelPool::LoadResult result;
+  if (!metal_merc_models().load_fr3(path, is_common, &result, error)) {
+    return false;
+  }
+  out->level_name = result.level_name;
+  out->textures = result.textures;
+  out->models = result.models;
+  out->vertices = result.vertices;
+  out->indices = result.indices;
+  return true;
+}
+
+bool merc_add_level(std::unique_ptr<tfrag3::Level> level,
+                    bool is_common,
+                    MercLevelLoad* out,
+                    std::string* error) {
+  MetalMercModelPool::LoadResult result;
+  if (!metal_merc_models().add_level(std::move(level), is_common, &result, error)) {
+    return false;
+  }
+  out->level_name = result.level_name;
+  out->textures = result.textures;
+  out->models = result.models;
+  out->vertices = result.vertices;
+  out->indices = result.indices;
+  return true;
 }
 
 }  // namespace metal_renderer

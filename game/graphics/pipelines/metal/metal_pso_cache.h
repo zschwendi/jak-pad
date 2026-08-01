@@ -31,6 +31,8 @@ enum class MetalShaderId : u16 {
   OCEAN_TEXTURE = 9,          // generated ocean texture (ocean_texture.{vert,frag})
   OCEAN_TEXTURE_MIPMAP = 10,   // its mip chain (ocean_texture_mipmap.{vert,frag})
   OCEAN_COMMON = 11,           // ocean near/mid mesh (ocean_common.{vert,frag})
+  MERC2 = 12,           // Merc2 skinned foreground models (merc2.{vert,frag})
+  EMERC = 13,           // Merc2 envmap pass (emerc.{vert,frag})
   COUNT,
 };
 

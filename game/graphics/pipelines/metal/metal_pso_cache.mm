@@ -22,6 +22,8 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"ocean_texture_vs", "ocean_texture_fs"},      // OCEAN_TEXTURE
     {"ocean_texture_mipmap_vs", "ocean_texture_mipmap_fs"},  // OCEAN_TEXTURE_MIPMAP
     {"ocean_common_vs", "ocean_common_fs"},        // OCEAN_COMMON
+    {"merc2_vs", "merc2_fs"},                      // MERC2
+    {"emerc_vs", "emerc_fs"},                      // EMERC
 };
 
 size_t hash_combine(size_t seed, size_t v) {
