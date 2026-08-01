@@ -1,7 +1,7 @@
 /*!
  * @file desktop_seams.cpp
- * Definitions for the desktop-only symbols that the portable Jak 1 kernel subset still references
- * at link time.
+ * Definitions for the desktop-only symbols that the portable kernel subset still references
+ * at link time. Game-neutral: the per-game pieces reach this file through kernel_game.h.
  *
  * Almost every function in this file is a STUB. A stub is not implemented and does not return a
  * plausible-looking failure value: it aborts with a message naming the missing subsystem. They
@@ -47,8 +47,7 @@
 #include "game/kernel/common/kmachine.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/kernel_core.h"
-#include "game/kernel/jak1/kmachine.h"
-#include "game/kernel/jak1/kscheme.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/mips2c/mips2c_table.h"
 #include "game/sce/deci2.h"
 #include "game/sce/libscf.h"
@@ -82,146 +81,31 @@ void CacheFlush(void* mem, int size) {
 namespace {
 
 /*!
- * Every GOAL symbol the real jak1::InitMachineScheme fills in: the PS2 library shims, the pad and
- * file-stream entry points, the system-config readers, the sound RPC, and the PC port's own
- * functions. Taken from game/kernel/jak1/kmachine.cpp, game/kernel/jak1/ksound.cpp and
- * init_common_pc_port_functions in game/kernel/common/kmachine.cpp.
+ * The loudly-failing machine layer.
+ *
+ * Each game's kernel_game_jakN.cpp lists every GOAL symbol its real InitMachineScheme would fill
+ * in - the PS2 library shims, the pad and file-stream entry points, the system-config readers, the
+ * sound RPC, and the PC port's own functions - and installs the list through
+ * goal_kernel_core_install_machine_stubs below.
  *
  * They are stubs, and they exist so that GOAL calling one reports which function it wanted instead
  * of reading a symbol that holds 0 and faulting in the guard page with no name attached. The ones
- * that install_implemented_machine_functions overwrites below are the exception.
+ * that goal_kernel_core_install_implemented_machine_functions overwrites are the exception.
  */
-const char* const kMachineFunctionNames[] = {
-    "__pc-set-levels",
-    "pc-discord-rpc-update",
-    "put-display-env",
-    "syncv",
-    "sync-path",
-    "reset-path",
-    "reset-graph",
-    "dma-sync",
-    "gs-put-imr",
-    "gs-get-imr",
-    "gs-store-image",
-    "flush-cache",
-    "cpad-open",
-    "cpad-get-data",
-    "install-handler",
-    "install-debug-handler",
-    "file-stream-open",
-    "file-stream-close",
-    "file-stream-length",
-    "file-stream-seek",
-    "file-stream-read",
-    "file-stream-write",
-    "scf-get-language",
-    "scf-get-time",
-    "scf-get-aspect",
-    "scf-get-volume",
-    "scf-get-territory",
-    "scf-get-timeout",
-    "scf-get-inactive-timeout",
-    "dma-to-iop",
-    "kernel-shutdown",
-    "aybabtu",
-    "rpc-call",
-    "rpc-busy?",
-    "test-load-dgo-c",
-    "pc-sound-set-flava-hack",
-    "pc-sound-set-fade-hack",
-    "__read-ee-timer",
-    "__mem-move",
-    "__send-gfx-dma-chain",
-    "__pc-texture-upload-now",
-    "__pc-texture-relocate",
-    "__pc-get-mips2c",
-    "__pc-force-reload-all-levels",
-    "__pc-force-reload-level",
-    "__pc-force-reload-common-level",
-    "pc-get-display-id",
-    "pc-set-display-id!",
-    "pc-get-display-name",
-    "pc-get-display-mode",
-    "pc-set-display-mode!",
-    "pc-get-display-count",
-    "pc-get-active-display-size",
-    "pc-get-active-display-refresh-rate",
-    "pc-get-window-size",
-    "pc-get-window-scale",
-    "pc-set-window-size!",
-    "pc-get-num-resolutions",
-    "pc-get-resolution",
-    "pc-is-supported-resolution?",
-    "pc-get-controller-name",
-    "pc-get-current-bind",
-    "pc-get-controller-count",
-    "pc-get-controller-index",
-    "pc-set-controller!",
-    "pc-get-keyboard-enabled?",
-    "pc-set-keyboard-enabled!",
-    "pc-set-mouse-options!",
-    "pc-set-mouse-camera-sens!",
-    "pc-ignore-background-controller-events!",
-    "pc-current-controller-has-led?",
-    "pc-current-controller-has-rumble?",
-    "pc-set-controller-led!",
-    "pc-waiting-for-bind?",
-    "pc-set-waiting-for-bind!",
-    "pc-stop-waiting-for-bind!",
-    "pc-reset-bindings-to-defaults!",
-    "pc-set-auto-hide-cursor!",
-    "pc-get-pressure-sensitivity-enabled?",
-    "pc-set-pressure-sensitivity-enabled!",
-    "pc-set-axis-scale!",
-    "pc-get-axis-scale",
-    "pc-current-controller-has-pressure-sensitivity?",
-    "pc-current-controller-has-trigger-effect-support?",
-    "pc-get-trigger-effects-enabled?",
-    "pc-set-trigger-effects-enabled!",
-    "pc-clear-trigger-effect!",
-    "pc-send-trigger-effect-feedback!",
-    "pc-send-trigger-effect-vibrate!",
-    "pc-send-trigger-effect-weapon!",
-    "pc-send-trigger-rumble!",
-    "pc-set-vsync",
-    "pc-set-msaa",
-    "pc-set-frame-rate",
-    "pc-set-game-resolution",
-    "pc-set-brightness-contrast",
-    "pc-set-letterbox",
-    "pc-renderer-tree-set-lod",
-    "pc-set-collision-mode",
-    "pc-set-collision-mask",
-    "pc-get-collision-mask",
-    "pc-set-collision-wireframe",
-    "pc-set-collision",
-    "pc-set-gfx-hack",
-    "pc-get-os",
-    "pc-get-unix-timestamp",
-    "pc-treat-pad0-as-pad1",
-    "pc-is-imgui-visible?",
-    "pc-filepath-exists?",
-    "pc-mkdir-file-path",
-    "pc-discord-rpc-set",
-    "pc-prof",
-    "pc-rand",
-    "pc-encode-utf8-string",
-    "pc-filter-debug-string?",
-    "pc-screen-shot",
-    "pc-register-screen-shot-settings",
-};
-constexpr int kMachineFunctionCount = int(sizeof(kMachineFunctionNames) / sizeof(const char*));
+constexpr int kMaxMachineStubs = 192;
+const char* const* g_machine_stub_names = nullptr;
+int g_machine_stub_count = 0;
 
 bool g_machine_stubs_abort = true;
-bool g_machine_stub_reported[kMachineFunctionCount];
+bool g_machine_stub_reported[kMaxMachineStubs];
 
 u64 machine_function_called(int index) {
   if (g_machine_stubs_abort) {
-    missing("the machine layer (kmachine.cpp)", kMachineFunctionNames[index]);
+    missing("the machine layer (kmachine.cpp)", g_machine_stub_names[index]);
   }
   if (!g_machine_stub_reported[index]) {
     g_machine_stub_reported[index] = true;
-    std::fprintf(stdout, "  MISSING MACHINE FUNCTION: %s\n", kMachineFunctionNames[index]);
+    std::fprintf(stdout, "  MISSING MACHINE FUNCTION: %s\n", g_machine_stub_names[index]);
     std::fflush(stdout);
   }
   return 0;
@@ -234,10 +118,19 @@ u64 machine_function_stub() {
 }
 
 template <int... Index>
-void install_machine_function_stubs(std::integer_sequence<int, Index...>) {
-  (jak1::make_function_symbol_from_c(kMachineFunctionNames[Index],
-                                     (void*)&machine_function_stub<Index>),
-   ...);
+void collect_machine_stub_entries(void* (&out)[kMaxMachineStubs],
+                                  std::integer_sequence<int, Index...>) {
+  ((out[Index] = (void*)&machine_function_stub<Index>), ...);
+}
+
+void* const* machine_stub_entry_points() {
+  static void* entries[kMaxMachineStubs];
+  static bool built = false;
+  if (!built) {
+    collect_machine_stub_entries(entries, std::make_integer_sequence<int, kMaxMachineStubs>{});
+    built = true;
+  }
+  return entries;
 }
 
 /*!
@@ -302,20 +195,30 @@ void decode_time(u32 ptr) {
   ee::sceCdReadClock(Ptr<ee::sceCdCLOCK>(ptr).c());
 }
 
-void install_implemented_machine_functions() {
-  jak1::make_function_symbol_from_c("__mem-move", (void*)pc_mem_move);
-  jak1::make_function_symbol_from_c("__read-ee-timer", (void*)read_ee_timer);
-  jak1::make_function_symbol_from_c("__pc-get-mips2c", (void*)pc_get_mips2c);
-  jak1::make_function_symbol_from_c("scf-get-language", (void*)decode_language);
-  jak1::make_function_symbol_from_c("scf-get-time", (void*)decode_time);
-  jak1::make_function_symbol_from_c("scf-get-aspect", (void*)decode_aspect);
-  jak1::make_function_symbol_from_c("scf-get-volume", (void*)decode_volume);
-  jak1::make_function_symbol_from_c("scf-get-territory", (void*)decode_territory);
-  jak1::make_function_symbol_from_c("scf-get-timeout", (void*)decode_timeout);
-  jak1::make_function_symbol_from_c("scf-get-inactive-timeout", (void*)decode_inactive_timeout);
+}  // namespace
+
+void goal_kernel_core_install_machine_stubs(const char* const* names, int count) {
+  ASSERT_MSG(count <= kMaxMachineStubs, "more machine functions than stub entry points");
+  g_machine_stub_names = names;
+  g_machine_stub_count = count;
+  memset(g_machine_stub_reported, 0, sizeof(g_machine_stub_reported));
+  for (int i = 0; i < count; i++) {
+    goal_game_make_function_symbol(names[i], machine_stub_entry_points()[i]);
+  }
 }
 
-}  // namespace
+void goal_kernel_core_install_implemented_machine_functions() {
+  goal_game_make_function_symbol("__mem-move", (void*)pc_mem_move);
+  goal_game_make_function_symbol("__read-ee-timer", (void*)read_ee_timer);
+  goal_game_make_function_symbol("__pc-get-mips2c", (void*)pc_get_mips2c);
+  goal_game_make_function_symbol("scf-get-language", (void*)decode_language);
+  goal_game_make_function_symbol("scf-get-time", (void*)decode_time);
+  goal_game_make_function_symbol("scf-get-aspect", (void*)decode_aspect);
+  goal_game_make_function_symbol("scf-get-volume", (void*)decode_volume);
+  goal_game_make_function_symbol("scf-get-territory", (void*)decode_territory);
+  goal_game_make_function_symbol("scf-get-timeout", (void*)decode_timeout);
+  goal_game_make_function_symbol("scf-get-inactive-timeout", (void*)decode_inactive_timeout);
+}
 
 void goal_kernel_core_set_machine_stub_mode(bool abort_when_called) {
   g_machine_stubs_abort = abort_when_called;
@@ -344,25 +247,8 @@ u64 goal_kernel_core_machine_stub_report(const char* what) {
   return 0;
 }
 
-namespace jak1 {
-/*!
- * The machine layer is not in this library, so this installs a loudly-failing GOAL function object
- * for every symbol it would define, and sets the three stack constants, which are plain facts about
- * where GOAL's own stack lives (see docs/aot-stack-model.md).
- *
- * This is not an implementation of the machine layer and does not pretend to be one: calling any of
- * these functions from GOAL either aborts or, in the reporting mode the boot probe uses, prints the
- * function's name and returns 0. A run that continues past one of those messages is measuring how
- * far the loader gets, not demonstrating that anything works.
- */
-void InitMachineScheme() {
-  install_machine_function_stubs(std::make_integer_sequence<int, kMachineFunctionCount>{});
-  install_implemented_machine_functions();
-  intern_from_c("*stack-top*")->value = 0x07ffc000;
-  intern_from_c("*stack-base*")->value = 0x07ffffff;
-  intern_from_c("*stack-size*")->value = 0x4000;
-}
-}  // namespace jak1
+// The per-game InitMachineScheme - the name list and the stack constants - lives in
+// kernel_game_jak1.cpp / kernel_game_jak2.cpp and drives the two installers above.
 
 // ---------------------------------------------------------------------------------------------
 // game/sce/sif_ee.cpp - host file I/O and the EE<->IOP RPC bridge

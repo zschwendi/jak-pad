@@ -13,33 +13,23 @@
 #include "common/log/log.h"
 #include "common/symbols.h"
 
-#include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kboot.h"
-#include "game/kernel/common/kdgo.h"
-#include "game/kernel/common/kdsnetm.h"
-#include "game/kernel/common/klink.h"
-#include "game/kernel/common/klisten.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kmemcard.h"
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/common/memory_layout.h"
-#include "game/kernel/jak1/kdgo.h"
-#include "game/kernel/jak1/klisten.h"
-#include "game/kernel/jak1/kscheme.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/runtime.h"
 #include "game/sce/libscf.h"
 
 // defined in desktop_seams.cpp, next to the machine-layer stubs it controls
 void goal_kernel_core_set_machine_stub_mode(bool abort_when_called);
-namespace jak1 {
-void InitMachineScheme();
-}
 
 // These globals normally live in game/runtime.cpp, which is the desktop runtime entry point and
 // is not part of this library. The kernel reaches them through game/runtime.h.
 u8* g_ee_main_mem = nullptr;
-GameVersion g_game_version = GameVersion::Jak1;
+GameVersion g_game_version = goal_game_version();
 
 namespace {
 
@@ -85,30 +75,6 @@ bool map_main_memory() {
   // pointer dereferences into a crash instead of silent corruption.
   mprotect(g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_NONE);
   return true;
-}
-
-void init_kernel_globals() {
-  fileio_init_globals();
-  kboot_init_globals_common();
-  kdgo_init_globals();
-  jak1::kdgo_init_globals();
-  kdsnetm_init_globals_common();
-  klink_init_globals();
-  kscheme_init_globals_common();
-  jak1::kscheme_init_globals();
-  kmalloc_init_globals_common();
-  klisten_init_globals();
-  jak1::klisten_init_globals();
-  kmemcard_init_globals();
-  kprint_init_globals_common();
-
-  // GOAL hashes symbol names with its own CRC table, and kscheme_init_globals_common zeroes that
-  // table. Upstream fills it in jak1::goal_main (game/kernel/jak1/kboot.cpp), which is the desktop
-  // entry point and is not part of this library. Without it every hash is computed from a table of
-  // zeroes: symbol interning still works, because it is self-consistent, but `EMPTY_HASH` no
-  // longer matches, so `intern_from_c("_empty_")` makes an ordinary symbol instead of returning
-  // the empty pair - and every static field holding '() links to it. `(null? ...)` then says no.
-  init_crc();
 }
 
 /*!
@@ -162,10 +128,6 @@ void init_heaps() {
   kinitheap(kdebugheap, Ptr<u8>(DEBUG_HEAP_START), debug_heap_end - DEBUG_HEAP_START);
 }
 
-jak1::Symbol* symbol_at(u32 offset) {
-  return Ptr<jak1::Symbol>(offset).c();
-}
-
 }  // namespace
 
 extern "C" {
@@ -182,7 +144,7 @@ goal_kernel_core_status goal_kernel_core_initialize(void) {
     return GOAL_KERNEL_CORE_MAIN_MEMORY_FAILED;
   }
 
-  init_kernel_globals();
+  goal_game_init_kernel_globals();
   init_boot_config();
 
   // No compiler is connected and none can be: the listener transport is not part of this library.
@@ -196,9 +158,9 @@ goal_kernel_core_status goal_kernel_core_initialize(void) {
   init_output();
   clear_print();
 
-  const s32 status = jak1::InitSymbolAndTypes();
+  const s32 status = goal_game_init_symbol_and_types();
   if (status < 0) {
-    set_error("jak1::InitSymbolAndTypes failed");
+    set_error("InitSymbolAndTypes failed");
     munmap(g_ee_main_mem, EE_MAIN_MEM_SIZE);
     g_ee_main_mem = nullptr;
     return GOAL_KERNEL_CORE_SYMBOL_INIT_FAILED;
@@ -207,7 +169,7 @@ goal_kernel_core_status goal_kernel_core_initialize(void) {
   // The hand-translated PS2 assembly functions GOAL's `def-mips2c` asks for by name. Upstream
   // registers each file's as that file is linked; this runtime does it once, here. See
   // mips2c_seam.cpp.
-  goal_mips2c_register_jak1();
+  goal_game_register_mips2c();
 
   g_initialized = true;
   return GOAL_KERNEL_CORE_OK;
@@ -246,7 +208,7 @@ goal_kernel_core_status goal_kernel_core_stub_machine_layer(int abort_when_calle
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
   goal_kernel_core_set_machine_stub_mode(abort_when_called != 0);
-  jak1::InitMachineScheme();
+  goal_game_init_machine_scheme();
   return GOAL_KERNEL_CORE_OK;
 }
 
@@ -279,9 +241,9 @@ goal_kernel_core_status goal_kernel_core_get_state(goal_kernel_core_state* out) 
   out->last_symbol_offset = LastSymbol.offset;
   out->symbol_count = NumSymbols;
 
-  out->empty_pair_offset = (s7 + jak1_symbols::FIX_SYM_EMPTY_PAIR).offset;
-  out->false_offset = (s7 + jak1_symbols::FIX_SYM_FALSE).offset;
-  out->true_offset = (s7 + jak1_symbols::FIX_SYM_TRUE).offset;
+  out->empty_pair_offset = goal_game_empty_pair_offset();
+  out->false_offset = goal_game_false_offset();
+  out->true_offset = goal_game_true_offset();
   return GOAL_KERNEL_CORE_OK;
 }
 
@@ -314,7 +276,7 @@ goal_kernel_core_status goal_kernel_core_intern(const char* name, uint32_t* out_
     set_error("goal_kernel_core_intern: not initialized");
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
-  *out_symbol_offset = jak1::intern_from_c(name).offset;
+  *out_symbol_offset = goal_game_intern(name);
   return GOAL_KERNEL_CORE_OK;
 }
 
@@ -329,16 +291,17 @@ goal_kernel_core_status goal_kernel_core_lookup(const char* name,
     set_error("goal_kernel_core_lookup: not initialized");
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
-  auto sym = jak1::find_symbol_from_c(name);
-  if (!sym.offset) {
+  uint32_t value = 0;
+  const uint32_t sym = goal_game_find_symbol(name, &value);
+  if (!sym) {
     set_error("goal_kernel_core_lookup: symbol not found");
     return GOAL_KERNEL_CORE_NOT_FOUND;
   }
   if (out_symbol_offset) {
-    *out_symbol_offset = sym.offset;
+    *out_symbol_offset = sym;
   }
   if (out_value) {
-    *out_value = sym->value;
+    *out_value = value;
   }
   return GOAL_KERNEL_CORE_OK;
 }
@@ -354,17 +317,11 @@ goal_kernel_core_status goal_kernel_core_type_name_of_symbol(const char* name,
     set_error("goal_kernel_core_type_name_of_symbol: not initialized");
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
-  auto sym = jak1::find_symbol_from_c(name);
-  if (!sym.offset) {
-    set_error("goal_kernel_core_type_name_of_symbol: symbol not found");
+  const char* type_name = goal_game_type_name_of_symbol(name);
+  if (!type_name) {
+    set_error("goal_kernel_core_type_name_of_symbol: no such symbol, or it holds no type");
     return GOAL_KERNEL_CORE_NOT_FOUND;
   }
-  auto type = Ptr<jak1::Type>(symbol_at(sym.offset)->value);
-  if (!type.offset || !type->symbol.offset) {
-    set_error("goal_kernel_core_type_name_of_symbol: symbol does not hold a type");
-    return GOAL_KERNEL_CORE_NOT_FOUND;
-  }
-  const char* type_name = jak1::info(type->symbol)->str->data();
   strncpy(buffer, type_name, buffer_size - 1);
   buffer[buffer_size - 1] = '\0';
   return GOAL_KERNEL_CORE_OK;

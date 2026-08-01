@@ -50,6 +50,8 @@ set(JAK1_KERNEL_CORE_SOURCES
     # portable entry point + the stubs for everything deliberately left out
     "${CMAKE_CURRENT_LIST_DIR}/kernel_core.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/desktop_seams.cpp"
+    # the per-game seam (kernel_game.h): jak1 symbols, types, machine-stub list, layouts
+    "${CMAKE_CURRENT_LIST_DIR}/kernel_game_jak1.cpp"
     # loader for object files produced by the AOT C backend
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
     # synchronous DGO reader, in place of game/kernel/jak1/kdgo.cpp
@@ -92,8 +94,9 @@ set(JAK1_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/gfx_host.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma_copy.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma.cpp"
-    # the Jak 1 mips2c function library, in place of game/mips2c/mips2c_table.cpp
+    # the mips2c seam, in place of game/mips2c/mips2c_table.cpp, plus the Jak 1 function library
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_seam.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/mips2c_jak1.cpp"
     # native implementations of the GOAL kernel routines that switch stacks
     "${CMAKE_CURRENT_LIST_DIR}/goal_native_kernel.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/goal_thread_arm64.s"

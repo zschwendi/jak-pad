@@ -12,7 +12,7 @@
 
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kscheme.h"
-#include "game/kernel/jak1/kscheme.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/runtime.h"
 
 // The GOAL machine state the emitted C reads. goal_c_runtime.h declares them; the loader owns them.
@@ -53,23 +53,22 @@ void set_error(const std::string& message) {
 }
 
 /*!
- * Reproduces symlink_v3 from game/kernel/jak1/klink.cpp: goalc writes -1 into a static when it
+ * Reproduces symlink_v3 from the game's klink.cpp: goalc writes -1 into a static when it
  * wants the symbol's address, and anything else when it wants the symbol's offset from s7.
  */
 void write_symbol_link(u32 addr, const char* name) {
-  auto sym = jak1::intern_from_c(name);
+  const u32 sym = goal_game_intern(name);
   auto* slot = Ptr<s32>(addr).c();
   if (*slot == -1) {
-    *slot = (s32)sym.offset;
+    *slot = (s32)sym;
   } else {
-    *slot = (s32)(sym.cast<u32>() - s7);
+    *slot = (s32)(sym - s7.offset);
   }
 }
 
 /*! Reproduces typelink_v3: intern the type, creating its vtable if this is the first reference. */
 void write_type_link(u32 addr, const char* name, int method_count) {
-  auto type = jak1::intern_type_from_c(name, (u64)method_count);
-  *Ptr<s32>(addr).c() = (s32)type.offset;
+  *Ptr<s32>(addr).c() = (s32)goal_game_intern_type(name, method_count);
 }
 
 }  // namespace
@@ -77,11 +76,11 @@ void write_type_link(u32 addr, const char* name, int method_count) {
 extern "C" {
 
 int32_t* goal_symbol_slot(const char* name) {
-  return (int32_t*)&jak1::intern_from_c(name)->value;
+  return goal_game_symbol_slot(name);
 }
 
 uint64_t goal_symbol_ptr(const char* name) {
-  return jak1::intern_from_c(name).offset;
+  return goal_game_intern(name);
 }
 
 uint64_t goal_static_addr(const char* file, int index) {
@@ -205,7 +204,7 @@ goal_kernel_core_status goal_aot_load_into(const goal_aot_object_file* file, uin
       set_error(fmt::format("goal_aot_load: no room for a {} function object", file->tag));
       return GOAL_KERNEL_CORE_OUT_OF_MEMORY;
     }
-    *Ptr<u32>(mem.offset).c() = *(s7 + jak1_symbols::FIX_SYM_FUNCTION_TYPE);
+    *Ptr<u32>(mem.offset).c() = goal_game_function_type_value();
     const u32 obj = mem.offset + BASIC_OFFSET;
     const void* native = file->functions[i];
     memcpy(Ptr<u8>(obj).c(), &native, sizeof(native));
@@ -382,12 +381,12 @@ goal_kernel_core_status goal_aot_call_symbol(const char* name,
     set_error("goal_aot_call_symbol: the kernel is not initialized");
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
-  auto sym = jak1::find_symbol_from_c(name);
-  if (!sym.offset || !sym->value) {
+  uint32_t value = 0;
+  if (!goal_game_find_symbol(name, &value) || !value) {
     set_error(fmt::format("goal_aot_call_symbol: '{}' holds no function", name));
     return GOAL_KERNEL_CORE_NOT_FOUND;
   }
-  const u64 result = goal_aot_call(sym->value, a0, a1, a2);
+  const u64 result = goal_aot_call(value, a0, a1, a2);
   if (out_result) {
     *out_result = result;
   }
