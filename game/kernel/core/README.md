@@ -9,12 +9,14 @@ per-game seam in `kernel_game.h`, implemented by `kernel_game_jak1.cpp` and
 `kernel_game_jak2.cpp`. One game per library, chosen at link time: `jak1-kernel-core` is
 everything documented below; `jak2-kernel-core` (**Experimental**) is the same core keyed to the
 Jak 2 kernel, with `dgo_loader_jak2.cpp` carrying the C-driven DGO load and the upstream Jak 2
-mips2c translations registered through the native-function seam. It still has no sound, pad, or
-graphics seams - the machine stubs report those loudly. `jak2-data-boot-test` loads the player's
-own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2 kernel dispatcher headless. Its
-explicit `--with-game` mode also loads all of GAME.CGO as an exploratory integration probe;
-the registered CTest does not enable that mode. `jak2-thread-switch-test` drives the native ARM64
-thread routines through the Jak 2 process and thread layouts.
+mips2c translations registered through the native-function seam. `sound_rpc_jak2.cpp` answers only
+the loader's IRX 4.0 version handshake; banks, playback, streaming, pad, and graphics still report
+through the machine stubs. `jak2-sound-rpc-test` covers that handshake without retail data.
+`jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
+kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
+exploratory integration probe; the registered CTest does not enable that mode.
+`jak2-thread-switch-test` drives the native ARM64 thread routines through the Jak 2 process and
+thread layouts.
 
 **Status: Experimental.** It initializes real kernel state, executes real Jak 1 GOAL code that was
 compiled ahead of time by goalc's AOT C backend, and loads the player's own extracted game data out
@@ -663,9 +665,10 @@ with no case now fails to compile rather than returning garbage.
   `r13` - and `_format`, `link` and `link-begin` get a shim that rebuilds GOAL's 8-register
   argument array from the C arguments.
 - **Jak 2 remains a headless kernel probe.** Its kernel and GAME.CGO objects load through the AOT
-  path and its translated mips2c functions are registered, but its sound, pad, graphics, and
-  broader machine seams are not implemented. Jak 3 and Jak X still use the desktop/x86-oriented
-  paths and remain non-functional in this ARM64 kernel core.
+  path, its translated mips2c functions are registered, and its sound loader accepts the IRX 4.0
+  version handshake. Sound banks, playback, streaming and info-frame updates are not implemented;
+  neither are its pad, graphics, and broader machine seams. Jak 3 and Jak X still use the
+  desktop/x86-oriented paths and remain non-functional in this ARM64 kernel core.
 - **Little machine layer.** Almost nothing from `kmachine.cpp` is here.
   `goal_kernel_core_stub_machine_layer` puts a loudly-failing GOAL function object in each of its
   117 symbols so a call says which function was wanted instead of faulting in the guard page. Only

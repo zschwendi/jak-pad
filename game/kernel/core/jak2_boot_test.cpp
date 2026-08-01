@@ -38,6 +38,7 @@ extern "C" {
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/kernel_core.h"
+#include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/klisten.h"
 #include "game/kernel/jak2/kscheme.h"
 #include "game/mips2c/mips2c_table.h"
@@ -211,7 +212,11 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
   // InitListener, then InitMachineScheme: the machine layer is not in this library, so the stubs
   // stand in for it and name themselves the first time GOAL calls one.
   jak2::InitListener();
-  goal_kernel_core_stub_machine_layer(0);
+  if (goal_kernel_core_stub_machine_layer(0) != GOAL_KERNEL_CORE_OK ||
+      goal_jak2_sound_rpc_install() != GOAL_KERNEL_CORE_OK) {
+    say("FAILED: could not install the Jak 2 machine seams\n");
+    return 1;
+  }
 
   if (with_game) {
     say("\n=== GAME.CGO (exploratory; expected to stop at the first missing subsystem)\n");
@@ -226,6 +231,19 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
     say("  %d objects: %d code, %d data; heap use %u -> %u bytes\n", stats.objects,
         stats.code_objects, stats.data_objects, stats.heap_used_before, stats.heap_used_after);
     report_heap("after GAME.CGO");
+
+    goal_jak2_sound_rpc_stats sound_stats;
+    goal_jak2_sound_rpc_stats_get(&sound_stats);
+    uint32_t sound_info = 0;
+    goal_kernel_core_lookup("*sound-iop-info*", nullptr, &sound_info);
+    if (sound_stats.version_requests != 1 || !sound_stats.info_ee ||
+        sound_stats.info_ee != sound_info) {
+      say("FAILED: Jak 2 sound handshake: requests=%u info=#x%x symbol=#x%x\n",
+          sound_stats.version_requests, sound_stats.info_ee, sound_info);
+      return 1;
+    }
+    say("  sound loader answered IRX 4.0 and retained info block #x%x\n",
+        sound_stats.info_ee);
   }
 
   // KernelCheckAndDispatch's loop body, without the listener half: the GOAL kernel's own frame,
