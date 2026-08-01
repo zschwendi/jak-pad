@@ -28,6 +28,9 @@ enum class MetalShaderId : u16 {
   TFRAG3 = 6,           // tfrag terrain + TIE base draw (tfrag3.{vert,frag})
   ETIE_BASE = 7,        // base draw of an envmapped TIE (etie_base.{vert,frag})
   SHRUB = 8,            // shrub vegetation (shrub.{vert,frag})
+  OCEAN_TEXTURE = 9,          // generated ocean texture (ocean_texture.{vert,frag})
+  OCEAN_TEXTURE_MIPMAP = 10,   // its mip chain (ocean_texture_mipmap.{vert,frag})
+  OCEAN_COMMON = 11,           // ocean near/mid mesh (ocean_common.{vert,frag})
   COUNT,
 };
 

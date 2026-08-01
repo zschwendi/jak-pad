@@ -9,6 +9,7 @@
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_shrub.h"
+#include "game/graphics/pipelines/metal/metal_ocean_renderer.h"
 #include "game/graphics/pipelines/metal/metal_sky_renderer.h"
 #include "game/graphics/pipelines/metal/metal_sprite_renderer.h"
 #include "game/graphics/pipelines/metal/metal_tfrag.h"
@@ -184,7 +185,13 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   sky_cpu_blender->init_textures(*m_texture_pool, GameVersion::Jak1);
 
   set(BucketId::SKY_DRAW, std::make_unique<MetalSkyRenderer>("sky", (int)BucketId::SKY_DRAW));
-  skip(BucketId::OCEAN_MID_AND_FAR, "ocean-mid-far");
+  {
+    auto ocean = std::make_unique<MetalOceanMidAndFar>("ocean-mid-far",
+                                                       (int)BucketId::OCEAN_MID_AND_FAR, m_device,
+                                                       m_queue);
+    ocean->init_textures(*m_texture_pool, GameVersion::Jak1);
+    set(BucketId::OCEAN_MID_AND_FAR, std::move(ocean));
+  }
 
   tex(BucketId::TFRAG_TEX_LEVEL0, "l0-tfrag-tex");
   tfrag(BucketId::TFRAG_LEVEL0, "l0-tfrag-tfrag", normal_tfrags, 0);
@@ -249,7 +256,12 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   tex(BucketId::WATER_TEX_LEVEL1, "l1-water-tex");
   skip(BucketId::MERC_WATER_LEVEL1, "l1-water-merc");
   skip(BucketId::GENERIC_WATER_LEVEL1, "l1-water-generic");
-  skip(BucketId::OCEAN_NEAR, "ocean-near");
+  {
+    auto ocean =
+        std::make_unique<MetalOceanNear>("ocean-near", (int)BucketId::OCEAN_NEAR, m_device, m_queue);
+    ocean->init_textures(*m_texture_pool, GameVersion::Jak1);
+    set(BucketId::OCEAN_NEAR, std::move(ocean));
+  }
   skip(BucketId::DEPTH_CUE, "depth-cue");
 
   tex(BucketId::PRE_SPRITE_TEX, "common-tex");
@@ -647,6 +659,9 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     int uploads = 0;
     u64 skipped = 0;
     int unsupported_blends = 0;
+    m_chain_stats.ocean_draws = 0;
+    m_chain_stats.ocean_triangles = 0;
+    m_chain_stats.ocean_missing_textures = 0;
     for (auto& r : m_bucket_renderers) {
       if (auto* t = dynamic_cast<MetalTextureBucketRenderer*>(r.get())) {
         uploads += t->last_stats().uploads;
@@ -656,6 +671,24 @@ void MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         unsupported_blends += d->stats().unsupported_blends;
       } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
         unsupported_blends += sky->direct_stats().unsupported_blends;
+      } else if (auto* omf = dynamic_cast<MetalOceanMidAndFar*>(r.get())) {
+        m_chain_stats.ocean_texture_verts = omf->texture_stats().vertices;
+        m_chain_stats.ocean_mid_verts = omf->mid_stats().vertices;
+        m_chain_stats.ocean_draws += omf->texture_stats().draw_calls + omf->mid_stats().draw_calls;
+        m_chain_stats.ocean_triangles +=
+            omf->texture_stats().triangles + omf->mid_stats().triangles;
+        m_chain_stats.ocean_missing_textures +=
+            omf->texture_stats().missing_textures + omf->mid_stats().missing_textures;
+        m_chain_stats.ocean_mid_texture = omf->texture_handle();
+        unsupported_blends += omf->direct_stats().unsupported_blends;
+      } else if (auto* on = dynamic_cast<MetalOceanNear*>(r.get())) {
+        m_chain_stats.ocean_near_verts = on->near_stats().vertices;
+        m_chain_stats.ocean_draws += on->texture_stats().draw_calls + on->near_stats().draw_calls;
+        m_chain_stats.ocean_triangles +=
+            on->texture_stats().triangles + on->near_stats().triangles;
+        m_chain_stats.ocean_missing_textures +=
+            on->texture_stats().missing_textures + on->near_stats().missing_textures;
+        m_chain_stats.ocean_near_texture = on->texture_handle();
       } else if (auto* sp = dynamic_cast<MetalSpriteRenderer*>(r.get())) {
         const auto& ss = sp->stats();
         m_chain_stats.sprites_2d = ss.count_2d_grp0 - ss.sprites_3d;

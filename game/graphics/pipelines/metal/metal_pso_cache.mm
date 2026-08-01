@@ -19,6 +19,9 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"tfrag3_vs", "tfrag3_fs"},                    // TFRAG3
     {"etie_base_vs", "tfrag3_fs"},                 // ETIE_BASE
     {"shrub_vs", "shrub_fs"},                      // SHRUB
+    {"ocean_texture_vs", "ocean_texture_fs"},      // OCEAN_TEXTURE
+    {"ocean_texture_mipmap_vs", "ocean_texture_mipmap_fs"},  // OCEAN_TEXTURE_MIPMAP
+    {"ocean_common_vs", "ocean_common_fs"},        // OCEAN_COMMON
 };
 
 size_t hash_combine(size_t seed, size_t v) {

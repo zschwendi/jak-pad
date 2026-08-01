@@ -7,13 +7,6 @@ static bool is_end_tag(const DmaTag& tag, const VifCode& v0, const VifCode& v1) 
          v1.kind == VifCode::Kind::DIRECT;
 }
 
-OceanMid::OceanMid() {
-  for (auto& x : m_vu_data) {
-    x.fill(999.);
-  }
-  vu.vf25 = Vf(1, 1, 1, 1);
-}
-
 void OceanMid::run(DmaFollower& dma, SharedRenderState* render_state, ScopedProfilerNode& prof) {
   m_common_ocean_renderer.init_for_mid();
   // first is setting base and offset
