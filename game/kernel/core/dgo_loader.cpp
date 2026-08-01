@@ -77,6 +77,7 @@
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
+#include "game/kernel/core/sound_rpc.h"
 #include "game/kernel/jak1/kdgo.h"
 #include "game/kernel/jak1/klink.h"
 #include "game/kernel/jak1/kscheme.h"
@@ -777,10 +778,12 @@ u64 goal_rpc_call(u64* args) {
   if (channel == RAMDISK_RPC_CHANNEL) {
     return ramdisk_rpc((u32)args[1], (u32)args[3], (u32)args[5], (u32)args[6]);
   }
-  return goal_kernel_core_machine_stub_report(channel == 0 || channel == 1 ? "rpc-call (sound)"
-                                              : channel == PLAY_RPC_CHANNEL
-                                                  ? "rpc-call (streamed audio)"
-                                                  : "rpc-call (unknown channel)");
+  // The sound player (0), the sound loader (1) and streamed audio (5) are answered by
+  // sound_rpc.cpp, which reports through the same stub path when no sound system is installed.
+  if (channel == 0 || channel == 1 || channel == PLAY_RPC_CHANNEL) {
+    return goal_sound_rpc_call(channel, args);
+  }
+  return goal_kernel_core_machine_stub_report("rpc-call (unknown channel)");
 }
 
 /*!

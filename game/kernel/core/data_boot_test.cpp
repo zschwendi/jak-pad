@@ -54,6 +54,7 @@ extern "C" {
 #include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
+#include "game/kernel/core/sound_rpc.h"
 #include "game/kernel/jak1/klisten.h"
 #include "game/kernel/jak1/kscheme.h"
 #include "game/runtime.h"
@@ -993,6 +994,136 @@ struct DmaCaptureRequest {
 };
 
 /*!
+ * Pull the frames 989snd mixed, measure them, and optionally write them to a WAV file so a run of
+ * the game can be listened to. This is a host driving the audio-out seam - `goal_sound_pull_audio` -
+ * and it is what a CoreAudio or AVAudioEngine render callback does instead, one buffer at a time.
+ *
+ * There is no audio device here and nothing waits on one, so the sample clock is the game's: each
+ * dispatcher frame is one 60th of a second, and exactly that many frames are pulled after it. A run
+ * therefore produces audio exactly as long as the frames it ran, whatever the wall clock did.
+ *
+ * The measurement happens with or without a file, because the thing worth asserting - that the
+ * mixer produced something other than silence - must not need a file of the player's own game audio
+ * to be written anywhere.
+ */
+class AudioPump {
+ public:
+  void start() {
+    m_rate = goal_sound_sample_rate();
+    m_frames_per_game_frame = m_rate / 60;
+    m_buffer.resize((size_t)m_frames_per_game_frame * 2);
+    m_running = true;
+  }
+
+  bool open(const std::string& path) {
+    m_file = std::fopen(path.c_str(), "wb");
+    if (!m_file) {
+      say("FAILED: could not write '%s': %s\n", path.c_str(), std::strerror(errno));
+      return false;
+    }
+    m_path = path;
+    unsigned char header[44] = {};
+    std::fwrite(header, 1, sizeof(header), m_file);  // rewritten by close(), once the size is known
+    return true;
+  }
+
+  /*! One game frame of audio. Returns false when a write failed. */
+  bool pull_one_game_frame() {
+    if (!m_running) {
+      return true;
+    }
+    const int got = goal_sound_pull_audio(m_buffer.data(), m_frames_per_game_frame);
+    if (got <= 0) {
+      m_silent_frames++;
+      return true;
+    }
+    m_written_frames += got;
+    for (int i = 0; i < got * 2; i++) {
+      const int16_t sample = m_buffer[i];
+      if (sample > m_peak) {
+        m_peak = sample;
+      } else if (-sample > m_peak) {
+        m_peak = (int16_t)-sample;
+      }
+    }
+    if (m_file &&
+        std::fwrite(m_buffer.data(), sizeof(int16_t) * 2, (size_t)got, m_file) != (size_t)got) {
+      say("FAILED: writing '%s': %s\n", m_path.c_str(), std::strerror(errno));
+      std::fclose(m_file);
+      m_file = nullptr;
+      return false;
+    }
+    return true;
+  }
+
+  bool close() {
+    if (!m_running) {
+      return true;
+    }
+    say("\n=== audio\n");
+    say("  %d frames at %d Hz, stereo 16-bit: %.2f seconds mixed. Peak sample %d of 32767.\n",
+        m_written_frames, m_rate, (double)m_written_frames / m_rate, (int)m_peak);
+    if (m_silent_frames) {
+      say("  %d game frames produced nothing because the sound system was not running.\n",
+          m_silent_frames);
+    }
+    if (!m_file) {
+      return true;
+    }
+    // A canonical 44-byte PCM WAV header, now that the length is known.
+    const uint32_t data_bytes = (uint32_t)m_written_frames * 4;
+    const uint32_t byte_rate = (uint32_t)m_rate * 4;
+    unsigned char h[44];
+    auto put32 = [&](int at, uint32_t v) {
+      h[at] = (unsigned char)(v & 0xff);
+      h[at + 1] = (unsigned char)((v >> 8) & 0xff);
+      h[at + 2] = (unsigned char)((v >> 16) & 0xff);
+      h[at + 3] = (unsigned char)((v >> 24) & 0xff);
+    };
+    auto put16 = [&](int at, uint16_t v) {
+      h[at] = (unsigned char)(v & 0xff);
+      h[at + 1] = (unsigned char)((v >> 8) & 0xff);
+    };
+    std::memcpy(h + 0, "RIFF", 4);
+    put32(4, 36 + data_bytes);
+    std::memcpy(h + 8, "WAVEfmt ", 8);
+    put32(16, 16);      // PCM fmt chunk size
+    put16(20, 1);       // PCM
+    put16(22, 2);       // stereo
+    put32(24, (uint32_t)m_rate);
+    put32(28, byte_rate);
+    put16(32, 4);   // block align
+    put16(34, 16);  // bits per sample
+    std::memcpy(h + 36, "data", 4);
+    put32(40, data_bytes);
+    std::fseek(m_file, 0, SEEK_SET);
+    const bool ok = std::fwrite(h, 1, sizeof(h), m_file) == sizeof(h);
+    std::fclose(m_file);
+    m_file = nullptr;
+    if (!ok) {
+      say("FAILED: could not finish the WAV header of '%s'\n", m_path.c_str());
+      return false;
+    }
+    say("  written to %s (%u bytes of PCM)\n", m_path.c_str(), data_bytes);
+    return true;
+  }
+
+  int peak() const { return m_peak; }
+  int written_frames() const { return m_written_frames; }
+
+ private:
+  bool m_running = false;
+  std::FILE* m_file = nullptr;
+  std::string m_path;
+  std::vector<int16_t> m_buffer;
+  int m_rate = 48000;
+  int m_frames_per_game_frame = 800;
+  int m_written_frames = 0;
+  int m_silent_frames = 0;
+  int16_t m_peak = 0;
+};
+
+/*!
  * Bucket names for the Jak 1 chain, indexed the same way `jak1::BucketId` is. Only the ones a
  * report needs to be readable are named; the rest print as their number. Kept here rather than
  * pulled from game/graphics so this library does not depend on the renderer.
@@ -1129,7 +1260,10 @@ int run_real_boot(const std::string& data_dir,
                   int level_cycle_frames,
                   bool report_state,
                   const std::vector<std::string>& expected_states,
-                  double expected_travel) {
+                  double expected_travel,
+                  bool with_sound,
+                  const std::string& audio_path,
+                  bool require_audio) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
 
@@ -1169,6 +1303,15 @@ int run_real_boot(const std::string& data_dir,
   goal_dgo_install_goal_loader();
   goal_gfx_dma_install();
   capture.install();
+  // The sound RPC channels. gsound.gc's top level calls `check-irx-version` and loads the common
+  // sound banks while GAME.CGO is still being read, so this has to be up before that load.
+  if (with_sound) {
+    if (goal_sound_install() != GOAL_KERNEL_CORE_OK) {
+      say("FAILED: %s\n", goal_sound_last_error());
+      return 1;
+    }
+    say("  989snd is running at %d Hz and answering the sound RPC\n", goal_sound_sample_rate());
+  }
   jak1::intern_from_c("*kernel-boot-message*")->value =
       jak1::intern_from_c(DebugBootMessage).offset;
   jak1::intern_from_c("*kernel-boot-mode*")->value = jak1::intern_from_c("boot").offset;
@@ -1221,6 +1364,14 @@ int run_real_boot(const std::string& data_dir,
   for (const auto& hold : g_pad_script) {
     watch_target = watch_target || !hold.after_state.empty();
   }
+  AudioPump audio;
+  if (with_sound) {
+    audio.start();
+  }
+  if (!audio_path.empty() && !audio.open(audio_path)) {
+    return 1;
+  }
+  bool audio_failed = false;
   auto run_frames = [&](int count) {
     for (int i = 0; i < count; i++) {
       frame_number++;
@@ -1228,6 +1379,13 @@ int run_real_boot(const std::string& data_dir,
       call_goal_on_stack(Ptr<Function>(dispatcher->value), goal_kernel_stack_top(), s7.offset,
                          g_ee_main_mem);
       drain_goal_print_buffer();
+      // The overlord's vblank work, then the frame's worth of audio the mixer produced from
+      // whatever the frame's RPC commands asked for. Before the target watching below, which can
+      // skip the rest of the frame: a frame of the game is always a frame of audio.
+      goal_sound_frame();
+      if (!audio.pull_one_game_frame()) {
+        audio_failed = true;
+      }
       if (!watch_target) {
         continue;
       }
@@ -1340,6 +1498,27 @@ int run_real_boot(const std::string& data_dir,
   say("  level code: %u bytes linked into level heaps, and none into the global heap\n",
       rpc.level_code_bytes);
 
+  goal_sound_rpc_stats snd_stats;
+  goal_sound_rpc_stats_get(&snd_stats);
+  if (with_sound) {
+    say("  sound: %d loader commands, %d player commands; %d banks loaded (%d failed),"
+        " %d music banks loaded (%d failed)\n",
+        snd_stats.loader_commands, snd_stats.player_commands, snd_stats.banks_loaded,
+        snd_stats.bank_failures, snd_stats.music_loaded, snd_stats.music_failures);
+    say("  sound: %d sounds started, %d music starts, %d play requests found no sound,"
+        " %d streamed-audio requests, %d unknown commands\n",
+        snd_stats.sounds_started, snd_stats.music_starts, snd_stats.sounds_missing,
+        snd_stats.spool_requests + snd_stats.play_rpc_calls, snd_stats.unknown_commands);
+    say("  sound: the music group ended at volume %d of 1024\n", snd_stats.music_group_volume);
+    const char* unhandled = goal_sound_unhandled_report();
+    if (*unhandled) {
+      say("  what this build could not play:\n%s", unhandled);
+    }
+  }
+  if (!audio.close()) {
+    audio_failed = true;
+  }
+
   int failures = 0;
   auto expect = [&](bool ok, const char* what) {
     say("%s %s\n", ok ? "ok  " : "FAIL", what);
@@ -1397,6 +1576,24 @@ int run_real_boot(const std::string& data_dir,
     expect(target_travel / 4096.0 >= expected_travel,
            "the target moved at least as far as the run asked it to");
   }
+  if (with_sound) {
+    // The sound RPC is not "wired up" until the game's own boot has driven it: gsound.gc's top
+    // level asks for the IRX version and loads the common banks, and nothing later works if that
+    // did not happen.
+    expect(snd_stats.loader_commands > 0, "GOAL drove the sound loader RPC");
+    expect(snd_stats.banks_loaded > 0 && snd_stats.bank_failures == 0,
+           "every sound bank the game asked for loaded into 989snd");
+  }
+  if (!audio_path.empty()) {
+    expect(!audio_failed, "the mixed audio was written");
+  }
+  if (require_audio) {
+    expect(audio.written_frames() > 0, "the audio-out seam produced frames");
+    // Silence is the failure this whole path exists to rule out: it is what "the RPC was answered
+    // and nothing ever reached a voice" looks like. The title's music only becomes audible once
+    // `target-title-wait` puts the music volume back, so this needs enough frames to get there.
+    expect(audio.peak() > 0, "the mixed audio is not silence");
+  }
   if (!level_cycle.empty()) {
     // The whole point of linking level code into the level's own heap: unloading a level has to
     // give the memory back. Each pass through the cycle relinks the level's object files, so the
@@ -1424,6 +1621,9 @@ int main(int argc, char** argv) {
   std::vector<std::string> level_cycle;
   int level_cycle_frames = 600;
   int dispatch_frames = 0;
+  bool with_sound = true;
+  bool require_audio = false;
+  std::string audio_path;
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
     if (arg == "--synthetic") {
@@ -1450,6 +1650,14 @@ int main(int argc, char** argv) {
       capture.min_payload = (uint32_t)std::strtoul(argv[++i], nullptr, 0);
     } else if (arg == "--capture-dma-count" && i + 1 < argc) {
       capture.over_count = std::atoi(argv[++i]);
+    } else if (arg == "--capture-audio" && i + 1 < argc) {
+      audio_path = argv[++i];
+    } else if (arg == "--require-audio") {
+      require_audio = true;
+    } else if (arg == "--no-sound") {
+      with_sound = false;
+    } else if (arg == "--sound-verbose") {
+      goal_sound_set_verbose(1);
     } else if (arg == "--dma-frame-report") {
       capture.per_frame_report = true;
     } else if (arg == "--press" && i + 1 < argc) {
@@ -1511,6 +1719,10 @@ int main(int argc, char** argv) {
     say("--capture-dma-count needs --capture-dma-dir\n");
     return 2;
   }
+  if ((!audio_path.empty() || require_audio) && !with_sound) {
+    say("--capture-audio and --require-audio need the sound system: drop --no-sound\n");
+    return 2;
+  }
   if (data_dir.empty()) {
     const char* env = std::getenv("GOALPAD_JAK1_DATA_DIR");
     data_dir = env ? env : "";
@@ -1543,9 +1755,11 @@ int main(int argc, char** argv) {
     result = run_synthetic();
   } else {
     result = run_real_boot(data_dir, dispatch_frames, run_play, capture, level_cycle,
-                           level_cycle_frames, report_state, expected_states, expected_travel);
+                           level_cycle_frames, report_state, expected_states, expected_travel,
+                           with_sound, audio_path, require_audio);
   }
 
+  goal_sound_shutdown();
   goal_aot_reset();
   goal_kernel_core_shutdown();
   return result;

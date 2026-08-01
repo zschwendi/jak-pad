@@ -29,6 +29,9 @@ repository: the data directory is configuration (`goal_kernel_core_set_data_dire
    `game/kernel/jak1/klink.cpp` uses (`symlink_v3`, `typelink_v3`, `ptr_link_v3`),
 4. and leaves the file's `top-level` function ready to run through `call_goal`.
 
+`goal_sound_install()` (see `sound_rpc.h`) starts 989snd and takes over the sound RPC channels, and
+`goal_sound_pull_audio()` is the seam a host renders from. See **Sound** below.
+
 `goal_dgo_load()` (see `dgo_loader.h`) loads one of the game's DGO archives out of
 `<data directory>/iso/`. It reads the archive with ordinary file calls instead of through the IOP,
 and it splits every object two ways - see **Code and data in a DGO** below.
@@ -345,8 +348,89 @@ shorter than the 2 kB GOAL always asks for - `decomp.gc` calls that "a worst cas
 can't be compressed" - so a short read is normal and the rest of the window is zeroed rather than
 being filled with whatever follows.
 
-The remaining channels - sound (0, 1) and streamed-audio playback (5) - report themselves through
-the machine-layer stub path.
+## Sound
+
+Channels 0 and 1 are the sound RPC, and `sound_rpc.cpp` answers them the same way: where they are
+sent. Upstream they reach two IOP threads in `game/overlord/jak1/srpc.cpp` - `RPC_Player`, which
+starts and positions sounds, and `RPC_Loader`, which loads banks and music - and those two
+functions are what that file re-implements. Everything they call that is not the IOP is compiled in
+unchanged and used as-is: the 64 sound slots with their volume, pan and falloff math
+(`game/overlord/common/ssound.cpp`), the 6 bank slots (`sbank.cpp`), and 989snd itself
+(`game/sound/**`) - the sequencer, the SPU voice model and the mixer, which are portable C++ with no
+threads, no SIMD and no OS calls.
+
+What is different is where the files and the samples come from. A bank is not requested from a file
+server and waited on: `<name>.SBK` and `<name>.MUS` are read out of `<data directory>/iso/` and
+handed straight to 989snd, which is what `FS_LoadSoundBank` does once upstream's ISO thread has
+scheduled it. There is no vblank interrupt, so `goal_sound_frame()` stands in for `VBlank_Handler`:
+it runs the music fade and writes the `sound-iop-info` block back to the EE.
+
+989snd's own output backend is cubeb, which needs a desktop audio device. This library has none, so
+it is compiled with `GOALPAD_SND_NO_CUBEB` and the seam is a pull instead:
+
+```c
+int goal_sound_sample_rate(void);                      /* 48000 */
+int goal_sound_pull_audio(int16_t* out, int frames);   /* interleaved stereo 16-bit */
+```
+
+`goal_sound_pull_audio` calls the same `snd::Player::Tick` the desktop port's audio callback calls,
+through `snd_PullAudio` in `game/sound/sndshim.cpp`. A CoreAudio or AVAudioEngine render callback
+can call it directly - 989snd takes its own lock, so the caller may be the device's thread - and the
+boot test calls it once per game frame. 48 kHz is not a preference: 989snd's 240 Hz sequencer tick,
+its note-pitch conversion and its envelope timing are all derived from the output rate, so a host
+that cannot open a 48 kHz device has to resample rather than ask for another rate.
+
+**What plays.** Everything sequenced. Sound effects come out of the `.SBK` banks the game loads
+(`common`, `empty1`, `empty2`, then the level's own), and music comes out of the level's `.MUS`
+bank, which 989snd drives through its MIDI/AME handlers. Music is not started by a command: as
+upstream does, the player channel restarts the loaded music bank's sound 0 under the internal id 666
+whenever it is not already running, and re-fades it in.
+
+**What does not.** Streamed VAG audio - the spooled cutscene and dialogue audio in `VAGWAD.<lang>`,
+reached by the `spool-` prefix on the player channel and by channel 5. Upstream that is a second
+subsystem: the ISO thread's VAG state machine, `game/overlord/jak1/stream.cpp`, and a plugin feeding
+raw SPU voices, none of which is here. Requests for it are counted and named rather than dropped
+quietly, so a run reports what it could not play instead of just being quieter than it should be.
+The same goes for a play request naming a sound no loaded bank has, and for an RPC command this
+implementation does not handle.
+
+```sh
+GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 ./build/Release/bin/game/jak1-data-boot-test \
+  --play --frames 4000 --capture-audio /tmp/jak1-title.wav
+```
+
+`--capture-audio` drives the seam and writes an ordinary 48 kHz stereo 16-bit WAV. There is no audio
+device and nothing waits on one, so the sample clock is the game's: one 60th of a second is pulled
+after each `kernel-dispatcher` frame, and the file is exactly as long as the frames the run
+executed. Like a DMA capture it is derived from the player's own game data, so it goes where the
+caller says and never into the repository.
+
+With data, `--play --frames 4000` loads 4 sound banks and `VILLAGE1.MUS` - the title level's
+`music-bank` in `engine/level/level-info.gc` - and the WAV holds 66 seconds of the title screen.
+It is silent for the first 8: `target-title` zeroes the music volume while the intro plays, and
+`target-title-wait` puts it back. After that the sequenced Sandover Village theme plays continuously
+to the end of the run. It is quiet - peak 3416 of 32767 - and that is the game's own volume, not an
+attenuation added here: the PC port's default music volume is 40 of 100
+(`memcard-volume-music` in `pc/pckernel-impl.gc`), so the music group ends at 351 of 1024, and 989snd's
+synth master is 0x3FFF of 0x8000 on top of that. The run reports the group volume it ended at.
+
+`jak1-title-audio-test` is the same run at 1400 frames with `--require-audio`, which measures the
+mixed audio without writing it and fails on silence. It is registered with CTest and, like the rest,
+reports that it was skipped when there is no data directory.
+
+The audio capture and the scripted controller of **The controller** above are the same run: one
+frame loop drives the pad, runs the frame, and pulls that frame's audio. The `jak1-gameplay-test`
+script at 4000 frames with `--capture-audio` produces 66.67 seconds that follow what the game did.
+It is silent through `target-title` (the intro zeroes the music volume), the title theme comes in at
+`target-title-wait` around frame 480 with the progress menu's own sounds over it, it goes quiet
+again while the title level is discarded and `village1` is displayed, and from `target-stance` in
+Sandover Village to the end of the run the village music plays continuously with the target's
+footsteps and jumps in it. The same script run with `--no-sound` enters the same states on the same
+frames and travels the same distance, so the audio is being pulled alongside the simulation rather
+than changing it.
+
+`--no-sound` boots without starting 989snd at all, which puts the sound channels back on the
+machine-layer stub path.
 
 Standalone static library for a device build:
 
@@ -360,7 +444,9 @@ cmake --build build/ios-kernel-core -j 4
 ```
 
 Use `-DCMAKE_OSX_SYSROOT=iphonesimulator` for the simulator. The resulting archive links against
-only `libc++` and `libSystem`.
+only `libc++` and `libSystem` - 989snd is in it and brings no audio backend with it, so nothing has
+to be linked for sound either. What the iPad still needs is a device: an `AVAudioEngine` source node
+or an `AudioUnit` render callback that asks `goal_sound_pull_audio` for `inNumberFrames` at 48 kHz.
 
 The same AOT proofs can be built for a device or the simulator. The generated C comes from the host
 build above; only the compiler target changes. `jak1-aot-boot-test` and `jak1-thread-switch-test`
@@ -396,7 +482,7 @@ it, is listed at the top of `desktop_seams.cpp`. Summary:
 | Left out | Why |
 | --- | --- |
 | `game/kernel/{common,jak1}/kmachine.cpp` | IOP boot, video, pads, PC-port functions: SDL, OpenGL, Discord, sqlite |
-| `game/kernel/{common,jak1}/ksound.cpp` | 989snd / overlord sound |
+| `game/kernel/{common,jak1}/ksound.cpp` | its `InitSoundScheme` installs the desktop `rpc-call`; `core/sound_rpc.cpp` answers the sound channels instead |
 | `game/kernel/jak1/kboot.cpp` | desktop boot path and the GOAL kernel dispatch loop |
 | `game/sce/sif_ee.cpp` | the EE↔IOP bridge; file I/O is implemented in `desktop_seams.cpp` |
 | `game/sce/deci2.cpp`, `game/system/**` | DECI2 debugger transport and sockets |
@@ -404,7 +490,11 @@ it, is listed at the top of `desktop_seams.cpp`. Summary:
 | `game/runtime.cpp` | desktop process entry point; `g_ee_main_mem` is defined in `kernel_core.cpp` instead |
 
 `game/kernel/jak1/kdgo.cpp` is replaced by `core/dgo_loader.cpp`, which defines the same jak1 entry
-points but reads the archive from a file instead of through the IOP RPC.
+points but reads the archive from a file instead of through the IOP RPC. `game/overlord/jak1/srpc.cpp`
+is replaced by `core/sound_rpc.cpp` the same way - the same two handlers, answered without an IOP
+thread. The rest of `game/overlord/` is the IOP: its threads, mailboxes, file server and VAG stream
+machinery. Only the four files that are not (`common/{sbank,soundcommon,srpc,ssound}.cpp`) are here,
+unchanged.
 
 `game/kernel/asm_funcs_arm64.s` *is* included: it holds the ARM64 GOAL calling-convention
 trampolines, and it is the seam the compiler/AOT track needs. So are
@@ -454,9 +544,11 @@ with no case now fails to compile rather than returning garbage.
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
   names - what `file-stream-open` would be given - are not translated yet, because nothing calls
   `file-stream-open` here.
-- **The sound RPC is dropped, so the game is silent.** Channels 0 and 1 report themselves through
-  the machine-layer stub, which is why `gsound.gc` prints `IRX version 0.0` and `ERROR: IRX is the
-  wrong version - need 2.0` once during boot. Nothing else depends on it.
+- **No streamed VAG audio.** Sequenced sound - effects out of `.SBK` banks and music out of `.MUS`
+  banks - plays. The spooled cutscene and dialogue audio in `VAGWAD.<lang>` does not; see **Sound**
+  above. It is counted and named, not dropped quietly. `--no-sound` puts the sound channels back on
+  the machine-layer stub path, where `gsound.gc` prints `IRX version 0.0` and
+  `ERROR: IRX is the wrong version - need 2.0` once during boot.
 - `game/kernel/common/kmachine.h` transitively includes `<SDL3/SDL.h>` through
   `game/graphics/gfx.h`, so the vendored SDL headers are on the include path. No SDL code is
   compiled and no SDL library is linked; removing that include from the header is a follow-up.

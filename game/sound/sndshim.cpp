@@ -299,6 +299,14 @@ void snd_RegisterPluginHandler(snd::PluginHandler handler) {
   snd::RegisterPluginHandler(handler);
 }
 
+int snd_PullAudio(s16* out, int frames) {
+  if (!player || !out || frames <= 0) {
+    return 0;
+  }
+  player->Tick((snd::s16Output*)out, frames);
+  return frames;
+}
+
 void snd_SetGlobalExcite(u8 value) {
   if (player) {
     player->SetGlobalExcite(value);
