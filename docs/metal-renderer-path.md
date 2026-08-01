@@ -514,7 +514,21 @@ come from a `UIView`/SwiftUI instead of SDL.
     the GL buffer, and `alloc_bones` rounds `first_bone` up to 16 bone vectors (256 bytes)
     so every offset satisfies Metal's buffer-offset alignment. The `std140` padding of
     the bone struct (mat3 columns padded to `vec4`, plus the trailing `vec4`) is
-    reproduced exactly, so the CPU-side layout is the GL one.
+    reproduced exactly, so the CPU-side layout is the GL one. This layout is checked end
+    to end by the proof's **Y-rotation sweep**: one bone is driven through
+    `translate * rotate_y` at nine yaws and the model's silhouette is measured against the
+    same transform computed on the CPU. The model is a cross of two quads - one spanning
+    model x above the origin, one spanning model z below it - so its width is
+    `h * max(|cos|, |sin|)`, which never falls below `h/sqrt(2)`; the two quads carry
+    different normals, so their shading reads back two columns of the normal matrix in the
+    same frame. Diagonal bone matrices (all the merc checks used before) map onto
+    themselves under a transposed, short-strided or column-dropping read, so they cannot
+    see any of those. The sweep fails on all three: dropping the `X[2]` column takes the
+    model to 0 px wide at 90 degrees, a row-major read to 0 px at every yaw, and reading
+    the mat3 columns at a packed 12-byte stride mis-shades it.
+  - **Draw-buffer overflow**: a flush retires every level draw bucket, so the bucket
+    pointer is re-acquired after the "out of draws" flush. Holding the pre-flush pointer
+    appended to a bucket outside the live range, and those draws were never issued.
   - **One deliberate divergence from the GL source**: the GL renderer resolves the bone
     matrices with `setup.data - setup.data_offset + addr`, which works there only because
     the GL pipeline renders from the *original* EE memory (`run_dma_copy = false` in
@@ -523,6 +537,27 @@ come from a `UIView`/SwiftUI instead of SDL.
     resolves bone pointers against `render_state->ee_memory` - the same thing the ported
     texture-upload handler does with its `texture-page` pointers. Addresses are bounds-
     checked before dereferencing and reported (`bad_bone_pointers`) rather than faulting.
+
+    That read is of **live** game memory while the rest of the frame is a snapshot, and the two
+    have to be taken at the same moment or the character is drawn with a skeleton that does not
+    belong to its own control data. The bone arrays are referenced from inside a packet rather
+    than transferred by a DMA tag, so `FixedChunkDmaCopier::run` - which marks only the chunks
+    the tags touch - never copies them, and there is nothing to resolve them against but live
+    memory. Measured on the Mac host, the region the bone pointers live in
+    (`0x5515c0`-`0xd26b80`, about 8 MB) had already changed between `send_chain` and the render
+    on **162 of 500 frames**: a character visibly shivering on a still pose. `send_chain` now
+    holds the game thread until the renderer has consumed the chain, which is the guarantee GL
+    has for free by rendering from original memory while the game waits. After the change the
+    same measurement is **0 of 500**, at an unchanged 59.9 fps / 16.69 ms +/- 0.01 - the game
+    thread was already blocking for that long in `sync-path`.
+
+    Two related fixes came with it: `sync_path` waited on `sync_mutex` for a predicate written
+    under `dma_mutex`, and now waits under the mutex that protects it; and the wait is skipped
+    when the host renders on the thread it sends from (the proof, and any single-threaded
+    display-link driver), which already has the guarantee and would otherwise wait for itself.
+    **A single-threaded host still has to render a chain in the same tick it was sent** - if it
+    renders the previous tick's chain, the bones are again from the wrong frame, and no waiting
+    in `send_chain` can fix that.
   - **Model geometry** does not travel in the chain. `metal_merc_model_pool.{h,mm}` is the
     merc-scoped equivalent of what the GL loader's `MercLoaderStage` produces: it reads an
     extracted level, uploads its textures the way `add_texture` does, puts
@@ -668,7 +703,7 @@ Daxter logo and "PRESS START". The eye, Generic2, shadow, TIE-envmap-second-draw
 tfrag-trans ports then closed every remaining payload gap.
 `metal-proof --replay`, `MTL_DEBUG_LAYER=1`, headless, 45 checks per frame (42 on
 frame 100), no Metal validation diagnostics. The argument-less proof runs
-190 checks, 206 with an `.fr3` - the union of every branch's checks, none dropped.
+224 checks, 240 with an `.fr3` - the union of every branch's checks, none dropped.
 
 | frame | draws | triangles | lit pixels |
 | --- | --- | --- | --- |

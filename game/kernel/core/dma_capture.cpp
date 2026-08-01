@@ -439,6 +439,39 @@ void goal_gfx_dma_install(void) {
   jak1::make_function_symbol_from_c("__send-gfx-dma-chain", (void*)send_gfx_dma_chain);
 }
 
+int goal_gfx_dma_capture_chain_now(const void* ee_base,
+                                   uint32_t chain_offset,
+                                   int frame,
+                                   const char* path) {
+  if (!ee_base || !path || !path[0]) {
+    return 0;
+  }
+  if (!g_copier) {
+    g_copier = new FixedChunkDmaCopier(EE_MAIN_MEM_SIZE);
+  }
+  // The same walk and the same serialized result the measuring seam writes, so a file from here
+  // is byte-identical in structure to one from --capture-dma and replays the same way.
+  const auto& result = g_copier->run((const u8*)ee_base, chain_offset, false);
+  const ChainSummary summary = summarize_chain(result);
+  if (!summary.problem.empty()) {
+    lg::error("[dma-capture] frame {}: {}", frame, summary.problem);
+  }
+  if (!write_capture(path, frame, summary)) {
+    return 0;
+  }
+  auto& buckets = g_captured_buckets[frame];
+  buckets.clear();
+  for (size_t i = 0; i < summary.buckets.size(); i++) {
+    goal_gfx_dma_bucket_summary entry;
+    entry.bucket = (int)i;
+    entry.transfers = summary.buckets[i].transfers;
+    entry.payload_bytes = summary.buckets[i].payload_bytes;
+    entry.texture_uploads = summary.buckets[i].texture_uploads;
+    buckets.push_back(entry);
+  }
+  return 1;
+}
+
 void goal_gfx_dma_capture_frame_to_file(const char* path, int frame) {
   if (!path || !path[0]) {
     return;
