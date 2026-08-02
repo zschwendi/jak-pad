@@ -22,6 +22,7 @@ struct Provenance {
   std::string source_archive_relative_path;
   std::uint32_t archive_object_index = 0;
   std::string internal_name;
+  std::string unique_name;
   std::size_t byte_size = 0;
   std::uint64_t xxh64 = 0;
   ObjectVersion object_version = ObjectVersion::v2;

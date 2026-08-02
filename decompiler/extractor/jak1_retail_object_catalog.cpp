@@ -504,6 +504,7 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
         entry.provenance.source_archive_relative_path = source.source_archive_relative_path;
         entry.provenance.archive_object_index = static_cast<std::uint32_t>(object_index);
         entry.provenance.internal_name = object.internal_name;
+        entry.provenance.unique_name = object.unique_name;
         entry.provenance.byte_size = object.data.size();
         entry.provenance.xxh64 = hash.value();
         entry.provenance.object_version = *object_version.value();

@@ -150,15 +150,19 @@ bool indexes_exact_provenance_in_deterministic_order() {
   CHECK(result.value().entries()[0].provenance.source_archive_relative_path == "DGO/A.DGO");
   CHECK(result.value().entries()[0].provenance.archive_object_index == 0);
   CHECK(result.value().entries()[0].provenance.internal_name == "alpha");
+  CHECK(result.value().entries()[0].provenance.unique_name == "alpha");
   const auto expected_alpha = make_v4(3);
   CHECK(result.value().entries()[0].provenance.byte_size == expected_alpha.size());
   CHECK(result.value().entries()[0].provenance.xxh64 ==
         XXH64(expected_alpha.data(), expected_alpha.size(), 0));
   CHECK(result.value().entries()[0].provenance.object_version == ObjectVersion::v4);
   CHECK(result.value().entries()[1].provenance.internal_name == "shared");
+  CHECK(result.value().entries()[1].provenance.unique_name == "shared");
   CHECK(result.value().entries()[2].provenance.source_archive_relative_path == "DGO/Z.DGO");
   CHECK(result.value().entries()[2].provenance.internal_name == "shared");
+  CHECK(result.value().entries()[2].provenance.unique_name == "shared");
   CHECK(result.value().entries()[3].provenance.internal_name == "zeta");
+  CHECK(result.value().entries()[3].provenance.unique_name == "zeta");
   CHECK(progress.front().stage == jak1_retail_object_catalog::ProgressStage::starting_archive);
   CHECK(progress.back().stage == jak1_retail_object_catalog::ProgressStage::complete);
   CHECK(progress.back().entries_indexed == 4);
@@ -217,6 +221,12 @@ bool divergent_names_require_exact_provenance() {
   CHECK(!crossed_lookup);
   CHECK(crossed_lookup.error().code == ErrorCode::provenance_mismatch);
 
+  auto wrong_unique_name = result.value().entries()[0].provenance;
+  wrong_unique_name.unique_name = "same-144";
+  const auto unique_name_lookup = result.value().lookup(wrong_unique_name);
+  CHECK(!unique_name_lookup);
+  CHECK(unique_name_lookup.error().code == ErrorCode::provenance_mismatch);
+
   const auto wrong_internal_name = make_dgo("OTHER.DGO", {{"one", make_v2()}});
   const std::vector<ArchiveSource> mismatched = {
       {"DGO/EXPECTED.DGO", wrong_internal_name},
@@ -227,6 +237,54 @@ bool divergent_names_require_exact_provenance() {
   CHECK(result.error().checked_dgo_error.has_value());
   CHECK(result.error().checked_dgo_error->code ==
         jak1_checked_dgo::ErrorCode::unexpected_archive_name);
+  return true;
+}
+
+bool retains_checked_unique_names_and_rejects_ambiguity() {
+  const auto duplicate_archive =
+      make_dgo("DUP.DGO", {{"same", make_v2(1)}, {"same", make_v2(2)}});
+  std::vector<ArchiveSource> sources = {{"DGO/DUP.DGO", duplicate_archive}};
+  auto result = jak1_retail_object_catalog::build(sources);
+  CHECK(result);
+  CHECK(result.value().entries().size() == 2);
+  CHECK(result.value().entries()[0].provenance.internal_name == "same");
+  CHECK(result.value().entries()[0].provenance.unique_name == "same");
+  CHECK(result.value().entries()[1].provenance.internal_name == "same");
+  CHECK(result.value().entries()[1].provenance.unique_name == "same-144");
+
+  const auto exact_lookup =
+      result.value().lookup(result.value().entries()[1].provenance);
+  CHECK(exact_lookup);
+  CHECK(exact_lookup.value()->provenance.unique_name == "same-144");
+
+  auto crossed_unique_name = result.value().entries()[0].provenance;
+  crossed_unique_name.unique_name = result.value().entries()[1].provenance.unique_name;
+  const auto crossed_lookup = result.value().lookup(crossed_unique_name);
+  CHECK(!crossed_lookup);
+  CHECK(crossed_lookup.error().code == ErrorCode::provenance_mismatch);
+
+  auto art_group = make_v2(3);
+  const std::string marker = "/src/next/data/art-group6/darkeco-ag.go";
+  std::copy(marker.begin(), marker.end(), art_group.begin() + 80);
+  art_group[80 + marker.size()] = 0;
+  const auto art_archive = make_dgo("ART.DGO", {{"darkeco", art_group}});
+  sources = {{"DGO/ART.DGO", art_archive}};
+  result = jak1_retail_object_catalog::build(sources);
+  CHECK(result);
+  CHECK(result.value().entries().size() == 1);
+  CHECK(result.value().entries()[0].provenance.internal_name == "darkeco");
+  CHECK(result.value().entries()[0].provenance.unique_name == "darkeco-ag");
+
+  const auto ambiguous_archive = make_dgo(
+      "AMBIG.DGO", {{"same", make_v2(1)}, {"same", make_v2(2)}, {"same", make_v2(3)}});
+  sources = {{"DGO/AMBIG.DGO", ambiguous_archive}};
+  result = jak1_retail_object_catalog::build(sources);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::checked_dgo_failed);
+  CHECK(result.error().checked_dgo_error.has_value());
+  CHECK(result.error().checked_dgo_error->code ==
+        jak1_checked_dgo::ErrorCode::duplicate_object_name);
+  CHECK(result.error().checked_dgo_error->object_index == 2);
   return true;
 }
 
@@ -355,6 +413,8 @@ int main() {
       {"indexes_exact_provenance_in_deterministic_order",
        indexes_exact_provenance_in_deterministic_order},
       {"divergent_names_require_exact_provenance", divergent_names_require_exact_provenance},
+      {"retains_checked_unique_names_and_rejects_ambiguity",
+       retains_checked_unique_names_and_rejects_ambiguity},
       {"skips_code_and_rejects_invalid_or_unsupported_headers",
        skips_code_and_rejects_invalid_or_unsupported_headers},
       {"enforces_caps_paths_and_callbacks", enforces_caps_paths_and_callbacks},
