@@ -99,7 +99,9 @@ struct ChainStats {
   u64 drawables_acquired = 0;
   u64 drawable_misses = 0;
   u64 late_present_submissions = 0;
-  // End-to-end provenance for the last chain. Camera qwords are camera-temp[0...3] then trans.
+  // End-to-end provenance for the last chain. Live camera qwords are camera-temp[0...3] then
+  // trans. Render qwords are camera-temp[0...3], hvdf-off, fog.x, trans, camera-rot[0...3], then
+  // perspective[0...3].
   u64 last_host_tick_id = 0;
   u64 last_chain_ordinal = 0;
   u64 last_engine_frame_id = 0;
@@ -111,6 +113,11 @@ struct ChainStats {
   u8 last_packet_camera_mismatch_qwords = 0;
   u64 live_camera_mismatches = 0;
   u64 packet_camera_mismatches = 0;
+  u64 last_render_camera_fingerprint = 0;
+  int last_render_camera_packet_mismatches = 0;
+  u16 last_render_camera_packet_mismatch_qwords = 0;
+  u64 render_camera_packet_mismatches = 0;
+  u64 render_camera_alternations = 0;
   u64 producer_camera_alternations = 0;
   u64 last_camera_alternation_older_frame_id = 0;
   u64 last_camera_alternation_previous_frame_id = 0;
@@ -331,6 +338,11 @@ void cull_check_all_slow_for_test(const math::Vector4f* planes,
                                   const std::vector<tfrag3::VisNode>& nodes,
                                   const u8* level_occlusion_string,
                                   u8* out);
+void background_camera_matrix_for_test(const math::Vector4f rotation[4],
+                                       const math::Vector4f perspective[4],
+                                       float fog_constant,
+                                       float hvdf_z,
+                                       math::Vector4f out[4]);
 
 // Sizes of the layout mirrors in metal_level_data.h, so the proof can check
 // them against the GL definitions they duplicate.

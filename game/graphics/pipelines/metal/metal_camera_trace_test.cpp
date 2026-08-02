@@ -25,6 +25,14 @@ metal_camera_trace::Snapshot scalar_snapshot(float value) {
   return out;
 }
 
+metal_camera_trace::RenderSnapshot scalar_render_snapshot(float value) {
+  std::array<float, metal_camera_trace::kRenderSnapshotBytes / sizeof(float)> components;
+  components.fill(value);
+  metal_camera_trace::RenderSnapshot out;
+  std::memcpy(out.bytes.data(), components.data(), out.bytes.size());
+  return out;
+}
+
 }  // namespace
 
 int main() {
@@ -76,6 +84,56 @@ int main() {
   check(trace.expected_mismatches() == 0 && trace.packet_mismatches() == 1,
         "capture replay still checks packet agreement without a live camera");
 
+  std::array<u8, 16> hvdf = {};
+  std::array<u8, 16> fog = {};
+  std::array<u8, 4 * 16> rotation = {};
+  std::array<u8, 4 * 16> perspective = {};
+  for (std::size_t i = 0; i < hvdf.size(); i++) {
+    hvdf[i] = static_cast<u8>(0x20 + i);
+    fog[i] = static_cast<u8>(0x30 + i);
+  }
+  for (std::size_t i = 0; i < rotation.size(); i++) {
+    rotation[i] = static_cast<u8>(0x40 + i);
+    perspective[i] = static_cast<u8>(0x90 + i);
+  }
+
+  const auto expected_render = metal_camera_trace::make_render_snapshot(
+      camera.data(), hvdf.data(), fog.data(), translation.data(), rotation.data(),
+      perspective.data());
+  auto changed_rotation = rotation;
+  changed_rotation[2 * 16 + 3] ^= 0x5a;
+  auto changed_perspective = perspective;
+  changed_perspective[3 * 16 + 7] ^= 0xa5;
+  const auto changed_render = metal_camera_trace::make_render_snapshot(
+      camera.data(), hvdf.data(), fog.data(), translation.data(), changed_rotation.data(),
+      changed_perspective.data());
+  check(expected_render.bytes[0] == 1 && expected_render.bytes[64] == 0x20 &&
+            expected_render.bytes[80] == 0x30 && expected_render.bytes[84] == 0 &&
+            expected_render.bytes[96] == 0x80 && expected_render.bytes[112] == 0x40 &&
+            expected_render.bytes[176] == 0x90,
+        "the render snapshot preserves the packet's view/projection field order");
+  const auto producer_subset_before =
+      metal_camera_trace::make_snapshot(camera.data(), translation.data());
+  const auto producer_subset_after =
+      metal_camera_trace::make_snapshot(camera.data(), translation.data());
+  check(metal_camera_trace::fingerprint(producer_subset_before) ==
+                metal_camera_trace::fingerprint(producer_subset_after) &&
+            metal_camera_trace::fingerprint(expected_render) !=
+                metal_camera_trace::fingerprint(changed_render),
+        "rotation and perspective changes expose the producer subset's diagnostic blind spot");
+  check(metal_camera_trace::mismatched_render_qwords(expected_render, changed_render) ==
+            ((1u << 9) | (1u << 14)),
+        "render-camera differences name their exact rotation and perspective qwords");
+
+  metal_camera_trace::RenderFrameTrace render_trace;
+  render_trace.reset();
+  const auto render_first = render_trace.observe(expected_render);
+  const auto render_second = render_trace.observe(changed_render);
+  check(render_first.packet_mismatch_qwords == 0 &&
+            render_second.packet_mismatch_qwords == ((1u << 9) | (1u << 14)) &&
+            render_trace.packet_mismatches() == 1,
+        "the render trace compares every packet field used for background vertex position");
+
   check(metal_camera_trace::normalized_snapshot_distance(scalar_snapshot(2.f),
                                                           scalar_snapshot(2.f)) == 0.0,
         "equal producer snapshots have zero normalized distance");
@@ -103,6 +161,14 @@ int main() {
         "the trigger reports the return distance and both adjacent distances");
   check(alternating_producer.alternations() == 1,
         "producer alternations are counted deterministically");
+
+  metal_camera_trace::RenderAlternationTrace alternating_render;
+  alternating_render.observe(300, scalar_render_snapshot(0.f));
+  alternating_render.observe(301, scalar_render_snapshot(1.f));
+  const auto render_returned = alternating_render.observe(302, scalar_render_snapshot(0.1f));
+  check(render_returned.has_three_frame_window && render_returned.alternation &&
+            alternating_render.alternations() == 1,
+        "full view/projection A/B/A returns are counted independently of the producer subset");
 
   auto durable_event = returned;
   const auto later_non_event = alternating_producer.observe(203, scalar_snapshot(0.2f));

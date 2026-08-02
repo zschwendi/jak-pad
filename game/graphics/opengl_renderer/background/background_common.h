@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "common/math/Vector.h"
 
 #include "game/graphics/opengl_renderer/BucketRenderer.h"
@@ -39,6 +41,11 @@ struct DoubleDraw {
   float aref_second = 0.;
   float color_mult = 1.;
 };
+
+std::array<math::Vector4f, 4> make_new_cam_mat(const math::Vector4f cam_T_w[4],
+                                               const math::Vector4f persp[4],
+                                               float fog_constant,
+                                               float hvdf_z);
 
 DoubleDraw setup_tfrag_shader(SharedRenderState* render_state, DrawMode mode, ShaderId shader);
 DoubleDraw setup_opengl_from_draw_mode(DrawMode mode, u32 tex_unit, bool mipmap);

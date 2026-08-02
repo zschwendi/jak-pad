@@ -27,12 +27,14 @@ struct MetalPresentationState {
   std::mutex mutex;
   metal_camera_trace::PresentationOrderTrace order;
   metal_camera_trace::ProducerAlternationTrace producer_camera;
+  metal_camera_trace::RenderAlternationTrace render_camera;
   u64 last_drawable_id = 0;
   u64 last_engine_frame_id = 0;
   u64 last_host_tick_id = 0;
   u64 last_chain_ordinal = 0;
   bool mismatch_reported = false;
   bool producer_alternation_reported = false;
+  bool render_alternation_reported = false;
 };
 
 // Precompiled Metal shader library, embedded at build time from
@@ -709,11 +711,32 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         m_background.camera_trace.packet_mismatch_qwords();
     m_chain_stats.live_camera_mismatches += m_chain_stats.last_live_camera_mismatches;
     m_chain_stats.packet_camera_mismatches += m_chain_stats.last_packet_camera_mismatches;
+    m_chain_stats.last_render_camera_fingerprint =
+        m_background.render_camera_trace.first_packet_fingerprint();
+    m_chain_stats.last_render_camera_packet_mismatches =
+        m_background.render_camera_trace.packet_mismatches();
+    m_chain_stats.last_render_camera_packet_mismatch_qwords =
+        m_background.render_camera_trace.packet_mismatch_qwords();
+    m_chain_stats.render_camera_packet_mismatches +=
+        m_chain_stats.last_render_camera_packet_mismatches;
 
+    metal_camera_trace::RenderAlternationObservation render_camera;
+    bool report_render_camera_alternation = false;
     metal_camera_trace::ProducerAlternationObservation producer_camera;
     bool report_producer_alternation = false;
     if (opts.expected_camera_valid && m_presentation_state) {
       std::lock_guard<std::mutex> lock(m_presentation_state->mutex);
+      if (m_background.render_camera_trace.has_packet()) {
+        render_camera = m_presentation_state->render_camera.observe(
+            opts.engine_frame_id, m_background.render_camera_trace.first_packet());
+        m_chain_stats.render_camera_alternations =
+            m_presentation_state->render_camera.alternations();
+        if (render_camera.alternation &&
+            !m_presentation_state->render_alternation_reported) {
+          m_presentation_state->render_alternation_reported = true;
+          report_render_camera_alternation = true;
+        }
+      }
       producer_camera =
           m_presentation_state->producer_camera.observe(opts.engine_frame_id, opts.expected_camera);
       m_chain_stats.producer_camera_alternations =
@@ -750,6 +773,16 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         report_producer_alternation = true;
       }
     }
+    if (report_render_camera_alternation) {
+      lg::error(
+          "Metal render-camera return pattern at engine frames {}/{}/{}: normalized distances "
+          "{:.9g}/{:.9g}/{:.9g}, full view/projection fingerprints {:#x}/{:#x}/{:#x}",
+          render_camera.older_frame_id, render_camera.previous_frame_id,
+          render_camera.current_frame_id, render_camera.older_to_previous_distance,
+          render_camera.previous_to_current_distance, render_camera.older_to_current_distance,
+          render_camera.older_fingerprint, render_camera.previous_fingerprint,
+          render_camera.current_fingerprint);
+    }
     if (report_producer_alternation) {
       lg::error(
           "Metal camera producer return pattern at engine frames {}/{}/{}, host tick {}, chain {}: "
@@ -763,17 +796,21 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     }
     if (!m_reported_camera_mismatch &&
         (m_chain_stats.last_live_camera_mismatches ||
-         m_chain_stats.last_packet_camera_mismatches)) {
+         m_chain_stats.last_packet_camera_mismatches ||
+         m_chain_stats.last_render_camera_packet_mismatches)) {
       m_reported_camera_mismatch = true;
       lg::error(
           "Metal camera provenance mismatch at engine frame {}, host tick {}, chain {} in '{}': "
-          "{} live mismatches (qwords {:#x}), {} packet mismatches (qwords {:#x})",
+          "{} live mismatches (qwords {:#x}), {} producer-subset packet mismatches (qwords "
+          "{:#x}), {} full view/projection packet mismatches (qwords {:#x})",
           opts.engine_frame_id, opts.host_tick_id, opts.chain_ordinal,
           m_background.first_camera_mismatch_bucket,
           m_chain_stats.last_live_camera_mismatches,
           m_chain_stats.last_live_camera_mismatch_qwords,
           m_chain_stats.last_packet_camera_mismatches,
-          m_chain_stats.last_packet_camera_mismatch_qwords);
+          m_chain_stats.last_packet_camera_mismatch_qwords,
+          m_chain_stats.last_render_camera_packet_mismatches,
+          m_chain_stats.last_render_camera_packet_mismatch_qwords);
     }
 
 #if TARGET_OS_OSX

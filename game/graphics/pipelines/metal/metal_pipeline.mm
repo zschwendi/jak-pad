@@ -532,6 +532,22 @@ void cull_check_all_slow_for_test(const math::Vector4f* planes,
   metal_cull_check_all_slow(planes, nodes, level_occlusion_string, out);
 }
 
+void background_camera_matrix_for_test(const math::Vector4f rotation[4],
+                                       const math::Vector4f perspective[4],
+                                       float fog_constant,
+                                       float hvdf_z,
+                                       math::Vector4f out[4]) {
+  MetalGoalBackgroundCameraData camera = {};
+  std::memcpy(camera.rot, rotation, sizeof(camera.rot));
+  std::memcpy(camera.perspective, perspective, sizeof(camera.perspective));
+  camera.fog.x() = fog_constant;
+  camera.hvdf_off.z() = hvdf_z;
+
+  MetalBackgroundVsParams params = {};
+  metal_fill_background_vs_params(camera, GameVersion::Jak1, &params);
+  std::memcpy(out, params.pc_camera, sizeof(params.pc_camera));
+}
+
 size_t sizeof_pc_port_data_mirror() {
   return sizeof(MetalTfragPcPortData);
 }

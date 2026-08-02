@@ -116,8 +116,10 @@ struct MetalBackgroundState {
   int unexpected_dma = 0;   // a bucket's DMA did not match this renderer
 
   // One frame's camera provenance. The producer snapshot contains exactly the four camera-temp
-  // qwords and one trans qword copied into every Jak 1 tfrag/tie/shrub PC-port packet.
+  // qwords and one trans qword available from the live GOAL producer. The render snapshot also
+  // covers hvdf-off, fog.x, camera-rot, and perspective as consumed by the Metal vertex shaders.
   metal_camera_trace::FrameTrace camera_trace;
+  metal_camera_trace::RenderFrameTrace render_camera_trace;
   std::string first_camera_mismatch_bucket;
 
   void reset_frame();

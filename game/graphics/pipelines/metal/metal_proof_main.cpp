@@ -1823,6 +1823,27 @@ void test_background_common_parity() {
   check(metal_renderer::sizeof_camera_data_mirror() == sizeof(GoalBackgroundCameraData),
         "GoalBackgroundCameraData layout mirror has the same size as the GL struct");
 
+  math::Vector4f rotation[4] = {
+      math::Vector4f(0.8660254f, 0.f, -0.5f, 0.f),
+      math::Vector4f(0.1294095f, 0.9659258f, 0.2241439f, 0.f),
+      math::Vector4f(0.4829629f, -0.258819f, 0.8365163f, 0.f),
+      math::Vector4f(0.f, 0.f, 0.f, 1.f),
+  };
+  math::Vector4f perspective[4] = {
+      math::Vector4f(-300.f, 0.f, 0.f, 0.f),
+      math::Vector4f(0.f, -280.f, 0.f, 0.f),
+      math::Vector4f(0.f, 0.f, -8200000.f, -2.5f),
+      math::Vector4f(0.f, 0.f, 16000000.f, 0.f),
+  };
+  constexpr float kFogConstant = 0.75f;
+  constexpr float kHvdfZ = 8388607.5f;
+  const auto gl_camera = make_new_cam_mat(rotation, perspective, kFogConstant, kHvdfZ);
+  math::Vector4f metal_camera[4];
+  metal_renderer::background_camera_matrix_for_test(rotation, perspective, kFogConstant, kHvdfZ,
+                                                    metal_camera);
+  check(std::memcmp(gl_camera.data(), metal_camera, sizeof(metal_camera)) == 0,
+        "background view/projection matrix matches the GL renderer byte for byte");
+
   // --- time of day ---
   // A packed palette is groups of 4 colors x 8 palettes x 4 channels. Fill one
   // with a spread of values, including the extremes that exercise the
