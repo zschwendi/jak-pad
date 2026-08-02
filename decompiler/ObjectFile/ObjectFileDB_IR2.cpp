@@ -877,6 +877,9 @@ void ObjectFileDB::ir2_write_results(const fs::path& output_dir,
     auto unformatted_code = ir2_final_out(obj, imports, {});
     auto final_name = output_dir / (obj.to_unique_name() + "_disasm.gc");
     if (config.format_code) {
+#if defined(OPENGOAL_FR3_PREPARER_ONLY)
+      file_util::write_text_file(final_name, unformatted_code);
+#else
       const auto formatted_code = formatter::format_code(unformatted_code);
       if (!formatted_code) {
         lg::error(
@@ -887,6 +890,7 @@ void ObjectFileDB::ir2_write_results(const fs::path& output_dir,
       } else {
         file_util::write_text_file(final_name, formatted_code.value());
       }
+#endif
     } else {
       file_util::write_text_file(final_name, unformatted_code);
     }

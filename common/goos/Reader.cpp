@@ -161,6 +161,7 @@ Reader::Reader() {
 /*!
  * Prompt the user and read the result.
  */
+#if !defined(OPENGOAL_FR3_PREPARER_ONLY)
 std::optional<Object> Reader::read_from_stdin(const std::string& prompt, REPL::Wrapper& repl) {
   // escape code will make sure that we remove any color
   std::string prompt_full = "\033[0m" + prompt;
@@ -184,6 +185,7 @@ std::optional<Object> Reader::read_from_stdin(const std::string& prompt, REPL::W
     return {};
   }
 }
+#endif
 
 /*!
  * Read a string.
