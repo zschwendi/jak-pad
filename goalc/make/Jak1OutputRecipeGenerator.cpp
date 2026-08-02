@@ -7,7 +7,6 @@
 #include <limits>
 #include <new>
 #include <string>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -196,18 +195,7 @@ std::optional<std::string> relative_to_root(const std::string& source,
   return result;
 }
 
-bool same_retail_payload(const RetailCatalogObject& left, const RetailCatalogObject& right) {
-  return left.internal_name == right.internal_name && left.object_version == right.object_version &&
-         left.size == right.size && left.xxh64 == right.xxh64;
-}
-
-std::string basename(std::string_view path) {
-  const auto slash = path.find_last_of("/\\");
-  return std::string(path.substr(slash == std::string_view::npos ? 0 : slash + 1));
-}
-
 Result<const RetailCatalogObject*> select_retail_object(
-    const GraphArchive& archive,
     const GraphObject& object,
     const std::unordered_map<std::string, std::vector<const RetailCatalogObject*>>& by_unique_name,
     uint32_t archive_index,
@@ -230,48 +218,26 @@ Result<const RetailCatalogObject*> select_retail_object(
 
   std::vector<const RetailCatalogObject*> candidates;
   for (const auto* candidate : found->second) {
-    if (candidate->internal_name == object.internal_name) {
+    if (candidate->internal_name == object.internal_name &&
+        candidate->source_archive_relative_path == object.retail_source_archive) {
       candidates.push_back(candidate);
     }
   }
   if (candidates.empty()) {
     return Result<const RetailCatalogObject*>::failure(
         make_error(ErrorCode::missing_retail_object,
-                   "The verified retail object for " + object.prepared_basename +
-                       " has a different internal DGO name.",
+                   "The verified retail object does not match the public source provenance for " +
+                       object.prepared_basename + ".",
                    archive_index, object_index));
   }
-
-  const auto destination_key = collision_key(archive.destination_basename);
-  std::vector<const RetailCatalogObject*> archive_matches;
-  for (const auto* candidate : candidates) {
-    if (collision_key(basename(candidate->source_archive_relative_path)) == destination_key) {
-      archive_matches.push_back(candidate);
-    }
+  if (candidates.size() != 1) {
+    return Result<const RetailCatalogObject*>::failure(
+        make_error(ErrorCode::ambiguous_retail_object,
+                   "Public source provenance does not identify one retail catalog object for " +
+                       object.prepared_basename + ".",
+                   archive_index, object_index));
   }
-  if (archive_matches.size() == 1) {
-    return Result<const RetailCatalogObject*>::success(archive_matches.front());
-  }
-  if (!archive_matches.empty()) {
-    candidates = std::move(archive_matches);
-  }
-
-  const auto* first = candidates.front();
-  if (!std::all_of(candidates.begin() + 1, candidates.end(), [&](const auto* candidate) {
-        return same_retail_payload(*first, *candidate);
-      })) {
-    return Result<const RetailCatalogObject*>::failure(make_error(
-        ErrorCode::ambiguous_retail_object,
-        "Multiple divergent verified retail objects match " + object.prepared_basename + ".",
-        archive_index, object_index));
-  }
-
-  const auto selected = std::min_element(
-      candidates.begin(), candidates.end(), [](const auto* left, const auto* right) {
-        return std::tie(left->source_archive_relative_path, left->archive_object_index) <
-               std::tie(right->source_archive_relative_path, right->archive_object_index);
-      });
-  return Result<const RetailCatalogObject*>::success(*selected);
+  return Result<const RetailCatalogObject*>::success(candidates.front());
 }
 
 std::optional<jak1_output_recipe::GeneratedDataKind> generated_kind(ObjectProducerKind producer) {
@@ -507,6 +473,13 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
           return Result<jak1_output_recipe::Recipe>::failure(*error);
         }
         const auto& graph_object = graph_archive.objects[object_index];
+        if ((graph_object.producer == ObjectProducerKind::verified_retail) !=
+            !graph_object.retail_source_archive.empty()) {
+          return Result<jak1_output_recipe::Recipe>::failure(
+              make_error(ErrorCode::invalid_graph,
+                         "A graph object's public retail provenance is missing or misplaced.",
+                         archive_index, object_index));
+        }
         jak1_output_recipe::ObjectEntry object;
         object.internal_name = graph_object.internal_name;
         if (graph_object.producer == ObjectProducerKind::bundled_source) {
@@ -520,8 +493,8 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
           object.source = jak1_output_recipe::BundledSourceObject{
               found->second->bundle_relative_path, found->second->size, found->second->xxh64};
         } else if (graph_object.producer == ObjectProducerKind::verified_retail) {
-          auto selected = select_retail_object(graph_archive, graph_object, retail_by_unique_name,
-                                               archive_index, object_index);
+          auto selected = select_retail_object(graph_object, retail_by_unique_name, archive_index,
+                                               object_index);
           if (!selected) {
             return Result<jak1_output_recipe::Recipe>::failure(selected.error());
           }

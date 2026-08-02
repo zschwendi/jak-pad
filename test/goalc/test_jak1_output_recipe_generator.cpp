@@ -65,14 +65,14 @@ generator::Graph valid_graph() {
   graph.ordered_source_files = {"goal_src/jak1/code-a.gc", "goal_src/jak1/code-b.gc"};
   graph.archives = {
       {"A.DGO",
-       {{"code-a.o", "code-a", generator::ObjectProducerKind::bundled_source},
-        {"art-ag.go", "art", generator::ObjectProducerKind::verified_retail}}},
+       {{"code-a.o", "code-a", generator::ObjectProducerKind::bundled_source, {}},
+        {"art-ag.go", "art", generator::ObjectProducerKind::verified_retail, "DGO/A.DGO"}}},
       {"B.CGO",
-       {{"code-b.o", "code-b", generator::ObjectProducerKind::bundled_source},
-        {"dir-tpages.go", "dir-tpages", generator::ObjectProducerKind::directory_tpages},
-        {"game-cnt.go", "game-cnt", generator::ObjectProducerKind::game_count},
-        {"test-actor-ag.go", "test-actor", generator::ObjectProducerKind::custom_actor},
-        {"test-zone.go", "test-zone", generator::ObjectProducerKind::custom_level}}},
+       {{"code-b.o", "code-b", generator::ObjectProducerKind::bundled_source, {}},
+        {"dir-tpages.go", "dir-tpages", generator::ObjectProducerKind::directory_tpages, {}},
+        {"game-cnt.go", "game-cnt", generator::ObjectProducerKind::game_count, {}},
+        {"test-actor-ag.go", "test-actor", generator::ObjectProducerKind::custom_actor, {}},
+        {"test-zone.go", "test-zone", generator::ObjectProducerKind::custom_level, {}}}},
   };
   graph.flat_file_copies = {{"/verified/iso/MUS/TWEAKVAL.MUS", "TWEAKVAL.MUS"}};
   graph.generated_flat_files = {
@@ -158,29 +158,38 @@ void test_retail_selection() {
   graph.archives[0].destination_basename = "X.DGO";
   auto result = generator::generate_from_graph(graph, make_manifest(graph.ordered_source_files),
                                                valid_inputs(), test_options());
-  check(!result && result.error().code == generator::ErrorCode::ambiguous_retail_object,
-        "divergent same-name retail objects fail closed");
-
-  auto inputs = valid_inputs();
-  inputs.retail_catalog[0].source_archive_relative_path = "DGO/Y.DGO";
-  inputs.retail_catalog[0].size = inputs.retail_catalog[1].size;
-  inputs.retail_catalog[0].xxh64 = inputs.retail_catalog[1].xxh64;
-  result = generator::generate_from_graph(graph, make_manifest(graph.ordered_source_files), inputs,
-                                          test_options());
-  check(bool(result), "identical duplicate retail objects are accepted");
+  check(bool(result), "public source provenance does not depend on output archive identity");
   if (result) {
     const auto& selected =
         std::get<recipe::VerifiedRetailObject>(result.value().archives[1].objects[1].source);
-    check(selected.source_archive_relative_path == "DGO/Y.DGO",
-          "identical duplicate selection is canonical and deterministic");
+    check(selected.source_archive_relative_path == "DGO/A.DGO",
+          "explicit public provenance selects the intended divergent retail source");
   }
 
-  inputs = valid_inputs();
-  inputs.retail_catalog.clear();
-  result = generator::generate_from_graph(
-      valid_graph(), make_manifest(valid_graph().ordered_source_files), inputs, test_options());
+  graph = valid_graph();
+  graph.archives[0].objects[1].retail_source_archive = "DGO/Z.DGO";
+  result = generator::generate_from_graph(graph, make_manifest(graph.ordered_source_files),
+                                          valid_inputs(), test_options());
+  check(bool(result), "another explicit public source can be selected exactly");
+  if (result) {
+    const auto& selected =
+        std::get<recipe::VerifiedRetailObject>(result.value().archives[0].objects[1].source);
+    check(selected.source_archive_relative_path == "DGO/Z.DGO",
+          "selection follows public provenance rather than catalog order or hashes");
+  }
+
+  graph.archives[0].objects[1].retail_source_archive = "DGO/Y.DGO";
+  result = generator::generate_from_graph(graph, make_manifest(graph.ordered_source_files),
+                                          valid_inputs(), test_options());
   check(!result && result.error().code == generator::ErrorCode::missing_retail_object,
-        "missing retail objects fail closed");
+        "missing public retail provenance fails closed");
+
+  graph = valid_graph();
+  graph.archives[0].objects[1].retail_source_archive.clear();
+  result = generator::generate_from_graph(graph, make_manifest(graph.ordered_source_files),
+                                          valid_inputs(), test_options());
+  check(!result && result.error().code == generator::ErrorCode::invalid_graph,
+        "missing graph provenance fails closed before catalog selection");
 }
 
 void test_provenance_and_callbacks() {

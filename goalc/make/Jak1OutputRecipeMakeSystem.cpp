@@ -1,8 +1,13 @@
+#include "Jak1OutputRecipeMakeSystem.h"
+
 #include <algorithm>
 #include <new>
+#include <unordered_map>
 #include <unordered_set>
 
-#include "Jak1OutputRecipeGenerator.h"
+#include "common/util/FileUtil.h"
+#include "common/util/json_util.h"
+
 #include "goalc/make/MakeSystem.h"
 #include "goalc/make/Tools.h"
 
@@ -63,6 +68,101 @@ std::optional<ObjectProducerKind> producer_kind(std::string_view tool) {
   }
   if (tool == "build-level") {
     return ObjectProducerKind::custom_level;
+  }
+  return {};
+}
+
+std::string source_key(std::string_view value) {
+  std::string key(value);
+  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char byte) {
+    return static_cast<char>(byte >= 'a' && byte <= 'z' ? byte - ('a' - 'A') : byte);
+  });
+  return key;
+}
+
+std::optional<Error> attach_public_retail_provenance(Graph* graph) {
+  const auto all_objects = parse_commented_json(
+      file_util::read_text_file(file_util::get_file_path({"goal_src/jak1/build/all_objs.json"})),
+      "goal_src/jak1/build/all_objs.json");
+  const auto inputs = parse_commented_json(file_util::read_text_file(file_util::get_file_path(
+                                               {"decompiler/config/jak1/ntsc_v1/inputs.jsonc"})),
+                                           "decompiler/config/jak1/ntsc_v1/inputs.jsonc");
+
+  std::unordered_map<std::string, std::vector<std::string>> sources_by_unique_name;
+  for (const auto& row : all_objects) {
+    if (!row.is_array() || row.size() < 4 || !row[0].is_string() || !row[3].is_array()) {
+      return make_error(ErrorCode::invalid_graph,
+                        "The public Jak 1 object provenance table is malformed.");
+    }
+    auto sources = row[3].get<std::vector<std::string>>();
+    if (sources.empty() ||
+        !sources_by_unique_name.emplace(row[0].get<std::string>(), std::move(sources)).second) {
+      return make_error(ErrorCode::invalid_graph,
+                        "The public Jak 1 object provenance table repeats an identity.");
+    }
+  }
+
+  struct OrderedArchive {
+    std::size_t input_index = 0;
+    std::string path;
+  };
+  std::unordered_map<std::string, OrderedArchive> archives_by_stem;
+  const auto dgo_names = inputs.at("dgo_names").get<std::vector<std::string>>();
+  for (std::size_t index = 0; index < dgo_names.size(); ++index) {
+    const auto& path = dgo_names[index];
+    const auto slash = path.find_last_of('/');
+    const auto dot = path.find_last_of('.');
+    if (dot == std::string::npos || dot <= (slash == std::string::npos ? 0 : slash + 1)) {
+      return make_error(ErrorCode::invalid_graph,
+                        "The public Jak 1 input archive order contains an invalid path.");
+    }
+    const auto stem = path.substr(slash == std::string::npos ? 0 : slash + 1,
+                                  dot - (slash == std::string::npos ? 0 : slash + 1));
+    if (!archives_by_stem.emplace(source_key(stem), OrderedArchive{index, path}).second) {
+      return make_error(ErrorCode::invalid_graph,
+                        "The public Jak 1 input archive order repeats an archive stem.");
+    }
+  }
+
+  for (std::uint32_t archive_index = 0; archive_index < graph->archives.size(); ++archive_index) {
+    auto& archive = graph->archives[archive_index];
+    for (std::uint32_t object_index = 0; object_index < archive.objects.size(); ++object_index) {
+      auto& object = archive.objects[object_index];
+      if (object.producer != ObjectProducerKind::verified_retail) {
+        continue;
+      }
+      auto unique_name = object.prepared_basename;
+      if (!unique_name.ends_with(".go")) {
+        return make_error(ErrorCode::invalid_graph,
+                          "A retail graph object has no public .go identity.", archive_index,
+                          object_index);
+      }
+      unique_name.resize(unique_name.size() - 3);
+      const auto found_sources = sources_by_unique_name.find(unique_name);
+      if (found_sources == sources_by_unique_name.end()) {
+        return make_error(ErrorCode::invalid_graph,
+                          "A retail graph object is absent from the public provenance table.",
+                          archive_index, object_index);
+      }
+
+      const OrderedArchive* winner = nullptr;
+      for (const auto& source : found_sources->second) {
+        const auto found_archive = archives_by_stem.find(source_key(source));
+        if (found_archive != archives_by_stem.end() &&
+            (!winner || found_archive->second.input_index > winner->input_index)) {
+          winner = &found_archive->second;
+        }
+      }
+      if (!winner) {
+        return make_error(ErrorCode::invalid_graph,
+                          "A retail graph object's public sources are absent from the checked "
+                          "input archive order.",
+                          archive_index, object_index);
+      }
+      // Desktop raw_obj generation overwrites equal unique names in dgo_names order. Recording the
+      // final public source makes that behavior explicit and independent of retail catalog order.
+      object.retail_source_archive = winner->path;
+    }
   }
   return {};
 }
@@ -157,7 +257,7 @@ Result<Graph> inspect_make_system(const MakeSystem& make_system, const Options& 
                 static_cast<uint32_t>(graph.archives.size()), object_index));
           }
           archive.objects.push_back(
-              {description_entry.file_name, description_entry.name_in_dgo, *kind});
+              {description_entry.file_name, description_entry.name_in_dgo, *kind, {}});
         }
         total_objects += archive.objects.size();
         graph.archives.push_back(std::move(archive));
@@ -209,6 +309,9 @@ Result<Graph> inspect_make_system(const MakeSystem& make_system, const Options& 
     std::sort(graph.archives.begin(), graph.archives.end(), by_destination);
     std::sort(graph.flat_file_copies.begin(), graph.flat_file_copies.end(), by_destination);
     std::sort(graph.generated_flat_files.begin(), graph.generated_flat_files.end(), by_destination);
+    if (const auto error = attach_public_retail_provenance(&graph)) {
+      return Result<Graph>::failure(*error);
+    }
     return Result<Graph>::success(std::move(graph));
   } catch (const std::bad_alloc&) {
     return Result<Graph>::failure(

@@ -9,51 +9,17 @@
 #include <utility>
 #include <vector>
 
+#include "common/custom_data/Jak1OutputGraph.h"
 #include "common/custom_data/Jak1OutputRecipe.h"
-
-class MakeSystem;
 
 namespace jak1_output_recipe_generator {
 
-enum class ObjectProducerKind {
-  bundled_source,
-  verified_retail,
-  directory_tpages,
-  game_count,
-  custom_actor,
-  custom_level,
-};
-
-struct GraphObject {
-  std::string prepared_basename;
-  std::string internal_name;
-  ObjectProducerKind producer = ObjectProducerKind::bundled_source;
-};
-
-struct GraphArchive {
-  std::string destination_basename;
-  std::vector<GraphObject> objects;
-};
-
-struct GraphFlatCopy {
-  std::string source_path;
-  std::string destination_basename;
-};
-
-struct GraphGeneratedFlatFile {
-  jak1_output_recipe::GeneratedFlatFileKind kind =
-      jak1_output_recipe::GeneratedFlatFileKind::game_text;
-  std::string destination_basename;
-};
-
-// A deterministic, data-only projection of the MakeSystem graph. The ordered source list must
-// contain the exact inputs to GROUP:all-code; archive object order is never sorted or deduplicated.
-struct Graph {
-  std::vector<std::string> ordered_source_files;
-  std::vector<GraphArchive> archives;
-  std::vector<GraphFlatCopy> flat_file_copies;
-  std::vector<GraphGeneratedFlatFile> generated_flat_files;
-};
+using ObjectProducerKind = jak1_output_graph::ObjectProducerKind;
+using GraphObject = jak1_output_graph::GraphObject;
+using GraphArchive = jak1_output_graph::GraphArchive;
+using GraphFlatCopy = jak1_output_graph::GraphFlatCopy;
+using GraphGeneratedFlatFile = jak1_output_graph::GraphGeneratedFlatFile;
+using Graph = jak1_output_graph::Graph;
 
 struct SourceObjectPackEntry {
   std::string source_file;
@@ -164,17 +130,10 @@ class Result {
 Result<SourceObjectPackManifest> parse_source_object_pack_manifest(std::string_view bytes,
                                                                    const Options& options = {});
 
-Result<Graph> inspect_make_system(const MakeSystem& make_system, const Options& options = {});
-
 Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
                                                        std::string_view source_object_pack_manifest,
                                                        const VerifiedInputs& verified_inputs,
                                                        const Options& options = {});
-
-Result<jak1_output_recipe::Recipe> generate(const MakeSystem& make_system,
-                                            std::string_view source_object_pack_manifest,
-                                            const VerifiedInputs& verified_inputs,
-                                            const Options& options = {});
 
 const char* error_code_name(ErrorCode code);
 

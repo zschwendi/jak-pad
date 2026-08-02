@@ -86,12 +86,30 @@ add_library(compiler
 
 target_link_libraries(compiler common Zydis tiny_gltf decomp)
 
-add_library(jak1-output-recipe-generator
-        make/Jak1OutputRecipeGenerator.cpp
-        make/Jak1OutputRecipeMakeSystem.cpp
-        ../common/custom_data/Jak1OutputRecipe.cpp)
-target_link_libraries(jak1-output-recipe-generator PUBLIC compiler decomp)
+include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_output_recipe_core.cmake")
+
+add_library(jak1-output-recipe-generator make/Jak1OutputRecipeMakeSystem.cpp)
+target_link_libraries(jak1-output-recipe-generator
+                      PUBLIC jak1-output-recipe-core compiler decomp)
 target_compile_features(jak1-output-recipe-generator PUBLIC cxx_std_20)
+
+add_executable(jak1-public-output-graph-generator
+               make/Jak1PublicOutputGraphGeneratorMain.cpp)
+target_link_libraries(jak1-public-output-graph-generator
+                      PRIVATE jak1-output-recipe-generator)
+target_compile_features(jak1-public-output-graph-generator PRIVATE cxx_std_20)
+
+if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
+  add_executable(jak1-public-output-graph-exactness-test
+                 "${CMAKE_SOURCE_DIR}/test/goalc/test_jak1_public_output_graph_exactness.cpp")
+  target_link_libraries(jak1-public-output-graph-exactness-test
+                        PRIVATE jak1-output-recipe-generator)
+  target_compile_features(jak1-public-output-graph-exactness-test PRIVATE cxx_std_20)
+  add_test(NAME jak1-public-output-graph-exactness
+           COMMAND jak1-public-output-graph-exactness-test)
+  set_tests_properties(jak1-public-output-graph-exactness
+                       PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endif()
 
 if (WIN32)
     target_link_libraries(compiler mman)

@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -10,7 +11,7 @@
 
 #include "common/util/FileUtil.h"
 
-#include "goalc/make/Jak1OutputRecipeGenerator.h"
+#include "goalc/make/Jak1OutputRecipeMakeSystem.h"
 #include "goalc/make/MakeSystem.h"
 
 #define XXH_PRIVATE_API
@@ -53,10 +54,8 @@ std::string synthetic_manifest(const std::vector<std::string>& sources) {
   for (const auto& source : sources) {
     auto tag = std::filesystem::path(source).stem().string();
     char hash[17]{};
-    std::snprintf(hash, sizeof(hash), "%016llx",
-                  static_cast<unsigned long long>(seed + 1));
-    rows += source + "\t" + tag + "\t" + tag + ".o\t" + std::to_string(seed) + "\t" +
-            hash + "\n";
+    std::snprintf(hash, sizeof(hash), "%016llx", static_cast<unsigned long long>(seed + 1));
+    rows += source + "\t" + tag + "\t" + tag + ".o\t" + std::to_string(seed) + "\t" + hash + "\n";
     seed += 0x100;
   }
 
@@ -65,12 +64,7 @@ std::string synthetic_manifest(const std::vector<std::string>& sources) {
   std::snprintf(aggregate_text, sizeof(aggregate_text), "%016llx",
                 static_cast<unsigned long long>(aggregate));
   return "FORMAT\tgoalc-source-object-pack-v1\nCOUNT\t" + std::to_string(sources.size()) +
-         "\nAGGREGATE_XXH64\t" + aggregate_text +
-         "\nSOURCE\tTAG\tFILE\tBYTES\tXXH64\n" + rows;
-}
-
-std::string synthetic_retail_path(const std::string& destination_basename) {
-  return (destination_basename.ends_with(".CGO") ? "CGO/" : "DGO/") + destination_basename;
+         "\nAGGREGATE_XXH64\t" + aggregate_text + "\nSOURCE\tTAG\tFILE\tBYTES\tXXH64\n" + rows;
 }
 
 struct SyntheticInputs {
@@ -95,12 +89,13 @@ SyntheticInputs make_synthetic_inputs(const jak1_output_recipe_generator::Graph&
     }
   }
   result.verified.verified_extracted_iso_relative_paths.assign(verified_flat_paths.begin(),
-                                                                verified_flat_paths.end());
+                                                               verified_flat_paths.end());
 
   std::uint64_t seed = 0x100000;
+  std::map<std::string, std::uint32_t> catalog_index_by_key;
+  std::map<std::string, std::uint32_t> next_index_by_archive;
   for (const auto& archive : graph.archives) {
-    for (std::uint32_t object_index = 0; object_index < archive.objects.size(); ++object_index) {
-      const auto& object = archive.objects[object_index];
+    for (const auto& object : archive.objects) {
       if (object.producer != generator::ObjectProducerKind::verified_retail) {
         continue;
       }
@@ -108,26 +103,32 @@ SyntheticInputs make_synthetic_inputs(const jak1_output_recipe_generator::Graph&
       if (unique_name.ends_with(".go")) {
         unique_name.resize(unique_name.size() - 3);
       }
-      result.verified.retail_catalog.push_back(
-          {synthetic_retail_path(archive.destination_basename), object_index, object.internal_name,
-           std::move(unique_name), 4, seed, seed + 1});
       ++result.retail_occurrences;
+      const auto key =
+          object.retail_source_archive + "\n" + unique_name + "\n" + object.internal_name;
+      if (catalog_index_by_key.contains(key)) {
+        continue;
+      }
+      const auto index = next_index_by_archive[object.retail_source_archive]++;
+      catalog_index_by_key.emplace(key, index);
+      result.verified.retail_catalog.push_back({object.retail_source_archive, index,
+                                                object.internal_name, std::move(unique_name), 4,
+                                                seed, seed + 1});
       seed += 0x100;
     }
   }
   return result;
 }
 
-bool verify_synthetic_graph_complete_resolution(
-    const jak1_output_recipe_generator::Graph& graph) {
+bool verify_synthetic_graph_complete_resolution(const jak1_output_recipe_generator::Graph& graph) {
   namespace generator = jak1_output_recipe_generator;
   namespace recipe = jak1_output_recipe;
 
   // These ideal entries are derived from the public graph itself. This proves structural coverage
-  // and deterministic selection only; it does not prove compatibility with real retail unique names.
+  // and deterministic selection only; it does not prove compatibility with real retail unique
+  // names.
   auto inputs = make_synthetic_inputs(graph);
-  if (inputs.retail_occurrences == 0 ||
-      inputs.retail_occurrences != inputs.verified.retail_catalog.size()) {
+  if (inputs.retail_occurrences == 0 || inputs.verified.retail_catalog.empty()) {
     std::fputs("Synthetic graph coverage found no complete retail input set.\n", stderr);
     return false;
   }
@@ -165,7 +166,8 @@ bool verify_synthetic_graph_complete_resolution(
       std::fputs("Synthetic recipe changed an archive identity or object count.\n", stderr);
       return false;
     }
-    for (std::size_t object_index = 0; object_index < graph_archive.objects.size(); ++object_index) {
+    for (std::size_t object_index = 0; object_index < graph_archive.objects.size();
+         ++object_index) {
       const auto& graph_object = graph_archive.objects[object_index];
       const auto& output_object = output_archive.objects[object_index];
       if (graph_object.producer != generator::ObjectProducerKind::verified_retail) {
@@ -173,9 +175,7 @@ bool verify_synthetic_graph_complete_resolution(
       }
       const auto* retail = std::get_if<recipe::VerifiedRetailObject>(&output_object.source);
       if (!retail || output_object.internal_name != graph_object.internal_name ||
-          retail->source_archive_relative_path !=
-              synthetic_retail_path(graph_archive.destination_basename) ||
-          retail->archive_object_index != object_index) {
+          retail->source_archive_relative_path != graph_object.retail_source_archive) {
         std::fputs("Synthetic recipe did not resolve an expected retail graph occurrence.\n",
                    stderr);
         return false;
@@ -184,13 +184,15 @@ bool verify_synthetic_graph_complete_resolution(
     }
   }
   if (resolved_retail != inputs.retail_occurrences) {
-    std::fputs("Synthetic recipe did not resolve every expected retail graph occurrence.\n", stderr);
+    std::fputs("Synthetic recipe did not resolve every expected retail graph occurrence.\n",
+               stderr);
     return false;
   }
 
-  std::printf("Synthetic graph-complete retail coverage resolved %zu occurrences; real catalog "
-              "compatibility is not covered.\n",
-              resolved_retail);
+  std::printf(
+      "Synthetic graph-complete retail coverage resolved %zu occurrences; real catalog "
+      "compatibility is not covered.\n",
+      resolved_retail);
   return true;
 }
 
