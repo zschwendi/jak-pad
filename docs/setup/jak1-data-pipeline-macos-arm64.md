@@ -94,6 +94,21 @@ the embedded public source order, exact directory contents, byte limits and ever
 object hash before an app consumes the pack. Generated packs are build products and
 must not be committed.
 
+To recheck an existing pack without regenerating or recompiling its 518 objects,
+build the isolated reader once and run its verifier. By default the verifier requires
+the recorded canonical aggregate, so a writer change that changes the recorded pack
+output or identity, graph, manifest, or object set fails closed:
+
+```bash
+cmake -S . -B build-source-pack-verify -G Ninja \
+  -DOPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY=ON
+cmake --build build-source-pack-verify --target jak1-source-object-pack-verify
+build-source-pack-verify/jak1-source-object-pack-verify "$PACK_ROOT"
+```
+
+When intentionally validating a separately recorded replacement pack, pass its
+16-digit manifest aggregate explicitly with `--expected-aggregate`.
+
 ## Step 2 — Choose an outside-the-repo data root
 
 ```bash
