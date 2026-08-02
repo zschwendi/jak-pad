@@ -1,12 +1,16 @@
 #pragma once
 
+#include <cstddef>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "common/common_types.h"
-#include "common/goos/ParseHelpers.h"
-#include "common/log/log.h"
+
+namespace goos {
+class Object;
+}
 
 class DataObjectGenerator {
  public:
