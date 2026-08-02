@@ -123,7 +123,7 @@ bool deterministic_little_endian_round_trip() {
   CHECK(encoded.value() == encoded_again.value());
   const auto& bytes = encoded.value();
   CHECK(std::equal(kMagic.begin(), kMagic.end(), bytes.begin()));
-  CHECK(bytes[8] == 2 && bytes[9] == 0 && bytes[10] == 0 && bytes[11] == 0);
+  CHECK(bytes[8] == 3 && bytes[9] == 0 && bytes[10] == 0 && bytes[11] == 0);
   CHECK(read_le64(bytes.data() + 12) == bytes.size() - 28);
   CHECK(read_le64(bytes.data() + bytes.size() - 8) == XXH64(bytes.data(), bytes.size() - 8, 0));
   const std::array<uint8_t, 8> source_size_le = {3, 0, 0, 0, 0, 0, 0, 0};
@@ -155,10 +155,24 @@ bool rejects_corruption_bad_framing_and_every_truncation() {
   CHECK(!result && result.error().code == ErrorCode::wrong_magic);
 
   auto wrong_schema = encoded.value();
-  wrong_schema[8] = 3;
+  wrong_schema[8] = 4;
   rewrite_hash(&wrong_schema);
   result = decode(wrong_schema, options);
   CHECK(!result && result.error().code == ErrorCode::unsupported_schema);
+
+  auto old_schema = encoded.value();
+  old_schema[8] = 2;
+  rewrite_hash(&old_schema);
+  result = decode(old_schema, options);
+  CHECK(!result && result.error().code == ErrorCode::unsupported_schema);
+
+  auto unknown_profile = encoded.value();
+  const auto game = find_wire_string(unknown_profile, kGameId);
+  CHECK(game < unknown_profile.size());
+  unknown_profile[game + 4 + std::string_view(kGameId).size()] = 0xff;
+  rewrite_hash(&unknown_profile);
+  result = decode(unknown_profile, options);
+  CHECK(!result && result.error().code == ErrorCode::wrong_provenance);
 
   auto corrupt = encoded.value();
   corrupt[30] ^= 1;
@@ -294,6 +308,50 @@ bool rejects_wrong_source_pack_and_object_versions() {
   std::get<VerifiedRetailObject>(recipe.archives[0].objects[1].source).object_version = 5;
   result = encode(recipe, options);
   CHECK(!result && result.error().code == ErrorCode::invalid_object_version);
+  return true;
+}
+
+bool base_retail_profile_projects_exactly_one_source_object() {
+  const auto options = make_options();
+  auto recipe = make_recipe();
+  recipe.profile = OutputProfile::jak1_base_retail;
+  recipe.projected_source_objects = {{kBaseRetailProjectedBundlePath, 7, 0x3333333333333333ULL}};
+  recipe.archives[1].objects.erase(recipe.archives[1].objects.begin() + 1);
+  auto encoded = encode(recipe, options);
+  CHECK(encoded);
+  const auto decoded = decode(encoded.value(), options);
+  CHECK(decoded);
+  CHECK(decoded.value() == recipe);
+
+  recipe.archives[1].objects.erase(recipe.archives[1].objects.begin());
+  recipe.archives[0].objects.erase(recipe.archives[0].objects.begin());
+  auto result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::wrong_source_pack);
+
+  recipe = make_recipe();
+  recipe.profile = OutputProfile::jak1_base_retail;
+  recipe.projected_source_objects = {{kBaseRetailProjectedBundlePath, 7, 0x3333333333333333ULL}};
+  recipe.archives[1].objects.erase(recipe.archives[1].objects.begin() + 1);
+  recipe.archives.push_back(
+      {"TSZ.DGO", {{"test-actor", GeneratedData{GeneratedDataKind::custom_actor}}}});
+  std::sort(recipe.archives.begin(), recipe.archives.end(),
+            [](const auto& left, const auto& right) {
+              return left.destination_basename < right.destination_basename;
+            });
+  result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::wrong_provenance);
+
+  recipe = make_recipe();
+  recipe.profile = OutputProfile::jak1_base_retail;
+  recipe.projected_source_objects = {{"other.o", 7, 0x3333333333333333ULL}};
+  recipe.archives[1].objects.erase(recipe.archives[1].objects.begin() + 1);
+  result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::wrong_source_pack);
+
+  recipe = make_recipe();
+  recipe.profile = static_cast<OutputProfile>(0xff);
+  result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::wrong_provenance);
   return true;
 }
 
@@ -566,6 +624,8 @@ int main() {
       {"rejects_reserved_savegame_icon_destination", rejects_reserved_savegame_icon_destination},
       {"rejects_wrong_source_pack_and_object_versions",
        rejects_wrong_source_pack_and_object_versions},
+      {"base_retail_profile_projects_exactly_one_source_object",
+       base_retail_profile_projects_exactly_one_source_object},
       {"enforces_name_path_count_and_size_caps", enforces_name_path_count_and_size_caps},
       {"rejects_ambiguity_duplicates_and_identity_conflicts",
        rejects_ambiguity_duplicates_and_identity_conflicts},

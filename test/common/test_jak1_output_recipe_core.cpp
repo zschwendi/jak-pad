@@ -173,6 +173,84 @@ bool portable_generation_core_consumes_embedded_graph() {
   return true;
 }
 
+bool base_retail_profile_omits_only_custom_outputs() {
+  const auto full = jak1_public_output_graph::decode();
+  const auto base = jak1_public_output_graph::decode_base_retail();
+  CHECK(full);
+  CHECK(base);
+  CHECK(std::string(jak1_public_output_graph::kBaseRetailProfileName) == "jak1-base-retail");
+  CHECK(base.value().ordered_source_files == full.value().ordered_source_files);
+  CHECK(base.value().ordered_source_files.size() == 518);
+  CHECK(base.value().archives.size() == full.value().archives.size() - 1);
+  CHECK(base.value().archives.size() == 27);
+  CHECK(base.value().flat_file_copies == full.value().flat_file_copies);
+  CHECK(base.value().generated_flat_files == full.value().generated_flat_files);
+
+  for (const auto& archive : base.value().archives) {
+    CHECK(archive.destination_basename != "TSZ.DGO");
+    for (const auto& object : archive.objects) {
+      CHECK(object.producer != graph::ObjectProducerKind::custom_actor);
+      CHECK(object.producer != graph::ObjectProducerKind::custom_level);
+    }
+  }
+
+  auto inputs = synthetic_inputs(base.value());
+  const auto manifest = synthetic_manifest(base.value().ordered_source_files);
+  generator::Options options;
+  options.output_profile = jak1_output_recipe::OutputProfile::jak1_base_retail;
+  const auto generated = generator::generate_from_graph(base.value(), manifest, inputs, options);
+  if (!generated) {
+    std::cerr << "base-retail generation failed: " << generated.error().message << '\n';
+  }
+  CHECK(generated);
+  CHECK(generated.value().source_object_pack.object_count == 518);
+  CHECK(generated.value().profile == jak1_output_recipe::OutputProfile::jak1_base_retail);
+  CHECK(generated.value().projected_source_objects.size() == 1);
+  CHECK(generated.value().projected_source_objects.front().bundle_relative_path ==
+        jak1_output_recipe::kBaseRetailProjectedBundlePath);
+  CHECK(generated.value().archives.size() == 27);
+  for (const auto& archive : generated.value().archives) {
+    CHECK(archive.destination_basename != "TSZ.DGO");
+    for (const auto& object : archive.objects) {
+      if (const auto* data = std::get_if<jak1_output_recipe::GeneratedData>(&object.source)) {
+        CHECK(data->kind != jak1_output_recipe::GeneratedDataKind::custom_actor);
+        CHECK(data->kind != jak1_output_recipe::GeneratedDataKind::custom_level);
+      }
+    }
+  }
+
+  auto wrong_projection = base.value();
+  std::map<std::string, std::size_t> bundled_occurrences;
+  for (const auto& archive : wrong_projection.archives) {
+    for (const auto& object : archive.objects) {
+      if (object.producer == graph::ObjectProducerKind::bundled_source) {
+        ++bundled_occurrences[object.prepared_basename];
+      }
+    }
+  }
+  bool replaced = false;
+  for (auto& archive : wrong_projection.archives) {
+    for (auto& object : archive.objects) {
+      if (object.producer == graph::ObjectProducerKind::bundled_source &&
+          bundled_occurrences[object.prepared_basename] == 1 &&
+          object.prepared_basename != jak1_output_recipe::kBaseRetailProjectedBundlePath) {
+        object.internal_name = jak1_output_recipe::kBaseRetailProjectedSourceTag;
+        object.prepared_basename = jak1_output_recipe::kBaseRetailProjectedBundlePath;
+        replaced = true;
+        break;
+      }
+    }
+    if (replaced) {
+      break;
+    }
+  }
+  CHECK(replaced);
+  const auto rejected = generator::generate_from_graph(wrong_projection, manifest, inputs, options);
+  CHECK(!rejected);
+  CHECK(rejected.error().code == generator::ErrorCode::manifest_graph_mismatch);
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -180,6 +258,7 @@ int main() {
       embedded_graph_round_trips_exactly,
       rejects_corruption_limits_and_cancellation,
       portable_generation_core_consumes_embedded_graph,
+      base_retail_profile_omits_only_custom_outputs,
   };
   for (const auto test : tests) {
     if (!test()) {

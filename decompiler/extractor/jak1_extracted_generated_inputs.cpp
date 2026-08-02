@@ -101,7 +101,9 @@ bool valid_options(const Options& options) {
          limits.max_tpage_entries > 0 && limits.max_game_count_entries > 0 &&
          limits.max_text_lines_per_bank > 0 && limits.max_subtitle_scenes_per_bank > 0 &&
          limits.max_subtitle_lines_per_scene > 0 && limits.max_name_bytes > 0 &&
-         limits.max_string_bytes > 0 && limits.max_generated_bank_string_bytes > 0;
+         limits.max_string_bytes > 0 && limits.max_generated_bank_string_bytes > 0 &&
+         (options.subtitle_mode == artifacts::SubtitleMode::public_content ||
+          options.subtitle_mode == artifacts::SubtitleMode::empty);
 }
 
 Result<std::filesystem::path> checked_input_path(const ValidatedTree& tree,
@@ -1005,6 +1007,19 @@ std::optional<Error> canonicalize_public_data(const PublicAdditions& additions,
                           bank.destination_basename, {}, bank.language_id);
       }
     }
+  }
+
+  if (options.subtitle_mode == artifacts::SubtitleMode::empty) {
+    if (!additions.subtitles.empty()) {
+      return make_error(ErrorCode::invalid_public_data,
+                        "The empty-subtitle mode does not accept public subtitle content.");
+    }
+    subtitles->clear();
+    subtitles->reserve(kRetailLanguageCount);
+    for (std::uint32_t language = 0; language < kRetailLanguageCount; ++language) {
+      subtitles->push_back({std::to_string(language) + "SUBTIT.TXT", language, {}});
+    }
+    return {};
   }
 
   if (additions.subtitles.size() != kRetailLanguageCount) {

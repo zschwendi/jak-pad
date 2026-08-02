@@ -46,7 +46,9 @@ bool valid_options(const Options& options) {
          limits.max_banks > 0 && limits.max_text_lines_per_bank > 0 &&
          limits.max_subtitle_scenes_per_bank > 0 && limits.max_subtitle_lines_per_scene > 0 &&
          limits.max_name_bytes > 0 && limits.max_string_bytes > 0 &&
-         limits.max_artifact_bytes > 0 && limits.max_total_bytes >= limits.max_artifact_bytes;
+         limits.max_artifact_bytes > 0 && limits.max_total_bytes >= limits.max_artifact_bytes &&
+         (options.subtitle_mode == SubtitleMode::public_content ||
+          options.subtitle_mode == SubtitleMode::empty);
 }
 
 bool valid_basename(std::string_view value, std::uint32_t cap) {
@@ -248,7 +250,9 @@ std::optional<Error> validate_subtitle_bank(const SubtitleBank& bank,
                                             const Options& options) {
   const auto expected_destination = std::to_string(bank.language_id) + "SUBTIT.TXT";
   if (!valid_basename(bank.destination_basename, options.limits.max_name_bytes) ||
-      bank.destination_basename != expected_destination || bank.scenes.empty() ||
+      bank.destination_basename != expected_destination ||
+      (options.subtitle_mode == SubtitleMode::public_content && bank.scenes.empty()) ||
+      (options.subtitle_mode == SubtitleMode::empty && !bank.scenes.empty()) ||
       bank.scenes.size() > options.limits.max_subtitle_scenes_per_bank) {
     return make_error(ErrorCode::invalid_input, "A subtitle bank is invalid.", bank_index);
   }

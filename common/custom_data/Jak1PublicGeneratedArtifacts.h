@@ -66,6 +66,11 @@ struct Inputs {
   std::vector<SubtitleBank> subtitles;
 };
 
+enum class SubtitleMode : std::uint8_t {
+  public_content = 1,
+  empty = 2,
+};
+
 enum class ArtifactStorage : std::uint8_t {
   object = 1,
   flat_file = 2,
@@ -108,6 +113,7 @@ struct Limits {
 
 struct Options {
   Limits limits;
+  SubtitleMode subtitle_mode = SubtitleMode::public_content;
   CancelCallback should_cancel;
 };
 

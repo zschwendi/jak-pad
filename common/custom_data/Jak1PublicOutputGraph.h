@@ -7,8 +7,12 @@
 
 namespace jak1_public_output_graph {
 
+inline constexpr const char* kBaseRetailProfileName = "jak1-base-retail";
+
 std::span<const std::uint8_t> wire_data();
 jak1_output_graph::Result<jak1_output_graph::Graph> decode(
+    const jak1_output_graph::Options& options = {});
+jak1_output_graph::Result<jak1_output_graph::Graph> decode_base_retail(
     const jak1_output_graph::Options& options = {});
 
 }  // namespace jak1_public_output_graph

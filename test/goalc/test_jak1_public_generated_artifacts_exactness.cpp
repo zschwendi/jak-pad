@@ -149,6 +149,44 @@ int main() {
       return 1;
     }
   }
+
+  const auto base_graph = jak1_public_output_graph::decode_base_retail();
+  if (!base_graph) {
+    std::fputs("Could not decode the checked base-retail graph.\n", stderr);
+    return 1;
+  }
+  auto empty_inputs = synthetic_inputs(base_graph.value());
+  for (auto& bank : empty_inputs.subtitles) {
+    bank.scenes.clear();
+  }
+  artifacts::Options empty_options;
+  empty_options.subtitle_mode = artifacts::SubtitleMode::empty;
+  const auto empty_built = artifacts::build(base_graph.value(), empty_inputs, empty_options);
+  if (!empty_built) {
+    std::fprintf(stderr, "Empty-subtitle generation failed: %s\n",
+                 empty_built.error().message.c_str());
+    return 1;
+  }
+  std::size_t empty_subtitle_files = 0;
+  for (const auto& artifact : empty_built.value().artifacts) {
+    if (artifact.flat_file_kind != recipe::GeneratedFlatFileKind::game_subtitle) {
+      continue;
+    }
+    const auto bank = std::find_if(
+        empty_inputs.subtitles.begin(), empty_inputs.subtitles.end(), [&](const auto& candidate) {
+          return candidate.destination_basename == artifact.destination_basename;
+        });
+    if (bank == empty_inputs.subtitles.end() || artifact.bytes != reference_subtitles(*bank)) {
+      std::fputs("An empty subtitle bank differs from the desktop data-object generator.\n",
+                 stderr);
+      return 1;
+    }
+    ++empty_subtitle_files;
+  }
+  if (empty_subtitle_files != 7) {
+    std::fputs("The base-retail output does not contain seven empty subtitle banks.\n", stderr);
+    return 1;
+  }
   std::printf("All %zu checked public artifacts exactly match the desktop generator.\n",
               built.value().artifacts.size());
   return 0;

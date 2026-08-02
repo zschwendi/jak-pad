@@ -44,11 +44,15 @@ std::optional<Error> check_cancelled(const Options& options,
 }
 
 bool valid_options(const Options& options) {
+  const auto valid_profile =
+      options.output_profile == jak1_output_recipe::OutputProfile::full_public ||
+      options.output_profile == jak1_output_recipe::OutputProfile::jak1_base_retail;
   return options.limits.max_manifest_bytes > 0 && options.limits.max_manifest_entries > 0 &&
          options.limits.max_catalog_entries > 0 && options.limits.max_graph_archives > 0 &&
          options.limits.max_graph_objects > 0 && options.limits.max_path_bytes > 0 &&
          options.limits.max_name_bytes > 0 && !options.iso_target.empty() &&
-         !options.source_target.empty() && options.expected_source_object_count > 0 &&
+         !options.source_target.empty() && valid_profile &&
+         options.expected_source_object_count > 0 &&
          options.expected_source_object_count <= options.limits.max_manifest_entries;
 }
 
@@ -410,6 +414,7 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
     for (const auto& entry : manifest.entries) {
       source_objects.emplace(entry.bundle_relative_path, &entry);
     }
+    std::unordered_set<std::string> referenced_source_objects;
 
     std::unordered_map<std::string, std::vector<const RetailCatalogObject*>> retail_by_unique_name;
     std::unordered_set<std::string> catalog_identities;
@@ -443,6 +448,7 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
     }
 
     jak1_output_recipe::Recipe recipe;
+    recipe.profile = options.output_profile;
     recipe.revision = verified_inputs.revision;
     recipe.source_object_pack = manifest.identity;
     size_t total_graph_objects = 0;
@@ -492,6 +498,7 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
           }
           object.source = jak1_output_recipe::BundledSourceObject{
               found->second->bundle_relative_path, found->second->size, found->second->xxh64};
+          referenced_source_objects.emplace(found->second->bundle_relative_path);
         } else if (graph_object.producer == ObjectProducerKind::verified_retail) {
           auto selected = select_retail_object(graph_object, retail_by_unique_name, archive_index,
                                                object_index);
@@ -514,6 +521,29 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
         archive.objects.push_back(std::move(object));
       }
       recipe.archives.push_back(std::move(archive));
+    }
+
+    for (const auto& entry : manifest.entries) {
+      if (referenced_source_objects.contains(entry.bundle_relative_path)) {
+        continue;
+      }
+      if (options.output_profile != jak1_output_recipe::OutputProfile::jak1_base_retail ||
+          entry.source_file != jak1_output_recipe::kBaseRetailProjectedSourceFile ||
+          entry.tag != jak1_output_recipe::kBaseRetailProjectedSourceTag ||
+          entry.bundle_relative_path != jak1_output_recipe::kBaseRetailProjectedBundlePath ||
+          !recipe.projected_source_objects.empty()) {
+        return Result<jak1_output_recipe::Recipe>::failure(make_error(
+            ErrorCode::manifest_graph_mismatch,
+            "The graph projects an unexpected object out of the exact source-object pack."));
+      }
+      recipe.projected_source_objects.push_back(
+          {entry.bundle_relative_path, entry.size, entry.xxh64});
+    }
+    if (options.output_profile == jak1_output_recipe::OutputProfile::jak1_base_retail &&
+        recipe.projected_source_objects.size() != 1) {
+      return Result<jak1_output_recipe::Recipe>::failure(make_error(
+          ErrorCode::manifest_graph_mismatch,
+          "The base-retail graph did not project exactly the checked test-zone source object."));
     }
 
     recipe.flat_file_copies.reserve(graph.flat_file_copies.size());

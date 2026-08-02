@@ -236,6 +236,40 @@ bool loads_and_canonicalizes_generated_inputs() {
   return true;
 }
 
+bool empty_subtitle_mode_preserves_retail_game_text() {
+  Fixture fixture;
+  adapter::PublicAdditions additions;
+  adapter::Options options;
+  options.subtitle_mode = artifacts::SubtitleMode::empty;
+  const auto result = adapter::build(fixture.tree(), additions, options);
+  CHECK(result);
+  CHECK(result.value().game_text.size() == 7);
+  for (std::uint32_t language = 0; language < 7; ++language) {
+    const auto& bank = result.value().game_text[language];
+    CHECK(bank.destination_basename == std::to_string(language) + "COMMON.TXT");
+    CHECK(bank.language_id == language);
+    CHECK(bank.group_name == "common");
+    CHECK(bank.lines.size() == 2);
+    CHECK(bank.lines[0].id == 0x100);
+    CHECK(bank.lines[0].encoded_text == "earlier-" + std::to_string(language));
+    CHECK(bank.lines[1].id == 0x200);
+    CHECK(bank.lines[1].encoded_text == "later-" + std::to_string(language));
+  }
+  CHECK(result.value().subtitles.size() == 7);
+  for (std::uint32_t language = 0; language < 7; ++language) {
+    const auto& bank = result.value().subtitles[language];
+    CHECK(bank.destination_basename == std::to_string(language) + "SUBTIT.TXT");
+    CHECK(bank.language_id == language);
+    CHECK(bank.scenes.empty());
+  }
+
+  additions = public_additions();
+  const auto rejected = adapter::build(fixture.tree(), additions, options);
+  CHECK(!rejected);
+  CHECK(rejected.error().code == adapter::ErrorCode::invalid_public_data);
+  return true;
+}
+
 bool rejects_malformed_retail_pointer() {
   Fixture fixture;
   auto bytes = game_text_object(3);
@@ -479,6 +513,8 @@ int main() {
   const std::array tests = {
       std::pair{"loads_and_canonicalizes_generated_inputs",
                 loads_and_canonicalizes_generated_inputs},
+      std::pair{"empty_subtitle_mode_preserves_retail_game_text",
+                empty_subtitle_mode_preserves_retail_game_text},
       std::pair{"rejects_malformed_retail_pointer", rejects_malformed_retail_pointer},
       std::pair{"decodes_long_link_runs_and_orders_text_ids",
                 decodes_long_link_runs_and_orders_text_ids},

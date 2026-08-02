@@ -16,11 +16,20 @@
 namespace jak1_output_recipe {
 
 inline constexpr std::array<uint8_t, 8> kMagic = {'J', '1', 'O', 'U', 'T', 'P', 'U', 'T'};
-inline constexpr uint32_t kSchemaVersion = 2;
+inline constexpr uint32_t kSchemaVersion = 3;
 inline constexpr const char* kProvenanceId = "opengoal-jak1-output-recipe";
 inline constexpr const char* kGameId = "jak1";
+inline constexpr const char* kBaseRetailProjectedSourceFile =
+    "goal_src/jak1/levels/test-zone/test-zone-obs.gc";
+inline constexpr const char* kBaseRetailProjectedSourceTag = "test-zone-obs";
+inline constexpr const char* kBaseRetailProjectedBundlePath = "test-zone-obs.o";
 
 using Territory = jak1_iso::Territory;
+
+enum class OutputProfile : uint8_t {
+  full_public = 1,
+  jak1_base_retail = 2,
+};
 
 struct RevisionProvenance {
   std::string serial;
@@ -110,8 +119,10 @@ struct GeneratedFlatFile {
 struct Recipe {
   std::string producer = kProvenanceId;
   std::string game = kGameId;
+  OutputProfile profile = OutputProfile::full_public;
   RevisionProvenance revision;
   SourceObjectPackIdentity source_object_pack;
+  std::vector<BundledSourceObject> projected_source_objects;
   std::vector<ArchiveRecord> archives;
   std::vector<FlatFileCopy> flat_file_copies;
   std::vector<GeneratedFlatFile> generated_flat_files;

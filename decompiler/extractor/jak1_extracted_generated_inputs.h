@@ -78,6 +78,7 @@ struct Limits {
 
 struct Options {
   Limits limits;
+  artifacts::SubtitleMode subtitle_mode = artifacts::SubtitleMode::public_content;
   CancelCallback should_cancel;
   ProgressCallback on_progress;
 };

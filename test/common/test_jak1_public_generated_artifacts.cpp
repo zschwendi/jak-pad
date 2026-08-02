@@ -91,6 +91,42 @@ bool builds_complete_deterministic_public_set() {
   return true;
 }
 
+bool builds_only_structurally_empty_subtitle_banks() {
+  const auto graph = jak1_public_output_graph::decode_base_retail();
+  CHECK(graph);
+  auto inputs = synthetic_inputs(graph.value());
+  for (auto& bank : inputs.subtitles) {
+    bank.scenes.clear();
+  }
+  artifacts::Options options;
+  options.subtitle_mode = artifacts::SubtitleMode::empty;
+  const auto built = artifacts::build(graph.value(), inputs, options);
+  CHECK(built);
+
+  std::size_t subtitle_files = 0;
+  for (const auto& artifact : built.value().artifacts) {
+    if (artifact.flat_file_kind != recipe::GeneratedFlatFileKind::game_subtitle) {
+      continue;
+    }
+    ++subtitle_files;
+    CHECK(!artifact.bytes.empty());
+    CHECK(std::search(artifact.bytes.begin(), artifact.bytes.end(),
+                      reinterpret_cast<const std::uint8_t*>("synthetic subtitle"),
+                      reinterpret_cast<const std::uint8_t*>("synthetic subtitle") + 18) ==
+          artifact.bytes.end());
+  }
+  CHECK(subtitle_files == 7);
+
+  auto rejected = artifacts::build(graph.value(), inputs);
+  CHECK(!rejected);
+  CHECK(rejected.error().code == artifacts::ErrorCode::invalid_input);
+  inputs.subtitles.front().scenes = {{"scene", true, 0, {}}};
+  rejected = artifacts::build(graph.value(), inputs, options);
+  CHECK(!rejected);
+  CHECK(rejected.error().code == artifacts::ErrorCode::invalid_input);
+  return true;
+}
+
 bool rejects_incomplete_or_noncanonical_inputs() {
   const auto graph = jak1_public_output_graph::decode();
   CHECK(graph);
@@ -156,6 +192,7 @@ bool enforces_limits_and_cancellation() {
 int main() {
   const std::array tests = {
       builds_complete_deterministic_public_set,
+      builds_only_structurally_empty_subtitle_banks,
       rejects_incomplete_or_noncanonical_inputs,
       enforces_limits_and_cancellation,
   };

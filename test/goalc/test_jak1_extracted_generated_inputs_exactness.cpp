@@ -300,6 +300,64 @@ int main() {
       return 1;
     }
   }
+
+  const auto base_graph = jak1_public_output_graph::decode_base_retail();
+  if (!base_graph) {
+    std::fputs("Could not decode the checked base-retail graph.\n", stderr);
+    return 1;
+  }
+  adapter::Options empty_load_options;
+  empty_load_options.subtitle_mode = artifacts::SubtitleMode::empty;
+  const auto empty_loaded =
+      adapter::build({tree.root, jak1_iso::default_revision()}, {}, empty_load_options);
+  if (!empty_loaded) {
+    std::fprintf(stderr, "Empty-subtitle input loading failed: %s\n",
+                 empty_loaded.error().message.c_str());
+    return 1;
+  }
+  artifacts::Inputs expected_empty_inputs;
+  expected_empty_inputs.directory_tpages = directory;
+  expected_empty_inputs.game_count = counts;
+  expected_empty_inputs.game_text = retail_text;
+  for (std::uint32_t language = 0; language < 7; ++language) {
+    expected_empty_inputs.subtitles.push_back(
+        {std::to_string(language) + "SUBTIT.TXT", language, {}});
+  }
+  if (!same_inputs(empty_loaded.value(), expected_empty_inputs)) {
+    std::fputs("The base-retail adapter changed retail text or retained subtitle content.\n",
+               stderr);
+    return 1;
+  }
+  artifacts::Options empty_build_options;
+  empty_build_options.subtitle_mode = artifacts::SubtitleMode::empty;
+  const auto empty_built =
+      artifacts::build(base_graph.value(), empty_loaded.value(), empty_build_options);
+  if (!empty_built) {
+    std::fprintf(stderr, "Empty-subtitle artifact generation failed: %s\n",
+                 empty_built.error().message.c_str());
+    return 1;
+  }
+  std::size_t checked_empty_subtitles = 0;
+  for (const auto& artifact : empty_built.value().artifacts) {
+    if (artifact.flat_file_kind != recipe::GeneratedFlatFileKind::game_subtitle) {
+      continue;
+    }
+    const auto bank =
+        std::find_if(empty_loaded.value().subtitles.begin(), empty_loaded.value().subtitles.end(),
+                     [&](const auto& candidate) {
+                       return candidate.destination_basename == artifact.destination_basename;
+                     });
+    if (bank == empty_loaded.value().subtitles.end() ||
+        artifact.bytes != reference_subtitles(*bank)) {
+      std::fputs("An adapter-fed empty subtitle differs from the desktop generator.\n", stderr);
+      return 1;
+    }
+    ++checked_empty_subtitles;
+  }
+  if (checked_empty_subtitles != 7) {
+    std::fputs("The adapter did not generate seven empty subtitle banks.\n", stderr);
+    return 1;
+  }
   std::printf("All %zu adapter-fed artifacts exactly match the desktop generator.\n",
               built.value().artifacts.size());
   return 0;

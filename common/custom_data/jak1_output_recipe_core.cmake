@@ -28,6 +28,18 @@ if(NOT TARGET jak1-output-recipe-core)
                                PRIVATE -Wall -Wextra -Wpedantic -Werror)
       endif()
       add_test(NAME jak1-output-recipe-core-test COMMAND jak1-output-recipe-core-test)
+
+      add_executable(jak1-output-recipe-schema-test
+                     "${CMAKE_SOURCE_DIR}/test/common/test_jak1_output_recipe.cpp")
+      target_link_libraries(jak1-output-recipe-schema-test PRIVATE jak1-output-recipe-core)
+      target_compile_features(jak1-output-recipe-schema-test PRIVATE cxx_std_20)
+      if(MSVC)
+        target_compile_options(jak1-output-recipe-schema-test PRIVATE /W4 /WX)
+      else()
+        target_compile_options(jak1-output-recipe-schema-test
+                               PRIVATE -Wall -Wextra -Wpedantic -Werror)
+      endif()
+      add_test(NAME jak1-output-recipe-schema-test COMMAND jak1-output-recipe-schema-test)
     endif()
   endif()
 endif()

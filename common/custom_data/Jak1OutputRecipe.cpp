@@ -162,6 +162,15 @@ bool valid_generated_flat_kind(GeneratedFlatFileKind kind) {
   return false;
 }
 
+bool valid_output_profile(OutputProfile profile) {
+  switch (profile) {
+    case OutputProfile::full_public:
+    case OutputProfile::jak1_base_retail:
+      return true;
+  }
+  return false;
+}
+
 std::string retail_key(const VerifiedRetailObject& retail) {
   std::string key = collision_key(retail.source_archive_relative_path);
   key.push_back('\0');
@@ -204,6 +213,10 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
     return make_error(ErrorCode::wrong_provenance, 0,
                       "The recipe does not identify the Jak 1 output-recipe schema.");
   }
+  if (!valid_output_profile(recipe.profile)) {
+    return make_error(ErrorCode::wrong_provenance, 0,
+                      "The recipe identifies an unsupported Jak 1 output profile.");
+  }
   if (!known_revision(recipe.revision)) {
     return make_error(ErrorCode::unsupported_revision, 0,
                       "The recipe does not identify an exact supported Jak 1 revision.");
@@ -215,6 +228,33 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
   if (recipe.source_object_pack != options.expected_source_object_pack) {
     return make_error(ErrorCode::wrong_source_pack, 0,
                       "The recipe source-object pack does not match the expected signed pack.");
+  }
+  if ((recipe.profile == OutputProfile::full_public && !recipe.projected_source_objects.empty()) ||
+      (recipe.profile == OutputProfile::jak1_base_retail &&
+       recipe.projected_source_objects.size() != 1)) {
+    return make_error(ErrorCode::wrong_source_pack, 0,
+                      "The recipe source projection does not match its output profile.");
+  }
+
+  std::unordered_map<std::string, BundledSourceObject> projected_source_objects;
+  for (const auto& source : recipe.projected_source_objects) {
+    if (!safe_relative_path(source.bundle_relative_path, limits.max_path_bytes) ||
+        !has_suffix(source.bundle_relative_path, ".o")) {
+      return make_error(ErrorCode::unsafe_path, 0,
+                        "A projected source object path is not a safe relative .o path.");
+    }
+    if (source.size == 0 || source.size > limits.max_object_bytes || source.xxh64 == 0 ||
+        !projected_source_objects.emplace(collision_key(source.bundle_relative_path), source)
+             .second) {
+      return make_error(ErrorCode::wrong_source_pack, 0,
+                        "A projected source object identity is invalid or repeated.");
+    }
+  }
+  if (recipe.profile == OutputProfile::jak1_base_retail &&
+      recipe.projected_source_objects.front().bundle_relative_path !=
+          kBaseRetailProjectedBundlePath) {
+    return make_error(ErrorCode::wrong_source_pack, 0,
+                      "The base-retail recipe projects an unexpected source object.");
   }
   if (recipe.archives.empty() || recipe.archives.size() > limits.max_archives ||
       recipe.flat_file_copies.size() > limits.max_flat_file_copies ||
@@ -242,11 +282,15 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
   uint64_t total_object_bytes = 0;
   uint32_t total_objects = 0;
   std::string previous_archive;
+  bool contains_base_retail_excluded_output = false;
   for (uint32_t archive_index = 0; archive_index < recipe.archives.size(); ++archive_index) {
     if (const auto error = check_cancelled(options, archive_index)) {
       return error;
     }
     const auto& archive = recipe.archives[archive_index];
+    if (collision_key(archive.destination_basename) == "tsz.dgo") {
+      contains_base_retail_excluded_output = true;
+    }
     if (reserved_destination(archive.destination_basename)) {
       return make_error(ErrorCode::invalid_name, 0,
                         "SAVEGAME.ICO is reserved and cannot be an output archive destination.",
@@ -313,6 +357,11 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
         total_object_bytes += bundled.size;
         const BundledIdentity identity{bundled.bundle_relative_path, object.internal_name,
                                        bundled.size, bundled.xxh64};
+        if (projected_source_objects.contains(collision_key(bundled.bundle_relative_path))) {
+          return make_error(ErrorCode::wrong_source_pack, 0,
+                            "A source object is both projected and referenced by the recipe.",
+                            archive_index, object_index);
+        }
         const auto [entry, inserted] =
             bundled_identities.emplace(collision_key(bundled.bundle_relative_path), identity);
         if (!inserted && entry->second != identity) {
@@ -362,14 +411,33 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
                             "An archive object has an unsupported generated-data kind.",
                             archive_index, object_index);
         }
+        if (generated.kind == GeneratedDataKind::custom_actor ||
+            generated.kind == GeneratedDataKind::custom_level) {
+          contains_base_retail_excluded_output = true;
+        }
       }
     }
   }
 
-  if (total_objects > limits.max_total_objects ||
-      bundled_identities.size() != recipe.source_object_pack.object_count) {
+  const auto referenced_source_objects = bundled_identities.size();
+  if (recipe.projected_source_objects.size() >= recipe.source_object_pack.object_count) {
     return make_error(ErrorCode::wrong_source_pack, 0,
-                      "The recipe does not reference every object in its exact source pack.");
+                      "The recipe projects too many objects from its exact source pack.");
+  }
+  const auto expected_referenced_source_objects =
+      static_cast<size_t>(recipe.source_object_pack.object_count) -
+      recipe.projected_source_objects.size();
+  if (total_objects > limits.max_total_objects ||
+      referenced_source_objects != expected_referenced_source_objects) {
+    return make_error(ErrorCode::wrong_source_pack, 0,
+                      recipe.profile == OutputProfile::jak1_base_retail
+                          ? "The base-retail recipe does not project exactly one object out of "
+                            "its exact source pack."
+                          : "The recipe does not reference every object in its exact source pack.");
+  }
+  if (recipe.profile == OutputProfile::jak1_base_retail && contains_base_retail_excluded_output) {
+    return make_error(ErrorCode::wrong_provenance, 0,
+                      "The base-retail recipe contains a TSZ or custom generated output.");
   }
 
   std::unordered_set<std::string> copy_sources;
@@ -627,6 +695,7 @@ Result<std::vector<uint8_t>> encode_impl(const Recipe& recipe, const Options& op
   Writer payload(payload_cap);
   const auto write_revision = [&]() {
     return payload.string(recipe.producer) && payload.string(recipe.game) &&
+           payload.u8(static_cast<uint8_t>(recipe.profile)) &&
            payload.string(recipe.revision.serial) && payload.u64(recipe.revision.executable_hash) &&
            payload.u64(recipe.revision.contents_hash) && payload.u32(recipe.revision.file_count) &&
            payload.string(recipe.revision.config_version) &&
@@ -635,7 +704,17 @@ Result<std::vector<uint8_t>> encode_impl(const Recipe& recipe, const Options& op
            payload.u32(recipe.source_object_pack.object_count) &&
            payload.u64(recipe.source_object_pack.aggregate_xxh64);
   };
-  if (!write_revision() || !payload.u32(static_cast<uint32_t>(recipe.archives.size()))) {
+  if (!write_revision() ||
+      !payload.u32(static_cast<uint32_t>(recipe.projected_source_objects.size()))) {
+    return Result<std::vector<uint8_t>>::failure(*payload.error);
+  }
+  for (const auto& source : recipe.projected_source_objects) {
+    if (!payload.string(source.bundle_relative_path) || !payload.u64(source.size) ||
+        !payload.u64(source.xxh64)) {
+      return Result<std::vector<uint8_t>>::failure(*payload.error);
+    }
+  }
+  if (!payload.u32(static_cast<uint32_t>(recipe.archives.size()))) {
     return Result<std::vector<uint8_t>>::failure(*payload.error);
   }
   for (uint32_t archive_index = 0; archive_index < recipe.archives.size(); ++archive_index) {
@@ -792,10 +871,11 @@ Result<Recipe> decode_impl(std::span<const uint8_t> bytes, const Options& option
   const auto payload = bytes.subspan(kHeaderBytes, static_cast<size_t>(payload_size_u64));
   Reader reader(payload);
   Recipe recipe;
+  uint8_t profile = 0;
   uint8_t territory = 0;
   uint8_t black_label = 0;
   if (!reader.string(&recipe.producer, options.limits.max_path_bytes) ||
-      !reader.string(&recipe.game, options.limits.max_name_bytes) ||
+      !reader.string(&recipe.game, options.limits.max_name_bytes) || !reader.u8(&profile) ||
       !reader.string(&recipe.revision.serial, options.limits.max_name_bytes) ||
       !reader.u64(&recipe.revision.executable_hash) ||
       !reader.u64(&recipe.revision.contents_hash) || !reader.u32(&recipe.revision.file_count) ||
@@ -805,6 +885,7 @@ Result<Recipe> decode_impl(std::span<const uint8_t> bytes, const Options& option
       !reader.u64(&recipe.source_object_pack.aggregate_xxh64)) {
     return reader_failure<Recipe>(reader, kHeaderBytes);
   }
+  recipe.profile = static_cast<OutputProfile>(profile);
   if (territory > static_cast<uint8_t>(Territory::scek) || black_label > 1) {
     return Result<Recipe>::failure(
         make_error(ErrorCode::wrong_provenance, kHeaderBytes + reader.position,
@@ -812,6 +893,18 @@ Result<Recipe> decode_impl(std::span<const uint8_t> bytes, const Options& option
   }
   recipe.revision.territory = static_cast<Territory>(territory);
   recipe.revision.black_label = black_label != 0;
+
+  uint32_t projected_source_count = 0;
+  if (!reader.count(options.limits.max_source_pack_objects, &projected_source_count)) {
+    return reader_failure<Recipe>(reader, kHeaderBytes);
+  }
+  recipe.projected_source_objects.resize(projected_source_count);
+  for (auto& source : recipe.projected_source_objects) {
+    if (!reader.string(&source.bundle_relative_path, options.limits.max_path_bytes) ||
+        !reader.u64(&source.size) || !reader.u64(&source.xxh64)) {
+      return reader_failure<Recipe>(reader, kHeaderBytes);
+    }
+  }
 
   uint32_t archive_count = 0;
   if (!reader.count(options.limits.max_archives, &archive_count)) {

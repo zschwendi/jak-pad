@@ -70,6 +70,7 @@ struct Limits {
 struct Options {
   Limits limits;
   jak1_output_recipe::Limits recipe_limits;
+  jak1_output_recipe::OutputProfile output_profile = jak1_output_recipe::OutputProfile::full_public;
   uint32_t expected_source_object_count = 518;
   std::string iso_target = "GROUP:iso";
   std::string source_target = "GROUP:all-code";

@@ -310,15 +310,23 @@ bool rejects_inexact_generated_and_fr3_catalogs() {
     Fixture fixture;
     CHECK(fixture.setup());
     fixture.inputs.generated_objects.push_back({
+        jak1_output_recipe::GeneratedDataKind::custom_actor,
+        "test-actor",
+        "objects/test-actor-ag.go",
+        1,
+        1,
+    });
+    fixture.inputs.generated_objects.push_back({
         jak1_output_recipe::GeneratedDataKind::custom_level,
-        "unused",
-        "objects/unused.o",
+        "test-zone",
+        "objects/test-zone.go",
         1,
         1,
     });
     const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
     CHECK(!result);
     CHECK(result.error().code == ErrorCode::generated_catalog_invalid);
+    CHECK(result.error().message.find("unreferenced") != std::string::npos);
     CHECK(!fs::exists(fixture.destination));
     CHECK(fixture.stage_absent());
   }
