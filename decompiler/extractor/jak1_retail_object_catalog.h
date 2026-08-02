@@ -41,6 +41,7 @@ struct ArchiveSource {
 enum class ProgressStage {
   starting_archive,
   indexed_object,
+  skipped_code_object,
   complete,
 };
 
@@ -50,6 +51,7 @@ struct Progress {
   std::size_t archives_processed = 0;
   std::size_t entries_indexed = 0;
   std::size_t bytes_indexed = 0;
+  std::size_t code_objects_skipped = 0;
   std::string source_archive_relative_path;
   std::optional<std::uint32_t> archive_object_index;
 };
@@ -86,8 +88,6 @@ enum class ErrorCode {
   checked_dgo_failed,
   invalid_object_header,
   unsupported_object_version,
-  code_bearing_v3_object,
-  ambiguous_duplicate_internal_name,
   hash_failed,
   object_not_found,
   provenance_mismatch,
@@ -130,11 +130,13 @@ class Result {
 class Catalog {
  public:
   const std::vector<Entry>& entries() const { return m_entries; }
+  std::size_t skipped_code_object_count() const { return m_skipped_code_objects; }
   Result<const Entry*> lookup(const Provenance& expected) const;
 
  private:
   friend Result<Catalog> build(std::span<const ArchiveSource>, const Options&);
   std::vector<Entry> m_entries;
+  std::size_t m_skipped_code_objects = 0;
 };
 
 Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& options = {});

@@ -6,7 +6,6 @@
 #include <new>
 #include <stdexcept>
 #include <string_view>
-#include <unordered_map>
 
 #define XXH_STATIC_LINKING_ONLY
 #include "third-party/zstd/lib/common/xxhash.h"
@@ -25,13 +24,7 @@ constexpr std::size_t kV3SegmentInfoBytes = 16;
 constexpr std::size_t kObjectAlignment = 16;
 constexpr std::size_t kV2LinkAlignment = 64;
 
-struct Fingerprint {
-  std::size_t byte_size = 0;
-  std::uint64_t xxh64 = 0;
-  ObjectVersion version = ObjectVersion::v2;
-
-  bool operator==(const Fingerprint&) const = default;
-};
+using HeaderInspection = std::optional<ObjectVersion>;
 
 Error make_error(ErrorCode code,
                  std::string message,
@@ -137,43 +130,43 @@ std::optional<Error> emit_progress(const Options& options, const Progress& progr
   }
 }
 
-Result<ObjectVersion> inspect_v2_or_v4_header(std::span<const std::uint8_t> data,
-                                              const std::string& source_path,
-                                              std::uint32_t object_index) {
+Result<HeaderInspection> inspect_v2_or_v4_header(std::span<const std::uint8_t> data,
+                                                 const std::string& source_path,
+                                                 std::uint32_t object_index) {
   if (data.size() < kLinkHeaderV2Bytes) {
-    return Result<ObjectVersion>::failure(make_error(ErrorCode::invalid_object_header,
-                                                     "The retail object link header is truncated.",
-                                                     source_path, object_index));
+    return Result<HeaderInspection>::failure(
+        make_error(ErrorCode::invalid_object_header, "The retail object link header is truncated.",
+                   source_path, object_index));
   }
   const auto type_tag = read_u32_le(data, 0);
   const auto link_length = static_cast<std::size_t>(read_u32_le(data, 4));
   const auto version32 = read_u32_le(data, 8);
   const auto version16 = read_u16_le(data, 8);
   if (version32 != version16) {
-    return Result<ObjectVersion>::failure(make_error(
+    return Result<HeaderInspection>::failure(make_error(
         ErrorCode::invalid_object_header, "The retail object version field is malformed.",
         source_path, object_index, version16));
   }
   if (version32 == 2) {
     if (type_tag != std::numeric_limits<std::uint32_t>::max() || link_length < kLinkHeaderV2Bytes ||
         link_length >= data.size() || link_length % kV2LinkAlignment != 0) {
-      return Result<ObjectVersion>::failure(make_error(
+      return Result<HeaderInspection>::failure(make_error(
           ErrorCode::invalid_object_header, "The Jak 1 V2 data-object header is invalid.",
           source_path, object_index, version16));
     }
-    return Result<ObjectVersion>::success(ObjectVersion::v2);
+    return Result<HeaderInspection>::success(ObjectVersion::v2);
   }
   if (version32 != 4) {
-    return Result<ObjectVersion>::failure(
+    return Result<HeaderInspection>::failure(
         make_error(ErrorCode::unsupported_object_version,
                    "The retail object version is not a Jak 1 V2 or V4 data object.", source_path,
                    object_index, version16));
   }
   if (data.size() < kLinkHeaderV4Bytes || type_tag != std::numeric_limits<std::uint32_t>::max() ||
       link_length < kLinkHeaderV2Bytes || link_length % kV2LinkAlignment != 0) {
-    return Result<ObjectVersion>::failure(make_error(ErrorCode::invalid_object_header,
-                                                     "The Jak 1 V4 data-object header is invalid.",
-                                                     source_path, object_index, version16));
+    return Result<HeaderInspection>::failure(
+        make_error(ErrorCode::invalid_object_header, "The Jak 1 V4 data-object header is invalid.",
+                   source_path, object_index, version16));
   }
 
   const auto code_size = static_cast<std::size_t>(read_u32_le(data, 12));
@@ -186,30 +179,30 @@ Result<ObjectVersion> inspect_v2_or_v4_header(std::span<const std::uint8_t> data
       read_u32_le(data, trailing_header_offset) != std::numeric_limits<std::uint32_t>::max() ||
       read_u32_le(data, trailing_header_offset + 4) != link_length ||
       read_u32_le(data, trailing_header_offset + 8) != 2) {
-    return Result<ObjectVersion>::failure(make_error(
+    return Result<HeaderInspection>::failure(make_error(
         ErrorCode::invalid_object_header,
         "The Jak 1 V4 object does not contain a matching bounded trailing V2 link header.",
         source_path, object_index, version16));
   }
-  return Result<ObjectVersion>::success(ObjectVersion::v4);
+  return Result<HeaderInspection>::success(ObjectVersion::v4);
 }
 
-Result<ObjectVersion> inspect_v3_header(std::span<const std::uint8_t> data,
-                                        const std::string& source_path,
-                                        std::uint32_t object_index,
-                                        const std::string& internal_name) {
+Result<HeaderInspection> inspect_v3_header(std::span<const std::uint8_t> data,
+                                           const std::string& source_path,
+                                           std::uint32_t object_index,
+                                           const std::string& internal_name) {
   if (data.size() < kLinkHeaderV3Bytes || read_u32_le(data, 0) != 0 || read_u32_le(data, 8) != 3 ||
       read_u32_le(data, 12) != 3) {
-    return Result<ObjectVersion>::failure(make_error(ErrorCode::invalid_object_header,
-                                                     "The Jak 1 V3 object header is invalid.",
-                                                     source_path, object_index, 3));
+    return Result<HeaderInspection>::failure(make_error(ErrorCode::invalid_object_header,
+                                                        "The Jak 1 V3 object header is invalid.",
+                                                        source_path, object_index, 3));
   }
   const auto link_length = static_cast<std::size_t>(read_u32_le(data, 4));
   if (link_length < kLinkHeaderV3Bytes || link_length > data.size() ||
       link_length % kObjectAlignment != 0) {
-    return Result<ObjectVersion>::failure(make_error(ErrorCode::invalid_object_header,
-                                                     "The Jak 1 V3 link-data bound is invalid.",
-                                                     source_path, object_index, 3));
+    return Result<HeaderInspection>::failure(make_error(ErrorCode::invalid_object_header,
+                                                        "The Jak 1 V3 link-data bound is invalid.",
+                                                        source_path, object_index, 3));
   }
 
   const auto name_begin = data.begin() + kV3NameOffset;
@@ -219,7 +212,7 @@ Result<ObjectVersion> inspect_v3_header(std::span<const std::uint8_t> data,
       std::string(reinterpret_cast<const char*>(&*name_begin), terminator - name_begin) !=
           internal_name ||
       std::any_of(terminator + 1, name_end, [](std::uint8_t byte) { return byte != 0; })) {
-    return Result<ObjectVersion>::failure(
+    return Result<HeaderInspection>::failure(
         make_error(ErrorCode::invalid_object_header,
                    "The Jak 1 V3 embedded object name does not match its DGO object name.",
                    source_path, object_index, 3));
@@ -237,7 +230,7 @@ Result<ObjectVersion> inspect_v3_header(std::span<const std::uint8_t> data,
     if (reloc >= link_length || magic != 0 ||
         !checked_add(link_length, relative_data, &data_offsets[segment]) ||
         data_offsets[segment] > data.size() || size > data.size() - data_offsets[segment]) {
-      return Result<ObjectVersion>::failure(make_error(
+      return Result<HeaderInspection>::failure(make_error(
           ErrorCode::invalid_object_header, "A Jak 1 V3 segment descriptor is out of bounds.",
           source_path, object_index, 3));
     }
@@ -250,7 +243,7 @@ Result<ObjectVersion> inspect_v3_header(std::span<const std::uint8_t> data,
     if (!checked_add(data_offsets[segment], data_sizes[segment], &segment_end) ||
         !align_up(segment_end, kObjectAlignment, &aligned_end) ||
         aligned_end != data_offsets[segment + 1]) {
-      return Result<ObjectVersion>::failure(
+      return Result<HeaderInspection>::failure(
           make_error(ErrorCode::invalid_object_header,
                      "The Jak 1 V3 segment layout is inconsistent.", source_path, object_index, 3));
     }
@@ -260,24 +253,21 @@ Result<ObjectVersion> inspect_v3_header(std::span<const std::uint8_t> data,
   if (!has_data || !checked_add(data_offsets[2], data_sizes[2], &final_end) ||
       !align_up(final_end, kObjectAlignment, &aligned_final_end) ||
       aligned_final_end != data.size()) {
-    return Result<ObjectVersion>::failure(make_error(
+    return Result<HeaderInspection>::failure(make_error(
         ErrorCode::invalid_object_header, "The Jak 1 V3 object data extent is inconsistent.",
         source_path, object_index, 3));
   }
-  return Result<ObjectVersion>::failure(make_error(
-      ErrorCode::code_bearing_v3_object,
-      "Jak 1 V3 objects are code-bearing retail objects and cannot enter the data catalog.",
-      source_path, object_index, 3));
+  return Result<HeaderInspection>::success(HeaderInspection{});
 }
 
-Result<ObjectVersion> inspect_object_header(std::span<const std::uint8_t> data,
-                                            const std::string& source_path,
-                                            std::uint32_t object_index,
-                                            const std::string& internal_name) {
+Result<HeaderInspection> inspect_object_header(std::span<const std::uint8_t> data,
+                                               const std::string& source_path,
+                                               std::uint32_t object_index,
+                                               const std::string& internal_name) {
   if (data.size() < kLinkHeaderV2Bytes) {
-    return Result<ObjectVersion>::failure(make_error(ErrorCode::invalid_object_header,
-                                                     "The retail object link header is truncated.",
-                                                     source_path, object_index));
+    return Result<HeaderInspection>::failure(
+        make_error(ErrorCode::invalid_object_header, "The retail object link header is truncated.",
+                   source_path, object_index));
   }
   if (read_u32_le(data, 8) == 3) {
     return inspect_v3_header(data, source_path, object_index, internal_name);
@@ -394,7 +384,6 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
 
     Catalog catalog;
     catalog.m_entries.reserve(std::min(options.max_entries, sources.size() * std::size_t{64}));
-    std::unordered_map<std::string, Fingerprint> fingerprints_by_name;
     std::size_t total_bytes = 0;
 
     for (std::size_t archive_index = 0; archive_index < ordered_sources.size(); ++archive_index) {
@@ -413,6 +402,7 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
                         archive_index,
                         catalog.m_entries.size(),
                         total_bytes,
+                        catalog.m_skipped_code_objects,
                         source.source_archive_relative_path,
                         {}};
       if (auto error = emit_progress(options, progress)) {
@@ -426,9 +416,6 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
       dgo_options.max_expanded_bytes = options.max_archive_expanded_bytes;
       dgo_options.max_object_bytes = options.max_object_bytes;
       dgo_options.max_total_object_bytes = options.max_total_object_bytes;
-      dgo_options.max_objects = static_cast<std::uint32_t>(
-          std::min(options.max_entries,
-                   static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
       dgo_options.max_name_bytes = options.max_internal_name_bytes;
       dgo_options.max_expansion_ratio = options.max_archive_expansion_ratio;
       dgo_options.should_cancel = [&]() {
@@ -471,43 +458,46 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
 
       for (std::size_t object_index = 0; object_index < archive.value().objects.size();
            ++object_index) {
-        if (catalog.m_entries.size() >= options.max_entries) {
-          return Result<Catalog>::failure(make_error(
-              ErrorCode::entry_limit_exceeded,
-              "The retail object count exceeds the configured catalog limit.",
-              source.source_archive_relative_path, static_cast<std::uint32_t>(object_index)));
-        }
         const auto& object = archive.value().objects[object_index];
-        std::size_t new_total = 0;
-        if (!checked_add(total_bytes, object.data.size(), &new_total) ||
-            new_total > options.max_total_object_bytes) {
-          return Result<Catalog>::failure(make_error(
-              ErrorCode::total_byte_limit_exceeded,
-              "Retail object payloads exceed the configured aggregate byte limit.",
-              source.source_archive_relative_path, static_cast<std::uint32_t>(object_index)));
-        }
-
         auto object_version =
             inspect_object_header(object.data, source.source_archive_relative_path,
                                   static_cast<std::uint32_t>(object_index), object.internal_name);
         if (!object_version) {
           return Result<Catalog>::failure(object_version.error());
         }
+        if (!object_version.value()) {
+          ++catalog.m_skipped_code_objects;
+          progress = {ProgressStage::skipped_code_object,
+                      ordered_sources.size(),
+                      archive_index,
+                      catalog.m_entries.size(),
+                      total_bytes,
+                      catalog.m_skipped_code_objects,
+                      source.source_archive_relative_path,
+                      static_cast<std::uint32_t>(object_index)};
+          if (auto error = emit_progress(options, progress)) {
+            return Result<Catalog>::failure(std::move(*error));
+          }
+          continue;
+        }
+        if (catalog.m_entries.size() >= options.max_entries) {
+          return Result<Catalog>::failure(make_error(
+              ErrorCode::entry_limit_exceeded,
+              "The retail data-object count exceeds the configured catalog limit.",
+              source.source_archive_relative_path, static_cast<std::uint32_t>(object_index)));
+        }
+        std::size_t new_total = 0;
+        if (!checked_add(total_bytes, object.data.size(), &new_total) ||
+            new_total > options.max_total_object_bytes) {
+          return Result<Catalog>::failure(make_error(
+              ErrorCode::total_byte_limit_exceeded,
+              "Retail data-object payloads exceed the configured aggregate byte limit.",
+              source.source_archive_relative_path, static_cast<std::uint32_t>(object_index)));
+        }
         auto hash = hash_object(object.data, source.source_archive_relative_path,
                                 static_cast<std::uint32_t>(object_index), options);
         if (!hash) {
           return Result<Catalog>::failure(hash.error());
-        }
-
-        const Fingerprint fingerprint{object.data.size(), hash.value(), object_version.value()};
-        const auto [existing, inserted] =
-            fingerprints_by_name.emplace(object.internal_name, fingerprint);
-        if (!inserted && existing->second != fingerprint) {
-          return Result<Catalog>::failure(make_error(
-              ErrorCode::ambiguous_duplicate_internal_name,
-              "A duplicate internal object name has divergent size, hash, or object version.",
-              source.source_archive_relative_path, static_cast<std::uint32_t>(object_index),
-              static_cast<std::uint16_t>(object_version.value())));
         }
 
         Entry entry;
@@ -516,7 +506,7 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
         entry.provenance.internal_name = object.internal_name;
         entry.provenance.byte_size = object.data.size();
         entry.provenance.xxh64 = hash.value();
-        entry.provenance.object_version = object_version.value();
+        entry.provenance.object_version = *object_version.value();
         catalog.m_entries.push_back(std::move(entry));
         total_bytes = new_total;
 
@@ -525,6 +515,7 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
                     archive_index,
                     catalog.m_entries.size(),
                     total_bytes,
+                    catalog.m_skipped_code_objects,
                     source.source_archive_relative_path,
                     static_cast<std::uint32_t>(object_index)};
         if (auto error = emit_progress(options, progress)) {
@@ -538,6 +529,7 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
                             ordered_sources.size(),
                             catalog.m_entries.size(),
                             total_bytes,
+                            catalog.m_skipped_code_objects,
                             {},
                             {}};
     if (auto error = emit_progress(options, complete)) {
@@ -579,10 +571,6 @@ const char* error_code_name(ErrorCode code) {
       return "invalid_object_header";
     case ErrorCode::unsupported_object_version:
       return "unsupported_object_version";
-    case ErrorCode::code_bearing_v3_object:
-      return "code_bearing_v3_object";
-    case ErrorCode::ambiguous_duplicate_internal_name:
-      return "ambiguous_duplicate_internal_name";
     case ErrorCode::hash_failed:
       return "hash_failed";
     case ErrorCode::object_not_found:

@@ -194,17 +194,28 @@ bool indexes_exact_provenance_in_deterministic_order() {
   return true;
 }
 
-bool rejects_ambiguous_names_and_bad_provenance() {
+bool divergent_names_require_exact_provenance() {
   const auto archive_a = make_dgo("A.DGO", {{"same", make_v2(1)}});
   const auto archive_b = make_dgo("B.DGO", {{"same", make_v2(2)}});
-  const std::vector<ArchiveSource> ambiguous = {
+  const std::vector<ArchiveSource> divergent = {
       {"DGO/A.DGO", archive_a},
       {"DGO/B.DGO", archive_b},
   };
-  auto result = jak1_retail_object_catalog::build(ambiguous);
-  CHECK(!result);
-  CHECK(result.error().code == ErrorCode::ambiguous_duplicate_internal_name);
-  CHECK(result.error().source_archive_relative_path == "DGO/B.DGO");
+  auto result = jak1_retail_object_catalog::build(divergent);
+  CHECK(result);
+  CHECK(result.value().entries().size() == 2);
+  CHECK(result.value().entries()[0].provenance.internal_name == "same");
+  CHECK(result.value().entries()[1].provenance.internal_name == "same");
+  CHECK(result.value().entries()[0].provenance.xxh64 !=
+        result.value().entries()[1].provenance.xxh64);
+  CHECK(result.value().lookup(result.value().entries()[0].provenance));
+  CHECK(result.value().lookup(result.value().entries()[1].provenance));
+
+  auto crossed_provenance = result.value().entries()[0].provenance;
+  crossed_provenance.xxh64 = result.value().entries()[1].provenance.xxh64;
+  const auto crossed_lookup = result.value().lookup(crossed_provenance);
+  CHECK(!crossed_lookup);
+  CHECK(crossed_lookup.error().code == ErrorCode::provenance_mismatch);
 
   const auto wrong_internal_name = make_dgo("OTHER.DGO", {{"one", make_v2()}});
   const std::vector<ArchiveSource> mismatched = {
@@ -219,12 +230,34 @@ bool rejects_ambiguous_names_and_bad_provenance() {
   return true;
 }
 
-bool rejects_code_and_invalid_or_unsupported_headers() {
+bool skips_code_and_rejects_invalid_or_unsupported_headers() {
   auto archive = make_dgo("CODE.DGO", {{"code", make_v3("code")}});
   std::vector<ArchiveSource> sources = {{"DGO/CODE.DGO", archive}};
   auto result = jak1_retail_object_catalog::build(sources);
+  CHECK(result);
+  CHECK(result.value().entries().empty());
+  CHECK(result.value().skipped_code_object_count() == 1);
+
+  archive =
+      make_dgo("MIXED.DGO",
+               {{"code-a", make_v3("code-a")}, {"data", make_v4()}, {"code-b", make_v3("code-b")}});
+  sources = {{"DGO/MIXED.DGO", archive}};
+  jak1_retail_object_catalog::Options one_data_entry;
+  one_data_entry.max_entries = 1;
+  result = jak1_retail_object_catalog::build(sources, one_data_entry);
+  CHECK(result);
+  CHECK(result.value().entries().size() == 1);
+  CHECK(result.value().entries()[0].provenance.archive_object_index == 1);
+  CHECK(result.value().entries()[0].provenance.internal_name == "data");
+  CHECK(result.value().skipped_code_object_count() == 2);
+
+  auto invalid_v3 = make_v3("code");
+  write_u32(&invalid_v3, 92, 1);
+  archive = make_dgo("BADV3.DGO", {{"code", invalid_v3}});
+  sources = {{"DGO/BADV3.DGO", archive}};
+  result = jak1_retail_object_catalog::build(sources);
   CHECK(!result);
-  CHECK(result.error().code == ErrorCode::code_bearing_v3_object);
+  CHECK(result.error().code == ErrorCode::invalid_object_header);
   CHECK(result.error().detected_object_version == 3);
 
   auto invalid_v4 = make_v4();
@@ -309,7 +342,7 @@ bool enforces_caps_paths_and_callbacks() {
 
 bool error_names_are_stable() {
   CHECK(std::string(jak1_retail_object_catalog::error_code_name(
-            ErrorCode::code_bearing_v3_object)) == "code_bearing_v3_object");
+            ErrorCode::unsupported_object_version)) == "unsupported_object_version");
   CHECK(std::string(jak1_retail_object_catalog::error_code_name(ErrorCode::provenance_mismatch)) ==
         "provenance_mismatch");
   return true;
@@ -321,9 +354,9 @@ int main() {
   const std::vector<std::pair<const char*, bool (*)()>> tests = {
       {"indexes_exact_provenance_in_deterministic_order",
        indexes_exact_provenance_in_deterministic_order},
-      {"rejects_ambiguous_names_and_bad_provenance", rejects_ambiguous_names_and_bad_provenance},
-      {"rejects_code_and_invalid_or_unsupported_headers",
-       rejects_code_and_invalid_or_unsupported_headers},
+      {"divergent_names_require_exact_provenance", divergent_names_require_exact_provenance},
+      {"skips_code_and_rejects_invalid_or_unsupported_headers",
+       skips_code_and_rejects_invalid_or_unsupported_headers},
       {"enforces_caps_paths_and_callbacks", enforces_caps_paths_and_callbacks},
       {"error_names_are_stable", error_names_are_stable},
   };
