@@ -9,8 +9,6 @@
 
 namespace {
 
-constexpr std::uint64_t kRecordedAggregateXXH64 = 0xe3ed59b376d6a079ULL;
-
 void print_usage() {
   std::fprintf(stderr,
                "Usage: jak1-source-object-pack-verify PACK_ROOT "
@@ -37,7 +35,7 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  std::uint64_t expected_aggregate = kRecordedAggregateXXH64;
+  std::uint64_t expected_aggregate = jak1_source_object_pack::kRecordedAggregateXXH64;
   if (argc == 4) {
     if (std::string_view(argv[2]) != "--expected-aggregate" ||
         !parse_aggregate(argv[3], &expected_aggregate) || expected_aggregate == 0) {

@@ -1,0 +1,119 @@
+#pragma once
+
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <optional>
+#include <string>
+#include <utility>
+
+namespace jak1_import_composer {
+
+struct Request {
+  std::filesystem::path iso_path;
+  std::filesystem::path source_object_pack_root;
+  std::filesystem::path project_resource_root;
+  std::filesystem::path candidate_root;
+};
+
+enum class Phase {
+  validating_source_pack,
+  extracting_iso,
+  cataloging_retail,
+  generating_data,
+  preparing_fr3,
+  generating_recipe,
+  materializing_output,
+  finalizing_candidate,
+};
+
+struct Progress {
+  Phase phase = Phase::validating_source_pack;
+  std::uint64_t completed = 0;
+  std::uint64_t total = 0;
+  std::uint64_t bytes_completed = 0;
+  std::string current_item;
+};
+
+using CancelCallback = std::function<bool()>;
+using ProgressCallback = std::function<void(const Progress&)>;
+
+struct Options {
+  CancelCallback should_cancel;
+  ProgressCallback on_progress;
+};
+
+enum class ErrorCode {
+  invalid_argument,
+  cancelled,
+  callback_failed,
+  source_pack_failed,
+  iso_open_failed,
+  iso_validation_failed,
+  unsupported_revision,
+  graph_failed,
+  retail_catalog_failed,
+  generated_data_failed,
+  fr3_failed,
+  recipe_failed,
+  candidate_create_failed,
+  work_write_failed,
+  insufficient_storage,
+  materialization_failed,
+  candidate_finalize_failed,
+  candidate_cleanup_failed,
+  allocation_failed,
+  unexpected_failure,
+};
+
+struct Error {
+  ErrorCode code = ErrorCode::invalid_argument;
+  std::string message;
+  std::optional<std::filesystem::path> preserved_candidate_root;
+  std::optional<std::string> cleanup_error;
+};
+
+template <typename T>
+class Result {
+ public:
+  static Result success(T value) {
+    Result result;
+    result.m_value.emplace(std::move(value));
+    return result;
+  }
+
+  static Result failure(Error error) {
+    Result result;
+    result.m_error.emplace(std::move(error));
+    return result;
+  }
+
+  explicit operator bool() const { return m_value.has_value(); }
+  const T& value() const { return *m_value; }
+  T take_value() { return std::move(*m_value); }
+  const Error& error() const { return *m_error; }
+
+ private:
+  std::optional<T> m_value;
+  std::optional<Error> m_error;
+};
+
+struct Summary {
+  std::uint32_t archives_written = 0;
+  std::uint32_t objects_written = 0;
+  std::uint32_t flat_files_written = 0;
+  std::uint32_t fr3_files_written = 0;
+  std::uint64_t output_bytes = 0;
+};
+
+/// Synchronously compose a fresh private candidate from a user-supplied Jak 1 ISO and the
+/// existing verified source-object pack. The caller owns serialization and runs this function off
+/// its UI thread. `candidate_root` must not exist. Failures after candidate creation preserve the
+/// candidate and its hidden work tree for recovery; successful candidates contain only `iso/` and
+/// `fr3/`.
+Result<Summary> compose(const Request& request, const Options& options = {});
+
+const char* error_code_name(ErrorCode code);
+const char* phase_name(Phase phase);
+
+}  // namespace jak1_import_composer

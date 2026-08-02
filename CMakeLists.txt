@@ -33,6 +33,8 @@ option(OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY
        "Build only the portable checked Jak 1 source-object-pack library" OFF)
 option(OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY
        "Build only the portable Jak 1 extracted-tree generated-input adapter" OFF)
+option(OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY
+       "Build only the portable Jak 1 raw-ISO import composer" OFF)
 set(OPENGOAL_JAK2_AOT_DIR "" CACHE PATH
     "Host-generated Jak 2 AOT C directory used by the iPhoneOS link proof")
 set(OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT "" CACHE PATH
@@ -49,7 +51,8 @@ foreach(OPENGOAL_ISOLATED_IMPORT_MODE
         OPENGOAL_BUILD_JAK1_OUTPUT_RECIPE_CORE_ONLY
         OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY
         OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY
-        OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY)
+        OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY
+        OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY)
   if(${OPENGOAL_ISOLATED_IMPORT_MODE})
     math(EXPR OPENGOAL_ISOLATED_IMPORT_MODE_COUNT
          "${OPENGOAL_ISOLATED_IMPORT_MODE_COUNT} + 1")
@@ -113,6 +116,9 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   endif()
   if(OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY)
     include(decompiler/extractor/jak1_extracted_generated_inputs.cmake)
+  endif()
+  if(OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY)
+    include(decompiler/extractor/jak1_import_composer.cmake)
   endif()
   return()
 endif()
