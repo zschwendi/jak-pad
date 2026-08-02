@@ -166,12 +166,14 @@ void MetalTie3::render(DmaFollower& dma,
     }
   }
 
-  // Jak 1's TIE bucket draws the plain category, then the base draw of the
-  // envmapped one, then the envmap second draw (Tie3WithEnvmapJak1::render and
-  // Tie3::envmap_second_pass_draw).
+  // Tie3WithEnvmapJak1 first draws the plain category for every tree. Its
+  // envmapped pass then completes both draws for one tree before advancing to
+  // the next, so a later tree's base draw can replace an earlier tree's shine.
   render_all_trees(geom, tfrag3::TieCategory::NORMAL, render_state, ctx);
-  render_all_trees(geom, tfrag3::TieCategory::NORMAL_ENVMAP, render_state, ctx);
-  render_all_trees(geom, tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW, render_state, ctx);
+  for (size_t i = 0; i < m_trees[geom].size(); i++) {
+    render_tree(geom, (int)i, tfrag3::TieCategory::NORMAL_ENVMAP, render_state, ctx);
+    render_tree(geom, (int)i, tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW, render_state, ctx);
+  }
 }
 
 bool MetalTie3::setup_for_level(const std::string& level) {

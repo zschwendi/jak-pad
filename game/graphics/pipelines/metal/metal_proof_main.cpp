@@ -52,6 +52,7 @@
 #include "common/log/log.h"
 #include "common/texture/texture_conversion.h"
 #include "common/util/FileUtil.h"
+#include "common/util/Serializer.h"
 #include "common/util/compress.h"
 
 #include "game/graphics/display.h"
@@ -1927,6 +1928,180 @@ void test_background_common_parity() {
                       (int)nodes.size())
               .c_str());
   }
+}
+
+// ---------------------------------------------------------------------------
+// Section: Jak 1 TIE envmap ordering. The GL renderer completes both envmap
+// draws for one tree before advancing to the next tree. This matters when two
+// trees overlap at the same depth: the later tree's opaque base must replace
+// both draws from the earlier tree before its own shiny pass is added.
+// ---------------------------------------------------------------------------
+
+constexpr const char* kTieOrderLevelName = "tie-proof";
+
+tfrag3::StripDraw make_tie_order_draw(int texture, bool envmap_second) {
+  tfrag3::StripDraw draw{};
+  draw.mode.as_int() = 0;
+  draw.mode.set_depth_write_enable(!envmap_second);
+  draw.mode.set_zt(true);
+  draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
+  draw.mode.set_ab(envmap_second);
+  draw.mode.set_alpha_blend(envmap_second ? DrawMode::AlphaBlend::SRC_0_FIX_DST
+                                         : DrawMode::AlphaBlend::DISABLED);
+  draw.mode.set_at(false);
+  draw.mode.set_fog(false);
+  draw.mode.set_decal(false);
+  draw.mode.set_filt_enable(false);
+  draw.mode.set_clamp_s_enable(true);
+  draw.mode.set_clamp_t_enable(true);
+  draw.tree_tex_id = texture;
+  draw.plain_indices = {0, 1, 2, 3};
+  draw.vis_groups.push_back({4, 2, UINT16_MAX, 0});
+  draw.num_triangles = 2;
+  return draw;
+}
+
+tfrag3::TieTree make_tie_order_tree(int normal_texture,
+                                    int base_texture,
+                                    int envmap_texture) {
+  tfrag3::TieTree tree{};
+  tree.use_strips = true;
+  tree.static_draws.push_back(make_tie_order_draw(normal_texture, false));
+  tree.static_draws.push_back(make_tie_order_draw(base_texture, false));
+  tree.static_draws.push_back(make_tie_order_draw(envmap_texture, true));
+  tree.category_draw_indices = {0, 1, 1, 1, 2, 2, 2, 3, 3, 3};
+
+  constexpr float kHalfWidth = 64.f;
+  constexpr float kHalfHeight = 32.f;
+  constexpr float kDepth = 1.f;
+  const float xs[4] = {-kHalfWidth, kHalfWidth, -kHalfWidth, kHalfWidth};
+  const float ys[4] = {-kHalfHeight, -kHalfHeight, kHalfHeight, kHalfHeight};
+  for (int i = 0; i < 4; i++) {
+    tfrag3::PackedTieVertices::Vertex vertex{};
+    vertex.x = xs[i];
+    vertex.y = ys[i];
+    vertex.z = kDepth;
+    vertex.s = 0.5f;
+    vertex.t = 0.5f;
+    vertex.nz = 127;
+    vertex.r = vertex.g = vertex.b = vertex.a = 255;
+    tree.packed_vertices.vertices.push_back(vertex);
+    tree.packed_vertices.color_indices.push_back(0);
+  }
+  tree.packed_vertices.matrix_groups.push_back({-1, 0, 4, true});
+
+  tree.colors.color_count = 4;
+  tree.colors.data.assign(128, 128);
+  return tree;
+}
+
+std::unique_ptr<tfrag3::Level> make_tie_order_test_level() {
+  auto level = std::make_unique<tfrag3::Level>();
+  level->level_name = kTieOrderLevelName;
+
+  auto add_texture = [&](const char* name, u32 rgba) {
+    tfrag3::Texture texture{};
+    texture.w = 16;
+    texture.h = 16;
+    texture.debug_name = name;
+    texture.debug_tpage_name = "tie-proof-page";
+    texture.load_to_pool = false;
+    texture.data.assign(16 * 16, rgba);
+    level->textures.push_back(std::move(texture));
+  };
+  add_texture("tree-a-base-red", 0xff0000ffu);
+  add_texture("tree-a-env-green", 0xff00ff00u);
+  add_texture("tree-b-base-blue", 0xffff0000u);
+  add_texture("tree-b-env-black", 0xff000000u);
+
+  // Both plain passes are red. This also proves the global NORMAL batch runs
+  // before the envmap work: if either plain draw ran afterward, it would hide
+  // the expected blue result.
+  level->tie_trees[0].push_back(make_tie_order_tree(0, 0, 1));
+  level->tie_trees[0].push_back(make_tie_order_tree(0, 2, 3));
+  return level;
+}
+
+std::vector<ChainBuilder::Transfer> make_tie_order_bucket() {
+  std::vector<ChainBuilder::Transfer> transfers;
+  transfers.push_back({0, 0, std::vector<u8>(160, 0), false});
+  transfers.push_back({0, 0, {}, true});
+  transfers.push_back({0, 0, std::vector<u8>(32, 0), false});
+  transfers.push_back({0, 0, {}, true});
+
+  TfragPcPortData pc{};
+  memcpy(pc.level_name, kTieOrderLevelName, strlen(kTieOrderLevelName));
+  pc.camera.itimes[0][0] = 0x00400040;
+  pc.camera.itimes[0][1] = 0x00400040;
+  for (int i = 0; i < 4; i++) {
+    pc.camera.rot[i][i] = 1.f;
+  }
+  pc.camera.camera[3].w() = 255.f;  // zero fogginess
+  pc.camera.hvdf_off = math::Vector4f(2048.f, 2048.f, 8388608.f, 0.f);
+  pc.camera.fog = math::Vector4f(1.f, 0.f, 255.f, 0.f);
+  pc.camera.perspective[0].x() = 1.f;
+  pc.camera.perspective[1].y() = 1.f;
+  pc.camera.perspective[2].w() = 1.f;
+  std::vector<u8> pc_bytes(sizeof(pc));
+  memcpy(pc_bytes.data(), &pc, sizeof(pc));
+  transfers.push_back({0, 0, std::move(pc_bytes), false});
+
+  transfers.push_back({0, 0, std::vector<u8>(84 * 16, 0), false});
+  const float envmap_color[4] = {64.f, 64.f, 64.f, 64.f};
+  std::vector<u8> envmap_bytes(sizeof(envmap_color));
+  memcpy(envmap_bytes.data(), envmap_color, sizeof(envmap_color));
+  transfers.push_back({0, 0, std::move(envmap_bytes), false});
+  return transfers;
+}
+
+void test_tie_envmap_tree_order(const GfxRendererModule* mod,
+                                std::shared_ptr<GfxDisplay>& display) {
+  printf("--- DMA chain: Jak 1 TIE envmap tree ordering ---\n");
+  using namespace jak1;
+
+  auto level = make_tie_order_test_level();
+  Serializer serializer;
+  level->serialize(serializer);
+  const auto serialized = serializer.get_save_result();
+  const auto compressed = compression::compress_zstd(serialized.first, serialized.second);
+  const fs::path path = fs::temp_directory_path() / "goalpad-metal-tie-order-proof.fr3";
+  file_util::write_binary_file(path, compressed.data(), compressed.size());
+  const auto load = metal_renderer::load_level_fr3(path.string(), false);
+  std::error_code remove_error;
+  fs::remove(path, remove_error);
+  check(load.ok, "TIE order proof level loaded");
+  if (!load.ok) {
+    printf("  error: %s\n", load.error.c_str());
+    return;
+  }
+
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+  ChainBuilder cb(mem);
+  cb.set_bucket_content((int)BucketId::TIE_LEVEL0, make_tie_order_bucket());
+  mod->send_chain(mem.data(), kChainStart);
+  display->render();
+
+  metal_renderer::FramePixels frame;
+  if (!metal_renderer::read_last_frame(&frame)) {
+    printf("[FAIL] could not read back the TIE order proof frame\n");
+    g_fail_count++;
+  } else {
+    const auto stats = metal_renderer::get_background_stats();
+    check(stats.tie_draws == 6, "TIE order proof issued plain and both envmap passes per tree");
+    check(stats.tie_envmap_second_draws == 2,
+          "TIE order proof issued one envmap second draw per tree");
+    check(stats.missing_levels == 0, "TIE order proof found its synthetic level");
+    check(stats.missing_textures == 0, "TIE order proof found every synthetic texture");
+    // Correct GL order is A base red + A env green, then B base blue + B env
+    // black. The old Metal batching instead leaves A's green env pass over B's
+    // blue base, producing cyan here.
+    check_pixel(frame, 320, 240, 0, 0, 255,
+                "TIE envmap passes stay adjacent within each tree");
+  }
+
+  g_ee_main_mem = nullptr;
+  metal_renderer::unload_all_levels();
 }
 
 // ---------------------------------------------------------------------------
@@ -4512,6 +4687,7 @@ int main(int argc, char** argv) {
   // ---- DMA chain path (stage 4) ----
   test_dma_chain(mod, display, level.get());
   test_sprite_chain(mod, display);
+  test_tie_envmap_tree_order(mod, display);
   test_merc_chain(mod, display);
   test_merc_blerc_chain(mod, display);
   test_bones_wrapper_chunk_boundary();
