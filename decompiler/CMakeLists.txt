@@ -37,6 +37,8 @@ add_library(
 
         extractor/extractor_util.cpp
 
+        ../common/versions/jak1_iso_revisions.cpp
+
         Function/BasicBlocks.cpp
         Function/CfgVtx.cpp
         Function/Function.cpp
@@ -126,3 +128,16 @@ target_link_libraries(extractor
         compiler
         stb_image
         tiny_gltf)
+
+if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
+  add_executable(jak1-iso-database-test
+                 ../test/decompiler/test_jak1_iso_database.cpp)
+  target_link_libraries(jak1-iso-database-test PRIVATE decomp common)
+  target_compile_features(jak1-iso-database-test PRIVATE cxx_std_20)
+  if(MSVC)
+    target_compile_options(jak1-iso-database-test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(jak1-iso-database-test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME jak1-iso-database-test COMMAND jak1-iso-database-test)
+endif()

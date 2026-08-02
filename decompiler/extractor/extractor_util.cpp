@@ -9,6 +9,7 @@
 #include "common/util/FileUtil.h"
 #include "common/util/json_util.h"
 #include "common/util/read_iso_file.h"
+#include "common/versions/jak1_iso_revisions.h"
 
 #include "game/kernel/common/kboot.h"
 
@@ -27,56 +28,36 @@ std::string get_territory_name(int territory) {
   return game_iso_territory_map.at(territory);
 }
 
-const ISOMetadata jak1_ntsc_black_label_info = {"Jak & Daxter™: The Precursor Legacy (Black Label)",
-                                                GAME_TERRITORY_SCEA,
-                                                337,
-                                                {11363853835861842434U},
-                                                "ntsc_v1",
-                                                "jak1",
-                                                {"jak1-black-label"}};
+namespace {
+
+ISOMetadata metadata_from_revision(const jak1_iso::Revision& revision) {
+  std::vector<std::string> flags;
+  if (revision.black_label) {
+    flags.emplace_back("jak1-black-label");
+  }
+  return {
+      std::string(revision.canonical_name),
+      static_cast<int>(revision.territory),
+      static_cast<int>(revision.file_count),
+      {revision.contents_hash},
+      std::string(revision.decomp_config_version),
+      "jak1",
+      std::move(flags),
+  };
+}
+
+const ISOMetadata& default_jak1_metadata() {
+  static const auto metadata = metadata_from_revision(jak1_iso::default_revision());
+  return metadata;
+}
+
+}  // namespace
 
 // { SERIAL : { ELF_HASH : ISOMetadataDatabase } }
 const std::unordered_map<std::string, std::unordered_map<uint64_t, ISOMetadata>>&
 extractor_iso_database() {
-  static const std::unordered_map<std::string, std::unordered_map<uint64_t, ISOMetadata>> database =
-      {
-          {"SCUS-97124",
-           {{7280758013604870207U, jak1_ntsc_black_label_info},
-            {744661860962747854,
-             {"Jak & Daxter™: The Precursor Legacy",
-              GAME_TERRITORY_SCEA,
-              338,
-              {8538304367812415885U},
-              "ntsc_v2",
-              "jak1",
-              {}}}}},
-          {"SCES-50361",
-           {{12150718117852276522U,
-             {"Jak & Daxter™: The Precursor Legacy",
-              GAME_TERRITORY_SCEE,
-              338,
-              {16850370297611763875U},
-              "pal",
-              "jak1",
-              {}}}}},
-          {"SCPS-15021",
-           {{16909372048085114219U,
-             {"ジャックＸダクスター　～　旧世界の遺産",
-              GAME_TERRITORY_SCEI,
-              338,
-              {1262350561338887717U},
-              "jp",
-              "jak1",
-              {}}}}},
-          {"SCPS-56003",
-           {{7280758013604870207U,
-             {"Jak & Daxter: 구세계의 유산",
-              GAME_TERRITORY_SCEA,
-              338,
-              {13924540661438229398U},
-              "ntsc_v1",
-              "jak1",
-              {}}}}},
+  static const auto database = [] {
+    std::unordered_map<std::string, std::unordered_map<uint64_t, ISOMetadata>> result = {
           // Jak 2, NTSC-U v1 and v2.
           // we put both of them together because they have the same serial and ELF.
           {"SCUS-97265",             // serial from ELF name
@@ -161,7 +142,13 @@ extractor_iso_database() {
               "pal",                  // decompiler config
               "jak3",
               {}}}}},
-      };
+    };
+    for (const auto& revision : jak1_iso::supported_revisions()) {
+      result[std::string(revision.serial)].emplace(revision.elf_hash,
+                                                   metadata_from_revision(revision));
+    }
+    return result;
+  }();
   return database;
 }
 
@@ -207,7 +194,7 @@ std::optional<ISOMetadata> get_version_info_from_build_info(const BuildInfo& bui
 }
 
 ISOMetadata get_version_info_or_default(const fs::path& iso_data_path) {
-  ISOMetadata version_info = jak1_ntsc_black_label_info;
+  ISOMetadata version_info = default_jak1_metadata();
   const auto build_info = get_buildinfo_from_path(iso_data_path);
   if (!build_info) {
     lg::warn(

@@ -15,20 +15,27 @@ option(OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY
        "Build the portable kernels and the complete Jak 2 iPhoneOS AOT link proof" OFF)
 option(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY
        "Build only the bounded, portable ISO9660 reader static library" OFF)
+option(OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY
+       "Build only the bounded Jak 1 ISO revision-validation static library" OFF)
 set(OPENGOAL_JAK2_AOT_DIR "" CACHE PATH
     "Host-generated Jak 2 AOT C directory used by the iPhoneOS link proof")
 
-if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY AND
+if((OPENGOAL_BUILD_SAFE_ISO_READER_ONLY OR OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY) AND
    (OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY OR
     OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY OR
     OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY OR
     OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY))
   message(FATAL_ERROR
-          "OPENGOAL_BUILD_SAFE_ISO_READER_ONLY is mutually exclusive with the runtime-only "
+          "The isolated ISO preparation modes are mutually exclusive with the runtime-only "
           "build modes.")
 endif()
 
-if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY)
+if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY AND OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY)
+  message(FATAL_ERROR
+          "Select only one isolated ISO preparation mode.")
+endif()
+
+if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY OR OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY)
   if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     string(TOLOWER "${CMAKE_OSX_SYSROOT}" OPENGOAL_SAFE_ISO_APPLE_SYSROOT)
     if(NOT APPLE OR NOT OPENGOAL_SAFE_ISO_APPLE_SYSROOT MATCHES "iphoneos")
@@ -42,6 +49,9 @@ if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY)
   endif()
   include(CTest)
   include(common/util/safe_iso_reader.cmake)
+  if(OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY)
+    include(decompiler/extractor/jak1_iso_validation.cmake)
+  endif()
   return()
 endif()
 
