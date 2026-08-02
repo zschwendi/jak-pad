@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-#include "common/dma/gs.h"
+#include "common/versions/jak1_iso_revisions.h"
 
 namespace jak1_prepared_retail {
 
@@ -27,12 +27,7 @@ inline constexpr std::array<const char*, 4> kEnumMapNames = {
     "pickup-type",
 };
 
-enum class Territory : uint8_t {
-  scea = 0,
-  scee = 1,
-  scei = 2,
-  scek = 3,
-};
+using Territory = jak1_iso::Territory;
 
 struct RevisionProvenance {
   std::string serial;
@@ -64,6 +59,21 @@ struct TextureRemap {
   bool operator==(const TextureRemap&) const = default;
 };
 
+struct AdGifRecord {
+  uint64_t tex0_data = 0;
+  uint64_t tex0_addr = 0;
+  uint64_t tex1_data = 0;
+  uint64_t tex1_addr = 0;
+  uint64_t mip_data = 0;
+  uint64_t mip_addr = 0;
+  uint64_t clamp_data = 0;
+  uint64_t clamp_addr = 0;
+  uint64_t alpha_data = 0;
+  uint64_t alpha_addr = 0;
+
+  bool operator==(const AdGifRecord&) const = default;
+};
+
 struct EnumEntry {
   std::string name;
   int64_t value = 0;
@@ -84,7 +94,7 @@ struct Catalog {
   std::vector<TextureRemap> village1_remaps;
   std::vector<uint32_t> raw_texture_ids;
   uint32_t raw_texture_page_count = 0;
-  std::vector<AdGifData> raw_adgifs;
+  std::vector<AdGifRecord> raw_adgifs;
   std::vector<uint32_t> village1_vis_alpha_combo_ids;
   std::array<EnumMap, 4> enum_maps = {{
       {kEnumMapNames[0], {}},

@@ -78,7 +78,8 @@ void rewrite_hash(std::vector<uint8_t>* bytes) {
   write_le64(bytes->data() + bytes->size() - sizeof(uint64_t), hash);
 }
 
-bool same_adgif(const AdGifData& left, const AdGifData& right) {
+bool same_adgif(const jak1_prepared_retail::AdGifRecord& left,
+                const jak1_prepared_retail::AdGifRecord& right) {
   return left.tex0_data == right.tex0_data && left.tex0_addr == right.tex0_addr &&
          left.tex1_data == right.tex1_data && left.tex1_addr == right.tex1_addr &&
          left.mip_data == right.mip_data && left.mip_addr == right.mip_addr &&

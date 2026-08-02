@@ -13,7 +13,7 @@ namespace {
 
 constexpr size_t kHeaderBytes = kMagic.size() + sizeof(uint32_t) + sizeof(uint64_t);
 constexpr size_t kHashBytes = sizeof(uint64_t);
-constexpr size_t kAdGifWords = sizeof(AdGifData) / sizeof(uint64_t);
+constexpr size_t kAdGifWords = sizeof(AdGifRecord) / sizeof(uint64_t);
 static_assert(kAdGifWords == 10);
 
 Error make_error(ErrorCode code, size_t offset, std::string message) {
@@ -27,34 +27,12 @@ bool valid_limits(const Limits& limits) {
          limits.max_enum_entries_per_map > 0 && limits.min_enum_value <= limits.max_enum_value;
 }
 
-struct KnownRevision {
-  std::string_view serial;
-  uint64_t executable_hash;
-  uint64_t contents_hash;
-  uint32_t file_count;
-  std::string_view config;
-  Territory territory;
-  bool black_label;
-};
-
-constexpr std::array<KnownRevision, 5> kKnownRevisions = {{
-    {"SCUS-97124", 7280758013604870207ULL, 11363853835861842434ULL, 337, "ntsc_v1", Territory::scea,
-     true},
-    {"SCUS-97124", 744661860962747854ULL, 8538304367812415885ULL, 338, "ntsc_v2", Territory::scea,
-     false},
-    {"SCES-50361", 12150718117852276522ULL, 16850370297611763875ULL, 338, "pal", Territory::scee,
-     false},
-    {"SCPS-15021", 16909372048085114219ULL, 1262350561338887717ULL, 338, "jp", Territory::scei,
-     false},
-    {"SCPS-56003", 7280758013604870207ULL, 13924540661438229398ULL, 338, "ntsc_v1", Territory::scea,
-     false},
-}};
-
 bool known_revision(const RevisionProvenance& revision) {
-  return std::any_of(kKnownRevisions.begin(), kKnownRevisions.end(), [&](const auto& known) {
-    return revision.serial == known.serial && revision.executable_hash == known.executable_hash &&
-           revision.contents_hash == known.contents_hash &&
-           revision.file_count == known.file_count && revision.config_version == known.config &&
+  const auto revisions = jak1_iso::supported_revisions();
+  return std::any_of(revisions.begin(), revisions.end(), [&](const auto& known) {
+    return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
+           revision.contents_hash == known.contents_hash && revision.file_count == known.file_count &&
+           revision.config_version == known.decomp_config_version &&
            revision.territory == known.territory && revision.black_label == known.black_label;
   });
 }
@@ -290,7 +268,7 @@ uint64_t wire_hash(std::span<const uint8_t> bytes) {
   return XXH64(bytes.data(), bytes.size(), 0);
 }
 
-void write_adgif(Writer* writer, const AdGifData& adgif) {
+void write_adgif(Writer* writer, const AdGifRecord& adgif) {
   writer->u64(adgif.tex0_data);
   writer->u64(adgif.tex0_addr);
   writer->u64(adgif.tex1_data);
@@ -303,7 +281,7 @@ void write_adgif(Writer* writer, const AdGifData& adgif) {
   writer->u64(adgif.alpha_addr);
 }
 
-bool read_adgif(Reader* reader, AdGifData* adgif) {
+bool read_adgif(Reader* reader, AdGifRecord* adgif) {
   return reader->u64(&adgif->tex0_data) && reader->u64(&adgif->tex0_addr) &&
          reader->u64(&adgif->tex1_data) && reader->u64(&adgif->tex1_addr) &&
          reader->u64(&adgif->mip_data) && reader->u64(&adgif->mip_addr) &&

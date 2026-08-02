@@ -17,10 +17,26 @@ option(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY
        "Build only the bounded, portable ISO9660 reader static library" OFF)
 option(OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY
        "Build only the bounded Jak 1 ISO revision-validation static library" OFF)
+option(OPENGOAL_BUILD_JAK1_CHECKED_DGO_ONLY
+       "Build only the bounded Jak 1 DGO/CGO reader static library" OFF)
+option(OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY
+       "Build only the checked Jak 1 prepared-retail catalog static library" OFF)
 set(OPENGOAL_JAK2_AOT_DIR "" CACHE PATH
     "Host-generated Jak 2 AOT C directory used by the iPhoneOS link proof")
 
-if((OPENGOAL_BUILD_SAFE_ISO_READER_ONLY OR OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY) AND
+set(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT 0)
+foreach(OPENGOAL_ISOLATED_IMPORT_MODE
+        OPENGOAL_BUILD_SAFE_ISO_READER_ONLY
+        OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY
+        OPENGOAL_BUILD_JAK1_CHECKED_DGO_ONLY
+        OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY)
+  if(${OPENGOAL_ISOLATED_IMPORT_MODE})
+    math(EXPR OPENGOAL_ISOLATED_IMPORT_MODE_COUNT
+         "${OPENGOAL_ISOLATED_IMPORT_MODE_COUNT} + 1")
+  endif()
+endforeach()
+
+if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0 AND
    (OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY OR
     OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY OR
     OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY OR
@@ -30,27 +46,35 @@ if((OPENGOAL_BUILD_SAFE_ISO_READER_ONLY OR OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ON
           "build modes.")
 endif()
 
-if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY AND OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY)
+if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 1)
   message(FATAL_ERROR
-          "Select only one isolated ISO preparation mode.")
+          "Select only one isolated Jak 1 import-library mode.")
 endif()
 
-if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY OR OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY)
+if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    string(TOLOWER "${CMAKE_OSX_SYSROOT}" OPENGOAL_SAFE_ISO_APPLE_SYSROOT)
-    if(NOT APPLE OR NOT OPENGOAL_SAFE_ISO_APPLE_SYSROOT MATCHES "iphoneos")
+    string(TOLOWER "${CMAKE_OSX_SYSROOT}" OPENGOAL_IMPORT_APPLE_SYSROOT)
+    if(NOT APPLE OR NOT OPENGOAL_IMPORT_APPLE_SYSROOT MATCHES "iphoneos")
       message(FATAL_ERROR
-              "iOS safe ISO reader builds require CMAKE_OSX_SYSROOT=iphoneos.")
+              "iOS Jak 1 import-library builds require CMAKE_OSX_SYSROOT=iphoneos.")
     endif()
     if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
       message(FATAL_ERROR
-              "iPhoneOS safe ISO reader builds require CMAKE_OSX_ARCHITECTURES=arm64.")
+              "iPhoneOS Jak 1 import-library builds require CMAKE_OSX_ARCHITECTURES=arm64.")
     endif()
   endif()
   include(CTest)
-  include(common/util/safe_iso_reader.cmake)
+  if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY OR OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY)
+    include(common/util/safe_iso_reader.cmake)
+  endif()
   if(OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY)
     include(decompiler/extractor/jak1_iso_validation.cmake)
+  endif()
+  if(OPENGOAL_BUILD_JAK1_CHECKED_DGO_ONLY)
+    include(decompiler/extractor/jak1_checked_dgo.cmake)
+  endif()
+  if(OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY)
+    include(common/custom_data/jak1_prepared_retail.cmake)
   endif()
   return()
 endif()
