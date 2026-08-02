@@ -134,6 +134,10 @@ MercDrawSettings settings_from_draw_mode(DrawMode mode,
         // shaders have no uniform for and the GL renderer discards too
         out.pso.blend_src_rgb = MTLBlendFactorDestinationAlpha;
         out.pso.blend_dst_rgb = MTLBlendFactorOne;
+        // setup_opengl_from_draw_mode uses glBlendFunc (not glBlendFuncSeparate)
+        // for this mode, so alpha uses the same factors as RGB.
+        out.pso.blend_src_alpha = MTLBlendFactorDestinationAlpha;
+        out.pso.blend_dst_alpha = MTLBlendFactorOne;
         break;
       default:
         ASSERT(false);

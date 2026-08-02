@@ -109,6 +109,21 @@ void check_pixel(const metal_renderer::FramePixels& frame,
   }
 }
 
+void check_pixel_alpha(const metal_renderer::FramePixels& frame,
+                       int x,
+                       int y,
+                       int alpha,
+                       const char* what) {
+  const u8* p = &frame.rgba[(y * frame.width + x) * 4];
+  const int tol = 10;
+  const bool ok = std::abs(p[3] - alpha) <= tol;
+  printf("[%s] %s at (%d,%d): expected alpha ~%d, got %d\n", ok ? "PASS" : "FAIL", what,
+         x, y, alpha, p[3]);
+  if (!ok) {
+    g_fail_count++;
+  }
+}
+
 // Renders the sample quad or records a failure.
 bool sample_tex(const metal_renderer::TextureSampleSpec& spec,
                 metal_renderer::FramePixels* out,
@@ -1948,6 +1963,13 @@ std::unique_ptr<tfrag3::Level> make_merc_test_level(bool with_envmap) {
   tex.data.resize(16 * 16, 0xff3264c8u);  // a=255 b=50 g=100 r=200
   level->textures.push_back(tex);
 
+  // The normal pass must leave destination alpha opaque. Give the envmap a
+  // translucent source alpha so the test can distinguish GL's SRC_0_DST_DST
+  // alpha factors from accidentally replacing alpha with the envmap's alpha.
+  tex.debug_name = "merc-envmap-translucent";
+  tex.data.assign(16 * 16, 0x403264c8u);  // a=64 b=50 g=100 r=200
+  level->textures.push_back(tex);
+
   // a quad as a triangle strip, in GS coordinates around the origin
   auto& merc = level->merc_data;
   merc.vertices.resize(4);
@@ -1993,7 +2015,7 @@ std::unique_ptr<tfrag3::Level> make_merc_test_level(bool with_envmap) {
   effect.all_draws.push_back(draw);
   effect.has_envmap = with_envmap;
   effect.has_mod_draw = false;
-  effect.envmap_texture = 0;
+  effect.envmap_texture = 1;
   if (with_envmap) {
     effect.envmap_mode = draw.mode;
     // the envmap pass is always this blend (Merc2::do_draws asserts it)
@@ -2362,6 +2384,8 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
     // through the SRC_0_DST_DST blend (dst alpha is 1 after the first draw).
     const int col0 = gs_to_col(kX0), row0 = gs_to_row(kY0);
     check_pixel(frame, col0, row0, 255, 151, 75, "merc: envmap pass blended over the model");
+    check_pixel_alpha(frame, col0, row0, 255,
+                      "merc: envmap pass preserves destination alpha blend semantics");
     check_pixel(frame, gs_to_col(kX1), gs_to_row(kY1), 0, 0, 0,
                 "merc: no second instance in the envmap frame");
   }
