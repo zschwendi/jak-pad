@@ -597,6 +597,28 @@ build above; only the compiler target changes. `jak1-aot-boot-test` and `jak1-th
 build the same way from `build/Release/bin/game/aot-boot` and `.../aot-thread-switch` - one
 `clang -c` per generated `.c`, then the driver, then a link against the archive.
 
+Jak 2 has a CMake-managed iPhoneOS final-link proof for its complete externally generated corpus.
+First build `jak2-data-boot-test` on the ARM64 host to generate
+`build/Release/bin/game/aot-boot-jak2`, then configure the device-only build:
+
+```sh
+cmake -S . -B build/ios-jak2-aot-link -G Ninja \
+  -DOPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY=ON \
+  -DOPENGOAL_JAK2_AOT_DIR="$PWD/build/Release/bin/game/aot-boot-jak2" \
+  -DBUILD_TESTING=OFF -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build/ios-jak2-aot-link -j 4 \
+  --target jak1-kernel-core jak2-kernel-core jak2-iphoneos-full-aot-link
+```
+
+Configuration and every build validate the manifest, its declared count, and the exact corpus of
+840 generated C/header pairs. The final executable compiles those 840 units plus
+`aot_boot_manifest.c` with `-fno-strict-aliasing` and links only `jak2-kernel-core`. It must not
+link the Jak 1 AOT product in the same executable because the generated games export overlapping
+symbols. This is a device-SDK compile/link proof, not the shipping GOALPad application, a signing
+proof, or a runtime result.
+
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 GEN=build/Release/bin/game/aot-generated

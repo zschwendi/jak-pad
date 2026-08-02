@@ -11,6 +11,46 @@ option(OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY
        "Build only the Jak 1 data-arena ARM64 native-method invoker libraries" OFF)
 option(OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY
        "Build only the portable Jak 1 kernel core static library" OFF)
+option(OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY
+       "Build the portable kernels and the complete Jak 2 iPhoneOS AOT link proof" OFF)
+set(OPENGOAL_JAK2_AOT_DIR "" CACHE PATH
+    "Host-generated Jak 2 AOT C directory used by the iPhoneOS link proof")
+
+if(OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY AND
+   (OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY OR
+    OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY OR
+    OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY))
+  message(FATAL_ERROR
+          "OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY is mutually exclusive with the "
+          "Jak 1-only build modes; the generated Jak 1 and Jak 2 products export "
+          "overlapping symbols.")
+endif()
+
+if(OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY)
+  if(BUILD_TESTING)
+    message(FATAL_ERROR
+            "OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY requires BUILD_TESTING=OFF.")
+  endif()
+  string(TOLOWER "${CMAKE_OSX_SYSROOT}" OPENGOAL_APPLE_SYSROOT)
+  if(NOT APPLE OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" OR
+     NOT OPENGOAL_APPLE_SYSROOT MATCHES "iphoneos")
+    message(FATAL_ERROR
+            "OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY requires the iPhoneOS SDK; set "
+            "CMAKE_SYSTEM_NAME=iOS and CMAKE_OSX_SYSROOT=iphoneos.")
+  endif()
+  if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    message(FATAL_ERROR
+            "OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY requires "
+            "CMAKE_OSX_ARCHITECTURES=arm64.")
+  endif()
+
+  # The Jak 2 core's profiler references zstd. A static archive can leave that unresolved, but the
+  # full-AOT executable deliberately performs final link resolution.
+  add_subdirectory(third-party/zstd EXCLUDE_FROM_ALL)
+  include(game/kernel/core/kernel_core.cmake)
+  include(game/kernel/core/jak2_iphoneos_aot_link.cmake)
+  return()
+endif()
 
 if(OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY)
   if(BUILD_TESTING)
