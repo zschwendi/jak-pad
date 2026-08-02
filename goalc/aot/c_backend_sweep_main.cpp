@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -17,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include "common/custom_data/Jak1SourceObjectPack.h"
 #include "common/log/log.h"
 #include "common/util/FileUtil.h"
 #include "common/util/string_util.h"
@@ -30,7 +32,7 @@
 namespace {
 
 constexpr size_t kJak1AllCodeSourceCount = 518;
-constexpr const char* kObjectManifestName = "object_pack_manifest.tsv";
+constexpr const char* kObjectManifestName = jak1_source_object_pack::kManifestName;
 
 struct Options {
   std::string game = "jak1";
@@ -237,8 +239,9 @@ std::string object_manifest_text(const std::vector<ObjectManifestEntry>& entries
   return manifest;
 }
 
-void write_and_verify_object_manifest(const fs::path& directory,
-                                      const std::vector<ObjectManifestEntry>& entries) {
+jak1_source_object_pack::Summary write_and_verify_object_manifest(
+    const fs::path& directory,
+    const std::vector<ObjectManifestEntry>& entries) {
   if (entries.size() != kJak1AllCodeSourceCount) {
     throw std::runtime_error(fmt::format("Object pack has {} entries instead of {}.",
                                          entries.size(), kJak1AllCodeSourceCount));
@@ -247,25 +250,14 @@ void write_and_verify_object_manifest(const fs::path& directory,
   const auto manifest_path = directory / kObjectManifestName;
   file_util::write_binary_file(manifest_path, manifest.data(), manifest.size());
 
-  std::set<std::string> expected_files = {kObjectManifestName};
-  for (const auto& entry : entries) {
-    expected_files.emplace(entry.file);
-    const auto bytes = file_util::read_binary_file(directory / entry.file);
-    if (bytes.size() != entry.byte_size || XXH64(bytes.data(), bytes.size(), 0) != entry.hash) {
-      throw std::runtime_error(fmt::format("Object verification failed for {}.", entry.file));
-    }
+  const auto absolute_root = std::filesystem::absolute(std::filesystem::path(directory.string()));
+  auto verified = jak1_source_object_pack::validate(absolute_root);
+  if (!verified) {
+    throw std::runtime_error(fmt::format(
+        "Portable object-pack validation failed ({}): {}",
+        jak1_source_object_pack::error_code_name(verified.error().code), verified.error().message));
   }
-  if (file_util::read_text_file(manifest_path) != manifest) {
-    throw std::runtime_error("Object manifest verification failed.");
-  }
-
-  std::set<std::string> actual_files;
-  for (const auto& item : fs::directory_iterator(directory)) {
-    actual_files.emplace(item.path().filename().string());
-  }
-  if (actual_files != expected_files) {
-    throw std::runtime_error("Object staging directory contains missing or unexpected files.");
-  }
+  return verified.take_value();
 }
 
 /*!
@@ -452,8 +444,12 @@ int main(int argc, char** argv) {
       return 1;
     }
     try {
-      write_and_verify_object_manifest(object_pack->path(), object_manifest);
+      const auto summary = write_and_verify_object_manifest(object_pack->path(), object_manifest);
       object_pack->commit();
+      std::printf("source_object_pack_count=%u aggregate_xxh64=%016llx total_bytes=%llu\n",
+                  summary.identity.object_count,
+                  static_cast<unsigned long long>(summary.identity.aggregate_xxh64),
+                  static_cast<unsigned long long>(summary.total_object_bytes));
     } catch (const std::exception& error) {
       std::fprintf(stderr, "goalc-cbackend-sweep: object pack verification failed: %s\n",
                    error.what());

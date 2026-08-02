@@ -88,6 +88,7 @@ add_library(compiler
 target_link_libraries(compiler common Zydis tiny_gltf decomp)
 
 include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_output_recipe_core.cmake")
+include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_source_object_pack.cmake")
 
 add_library(jak1-output-recipe-generator make/Jak1OutputRecipeMakeSystem.cpp)
 target_link_libraries(jak1-output-recipe-generator
@@ -127,9 +128,41 @@ add_executable(build_actor build_actor/main.cpp)
 target_link_libraries(goalc common Zydis compiler)
 target_link_libraries(goalc-simple common Zydis compiler)
 target_link_libraries(goalc-cbackend common Zydis compiler)
-target_link_libraries(goalc-cbackend-sweep common Zydis compiler)
+target_link_libraries(goalc-cbackend-sweep common Zydis compiler jak1-source-object-pack)
 target_link_libraries(build_level common Zydis compiler)
 target_link_libraries(build_actor common Zydis compiler)
+
+if(OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT)
+  get_filename_component(OPENGOAL_JAK1_SOURCE_OBJECT_PACK_PARENT
+                         "${OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT}" DIRECTORY)
+  string(SHA256 OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT_HASH
+         "${OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT}")
+  string(SUBSTRING "${OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT_HASH}" 0 16
+                   OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT_KEY)
+  set(OPENGOAL_JAK1_SOURCE_OBJECT_PACK_STAMP
+      "${CMAKE_CURRENT_BINARY_DIR}/jak1-source-object-pack-${OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT_KEY}.stamp")
+  add_custom_command(
+      OUTPUT "${OPENGOAL_JAK1_SOURCE_OBJECT_PACK_STAMP}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+              "${OPENGOAL_JAK1_SOURCE_OBJECT_PACK_PARENT}"
+      COMMAND "$<TARGET_FILE:goalc-cbackend-sweep>"
+              --game jak1
+              --project-file goal_src/jak1/game.gp
+              --target GROUP:all-code
+              --report
+              "${CMAKE_CURRENT_BINARY_DIR}/jak1-source-object-pack-report.tsv"
+              --project-path "${CMAKE_SOURCE_DIR}"
+              --object-output-dir "${OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT}"
+      COMMAND "${CMAKE_COMMAND}" -E touch
+              "${OPENGOAL_JAK1_SOURCE_OBJECT_PACK_STAMP}"
+      DEPENDS goalc-cbackend-sweep
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      COMMENT "Generating checked Jak 1 public source-object pack"
+      VERBATIM)
+  add_custom_target(
+      jak1-source-object-pack-package
+      DEPENDS "${OPENGOAL_JAK1_SOURCE_OBJECT_PACK_STAMP}")
+endif()
 
 add_test(
         NAME goalc-c-backend-gcommon

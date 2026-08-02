@@ -70,6 +70,30 @@ and are native `arm64` Mach-O executables:
 
 The build directory was 838 MB after this targeted build.
 
+### Build the reconstructed-source object pack
+
+The app build can package the 518 public Jak 1 objects reconstructed from this
+repository separately from the user's retail data. Choose a new output directory;
+the target deliberately refuses to replace an existing directory:
+
+```bash
+export PACK_ROOT="/path/to/new/jak1-source-object-pack"
+cmake -S . -B build-source-pack -G Ninja \
+  -DOPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT="$PACK_ROOT"
+cmake --build build-source-pack --target jak1-source-object-pack-package
+```
+
+The output is a flat directory containing 518 `.o` files and
+`object_pack_manifest.tsv`. The manifest records the exact ordered source graph,
+object sizes and XXH64 hashes, plus a stable aggregate identity. The host writer
+validates the completed staging directory before publishing it.
+
+The corresponding bounded reader is isolated from the host compiler and can be
+built on its own with `-DOPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY=ON`. It checks
+the embedded public source order, exact directory contents, byte limits and every
+object hash before an app consumes the pack. Generated packs are build products and
+must not be committed.
+
 ## Step 2 — Choose an outside-the-repo data root
 
 ```bash
