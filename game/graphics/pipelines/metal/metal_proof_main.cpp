@@ -1952,13 +1952,31 @@ void test_background_common_parity() {
 }
 
 // ---------------------------------------------------------------------------
-// Section: Jak 1 TIE envmap ordering. The GL renderer completes both envmap
-// draws for one tree before advancing to the next tree. This matters when two
-// trees overlap at the same depth: the later tree's opaque base must replace
-// both draws from the earlier tree before its own shiny pass is added.
+// Section: Jak 1 TIE envmap ordering and coplanar stability. The GL renderer
+// completes both envmap draws for one tree before advancing to the next tree.
+// This matters when two trees overlap at the same depth: the later tree's
+// opaque base must replace both draws from the earlier tree before its own
+// shiny pass is added. The base and shiny shaders must also cover exactly the
+// same pixels as the camera moves because the shiny pass uses GEQUAL without a
+// depth write against the base pass.
 // ---------------------------------------------------------------------------
 
 constexpr const char* kTieOrderLevelName = "tie-proof";
+
+struct TieCameraState {
+  const char* name;
+  float angle;
+  float tx;
+  float ty;
+  float tz;
+  float pxx;
+  float pyy;
+  float fog_constant;
+  float pzw;
+  float hvdf_z;
+  float pzz;
+  float pwz;
+};
 
 tfrag3::StripDraw make_tie_order_draw(int texture, bool envmap_second) {
   tfrag3::StripDraw draw{};
@@ -1982,15 +2000,12 @@ tfrag3::StripDraw make_tie_order_draw(int texture, bool envmap_second) {
   return draw;
 }
 
-tfrag3::TieTree make_tie_order_tree(int normal_texture,
-                                    int base_texture,
-                                    int envmap_texture) {
+tfrag3::TieTree make_tie_order_tree(int base_texture, int envmap_texture) {
   tfrag3::TieTree tree{};
   tree.use_strips = true;
-  tree.static_draws.push_back(make_tie_order_draw(normal_texture, false));
   tree.static_draws.push_back(make_tie_order_draw(base_texture, false));
   tree.static_draws.push_back(make_tie_order_draw(envmap_texture, true));
-  tree.category_draw_indices = {0, 1, 1, 1, 2, 2, 2, 3, 3, 3};
+  tree.category_draw_indices = {0, 0, 0, 0, 1, 1, 1, 2, 2, 2};
 
   constexpr float kHalfWidth = 64.f;
   constexpr float kHalfHeight = 32.f;
@@ -2033,17 +2048,17 @@ std::unique_ptr<tfrag3::Level> make_tie_order_test_level() {
   add_texture("tree-a-base-red", 0xff0000ffu);
   add_texture("tree-a-env-green", 0xff00ff00u);
   add_texture("tree-b-base-blue", 0xffff0000u);
-  add_texture("tree-b-env-black", 0xff000000u);
+  add_texture("tree-b-env-red", 0xff0000ffu);
 
-  // Both plain passes are red. This also proves the global NORMAL batch runs
-  // before the envmap work: if either plain draw ran afterward, it would hide
-  // the expected blue result.
-  level->tie_trees[0].push_back(make_tie_order_tree(0, 0, 1));
-  level->tie_trees[0].push_back(make_tie_order_tree(0, 2, 3));
+  // Correct paired order leaves tree B's blue base plus its red shiny pass:
+  // magenta. The old category-batched order also leaves tree A's green shine:
+  // white. If B's coplanar shiny pass fails depth, the result stays blue.
+  level->tie_trees[0].push_back(make_tie_order_tree(0, 1));
+  level->tie_trees[0].push_back(make_tie_order_tree(2, 3));
   return level;
 }
 
-std::vector<ChainBuilder::Transfer> make_tie_order_bucket() {
+std::vector<ChainBuilder::Transfer> make_tie_order_bucket(const TieCameraState& state) {
   std::vector<ChainBuilder::Transfer> transfers;
   transfers.push_back({0, 0, std::vector<u8>(160, 0), false});
   transfers.push_back({0, 0, {}, true});
@@ -2054,15 +2069,20 @@ std::vector<ChainBuilder::Transfer> make_tie_order_bucket() {
   memcpy(pc.level_name, kTieOrderLevelName, strlen(kTieOrderLevelName));
   pc.camera.itimes[0][0] = 0x00400040;
   pc.camera.itimes[0][1] = 0x00400040;
-  for (int i = 0; i < 4; i++) {
-    pc.camera.rot[i][i] = 1.f;
-  }
+  const float c = std::cos(state.angle);
+  const float s = std::sin(state.angle);
+  pc.camera.rot[0] = math::Vector4f(c, s, 0.f, 0.f);
+  pc.camera.rot[1] = math::Vector4f(-s, c, 0.f, 0.f);
+  pc.camera.rot[2] = math::Vector4f(0.f, 0.f, 1.f, 0.f);
+  pc.camera.rot[3] = math::Vector4f(state.tx, state.ty, state.tz, 1.f);
   pc.camera.camera[3].w() = 255.f;  // zero fogginess
-  pc.camera.hvdf_off = math::Vector4f(2048.f, 2048.f, 8388608.f, 0.f);
-  pc.camera.fog = math::Vector4f(1.f, 0.f, 255.f, 0.f);
-  pc.camera.perspective[0].x() = 1.f;
-  pc.camera.perspective[1].y() = 1.f;
-  pc.camera.perspective[2].w() = 1.f;
+  pc.camera.hvdf_off = math::Vector4f(2048.f, 2048.f, state.hvdf_z, 0.f);
+  pc.camera.fog = math::Vector4f(state.fog_constant, 0.f, 255.f, 0.f);
+  pc.camera.perspective[0].x() = state.pxx;
+  pc.camera.perspective[1].y() = state.pyy;
+  pc.camera.perspective[2].z() = state.pzz;
+  pc.camera.perspective[2].w() = state.pzw;
+  pc.camera.perspective[3].z() = state.pwz;
   std::vector<u8> pc_bytes(sizeof(pc));
   memcpy(pc_bytes.data(), &pc, sizeof(pc));
   transfers.push_back({0, 0, std::move(pc_bytes), false});
@@ -2073,6 +2093,34 @@ std::vector<ChainBuilder::Transfer> make_tie_order_bucket() {
   memcpy(envmap_bytes.data(), envmap_color, sizeof(envmap_color));
   transfers.push_back({0, 0, std::move(envmap_bytes), false});
   return transfers;
+}
+
+struct TieFrameIdentity {
+  size_t magenta = 0;
+  size_t blue = 0;
+  size_t white = 0;
+  size_t unexpected = 0;
+};
+
+TieFrameIdentity tie_frame_identity(const metal_renderer::FramePixels& frame) {
+  TieFrameIdentity out;
+  for (size_t i = 0; i < frame.rgba.size(); i += 4) {
+    const u8 r = frame.rgba[i];
+    const u8 g = frame.rgba[i + 1];
+    const u8 b = frame.rgba[i + 2];
+    if (r >= 245 && g <= 10 && b >= 245) {
+      out.magenta++;
+    } else if (r <= 10 && g <= 10 && b >= 245) {
+      out.blue++;
+      out.unexpected++;
+    } else if (r >= 245 && g >= 245 && b >= 245) {
+      out.white++;
+      out.unexpected++;
+    } else if (r > 10 || g > 10 || b > 10) {
+      out.unexpected++;
+    }
+  }
+  return out;
 }
 
 void test_tie_envmap_tree_order(const GfxRendererModule* mod,
@@ -2096,29 +2144,59 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
     return;
   }
 
-  std::vector<u8> mem(kEeSize, 0);
-  g_ee_main_mem = mem.data();
-  ChainBuilder cb(mem);
-  cb.set_bucket_content((int)BucketId::TIE_LEVEL0, make_tie_order_bucket());
-  mod->send_chain(mem.data(), kChainStart);
-  display->render();
+  const TieCameraState camera_a{"A", 0.31f, 19.f, -11.f, 0.4f, 1.8f, 1.35f,
+                                3.25f, 1.625f, 11184810.f, 70000.f, 16000.f};
+  const TieCameraState camera_b{"B", -0.43f, -15.f, 13.f, 0.85f, 2.15f, 1.7f,
+                                2.25f, 1.6875f, 9437184.f, -50000.f, 24000.f};
 
-  metal_renderer::FramePixels frame;
-  if (!metal_renderer::read_last_frame(&frame)) {
-    printf("[FAIL] could not read back the TIE order proof frame\n");
-    g_fail_count++;
-  } else {
+  auto render_camera = [&](const TieCameraState& state, metal_renderer::FramePixels* frame) {
+    std::vector<u8> mem(kEeSize, 0);
+    g_ee_main_mem = mem.data();
+    ChainBuilder cb(mem);
+    cb.set_bucket_content((int)BucketId::TIE_LEVEL0, make_tie_order_bucket(state));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    const bool read = metal_renderer::read_last_frame(frame);
+    g_ee_main_mem = nullptr;
+    check(read, fmt::format("TIE camera {} frame readback succeeds", state.name).c_str());
+    if (!read) {
+      return false;
+    }
+
     const auto stats = metal_renderer::get_background_stats();
-    check(stats.tie_draws == 6, "TIE order proof issued plain and both envmap passes per tree");
+    check(stats.tie_draws == 4,
+          fmt::format("TIE camera {} issued both envmap passes per tree", state.name).c_str());
     check(stats.tie_envmap_second_draws == 2,
-          "TIE order proof issued one envmap second draw per tree");
-    check(stats.missing_levels == 0, "TIE order proof found its synthetic level");
-    check(stats.missing_textures == 0, "TIE order proof found every synthetic texture");
-    // Correct GL order is A base red + A env green, then B base blue + B env
-    // black. The old Metal batching instead leaves A's green env pass over B's
-    // blue base, producing cyan here.
-    check_pixel(frame, 320, 240, 0, 0, 255,
-                "TIE envmap passes stay adjacent within each tree");
+          fmt::format("TIE camera {} issued one shiny draw per tree", state.name).c_str());
+    check(stats.missing_levels == 0,
+          fmt::format("TIE camera {} found its synthetic level", state.name).c_str());
+    check(stats.missing_textures == 0,
+          fmt::format("TIE camera {} found every synthetic texture", state.name).c_str());
+
+    const auto identity = tie_frame_identity(*frame);
+    printf("  camera %s identity: magenta=%zu blue=%zu white=%zu unexpected=%zu\n", state.name,
+           identity.magenta, identity.blue, identity.white, identity.unexpected);
+    check(identity.magenta > 100,
+          fmt::format("TIE camera {} produces a meaningful paired-pass mask", state.name).c_str());
+    check(identity.unexpected == 0,
+          fmt::format("TIE camera {} keeps base and shiny coverage identical", state.name).c_str());
+    return true;
+  };
+
+  metal_renderer::FramePixels frame_a_first;
+  metal_renderer::FramePixels frame_b;
+  metal_renderer::FramePixels frame_a_second;
+  const bool read_a_first = render_camera(camera_a, &frame_a_first);
+  const bool read_b = render_camera(camera_b, &frame_b);
+  const bool read_a_second = render_camera(camera_a, &frame_a_second);
+  if (read_a_first && read_b && read_a_second) {
+    check(frame_a_first.width == frame_a_second.width &&
+              frame_a_first.height == frame_a_second.height &&
+              frame_a_first.rgba == frame_a_second.rgba,
+          "TIE camera A produces an identical frame after A/B/A alternation");
+    check(frame_a_first.rgba != frame_b.rgba,
+          "TIE camera B changes the coverage exercised between repeated A frames");
   }
 
   g_ee_main_mem = nullptr;
