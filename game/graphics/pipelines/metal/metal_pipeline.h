@@ -133,6 +133,8 @@ struct ChainStats {
   u64 last_camera_alternation_packet_fingerprint = 0;
   u8 last_camera_alternation_live_mismatch_qwords = 0;
   u8 last_camera_alternation_packet_mismatch_qwords = 0;
+  u16 last_camera_alternation_render_live_mismatch_qwords = 0;
+  u16 last_camera_alternation_render_packet_mismatch_qwords = 0;
   double last_camera_older_to_previous_distance = 0.0;
   double last_camera_previous_to_current_distance = 0.0;
   double last_camera_older_to_current_distance = 0.0;

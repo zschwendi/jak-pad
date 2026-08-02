@@ -134,6 +134,17 @@ inline u16 mismatched_render_qwords(const RenderSnapshot& expected,
   return mask;
 }
 
+inline void latch_render_mismatch_qwords_on_alternation(bool alternation,
+                                                        u16 live_mismatch_qwords,
+                                                        u16 packet_mismatch_qwords,
+                                                        u16& last_live_mismatch_qwords,
+                                                        u16& last_packet_mismatch_qwords) {
+  if (alternation) {
+    last_live_mismatch_qwords = live_mismatch_qwords;
+    last_packet_mismatch_qwords = packet_mismatch_qwords;
+  }
+}
+
 /*!
  * A scale-independent distance over every float component in a camera snapshot. This is a
  * diagnostic comparison only: it deliberately does not interpret the fields as a world-space pose.

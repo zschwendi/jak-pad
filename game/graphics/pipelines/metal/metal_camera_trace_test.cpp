@@ -164,6 +164,27 @@ int main() {
   check(render_trace.expected_mismatches() == 0 && render_trace.packet_mismatches() == 1,
         "the full render trace remains packet-only when the host supplies no live snapshot");
 
+  u16 last_alternation_live_mismatch_qwords = 0xffff;
+  u16 last_alternation_packet_mismatch_qwords = 0xffff;
+  metal_camera_trace::latch_render_mismatch_qwords_on_alternation(
+      true, render_first.expected_mismatch_qwords, render_first.packet_mismatch_qwords,
+      last_alternation_live_mismatch_qwords, last_alternation_packet_mismatch_qwords);
+  check(last_alternation_live_mismatch_qwords == 0 &&
+            last_alternation_packet_mismatch_qwords == 0,
+        "a matching alternation chain latches zero full render mismatch masks");
+  metal_camera_trace::latch_render_mismatch_qwords_on_alternation(
+      true, render_second.expected_mismatch_qwords, render_second.packet_mismatch_qwords,
+      last_alternation_live_mismatch_qwords, last_alternation_packet_mismatch_qwords);
+  check(last_alternation_live_mismatch_qwords == ((1u << 9) | (1u << 14)) &&
+            last_alternation_packet_mismatch_qwords == ((1u << 9) | (1u << 14)),
+        "a divergent alternation chain latches its full live and packet mismatch masks");
+  metal_camera_trace::latch_render_mismatch_qwords_on_alternation(
+      false, 0, 0, last_alternation_live_mismatch_qwords,
+      last_alternation_packet_mismatch_qwords);
+  check(last_alternation_live_mismatch_qwords == ((1u << 9) | (1u << 14)) &&
+            last_alternation_packet_mismatch_qwords == ((1u << 9) | (1u << 14)),
+        "a later non-alternating chain preserves the last full render mismatch masks");
+
   check(metal_camera_trace::normalized_snapshot_distance(scalar_snapshot(2.f),
                                                           scalar_snapshot(2.f)) == 0.0,
         "equal producer snapshots have zero normalized distance");

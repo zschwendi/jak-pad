@@ -749,6 +749,11 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
           m_presentation_state->producer_camera.observe(opts.engine_frame_id, opts.expected_camera);
       m_chain_stats.producer_camera_alternations =
           m_presentation_state->producer_camera.alternations();
+      metal_camera_trace::latch_render_mismatch_qwords_on_alternation(
+          producer_camera.alternation, m_chain_stats.last_render_camera_live_mismatch_qwords,
+          m_chain_stats.last_render_camera_packet_mismatch_qwords,
+          m_chain_stats.last_camera_alternation_render_live_mismatch_qwords,
+          m_chain_stats.last_camera_alternation_render_packet_mismatch_qwords);
       if (producer_camera.alternation) {
         m_chain_stats.last_camera_alternation_older_frame_id = producer_camera.older_frame_id;
         m_chain_stats.last_camera_alternation_previous_frame_id =
