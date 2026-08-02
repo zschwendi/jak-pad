@@ -154,7 +154,9 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
   void* st_ptr = (void*)st;
 
   void* fptr = goal_function_entry_point(f);
+#ifdef __aarch64__
   ScopedCurrentProcess pp(st);
+#endif
   return call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
 }
 
@@ -165,7 +167,9 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   void* st_ptr = (void*)st;
 
   void* fptr = goal_function_entry_point(f);
+#ifdef __aarch64__
   ScopedCurrentProcess pp(st);
+#endif
   return call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
 }
 
