@@ -141,6 +141,7 @@ using CancelCallback = std::function<bool()>;
 
 struct Options {
   Limits limits;
+  RevisionProvenance expected_revision;
   SourceObjectPackIdentity expected_source_object_pack;
   CancelCallback should_cancel;
 };

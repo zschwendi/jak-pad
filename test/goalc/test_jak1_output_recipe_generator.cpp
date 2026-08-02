@@ -122,6 +122,7 @@ void test_success_and_round_trip() {
   check(output.generated_flat_files.size() == 2, "recipe carries all generated flat outputs");
 
   recipe::Options schema_options;
+  schema_options.expected_revision = output.revision;
   schema_options.expected_source_object_pack = output.source_object_pack;
   const auto encoded = recipe::encode(output, schema_options);
   check(bool(encoded), "generated recipe encodes");
@@ -212,6 +213,29 @@ void test_provenance_and_callbacks() {
         "callback exceptions are contained");
 }
 
+void test_reserved_savegame_icon_destination() {
+  auto graph = valid_graph();
+  graph.archives[0].destination_basename = "savegame.ico";
+  auto result = generator::generate_from_graph(graph, make_manifest(graph.ordered_source_files),
+                                               valid_inputs(), test_options());
+  check(!result && result.error().code == generator::ErrorCode::invalid_graph,
+        "reserved archive destination is rejected case-insensitively");
+
+  graph = valid_graph();
+  graph.flat_file_copies[0].destination_basename = "SaveGame.Ico";
+  result = generator::generate_from_graph(graph, make_manifest(graph.ordered_source_files),
+                                          valid_inputs(), test_options());
+  check(!result && result.error().code == generator::ErrorCode::invalid_graph,
+        "reserved flat-file destination is rejected case-insensitively");
+
+  graph = valid_graph();
+  graph.generated_flat_files[0].destination_basename = "SAVEGAME.ICO";
+  result = generator::generate_from_graph(graph, make_manifest(graph.ordered_source_files),
+                                          valid_inputs(), test_options());
+  check(!result && result.error().code == generator::ErrorCode::invalid_graph,
+        "reserved generated destination is rejected case-insensitively");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -219,6 +243,7 @@ int main(int argc, char** argv) {
   test_manifest_failures();
   test_retail_selection();
   test_provenance_and_callbacks();
+  test_reserved_savegame_icon_destination();
   if (argc == 2) {
     std::ifstream input(argv[1], std::ios::binary);
     const std::string manifest((std::istreambuf_iterator<char>(input)),

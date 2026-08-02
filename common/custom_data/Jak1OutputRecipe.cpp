@@ -49,19 +49,6 @@ std::optional<Error> check_cancelled(const Options& options,
   return {};
 }
 
-bool valid_options(const Options& options) {
-  const auto& limits = options.limits;
-  return limits.max_wire_bytes >= kHeaderBytes + kHashBytes && limits.max_name_bytes > 0 &&
-         limits.max_path_bytes > 0 && limits.max_archives > 0 &&
-         limits.max_objects_per_archive > 0 && limits.max_total_objects > 0 &&
-         limits.max_source_pack_objects > 0 && limits.max_flat_file_copies > 0 &&
-         limits.max_generated_flat_files > 0 && limits.max_expected_fr3_files > 0 &&
-         limits.max_object_bytes > 0 && limits.max_total_object_bytes > 0 &&
-         limits.hash_chunk_bytes > 0 && options.expected_source_object_pack.object_count > 0 &&
-         options.expected_source_object_pack.object_count <= limits.max_source_pack_objects &&
-         options.expected_source_object_pack.aggregate_xxh64 != 0;
-}
-
 bool known_revision(const RevisionProvenance& revision) {
   const auto revisions = jak1_iso::supported_revisions();
   return std::any_of(revisions.begin(), revisions.end(), [&](const auto& known) {
@@ -71,6 +58,20 @@ bool known_revision(const RevisionProvenance& revision) {
            revision.config_version == known.decomp_config_version &&
            revision.territory == known.territory && revision.black_label == known.black_label;
   });
+}
+
+bool valid_options(const Options& options) {
+  const auto& limits = options.limits;
+  return limits.max_wire_bytes >= kHeaderBytes + kHashBytes && limits.max_name_bytes > 0 &&
+         limits.max_path_bytes > 0 && limits.max_archives > 0 &&
+         limits.max_objects_per_archive > 0 && limits.max_total_objects > 0 &&
+         limits.max_source_pack_objects > 0 && limits.max_flat_file_copies > 0 &&
+         limits.max_generated_flat_files > 0 && limits.max_expected_fr3_files > 0 &&
+         limits.max_object_bytes > 0 && limits.max_total_object_bytes > 0 &&
+         limits.hash_chunk_bytes > 0 && known_revision(options.expected_revision) &&
+         options.expected_source_object_pack.object_count > 0 &&
+         options.expected_source_object_pack.object_count <= limits.max_source_pack_objects &&
+         options.expected_source_object_pack.aggregate_xxh64 != 0;
 }
 
 bool valid_name(std::string_view value, uint32_t cap) {
@@ -125,6 +126,10 @@ std::string collision_key(std::string_view value) {
                                       : static_cast<char>(byte);
   });
   return key;
+}
+
+bool reserved_destination(std::string_view value) {
+  return collision_key(value) == "savegame.ico";
 }
 
 SourceKind source_kind(const ObjectSource& source) {
@@ -203,6 +208,10 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
     return make_error(ErrorCode::unsupported_revision, 0,
                       "The recipe does not identify an exact supported Jak 1 revision.");
   }
+  if (recipe.revision != options.expected_revision) {
+    return make_error(ErrorCode::unsupported_revision, 0,
+                      "The recipe revision does not match the exact expected Jak 1 revision.");
+  }
   if (recipe.source_object_pack != options.expected_source_object_pack) {
     return make_error(ErrorCode::wrong_source_pack, 0,
                       "The recipe source-object pack does not match the expected signed pack.");
@@ -238,6 +247,11 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
       return error;
     }
     const auto& archive = recipe.archives[archive_index];
+    if (reserved_destination(archive.destination_basename)) {
+      return make_error(ErrorCode::invalid_name, 0,
+                        "SAVEGAME.ICO is reserved and cannot be an output archive destination.",
+                        archive_index);
+    }
     if (!archive_basename(archive.destination_basename, limits.max_name_bytes)) {
       return make_error(ErrorCode::invalid_name, 0,
                         "An output archive has an invalid DGO/CGO basename.", archive_index);
@@ -365,6 +379,10 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
       return error;
     }
     const auto& copy = recipe.flat_file_copies[index];
+    if (reserved_destination(copy.destination_basename)) {
+      return make_error(ErrorCode::invalid_name, 0,
+                        "SAVEGAME.ICO is reserved and cannot be a flat-file destination.");
+    }
     if (!safe_relative_path(copy.extracted_iso_relative_path, limits.max_path_bytes)) {
       return make_error(ErrorCode::unsafe_path, 0,
                         "A flat-file source is not a safe extracted-ISO relative path.");
@@ -399,6 +417,10 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
     if (!valid_generated_flat_kind(generated.kind)) {
       return make_error(ErrorCode::invalid_generated_flat_kind, 0,
                         "A generated flat file has an unsupported kind.");
+    }
+    if (reserved_destination(generated.destination_basename)) {
+      return make_error(ErrorCode::invalid_name, 0,
+                        "SAVEGAME.ICO is reserved and cannot be a generated-file destination.");
     }
     if (!valid_name(generated.destination_basename, limits.max_name_bytes)) {
       return make_error(ErrorCode::invalid_name, 0,

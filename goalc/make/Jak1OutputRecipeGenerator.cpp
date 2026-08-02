@@ -97,6 +97,10 @@ std::string collision_key(std::string_view value) {
   return result;
 }
 
+bool reserved_destination(std::string_view value) {
+  return collision_key(value) == "savegame.ico";
+}
+
 bool parse_u32(std::string_view text, uint32_t* value) {
   if (text.empty() || text.front() == '+' || text.front() == '-') {
     return false;
@@ -482,6 +486,12 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
         return Result<jak1_output_recipe::Recipe>::failure(*error);
       }
       const auto& graph_archive = graph.archives[archive_index];
+      if (reserved_destination(graph_archive.destination_basename)) {
+        return Result<jak1_output_recipe::Recipe>::failure(
+            make_error(ErrorCode::invalid_graph,
+                       "SAVEGAME.ICO is reserved and cannot be an output archive destination.",
+                       archive_index));
+      }
       if (graph_archive.objects.empty() ||
           graph_archive.objects.size() > options.limits.max_graph_objects - total_graph_objects) {
         return Result<jak1_output_recipe::Recipe>::failure(
@@ -538,6 +548,11 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
       if (const auto error = check_cancelled(options)) {
         return Result<jak1_output_recipe::Recipe>::failure(*error);
       }
+      if (reserved_destination(copy.destination_basename)) {
+        return Result<jak1_output_recipe::Recipe>::failure(
+            make_error(ErrorCode::invalid_graph,
+                       "SAVEGAME.ICO is reserved and cannot be a flat-file destination."));
+      }
       const auto relative = relative_to_root(copy.source_path, verified_inputs.extracted_iso_root,
                                              options.limits.max_path_bytes);
       if (!relative || !verified_flat_paths.contains(collision_key(*relative))) {
@@ -548,6 +563,11 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
       recipe.flat_file_copies.push_back({*relative, copy.destination_basename});
     }
     for (const auto& generated : graph.generated_flat_files) {
+      if (reserved_destination(generated.destination_basename)) {
+        return Result<jak1_output_recipe::Recipe>::failure(
+            make_error(ErrorCode::invalid_graph,
+                       "SAVEGAME.ICO is reserved and cannot be a generated-file destination."));
+      }
       recipe.generated_flat_files.push_back({generated.kind, generated.destination_basename});
     }
     recipe.expected_fr3_basenames = verified_inputs.expected_fr3_basenames;
@@ -563,6 +583,7 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
 
     jak1_output_recipe::Options schema_options;
     schema_options.limits = options.recipe_limits;
+    schema_options.expected_revision = verified_inputs.revision;
     schema_options.expected_source_object_pack = manifest.identity;
     schema_options.should_cancel = options.should_cancel;
     const auto encoded = jak1_output_recipe::encode(recipe, schema_options);

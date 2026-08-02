@@ -41,6 +41,7 @@ RevisionProvenance provenance_of(const jak1_iso::Revision& revision) {
 
 Options make_options() {
   Options options;
+  options.expected_revision = provenance_of(jak1_iso::default_revision());
   options.expected_source_object_pack = kSourcePack;
   return options;
 }
@@ -186,6 +187,7 @@ bool supports_only_exact_known_revisions() {
   for (const auto& revision : jak1_iso::supported_revisions()) {
     auto recipe = make_recipe();
     recipe.revision = provenance_of(revision);
+    options.expected_revision = recipe.revision;
     const auto encoded = encode(recipe, options);
     CHECK(encoded);
     const auto decoded = decode(encoded.value(), options);
@@ -193,9 +195,26 @@ bool supports_only_exact_known_revisions() {
     CHECK(decoded.value().revision == recipe.revision);
   }
 
+  options = make_options();
+  auto other_recipe = make_recipe();
+  other_recipe.revision = provenance_of(jak1_iso::supported_revisions()[1]);
+  auto other_options = options;
+  other_options.expected_revision = other_recipe.revision;
+  const auto other_wire = encode(other_recipe, other_options);
+  CHECK(other_wire);
+  auto result = encode(other_recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::unsupported_revision);
+  const auto mismatched_decode = decode(other_wire.value(), options);
+  CHECK(!mismatched_decode && mismatched_decode.error().code == ErrorCode::unsupported_revision);
+
+  auto missing_revision = options;
+  missing_revision.expected_revision = {};
+  result = encode(make_recipe(), missing_revision);
+  CHECK(!result && result.error().code == ErrorCode::invalid_argument);
+
   auto recipe = make_recipe();
   recipe.revision.contents_hash ^= 1;
-  auto result = encode(recipe, options);
+  result = encode(recipe, options);
   CHECK(!result && result.error().code == ErrorCode::unsupported_revision);
 
   recipe = make_recipe();
@@ -207,6 +226,37 @@ bool supports_only_exact_known_revisions() {
   recipe.producer = "other";
   result = encode(recipe, options);
   CHECK(!result && result.error().code == ErrorCode::wrong_provenance);
+  return true;
+}
+
+bool rejects_reserved_savegame_icon_destination() {
+  const auto options = make_options();
+  auto recipe = make_recipe();
+  recipe.archives[0].destination_basename = "savegame.ico";
+  auto result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::invalid_name);
+
+  recipe = make_recipe();
+  recipe.flat_file_copies[0].destination_basename = "SaveGame.Ico";
+  result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::invalid_name);
+
+  recipe = make_recipe();
+  recipe.generated_flat_files[0].destination_basename = "SAVEGAME.ICO";
+  result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::invalid_name);
+
+  const auto canonical_wire = encode(make_recipe(), options);
+  CHECK(canonical_wire);
+  auto reserved_wire = canonical_wire.value();
+  const auto destination = find_wire_string(reserved_wire, "TWEAKVAL.MUS");
+  CHECK(destination < reserved_wire.size());
+  const std::string replacement = "sAvEgAmE.IcO";
+  CHECK(replacement.size() == std::string("TWEAKVAL.MUS").size());
+  std::copy(replacement.begin(), replacement.end(), reserved_wire.begin() + destination + 4);
+  rewrite_hash(&reserved_wire);
+  const auto reserved_decode = decode(reserved_wire, options);
+  CHECK(!reserved_decode && reserved_decode.error().code == ErrorCode::invalid_name);
   return true;
 }
 
@@ -513,6 +563,7 @@ int main() {
       {"rejects_corruption_bad_framing_and_every_truncation",
        rejects_corruption_bad_framing_and_every_truncation},
       {"supports_only_exact_known_revisions", supports_only_exact_known_revisions},
+      {"rejects_reserved_savegame_icon_destination", rejects_reserved_savegame_icon_destination},
       {"rejects_wrong_source_pack_and_object_versions",
        rejects_wrong_source_pack_and_object_versions},
       {"enforces_name_path_count_and_size_caps", enforces_name_path_count_and_size_caps},
