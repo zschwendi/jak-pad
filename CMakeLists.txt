@@ -13,8 +13,37 @@ option(OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY
        "Build only the portable Jak 1 kernel core static library" OFF)
 option(OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY
        "Build the portable kernels and the complete Jak 2 iPhoneOS AOT link proof" OFF)
+option(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY
+       "Build only the bounded, portable ISO9660 reader static library" OFF)
 set(OPENGOAL_JAK2_AOT_DIR "" CACHE PATH
     "Host-generated Jak 2 AOT C directory used by the iPhoneOS link proof")
+
+if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY AND
+   (OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY OR
+    OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY OR
+    OPENGOAL_BUILD_JAK1_DATA_ARENA_ONLY OR
+    OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY))
+  message(FATAL_ERROR
+          "OPENGOAL_BUILD_SAFE_ISO_READER_ONLY is mutually exclusive with the runtime-only "
+          "build modes.")
+endif()
+
+if(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY)
+  if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    string(TOLOWER "${CMAKE_OSX_SYSROOT}" OPENGOAL_SAFE_ISO_APPLE_SYSROOT)
+    if(NOT APPLE OR NOT OPENGOAL_SAFE_ISO_APPLE_SYSROOT MATCHES "iphoneos")
+      message(FATAL_ERROR
+              "iOS safe ISO reader builds require CMAKE_OSX_SYSROOT=iphoneos.")
+    endif()
+    if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+      message(FATAL_ERROR
+              "iPhoneOS safe ISO reader builds require CMAKE_OSX_ARCHITECTURES=arm64.")
+    endif()
+  endif()
+  include(CTest)
+  include(common/util/safe_iso_reader.cmake)
+  return()
+endif()
 
 if(OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY AND
    (OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY OR
