@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <unordered_map>
 
 #include "LinkedObjectFileCreation.h"
@@ -123,7 +125,8 @@ ObjectFileDB::ObjectFileDB(const std::vector<fs::path>& _dgos,
                            const std::vector<fs::path>& str_files,
                            const std::vector<fs::path>& str_tex_files,
                            const std::vector<fs::path>& str_art_files,
-                           const Config& config)
+                           const Config& config,
+                           bool allow_deferred_input)
     : dts(config.game_version), m_version(config.game_version) {
   Timer timer;
 
@@ -152,62 +155,7 @@ ObjectFileDB::ObjectFileDB(const std::vector<fs::path>& _dgos,
 
   lg::info("-Loading {} plain object files...", object_files.size());
   for (auto& obj : object_files) {
-    auto data = file_util::read_binary_file(obj);
-    auto name = obj_filename_to_name(obj.string());
-    if (auto it = config.object_patches.find(name); it != config.object_patches.end()) {
-      // print the file CRC
-      lg::print("CRC for {} is: 0x{:X}\n", name, crc32(data.data(), data.size()));
-      // write patch file if necessary
-      if (config.write_patches) {
-        // this is the "target" file we want to patch to
-        auto data2 = file_util::read_binary_file(
-            (file_util::get_jak_project_dir() / it->second.target_file).string());
-        // we need to allocate a buffer to store the delta patch
-        // we make it 2x the source file's size because... it seems like a good size?
-        // ideally the delta patch should never be that big.
-        int buf_sz = data.size() * 2;
-        u8* out_buf = (u8*)malloc(buf_sz);
-        size_t out_sz = 0;  // this is where the actual used size of the delta patch will be stored
-        int xd3_res = xd3_encode_memory(data2.data(), data2.size(), data.data(), data.size(),
-                                        out_buf, &out_sz, buf_sz, 0);
-        if (xd3_res) {
-          lg::error("error patching {} with {} (out {}): {}", name, it->second.target_file,
-                    it->second.patch_file, xd3_strerror(xd3_res));
-        } else {
-          std::vector<u8> patch_data(out_sz);
-          memcpy(patch_data.data(), out_buf, patch_data.size());
-          file_util::write_binary_file(
-              (file_util::get_jak_project_dir() / it->second.patch_file).string(),
-              patch_data.data(), patch_data.size());
-        }
-        free(out_buf);
-      }
-
-      // apply patch file if necessary
-      // note that xd3 doesnt really have any safety against bad files so we check crc ourselves
-      if (config.apply_patches && it->second.crc == crc32(data.data(), data.size())) {
-        // this is the delta patch file
-        auto data2 = file_util::read_binary_file(
-            (file_util::get_jak_project_dir() / it->second.patch_file).string());
-        // we need to allocate a buffer to store the patched file
-        // the delta patch isn't gonna be this big but we allocate 2x the source file's size + the
-        // delta patch's size
-        int buf_sz = data.size() * 2 + data2.size();
-        u8* out_buf = (u8*)malloc(buf_sz);
-        size_t out_sz = 0;
-        int xd3_res = xd3_decode_memory(data2.data(), data2.size(), data.data(), data.size(),
-                                        out_buf, &out_sz, buf_sz, 0);
-        if (xd3_res) {
-          lg::error("error patching {} with {} (out {}): {}", name, it->second.target_file,
-                    it->second.patch_file, xd3_strerror(xd3_res));
-        } else {
-          data.resize(out_sz);
-          memcpy(data.data(), out_buf, data.size());
-        }
-        free(out_buf);
-      }
-    }
-    add_obj_from_dgo(name, name, data.data(), data.size(), "NO-XGO", config);
+    add_plain_object_file(obj, config);
   }
 
   if (config.read_spools) {
@@ -254,7 +202,7 @@ ObjectFileDB::ObjectFileDB(const std::vector<fs::path>& _dgos,
   }
 
   lg::info("ObjectFileDB Initialized");
-  if (obj_files_by_name.empty()) {
+  if (obj_files_by_name.empty() && !allow_deferred_input) {
     lg::error(
         "No object files have been added. Check that there are input files and the allowed_objects "
         "list.");
@@ -263,6 +211,54 @@ ObjectFileDB::ObjectFileDB(const std::vector<fs::path>& _dgos,
   dts.bad_format_strings = config.bad_format_strings;
   dts.format_ops_with_dynamic_string_by_func_name =
       config.hacks.format_ops_with_dynamic_string_by_func_name;
+}
+
+void ObjectFileDB::add_plain_object_file(const fs::path& object_file, const Config& config) {
+  auto data = file_util::read_binary_file(object_file);
+  auto name = obj_filename_to_name(object_file.string());
+  if (auto it = config.object_patches.find(name); it != config.object_patches.end()) {
+    lg::print("CRC for {} is: 0x{:X}\n", name, crc32(data.data(), data.size()));
+    if (config.write_patches) {
+      auto data2 = file_util::read_binary_file(
+          (file_util::get_jak_project_dir() / it->second.target_file).string());
+      if (data.size() > std::numeric_limits<size_t>::max() / 2) {
+        throw std::length_error("The object patch encode buffer size overflowed.");
+      }
+      const size_t buf_sz = data.size() * 2;
+      std::vector<u8> out_buf(buf_sz);
+      size_t out_sz = 0;
+      int xd3_res = xd3_encode_memory(data2.data(), data2.size(), data.data(), data.size(),
+                                      out_buf.data(), &out_sz, buf_sz, 0);
+      if (xd3_res) {
+        throw std::runtime_error(fmt::format("error patching {} with {} (out {}): {}", name,
+                                             it->second.target_file, it->second.patch_file,
+                                             xd3_strerror(xd3_res)));
+      }
+      file_util::write_binary_file(
+          (file_util::get_jak_project_dir() / it->second.patch_file).string(), out_buf.data(),
+          out_sz);
+    }
+
+    if (config.apply_patches && it->second.crc == crc32(data.data(), data.size())) {
+      auto data2 = file_util::read_binary_file(
+          (file_util::get_jak_project_dir() / it->second.patch_file).string());
+      if (data.size() > (std::numeric_limits<size_t>::max() - data2.size()) / 2) {
+        throw std::length_error("The object patch decode buffer size overflowed.");
+      }
+      const size_t buf_sz = data.size() * 2 + data2.size();
+      std::vector<u8> out_buf(buf_sz);
+      size_t out_sz = 0;
+      int xd3_res = xd3_decode_memory(data2.data(), data2.size(), data.data(), data.size(),
+                                      out_buf.data(), &out_sz, buf_sz, 0);
+      if (xd3_res) {
+        throw std::runtime_error(fmt::format("error patching {} with {} (out {}): {}", name,
+                                             it->second.target_file, it->second.patch_file,
+                                             xd3_strerror(xd3_res)));
+      }
+      data.assign(out_buf.begin(), out_buf.begin() + out_sz);
+    }
+  }
+  add_obj_from_dgo(name, name, data.data(), data.size(), "NO-XGO", config);
 }
 
 void ObjectFileDB::load_map_file(const std::string& map_data) {
@@ -344,6 +340,16 @@ void ObjectFileDB::get_objs_from_dgo(const fs::path& filename, const Config& con
 
   // check we're at the end
   ASSERT(0 == reader.bytes_left());
+}
+
+void ObjectFileDB::add_checked_dgo(const jak1_checked_dgo::Archive& archive,
+                                   const Config& config) {
+  stats.total_dgo_bytes += archive.expanded_size;
+  for (const auto& object : archive.objects) {
+    ASSERT(object.data.size() <= UINT32_MAX);
+    add_obj_from_dgo(object.unique_name, object.internal_name, object.data.data(),
+                     static_cast<uint32_t>(object.data.size()), archive.internal_name, config);
+  }
 }
 
 /*!

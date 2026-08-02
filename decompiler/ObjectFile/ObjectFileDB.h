@@ -19,6 +19,7 @@
 
 #include "decompiler/analysis/symbol_def_map.h"
 #include "decompiler/data/TextureDB.h"
+#include "decompiler/extractor/jak1_checked_dgo.h"
 #include "decompiler/util/DecompilerTypeSystem.h"
 
 #include "fmt/format.h"
@@ -185,7 +186,8 @@ class ObjectFileDB {
                const std::vector<fs::path>& str_files,
                const std::vector<fs::path>& str_tex_files,
                const std::vector<fs::path>& str_art_files,
-               const Config& config);
+               const Config& config,
+               bool allow_deferred_input = false);
   std::string generate_dgo_listing();
   std::string generate_obj_listing(const std::unordered_set<std::string>& merged_objs);
   void process_link_data(const Config& config);
@@ -195,6 +197,8 @@ class ObjectFileDB {
   void extract_art_info();
   void dump_art_info(const fs::path& output_dir);
   void dump_raw_objects(const fs::path& output_dir);
+  void add_checked_dgo(const jak1_checked_dgo::Archive& archive, const Config& config);
+  void add_plain_object_file(const fs::path& object_file, const Config& config);
   void dump_part_group_table(const fs::path& output_dir,
                              const std::unordered_map<u32, std::string>& part_group_table);
   void write_object_file_words(const fs::path& output_dir, bool dump_data, bool dump_code);

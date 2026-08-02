@@ -58,6 +58,17 @@ void extract_all_levels(const ObjectFileDB& db,
                         const std::string& common_name,
                         const Config& config,
                         const fs::path& path);
+void extract_common(const ObjectFileDB& db,
+                    const TextureDB& tex_db,
+                    const std::string& dgo_name,
+                    const fs::path& output_folder,
+                    const Config& config);
+void extract_from_level(const ObjectFileDB& db,
+                        const TextureDB& tex_db,
+                        const std::string& dgo_name,
+                        const Config& config,
+                        const fs::path& output_folder,
+                        const fs::path& entities_folder);
 void add_all_textures_from_level(tfrag3::Level& lev,
                                  const std::string& level_name,
                                  const TextureDB& tex_db);
