@@ -16,7 +16,7 @@
 namespace jak1_output_recipe {
 
 inline constexpr std::array<uint8_t, 8> kMagic = {'J', '1', 'O', 'U', 'T', 'P', 'U', 'T'};
-inline constexpr uint32_t kSchemaVersion = 1;
+inline constexpr uint32_t kSchemaVersion = 2;
 inline constexpr const char* kProvenanceId = "opengoal-jak1-output-recipe";
 inline constexpr const char* kGameId = "jak1";
 
@@ -95,6 +95,18 @@ struct FlatFileCopy {
   bool operator==(const FlatFileCopy&) const = default;
 };
 
+enum class GeneratedFlatFileKind : uint8_t {
+  game_text = 1,
+  game_subtitle = 2,
+};
+
+struct GeneratedFlatFile {
+  GeneratedFlatFileKind kind = GeneratedFlatFileKind::game_text;
+  std::string destination_basename;
+
+  bool operator==(const GeneratedFlatFile&) const = default;
+};
+
 struct Recipe {
   std::string producer = kProvenanceId;
   std::string game = kGameId;
@@ -102,6 +114,7 @@ struct Recipe {
   SourceObjectPackIdentity source_object_pack;
   std::vector<ArchiveRecord> archives;
   std::vector<FlatFileCopy> flat_file_copies;
+  std::vector<GeneratedFlatFile> generated_flat_files;
   std::vector<std::string> expected_fr3_basenames;
 
   bool operator==(const Recipe&) const = default;
@@ -117,6 +130,7 @@ struct Limits {
   uint32_t max_source_pack_objects = 4096;
   uint32_t max_archive_object_index = 4095;
   uint32_t max_flat_file_copies = 4096;
+  uint32_t max_generated_flat_files = 64;
   uint32_t max_expected_fr3_files = 4096;
   uint64_t max_object_bytes = 1024ull * 1024 * 1024;
   uint64_t max_total_object_bytes = 64ull * 1024 * 1024 * 1024;
@@ -148,6 +162,7 @@ enum class ErrorCode {
   unsafe_path,
   invalid_source_kind,
   invalid_generated_kind,
+  invalid_generated_flat_kind,
   invalid_object_version,
   duplicate_value,
   duplicate_destination,

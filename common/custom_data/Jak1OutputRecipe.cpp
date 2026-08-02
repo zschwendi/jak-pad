@@ -55,9 +55,9 @@ bool valid_options(const Options& options) {
          limits.max_path_bytes > 0 && limits.max_archives > 0 &&
          limits.max_objects_per_archive > 0 && limits.max_total_objects > 0 &&
          limits.max_source_pack_objects > 0 && limits.max_flat_file_copies > 0 &&
-         limits.max_expected_fr3_files > 0 && limits.max_object_bytes > 0 &&
-         limits.max_total_object_bytes > 0 && limits.hash_chunk_bytes > 0 &&
-         options.expected_source_object_pack.object_count > 0 &&
+         limits.max_generated_flat_files > 0 && limits.max_expected_fr3_files > 0 &&
+         limits.max_object_bytes > 0 && limits.max_total_object_bytes > 0 &&
+         limits.hash_chunk_bytes > 0 && options.expected_source_object_pack.object_count > 0 &&
          options.expected_source_object_pack.object_count <= limits.max_source_pack_objects &&
          options.expected_source_object_pack.aggregate_xxh64 != 0;
 }
@@ -148,6 +148,15 @@ bool valid_generated_kind(GeneratedDataKind kind) {
   return false;
 }
 
+bool valid_generated_flat_kind(GeneratedFlatFileKind kind) {
+  switch (kind) {
+    case GeneratedFlatFileKind::game_text:
+    case GeneratedFlatFileKind::game_subtitle:
+      return true;
+  }
+  return false;
+}
+
 std::string retail_key(const VerifiedRetailObject& retail) {
   std::string key = collision_key(retail.source_archive_relative_path);
   key.push_back('\0');
@@ -200,6 +209,7 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
   }
   if (recipe.archives.empty() || recipe.archives.size() > limits.max_archives ||
       recipe.flat_file_copies.size() > limits.max_flat_file_copies ||
+      recipe.generated_flat_files.size() > limits.max_generated_flat_files ||
       recipe.expected_fr3_basenames.size() > limits.max_expected_fr3_files) {
     return make_error(ErrorCode::limit_exceeded, 0,
                       "An output-recipe collection is empty or exceeds its configured cap.");
@@ -378,6 +388,34 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
     if (!copy_sources.emplace(collision_key(copy.extracted_iso_relative_path)).second) {
       return make_error(ErrorCode::duplicate_value, 0,
                         "The recipe repeats an extracted-ISO flat-file source.");
+    }
+  }
+
+  std::string previous_generated_destination;
+  for (const auto& generated : recipe.generated_flat_files) {
+    if (const auto error = check_cancelled(options)) {
+      return error;
+    }
+    if (!valid_generated_flat_kind(generated.kind)) {
+      return make_error(ErrorCode::invalid_generated_flat_kind, 0,
+                        "A generated flat file has an unsupported kind.");
+    }
+    if (!valid_name(generated.destination_basename, limits.max_name_bytes)) {
+      return make_error(ErrorCode::invalid_name, 0,
+                        "A generated flat-file destination is not a safe basename.");
+    }
+    if (!previous_generated_destination.empty() &&
+        generated.destination_basename <= previous_generated_destination) {
+      return make_error(generated.destination_basename == previous_generated_destination
+                            ? ErrorCode::duplicate_destination
+                            : ErrorCode::invalid_order,
+                        0,
+                        "Generated flat files are not strictly ordered by destination basename.");
+    }
+    previous_generated_destination = generated.destination_basename;
+    if (!destination_basenames.emplace(collision_key(generated.destination_basename)).second) {
+      return make_error(ErrorCode::duplicate_destination, 0,
+                        "A generated flat file collides with another output destination.");
     }
   }
 
@@ -627,6 +665,18 @@ Result<std::vector<uint8_t>> encode_impl(const Recipe& recipe, const Options& op
       return Result<std::vector<uint8_t>>::failure(*payload.error);
     }
   }
+  if (!payload.u32(static_cast<uint32_t>(recipe.generated_flat_files.size()))) {
+    return Result<std::vector<uint8_t>>::failure(*payload.error);
+  }
+  for (const auto& generated : recipe.generated_flat_files) {
+    if (const auto error = check_cancelled(options)) {
+      return Result<std::vector<uint8_t>>::failure(*error);
+    }
+    if (!payload.u8(static_cast<uint8_t>(generated.kind)) ||
+        !payload.string(generated.destination_basename)) {
+      return Result<std::vector<uint8_t>>::failure(*payload.error);
+    }
+  }
   if (!payload.u32(static_cast<uint32_t>(recipe.expected_fr3_basenames.size()))) {
     return Result<std::vector<uint8_t>>::failure(*payload.error);
   }
@@ -825,6 +875,29 @@ Result<Recipe> decode_impl(std::span<const uint8_t> bytes, const Options& option
     }
   }
 
+  uint32_t generated_count = 0;
+  if (!reader.count(options.limits.max_generated_flat_files, &generated_count)) {
+    return reader_failure<Recipe>(reader, kHeaderBytes);
+  }
+  recipe.generated_flat_files.resize(generated_count);
+  for (auto& generated : recipe.generated_flat_files) {
+    if (const auto error = check_cancelled(options)) {
+      return Result<Recipe>::failure(*error);
+    }
+    uint8_t kind = 0;
+    if (!reader.u8(&kind) ||
+        !reader.string(&generated.destination_basename, options.limits.max_name_bytes)) {
+      return reader_failure<Recipe>(reader, kHeaderBytes);
+    }
+    if (kind < static_cast<uint8_t>(GeneratedFlatFileKind::game_text) ||
+        kind > static_cast<uint8_t>(GeneratedFlatFileKind::game_subtitle)) {
+      return Result<Recipe>::failure(
+          make_error(ErrorCode::invalid_generated_flat_kind, kHeaderBytes + reader.position,
+                     "The output recipe has an unknown generated flat-file kind."));
+    }
+    generated.kind = static_cast<GeneratedFlatFileKind>(kind);
+  }
+
   uint32_t fr3_count = 0;
   if (!reader.count(options.limits.max_expected_fr3_files, &fr3_count)) {
     return reader_failure<Recipe>(reader, kHeaderBytes);
@@ -905,6 +978,8 @@ const char* error_code_name(ErrorCode code) {
       return "invalid_source_kind";
     case ErrorCode::invalid_generated_kind:
       return "invalid_generated_kind";
+    case ErrorCode::invalid_generated_flat_kind:
+      return "invalid_generated_flat_kind";
     case ErrorCode::invalid_object_version:
       return "invalid_object_version";
     case ErrorCode::duplicate_value:

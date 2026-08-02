@@ -69,9 +69,15 @@ Recipe make_recipe() {
       },
   };
   recipe.flat_file_copies = {
-      {"COMMON/0COMMON.TXT", "0COMMON.TXT"},
+      {"MUS/TWEAKVAL.MUS", "TWEAKVAL.MUS"},
       {"VAG/VAGDIR.AYB", "VAGDIR.AYB"},
   };
+  for (uint32_t language = 0; language < 7; ++language) {
+    recipe.generated_flat_files.push_back(
+        {GeneratedFlatFileKind::game_text, std::to_string(language) + "COMMON.TXT"});
+    recipe.generated_flat_files.push_back(
+        {GeneratedFlatFileKind::game_subtitle, std::to_string(language) + "SUBTIT.TXT"});
+  }
   recipe.expected_fr3_basenames = {"beach.fr3", "village1.fr3"};
   return recipe;
 }
@@ -116,7 +122,7 @@ bool deterministic_little_endian_round_trip() {
   CHECK(encoded.value() == encoded_again.value());
   const auto& bytes = encoded.value();
   CHECK(std::equal(kMagic.begin(), kMagic.end(), bytes.begin()));
-  CHECK(bytes[8] == 1 && bytes[9] == 0 && bytes[10] == 0 && bytes[11] == 0);
+  CHECK(bytes[8] == 2 && bytes[9] == 0 && bytes[10] == 0 && bytes[11] == 0);
   CHECK(read_le64(bytes.data() + 12) == bytes.size() - 28);
   CHECK(read_le64(bytes.data() + bytes.size() - 8) == XXH64(bytes.data(), bytes.size() - 8, 0));
   const std::array<uint8_t, 8> source_size_le = {3, 0, 0, 0, 0, 0, 0, 0};
@@ -131,6 +137,9 @@ bool deterministic_little_endian_round_trip() {
   CHECK(std::holds_alternative<BundledSourceObject>(decoded.value().archives[0].objects[0].source));
   CHECK(
       std::holds_alternative<VerifiedRetailObject>(decoded.value().archives[0].objects[1].source));
+  CHECK(decoded.value().generated_flat_files.size() == 14);
+  CHECK(decoded.value().generated_flat_files.front().kind == GeneratedFlatFileKind::game_text);
+  CHECK(decoded.value().generated_flat_files.back().kind == GeneratedFlatFileKind::game_subtitle);
   return true;
 }
 
@@ -145,7 +154,7 @@ bool rejects_corruption_bad_framing_and_every_truncation() {
   CHECK(!result && result.error().code == ErrorCode::wrong_magic);
 
   auto wrong_schema = encoded.value();
-  wrong_schema[8] = 2;
+  wrong_schema[8] = 3;
   rewrite_hash(&wrong_schema);
   result = decode(wrong_schema, options);
   CHECK(!result && result.error().code == ErrorCode::unsupported_schema);
@@ -259,7 +268,7 @@ bool enforces_name_path_count_and_size_caps() {
   CHECK(!result && result.error().code == ErrorCode::unsafe_path);
 
   recipe = make_recipe();
-  recipe.flat_file_copies[0].extracted_iso_relative_path = "/COMMON/0COMMON.TXT";
+  recipe.flat_file_copies[0].extracted_iso_relative_path = "/MUS/TWEAKVAL.MUS";
   result = encode(recipe, options);
   CHECK(!result && result.error().code == ErrorCode::unsafe_path);
 
@@ -298,6 +307,11 @@ bool enforces_name_path_count_and_size_caps() {
 
   capped = make_options();
   capped.limits.max_object_bytes = 4;
+  result = encode(recipe, capped);
+  CHECK(!result && result.error().code == ErrorCode::limit_exceeded);
+
+  capped = make_options();
+  capped.limits.max_generated_flat_files = 13;
   result = encode(recipe, capped);
   CHECK(!result && result.error().code == ErrorCode::limit_exceeded);
 
@@ -360,6 +374,18 @@ bool rejects_ambiguity_duplicates_and_identity_conflicts() {
   CHECK(!result && result.error().code == ErrorCode::duplicate_destination);
 
   recipe = make_recipe();
+  recipe.generated_flat_files = {
+      {GeneratedFlatFileKind::game_text, "TWEAKVAL.MUS"},
+  };
+  result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::duplicate_destination);
+
+  recipe = make_recipe();
+  recipe.generated_flat_files[0].kind = static_cast<GeneratedFlatFileKind>(99);
+  result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::invalid_generated_flat_kind);
+
+  recipe = make_recipe();
   std::get<BundledSourceObject>(recipe.archives[1].objects[0].source).bundle_relative_path =
       "OBJ/shared.o";
   result = encode(recipe, options);
@@ -391,6 +417,11 @@ bool enforces_deterministic_outer_order_and_preserves_object_order() {
 
   recipe = make_recipe();
   std::swap(recipe.expected_fr3_basenames[0], recipe.expected_fr3_basenames[1]);
+  result = encode(recipe, options);
+  CHECK(!result && result.error().code == ErrorCode::invalid_order);
+
+  recipe = make_recipe();
+  std::swap(recipe.generated_flat_files[0], recipe.generated_flat_files[1]);
   result = encode(recipe, options);
   CHECK(!result && result.error().code == ErrorCode::invalid_order);
 
@@ -430,6 +461,14 @@ bool rejects_unknown_wire_kinds() {
   rewrite_hash(&unknown_generated);
   result = decode(unknown_generated, options);
   CHECK(!result && result.error().code == ErrorCode::invalid_generated_kind);
+
+  auto unknown_generated_flat = encoded.value();
+  const auto generated_flat = find_wire_string(unknown_generated_flat, "0COMMON.TXT");
+  CHECK(generated_flat > 0 && generated_flat < unknown_generated_flat.size());
+  unknown_generated_flat[generated_flat - 1] = 99;
+  rewrite_hash(&unknown_generated_flat);
+  result = decode(unknown_generated_flat, options);
+  CHECK(!result && result.error().code == ErrorCode::invalid_generated_flat_kind);
   return true;
 }
 
@@ -460,6 +499,8 @@ bool error_names_are_stable() {
   CHECK(std::string(error_code_name(ErrorCode::wrong_source_pack)) == "wrong_source_pack");
   CHECK(std::string(error_code_name(ErrorCode::invalid_object_version)) ==
         "invalid_object_version");
+  CHECK(std::string(error_code_name(ErrorCode::invalid_generated_flat_kind)) ==
+        "invalid_generated_flat_kind");
   CHECK(std::string(error_code_name(ErrorCode::corrupt_hash)) == "corrupt_hash");
   return true;
 }
