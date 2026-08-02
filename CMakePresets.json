@@ -113,6 +113,14 @@
       }
     },
     {
+      "name": "base-ccache",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache"
+      }
+    },
+    {
       "name": "base-msvc",
       "hidden": true,
       "cacheVariables": {
@@ -195,6 +203,12 @@
       "displayName": "MacOS ARM64 Release (clang)",
       "description": "Build for ARM64 with Clang as Release without Debug Symbols",
       "inherits": ["base-macos-release", "base-macos-arm64", "base-clang"]
+    },
+    {
+      "name": "Release-macos-arm64-clang-ccache",
+      "displayName": "MacOS ARM64 Release (clang + ccache)",
+      "description": "Opt-in ARM64 Release build using a locally installed ccache launcher",
+      "inherits": ["base-macos-release", "base-macos-arm64", "base-clang", "base-ccache"]
     },
     {
       "name": "Release-macos-x86_64-clang",
