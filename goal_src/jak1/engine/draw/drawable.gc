@@ -930,6 +930,11 @@
 
 (define *draw-hook* main-draw-hook)
 
+(#when PC_PORT
+  ;; A host with an external display clock can supply the interval at the frame-start boundary.
+  ;; Zero preserves the normal timer-derived PC behavior.
+  (define *host-display-time-ratio* 0.0))
+
 (defun debug-init-buffer ((arg0 bucket-id) (arg1 gs-zbuf) (arg2 gs-test))
   "Initialize a bucket for debug draw with the given zbuf and test settings"
   (let* ((t0-0 (-> *display* frames (-> *display* on-screen) frame global-buf))
@@ -993,6 +998,9 @@
             )
         |#
         ))
+    (#when PC_PORT
+      (when (> *host-display-time-ratio* 0.0)
+        (set! time-ratio *host-display-time-ratio*)))
     ;; inform display system of our speed. This will adjust the scaling used in all physics calculations
     (set-time-ratios *display* time-ratio)
     ;; set our "old" counters.  In the event of a game load/save, these will not jump

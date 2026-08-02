@@ -82,6 +82,37 @@ bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
                                           options:MTLResourceStorageModeShared];
   }
 
+  // Palette requirements are immutable level metadata. Computing them here
+  // keeps the per-model packet path to a few fixed-mask operations and makes
+  // their lifetime follow the level across unload/reload.
+  entry->required_bone_slots_by_model.resize(merc.models.size());
+  for (size_t model_idx = 0; model_idx < merc.models.size(); model_idx++) {
+    const auto& model = merc.models[model_idx];
+    auto& effect_masks = entry->required_bone_slots_by_model[model_idx];
+    effect_masks.resize(model.effects.size());
+    for (size_t effect_idx = 0; effect_idx < model.effects.size(); effect_idx++) {
+      auto& required_slots = effect_masks[effect_idx];
+      for (const auto& draw : model.effects[effect_idx].all_draws) {
+        if ((u64)draw.first_index + draw.index_count > merc.indices.size()) {
+          continue;
+        }
+        for (u32 index_offset = 0; index_offset < draw.index_count; index_offset++) {
+          const u32 vertex_index = merc.indices[draw.first_index + index_offset];
+          if (vertex_index == UINT32_MAX || vertex_index >= merc.vertices.size()) {
+            continue;
+          }
+          const auto& vertex = merc.vertices[vertex_index];
+          for (int matrix = 0; matrix < 3; matrix++) {
+            if (vertex.weights[matrix] > 0.f) {
+              const u8 slot = vertex.mats[matrix];
+              required_slots[slot / 64] |= 1ull << (slot % 64);
+            }
+          }
+        }
+      }
+    }
+  }
+
   out->level_name = entry->name;
   out->textures = (int)entry->textures.size();
   out->models = (int)merc.models.size();
@@ -89,8 +120,10 @@ bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
   out->indices = (u32)merc.indices.size();
 
   const MetalMercLevel* lev = entry.get();
-  for (const auto& model : entry->level->merc_data.models) {
-    m_by_name[model.name].push_back(Ref{&model, lev});
+  for (size_t model_idx = 0; model_idx < merc.models.size(); model_idx++) {
+    const auto& model = merc.models[model_idx];
+    const auto& effect_masks = entry->required_bone_slots_by_model[model_idx];
+    m_by_name[model.name].push_back(Ref{&model, lev, &effect_masks});
   }
   m_levels.push_back(std::move(entry));
   return true;

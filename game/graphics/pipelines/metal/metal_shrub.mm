@@ -47,6 +47,9 @@ void MetalShrub::render(DmaFollower& dma,
   if (have_data) {
     memcpy(&m_pc_port_data, pc_port_data.data, sizeof(MetalTfragPcPortData));
     m_pc_port_data.level_name[11] = '\0';
+    if (bg) {
+      bg->observe_camera(m_pc_port_data.camera, m_name);
+    }
   }
 
   metal_finish_bucket(dma, *render_state);

@@ -66,10 +66,78 @@ struct PresentTestOptions {
   int brightness_contrast_alpha = 128;
 };
 
+enum MercPaletteHealthIssue : u8 {
+  MERC_PALETTE_HEALTH_NONFINITE = 1 << 0,
+  MERC_PALETTE_HEALTH_DEGENERATE = 1 << 1,
+  MERC_PALETTE_HEALTH_SOURCE_BASE = 1 << 2,
+};
+
+// Numeric evidence retained for an unhealthy matrix in an enabled, weighted Merc palette slot.
+// This is diagnostic only: the renderer still uploads and draws the original matrix bytes.
+struct MercPaletteHealthEvent {
+  u8 issue_mask = 0;
+  int bone_slot = -1;
+  u64 model_name_hash = 0;
+  u64 matrix_hash = 0;
+  double axis_norm_x = 0.0;
+  double axis_norm_y = 0.0;
+  double axis_norm_z = 0.0;
+  double normalized_abs_determinant = 0.0;
+  u32 source_address = 0;
+  u64 source_base = 0;
+  u64 expected_source_base = 0;
+
+  bool valid() const { return issue_mask != 0; }
+};
+
 // Counters for the DMA-chain path, used by tests to verify that send_chain
 // frames really dispatched buckets and that deferred content is counted.
 struct ChainStats {
   u64 chains_rendered = 0;
+  u64 drawables_acquired = 0;
+  u64 drawable_misses = 0;
+  u64 late_present_submissions = 0;
+  // End-to-end provenance for the last chain. Camera qwords are camera-temp[0...3] then trans.
+  u64 last_host_tick_id = 0;
+  u64 last_chain_ordinal = 0;
+  u64 last_engine_frame_id = 0;
+  u64 last_camera_fingerprint = 0;
+  int last_camera_packets = 0;
+  int last_live_camera_mismatches = 0;
+  int last_packet_camera_mismatches = 0;
+  u8 last_live_camera_mismatch_qwords = 0;
+  u8 last_packet_camera_mismatch_qwords = 0;
+  u64 live_camera_mismatches = 0;
+  u64 packet_camera_mismatches = 0;
+  u64 producer_camera_alternations = 0;
+  u64 last_camera_alternation_older_frame_id = 0;
+  u64 last_camera_alternation_previous_frame_id = 0;
+  u64 last_camera_alternation_current_frame_id = 0;
+  u64 last_camera_alternation_older_fingerprint = 0;
+  u64 last_camera_alternation_previous_fingerprint = 0;
+  u64 last_camera_alternation_current_fingerprint = 0;
+  u64 last_camera_alternation_host_tick_id = 0;
+  u64 last_camera_alternation_chain_ordinal = 0;
+  u64 last_camera_alternation_packet_fingerprint = 0;
+  u8 last_camera_alternation_live_mismatch_qwords = 0;
+  u8 last_camera_alternation_packet_mismatch_qwords = 0;
+  double last_camera_older_to_previous_distance = 0.0;
+  double last_camera_previous_to_current_distance = 0.0;
+  double last_camera_older_to_current_distance = 0.0;
+  u64 submissions = 0;
+  u64 presentations_completed = 0;
+  u64 presentation_drops = 0;
+  u64 presentation_order_mismatches = 0;
+  u64 last_submission_id = 0;
+  u64 last_presented_submission_id = 0;
+  u64 last_dropped_submission_id = 0;
+  u64 last_drawable_id = 0;
+  u64 last_presented_drawable_id = 0;
+  u64 last_presented_engine_frame_id = 0;
+  u64 last_presented_host_tick_id = 0;
+  u64 last_presented_chain_ordinal = 0;
+  double last_requested_presentation_time = 0.0;
+  double last_actual_presentation_time = 0.0;
   // from the last chain frame
   int draw_calls = 0;
   int triangles = 0;
@@ -110,6 +178,15 @@ struct ChainStats {
   int merc_missing_textures = 0;
   int merc_bad_bone_pointers = 0;  // bone pointer outside EE memory
   int merc_bad_draw_ranges = 0;    // draw range outside the level's index buffer
+  int merc_missing_bone_slots = 0;
+  int merc_models_with_missing_bone_slots = 0;
+  int merc_nonfinite_bone_matrices = 0;
+  int merc_degenerate_bone_matrices = 0;
+  int merc_incoherent_bone_sources = 0;
+  int merc_models_with_palette_health_issues = 0;
+  // Retained across clean frames so an intermittent one-frame failure remains inspectable.
+  MercPaletteHealthEvent first_merc_palette_health_event;
+  MercPaletteHealthEvent last_merc_palette_health_event;
   // eye renderer, from the last chain frame
   int eyes_composed = 0;
   int eye_draws = 0;

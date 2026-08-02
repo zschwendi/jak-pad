@@ -36,6 +36,7 @@
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/dma/gs.h"
 #include "common/math/Vector.h"
+#include "game/graphics/pipelines/metal/metal_camera_trace.h"
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
@@ -114,7 +115,13 @@ struct MetalBackgroundState {
   int anim_slot_draws = 0;  // draws asking for a texture-animator slot (Jak 2/3)
   int unexpected_dma = 0;   // a bucket's DMA did not match this renderer
 
+  // One frame's camera provenance. The producer snapshot contains exactly the four camera-temp
+  // qwords and one trans qword copied into every Jak 1 tfrag/tie/shrub PC-port packet.
+  metal_camera_trace::FrameTrace camera_trace;
+  std::string first_camera_mismatch_bucket;
+
   void reset_frame();
+  void observe_camera(const MetalGoalBackgroundCameraData& camera, const std::string& bucket);
 };
 
 // A structural expectation about a background bucket's DMA, or about the level

@@ -3,6 +3,7 @@
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/util/Assert.h"
+#include "common/util/fnv.h"
 
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -247,6 +248,18 @@ void MetalMerc2::Stats::add(const Stats& o) {
   missing_textures += o.missing_textures;
   bad_bone_pointers += o.bad_bone_pointers;
   bad_draw_ranges += o.bad_draw_ranges;
+  missing_bone_slots += o.missing_bone_slots;
+  models_with_missing_bone_slots += o.models_with_missing_bone_slots;
+  nonfinite_bone_matrices += o.nonfinite_bone_matrices;
+  degenerate_bone_matrices += o.degenerate_bone_matrices;
+  incoherent_bone_sources += o.incoherent_bone_sources;
+  models_with_palette_health_issues += o.models_with_palette_health_issues;
+  if (!first_palette_health_event.valid() && o.first_palette_health_event.valid()) {
+    first_palette_health_event = o.first_palette_health_event;
+  }
+  if (o.last_palette_health_event.valid()) {
+    last_palette_health_event = o.last_palette_health_event;
+  }
 }
 
 MetalMerc2::MetalMerc2(id<MTLDevice> device, id<MTLCommandQueue> queue, TexturePool* texture_pool) {
@@ -744,6 +757,8 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   // The matrix slot string tells us which bones go where; the matrices
   // themselves live in EE main memory (bones runs after merc's DMA is built).
   ShaderMercMat skel_matrix_buffer[MAX_SKEL_BONES] = {};
+  MetalMercBoneSlotMask populated_bone_slots = {};
+  u32 bone_source_addresses[MAX_SKEL_BONES] = {};
   auto* matrix_array = (const u32*)(input_data + 128);
   int i;
   for (i = 0; i < 128; i++) {
@@ -765,7 +780,10 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
       }
       continue;
     }
-    memcpy(&skel_matrix_buffer[input_data[i]], ee0 + addr, sizeof(MercMat));
+    const u8 destination_slot = input_data[i];
+    memcpy(&skel_matrix_buffer[destination_slot], ee0 + addr, sizeof(MercMat));
+    bone_source_addresses[destination_slot] = addr;
+    populated_bone_slots[destination_slot / 64] |= 1ull << (destination_slot % 64);
   }
   input_data += 128 + 16 * i;
 
@@ -785,6 +803,161 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   bool model_uses_pc_blerc = flags->bitflags & 4;
   bool model_disables_envmap = flags->bitflags & 8;
   input_data += 32;
+
+  MetalMercBoneSlotMask required_bone_slots = {};
+  const auto& effect_masks = *model_ref->required_bone_slots_by_effect;
+  ASSERT(effect_masks.size() == model->effects.size());
+  for (size_t effect_idx = 0; effect_idx < effect_masks.size() && effect_idx < 64; effect_idx++) {
+    if (!(current_effect_enable_bits & (1ull << effect_idx))) {
+      continue;
+    }
+    for (size_t word = 0; word < required_bone_slots.size(); word++) {
+      required_bone_slots[word] |= effect_masks[effect_idx][word];
+    }
+  }
+
+  MetalMercBoneSlotMask missing_bone_slots = {};
+  int missing_slot_count = 0;
+  for (size_t word = 0; word < missing_bone_slots.size(); word++) {
+    missing_bone_slots[word] = required_bone_slots[word] & ~populated_bone_slots[word];
+    missing_slot_count += __builtin_popcountll(missing_bone_slots[word]);
+  }
+  if (missing_slot_count) {
+    stats->missing_bone_slots += missing_slot_count;
+    stats->models_with_missing_bone_slots++;
+    if (!m_reported_missing_bone_slots) {
+      std::string missing_slots;
+      for (int slot = 0; slot < 256; slot++) {
+        if (!(missing_bone_slots[slot / 64] & (1ull << (slot % 64)))) {
+          continue;
+        }
+        if (!missing_slots.empty()) {
+          missing_slots += ",";
+        }
+        missing_slots += fmt::format("{}", slot);
+      }
+      lg::error("Metal merc: model '{}' is missing {} required bone slot(s): {} (logged once)",
+                model->name, missing_slot_count, missing_slots);
+      m_reported_missing_bone_slots = true;
+    }
+  }
+
+  bool model_has_palette_health_issue = false;
+  bool expected_source_base_valid = false;
+  u64 expected_source_base = 0;
+  for (size_t word = 0; word < required_bone_slots.size(); word++) {
+    u64 slots_to_inspect = required_bone_slots[word] & populated_bone_slots[word];
+    while (slots_to_inspect) {
+      const int bit = __builtin_ctzll(slots_to_inspect);
+      slots_to_inspect &= slots_to_inspect - 1;
+      const int slot = (int)(word * 64 + bit);
+      ASSERT(slot < MAX_SKEL_BONES);
+
+      MercMat matrix;
+      memcpy(&matrix, &skel_matrix_buffer[slot], sizeof(matrix));
+
+      bool matrix_is_finite = true;
+      for (const auto& column : matrix.tmat) {
+        for (int lane = 0; lane < 4; lane++) {
+          matrix_is_finite &= std::isfinite(column[lane]);
+        }
+      }
+      for (const auto& column : matrix.nmat) {
+        for (int lane = 0; lane < 4; lane++) {
+          matrix_is_finite &= std::isfinite(column[lane]);
+        }
+      }
+
+      auto axis_norm = [](const math::Vector4f& axis) {
+        const double x = axis.x();
+        const double y = axis.y();
+        const double z = axis.z();
+        return std::sqrt(x * x + y * y + z * z);
+      };
+      const double axis_norm_x = axis_norm(matrix.tmat[0]);
+      const double axis_norm_y = axis_norm(matrix.tmat[1]);
+      const double axis_norm_z = axis_norm(matrix.tmat[2]);
+      const auto& x = matrix.tmat[0];
+      const auto& y = matrix.tmat[1];
+      const auto& z = matrix.tmat[2];
+      const double determinant =
+          (double)x.x() * ((double)y.y() * z.z() - (double)y.z() * z.y()) -
+          (double)y.x() * ((double)x.y() * z.z() - (double)x.z() * z.y()) +
+          (double)z.x() * ((double)x.y() * y.z() - (double)x.z() * y.y());
+      const double norm_product = axis_norm_x * axis_norm_y * axis_norm_z;
+      const double normalized_abs_determinant =
+          norm_product > 0.0 ? std::abs(determinant) / norm_product : 0.0;
+      constexpr double kMinimumAxisNorm = 1e-9;
+      constexpr double kMinimumNormalizedDeterminant = 1e-6;
+      const bool matrix_is_degenerate =
+          matrix_is_finite &&
+          (axis_norm_x <= kMinimumAxisNorm || axis_norm_y <= kMinimumAxisNorm ||
+           axis_norm_z <= kMinimumAxisNorm ||
+           normalized_abs_determinant <= kMinimumNormalizedDeterminant);
+
+      const u32 source_address = bone_source_addresses[slot];
+      const u64 slot_offset = (u64)slot * sizeof(ShaderMercMat);
+      const bool source_base_valid = source_address >= slot_offset;
+      const u64 source_base = source_base_valid ? source_address - slot_offset : 0;
+      bool source_base_is_incoherent = !source_base_valid;
+      if (source_base_valid) {
+        if (!expected_source_base_valid) {
+          expected_source_base = source_base;
+          expected_source_base_valid = true;
+        } else {
+          source_base_is_incoherent = source_base != expected_source_base;
+        }
+      }
+
+      u8 issue_mask = 0;
+      if (!matrix_is_finite) {
+        stats->nonfinite_bone_matrices++;
+        issue_mask |= metal_renderer::MERC_PALETTE_HEALTH_NONFINITE;
+      } else if (matrix_is_degenerate) {
+        stats->degenerate_bone_matrices++;
+        issue_mask |= metal_renderer::MERC_PALETTE_HEALTH_DEGENERATE;
+      }
+      if (source_base_is_incoherent) {
+        stats->incoherent_bone_sources++;
+        issue_mask |= metal_renderer::MERC_PALETTE_HEALTH_SOURCE_BASE;
+      }
+      if (!issue_mask) {
+        continue;
+      }
+
+      model_has_palette_health_issue = true;
+      metal_renderer::MercPaletteHealthEvent event;
+      event.issue_mask = issue_mask;
+      event.bone_slot = slot;
+      event.model_name_hash = fnv64(model->name);
+      event.matrix_hash = fnv64(&matrix, sizeof(matrix));
+      event.axis_norm_x = axis_norm_x;
+      event.axis_norm_y = axis_norm_y;
+      event.axis_norm_z = axis_norm_z;
+      event.normalized_abs_determinant = normalized_abs_determinant;
+      event.source_address = source_address;
+      event.source_base = source_base;
+      event.expected_source_base = expected_source_base_valid ? expected_source_base : 0;
+      if (!stats->first_palette_health_event.valid()) {
+        stats->first_palette_health_event = event;
+      }
+      stats->last_palette_health_event = event;
+
+      if (!m_reported_palette_health_issue) {
+        lg::error(
+            "Metal merc: model '{}' required bone slot {} has palette health issue {:#x}; "
+            "matrix hash {:#x}, axis norms [{:.9g}, {:.9g}, {:.9g}], normalized |det| "
+            "{:.9g}, source {:#x}, source base {:#x}, expected base {:#x} (logged once)",
+            model->name, slot, issue_mask, event.matrix_hash, axis_norm_x, axis_norm_y,
+            axis_norm_z, normalized_abs_determinant, source_address, source_base,
+            event.expected_source_base);
+        m_reported_palette_health_issue = true;
+      }
+    }
+  }
+  if (model_has_palette_health_issue) {
+    stats->models_with_palette_health_issues++;
+  }
 
   float blerc_weights[kMaxBlerc];
   if (model_uses_pc_blerc) {

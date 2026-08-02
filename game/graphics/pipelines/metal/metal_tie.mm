@@ -87,6 +87,9 @@ bool MetalTie3::set_up_common_data_from_dma(DmaFollower& dma,
   }
   memcpy(&m_pc_port_data, pc_port_data.data, sizeof(MetalTfragPcPortData));
   m_pc_port_data.level_name[11] = '\0';
+  if (bg) {
+    bg->observe_camera(m_pc_port_data.camera, m_name);
+  }
 
   if (!expect(render_state->version == GameVersion::Jak1, "a Jak 1 chain")) {
     return false;

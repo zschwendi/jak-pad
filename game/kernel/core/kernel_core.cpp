@@ -3,7 +3,6 @@
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/mips2c_seam.h"
 
-#include <cerrno>
 #include <cstring>
 #include <string>
 
@@ -34,10 +33,15 @@ GameVersion g_game_version = goal_game_version();
 namespace {
 
 bool g_initialized = false;
-bool g_main_memory_executable = false;
 std::string g_last_error;
 std::string g_data_directory;
 std::string g_saves_directory;
+
+// Kernel-core GOAL code is ahead-of-time compiled into the signed image. The arena contains only
+// data, function objects that hold native __TEXT pointers, and GOAL stacks.
+constexpr int kMainMemoryProtection = PROT_READ | PROT_WRITE;
+static_assert((kMainMemoryProtection & PROT_EXEC) == 0,
+              "the portable kernel core must never request an executable GOAL arena");
 
 void set_error(const char* msg) {
   g_last_error = msg;
@@ -49,23 +53,15 @@ void clear_error() {
 }
 
 /*!
- * Map EE main memory. The GOAL heap is where the C kernel writes the trampolines it hands to GOAL
- * code, so upstream asks for PROT_EXEC. Ordinary iPadOS will not grant an executable anonymous
- * mapping, so failing to get PROT_EXEC is recorded rather than treated as fatal: everything this
- * library does is data, and the execution seam is reported through
- * goal_kernel_core_state::main_memory_executable.
+ * Map EE main memory as data. Desktop OpenGOAL stores generated code in this arena, but the
+ * portable kernel core does not: AOT and mips2c function objects store pointers to signed native
+ * entry points instead. Requesting PROT_EXEC as a probe is unsafe because some Apple device builds
+ * grant it, leaving the live heap and GOAL stacks writable and executable even though no code uses
+ * that permission.
  */
 bool map_main_memory() {
-  void* mem = mmap(nullptr, EE_MAIN_MEM_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,
-                   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-  g_main_memory_executable = mem != MAP_FAILED;
-  if (mem == MAP_FAILED) {
-    lg::warn("[kernel-core] executable EE main memory was refused ({}); mapping read/write only. "
-             "No native code can be executed out of the GOAL heap.",
-             strerror(errno));
-    mem = mmap(nullptr, EE_MAIN_MEM_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1,
-               0);
-  }
+  void* mem = mmap(nullptr, EE_MAIN_MEM_SIZE, kMainMemoryProtection, MAP_ANONYMOUS | MAP_PRIVATE,
+                   -1, 0);
   if (mem == MAP_FAILED) {
     return false;
   }
@@ -187,7 +183,6 @@ void goal_kernel_core_shutdown(void) {
   mprotect(g_ee_main_mem, EE_MAIN_MEM_LOW_PROTECT, PROT_READ | PROT_WRITE);
   munmap(g_ee_main_mem, EE_MAIN_MEM_SIZE);
   g_ee_main_mem = nullptr;
-  g_main_memory_executable = false;
   g_initialized = false;
   s7.offset = 0;
   SymbolTable2.offset = 0;
@@ -225,7 +220,7 @@ goal_kernel_core_status goal_kernel_core_get_state(goal_kernel_core_state* out) 
   memset(out, 0, sizeof(*out));
   out->main_memory_address = (uint64_t)g_ee_main_mem;
   out->main_memory_size = EE_MAIN_MEM_SIZE;
-  out->main_memory_executable = g_main_memory_executable ? 1 : 0;
+  out->main_memory_executable = 0;
 
   out->global_heap_base_offset = kglobalheap->base.offset;
   out->global_heap_current_offset = kglobalheap->current.offset;

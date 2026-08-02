@@ -655,10 +655,12 @@ with no case now fails to compile rather than returning garbage.
 
 ## Known limitations
 
-- **No executable GOAL heap.** `mmap` refuses `PROT_EXEC` for anonymous memory on ARM64 macOS, the
-  iOS simulator, and iOS, so `goal_kernel_core_state::main_memory_executable` is 0. On ARM64 the
-  kernel therefore stores the 64-bit native entry point in a function object instead of machine
-  code, and `call_goal` loads it. Nothing is executed out of the GOAL heap.
+- **No executable GOAL heap.** The portable kernel core maps EE main memory read/write only by
+  policy; it never requests `PROT_EXEC`. `goal_kernel_core_state::main_memory_executable` is
+  therefore always 0. On ARM64 a function object stores the 64-bit native entry point of signed AOT
+  or mips2c code instead of machine instructions, and `call_goal` loads that pointer. The AOT
+  execution test also inspects the live Apple VM region before and after its calls and requires
+  `rw-`. Nothing is executed out of the GOAL heap.
 - **`pp` and stack-argument kernel functions.** A native pointer cannot also say "pass the current
   process in argument 3", so `copy_basic`, `new_basic` and `alloc_heap_object` get explicit
   ARM64 shims that read `g_goal_current_process` - which is where ARM64 keeps what x86-64 keeps in

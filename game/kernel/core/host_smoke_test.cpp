@@ -63,7 +63,8 @@ int main() {
   printf("  base                 %p\n", (void*)(uintptr_t)state.main_memory_address);
   printf("  size                 0x%x (%.1f MiB)\n", state.main_memory_size,
          (double)state.main_memory_size / (1 << 20));
-  printf("  PROT_EXEC granted    %s\n", state.main_memory_executable ? "yes" : "NO");
+  printf("  executable           %s\n", state.main_memory_executable ? "YES" : "NO (policy)");
+  check(state.main_memory_executable == 0, "EE main memory is non-executable by policy");
 
   printf("\n== kernel heaps ==\n");
   printf("  global heap          base #x%08x  current #x%08x  top #x%08x  top_base #x%08x\n",
@@ -166,10 +167,8 @@ int main() {
     check(bytes[0] == 0xab && bytes[4095] == 0xab, "allocation is writable");
   }
 
-  // The C kernel builds GOAL function objects by writing machine code into the GOAL heap. On
-  // ARM64 those bytes are still x86-64 (see the TODO in make_function_from_c_systemv), and the
-  // heap is not executable anyway. Print the bytes so the state of that seam is visible instead
-  // of assumed.
+  // The portable ARM64 kernel builds GOAL function objects by storing signed native entry points,
+  // not generated instructions. Print the pointers so that representation stays visible.
   printf("\n== GOAL function objects built by the C kernel ==\n");
   for (const char* name : {"nothing", "zero-func", "string->symbol"}) {
     uint32_t sym = 0, value = 0;
@@ -199,6 +198,8 @@ int main() {
   printf("  s7 #x%08x, %d symbols, %u heap bytes used\n", state2.s7_offset, state2.symbol_count,
          state2.global_heap_used_bytes);
   check(state2.s7_offset == state.s7_offset, "s7 is deterministic across runs");
+  check(state2.main_memory_executable == 0,
+        "reinitialized EE main memory remains non-executable by policy");
   goal_kernel_core_shutdown();
 
   printf("\n%s (%d failures)\n", g_failures ? "SMOKE TEST FAILED" : "SMOKE TEST PASSED",

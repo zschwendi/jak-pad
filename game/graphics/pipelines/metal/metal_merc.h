@@ -30,6 +30,7 @@
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
+#include "game/graphics/pipelines/metal/metal_pipeline.h"
 
 #import <Metal/Metal.h>
 
@@ -51,6 +52,14 @@ class MetalMerc2 {
     int missing_textures = 0;
     int bad_bone_pointers = 0;  // bone address outside EE memory: identity used
     int bad_draw_ranges = 0;    // draw range outside the level's index buffer: skipped
+    int missing_bone_slots = 0;  // unique weighted slots absent from model packets
+    int models_with_missing_bone_slots = 0;
+    int nonfinite_bone_matrices = 0;
+    int degenerate_bone_matrices = 0;
+    int incoherent_bone_sources = 0;
+    int models_with_palette_health_issues = 0;
+    metal_renderer::MercPaletteHealthEvent first_palette_health_event;
+    metal_renderer::MercPaletteHealthEvent last_palette_health_event;
 
     void add(const Stats& o);
   };
@@ -244,6 +253,8 @@ class MetalMerc2 {
   bool m_warned_eyes = false;
   bool m_warned_no_ee = false;
   bool m_warned_bad_bone = false;
+  bool m_reported_missing_bone_slots = false;
+  bool m_reported_palette_health_issue = false;
 };
 
 /*!

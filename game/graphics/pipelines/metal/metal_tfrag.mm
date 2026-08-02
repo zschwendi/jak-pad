@@ -87,6 +87,9 @@ bool MetalTFragment::handle_initialization(DmaFollower& dma, MetalBackgroundStat
   }
   memcpy(&m_pc_port_data, pc_port_data.data, sizeof(MetalTfragPcPortData));
   m_pc_port_data.level_name[11] = '\0';
+  if (bg) {
+    bg->observe_camera(m_pc_port_data.camera, m_name);
+  }
 
   auto db_setup = dma.read_and_advance();
   return expect(db_setup.size_bytes == 0 &&

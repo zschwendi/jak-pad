@@ -39,8 +39,8 @@ typedef enum goal_kernel_core_status {
 typedef struct goal_kernel_core_state {
   uint64_t main_memory_address;
   uint32_t main_memory_size;
-  /*! 1 if EE main memory was mapped with PROT_EXEC. 0 means no native GOAL code can run from the
-   *  GOAL heap on this platform without a different execution strategy. */
+  /*! Always 0 in the portable kernel core: EE main memory is mapped read/write by policy and all
+   *  native GOAL entry points live ahead of time in the signed image. */
   int32_t main_memory_executable;
 
   uint32_t global_heap_base_offset;

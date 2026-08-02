@@ -20,6 +20,7 @@
  * piece of work; the duplication is deliberate and will be unified later.
  */
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -33,6 +34,8 @@
 
 class TexturePool;
 
+using MetalMercBoneSlotMask = std::array<u64, 4>;
+
 /*!
  * One extracted level's merc data. The merc-scoped analog of the GL loader's
  * LevelData: the CPU-side level is kept alive because MercModel pointers point
@@ -45,6 +48,7 @@ struct MetalMercLevel {
   id<MTLBuffer> vertices = nil;
   id<MTLBuffer> indices = nil;
   std::vector<u64> textures;
+  std::vector<std::vector<MetalMercBoneSlotMask>> required_bone_slots_by_model;
   std::string name;
 };
 
@@ -78,6 +82,7 @@ class MetalMercModelPool {
   struct Ref {
     const tfrag3::MercModel* model = nullptr;
     const MetalMercLevel* level = nullptr;
+    const std::vector<MetalMercBoneSlotMask>* required_bone_slots_by_effect = nullptr;
   };
 
   // Mirror of Loader::get_merc_model: first match wins.

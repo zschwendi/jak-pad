@@ -2486,6 +2486,9 @@ u64 execute(void* ctxt) {
   c->mfc1(t3, f4);                                  // mfc1 t3, f4
   c->pcpyld(t1, t3, t1);                            // pcpyld t1, t3, t1
   c->mov128_vf_gpr(vf16, t1);                       // qmtc2.i vf16, t1
+  // A negative scale sign-extends through mfc1/pcpyld, making vf16.w a NaN on the host. The PS2
+  // keeps the zero homogeneous lanes zero here; match the Jak 2/3 translations before vmul.
+  c->vfs[vf16].vf.w() = 0;
   c->vmul(DEST::xyzw, vf2, vf2, vf16);              // vmul.xyzw vf2, vf2, vf16
   c->vmul(DEST::xyzw, vf3, vf3, vf16);              // vmul.xyzw vf3, vf3, vf16
   c->vmul(DEST::xyzw, vf4, vf4, vf16);              // vmul.xyzw vf4, vf4, vf16

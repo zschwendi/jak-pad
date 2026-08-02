@@ -32,6 +32,7 @@
 
 class TexturePool;
 class MetalSkyBlendHandler;
+struct MetalPresentationState;
 
 // Backs metal_renderer::set_s7_override (see metal_pipeline.h).
 void metal_set_s7_override(u32 s7_ptr);
@@ -60,6 +61,17 @@ struct MetalRenderOptions {
   // regular: at 0 a 60 fps game on a 120 Hz display lands on alternating 8.3 ms and 16.7 ms
   // vsyncs and judders even though the average rate is exactly right.
   double min_present_duration = 0.0;
+  // Absolute Core Animation host time for this drawable. When nonzero this takes precedence over
+  // min_present_duration, so a CADisplayLink-driven host can use the link as its only clock.
+  double presentation_time = 0.0;
+
+  // Diagnostic identity supplied by the host at the synchronous DMA-send seam. These fields do
+  // not affect rendering or presentation.
+  u64 host_tick_id = 0;
+  u64 chain_ordinal = 0;
+  u64 engine_frame_id = 0;
+  bool expected_camera_valid = false;
+  metal_camera_trace::Snapshot expected_camera;
 };
 
 class MetalRenderer {
@@ -79,7 +91,7 @@ class MetalRenderer {
   // Renders one frame from the game's DMA chain (the copied chain from
   // send_chain): walks the chain like OpenGLRenderer::dispatch_buckets_jak1
   // and hands each bucket to its renderer, then runs the present pass.
-  void render_chain_frame(const MetalRenderOptions& opts,
+  bool render_chain_frame(const MetalRenderOptions& opts,
                           CAMetalLayer* layer,
                           const u8* chain_data,
                           u32 chain_offset);
@@ -155,4 +167,7 @@ class MetalRenderer {
   // level-geometry frame state, shared with the tfrag/tie/shrub renderers
   MetalBackgroundState m_background;
   metal_renderer::ChainStats m_chain_stats;
+  bool m_reported_camera_mismatch = false;
+  std::shared_ptr<MetalPresentationState> m_presentation_state;
+  u64 m_submission_count = 0;
 };

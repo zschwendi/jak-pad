@@ -36,6 +36,7 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -64,7 +65,21 @@
 #include "game/graphics/texture/TextureConverter.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/graphics/texture/jak1_tpage_dir.h"
+#include "game/mips2c/mips2c_private.h"
 #include "game/runtime.h"
+
+namespace Mips2C::jak1::bones_mtx_calc {
+struct Cache {
+  void* fake_scratchpad_data;
+};
+extern Cache cache;
+void exec_mpg(ExecutionContext* c);
+u64 execute(void* ctxt);
+}
+
+namespace Mips2C::jak1::cspace_parented_transformq_joint {
+u64 execute(void* ctxt);
+}
 
 namespace {
 
@@ -1914,6 +1929,7 @@ void test_background_common_parity() {
 // ---------------------------------------------------------------------------
 
 constexpr const char* kMercModelName = "proof-merc";
+constexpr const char* kMercPaletteHealthModelName = "proof-merc-palette-health";
 constexpr float kMercQuadHalf = 32.f;  // GS units
 constexpr float kMercZ = 8388608.f;    // depth 0.5 in Metal's [0, 1] clip range
 
@@ -1997,6 +2013,20 @@ std::unique_ptr<tfrag3::Level> make_merc_test_level(bool with_envmap) {
   return level;
 }
 
+std::unique_ptr<tfrag3::Level> make_merc_palette_health_test_level() {
+  auto level = make_merc_test_level(false);
+  level->level_name = "metal-proof-merc-palette-health";
+  auto& merc = level->merc_data;
+  merc.models[0].name = kMercPaletteHealthModelName;
+  for (auto& vertex : merc.vertices) {
+    vertex.weights[0] = 0.5f;
+    vertex.weights[1] = 0.5f;
+    vertex.mats[0] = 0;
+    vertex.mats[1] = 1;
+  }
+  return level;
+}
+
 // The 10-quadword merc setup packet. The low-memory block holds an identity
 // perspective matrix and an hvdf offset of 0, so a vertex position in GS
 // coordinates lands where gs_to_col/gs_to_row say it does.
@@ -2050,6 +2080,29 @@ void write_merc_bone(std::vector<u8>& mem, u32 addr, float tx, float ty) {
   memcpy(&mem[addr], m, sizeof(m));
 }
 
+enum class MercBoneHealthFixture {
+  Healthy,
+  NonFinite,
+  Degenerate,
+};
+
+void write_merc_bone_fixture(std::vector<u8>& mem,
+                             u32 addr,
+                             float tx,
+                             float ty,
+                             MercBoneHealthFixture fixture) {
+  write_merc_bone(mem, addr, tx, ty);
+  if (fixture == MercBoneHealthFixture::NonFinite) {
+    const u32 quiet_nan = 0x7fc00000;
+    memcpy(&mem[addr], &quiet_nan, sizeof(quiet_nan));
+  } else if (fixture == MercBoneHealthFixture::Degenerate) {
+    const float zero = 0.f;
+    memcpy(&mem[addr], &zero, sizeof(zero));
+    memcpy(&mem[addr + sizeof(float)], &zero, sizeof(zero));
+    memcpy(&mem[addr + 2 * sizeof(float)], &zero, sizeof(zero));
+  }
+}
+
 // The PC_PORT model packet Merc2::handle_pc_model parses.
 std::vector<u8> make_merc_model_packet(u32 bone0_addr,
                                        u32 bone1_addr,
@@ -2062,7 +2115,8 @@ std::vector<u8> make_merc_model_packet(u32 bone0_addr,
                                        float dir2_color = 0.f,
                                        // when set, the pc-blerc flag bit and these 40 blend-shape
                                        // weights follow the flags quadword, as bones.gc sends them
-                                       const float* blerc_weights = nullptr) {
+                                       const float* blerc_weights = nullptr,
+                                       bool omit_bone0 = false) {
   std::vector<u8> d;
   // name (128 bytes)
   d.resize(128, 0);
@@ -2085,17 +2139,22 @@ std::vector<u8> make_merc_model_packet(u32 bone0_addr,
   // jak 1 water flag quadword
   push_u64(d, 0);
   push_u64(d, 0);
-  // matrix slot string (128 bytes): slots 0 and 1, then the 0xff terminator
+  // matrix slot string (128 bytes): required slot 0 unless omitted, slot 1, then terminator
   size_t slot_string = d.size();
   d.resize(slot_string + 128, 0);
-  d[slot_string + 0] = 0;
-  d[slot_string + 1] = 1;
-  d[slot_string + 2] = 0xff;
+  size_t slot_count = 0;
+  if (!omit_bone0) {
+    d[slot_string + slot_count++] = 0;
+  }
+  d[slot_string + slot_count++] = 1;
+  d[slot_string + slot_count] = 0xff;
   // matrix pointers: one quadword each, the EE address in the first word
-  push_i(d, (s32)bone0_addr);
-  push_i(d, 0);
-  push_i(d, 0);
-  push_i(d, 0);
+  if (!omit_bone0) {
+    push_i(d, (s32)bone0_addr);
+    push_i(d, 0);
+    push_i(d, 0);
+    push_i(d, 0);
+  }
   push_i(d, (s32)bone1_addr);
   push_i(d, 0);
   push_i(d, 0);
@@ -2138,6 +2197,19 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
     check(load.models == 1 && load.vertices == 4 && load.indices == 4,
           "merc: test level registered with the model pool");
   }
+  {
+    metal_renderer::MercLevelLoad load;
+    std::string error;
+    if (!metal_renderer::merc_add_level(make_merc_palette_health_test_level(), false, &load,
+                                        &error)) {
+      printf("[FAIL] merc palette health: could not register the two-slot test level: %s\n",
+             error.c_str());
+      g_fail_count++;
+      return;
+    }
+    check(load.models == 1 && load.vertices == 4 && load.indices == 4,
+          "merc palette health: two-slot test level registered with the model pool");
+  }
 
   std::vector<u8> mem(kEeSize, 0);
   g_ee_main_mem = mem.data();
@@ -2148,9 +2220,11 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
 
   // Builds one merc bucket. `two_models` adds a second instance with its own
   // bone matrices; `fade` non-zero turns on the envmap (emerc) pass.
-  auto build_merc_bucket = [&](ChainBuilder& cb, bool two_models, const u8 fade[4]) {
+  auto build_merc_bucket =
+      [&](ChainBuilder& cb, bool two_models, const u8 fade[4], bool omit_bone0 = false,
+          MercBoneHealthFixture bone0_health = MercBoneHealthFixture::Healthy) {
     u32 bone_a0 = cb.alloc(112), bone_a1 = cb.alloc(112);
-    write_merc_bone(mem, bone_a0, kX0, kY0);
+    write_merc_bone_fixture(mem, bone_a0, kX0, kY0, bone0_health);
     write_merc_bone(mem, bone_a1, 0, 0);
 
     // the bucket's own NEXT tag is the "nothing" transfer merc reads first, so
@@ -2162,7 +2236,9 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
     merc.push_back({0, 0, {}, true});
 
     merc.push_back({0, vif_code(VifCode::Kind::PC_PORT, 0),
-                    make_merc_model_packet(bone_a0, bone_a1, fade), false});
+                    make_merc_model_packet(bone_a0, bone_a1, fade, kMercModelName, 0.5f, 0.f,
+                                           nullptr, omit_bone0),
+                    false});
     merc.push_back({0, 0, {}, true});
     merc.push_back({0, 0, {}, true});
 
@@ -2177,6 +2253,29 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
     }
 
     // a transfer that is neither PC_PORT nor FLUSHA ends the model loop
+    merc.push_back({0, 0, {}, true});
+    return merc;
+  };
+
+  auto build_merc_source_base_bucket = [&](ChainBuilder& cb, bool incoherent_source_base) {
+    const u32 matrix_base = cb.alloc(3 * 128);
+    const u32 bone0 = matrix_base;
+    const u32 bone1 = matrix_base + (incoherent_source_base ? 256 : 128);
+    write_merc_bone(mem, bone0, kX0, kY0);
+    write_merc_bone(mem, bone1, kX0, kY0);
+
+    const u8 no_fade[4] = {0, 0, 0, 0};
+    std::vector<ChainBuilder::Transfer> merc;
+    merc.push_back(
+        {vif_stcycl(4, 4), vif_code(VifCode::Kind::STMOD, 0), make_merc_setup_data(), false});
+    merc.push_back({0, 0, std::vector<u8>(32, 0), false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, vif_code(VifCode::Kind::PC_PORT, 0),
+                    make_merc_model_packet(bone0, bone1, no_fade,
+                                           kMercPaletteHealthModelName),
+                    false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
     merc.push_back({0, 0, {}, true});
     return merc;
   };
@@ -2208,6 +2307,14 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
     check(stats.merc_models == 2, "merc: both model instances were built");
     check(stats.merc_missing_models == 0, "merc: every model name resolved in the model pool");
     check(stats.merc_draws == 2, "merc: one draw per instance");
+    check(stats.merc_missing_bone_slots == 0 &&
+              stats.merc_models_with_missing_bone_slots == 0,
+          "merc palette: complete packets cover every weighted slot");
+    check(stats.merc_nonfinite_bone_matrices == 0 &&
+              stats.merc_degenerate_bone_matrices == 0 &&
+              stats.merc_incoherent_bone_sources == 0 &&
+              stats.merc_models_with_palette_health_issues == 0,
+          "merc palette health: complete finite matrices have no health findings");
     check(stats.merc_envmap_draws == 0, "merc: no envmap draws with a zero fade");
     check(stats.merc_triangles == 4, "merc: two triangles per instance");
     // 2 bones per instance, 8 vectors each, rounded up to the 16-vector
@@ -2257,6 +2364,168 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
     check_pixel(frame, col0, row0, 255, 151, 75, "merc: envmap pass blended over the model");
     check_pixel(frame, gs_to_col(kX1), gs_to_row(kY1), 0, 0, 0,
                 "merc: no second instance in the envmap frame");
+  }
+
+  // ---- frame 3: one instance whose weighted slot is absent ---------------
+  {
+    ChainBuilder cb(mem);
+    cb.set_bucket_content((int)BucketId::MERC_PRIS_LEVEL0,
+                          build_merc_bucket(cb, false, no_fade, true));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the incomplete merc palette frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    auto stats = metal_renderer::get_chain_stats();
+    check(stats.merc_missing_bone_slots == 1,
+          "merc palette: omitted weighted slot is counted once");
+    check(stats.merc_models_with_missing_bone_slots == 1,
+          "merc palette: model with an omitted weighted slot is counted once");
+    check(stats.merc_models == 1 && stats.merc_draws == 1,
+          "merc palette: diagnostic does not suppress the incomplete model draw");
+    check(stats.merc_nonfinite_bone_matrices == 0 &&
+              stats.merc_degenerate_bone_matrices == 0 &&
+              stats.merc_models_with_palette_health_issues == 0,
+          "merc palette health: an absent slot is not also classified as an unhealthy matrix");
+    check_pixel(frame, gs_to_col(kX0), gs_to_row(kY0), 0, 0, 0,
+                "merc palette: omitted weighted slot collapses the authored quad");
+  }
+
+  // ---- frame 4: complete palette with a non-finite required matrix -------
+  {
+    ChainBuilder cb(mem);
+    cb.set_bucket_content(
+        (int)BucketId::MERC_PRIS_LEVEL0,
+        build_merc_bucket(cb, false, no_fade, false, MercBoneHealthFixture::NonFinite));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the non-finite merc palette frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    auto stats = metal_renderer::get_chain_stats();
+    check(stats.merc_missing_bone_slots == 0 &&
+              stats.merc_models_with_missing_bone_slots == 0,
+          "merc palette health: a present non-finite slot remains complete");
+    check(stats.merc_nonfinite_bone_matrices == 1 &&
+              stats.merc_degenerate_bone_matrices == 0 &&
+              stats.merc_incoherent_bone_sources == 0 &&
+              stats.merc_models_with_palette_health_issues == 1,
+          "merc palette health: the non-finite required matrix is counted once");
+    check(stats.merc_models == 1 && stats.merc_draws == 1,
+          "merc palette health: the non-finite diagnostic does not suppress its draw");
+    const auto& event = stats.last_merc_palette_health_event;
+    check(event.issue_mask == metal_renderer::MERC_PALETTE_HEALTH_NONFINITE &&
+              event.bone_slot == 0 && event.model_name_hash != 0 && event.matrix_hash != 0 &&
+              event.source_address != 0 && event.source_base == event.source_address &&
+              !std::isfinite(event.axis_norm_x),
+          "merc palette health: the non-finite event retains numeric matrix evidence");
+    check(stats.first_merc_palette_health_event.issue_mask ==
+              metal_renderer::MERC_PALETTE_HEALTH_NONFINITE,
+          "merc palette health: the first intermittent event is retained");
+  }
+
+  // ---- frame 5: complete palette with a rank-deficient required matrix ---
+  {
+    ChainBuilder cb(mem);
+    cb.set_bucket_content(
+        (int)BucketId::MERC_PRIS_LEVEL0,
+        build_merc_bucket(cb, false, no_fade, false, MercBoneHealthFixture::Degenerate));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the degenerate merc palette frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    auto stats = metal_renderer::get_chain_stats();
+    check(stats.merc_missing_bone_slots == 0 &&
+              stats.merc_models_with_missing_bone_slots == 0,
+          "merc palette health: a present rank-deficient slot remains complete");
+    check(stats.merc_nonfinite_bone_matrices == 0 &&
+              stats.merc_degenerate_bone_matrices == 1 &&
+              stats.merc_incoherent_bone_sources == 0 &&
+              stats.merc_models_with_palette_health_issues == 1,
+          "merc palette health: the rank-deficient required matrix is counted once");
+    check(stats.merc_models == 1 && stats.merc_draws == 1,
+          "merc palette health: the degeneracy diagnostic does not suppress its draw");
+    const auto& event = stats.last_merc_palette_health_event;
+    check(event.issue_mask == metal_renderer::MERC_PALETTE_HEALTH_DEGENERATE &&
+              event.bone_slot == 0 && event.model_name_hash != 0 && event.matrix_hash != 0 &&
+              event.source_address != 0 && event.source_base == event.source_address &&
+              event.axis_norm_x == 0.0 && event.normalized_abs_determinant == 0.0,
+          "merc palette health: the degenerate event retains numeric matrix evidence");
+    check(stats.first_merc_palette_health_event.issue_mask ==
+                  metal_renderer::MERC_PALETTE_HEALTH_NONFINITE &&
+              stats.last_merc_palette_health_event.issue_mask ==
+                  metal_renderer::MERC_PALETTE_HEALTH_DEGENERATE,
+          "merc palette health: first and latest intermittent events remain distinct");
+  }
+
+  // ---- frames 6/7: coherent and incoherent two-slot source bases ----------
+  {
+    ChainBuilder cb(mem);
+    cb.set_bucket_content((int)BucketId::MERC_PRIS_LEVEL0,
+                          build_merc_source_base_bucket(cb, false));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the coherent merc source-base frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    const auto stats = metal_renderer::get_chain_stats();
+    check(stats.merc_missing_bone_slots == 0 &&
+              stats.merc_incoherent_bone_sources == 0 &&
+              stats.merc_models_with_palette_health_issues == 0,
+          "merc palette health: two required matrices with one 128-byte base are coherent");
+    check(stats.merc_models == 1 && stats.merc_draws == 1,
+          "merc palette health: the coherent two-slot palette submits its draw");
+  }
+  {
+    ChainBuilder cb(mem);
+    cb.set_bucket_content((int)BucketId::MERC_PRIS_LEVEL0,
+                          build_merc_source_base_bucket(cb, true));
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] could not read back the incoherent merc source-base frame\n");
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+    const auto stats = metal_renderer::get_chain_stats();
+    check(stats.merc_missing_bone_slots == 0 &&
+              stats.merc_nonfinite_bone_matrices == 0 &&
+              stats.merc_degenerate_bone_matrices == 0,
+          "merc palette health: a source-base mismatch remains complete and value-finite");
+    check(stats.merc_incoherent_bone_sources == 1 &&
+              stats.merc_models_with_palette_health_issues == 1,
+          "merc palette health: the incoherent required source base is counted once");
+    check(stats.merc_models == 1 && stats.merc_draws == 1,
+          "merc palette health: the source-base diagnostic does not suppress its draw");
+    const auto& event = stats.last_merc_palette_health_event;
+    check(event.issue_mask == metal_renderer::MERC_PALETTE_HEALTH_SOURCE_BASE &&
+              event.bone_slot == 1 && event.source_address != 0 &&
+              event.source_base != event.expected_source_base,
+          "merc palette health: the source-base event identifies the mismatched slot and bases");
   }
 
   g_ee_main_mem = nullptr;
@@ -2577,6 +2846,468 @@ LitSpan lit_col(const metal_renderer::FramePixels& frame, int x) {
     }
   }
   return s;
+}
+
+// ---------------------------------------------------------------------------
+// Section: live joint -> old-bones producer -> Merc palette -> presented pixels.
+//
+// The joint regression stops after cspace<-parented-transformq-joint!, while
+// the rotation sweep below begins with a hand-authored final Merc matrix. This
+// closes the seam between them with the same two translated functions the Jak 1
+// iOS fallback runs. Every stage has its own assertion, and the final A/B/A/B
+// sequence makes a stale or uniformly enlarged palette visually unmistakable.
+// ---------------------------------------------------------------------------
+
+constexpr const char* kMercProvenanceModelName = "proof-merc-provenance";
+constexpr u32 kProvenanceChildCspace = 0x1000;
+constexpr u32 kProvenanceParentCspace = 0x1100;
+constexpr u32 kProvenanceChildBone = 0x1200;
+constexpr u32 kProvenanceParentBone = 0x1300;
+constexpr u32 kProvenanceTransformq = 0x1400;
+constexpr u32 kProvenanceJointArray = 0x1604;
+constexpr u32 kProvenanceCamera = 0x1700;
+constexpr u32 kProvenanceScratchpadSymbol = 0x1800;
+constexpr u32 kProvenanceStackTop = 0x1f000;
+constexpr u32 kProvenanceScratchpad = 0x20000;
+static_assert(((kProvenanceJointArray - 68) & 15) == 0);
+
+using ProvenanceVec = std::array<float, 4>;
+using ProvenanceMatrix = std::array<ProvenanceVec, 4>;
+
+void provenance_store_u32(std::vector<u8>& mem, u32 address, u32 value) {
+  memcpy(mem.data() + address, &value, sizeof(value));
+}
+
+void provenance_store_vec(std::vector<u8>& mem, u32 address, const ProvenanceVec& value) {
+  memcpy(mem.data() + address, value.data(), sizeof(value));
+}
+
+ProvenanceVec provenance_load_vec(const std::vector<u8>& mem, u32 address) {
+  ProvenanceVec value;
+  memcpy(value.data(), mem.data() + address, sizeof(value));
+  return value;
+}
+
+bool provenance_near(float actual, float expected) {
+  return std::isfinite(actual) && std::abs(actual - expected) <= 2e-4f;
+}
+
+bool provenance_vec_matches(const ProvenanceVec& actual, const ProvenanceVec& expected) {
+  for (int lane = 0; lane < 4; lane++) {
+    if (!provenance_near(actual[lane], expected[lane])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool provenance_matrix_matches(const ProvenanceMatrix& actual, const ProvenanceMatrix& expected) {
+  for (int column = 0; column < 4; column++) {
+    if (!provenance_vec_matches(actual[column], expected[column])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void provenance_set_vf(Mips2C::ExecutionContext& context,
+                       Mips2C::VfName reg,
+                       const ProvenanceVec& value) {
+  memcpy(context.vfs[reg].f, value.data(), sizeof(value));
+}
+
+ProvenanceVec provenance_get_vf(const Mips2C::ExecutionContext& context, Mips2C::VfName reg) {
+  ProvenanceVec value;
+  memcpy(value.data(), context.vfs[reg].f, sizeof(value));
+  return value;
+}
+
+bool provenance_make_joint_matrix(std::vector<u8>& mem,
+                                  const ProvenanceVec& scale,
+                                  float tx,
+                                  float ty) {
+  memset(mem.data() + kProvenanceChildCspace, 0,
+         kProvenanceTransformq + 48 - kProvenanceChildCspace);
+  provenance_store_u32(mem, kProvenanceChildCspace, kProvenanceParentCspace);
+  provenance_store_u32(mem, kProvenanceChildCspace + 16, kProvenanceChildBone);
+  provenance_store_u32(mem, kProvenanceParentCspace + 16, kProvenanceParentBone);
+
+  const ProvenanceMatrix identity = {
+      ProvenanceVec{1, 0, 0, 0}, ProvenanceVec{0, 1, 0, 0},
+      ProvenanceVec{0, 0, 1, 0}, ProvenanceVec{0, 0, 0, 1}};
+  for (int column = 0; column < 4; column++) {
+    provenance_store_vec(mem, kProvenanceParentBone + 16 * column, identity[column]);
+  }
+  provenance_store_vec(mem, kProvenanceParentBone + 64, {1, 1, 1, 1});
+  provenance_store_vec(mem, kProvenanceTransformq, {tx, ty, 0, 1});
+  provenance_store_vec(mem, kProvenanceTransformq + 16, {0, 0, 0, 1});
+  provenance_store_vec(mem, kProvenanceTransformq + 32, scale);
+
+  Mips2C::ExecutionContext context{};
+  context.gprs[Mips2C::a0].du64[0] = kProvenanceChildCspace;
+  context.gprs[Mips2C::a1].du64[0] = kProvenanceTransformq;
+  Mips2C::jak1::cspace_parented_transformq_joint::execute(&context);
+
+  ProvenanceMatrix actual;
+  for (int column = 0; column < 4; column++) {
+    actual[column] = provenance_load_vec(mem, kProvenanceChildBone + 16 * column);
+  }
+  const ProvenanceMatrix expected = {
+      ProvenanceVec{scale[0], 0, 0, 0}, ProvenanceVec{0, scale[1], 0, 0},
+      ProvenanceVec{0, 0, scale[2], 0}, ProvenanceVec{tx, ty, 0, 1}};
+  return provenance_matrix_matches(actual, expected) &&
+         provenance_vec_matches(provenance_load_vec(mem, kProvenanceChildBone + 64), scale);
+}
+
+bool provenance_merc_matrix_matches(const std::vector<u8>& mem,
+                                    u32 output,
+                                    const ProvenanceVec& scale,
+                                    float tx,
+                                    float ty) {
+  const ProvenanceMatrix expected_tmat = {
+      ProvenanceVec{-scale[0], 0, 0, 0}, ProvenanceVec{0, -scale[1], 0, 0},
+      ProvenanceVec{0, 0, -scale[2], 0}, ProvenanceVec{-tx, -ty, 0, -1}};
+  ProvenanceMatrix actual_tmat;
+  for (int column = 0; column < 4; column++) {
+    actual_tmat[column] = provenance_load_vec(mem, output + 16 * column);
+  }
+
+  bool normal_ok = true;
+  for (int column = 0; column < 3; column++) {
+    const auto actual = provenance_load_vec(mem, output + 64 + 16 * column);
+    ProvenanceVec expected = {0, 0, 0, 0};
+    expected[column] = -1.f / scale[column];
+    normal_ok &= provenance_vec_matches(actual, expected);
+  }
+  return provenance_matrix_matches(actual_tmat, expected_tmat) && normal_ok &&
+         provenance_vec_matches(provenance_load_vec(mem, output + 112), {0, 0, 0, 0});
+}
+
+bool provenance_make_merc_matrix_with_mpg(std::vector<u8>& mem,
+                                          u32 output,
+                                          const ProvenanceVec& scale,
+                                          float tx,
+                                          float ty) {
+  Mips2C::ExecutionContext context{};
+  const ProvenanceMatrix identity = {
+      ProvenanceVec{1, 0, 0, 0}, ProvenanceVec{0, 1, 0, 0},
+      ProvenanceVec{0, 0, 1, 0}, ProvenanceVec{0, 0, 0, 1}};
+  for (int column = 0; column < 4; column++) {
+    provenance_set_vf(context, (Mips2C::VfName)(Mips2C::vf1 + column), identity[column]);
+    provenance_set_vf(context, (Mips2C::VfName)(Mips2C::vf5 + column),
+                      provenance_load_vec(mem, kProvenanceChildBone + 16 * column));
+  }
+
+  // This matches the Merc shader convention: positions are negated after the
+  // producer, so a negative camera basis yields positive GS-space positions.
+  const ProvenanceMatrix negative_identity = {
+      ProvenanceVec{-1, 0, 0, 0}, ProvenanceVec{0, -1, 0, 0},
+      ProvenanceVec{0, 0, -1, 0}, ProvenanceVec{0, 0, 0, -1}};
+  for (int column = 0; column < 4; column++) {
+    provenance_set_vf(context, (Mips2C::VfName)(Mips2C::vf28 + column),
+                      negative_identity[column]);
+    if (column < 3) {
+      provenance_set_vf(context, (Mips2C::VfName)(Mips2C::vf25 + column),
+                        negative_identity[column]);
+    }
+  }
+
+  Mips2C::jak1::bones_mtx_calc::exec_mpg(&context);
+  for (int column = 0; column < 4; column++) {
+    provenance_store_vec(mem, output + 16 * column,
+                         provenance_get_vf(context, (Mips2C::VfName)(Mips2C::vf13 + column)));
+  }
+  for (int column = 0; column < 3; column++) {
+    provenance_store_vec(mem, output + 64 + 16 * column,
+                         provenance_get_vf(context, (Mips2C::VfName)(Mips2C::vf9 + column)));
+  }
+  provenance_store_vec(mem, output + 112, {0, 0, 0, 0});
+  return provenance_merc_matrix_matches(mem, output, scale, tx, ty);
+}
+
+bool provenance_execute_bones_wrapper(std::vector<u8>& mem,
+                                      u32 output,
+                                      u32 joint_array,
+                                      u32 bones,
+                                      u32 count,
+                                      u32 camera) {
+  const ProvenanceMatrix identity = {
+      ProvenanceVec{1, 0, 0, 0}, ProvenanceVec{0, 1, 0, 0},
+      ProvenanceVec{0, 0, 1, 0}, ProvenanceVec{0, 0, 0, 1}};
+
+  memset(mem.data() + kProvenanceScratchpad, 0, 0x4000);
+  provenance_store_u32(mem, kProvenanceScratchpadSymbol, kProvenanceScratchpad);
+
+  // bones-init's two-buffer scratch layout. Count one only uses buffer zero,
+  // but the wrapper itself selects the addresses through this table.
+  provenance_store_u32(mem, kProvenanceScratchpad + 16, kProvenanceScratchpad + 256);
+  provenance_store_u32(mem, kProvenanceScratchpad + 20, kProvenanceScratchpad + 4864);
+  provenance_store_u32(mem, kProvenanceScratchpad + 24, kProvenanceScratchpad + 1280);
+  provenance_store_u32(mem, kProvenanceScratchpad + 28, kProvenanceScratchpad + 5888);
+  provenance_store_u32(mem, kProvenanceScratchpad + 32, kProvenanceScratchpad + 2816);
+  provenance_store_u32(mem, kProvenanceScratchpad + 36, kProvenanceScratchpad + 7424);
+
+  // Each batch speculatively executes one discarded matrix after its real
+  // inputs. Give both scratch buffers finite padding without adding DMA input.
+  const u32 joint_buffers[] = {256, 4864};
+  const u32 bone_buffers[] = {1280, 5888};
+  for (int buffer = 0; buffer < 2; buffer++) {
+    for (int column = 0; column < 4; column++) {
+      provenance_store_vec(mem, kProvenanceScratchpad + joint_buffers[buffer] + 64 + 16 * column,
+                           identity[column]);
+      provenance_store_vec(mem, kProvenanceScratchpad + bone_buffers[buffer] + 96 + 16 * column,
+                           identity[column]);
+    }
+  }
+
+  Mips2C::ExecutionContext context{};
+  context.gprs[Mips2C::sp].du64[0] = kProvenanceStackTop;
+  context.gprs[Mips2C::t0].du64[0] = camera;
+  context.gprs[Mips2C::a0].du64[0] = output;
+  context.gprs[Mips2C::a1].du64[0] = joint_array;
+  context.gprs[Mips2C::a2].du64[0] = bones;
+  context.gprs[Mips2C::a3].du64[0] = count;
+
+  auto& cache = Mips2C::jak1::bones_mtx_calc::cache;
+  void* previous_scratchpad_symbol = cache.fake_scratchpad_data;
+  cache.fake_scratchpad_data = mem.data() + kProvenanceScratchpadSymbol;
+  const u64 result = Mips2C::jak1::bones_mtx_calc::execute(&context);
+  cache.fake_scratchpad_data = previous_scratchpad_symbol;
+
+  return result == 0 && context.gprs[Mips2C::sp].du64[0] == kProvenanceStackTop;
+}
+
+bool provenance_make_merc_matrix_with_wrapper(std::vector<u8>& mem,
+                                              u32 output,
+                                              const ProvenanceVec& scale,
+                                              float tx,
+                                              float ty) {
+  const ProvenanceMatrix identity = {
+      ProvenanceVec{1, 0, 0, 0}, ProvenanceVec{0, 1, 0, 0},
+      ProvenanceVec{0, 0, 1, 0}, ProvenanceVec{0, 0, 0, 1}};
+  const ProvenanceMatrix negative_identity = {
+      ProvenanceVec{-1, 0, 0, 0}, ProvenanceVec{0, -1, 0, 0},
+      ProvenanceVec{0, 0, -1, 0}, ProvenanceVec{0, 0, 0, -1}};
+
+  // The old-bones interleave starts one joint behind the array pointer and at
+  // that joint's bind-pose field: a1 + 12 - sizeof(joint), where sizeof(joint)
+  // is 80. The bone input is the 96-byte child bone produced by stage one.
+  for (int column = 0; column < 4; column++) {
+    provenance_store_vec(mem, kProvenanceJointArray - 68 + 16 * column, identity[column]);
+    provenance_store_vec(mem, kProvenanceCamera + 16 * column, negative_identity[column]);
+  }
+
+  return provenance_execute_bones_wrapper(mem, output, kProvenanceJointArray,
+                                          kProvenanceChildBone, 1, kProvenanceCamera) &&
+         provenance_merc_matrix_matches(mem, output, scale, tx, ty);
+}
+
+void test_bones_wrapper_chunk_boundary() {
+  printf("--- old bones: 16-bone scratch/DMA chunk boundary ---\n");
+  constexpr u32 kCount = 17;
+  constexpr u32 kJointArray = 0x30004;
+  constexpr u32 kJointData = kJointArray - 68;
+  constexpr u32 kCamera = 0x31000;
+  constexpr u32 kBones = 0x32000;
+  constexpr u32 kOutput = 0x34010;
+  constexpr u32 kOutputBytes = kCount * 128;
+  static_assert((kJointData & 15) == 0 && (kBones & 15) == 0 && (kOutput & 15) == 0);
+
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+  const ProvenanceMatrix identity = {
+      ProvenanceVec{1, 0, 0, 0}, ProvenanceVec{0, 1, 0, 0},
+      ProvenanceVec{0, 0, 1, 0}, ProvenanceVec{0, 0, 0, 1}};
+  const ProvenanceMatrix negative_identity = {
+      ProvenanceVec{-1, 0, 0, 0}, ProvenanceVec{0, -1, 0, 0},
+      ProvenanceVec{0, 0, -1, 0}, ProvenanceVec{0, 0, 0, -1}};
+
+  for (u32 column = 0; column < 4; column++) {
+    provenance_store_vec(mem, kCamera + 16 * column, negative_identity[column]);
+  }
+  for (u32 bone = 0; bone < kCount; bone++) {
+    for (u32 column = 0; column < 4; column++) {
+      provenance_store_vec(mem, kJointData + 80 * bone + 16 * column, identity[column]);
+    }
+    const ProvenanceVec scale = {1.f + bone / 32.f, 1.f + bone / 64.f, 1.f, 1.f};
+    const float tx = 512.f + 13.f * bone;
+    const float ty = 768.f + 17.f * bone;
+    const ProvenanceMatrix transform = {
+        ProvenanceVec{scale[0], 0, 0, 0}, ProvenanceVec{0, scale[1], 0, 0},
+        ProvenanceVec{0, 0, scale[2], 0}, ProvenanceVec{tx, ty, 0, 1}};
+    for (u32 column = 0; column < 4; column++) {
+      provenance_store_vec(mem, kBones + 96 * bone + 16 * column, transform[column]);
+    }
+    provenance_store_vec(mem, kBones + 96 * bone + 64, scale);
+    provenance_store_vec(mem, kBones + 96 * bone + 80, {0, 0, 0, 0});
+  }
+
+  memset(mem.data() + kOutput - 16, 0xa5, kOutputBytes + 32);
+  check(provenance_execute_bones_wrapper(mem, kOutput, kJointArray, kBones, kCount, kCamera),
+        "old-bones boundary: count 17 wrapper completed and restored its stack");
+
+  bool all_matrices_ok = true;
+  bool every_stride_complete = true;
+  bool every_output_distinct = true;
+  for (u32 bone = 0; bone < kCount; bone++) {
+    const ProvenanceVec scale = {1.f + bone / 32.f, 1.f + bone / 64.f, 1.f, 1.f};
+    const float tx = 512.f + 13.f * bone;
+    const float ty = 768.f + 17.f * bone;
+    all_matrices_ok &=
+        provenance_merc_matrix_matches(mem, kOutput + 128 * bone, scale, tx, ty);
+    for (u32 byte = 112; byte < 128; byte++) {
+      every_stride_complete &= mem[kOutput + 128 * bone + byte] == 0;
+    }
+    if (bone > 0) {
+      every_output_distinct &=
+          memcmp(mem.data() + kOutput + 128 * (bone - 1), mem.data() + kOutput + 128 * bone,
+                 112) != 0;
+    }
+  }
+  check(all_matrices_ok, "old-bones boundary: all 17 transforms survived both DMA batches");
+  check(provenance_merc_matrix_matches(mem, kOutput + 15 * 128,
+                                      {1.f + 15.f / 32.f, 1.f + 15.f / 64.f, 1.f, 1.f},
+                                      512.f + 13.f * 15.f, 768.f + 17.f * 15.f),
+        "old-bones boundary: bone 15 kept the first-batch sentinel");
+  check(provenance_merc_matrix_matches(mem, kOutput + 16 * 128,
+                                      {1.f + 16.f / 32.f, 1.f + 16.f / 64.f, 1.f, 1.f},
+                                      512.f + 13.f * 16.f, 768.f + 17.f * 16.f),
+        "old-bones boundary: bone 16 kept the second-batch sentinel");
+  check(every_output_distinct,
+        "old-bones boundary: the second batch neither aliased nor reused a stale palette");
+  check(every_stride_complete,
+        "old-bones boundary: every copied palette includes its final 16-byte pad");
+  const bool guards_ok =
+      std::all_of(mem.begin() + kOutput - 16, mem.begin() + kOutput,
+                  [](u8 value) { return value == 0xa5; }) &&
+      std::all_of(mem.begin() + kOutput + kOutputBytes,
+                  mem.begin() + kOutput + kOutputBytes + 16,
+                  [](u8 value) { return value == 0xa5; });
+  check(guards_ok, "old-bones boundary: 17 full strides stayed inside the output allocation");
+  g_ee_main_mem = nullptr;
+}
+
+void test_merc_joint_to_present(const GfxRendererModule* mod,
+                                std::shared_ptr<GfxDisplay>& display) {
+  printf("--- merc provenance: joint -> old bones -> palette -> pixels ---\n");
+  using namespace jak1;
+
+  auto level = make_merc_test_level(false);
+  level->level_name = "metal-proof-merc-provenance";
+  level->merc_data.models[0].name = kMercProvenanceModelName;
+  metal_renderer::MercLevelLoad load;
+  std::string error;
+  if (!metal_renderer::merc_add_level(std::move(level), false, &load, &error)) {
+    printf("[FAIL] merc provenance: could not register the test level: %s\n", error.c_str());
+    g_fail_count++;
+    return;
+  }
+  check(load.models == 1, "merc provenance: synthetic model registered");
+
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+  constexpr float kTx = 2048.f, kTy = 2048.f;
+  const ProvenanceVec scale_a = {1.f, 1.f, 1.f, 1.f};
+  const ProvenanceVec scale_b = {0.5f, 1.25f, 1.f, 1.f};
+  const ProvenanceVec sequence[] = {scale_a, scale_b, scale_a, scale_b};
+  const char* labels[] = {"A0", "B0", "A1", "B1"};
+  std::array<int, 4> widths = {-1, -1, -1, -1};
+  std::array<int, 4> heights = {-1, -1, -1, -1};
+
+  for (int frame_idx = 0; frame_idx < 4; frame_idx++) {
+    const auto& scale = sequence[frame_idx];
+    ChainBuilder cb(mem);
+    const u32 mpg_output = cb.alloc(128);
+    const u32 bone0 = cb.alloc(128);
+    const u32 bone1 = cb.alloc(128);
+
+    const bool joint_ok = provenance_make_joint_matrix(mem, scale, kTx, kTy);
+    check(joint_ok,
+          fmt::format("merc provenance {} stage 1: live joint matrix", labels[frame_idx]).c_str());
+
+    const bool mpg_ok = provenance_make_merc_matrix_with_mpg(mem, mpg_output, scale, kTx, kTy);
+    check(mpg_ok,
+          fmt::format("merc provenance {} stage 2a: old-bones VU kernel", labels[frame_idx])
+              .c_str());
+    const bool wrapper_ok =
+        provenance_make_merc_matrix_with_wrapper(mem, bone0, scale, kTx, kTy);
+    check(wrapper_ok,
+          fmt::format("merc provenance {} stage 2b: old-bones DMA wrapper", labels[frame_idx])
+              .c_str());
+    check(memcmp(mem.data() + mpg_output, mem.data() + bone0, 128) == 0,
+          fmt::format("merc provenance {} stage 2c: wrapper matches VU kernel", labels[frame_idx])
+              .c_str());
+    write_merc_bone(mem, bone1, 0, 0);
+
+    const u8 no_fade[4] = {0, 0, 0, 0};
+    std::vector<ChainBuilder::Transfer> merc;
+    merc.push_back(
+        {vif_stcycl(4, 4), vif_code(VifCode::Kind::STMOD, 0), make_merc_setup_data(), false});
+    merc.push_back({0, 0, std::vector<u8>(32, 0), false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, vif_code(VifCode::Kind::PC_PORT, 0),
+                    make_merc_model_packet(bone0, bone1, no_fade, kMercProvenanceModelName),
+                    false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
+    cb.set_bucket_content((int)BucketId::MERC_PRIS_LEVEL0, merc);
+
+    mod->send_chain(mem.data(), kChainStart);
+    // This proof drives game and renderer on one thread, so send_chain cannot
+    // wait for palette consumption: display->render is its synchronous
+    // submission boundary. After that returns, the renderer must own the
+    // palette bytes even if the live EE producer reuses its matrix area.
+    display->render();
+    memset(mem.data() + bone0, 0, 112);
+
+    metal_renderer::FramePixels frame;
+    if (!metal_renderer::read_last_frame(&frame)) {
+      printf("[FAIL] merc provenance %s: could not read back the frame\n", labels[frame_idx]);
+      g_fail_count++;
+      g_ee_main_mem = nullptr;
+      return;
+    }
+
+    const auto stats = metal_renderer::get_chain_stats();
+    check(stats.merc_models == 1 && stats.merc_draws == 1,
+          fmt::format("merc provenance {} stage 3: one palette-backed draw", labels[frame_idx])
+              .c_str());
+    check(stats.merc_bad_bone_pointers == 0,
+          fmt::format("merc provenance {} stage 3: live pointer accepted", labels[frame_idx])
+              .c_str());
+
+    const LitSpan row = lit_row(frame);
+    const LitSpan col = lit_col(frame, gs_to_col(kTx));
+    widths[frame_idx] = row.width();
+    heights[frame_idx] = col.width();
+    const float expected_width = 2.f * kMercQuadHalf * scale[0] / kGsPerCol;
+    const float expected_height = 2.f * kMercQuadHalf * scale[1] / kGsPerRow;
+    printf("merc provenance %s: %dx%d pixels (expected %.1fx%.1f)\n", labels[frame_idx],
+           row.width(), col.width(), expected_width, expected_height);
+    check(std::abs(row.width() - expected_width) <= 3.f,
+          fmt::format("merc provenance {} stage 4: submitted width survived EE poison",
+                      labels[frame_idx])
+              .c_str());
+    check(std::abs(col.width() - expected_height) <= 3.f,
+          fmt::format("merc provenance {} stage 4: submitted height survived EE poison",
+                      labels[frame_idx])
+              .c_str());
+    check(!row.empty() && std::abs(row.center() - gs_to_col(kTx)) <= 2.f && !col.empty() &&
+              std::abs(col.center() - gs_to_row(kTy)) <= 2.f,
+          fmt::format("merc provenance {} stage 4: produced matrix stays centered",
+                      labels[frame_idx])
+              .c_str());
+  }
+
+  check(std::abs(widths[0] - widths[2]) <= 1 && std::abs(heights[0] - heights[2]) <= 1,
+        "merc provenance: repeated A frames are stable");
+  check(std::abs(widths[1] - widths[3]) <= 1 && std::abs(heights[1] - heights[3]) <= 1,
+        "merc provenance: repeated B frames are stable");
+  check(widths[0] - widths[1] >= 30 && heights[1] - heights[0] >= 25,
+        "merc provenance: A/B scale states remain unmistakably distinct");
+
+  g_ee_main_mem = nullptr;
 }
 
 void test_merc_bone_rotation(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& display) {
@@ -3758,6 +4489,8 @@ int main(int argc, char** argv) {
   test_sprite_chain(mod, display);
   test_merc_chain(mod, display);
   test_merc_blerc_chain(mod, display);
+  test_bones_wrapper_chunk_boundary();
+  test_merc_joint_to_present(mod, display);
   test_merc_bone_rotation(mod, display);
   test_generic2_chain(mod, display);
   g_ee_main_mem = nullptr;

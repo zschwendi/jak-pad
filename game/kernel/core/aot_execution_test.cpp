@@ -16,6 +16,11 @@
 #include <cstdio>
 #include <cstring>
 
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
+
 // The C backend does not put an extern "C" guard in the headers it generates, so the one C++
 // consumer adds it here rather than reaching into goalc/aot/CBackend.cpp.
 extern "C" {
@@ -113,6 +118,43 @@ void print_state(const char* stage) {
   std::printf("%s: s7 #x%x, %d symbols, global heap current #x%x, EE main memory executable: %s\n",
               stage, state.s7_offset, state.symbol_count, state.global_heap_current_offset,
               state.main_memory_executable ? "YES" : "NO");
+  if (state.main_memory_executable) {
+    fail("kernel core reported an executable EE main-memory arena");
+  }
+}
+
+/*! Verify the live mapping, not just the kernel-core policy bit, on Apple hosts and simulators. */
+void check_live_arena_protection(const char* stage) {
+#if defined(__APPLE__)
+  const mach_vm_address_t probe =
+      (mach_vm_address_t)(uintptr_t)g_ee_main_mem + EE_MAIN_MEM_LOW_PROTECT;
+  mach_vm_address_t region = probe;
+  mach_vm_size_t size = 0;
+  vm_region_basic_info_data_64_t info = {};
+  mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+  mach_port_t object = MACH_PORT_NULL;
+  const kern_return_t result =
+      mach_vm_region(mach_task_self(), &region, &size, VM_REGION_BASIC_INFO_64,
+                     reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+  if (object != MACH_PORT_NULL) {
+    mach_port_deallocate(mach_task_self(), object);
+  }
+  if (result != KERN_SUCCESS || region > probe || probe - region >= size) {
+    fail("could not inspect the live EE main-memory mapping");
+    return;
+  }
+  std::printf("  %s arena protection: %c%c%c\n", stage,
+              info.protection & VM_PROT_READ ? 'r' : '-',
+              info.protection & VM_PROT_WRITE ? 'w' : '-',
+              info.protection & VM_PROT_EXECUTE ? 'x' : '-');
+  if ((info.protection & (VM_PROT_READ | VM_PROT_WRITE)) !=
+          (VM_PROT_READ | VM_PROT_WRITE) ||
+      (info.protection & VM_PROT_EXECUTE)) {
+    fail("live EE main-memory arena is not read/write-only");
+  }
+#else
+  (void)stage;
+#endif
 }
 
 void load_file(const char* tag,
@@ -230,6 +272,7 @@ int main() {
     return 1;
   }
   print_state("kernel up");
+  check_live_arena_protection("before AOT calls");
 
   std::printf("\n== loading AOT object files into the real global heap ==\n");
   load_file("gcommon", goal_gcommon_statics, goal_gcommon_static_count, goal_gcommon_functions,
@@ -434,6 +477,7 @@ int main() {
   std::printf("\n== the native stack survived the switch ==\n");
   check_s64("(fact 10) on the native stack", call_symbol("fact", 10), 3628800);
   check_s64("(+ 3 4) on the native stack", call_symbol("+", 3, 4), 7);
+  check_live_arena_protection("after AOT calls");
 
   goal_aot_reset();
   goal_kernel_core_shutdown();

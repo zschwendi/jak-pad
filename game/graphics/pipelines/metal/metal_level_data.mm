@@ -116,6 +116,18 @@ void MetalBackgroundState::reset_frame() {
   missing_textures = 0;
   anim_slot_draws = 0;
   unexpected_dma = 0;
+  camera_trace.reset(nullptr);
+  first_camera_mismatch_bucket.clear();
+}
+
+void MetalBackgroundState::observe_camera(const MetalGoalBackgroundCameraData& camera,
+                                          const std::string& bucket) {
+  const auto snapshot = metal_camera_trace::make_snapshot(camera.camera, &camera.trans);
+  const auto observation = camera_trace.observe(snapshot);
+  if (first_camera_mismatch_bucket.empty() &&
+      (observation.expected_mismatch_qwords || observation.packet_mismatch_qwords)) {
+    first_camera_mismatch_bucket = bucket;
+  }
 }
 
 namespace metal_level_data {
