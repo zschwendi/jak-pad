@@ -164,4 +164,17 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
     target_compile_options(jak1-fr3-preparer-test PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
   add_test(NAME jak1-fr3-preparer-test COMMAND jak1-fr3-preparer-test)
+
+  add_executable(jak1-retail-object-catalog-test
+                 ../test/common/test_jak1_retail_object_catalog.cpp
+                 extractor/jak1_retail_object_catalog.cpp)
+  target_link_libraries(jak1-retail-object-catalog-test PRIVATE decomp common)
+  target_compile_features(jak1-retail-object-catalog-test PRIVATE cxx_std_20)
+  if(MSVC)
+    target_compile_options(jak1-retail-object-catalog-test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(jak1-retail-object-catalog-test
+                           PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME jak1-retail-object-catalog-test COMMAND jak1-retail-object-catalog-test)
 endif()
