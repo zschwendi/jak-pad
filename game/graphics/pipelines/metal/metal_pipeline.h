@@ -114,8 +114,11 @@ struct ChainStats {
   u64 live_camera_mismatches = 0;
   u64 packet_camera_mismatches = 0;
   u64 last_render_camera_fingerprint = 0;
+  int last_render_camera_live_mismatches = 0;
   int last_render_camera_packet_mismatches = 0;
+  u16 last_render_camera_live_mismatch_qwords = 0;
   u16 last_render_camera_packet_mismatch_qwords = 0;
+  u64 render_camera_live_mismatches = 0;
   u64 render_camera_packet_mismatches = 0;
   u64 render_camera_alternations = 0;
   u64 producer_camera_alternations = 0;

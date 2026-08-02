@@ -60,6 +60,45 @@ inline RenderSnapshot make_render_snapshot(const void* camera_matrix,
   return out;
 }
 
+namespace jak1_math_camera {
+
+// math-camera's asserted offsets in decompiler/config/jak1/all-types.gc include the four-byte
+// basic-object type tag. A live GOAL basic pointer is four bytes past that tag (BASIC_OFFSET), so
+// native reads use the asserted offsets minus four.
+constexpr std::size_t kBasicObjectTypeTagBytes = 4;
+constexpr std::size_t kPerspectiveOffset = 160 - kBasicObjectTypeTagBytes;
+constexpr std::size_t kCameraRotationOffset = 368 - kBasicObjectTypeTagBytes;
+constexpr std::size_t kCameraMatrixOffset = 576 - kBasicObjectTypeTagBytes;
+constexpr std::size_t kHvdfOffset = 736 - kBasicObjectTypeTagBytes;
+constexpr std::size_t kFogOffset = 832 - kBasicObjectTypeTagBytes;
+constexpr std::size_t kTranslationOffset = 848 - kBasicObjectTypeTagBytes;
+constexpr std::size_t kRequiredObjectBytes = kTranslationOffset + kTranslationBytes;
+constexpr std::size_t kDeclaredObjectBytes = 0x424 - kBasicObjectTypeTagBytes;
+
+static_assert(kRequiredObjectBytes <= kDeclaredObjectBytes);
+
+}  // namespace jak1_math_camera
+
+// Copies the Jak 1 fields serialized by add-pc-tfrag3-data from a live *math-camera* object into
+// one fixed-size diagnostic value. The caller owns the object and must keep it stable for the
+// duration of this synchronous copy.
+inline bool try_make_jak1_live_render_snapshot(const void* object,
+                                               std::size_t object_bytes,
+                                               RenderSnapshot* out) {
+  if (!object || !out || object_bytes < jak1_math_camera::kRequiredObjectBytes) {
+    return false;
+  }
+
+  const auto* bytes = static_cast<const u8*>(object);
+  *out = make_render_snapshot(bytes + jak1_math_camera::kCameraMatrixOffset,
+                              bytes + jak1_math_camera::kHvdfOffset,
+                              bytes + jak1_math_camera::kFogOffset,
+                              bytes + jak1_math_camera::kTranslationOffset,
+                              bytes + jak1_math_camera::kCameraRotationOffset,
+                              bytes + jak1_math_camera::kPerspectiveOffset);
+  return true;
+}
+
 template <typename SnapshotType>
 inline u64 fingerprint(const SnapshotType& snapshot) {
   constexpr u64 kOffsetBasis = 14695981039346656037ull;
@@ -282,21 +321,35 @@ class FrameTrace {
 };
 
 struct RenderObservation {
+  u16 expected_mismatch_qwords = 0;
   u16 packet_mismatch_qwords = 0;
 };
 
 class RenderFrameTrace {
  public:
-  void reset() {
+  void reset(const RenderSnapshot* expected = nullptr) {
+    m_expected_valid = expected != nullptr;
+    if (expected) {
+      m_expected = *expected;
+    }
     m_first_packet_valid = false;
     m_packet_count = 0;
+    m_expected_mismatches = 0;
     m_packet_mismatches = 0;
+    m_expected_mismatch_qwords = 0;
     m_packet_mismatch_qwords = 0;
   }
 
   RenderObservation observe(const RenderSnapshot& packet) {
     RenderObservation out;
     m_packet_count++;
+    if (m_expected_valid) {
+      out.expected_mismatch_qwords = mismatched_render_qwords(m_expected, packet);
+      if (out.expected_mismatch_qwords) {
+        m_expected_mismatches++;
+        m_expected_mismatch_qwords |= out.expected_mismatch_qwords;
+      }
+    }
     if (!m_first_packet_valid) {
       m_first_packet = packet;
       m_first_packet_valid = true;
@@ -316,14 +369,20 @@ class RenderFrameTrace {
     return m_first_packet_valid ? fingerprint(m_first_packet) : 0;
   }
   int packet_count() const { return m_packet_count; }
+  int expected_mismatches() const { return m_expected_mismatches; }
   int packet_mismatches() const { return m_packet_mismatches; }
+  u16 expected_mismatch_qwords() const { return m_expected_mismatch_qwords; }
   u16 packet_mismatch_qwords() const { return m_packet_mismatch_qwords; }
 
  private:
+  bool m_expected_valid = false;
+  RenderSnapshot m_expected;
   bool m_first_packet_valid = false;
   RenderSnapshot m_first_packet;
   int m_packet_count = 0;
+  int m_expected_mismatches = 0;
   int m_packet_mismatches = 0;
+  u16 m_expected_mismatch_qwords = 0;
   u16 m_packet_mismatch_qwords = 0;
 };
 

@@ -647,6 +647,8 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     // mirror of SharedRenderState::reset for the background state
     m_background.reset_frame();
     m_background.camera_trace.reset(opts.expected_camera_valid ? &opts.expected_camera : nullptr);
+    m_background.render_camera_trace.reset(
+        opts.expected_render_camera_valid ? &opts.expected_render_camera : nullptr);
     if (m_shared_state.eye_renderer) {
       m_shared_state.eye_renderer->start_frame();
     }
@@ -713,10 +715,16 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.packet_camera_mismatches += m_chain_stats.last_packet_camera_mismatches;
     m_chain_stats.last_render_camera_fingerprint =
         m_background.render_camera_trace.first_packet_fingerprint();
+    m_chain_stats.last_render_camera_live_mismatches =
+        m_background.render_camera_trace.expected_mismatches();
     m_chain_stats.last_render_camera_packet_mismatches =
         m_background.render_camera_trace.packet_mismatches();
+    m_chain_stats.last_render_camera_live_mismatch_qwords =
+        m_background.render_camera_trace.expected_mismatch_qwords();
     m_chain_stats.last_render_camera_packet_mismatch_qwords =
         m_background.render_camera_trace.packet_mismatch_qwords();
+    m_chain_stats.render_camera_live_mismatches +=
+        m_chain_stats.last_render_camera_live_mismatches;
     m_chain_stats.render_camera_packet_mismatches +=
         m_chain_stats.last_render_camera_packet_mismatches;
 
@@ -797,18 +805,22 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     if (!m_reported_camera_mismatch &&
         (m_chain_stats.last_live_camera_mismatches ||
          m_chain_stats.last_packet_camera_mismatches ||
+         m_chain_stats.last_render_camera_live_mismatches ||
          m_chain_stats.last_render_camera_packet_mismatches)) {
       m_reported_camera_mismatch = true;
       lg::error(
           "Metal camera provenance mismatch at engine frame {}, host tick {}, chain {} in '{}': "
           "{} live mismatches (qwords {:#x}), {} producer-subset packet mismatches (qwords "
-          "{:#x}), {} full view/projection packet mismatches (qwords {:#x})",
+          "{:#x}), {} full live view/projection mismatches (qwords {:#x}), {} full "
+          "view/projection packet mismatches (qwords {:#x})",
           opts.engine_frame_id, opts.host_tick_id, opts.chain_ordinal,
           m_background.first_camera_mismatch_bucket,
           m_chain_stats.last_live_camera_mismatches,
           m_chain_stats.last_live_camera_mismatch_qwords,
           m_chain_stats.last_packet_camera_mismatches,
           m_chain_stats.last_packet_camera_mismatch_qwords,
+          m_chain_stats.last_render_camera_live_mismatches,
+          m_chain_stats.last_render_camera_live_mismatch_qwords,
           m_chain_stats.last_render_camera_packet_mismatches,
           m_chain_stats.last_render_camera_packet_mismatch_qwords);
     }

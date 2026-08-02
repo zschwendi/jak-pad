@@ -72,6 +72,8 @@ struct MetalRenderOptions {
   u64 engine_frame_id = 0;
   bool expected_camera_valid = false;
   metal_camera_trace::Snapshot expected_camera;
+  bool expected_render_camera_valid = false;
+  metal_camera_trace::RenderSnapshot expected_render_camera;
 };
 
 class MetalRenderer {

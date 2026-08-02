@@ -125,14 +125,44 @@ int main() {
             ((1u << 9) | (1u << 14)),
         "render-camera differences name their exact rotation and perspective qwords");
 
+  std::array<u8, metal_camera_trace::jak1_math_camera::kDeclaredObjectBytes> math_camera = {};
+  const auto copy_field = [&](std::size_t offset, const auto& field) {
+    std::memcpy(math_camera.data() + offset, field.data(), field.size());
+  };
+  copy_field(metal_camera_trace::jak1_math_camera::kPerspectiveOffset, perspective);
+  copy_field(metal_camera_trace::jak1_math_camera::kCameraRotationOffset, rotation);
+  copy_field(metal_camera_trace::jak1_math_camera::kCameraMatrixOffset, camera);
+  copy_field(metal_camera_trace::jak1_math_camera::kHvdfOffset, hvdf);
+  copy_field(metal_camera_trace::jak1_math_camera::kFogOffset, fog);
+  copy_field(metal_camera_trace::jak1_math_camera::kTranslationOffset, translation);
+  metal_camera_trace::RenderSnapshot live_render;
+  check(metal_camera_trace::try_make_jak1_live_render_snapshot(
+            math_camera.data(), math_camera.size(), &live_render) &&
+            live_render == expected_render,
+        "the live Jak 1 math-camera layout reproduces add-pc-tfrag3-data serialization");
+  check(!metal_camera_trace::try_make_jak1_live_render_snapshot(
+            math_camera.data(), metal_camera_trace::jak1_math_camera::kRequiredObjectBytes - 1,
+            &live_render) &&
+            !metal_camera_trace::try_make_jak1_live_render_snapshot(
+                nullptr, math_camera.size(), &live_render) &&
+            !metal_camera_trace::try_make_jak1_live_render_snapshot(
+                math_camera.data(), math_camera.size(), nullptr),
+        "the live Jak 1 math-camera copy rejects null and truncated objects");
+
   metal_camera_trace::RenderFrameTrace render_trace;
-  render_trace.reset();
+  render_trace.reset(&expected_render);
   const auto render_first = render_trace.observe(expected_render);
   const auto render_second = render_trace.observe(changed_render);
-  check(render_first.packet_mismatch_qwords == 0 &&
+  check(render_first.expected_mismatch_qwords == 0 && render_first.packet_mismatch_qwords == 0 &&
+            render_second.expected_mismatch_qwords == ((1u << 9) | (1u << 14)) &&
             render_second.packet_mismatch_qwords == ((1u << 9) | (1u << 14)) &&
-            render_trace.packet_mismatches() == 1,
-        "the render trace compares every packet field used for background vertex position");
+            render_trace.expected_mismatches() == 1 && render_trace.packet_mismatches() == 1,
+        "the render trace compares every packet field with live and first-packet state");
+  render_trace.reset();
+  render_trace.observe(expected_render);
+  render_trace.observe(changed_render);
+  check(render_trace.expected_mismatches() == 0 && render_trace.packet_mismatches() == 1,
+        "the full render trace remains packet-only when the host supplies no live snapshot");
 
   check(metal_camera_trace::normalized_snapshot_distance(scalar_snapshot(2.f),
                                                           scalar_snapshot(2.f)) == 0.0,

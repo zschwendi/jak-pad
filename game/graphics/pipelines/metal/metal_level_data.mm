@@ -131,7 +131,7 @@ void MetalBackgroundState::observe_camera(const MetalGoalBackgroundCameraData& c
   const auto render_observation = render_camera_trace.observe(render_snapshot);
   if (first_camera_mismatch_bucket.empty() &&
       (observation.expected_mismatch_qwords || observation.packet_mismatch_qwords ||
-       render_observation.packet_mismatch_qwords)) {
+       render_observation.expected_mismatch_qwords || render_observation.packet_mismatch_qwords)) {
     first_camera_mismatch_bucket = bucket;
   }
 }
