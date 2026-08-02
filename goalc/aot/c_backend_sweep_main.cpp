@@ -11,7 +11,10 @@
 #include <cstdio>
 #include <exception>
 #include <optional>
+#include <set>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "common/log/log.h"
@@ -21,7 +24,13 @@
 #include "goalc/aot/CBackend.h"
 #include "goalc/compiler/Compiler.h"
 
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
+
 namespace {
+
+constexpr size_t kJak1AllCodeSourceCount = 518;
+constexpr const char* kObjectManifestName = "object_pack_manifest.tsv";
 
 struct Options {
   std::string game = "jak1";
@@ -29,6 +38,7 @@ struct Options {
   std::string target = "GROUP:all-code";
   std::string report_path;
   std::string c_output_dir;
+  std::string object_output_dir;
   std::string project_path;
   std::vector<std::string> extra_sources;
   int limit = 0;
@@ -38,7 +48,8 @@ void print_usage() {
   std::fprintf(stderr,
                "Usage: goalc-cbackend-sweep [--game jak1] [--project-file goal_src/jak1/game.gp]\n"
                "                            [--target GROUP:all-code]\n"
-               "                            [--c-output-dir DIR] [--report OUT.tsv]\n"
+               "                            [--c-output-dir DIR] [--object-output-dir DIR]\n"
+               "                            [--report OUT.tsv]\n"
                "                            [--project-path OPENGOAL_ROOT] [--limit N]\n"
                "                            [--extra-source FILE.gc]...\n"
                "\n"
@@ -47,7 +58,10 @@ void print_usage() {
                "--extra-source compiles a source that is not part of the game after that\n"
                "prefix, for building a test fixture on top of a real kernel.\n"
                "--c-output-dir also writes each file's header and aot_boot_manifest.{h,c},\n"
-               "which lists every emitted file in build order.\n");
+               "which lists every emitted file in build order.\n"
+               "--object-output-dir writes the complete Jak 1 GROUP:all-code v3 object pack and\n"
+               "a checked manifest. It rejects limits, extra sources, alternate games/targets,\n"
+               "unsafe or duplicate tags, and existing output directories.\n");
 }
 
 bool parse_options(int argc, char** argv, Options* options) {
@@ -71,6 +85,8 @@ bool parse_options(int argc, char** argv, Options* options) {
       options->report_path = argv[i];
     } else if (argument == "--c-output-dir") {
       options->c_output_dir = argv[i];
+    } else if (argument == "--object-output-dir") {
+      options->object_output_dir = argv[i];
     } else if (argument == "--project-path") {
       options->project_path = argv[i];
     } else if (argument == "--extra-source") {
@@ -108,6 +124,149 @@ struct ManifestEntry {
   std::string source;
   std::string tag;
 };
+
+struct ObjectManifestEntry {
+  std::string source;
+  std::string tag;
+  std::string file;
+  size_t byte_size = 0;
+  uint64_t hash = 0;
+};
+
+bool safe_object_tag(std::string_view tag) {
+  if (tag.empty() || tag.size() > 128) {
+    return false;
+  }
+  for (const auto byte : tag) {
+    const bool alpha = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z');
+    const bool digit = byte >= '0' && byte <= '9';
+    if (!alpha && !digit && byte != '-' && byte != '_') {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<std::string> validate_object_pack_request(const Options& options,
+                                                        const std::vector<std::string>& sources) {
+  if (options.object_output_dir.empty()) {
+    return std::nullopt;
+  }
+  if (options.game != "jak1" || options.project_file != "goal_src/jak1/game.gp" ||
+      options.target != "GROUP:all-code" || options.limit != 0 || !options.extra_sources.empty()) {
+    return "--object-output-dir requires the unmodified Jak 1 goal_src/jak1/game.gp "
+           "GROUP:all-code graph without --limit or --extra-source.";
+  }
+  if (sources.size() != kJak1AllCodeSourceCount) {
+    return fmt::format("Expected {} Jak 1 GROUP:all-code sources, but found {}.",
+                       kJak1AllCodeSourceCount, sources.size());
+  }
+
+  std::set<std::string> tags;
+  for (const auto& source : sources) {
+    if (source.find_first_of("\t\r\n") != std::string::npos) {
+      return fmt::format("Source path contains an unsafe manifest character: {}", source);
+    }
+    const auto tag = fs::path(source).stem().string();
+    if (!safe_object_tag(tag)) {
+      return fmt::format("Source produced an unsafe object tag: {}", tag);
+    }
+    if (!tags.emplace(tag).second) {
+      return fmt::format("Source graph produced a duplicate object tag: {}", tag);
+    }
+  }
+  return std::nullopt;
+}
+
+class ObjectPackStaging {
+ public:
+  explicit ObjectPackStaging(const fs::path& destination)
+      : m_destination(destination), m_staging(destination.string() + ".staging") {
+    if (fs::exists(m_destination)) {
+      throw std::runtime_error(
+          fmt::format("Object output directory already exists: {}", m_destination.string()));
+    }
+    if (fs::exists(m_staging)) {
+      throw std::runtime_error(
+          fmt::format("Object staging directory already exists: {}", m_staging.string()));
+    }
+    if (!fs::create_directories(m_staging)) {
+      throw std::runtime_error(
+          fmt::format("Could not create object staging directory: {}", m_staging.string()));
+    }
+    m_owns_staging = true;
+  }
+
+  ObjectPackStaging(const ObjectPackStaging&) = delete;
+  ObjectPackStaging& operator=(const ObjectPackStaging&) = delete;
+
+  ~ObjectPackStaging() {
+    if (m_owns_staging) {
+      try {
+        fs::remove_all(m_staging);
+      } catch (...) {
+      }
+    }
+  }
+
+  const fs::path& path() const { return m_staging; }
+
+  void commit() {
+    fs::rename(m_staging, m_destination);
+    m_owns_staging = false;
+  }
+
+ private:
+  fs::path m_destination;
+  fs::path m_staging;
+  bool m_owns_staging = false;
+};
+
+std::string object_manifest_text(const std::vector<ObjectManifestEntry>& entries) {
+  std::string rows;
+  for (const auto& entry : entries) {
+    rows += fmt::format("{}\t{}\t{}\t{}\t{:016x}\n", entry.source, entry.tag, entry.file,
+                        entry.byte_size, entry.hash);
+  }
+  const auto aggregate = XXH64(rows.data(), rows.size(), 0);
+  std::string manifest = "FORMAT\tgoalc-source-object-pack-v1\n";
+  manifest += fmt::format("COUNT\t{}\n", entries.size());
+  manifest += fmt::format("AGGREGATE_XXH64\t{:016x}\n", aggregate);
+  manifest += "SOURCE\tTAG\tFILE\tBYTES\tXXH64\n";
+  manifest += rows;
+  return manifest;
+}
+
+void write_and_verify_object_manifest(const fs::path& directory,
+                                      const std::vector<ObjectManifestEntry>& entries) {
+  if (entries.size() != kJak1AllCodeSourceCount) {
+    throw std::runtime_error(fmt::format("Object pack has {} entries instead of {}.",
+                                         entries.size(), kJak1AllCodeSourceCount));
+  }
+  const auto manifest = object_manifest_text(entries);
+  const auto manifest_path = directory / kObjectManifestName;
+  file_util::write_binary_file(manifest_path, manifest.data(), manifest.size());
+
+  std::set<std::string> expected_files = {kObjectManifestName};
+  for (const auto& entry : entries) {
+    expected_files.emplace(entry.file);
+    const auto bytes = file_util::read_binary_file(directory / entry.file);
+    if (bytes.size() != entry.byte_size || XXH64(bytes.data(), bytes.size(), 0) != entry.hash) {
+      throw std::runtime_error(fmt::format("Object verification failed for {}.", entry.file));
+    }
+  }
+  if (file_util::read_text_file(manifest_path) != manifest) {
+    throw std::runtime_error("Object manifest verification failed.");
+  }
+
+  std::set<std::string> actual_files;
+  for (const auto& item : fs::directory_iterator(directory)) {
+    actual_files.emplace(item.path().filename().string());
+  }
+  if (actual_files != expected_files) {
+    throw std::runtime_error("Object staging directory contains missing or unexpected files.");
+  }
+}
 
 /*!
  * The emitted files in build order, in a form the runtime can walk.
@@ -197,6 +356,21 @@ int main(int argc, char** argv) {
   std::fprintf(stderr, "%zu GOAL sources reachable from %s\n", sources.size(),
                options.target.c_str());
 
+  if (const auto error = validate_object_pack_request(options, sources)) {
+    std::fprintf(stderr, "goalc-cbackend-sweep: %s\n", error->c_str());
+    return 1;
+  }
+
+  std::optional<ObjectPackStaging> object_pack;
+  if (!options.object_output_dir.empty()) {
+    try {
+      object_pack.emplace(options.object_output_dir);
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "goalc-cbackend-sweep: %s\n", error.what());
+      return 1;
+    }
+  }
+
   if (!options.c_output_dir.empty()) {
     fs::create_directories(options.c_output_dir);
   }
@@ -211,6 +385,7 @@ int main(int argc, char** argv) {
 
   std::string report = "#kind\tfile\tfunction\tdetail\n";
   std::vector<ManifestEntry> manifest;
+  std::vector<ObjectManifestEntry> object_manifest;
   int total_functions = 0;
   int total_emitted = 0;
   int total_native = 0;
@@ -226,8 +401,8 @@ int main(int argc, char** argv) {
       auto result = aot::emit_c_file(*file, tag, game_version, compiler.type_system());
       total_functions += result.total_count();
       total_emitted += result.emitted_count();
-      report += fmt::format("FILE\t{}\t{}\t{}\n", source, result.emitted_count(),
-                            result.total_count());
+      report +=
+          fmt::format("FILE\t{}\t{}\t{}\n", source, result.emitted_count(), result.total_count());
       total_native += result.native_count();
       for (const auto& f : result.functions) {
         if (f.ok) {
@@ -250,6 +425,13 @@ int main(int argc, char** argv) {
             fmt::format("{}/{}_generated.h", options.c_output_dir, result.tag), result.header);
         manifest.push_back({source, result.tag});
       }
+      if (object_pack) {
+        const auto file_name = tag + ".o";
+        auto object = compiler.color_and_codegen_object_file(file);
+        const auto hash = XXH64(object.data(), object.size(), 0);
+        file_util::write_binary_file(object_pack->path() / file_name, object.data(), object.size());
+        object_manifest.push_back({source, tag, file_name, object.size(), hash});
+      }
     } catch (const std::exception& error) {
       failed_files++;
       report += fmt::format("FILEERROR\t{}\t-\t{}\n", source, escape_field(error.what()));
@@ -259,6 +441,24 @@ int main(int argc, char** argv) {
 
   if (!options.c_output_dir.empty()) {
     write_manifest(options.c_output_dir, manifest);
+  }
+
+  if (object_pack) {
+    if (failed_files || object_manifest.size() != sources.size()) {
+      std::fprintf(stderr,
+                   "goalc-cbackend-sweep: refusing to publish incomplete object pack "
+                   "(%zu/%zu objects, %d failed files).\n",
+                   object_manifest.size(), sources.size(), failed_files);
+      return 1;
+    }
+    try {
+      write_and_verify_object_manifest(object_pack->path(), object_manifest);
+      object_pack->commit();
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "goalc-cbackend-sweep: object pack verification failed: %s\n",
+                   error.what());
+      return 1;
+    }
   }
 
   report += fmt::format("TOTAL\t{}\t{}\t{}\n", sources.size(), total_emitted, total_functions);

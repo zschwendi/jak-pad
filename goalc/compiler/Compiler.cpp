@@ -153,6 +153,11 @@ FileEnv* Compiler::compile_object_file(const std::string& name,
   return file_env;
 }
 
+std::vector<u8> Compiler::color_and_codegen_object_file(FileEnv* env) {
+  color_object_file(env);
+  return codegen_object_file(env);
+}
+
 std::unique_ptr<FunctionEnv> Compiler::compile_top_level_function(const std::string& name,
                                                                   const goos::Object& code,
                                                                   Env* env) {

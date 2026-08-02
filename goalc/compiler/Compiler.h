@@ -61,6 +61,7 @@ class Compiler {
   ReplStatus handle_repl_string(const std::string& input);
   goos::Interpreter& get_goos() { return m_goos; }
   FileEnv* compile_object_file(const std::string& name, goos::Object code, bool allow_emit);
+  std::vector<u8> color_and_codegen_object_file(FileEnv* env);
   std::unique_ptr<FunctionEnv> compile_top_level_function(const std::string& name,
                                                           const goos::Object& code,
                                                           Env* env);
