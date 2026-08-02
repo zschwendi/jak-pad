@@ -84,6 +84,23 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
   add_test(NAME jak1-output-recipe-graph COMMAND jak1-output-recipe-graph-test)
   set_tests_properties(jak1-output-recipe-graph
                        PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+  # Maintainer-only proof requiring caller-supplied retail data; deliberately not a CTest entry.
+  add_executable(jak1-output-recipe-real-catalog-test
+                 ${CMAKE_CURRENT_LIST_DIR}/goalc/test_jak1_output_recipe_real_catalog.cpp
+                 ${CMAKE_SOURCE_DIR}/decompiler/extractor/jak1_checked_dgo.cpp
+                 ${CMAKE_SOURCE_DIR}/decompiler/extractor/jak1_retail_object_catalog.cpp
+                 ${CMAKE_SOURCE_DIR}/third-party/lzokay/lzokay.cpp
+                 ${CMAKE_SOURCE_DIR}/third-party/zstd/lib/common/xxhash.c)
+  target_link_libraries(jak1-output-recipe-real-catalog-test
+                        PRIVATE jak1-output-recipe-core)
+  target_compile_features(jak1-output-recipe-real-catalog-test PRIVATE cxx_std_20)
+  if(MSVC)
+    target_compile_options(jak1-output-recipe-real-catalog-test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(jak1-output-recipe-real-catalog-test
+                           PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
 endif()
 
 if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND TARGET jak1-data-arena-arm64-invoker)
