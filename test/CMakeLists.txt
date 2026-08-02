@@ -44,6 +44,19 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
   target_link_libraries(jak1-data-arena-test jak1-data-arena gtest_main)
   gtest_discover_tests(jak1-data-arena-test)
 
+  add_executable(jak1-output-recipe-test
+                 ${CMAKE_CURRENT_LIST_DIR}/common/test_jak1_output_recipe.cpp)
+  target_link_libraries(jak1-output-recipe-test
+                        PRIVATE jak1-output-recipe-generator)
+  target_compile_features(jak1-output-recipe-test PRIVATE cxx_std_20)
+  if(MSVC)
+    target_compile_options(jak1-output-recipe-test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(jak1-output-recipe-test
+                           PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME jak1-output-recipe COMMAND jak1-output-recipe-test)
+
   add_executable(jak1-output-recipe-generator-test
                  ${CMAKE_CURRENT_LIST_DIR}/goalc/test_jak1_output_recipe_generator.cpp)
   target_link_libraries(jak1-output-recipe-generator-test
