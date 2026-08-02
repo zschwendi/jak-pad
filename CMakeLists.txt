@@ -77,13 +77,15 @@ endif()
 if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     string(TOLOWER "${CMAKE_OSX_SYSROOT}" OPENGOAL_IMPORT_APPLE_SYSROOT)
-    if(NOT APPLE OR NOT OPENGOAL_IMPORT_APPLE_SYSROOT MATCHES "iphoneos")
+    if(NOT APPLE OR
+       NOT OPENGOAL_IMPORT_APPLE_SYSROOT MATCHES "iphone(os|simulator)")
       message(FATAL_ERROR
-              "iOS Jak 1 import-library builds require CMAKE_OSX_SYSROOT=iphoneos.")
+              "iOS Jak 1 import-library builds require CMAKE_OSX_SYSROOT=iphoneos or "
+              "iphonesimulator.")
     endif()
     if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
       message(FATAL_ERROR
-              "iPhoneOS Jak 1 import-library builds require CMAKE_OSX_ARCHITECTURES=arm64.")
+              "iOS Jak 1 import-library builds require CMAKE_OSX_ARCHITECTURES=arm64.")
     endif()
   endif()
   include(CTest)
