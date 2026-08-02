@@ -43,6 +43,34 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
   add_executable(jak1-data-arena-test ${CMAKE_CURRENT_LIST_DIR}/test_jak1_data_arena.cpp)
   target_link_libraries(jak1-data-arena-test jak1-data-arena gtest_main)
   gtest_discover_tests(jak1-data-arena-test)
+
+  add_executable(jak1-output-recipe-generator-test
+                 ${CMAKE_CURRENT_LIST_DIR}/goalc/test_jak1_output_recipe_generator.cpp)
+  target_link_libraries(jak1-output-recipe-generator-test
+                        PRIVATE jak1-output-recipe-generator)
+  target_compile_features(jak1-output-recipe-generator-test PRIVATE cxx_std_20)
+  if(MSVC)
+    target_compile_options(jak1-output-recipe-generator-test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(jak1-output-recipe-generator-test
+                           PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME jak1-output-recipe-generator COMMAND jak1-output-recipe-generator-test)
+
+  add_executable(jak1-output-recipe-graph-test
+                 ${CMAKE_CURRENT_LIST_DIR}/goalc/test_jak1_output_recipe_graph.cpp)
+  target_link_libraries(jak1-output-recipe-graph-test
+                        PRIVATE jak1-output-recipe-generator)
+  target_compile_features(jak1-output-recipe-graph-test PRIVATE cxx_std_20)
+  if(MSVC)
+    target_compile_options(jak1-output-recipe-graph-test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(jak1-output-recipe-graph-test
+                           PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME jak1-output-recipe-graph COMMAND jak1-output-recipe-graph-test)
+  set_tests_properties(jak1-output-recipe-graph
+                       PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
 if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED AND TARGET jak1-data-arena-arm64-invoker)

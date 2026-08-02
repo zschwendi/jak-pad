@@ -86,6 +86,13 @@ add_library(compiler
 
 target_link_libraries(compiler common Zydis tiny_gltf decomp)
 
+add_library(jak1-output-recipe-generator
+        make/Jak1OutputRecipeGenerator.cpp
+        make/Jak1OutputRecipeMakeSystem.cpp
+        ../common/custom_data/Jak1OutputRecipe.cpp)
+target_link_libraries(jak1-output-recipe-generator PUBLIC compiler decomp)
+target_compile_features(jak1-output-recipe-generator PUBLIC cxx_std_20)
+
 if (WIN32)
     target_link_libraries(compiler mman)
 endif ()

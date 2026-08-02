@@ -43,8 +43,7 @@ bool CompilerTool::run(const ToolInput& task, const PathMap& /*path_map*/) {
   return true;
 }
 
-namespace {
-DgoDescription parse_desc_file(const std::string& filename, goos::Reader& reader) {
+DgoDescription parse_dgo_description_file(const std::string& filename, goos::Reader& reader) {
   auto& dgo_desc = reader.read_from_file({filename}).as_pair()->cdr;
   if (goos::list_length(dgo_desc) != 1) {
     throw std::runtime_error("Invalid DGO description - got too many lists");
@@ -80,7 +79,6 @@ DgoDescription parse_desc_file(const std::string& filename, goos::Reader& reader
   });
   return desc;
 }
-}  // namespace
 
 DgoTool::DgoTool() : Tool("dgo") {}
 
@@ -88,7 +86,7 @@ bool DgoTool::run(const ToolInput& task, const PathMap& path_map) {
   if (task.input.size() != 1) {
     throw std::runtime_error(fmt::format("Invalid amount of inputs to {} tool", name()));
   }
-  auto desc = parse_desc_file(task.input.at(0), m_reader);
+  auto desc = parse_dgo_description_file(task.input.at(0), m_reader);
   build_dgo(desc, path_map.output_prefix);
   return true;
 }
@@ -96,7 +94,7 @@ bool DgoTool::run(const ToolInput& task, const PathMap& path_map) {
 std::vector<std::string> DgoTool::get_additional_dependencies(const ToolInput& task,
                                                               const PathMap& path_map) {
   std::vector<std::string> result;
-  auto desc = parse_desc_file(task.input.at(0), m_reader);
+  auto desc = parse_dgo_description_file(task.input.at(0), m_reader);
   for (auto& x : desc.entries) {
     // todo out
     result.push_back(fmt::format("out/{}obj/{}", path_map.output_prefix, x.file_name));

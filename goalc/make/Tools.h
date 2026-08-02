@@ -1,10 +1,15 @@
 #pragma once
 
 #include "common/goos/Reader.h"
+#include "common/util/DgoWriter.h"
 
 #include "goalc/make/Tool.h"
 
 class Compiler;
+
+// Parse the archive name and exact ordered entries used by DgoTool. Consumers that inspect a
+// MakeSystem graph use this same parser so archive naming and suffix handling cannot drift.
+DgoDescription parse_dgo_description_file(const std::string& filename, goos::Reader& reader);
 
 class CompilerTool : public Tool {
  public:
