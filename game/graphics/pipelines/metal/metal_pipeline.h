@@ -24,6 +24,7 @@
 
 #include "game/graphics/display.h"
 #include "game/graphics/gfx.h"
+#include "game/graphics/pipelines/metal/metal_merc_transform_trace.h"
 
 extern const GfxRendererModule gRendererMetal;
 
@@ -76,6 +77,7 @@ enum MercPaletteHealthIssue : u8 {
 // This is diagnostic only: the renderer still uploads and draws the original matrix bytes.
 struct MercPaletteHealthEvent {
   u8 issue_mask = 0;
+  u32 nonfinite_lane_mask = 0;
   int bone_slot = -1;
   u64 model_name_hash = 0;
   u64 matrix_hash = 0;
@@ -184,9 +186,12 @@ struct ChainStats {
   int merc_degenerate_bone_matrices = 0;
   int merc_incoherent_bone_sources = 0;
   int merc_models_with_palette_health_issues = 0;
+  int merc_eichar_transform_discontinuities = 0;
   // Retained across clean frames so an intermittent one-frame failure remains inspectable.
   MercPaletteHealthEvent first_merc_palette_health_event;
   MercPaletteHealthEvent last_merc_palette_health_event;
+  metal_merc_transform_trace::Event first_merc_eichar_transform_discontinuity;
+  metal_merc_transform_trace::Event last_merc_eichar_transform_discontinuity;
   // eye renderer, from the last chain frame
   int eyes_composed = 0;
   int eye_draws = 0;

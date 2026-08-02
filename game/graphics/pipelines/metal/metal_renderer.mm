@@ -652,6 +652,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_shared_state.texture_pool = m_texture_pool;
     m_shared_state.ee_memory = g_ee_main_mem;
     m_shared_state.offset_of_s7 = g_s7_override ? g_s7_override : metal_offset_of_s7();
+    m_shared_state.engine_frame_id = opts.engine_frame_id;
     m_shared_state.game_res_w = opts.game_res_w;
     m_shared_state.game_res_h = opts.game_res_h;
 
@@ -941,12 +942,23 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.merc_incoherent_bone_sources = merc_stats.incoherent_bone_sources;
     m_chain_stats.merc_models_with_palette_health_issues =
         merc_stats.models_with_palette_health_issues;
+    m_chain_stats.merc_eichar_transform_discontinuities =
+        merc_stats.eichar_transform_discontinuities;
     if (!m_chain_stats.first_merc_palette_health_event.valid() &&
         merc_stats.first_palette_health_event.valid()) {
       m_chain_stats.first_merc_palette_health_event = merc_stats.first_palette_health_event;
     }
     if (merc_stats.last_palette_health_event.valid()) {
       m_chain_stats.last_merc_palette_health_event = merc_stats.last_palette_health_event;
+    }
+    if (!m_chain_stats.first_merc_eichar_transform_discontinuity.valid() &&
+        merc_stats.first_eichar_transform_discontinuity.valid()) {
+      m_chain_stats.first_merc_eichar_transform_discontinuity =
+          merc_stats.first_eichar_transform_discontinuity;
+    }
+    if (merc_stats.last_eichar_transform_discontinuity.valid()) {
+      m_chain_stats.last_merc_eichar_transform_discontinuity =
+          merc_stats.last_eichar_transform_discontinuity;
     }
     m_chain_stats.tex_uploads = uploads;
     m_chain_stats.skipped_bucket_bytes = skipped;

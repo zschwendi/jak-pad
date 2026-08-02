@@ -2425,6 +2425,7 @@ void test_merc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>& 
           "merc palette health: the non-finite diagnostic does not suppress its draw");
     const auto& event = stats.last_merc_palette_health_event;
     check(event.issue_mask == metal_renderer::MERC_PALETTE_HEALTH_NONFINITE &&
+              event.nonfinite_lane_mask == 1u &&
               event.bone_slot == 0 && event.model_name_hash != 0 && event.matrix_hash != 0 &&
               event.source_address != 0 && event.source_base == event.source_address &&
               !std::isfinite(event.axis_norm_x),

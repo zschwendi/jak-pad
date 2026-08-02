@@ -1,5 +1,7 @@
 #include "metal_merc.h"
 
+#include <array>
+
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/util/Assert.h"
@@ -254,11 +256,19 @@ void MetalMerc2::Stats::add(const Stats& o) {
   degenerate_bone_matrices += o.degenerate_bone_matrices;
   incoherent_bone_sources += o.incoherent_bone_sources;
   models_with_palette_health_issues += o.models_with_palette_health_issues;
+  eichar_transform_discontinuities += o.eichar_transform_discontinuities;
   if (!first_palette_health_event.valid() && o.first_palette_health_event.valid()) {
     first_palette_health_event = o.first_palette_health_event;
   }
   if (o.last_palette_health_event.valid()) {
     last_palette_health_event = o.last_palette_health_event;
+  }
+  if (!first_eichar_transform_discontinuity.valid() &&
+      o.first_eichar_transform_discontinuity.valid()) {
+    first_eichar_transform_discontinuity = o.first_eichar_transform_discontinuity;
+  }
+  if (o.last_eichar_transform_discontinuity.valid()) {
+    last_eichar_transform_discontinuity = o.last_eichar_transform_discontinuity;
   }
 }
 
@@ -856,17 +866,13 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
       MercMat matrix;
       memcpy(&matrix, &skel_matrix_buffer[slot], sizeof(matrix));
 
-      bool matrix_is_finite = true;
-      for (const auto& column : matrix.tmat) {
-        for (int lane = 0; lane < 4; lane++) {
-          matrix_is_finite &= std::isfinite(column[lane]);
-        }
-      }
-      for (const auto& column : matrix.nmat) {
-        for (int lane = 0; lane < 4; lane++) {
-          matrix_is_finite &= std::isfinite(column[lane]);
-        }
-      }
+      static_assert(sizeof(matrix) ==
+                    metal_merc_transform_trace::kMatrixLaneCount * sizeof(float));
+      std::array<float, metal_merc_transform_trace::kMatrixLaneCount> matrix_lanes;
+      memcpy(matrix_lanes.data(), &matrix, sizeof(matrix));
+      const u32 nonfinite_lane_mask =
+          metal_merc_transform_trace::nonfinite_lane_mask(matrix_lanes.data());
+      const bool matrix_is_finite = nonfinite_lane_mask == 0;
 
       auto axis_norm = [](const math::Vector4f& axis) {
         const double x = axis.x();
@@ -909,6 +915,36 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
         }
       }
 
+      if (matrix_is_finite && model->name == "eichar-lod0") {
+        const auto discontinuity = m_eichar_transform_tracker.observe(
+            render_state->engine_frame_id, slot, fnv64(model->name), fnv64(&matrix, sizeof(matrix)),
+            axis_norm_x, axis_norm_y, axis_norm_z, source_base);
+        if (discontinuity.valid()) {
+          stats->eichar_transform_discontinuities++;
+          if (!stats->first_eichar_transform_discontinuity.valid()) {
+            stats->first_eichar_transform_discontinuity = discontinuity;
+          }
+          stats->last_eichar_transform_discontinuity = discontinuity;
+          if (!m_reported_eichar_transform_discontinuity) {
+            lg::error(
+                "Metal merc: model '{}' required bone slot {} has consecutive-frame transform "
+                "discontinuity {:#x} from engine frame {} to {}; matrix hashes {:#x}->{:#x}, "
+                "axis norms [{:.9g}, {:.9g}, {:.9g}]->[{:.9g}, {:.9g}, {:.9g}], scale "
+                "{:.9g}->{:.9g}, aspect {:.9g}->{:.9g}, source bases {:#x}->{:#x} (logged once)",
+                model->name, slot, discontinuity.issue_mask, discontinuity.previous_frame_id,
+                discontinuity.current_frame_id, discontinuity.previous_matrix_hash,
+                discontinuity.current_matrix_hash, discontinuity.previous_axis_norm_x,
+                discontinuity.previous_axis_norm_y, discontinuity.previous_axis_norm_z,
+                discontinuity.current_axis_norm_x, discontinuity.current_axis_norm_y,
+                discontinuity.current_axis_norm_z, discontinuity.previous_scale,
+                discontinuity.current_scale, discontinuity.previous_aspect,
+                discontinuity.current_aspect, discontinuity.previous_source_base,
+                discontinuity.current_source_base);
+            m_reported_eichar_transform_discontinuity = true;
+          }
+        }
+      }
+
       u8 issue_mask = 0;
       if (!matrix_is_finite) {
         stats->nonfinite_bone_matrices++;
@@ -928,6 +964,7 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
       model_has_palette_health_issue = true;
       metal_renderer::MercPaletteHealthEvent event;
       event.issue_mask = issue_mask;
+      event.nonfinite_lane_mask = nonfinite_lane_mask;
       event.bone_slot = slot;
       event.model_name_hash = fnv64(model->name);
       event.matrix_hash = fnv64(&matrix, sizeof(matrix));
@@ -946,10 +983,11 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
       if (!m_reported_palette_health_issue) {
         lg::error(
             "Metal merc: model '{}' required bone slot {} has palette health issue {:#x}; "
-            "matrix hash {:#x}, axis norms [{:.9g}, {:.9g}, {:.9g}], normalized |det| "
-            "{:.9g}, source {:#x}, source base {:#x}, expected base {:#x} (logged once)",
-            model->name, slot, issue_mask, event.matrix_hash, axis_norm_x, axis_norm_y,
-            axis_norm_z, normalized_abs_determinant, source_address, source_base,
+            "matrix hash {:#x}, non-finite lanes {:#x}, axis norms [{:.9g}, {:.9g}, "
+            "{:.9g}], normalized |det| {:.9g}, source {:#x}, source base {:#x}, expected base "
+            "{:#x} (logged once)",
+            model->name, slot, issue_mask, event.matrix_hash, nonfinite_lane_mask, axis_norm_x,
+            axis_norm_y, axis_norm_z, normalized_abs_determinant, source_address, source_base,
             event.expected_source_base);
         m_reported_palette_health_issue = true;
       }

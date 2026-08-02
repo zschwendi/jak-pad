@@ -83,6 +83,7 @@ struct MetalSharedRenderState {
   MetalEyeRenderer* eye_renderer = nullptr;
   const u8* ee_memory = nullptr;
   u32 offset_of_s7 = 0;
+  u64 engine_frame_id = 0;
   GameVersion version = GameVersion::Jak1;
   int game_res_w = 640;
   int game_res_h = 480;

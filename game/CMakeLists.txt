@@ -445,6 +445,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
                 graphics/pipelines/metal/metal_camera_trace_test.cpp)
         add_test(NAME metal-camera-trace-test COMMAND metal-camera-trace-test)
 
+        add_executable(metal-merc-transform-trace-test
+                graphics/pipelines/metal/metal_merc_transform_trace_test.cpp)
+        add_test(NAME metal-merc-transform-trace-test COMMAND metal-merc-transform-trace-test)
+
         add_executable(jak1-mips2c-joint-regression-test
                 kernel/core/jak1_mips2c_joint_regression_test.cpp
                 mips2c/jak1_functions/joint.cpp)
