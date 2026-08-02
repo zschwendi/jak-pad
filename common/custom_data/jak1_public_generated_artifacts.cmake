@@ -1,4 +1,4 @@
-include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_output_recipe_core.cmake")
+include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_output_graph.cmake")
 
 if(NOT TARGET jak1-public-generated-artifacts)
   add_library(jak1-public-generated-artifacts STATIC
