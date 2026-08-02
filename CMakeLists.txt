@@ -23,6 +23,8 @@ option(OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY
        "Build only the checked Jak 1 prepared-retail catalog static library" OFF)
 option(OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY
        "Build only the portable Jak 1 FR3 preparation static library" OFF)
+option(OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY
+       "Build only the portable Jak 1 output materializer static library" OFF)
 set(OPENGOAL_JAK2_AOT_DIR "" CACHE PATH
     "Host-generated Jak 2 AOT C directory used by the iPhoneOS link proof")
 
@@ -32,7 +34,8 @@ foreach(OPENGOAL_ISOLATED_IMPORT_MODE
         OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY
         OPENGOAL_BUILD_JAK1_CHECKED_DGO_ONLY
         OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY
-        OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY)
+        OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY
+        OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY)
   if(${OPENGOAL_ISOLATED_IMPORT_MODE})
     math(EXPR OPENGOAL_ISOLATED_IMPORT_MODE_COUNT
          "${OPENGOAL_ISOLATED_IMPORT_MODE_COUNT} + 1")
@@ -81,6 +84,9 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   endif()
   if(OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY)
     include(decompiler/extractor/jak1_fr3_preparer.cmake)
+  endif()
+  if(OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY)
+    include(common/custom_data/jak1_output_materializer.cmake)
   endif()
   return()
 endif()
