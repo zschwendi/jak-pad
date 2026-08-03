@@ -64,6 +64,11 @@ void build_payload_bucket_chain() {
   put_tag(g_payload_chain + 32, DmaTag::Kind::NEXT, 0, g_chain + 16);
 }
 
+void build_short_bucket_chain() {
+  build_empty_bucket_chain();
+  put_tag(g_chain + (u32)(kBucketCount - 1) * 16, DmaTag::Kind::END, 0, 0);
+}
+
 }  // namespace
 
 int main() {
@@ -128,6 +133,17 @@ int main() {
   expect(stats.last_payload_bytes == 16 && stats.last_texture_uploads == 1 &&
              stats.last_bytes != 0 && stats.captures == 0 && stats.captured_bytes == 0,
          "retained DMA measurements without writing a Jak 2 capture");
+
+  build_short_bucket_chain();
+  goal_aot_call(send_chain, 0x10009000, g_chain, 0);
+  expect(goal_gfx_dma_get_frame(3, &frame) && !frame.well_formed &&
+             frame.tags == kBucketCount && frame.buckets == 0,
+         "rejected a chain that ended before all 327 buckets completed");
+
+  goal_gfx_dma_get_stats(&stats);
+  expect(stats.chains == 3 && stats.well_formed_chains == 2 && stats.malformed_chains == 1 &&
+             stats.chains == stats.well_formed_chains + stats.malformed_chains,
+         "accounted for every accepted and malformed chain exactly once");
 
   goal_kernel_core_shutdown();
   std::printf("\n%s (%d failures)\n",

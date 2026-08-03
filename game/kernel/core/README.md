@@ -21,8 +21,11 @@ and `goal_jak2_sound_rpc_stats`. The shared pushed-state pad seam implements `cp
 `cpad-get-data` for Jak 2 as well as Jak 1. `install-handler` faithfully stores, replaces, or clears
 the vblank and VIF1 handler references, but this headless core does not dispatch them yet.
 `pc-rand` uses the same process-lifetime generator as upstream. Music, streaming, and rendering
-still report through the machine stubs; the graphics-DMA frontier validates, measures, and drops
-completed chains. `jak2-pad-seam-test`, `jak2-handler-seam-test`, `jak2-pc-rand-test`,
+still report through the machine stubs. Jak 2 graphics DMA remains on that diagnostic stub until a
+host explicitly calls `goal_gfx_dma_install`; `--play-dma` does so, validates, measures, and drops
+completed chains. Plain `--play` retains its title-only behavior, while the Jak 1 boot and gameplay
+probes retain their existing DMA measurement and capture behavior. `jak2-pad-seam-test`,
+`jak2-handler-seam-test`, `jak2-pc-rand-test`,
 `jak2-lightweight-machine-test`, `jak2-dma-boundary-test`, and `jak2-sound-rpc-test` cover those
 seams, while
 `jak2-dgo-rpc-test` covers the exact 32-byte DGO protocol, composed-router delegation and rejection
@@ -756,17 +759,19 @@ with no case now fails to compile rather than returning garbage.
   provider exists. The loader
   half of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the
   pad in `pad.cpp`. `install-handler` retains the vblank and VIF1 GOAL function references but no
-  portable frame path dispatches them yet. `dma_capture.cpp` validates and measures completed
-  graphics-DMA chains before dropping them; everything else - `file-stream-open`,
-  `reset-graph` - is a diagnostic and not an implementation. A frame runs with display functions
-  returning 0 and DMA chains measured but not rendered, so what it computes is real and what it
-  would have shown is not.
+  portable frame path dispatches them yet. When explicitly installed, `dma_capture.cpp` validates
+  and measures completed graphics-DMA chains before dropping them; everything else -
+  `file-stream-open`, `reset-graph` - is a diagnostic and not an implementation. Such a frame runs
+  with display functions returning 0 and DMA chains measured but not rendered, so what it computes
+  is real and what it would have shown is not.
 - **Without a host renderer, a frame is simulation only.** When no host installs itself through
   `gfx_host.h` (see **The renderer** above), `reset-graph`, `syncv`, `sync-path`,
   `put-display-env`, `dma-sync`, `__pc-texture-upload-now`, `__pc-texture-relocate`
-  and `__pc-set-levels` all report and return 0, and `__send-gfx-dma-chain` goes to
-  `dma_capture.cpp`, which measures the chain and drops it. That is what the boot and gameplay
-  tests run as, and it is why they measure what a frame *computes* rather than what it shows.
+  and `__pc-set-levels` all report and return 0. Jak 2's `__send-gfx-dma-chain` also remains a
+  diagnostic stub unless a host calls `goal_gfx_dma_install`; `--play-dma` is the boot mode that
+  performs that installation. Jak 1's existing boot and gameplay probes continue to route the seam
+  to `dma_capture.cpp`, which measures the chain and drops it. Those measurement modes establish
+  what a frame *computes*, not what it shows.
 - **File access is data-directory-relative only.** `ee::sceOpen` and friends are real POSIX file
   descriptors, but every name is resolved under the configured data directory
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file

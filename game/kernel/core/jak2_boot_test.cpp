@@ -190,18 +190,47 @@ void record_packages_in_game_cgo() {
   }
 }
 
-bool find_valid_jak2_dma_frame(int first_frame,
-                               int last_frame,
-                               goal_gfx_dma_frame_summary* out) {
-  for (int frame = first_frame; frame <= last_frame; frame++) {
+struct Jak2DmaWindow {
+  int chains = 0;
+  int well_formed = 0;
+  int malformed = 0;
+  bool accounting_complete = false;
+  bool found_valid = false;
+  goal_gfx_dma_frame_summary valid = {};
+};
+
+Jak2DmaWindow audit_jak2_dma_window(const goal_gfx_dma_stats& before,
+                                    const goal_gfx_dma_stats& after) {
+  Jak2DmaWindow out;
+  out.chains = after.chains - before.chains;
+  out.well_formed = after.well_formed_chains - before.well_formed_chains;
+  out.malformed = after.malformed_chains - before.malformed_chains;
+  if (out.chains < 0 || out.well_formed < 0 || out.malformed < 0 ||
+      out.chains != out.well_formed + out.malformed) {
+    return out;
+  }
+
+  int recorded_well_formed = 0;
+  int recorded_malformed = 0;
+  for (int frame = before.chains + 1; frame <= after.chains; frame++) {
     goal_gfx_dma_frame_summary candidate = {};
-    if (goal_gfx_dma_get_frame(frame, &candidate) && candidate.well_formed &&
-        candidate.buckets == 327 && candidate.tags > 0 && candidate.copied_bytes > 0) {
-      *out = candidate;
-      return true;
+    if (!goal_gfx_dma_get_frame(frame, &candidate) || candidate.frame != frame) {
+      return out;
+    }
+    if (candidate.well_formed) {
+      recorded_well_formed++;
+      if (!out.found_valid && candidate.buckets == 327 && candidate.tags > 0 &&
+          candidate.copied_bytes > 0) {
+        out.valid = candidate;
+        out.found_valid = true;
+      }
+    } else {
+      recorded_malformed++;
     }
   }
-  return false;
+  out.accounting_complete = recorded_well_formed == out.well_formed &&
+                            recorded_malformed == out.malformed;
+  return out;
 }
 
 int run_boot(const std::string& data_dir,
@@ -317,8 +346,7 @@ int run_boot(const std::string& data_dir,
 
     goal_dgo_rpc_stats rpc = {};
     goal_gfx_dma_stats dma = {};
-    goal_gfx_dma_frame_summary valid_dma = {};
-    bool found_valid_dma = false;
+    Jak2DmaWindow dma_window = {};
     int frames_run = 0;
     while (frames_run < dispatch_frames) {
       call_goal_on_stack(Ptr<Function>(dispatcher), goal_kernel_stack_top(), s7.offset,
@@ -331,9 +359,13 @@ int run_boot(const std::string& data_dir,
                                rpc.linked_code_objects + rpc.linked_data_objects >= 1;
       if (run_play_dma) {
         goal_gfx_dma_get_stats(&dma);
-        found_valid_dma = find_valid_jak2_dma_frame(dma_before.chains + 1, dma.chains, &valid_dma);
+        dma_window = audit_jak2_dma_window(dma_before, dma);
       }
-      if (title_ready && (!run_play_dma || found_valid_dma)) {
+      if (run_play_dma && dma_window.malformed > 0) {
+        break;
+      }
+      if (title_ready &&
+          (!run_play_dma || (dma_window.accounting_complete && dma_window.found_valid))) {
         break;
       }
     }
@@ -345,6 +377,23 @@ int run_boot(const std::string& data_dir,
         rpc.first_dgo_name[0] ? rpc.first_dgo_name : "<none>", rpc.dgo_archives,
         rpc.dgo_objects, rpc.linked_code_objects, rpc.linked_data_objects);
     report_heap("after play-boot frontier");
+
+    if (run_play_dma) {
+      goal_gfx_dma_get_stats(&dma);
+      dma_window = audit_jak2_dma_window(dma_before, dma);
+      say("  graphics DMA after play-boot: %d chain(s), %d well formed, %d malformed; measured "
+          "and dropped\n",
+          dma_window.chains, dma_window.well_formed, dma_window.malformed);
+      if (!dma_window.accounting_complete) {
+        say("FAILED: --play-dma chain totals and per-frame records do not agree\n");
+        return 1;
+      }
+      if (dma_window.malformed != 0) {
+        say("FAILED: --play-dma observed %d malformed graphics-DMA chain(s) after its baseline\n",
+            dma_window.malformed);
+        return 1;
+      }
+    }
 
     if (std::strcmp(rpc.first_dgo_name, "TITLE.DGO") != 0 || rpc.dgo_archives < 1 ||
         rpc.dgo_objects < 1 || rpc.linked_code_objects + rpc.linked_data_objects < 1 ||
@@ -360,20 +409,14 @@ int run_boot(const std::string& data_dir,
       return 0;
     }
 
-    goal_gfx_dma_get_stats(&dma);
-    found_valid_dma = find_valid_jak2_dma_frame(dma_before.chains + 1, dma.chains, &valid_dma);
-    say("  graphics DMA after play-boot: %d chain(s), %d well formed, %d malformed; measured and "
-        "dropped\n",
-        dma.chains - dma_before.chains,
-        dma.well_formed_chains - dma_before.well_formed_chains,
-        dma.malformed_chains - dma_before.malformed_chains);
-    if (!found_valid_dma) {
+    if (!dma_window.found_valid) {
       say("FAILED: --play-dma did not observe a valid 327-bucket graphics-DMA chain\n");
       return 1;
     }
     say("  proved: graphics DMA frame %d completed 327 buckets (%d tags, %u payload bytes, "
         "%u copied bytes)\n",
-        valid_dma.frame, valid_dma.tags, valid_dma.payload_bytes, valid_dma.copied_bytes);
+        dma_window.valid.frame, dma_window.valid.tags, dma_window.valid.payload_bytes,
+        dma_window.valid.copied_bytes);
     say("STOPPED: --play-dma measured and dropped the chain; this host probe has no renderer or "
         "app loop, and does not claim drawn output.\n");
     return 0;
