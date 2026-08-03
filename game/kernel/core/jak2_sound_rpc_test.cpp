@@ -285,7 +285,9 @@ std::vector<u8> version_2_tone_bank() {
   return wrap_sfx_bank(bank, std::vector<u8>{0, 0});
 }
 
-std::vector<u8> playable_named_sfx_bank() {
+std::vector<u8> playable_named_sfx_bank(
+    const char* sound_name = "TEST_TONE",
+    const std::array<u32, 4>& user_data = {}) {
   constexpr size_t kHeaderSize = 64;
   constexpr size_t kDescriptorSize = 12;
   constexpr size_t kGrainSize = 8;
@@ -298,17 +300,24 @@ std::vector<u8> playable_named_sfx_bank() {
   const size_t grain_data = first_grain + kGrainSize;
   const size_t block_names = grain_data + kToneSize;
   const size_t name_table = block_names + kNamesSize;
-  std::vector<u8> bank(name_table + 2 * kNameEntrySize, 0);
+  const bool has_user_data = std::any_of(user_data.begin(), user_data.end(), [](u32 value) {
+    return value != 0;
+  });
+  const size_t user_data_offset = name_table + 2 * kNameEntrySize;
+  std::vector<u8> bank(user_data_offset + (has_user_data ? 16 : 0), 0);
 
   write_value(&bank, 0, u32(0x6b6c4253));
   write_value(&bank, 4, u32(2));
-  write_value(&bank, 8, u32(0x100));  // names present
+  write_value(&bank, 8, u32(0x100 | (has_user_data ? 0x200 : 0)));  // names, optional userdata
   write_value(&bank, 22, s16(1));
   write_value(&bank, 24, s16(1));
   write_value(&bank, 28, static_cast<u32>(first_sound));
   write_value(&bank, 32, static_cast<u32>(first_grain));
   write_value(&bank, 52, static_cast<u32>(grain_data));
   write_value(&bank, 56, static_cast<u32>(block_names));
+  if (has_user_data) {
+    write_value(&bank, 60, static_cast<u32>(user_data_offset));
+  }
 
   write_value(&bank, first_sound + 0, s8(127));
   write_value(&bank, first_sound + 1, s8(0));
@@ -328,8 +337,13 @@ std::vector<u8> playable_named_sfx_bank() {
 
   memcpy(bank.data() + block_names, "PLAY", 4);
   write_value(&bank, block_names + 8, u32(kNamesSize));
-  memcpy(bank.data() + name_table, "TEST_TONE", 9);
+  memcpy(bank.data() + name_table, sound_name, std::min(strlen(sound_name), size_t(16)));
   write_value(&bank, name_table + 16, s16(0));
+  if (has_user_data) {
+    for (size_t index = 0; index < user_data.size(); index++) {
+      write_value(&bank, user_data_offset + index * sizeof(u32), user_data[index]);
+    }
+  }
 
   std::vector<u8> samples(kSampleSize, 0x77);
   samples[0] = 0;
@@ -527,7 +541,7 @@ int main() {
   auto bad_userdata_bank = valid_userdata_bank;
   write_value(&bad_userdata_bank, 24 + 56, u32(0xffffffff));
   auto valid_v2_bank = version_2_tone_bank();
-  auto playable_bank = playable_named_sfx_bank();
+  auto playable_bank = playable_named_sfx_bank("TEST_TONE", {5, 30, 0xff, 0});
   auto shared_reference_budget_bank = shared_reference_budget_sfx_bank();
   auto bad_v2_offset_bank = valid_v2_bank;
   write_value(&bad_v2_offset_bank, 24 + 64 + 12, u32(0x01ffffff));
@@ -542,7 +556,7 @@ int main() {
   check(bool(sblk_preflight::validate(valid_userdata_bank)), "bounded userdata fixture validates");
   check(bool(sblk_preflight::validate(valid_v2_bank)), "version-2 grain-data fixture validates");
   check(bool(sblk_preflight::validate(playable_bank)),
-        "named playable version-2 fixture validates");
+        "named playable fixture with hostile falloff userdata validates structurally");
   check(bool(sblk_preflight::validate(shared_reference_budget_bank)),
         "exact decoded-grain budget fixture validates");
   check(!sblk_preflight::validate(truncated_bank), "truncated outer attributes are rejected");
@@ -782,6 +796,28 @@ int main() {
   rpc_call(0, 0, 1, atomic.data.offset, atomic.size, 0, 0, 0);
   check(same_player_state(player_state(), state_before_rejection),
         "an unsupported MIDI register rejects the complete batch atomically");
+
+  set_player_master_volume(atomic, 0, 0x02, 777);
+  auto* unsafe_curve =
+      reset_player_command(atomic, 1, jak2::Jak2SoundCommand::play);
+  unsafe_curve->play.sound_id = 0x7004;
+  unsafe_curve->play.parms.mask = 0x100;
+  unsafe_curve->play.parms.fo_curve = -1;
+  set_player_fps(atomic, 2, 50);
+  rpc_call(0, 0, 1, atomic.data.offset, atomic.size, 0, 0, 0);
+  check(same_player_state(player_state(), state_before_rejection),
+        "an out-of-range explicit falloff curve rejects the complete batch");
+
+  set_player_master_volume(atomic, 0, 0x02, 888);
+  auto* unsafe_distance =
+      reset_player_command(atomic, 1, jak2::Jak2SoundCommand::play);
+  unsafe_distance->play.sound_id = 0x7005;
+  unsafe_distance->play.parms.mask = 0x40;
+  unsafe_distance->play.parms.fo_min = -1;
+  set_player_fps(atomic, 2, 50);
+  rpc_call(0, 0, 1, atomic.data.offset, atomic.size, 0, 0, 0);
+  check(same_player_state(player_state(), state_before_rejection),
+        "a negative explicit falloff distance rejects the complete batch");
   check_guards(atomic, "atomically rejected player batch canaries stay intact");
 
   std::printf("\n== strict player framing ==\n");
@@ -804,8 +840,8 @@ int main() {
   check_u32(stats.player_batches, 2, "rejected batches do not count as applied batches");
   check_u32(stats.player_commands, kStartupPlayerCommands + kOrderedPlayerCommands,
             "rejected batches do not count commands as applied");
-  check_u32(stats.player_failures, 14, "every semantic or framing rejection is counted");
-  const u32 player_rejected_calls = stats.rejected_calls;
+  check_u32(stats.player_failures, 16, "every semantic or framing rejection is counted");
+  u32 player_rejected_calls = stats.rejected_calls;
 
   const auto fixture_root =
       std::filesystem::temp_directory_path() / "goalpad-jak2-sound-rpc-test";
@@ -859,7 +895,6 @@ int main() {
             "the named tone bank load remains synchronous");
   check(LookupBank(bank_name("play").data()) != nullptr,
         "the named tone fixture decodes through 989snd");
-
   const std::array<const char*, 11> invalid_bank_names = {
       "trunc",    "overflow", "negcount", "sndcnt",  "grainoff", "badtype",
       "namehash", "nameterm", "userdata", "v2offset", "sampleof"};
@@ -889,17 +924,49 @@ int main() {
   check(invalid_banks_absent, "failed bank requests never enter loaded state");
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.bank_requests, 17, "every well-framed bank request is counted");
-  check_u32(stats.banks_loaded, 3, "only valid bank fixtures are loaded");
+  check_u32(stats.banks_loaded, 3, "only structurally valid bank fixtures are loaded");
   check_u32(stats.bank_reuses, 1, "a repeated request reuses the retained bank");
   check_u32(stats.bank_failures, 13, "every invalid, missing, or unsafe bank fails closed");
   check_guards(send, "no-reply command send canaries stay intact");
   check_guards(recv, "no-reply command receive canaries stay intact");
+
+  auto hostile_falloff = guarded_buffer(kCommandSize, "jak2-player-hostile-falloff");
+  set_player_play(hostile_falloff, 0, 0x7006, bank_name("test-tone"));
+  const auto hostile_falloff_bytes = snapshot(hostile_falloff);
+  rpc_call(0, 0, 1, hostile_falloff.data.offset, hostile_falloff.size, 0, 0, 0);
+  check(snapshot(hostile_falloff) == hostile_falloff_bytes,
+        "hostile checked userdata leaves the PLAY buffer untouched");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.play_requests, 0, "hostile checked userdata starts no PLAY request");
+  check_u32(stats.player_failures, 17, "hostile checked userdata rejects the player batch");
+  check_guards(hostile_falloff, "hostile checked-userdata command canaries stay intact");
+
+  auto duplicate_play = guarded_buffer(2 * kCommandSize, "jak2-player-duplicate-play");
+  set_player_play(duplicate_play, 0, 0x7007, bank_name("test-tone"));
+  auto* safe_first_play = duplicate_play.data.cast<jak2::SoundRpcCommand>().c();
+  safe_first_play->play.parms.mask = 0x1c0;
+  safe_first_play->play.parms.fo_min = 5;
+  safe_first_play->play.parms.fo_max = 30;
+  safe_first_play->play.parms.fo_curve = 2;
+  set_player_play(duplicate_play, 1, 0x7007, bank_name("not-there"));
+  const auto duplicate_play_bytes = snapshot(duplicate_play);
+  rpc_call(0, 0, 1, duplicate_play.data.offset, duplicate_play.size, 0, 0, 0);
+  check(snapshot(duplicate_play) == duplicate_play_bytes,
+        "duplicate-ID PLAY rejection leaves the complete batch untouched");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.play_requests, 0, "duplicate-ID rejection starts no earlier PLAY request");
+  check_u32(stats.player_failures, 18, "duplicate PLAY IDs reject the complete batch");
+  player_rejected_calls = stats.rejected_calls;
+  check_guards(duplicate_play, "duplicate-ID PLAY command canaries stay intact");
 
   std::printf("\n== named SFX PLAY, update and semantic miss ==\n");
   constexpr u32 kPlaybackCommands = 3;
   auto playback = guarded_buffer(kPlaybackCommands * kCommandSize, "jak2-player-playback");
   set_player_master_volume(playback, 0, 0x01, 900);
   set_player_play(playback, 1, 0x7002, bank_name("test-tone"));
+  auto* playback_command = (playback.data + kCommandSize).cast<jak2::SoundRpcCommand>().c();
+  playback_command->play.parms.mask = 0x100;
+  playback_command->play.parms.fo_curve = 2;
   set_player_ear(playback, 2, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, 0);
   const auto playback_bytes = snapshot(playback);
   check_u32((u32)rpc_call(0, 0, 1, playback.data.offset, playback.size, 0, 0, 0), 0,
@@ -912,6 +979,9 @@ int main() {
 
   auto same_id = guarded_buffer(kCommandSize, "jak2-player-same-id");
   set_player_play(same_id, 0, 0x7002, bank_name("not-there"), 800);
+  auto* same_id_command = same_id.data.cast<jak2::SoundRpcCommand>().c();
+  same_id_command->play.parms.mask = 0x100;
+  same_id_command->play.parms.fo_curve = 2;
   const auto same_id_bytes = snapshot(same_id);
   rpc_call(0, 0, 1, same_id.data.offset, same_id.size, 0, 0, 0);
   check(snapshot(same_id) == same_id_bytes, "same-ID update remains read-only");

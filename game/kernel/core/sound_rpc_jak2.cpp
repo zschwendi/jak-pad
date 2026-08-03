@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,7 @@ constexpr std::array<const char*, 8> kLanguages = {"ENG", "FRE", "GER", "SPA",
                                                     "ITA", "JAP", "KOR", "UKE"};
 constexpr size_t kBankStemSize = 8;
 constexpr size_t kMaxBankFileSize = 64 * 1024 * 1024;
+constexpr s32 kMaximumFalloffCurve = 15;
 
 static_assert(sizeof(snd::Grain) == 48,
               "Review the SBlk decoded-grain budget when the Grain layout changes");
@@ -220,18 +222,51 @@ std::array<char, 17> normalize_sound_name(const char source[16]) {
   return result;
 }
 
-void apply_falloff_defaults(SoundParams* params, const char* normalized_name) {
+bool falloff_parameters_are_safe(const SoundParams& params) {
+  return params.fo_min >= 0 && params.fo_max >= 0 && params.fo_curve >= 0 &&
+         params.fo_curve <= kMaximumFalloffCurve;
+}
+
+bool apply_falloff_defaults(SoundParams* params, const char* normalized_name) {
   SFXUserData data{};
   const bool found = snd_GetSoundUserData(0, nullptr, -1, const_cast<char*>(normalized_name), &data);
   if ((params->mask & 0x40) == 0) {
+    if (found && data.data[0] > static_cast<u32>(std::numeric_limits<s16>::max())) {
+      return false;
+    }
     params->fo_min = found && data.data[0] ? static_cast<s16>(data.data[0]) : 5;
   }
   if ((params->mask & 0x80) == 0) {
+    if (found && data.data[1] > static_cast<u32>(std::numeric_limits<s16>::max())) {
+      return false;
+    }
     params->fo_max = found && data.data[1] ? static_cast<s16>(data.data[1]) : 30;
   }
   if ((params->mask & 0x100) == 0) {
+    if (found && data.data[2] > static_cast<u32>(kMaximumFalloffCurve)) {
+      return false;
+    }
     params->fo_curve = found && data.data[2] ? static_cast<s8>(data.data[2]) : 2;
   }
+  return falloff_parameters_are_safe(*params);
+}
+
+bool play_falloff_parameters_are_safe(const SoundRpcPlayCommand& command,
+                                      const char* normalized_name) {
+  if (!command.sound_id) {
+    return true;
+  }
+  SoundParams params = command.parms;
+  return apply_falloff_defaults(&params, normalized_name);
+}
+
+const Sound* retained_sound_without_update(u32 sound_id) {
+  for (const auto& sound : gSounds) {
+    if (static_cast<u32>(sound.id) == sound_id) {
+      return &sound;
+    }
+  }
+  return nullptr;
 }
 
 void apply_sound_registers(const Sound& sound) {
@@ -292,10 +327,13 @@ void play_sound(const SoundRpcPlayCommand& command) {
   }
 
   if (Sound* sound = LookupSound(command.sound_id)) {
-    sound->params = command.parms;
-    sound->is_music = 0;
+    SoundParams params = command.parms;
     const auto existing_name = normalize_sound_name(sound->name);
-    apply_falloff_defaults(&sound->params, existing_name.data());
+    if (!apply_falloff_defaults(&params, existing_name.data())) {
+      return;
+    }
+    sound->params = params;
+    sound->is_music = 0;
     UpdateVolume(sound);
     snd_SetSoundPitchModifier(sound->sound_handle, sound->params.pitch_mod);
     if (sound->params.mask & 0x4) {
@@ -312,6 +350,10 @@ void play_sound(const SoundRpcPlayCommand& command) {
     g_stats.sounds_missing++;
     return;
   }
+  SoundParams params = command.parms;
+  if (!apply_falloff_defaults(&params, name.data())) {
+    return;
+  }
 
   Sound* sound = AllocateSound(true);
   if (!sound) {
@@ -322,10 +364,9 @@ void play_sound(const SoundRpcPlayCommand& command) {
   *sound = {};
   sound->add_index = add_index;
   memcpy(sound->name, name.data(), sizeof(sound->name));
-  sound->params = command.parms;
+  sound->params = params;
   sound->is_music = 0;
   sound->bank_entry = nullptr;
-  apply_falloff_defaults(&sound->params, name.data());
   sound->sound_handle = snd_PlaySoundByNameVolPanPMPB(
       0, nullptr, const_cast<char*>(name.data()), GetVolume(sound), GetPan(sound),
       sound->params.pitch_mod, sound->params.bend);
@@ -580,11 +621,37 @@ u64 player_rpc(u32 function,
   }
   memcpy(commands.data(), Ptr<u8>(send_buffer).c(), static_cast<size_t>(send_size));
 
-  // Preflight the complete snapshot before changing any state or starting a voice. Any unsupported
-  // command rejects the whole batch instead of applying the supported entries before it.
+  // Preflight the complete snapshot before changing any state or starting a voice. Duplicate PLAY
+  // IDs are rejected because the later command's default source would depend on the earlier PLAY.
+  std::array<u32, kMaxPlayerCommands> play_ids = {};
+  std::size_t play_id_count = 0;
   for (const auto& command : commands) {
     switch (command.j2command) {
-      case jak2::Jak2SoundCommand::play:
+      case jak2::Jak2SoundCommand::play: {
+        if (!command.play.sound_id) {
+          break;
+        }
+        const auto command_name = normalize_sound_name(command.play.name);
+        if (std::find(play_ids.begin(), play_ids.begin() + play_id_count,
+                      command.play.sound_id) != play_ids.begin() + play_id_count) {
+          return reject_player("rpc-call (Jak 2 player, duplicate PLAY sound ID)");
+        }
+        play_ids[play_id_count++] = command.play.sound_id;
+        if (const Sound* sound = retained_sound_without_update(command.play.sound_id)) {
+          const auto existing_name = normalize_sound_name(sound->name);
+          // LookupSound may clear a voice that finishes between preflight and apply, so validate
+          // both the retained-name update and the command-name new-sound paths without mutating it.
+          if (!play_falloff_parameters_are_safe(command.play, existing_name.data()) ||
+              !play_falloff_parameters_are_safe(command.play, command_name.data())) {
+            return reject_player("rpc-call (Jak 2 player, unsafe PLAY falloff parameters)");
+          }
+          break;
+        }
+        if (!play_falloff_parameters_are_safe(command.play, command_name.data())) {
+          return reject_player("rpc-call (Jak 2 player, unsafe PLAY falloff parameters)");
+        }
+        break;
+      }
       case jak2::Jak2SoundCommand::set_master_volume:
       case jak2::Jak2SoundCommand::set_reverb:
       case jak2::Jak2SoundCommand::set_ear_trans:
