@@ -22,6 +22,9 @@ constexpr std::size_t kPluginSize = 32;
 constexpr std::size_t kNamesHeaderSize = 0x98;
 constexpr std::size_t kNameRecordSize = 0x14;
 constexpr std::size_t kUserDataSize = 0x10;
+// The file format has a signed 16-bit global grain count. Allow shared ranges while keeping the
+// decoder's per-sound Grain vectors within the same format-derived aggregate budget.
+constexpr std::size_t kMaxDecodedGrainReferences = 32'767;
 
 constexpr std::uint8_t kTone = 1;
 constexpr std::uint8_t kStartChildSound = 5;
@@ -246,6 +249,7 @@ Result validate(std::span<const std::uint8_t> file) noexcept {
     return failure(Error::grain_table, bank, samples);
   }
 
+  std::size_t decoded_grain_references = 0;
   for (std::size_t sound = 0; sound < std::size_t(sound_count); sound++) {
     const std::size_t sound_record = first_sound + sound * kSoundRecordSize;
     std::int8_t sound_grain_count = -1;
@@ -253,6 +257,11 @@ Result validate(std::span<const std::uint8_t> file) noexcept {
     if (!read(bank_data, sound_record + 4, &sound_grain_count) ||
         !read(bank_data, sound_record + 8, &first_sound_grain_field) || sound_grain_count < 0) {
       return failure(Error::negative_count, bank, samples);
+    }
+    if (!add(decoded_grain_references, std::size_t(sound_grain_count),
+             &decoded_grain_references) ||
+        decoded_grain_references > kMaxDecodedGrainReferences) {
+      return failure(Error::allocation_budget, bank, samples);
     }
     if (!sound_grain_count) {
       continue;
@@ -367,6 +376,8 @@ const char* error_name(Error error) noexcept {
       return "sound-table";
     case Error::grain_table:
       return "grain-table";
+    case Error::allocation_budget:
+      return "allocation-budget";
     case Error::grain_type:
       return "grain-type";
     case Error::grain_data:

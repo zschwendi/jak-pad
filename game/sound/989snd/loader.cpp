@@ -193,8 +193,7 @@ static Grain ReadGrainV2(BinaryReader& data, BinaryReader grainData, u8* samples
 
 SFXBlock* SFXBlock::ReadBlock(std::span<u8> bank_data, std::span<u8> samples) {
   BinaryReader data(bank_data);
-  // auto block = std::make_unique<SFXBlock>();
-  auto block = new SFXBlock();
+  auto block = std::make_unique<SFXBlock>();
   block->DataID = data.read<u32>();
   if (block->DataID != fourcc("SBlk")) {
     return nullptr;
@@ -310,7 +309,7 @@ SFXBlock* SFXBlock::ReadBlock(std::span<u8> bank_data, std::span<u8> samples) {
     }
   }
 
-  return block;
+  return block.release();
 }
 
 MusicBank* MusicBank::ReadBank(std::span<u8> bank_data,

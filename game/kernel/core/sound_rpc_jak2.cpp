@@ -32,6 +32,7 @@
 #include "game/overlord/jak2/srpc.h"
 #include "game/runtime.h"
 #include "game/sce/sif_ee.h"
+#include "game/sound/989snd/sfxgrain.h"
 #include "game/sound/sndshim.h"
 
 // Defined beside the machine stubs in desktop_seams.cpp.
@@ -49,6 +50,9 @@ constexpr u32 kIrxMajor = 4;
 constexpr u32 kIrxMinor = 0;
 constexpr size_t kBankStemSize = 8;
 constexpr size_t kMaxBankFileSize = 64 * 1024 * 1024;
+
+static_assert(sizeof(snd::Grain) == 48,
+              "Review the SBlk decoded-grain budget when the Grain layout changes");
 
 static_assert(sizeof(jak2::SoundRpcCommand) == kCommandSize);
 static_assert(offsetof(jak2::SoundRpcCommand, j2command) == 2);

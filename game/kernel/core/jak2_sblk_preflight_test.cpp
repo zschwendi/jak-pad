@@ -131,6 +131,33 @@ std::vector<std::uint8_t> v2_bank(std::uint8_t grain_type = 1,
   return bank;
 }
 
+std::vector<std::uint8_t> shared_grain_budget_bank(std::int8_t final_grain_count) {
+  constexpr std::size_t sound_count = 259;
+  constexpr std::size_t grain_count = 127;
+  constexpr std::size_t first_sound = kV2HeaderSize;
+  constexpr std::size_t first_grain = first_sound + sound_count * kSoundSize;
+  constexpr std::size_t grain_data = first_grain + grain_count * kV2GrainSize;
+  std::vector<std::uint8_t> bank(grain_data);
+  put(bank, 0, kSblk);
+  put<std::uint32_t>(bank, 4, 2);
+  put<std::int16_t>(bank, 22, static_cast<std::int16_t>(sound_count));
+  put<std::int16_t>(bank, 24, static_cast<std::int16_t>(grain_count));
+  put<std::int16_t>(bank, 26, 0);
+  put<std::uint32_t>(bank, 28, static_cast<std::uint32_t>(first_sound));
+  put<std::uint32_t>(bank, 32, static_cast<std::uint32_t>(first_grain));
+  put<std::uint32_t>(bank, 52, static_cast<std::uint32_t>(grain_data));
+  for (std::size_t sound = 0; sound < sound_count; sound++) {
+    const std::int8_t references =
+        sound + 1 == sound_count ? final_grain_count : static_cast<std::int8_t>(grain_count);
+    put<std::int8_t>(bank, first_sound + sound * kSoundSize + 4, references);
+    put<std::uint32_t>(bank, first_sound + sound * kSoundSize + 8, 0);
+  }
+  for (std::size_t grain = 0; grain < grain_count; grain++) {
+    put<std::uint32_t>(bank, first_grain + grain * kV2GrainSize, std::uint32_t(24) << 24);
+  }
+  return bank;
+}
+
 Error result(const Fixture& fixture) {
   return sblk_preflight::validate(fixture.file).error;
 }
@@ -234,6 +261,10 @@ void count_and_table_cases() {
   put<std::uint32_t>(shared_grain_bank, shared_first_grain, std::uint32_t(24) << 24);
   expect_valid(wrap(std::move(shared_grain_bank)),
                "two sounds may share one declared grain range");
+  expect_valid(wrap(shared_grain_budget_bank(1)),
+               "the format-derived decoded-grain budget is accepted exactly");
+  expect(Error::allocation_budget, wrap(shared_grain_budget_bank(2)),
+         "shared ranges cannot amplify decoded grain storage past the budget");
 }
 
 void grain_cases() {

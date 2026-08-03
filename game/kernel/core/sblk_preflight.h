@@ -16,6 +16,7 @@ enum class Error : std::uint8_t {
   negative_count,
   sound_table,
   grain_table,
+  allocation_budget,
   grain_type,
   grain_data,
   sample_data,
@@ -38,9 +39,9 @@ struct Result {
 };
 
 // Validates every range and count consumed by SFXBlock::ReadBlock, plus the immediate sound and
-// sample references that the loader forms. It does not validate the lifetime of an ADPCM stream or
-// every semantic parameter used later during playback because the current Tone model stores no
-// sample length, and it does not impose a separate memory quota on overlapping sound records.
+// sample references that the loader forms. It also bounds the total decoded grain references,
+// including shared ranges. It does not validate the lifetime of an ADPCM stream or every semantic
+// parameter used later during playback because the current Tone model stores no sample length.
 Result validate(std::span<const std::uint8_t> file) noexcept;
 const char* error_name(Error error) noexcept;
 
