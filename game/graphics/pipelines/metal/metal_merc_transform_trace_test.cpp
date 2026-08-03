@@ -223,6 +223,38 @@ int main() {
             camera_return.camera_older_to_previous_distance > 0.1,
         "camera and output A/B/A with a stable root is attributed to the camera input");
 
+  metal_merc_transform_trace::Tracker mixed_provenance;
+  mixed_provenance.observe(350, 3, 0xe1c4a2, 1, 1.0, 1.0, 1.0, 0x2000,
+                           provenance(0.0, 0.0, 0.0, 350));
+  mixed_provenance.observe(351, 3, 0xe1c4a2, 2, 3.0, 3.0, 3.0, 0x2000,
+                           provenance(90.0, 0.0, 90.0, 351));
+  const auto mixed_return =
+      mixed_provenance.observe(352, 3, 0xe1c4a2, 3, 1.0, 1.0, 1.0, 0x2000,
+                               provenance(0.0, 0.0, 0.0, 352));
+  check(mixed_return.issue_mask == (metal_merc_transform_trace::SCALE_DISCONTINUITY |
+                                    metal_merc_transform_trace::INPUT_ROOT_ALTERNATION),
+        "a mixed scale and 0x04 provenance event retains both issue classes");
+
+  int retained_provenance_count = 0;
+  metal_merc_transform_trace::Event first_retained_provenance;
+  metal_merc_transform_trace::Event last_retained_provenance;
+  const bool retained_scale = metal_merc_transform_trace::retain_provenance_event(
+      scaled, &retained_provenance_count, &first_retained_provenance,
+      &last_retained_provenance);
+  const bool retained_input = metal_merc_transform_trace::retain_provenance_event(
+      input_return, &retained_provenance_count, &first_retained_provenance,
+      &last_retained_provenance);
+  const bool retained_mixed = metal_merc_transform_trace::retain_provenance_event(
+      mixed_return, &retained_provenance_count, &first_retained_provenance,
+      &last_retained_provenance);
+  check(!retained_scale && retained_input && retained_mixed && retained_provenance_count == 2 &&
+            first_retained_provenance.issue_mask ==
+                metal_merc_transform_trace::INPUT_ROOT_ALTERNATION &&
+            last_retained_provenance.issue_mask ==
+                (metal_merc_transform_trace::SCALE_DISCONTINUITY |
+                 metal_merc_transform_trace::INPUT_ROOT_ALTERNATION),
+        "generic provenance retention excludes pure scale but keeps 0x04 and mixed events");
+
   metal_merc_transform_trace::Tracker stale_output;
   observe_provenance(stale_output, 400, 0.0, 0.0, 0.0);
   const auto stale = observe_provenance(stale_output, 401, 90.0, 0.0, 0.0);

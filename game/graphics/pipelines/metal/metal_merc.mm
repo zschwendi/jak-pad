@@ -326,6 +326,7 @@ void MetalMerc2::Stats::add(const Stats& o) {
   models_with_palette_health_issues += o.models_with_palette_health_issues;
   eichar_palette_health_issues += o.eichar_palette_health_issues;
   eichar_transform_discontinuities += o.eichar_transform_discontinuities;
+  eichar_provenance_events += o.eichar_provenance_events;
   eichar_output_composition_mismatches += o.eichar_output_composition_mismatches;
   if (!first_palette_health_event.valid() && o.first_palette_health_event.valid()) {
     first_palette_health_event = o.first_palette_health_event;
@@ -345,6 +346,12 @@ void MetalMerc2::Stats::add(const Stats& o) {
   }
   if (o.last_eichar_transform_discontinuity.valid()) {
     last_eichar_transform_discontinuity = o.last_eichar_transform_discontinuity;
+  }
+  if (!first_eichar_provenance_event.valid() && o.first_eichar_provenance_event.valid()) {
+    first_eichar_provenance_event = o.first_eichar_provenance_event;
+  }
+  if (o.last_eichar_provenance_event.valid()) {
+    last_eichar_provenance_event = o.last_eichar_provenance_event;
   }
   if (!first_eichar_output_composition_mismatch.valid() &&
       o.first_eichar_output_composition_mismatch.valid()) {
@@ -1027,6 +1034,9 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
             stats->first_eichar_transform_discontinuity = discontinuity;
           }
           stats->last_eichar_transform_discontinuity = discontinuity;
+          metal_merc_transform_trace::retain_provenance_event(
+              discontinuity, &stats->eichar_provenance_events,
+              &stats->first_eichar_provenance_event, &stats->last_eichar_provenance_event);
           if (discontinuity.issue_mask & metal_merc_transform_trace::OUTPUT_COMPOSITION_MISMATCH) {
             stats->eichar_output_composition_mismatches++;
             if (!stats->first_eichar_output_composition_mismatch.valid()) {

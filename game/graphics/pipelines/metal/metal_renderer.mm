@@ -999,6 +999,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.merc_eichar_palette_health_issues = merc_stats.eichar_palette_health_issues;
     m_chain_stats.merc_eichar_transform_discontinuities =
         merc_stats.eichar_transform_discontinuities;
+    m_chain_stats.merc_eichar_provenance_events = merc_stats.eichar_provenance_events;
     m_chain_stats.merc_eichar_output_composition_mismatches =
         merc_stats.eichar_output_composition_mismatches;
     if (!m_chain_stats.first_merc_palette_health_event.valid() &&
@@ -1025,6 +1026,14 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     if (merc_stats.last_eichar_transform_discontinuity.valid()) {
       m_chain_stats.last_merc_eichar_transform_discontinuity =
           merc_stats.last_eichar_transform_discontinuity;
+    }
+    if (!m_chain_stats.first_merc_eichar_provenance_event.valid() &&
+        merc_stats.first_eichar_provenance_event.valid()) {
+      m_chain_stats.first_merc_eichar_provenance_event =
+          merc_stats.first_eichar_provenance_event;
+    }
+    if (merc_stats.last_eichar_provenance_event.valid()) {
+      m_chain_stats.last_merc_eichar_provenance_event = merc_stats.last_eichar_provenance_event;
     }
     if (!m_chain_stats.first_merc_eichar_output_composition_mismatch.valid() &&
         merc_stats.first_eichar_output_composition_mismatch.valid()) {

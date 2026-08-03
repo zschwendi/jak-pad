@@ -60,6 +60,7 @@ class MetalMerc2 {
     int models_with_palette_health_issues = 0;
     int eichar_palette_health_issues = 0;
     int eichar_transform_discontinuities = 0;
+    int eichar_provenance_events = 0;
     int eichar_output_composition_mismatches = 0;
     metal_renderer::MercPaletteHealthEvent first_palette_health_event;
     metal_renderer::MercPaletteHealthEvent last_palette_health_event;
@@ -67,6 +68,8 @@ class MetalMerc2 {
     metal_renderer::MercPaletteHealthEvent last_eichar_palette_health_event;
     metal_merc_transform_trace::Event first_eichar_transform_discontinuity;
     metal_merc_transform_trace::Event last_eichar_transform_discontinuity;
+    metal_merc_transform_trace::Event first_eichar_provenance_event;
+    metal_merc_transform_trace::Event last_eichar_provenance_event;
     metal_merc_transform_trace::Event first_eichar_output_composition_mismatch;
     metal_merc_transform_trace::Event last_eichar_output_composition_mismatch;
 

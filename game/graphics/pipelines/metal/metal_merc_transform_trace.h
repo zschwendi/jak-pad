@@ -180,6 +180,29 @@ struct Event {
   bool valid() const { return issue_mask != 0; }
 };
 
+constexpr u8 kProvenanceIssueMask = INPUT_ROOT_ALTERNATION | OUTPUT_ONLY_ALTERNATION |
+                                    CAMERA_DRIVEN_ALTERNATION | OUTPUT_STALE |
+                                    SOURCE_MAPPING_DISCONTINUITY | OUTPUT_COMPOSITION_MISMATCH;
+
+inline bool retain_provenance_event(const Event& event,
+                                    int* count,
+                                    Event* first,
+                                    Event* last) {
+  if (!(event.issue_mask & kProvenanceIssueMask)) {
+    return false;
+  }
+  if (count) {
+    (*count)++;
+  }
+  if (first && !first->valid()) {
+    *first = event;
+  }
+  if (last) {
+    *last = event;
+  }
+  return true;
+}
+
 // Jak's bone transforms may rotate every frame, but a rigid transform preserves the lengths and
 // aspect ratio of its basis vectors. Scale/aspect reports remain adjacent-frame checks. Optional
 // producer provenance retains exactly two older samples so rigid A/B/A facing changes can be
