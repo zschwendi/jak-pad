@@ -32,6 +32,10 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
   if (!calculation) {
     return out;
   }
+  const auto& target = calculation->target_control;
+  auto& control = out.target_control;
+  control.capture_stage = target.capture_stage;
+  control.capture_result = target.capture_result;
   out.mapping_checked = true;
   if (calculation->output_base != source_base || !calculation->camera.valid) {
     return out;
@@ -75,12 +79,11 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
   out.input_translation_x = root_matrix[12];
   out.input_translation_y = root_matrix[13];
   out.input_translation_z = root_matrix[14];
-  const auto& target = calculation->target_control;
   if (target.valid) {
-    auto& control = out.target_control;
     control.valid = true;
     control.producer_serial = calculation->serial;
     control.source_base = calculation->output_base;
+    control.camera_hash = out.camera_hash;
     control.target_state_id = target.target_state_id;
     control.target_attack_id = target.target_attack_id;
     control.button0_abs = target.button0_abs;
@@ -90,6 +93,10 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
     control.stick_direction = target.stick_direction;
     control.stick_speed = target.stick_speed;
     control.pad_magnitude = target.pad_magnitude;
+    control.raw_dir_targ = target.raw_dir_targ;
+    control.raw_quat_for_control = target.raw_quat_for_control;
+    control.raw_render_quat = target.raw_render_quat;
+    control.raw_turn_to_target = target.raw_turn_to_target;
     control.intent_forward = {target.intent_forward.valid, target.intent_forward.x,
                               target.intent_forward.z};
     control.desired_forward = {target.desired_forward.valid, target.desired_forward.x,
@@ -100,9 +107,22 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
                               target.render_forward.z};
     control.root_forward = metal_merc_transform_trace::make_facing_snapshot(
         out.input_root_basis.components[6], out.input_root_basis.components[8]);
+    control.camera_basis = out.camera_basis;
+    control.input_root_deformation =
+        metal_merc_transform_trace::make_deformation_snapshot(root_matrix.data());
+    control.output_deformation =
+        metal_merc_transform_trace::make_deformation_snapshot(output_matrix);
+    control.input_root_translation_x = out.input_translation_x;
+    control.input_root_translation_y = out.input_translation_y;
+    control.input_root_translation_z = out.input_translation_z;
     control.valid = control.intent_forward.valid && control.desired_forward.valid &&
                     control.control_forward.valid && control.render_forward.valid &&
-                    control.root_forward.valid;
+                    control.root_forward.valid && control.camera_basis.valid &&
+                    control.input_root_deformation.valid && control.output_deformation.valid;
+    if (!control.valid) {
+      control.capture_stage = jak1_target_control_capture::Stage::DEFORMATION;
+      control.capture_result = jak1_target_control_capture::Result::INVALID_DEFORMATION;
+    }
   }
   out.mapping_valid =
       out.input_root_basis.valid && out.camera_basis.valid && out.output_basis.valid;
@@ -360,6 +380,15 @@ void MetalMerc2::Stats::add(const Stats& o) {
   eichar_target_control_events += o.eichar_target_control_events;
   eichar_target_control_divergences += o.eichar_target_control_divergences;
   eichar_target_control_attack_boundaries += o.eichar_target_control_attack_boundaries;
+  eichar_target_control_capture_attempts += o.eichar_target_control_capture_attempts;
+  eichar_target_control_valid_observations += o.eichar_target_control_valid_observations;
+  if (o.eichar_target_control_capture_attempts > 0) {
+    last_eichar_target_control_capture_stage = o.last_eichar_target_control_capture_stage;
+    last_eichar_target_control_capture_result = o.last_eichar_target_control_capture_result;
+  }
+  if (o.eichar_target_control_valid_observations > 0) {
+    last_eichar_target_control_observation = o.last_eichar_target_control_observation;
+  }
   if (!first_palette_health_event.valid() && o.first_palette_health_event.valid()) {
     first_palette_health_event = o.first_palette_health_event;
   }
@@ -1062,8 +1091,20 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
           provenance =
               make_bones_provenance_observation(source_address, source_base, provenance_probe_slot,
                                                 reinterpret_cast<const float*>(&matrix));
-          const auto target_control = m_eichar_target_control_tracker.observe(
+          const auto target_control_trace = m_eichar_target_control_tracker.observe_with_status(
               render_state->engine_frame_id, slot, provenance.target_control);
+          if (target_control_trace.capture_attempted) {
+            stats->eichar_target_control_capture_attempts++;
+            stats->last_eichar_target_control_capture_stage =
+                target_control_trace.capture_stage;
+            stats->last_eichar_target_control_capture_result =
+                target_control_trace.capture_result;
+          }
+          if (target_control_trace.valid_observation) {
+            stats->eichar_target_control_valid_observations++;
+            stats->last_eichar_target_control_observation = target_control_trace.observation;
+          }
+          const auto& target_control = target_control_trace.event;
           if (target_control.valid()) {
             stats->eichar_target_control_events++;
             if (target_control.issue_mask &

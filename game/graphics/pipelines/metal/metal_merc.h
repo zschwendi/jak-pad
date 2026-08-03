@@ -65,6 +65,14 @@ class MetalMerc2 {
     int eichar_target_control_events = 0;
     int eichar_target_control_divergences = 0;
     int eichar_target_control_attack_boundaries = 0;
+    int eichar_target_control_capture_attempts = 0;
+    int eichar_target_control_valid_observations = 0;
+    jak1_target_control_capture::Stage last_eichar_target_control_capture_stage =
+        jak1_target_control_capture::Stage::NOT_ATTEMPTED;
+    jak1_target_control_capture::Result last_eichar_target_control_capture_result =
+        jak1_target_control_capture::Result::NOT_ATTEMPTED;
+    metal_merc_transform_trace::TargetControlObservation
+        last_eichar_target_control_observation;
     metal_renderer::MercPaletteHealthEvent first_palette_health_event;
     metal_renderer::MercPaletteHealthEvent last_palette_health_event;
     metal_renderer::MercPaletteHealthEvent first_eichar_palette_health_event;

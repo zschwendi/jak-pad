@@ -9,6 +9,7 @@
 #include <optional>
 
 #include "common/common_types.h"
+#include "game/mips2c/jak1_target_control_capture.h"
 
 namespace jak1_bones_provenance_trace {
 
@@ -53,6 +54,10 @@ struct FacingSnapshot {
 
 struct TargetControlSnapshot {
   bool valid = false;
+  jak1_target_control_capture::Stage capture_stage =
+      jak1_target_control_capture::Stage::NOT_ATTEMPTED;
+  jak1_target_control_capture::Result capture_result =
+      jak1_target_control_capture::Result::NOT_ATTEMPTED;
   u32 target_address = 0;
   u32 control_address = 0;
   u32 target_state_id = 0;
@@ -64,6 +69,10 @@ struct TargetControlSnapshot {
   double stick_direction = 0.0;
   double stick_speed = 0.0;
   double pad_magnitude = 0.0;
+  std::array<float, 4> raw_dir_targ = {};
+  std::array<float, 4> raw_quat_for_control = {};
+  std::array<float, 4> raw_render_quat = {};
+  std::array<float, 4> raw_turn_to_target = {};
   FacingSnapshot intent_forward;
   FacingSnapshot desired_forward;
   FacingSnapshot control_forward;
@@ -187,8 +196,17 @@ class Registry {
                                                       const u8* ee_memory,
                                                       std::size_t ee_memory_size) {
     TargetControlSnapshot out;
-    if (!ee_memory || !context.target_address || !context.target_type ||
-        !context.control_info_type || !context.cpad_info_type) {
+    out.capture_stage = jak1_target_control_capture::Stage::CONTEXT;
+    if (!ee_memory) {
+      out.capture_result = jak1_target_control_capture::Result::MISSING_MEMORY;
+      return out;
+    }
+    if (!context.target_address) {
+      out.capture_result = jak1_target_control_capture::Result::MISSING_TARGET_ADDRESS;
+      return out;
+    }
+    if (!context.target_type || !context.control_info_type || !context.cpad_info_type) {
+      out.capture_result = jak1_target_control_capture::Result::MISSING_TYPE_ADDRESS;
       return out;
     }
 
@@ -196,28 +214,54 @@ class Registry {
     const u32 target_type = normalize_goal_pointer(context.target_type);
     const u32 control_type = normalize_goal_pointer(context.control_info_type);
     const u32 cpad_type = normalize_goal_pointer(context.cpad_info_type);
-    if (!target || !target_type || !control_type || !cpad_type ||
-        !object_has_exact_type(target, target_type, kTargetMinimumSize, ee_memory,
-                               ee_memory_size)) {
+    if (!target) {
+      out.capture_result = jak1_target_control_capture::Result::MISSING_TARGET_ADDRESS;
+      return out;
+    }
+    if (!target_type || !control_type || !cpad_type) {
+      out.capture_result = jak1_target_control_capture::Result::MISSING_TYPE_ADDRESS;
+      return out;
+    }
+    out.capture_stage = jak1_target_control_capture::Stage::TARGET;
+    out.capture_result = validate_exact_type(target, target_type, kTargetMinimumSize, ee_memory,
+                                             ee_memory_size);
+    if (out.capture_result != jak1_target_control_capture::Result::SUCCESS) {
       return out;
     }
 
+    out.capture_stage = jak1_target_control_capture::Stage::CONTROL_POINTER;
     u32 raw_control = 0;
     if (!read_value(ee_memory, ee_memory_size, target + kTargetRootOffset, &raw_control)) {
+      out.capture_result = jak1_target_control_capture::Result::POINTER_READ_FAILED;
       return out;
     }
     const u32 control = normalize_goal_pointer(raw_control);
-    if (!object_has_exact_type(control, control_type, kControlMinimumSize, ee_memory,
-                               ee_memory_size)) {
+    if (!control) {
+      out.capture_result = jak1_target_control_capture::Result::NULL_OBJECT_POINTER;
+      return out;
+    }
+    out.capture_stage = jak1_target_control_capture::Stage::CONTROL;
+    out.capture_result = validate_exact_type(control, control_type, kControlMinimumSize, ee_memory,
+                                             ee_memory_size);
+    if (out.capture_result != jak1_target_control_capture::Result::SUCCESS) {
       return out;
     }
 
+    out.capture_stage = jak1_target_control_capture::Stage::CPAD_POINTER;
     u32 raw_cpad = 0;
     if (!read_value(ee_memory, ee_memory_size, control + kControlCpadOffset, &raw_cpad)) {
+      out.capture_result = jak1_target_control_capture::Result::POINTER_READ_FAILED;
       return out;
     }
     const u32 cpad = normalize_goal_pointer(raw_cpad);
-    if (!object_has_exact_type(cpad, cpad_type, kCpadMinimumSize, ee_memory, ee_memory_size)) {
+    if (!cpad) {
+      out.capture_result = jak1_target_control_capture::Result::NULL_OBJECT_POINTER;
+      return out;
+    }
+    out.capture_stage = jak1_target_control_capture::Stage::CPAD;
+    out.capture_result =
+        validate_exact_type(cpad, cpad_type, kCpadMinimumSize, ee_memory, ee_memory_size);
+    if (out.capture_result != jak1_target_control_capture::Result::SUCCESS) {
       return out;
     }
 
@@ -228,6 +272,7 @@ class Registry {
     float stick_direction = 0.0f;
     float stick_speed = 0.0f;
     float pad_magnitude = 0.0f;
+    out.capture_stage = jak1_target_control_capture::Stage::FIELDS;
     if (!read_value(ee_memory, ee_memory_size, control + kControlDirTargOffset, &dir_targ) ||
         !read_value(ee_memory, ee_memory_size, control + kControlQuatForControlOffset,
                     &quat_for_control) ||
@@ -238,10 +283,14 @@ class Registry {
                     &stick_direction) ||
         !read_value(ee_memory, ee_memory_size, cpad + kCpadStickSpeedOffset, &stick_speed) ||
         !read_value(ee_memory, ee_memory_size, control + kControlPadMagnitudeOffset,
-                    &pad_magnitude) ||
-        !all_finite(dir_targ) || !all_finite(quat_for_control) || !all_finite(render_quat) ||
+                    &pad_magnitude)) {
+      out.capture_result = jak1_target_control_capture::Result::FIELD_READ_FAILED;
+      return out;
+    }
+    if (!all_finite(dir_targ) || !all_finite(quat_for_control) || !all_finite(render_quat) ||
         !all_finite(turn_to_target) || !std::isfinite(stick_direction) ||
         !std::isfinite(stick_speed) || !std::isfinite(pad_magnitude)) {
+      out.capture_result = jak1_target_control_capture::Result::NONFINITE_FIELD;
       return out;
     }
 
@@ -260,12 +309,23 @@ class Registry {
     out.stick_direction = stick_direction;
     out.stick_speed = stick_speed;
     out.pad_magnitude = pad_magnitude;
+    out.raw_dir_targ = dir_targ;
+    out.raw_quat_for_control = quat_for_control;
+    out.raw_render_quat = render_quat;
+    out.raw_turn_to_target = turn_to_target;
     out.intent_forward = normalize_xz(turn_to_target[0], turn_to_target[2]);
     out.desired_forward = quaternion_forward_xz(dir_targ);
     out.control_forward = quaternion_forward_xz(quat_for_control);
     out.render_forward = quaternion_forward_xz(render_quat);
     out.valid = out.intent_forward.valid && out.desired_forward.valid &&
                 out.control_forward.valid && out.render_forward.valid;
+    if (!out.valid) {
+      out.capture_stage = jak1_target_control_capture::Stage::FACING;
+      out.capture_result = jak1_target_control_capture::Result::INVALID_FACING;
+      return out;
+    }
+    out.capture_stage = jak1_target_control_capture::Stage::COMPLETE;
+    out.capture_result = jak1_target_control_capture::Result::SUCCESS;
     return out;
   }
 
@@ -281,21 +341,30 @@ class Registry {
     return true;
   }
 
-  static bool object_has_exact_type(u32 address,
-                                    u32 expected_type,
-                                    u16 minimum_size,
-                                    const u8* memory,
-                                    std::size_t memory_size) {
+  static jak1_target_control_capture::Result validate_exact_type(u32 address,
+                                                                 u32 expected_type,
+                                                                 u16 minimum_size,
+                                                                 const u8* memory,
+                                                                 std::size_t memory_size) {
     if (address < kGoalTypeTagBytes || !span_fits(address, minimum_size, memory_size)) {
-      return false;
+      return jak1_target_control_capture::Result::OBJECT_SPAN_INVALID;
     }
     u32 actual_type = 0;
     u16 allocated_size = 0;
-    return read_value(memory, memory_size, address - kGoalTypeTagBytes, &actual_type) &&
-           normalize_goal_pointer(actual_type) == expected_type &&
-           read_value(memory, memory_size, expected_type + kTypeAllocatedSizeOffset,
-                      &allocated_size) &&
-           allocated_size >= minimum_size;
+    if (!read_value(memory, memory_size, address - kGoalTypeTagBytes, &actual_type)) {
+      return jak1_target_control_capture::Result::FIELD_READ_FAILED;
+    }
+    if (normalize_goal_pointer(actual_type) != expected_type) {
+      return jak1_target_control_capture::Result::TYPE_TAG_MISMATCH;
+    }
+    if (!read_value(memory, memory_size, expected_type + kTypeAllocatedSizeOffset,
+                    &allocated_size)) {
+      return jak1_target_control_capture::Result::TYPE_DESCRIPTOR_SPAN_INVALID;
+    }
+    if (allocated_size < minimum_size) {
+      return jak1_target_control_capture::Result::TYPE_ALLOCATED_SIZE_TOO_SMALL;
+    }
+    return jak1_target_control_capture::Result::SUCCESS;
   }
 
   static bool all_finite(const std::array<float, 4>& values) {

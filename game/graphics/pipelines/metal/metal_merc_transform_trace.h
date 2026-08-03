@@ -7,6 +7,7 @@
 #include <limits>
 
 #include "common/common_types.h"
+#include "game/mips2c/jak1_target_control_capture.h"
 
 namespace metal_merc_transform_trace {
 
@@ -36,6 +37,15 @@ struct FacingSnapshot {
   double z = 0.0;
 };
 
+struct DeformationSnapshot {
+  bool valid = false;
+  double axis_norm_x = 0.0;
+  double axis_norm_y = 0.0;
+  double axis_norm_z = 0.0;
+  double aspect = 0.0;
+  double normalized_abs_determinant = 0.0;
+};
+
 inline FacingSnapshot make_facing_snapshot(double x, double z) {
   FacingSnapshot out;
   const double length = std::sqrt(x * x + z * z);
@@ -52,10 +62,52 @@ inline double facing_dot(const FacingSnapshot& a, const FacingSnapshot& b) {
   return a.valid && b.valid ? a.x * b.x + a.z * b.z : std::numeric_limits<double>::quiet_NaN();
 }
 
+inline DeformationSnapshot make_deformation_snapshot(const float* matrix,
+                                                      std::size_t vector_stride = 4) {
+  DeformationSnapshot out;
+  if (!matrix || vector_stride < 3) {
+    return out;
+  }
+  const auto norm = [](const float* axis) {
+    return std::sqrt(static_cast<double>(axis[0]) * axis[0] +
+                     static_cast<double>(axis[1]) * axis[1] +
+                     static_cast<double>(axis[2]) * axis[2]);
+  };
+  const float* x = matrix;
+  const float* y = matrix + vector_stride;
+  const float* z = matrix + vector_stride * 2;
+  out.axis_norm_x = norm(x);
+  out.axis_norm_y = norm(y);
+  out.axis_norm_z = norm(z);
+  const double minimum = std::min({out.axis_norm_x, out.axis_norm_y, out.axis_norm_z});
+  const double maximum = std::max({out.axis_norm_x, out.axis_norm_y, out.axis_norm_z});
+  const double determinant =
+      static_cast<double>(x[0]) * (static_cast<double>(y[1]) * z[2] -
+                                   static_cast<double>(y[2]) * z[1]) -
+      static_cast<double>(y[0]) * (static_cast<double>(x[1]) * z[2] -
+                                   static_cast<double>(x[2]) * z[1]) +
+      static_cast<double>(z[0]) * (static_cast<double>(x[1]) * y[2] -
+                                   static_cast<double>(x[2]) * y[1]);
+  const double norm_product = out.axis_norm_x * out.axis_norm_y * out.axis_norm_z;
+  if (!std::isfinite(minimum) || !std::isfinite(maximum) || !std::isfinite(determinant) ||
+      minimum <= 0.0 || norm_product <= 0.0) {
+    return out;
+  }
+  out.aspect = maximum / minimum;
+  out.normalized_abs_determinant = std::abs(determinant) / norm_product;
+  out.valid = std::isfinite(out.aspect) && std::isfinite(out.normalized_abs_determinant);
+  return out;
+}
+
 struct TargetControlObservation {
   bool valid = false;
+  jak1_target_control_capture::Stage capture_stage =
+      jak1_target_control_capture::Stage::NOT_ATTEMPTED;
+  jak1_target_control_capture::Result capture_result =
+      jak1_target_control_capture::Result::NOT_ATTEMPTED;
   u64 producer_serial = 0;
   u32 source_base = 0;
+  u64 camera_hash = 0;
   u32 target_state_id = 0;
   u64 target_attack_id = 0;
   u32 button0_abs = 0;
@@ -65,11 +117,21 @@ struct TargetControlObservation {
   double stick_direction = 0.0;
   double stick_speed = 0.0;
   double pad_magnitude = 0.0;
+  std::array<float, 4> raw_dir_targ = {};
+  std::array<float, 4> raw_quat_for_control = {};
+  std::array<float, 4> raw_render_quat = {};
+  std::array<float, 4> raw_turn_to_target = {};
   FacingSnapshot intent_forward;
   FacingSnapshot desired_forward;
   FacingSnapshot control_forward;
   FacingSnapshot render_forward;
   FacingSnapshot root_forward;
+  BasisSnapshot camera_basis;
+  DeformationSnapshot input_root_deformation;
+  DeformationSnapshot output_deformation;
+  double input_root_translation_x = 0.0;
+  double input_root_translation_y = 0.0;
+  double input_root_translation_z = 0.0;
 };
 
 // Extracts the direction of each 3D basis vector while deliberately removing scale. Both the
@@ -188,6 +250,17 @@ struct TargetControlEvent {
   bool valid() const { return issue_mask != 0; }
 };
 
+struct TargetControlTraceResult {
+  bool capture_attempted = false;
+  bool valid_observation = false;
+  jak1_target_control_capture::Stage capture_stage =
+      jak1_target_control_capture::Stage::NOT_ATTEMPTED;
+  jak1_target_control_capture::Result capture_result =
+      jak1_target_control_capture::Result::NOT_ATTEMPTED;
+  TargetControlObservation observation;
+  TargetControlEvent event;
+};
+
 class TargetControlTracker {
  public:
   static constexpr u32 kSquareButton = 1u << 15;
@@ -197,15 +270,37 @@ class TargetControlTracker {
   TargetControlEvent observe(u64 engine_frame_id,
                              int bone_slot,
                              const TargetControlObservation& observation) {
-    TargetControlEvent event;
-    if (!engine_frame_id || bone_slot < 0 || bone_slot >= static_cast<int>(m_histories.size()) ||
-        !observation.valid) {
-      return event;
-    }
+    return observe_with_status(engine_frame_id, bone_slot, observation).event;
+  }
 
-    auto& previous = m_histories[bone_slot];
+  TargetControlTraceResult observe_with_status(u64 engine_frame_id,
+                                               int bone_slot,
+                                               const TargetControlObservation& observation) {
+    TargetControlTraceResult result;
+    if (!engine_frame_id || bone_slot < 0 || bone_slot >= static_cast<int>(m_histories.size())) {
+      return result;
+    }
+    const auto slot = static_cast<std::size_t>(bone_slot);
+    const bool attempted = observation.valid ||
+                           observation.capture_result !=
+                               jak1_target_control_capture::Result::NOT_ATTEMPTED;
+    if (!attempted || m_last_capture_frames[slot] == engine_frame_id) {
+      return result;
+    }
+    m_last_capture_frames[slot] = engine_frame_id;
+    result.capture_attempted = true;
+    result.capture_stage = observation.capture_stage;
+    result.capture_result = observation.capture_result;
+    if (!observation.valid) {
+      return result;
+    }
+    result.valid_observation = true;
+    result.observation = observation;
+    auto& event = result.event;
+
+    auto& previous = m_histories[slot];
     if (previous.valid && previous.engine_frame_id == engine_frame_id) {
-      return event;
+      return result;
     }
     const double intent_control_dot =
         facing_dot(observation.intent_forward, observation.control_forward);
@@ -248,7 +343,7 @@ class TargetControlTracker {
     previous.valid = true;
     previous.engine_frame_id = engine_frame_id;
     previous.target_attack_id = observation.target_attack_id;
-    return event;
+    return result;
   }
 
  private:
@@ -259,6 +354,7 @@ class TargetControlTracker {
   };
 
   std::array<History, kBoneSlotCount> m_histories = {};
+  std::array<u64, kBoneSlotCount> m_last_capture_frames = {};
 };
 
 enum DiscontinuityIssue : u8 {

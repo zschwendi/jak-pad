@@ -205,6 +205,14 @@ struct ChainStats {
   int merc_eichar_target_control_events = 0;
   int merc_eichar_target_control_divergences = 0;
   int merc_eichar_target_control_attack_boundaries = 0;
+  int merc_eichar_target_control_capture_attempts = 0;
+  int merc_eichar_target_control_valid_observations = 0;
+  jak1_target_control_capture::Stage last_merc_eichar_target_control_capture_stage =
+      jak1_target_control_capture::Stage::NOT_ATTEMPTED;
+  jak1_target_control_capture::Result last_merc_eichar_target_control_capture_result =
+      jak1_target_control_capture::Result::NOT_ATTEMPTED;
+  metal_merc_transform_trace::TargetControlObservation
+      last_merc_eichar_target_control_observation;
   // Retained across clean frames so an intermittent one-frame failure remains inspectable.
   MercPaletteHealthEvent first_merc_palette_health_event;
   MercPaletteHealthEvent last_merc_palette_health_event;

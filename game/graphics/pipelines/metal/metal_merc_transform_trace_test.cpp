@@ -146,6 +146,8 @@ metal_merc_transform_trace::TargetControlObservation target_control_observation(
     u32 button_rel = 0) {
   metal_merc_transform_trace::TargetControlObservation out;
   out.valid = true;
+  out.capture_stage = jak1_target_control_capture::Stage::COMPLETE;
+  out.capture_result = jak1_target_control_capture::Result::SUCCESS;
   out.producer_serial = attack_id + 100;
   out.source_base = 0x2000;
   out.target_state_id = 0x3000;
@@ -161,6 +163,11 @@ metal_merc_transform_trace::TargetControlObservation target_control_observation(
   out.control_forward = metal_merc_transform_trace::make_facing_snapshot(control_x, control_z);
   out.render_forward = out.control_forward;
   out.root_forward = out.control_forward;
+  const auto identity = yaw_matrix(0.0);
+  out.camera_basis = metal_merc_transform_trace::make_basis_snapshot(identity.data());
+  out.input_root_deformation =
+      metal_merc_transform_trace::make_deformation_snapshot(identity.data());
+  out.output_deformation = metal_merc_transform_trace::make_deformation_snapshot(identity.data());
   return out;
 }
 
@@ -391,6 +398,33 @@ int main() {
   const auto facing_ok =
       target_control_tracker.observe(800, 3, target_control_observation(0.0, 1.0, 0.0, 1.0, 7));
   check(!facing_ok.valid(), "matching active intent and control facing stay quiet");
+  metal_merc_transform_trace::TargetControlTracker ordinary_sample_tracker;
+  auto moderate_anisotropy =
+      target_control_observation(0.0, 1.0, 0.0, 1.0, 7);
+  auto moderately_narrow = yaw_matrix(0.0);
+  moderately_narrow[0] = 0.8f;
+  moderate_anisotropy.output_deformation =
+      metal_merc_transform_trace::make_deformation_snapshot(moderately_narrow.data());
+  const auto ordinary_sample =
+      ordinary_sample_tracker.observe_with_status(805, 3, moderate_anisotropy);
+  check(ordinary_sample.capture_attempted && ordinary_sample.valid_observation &&
+            !ordinary_sample.event.valid() && ordinary_sample.observation.valid &&
+            std::abs(ordinary_sample.observation.output_deformation.aspect - 1.25) < 1e-6 &&
+            ordinary_sample.observation.output_deformation.aspect <
+                metal_merc_transform_trace::Tracker::kDiscontinuityRatio,
+        "a quiet valid sample retains moderate anisotropy below the discontinuity threshold");
+  metal_merc_transform_trace::TargetControlTracker unavailable_provenance_tracker;
+  metal_merc_transform_trace::TargetControlObservation capture_without_provenance;
+  capture_without_provenance.capture_stage = jak1_target_control_capture::Stage::COMPLETE;
+  capture_without_provenance.capture_result = jak1_target_control_capture::Result::SUCCESS;
+  const auto unavailable_provenance = unavailable_provenance_tracker.observe_with_status(
+      806, 3, capture_without_provenance);
+  check(unavailable_provenance.capture_attempted &&
+            unavailable_provenance.capture_stage == jak1_target_control_capture::Stage::COMPLETE &&
+            unavailable_provenance.capture_result ==
+                jak1_target_control_capture::Result::SUCCESS &&
+            !unavailable_provenance.valid_observation && !unavailable_provenance.event.valid(),
+        "a successful capture still reports its outcome when mapping cannot form an observation");
   const auto facing_mismatch =
       target_control_tracker.observe(801, 3, target_control_observation(0.0, 1.0, 0.0, -1.0, 7));
   check(
@@ -605,6 +639,10 @@ int main() {
         "target-control capture stays attached to a valid producer calculation");
   const auto target_record = target_registry.find_output_base(kOutput);
   check(target_record && target_record->target_control.valid &&
+            target_record->target_control.capture_stage ==
+                jak1_target_control_capture::Stage::COMPLETE &&
+            target_record->target_control.capture_result ==
+                jak1_target_control_capture::Result::SUCCESS &&
             target_record->target_control.target_address == kTarget &&
             target_record->target_control.control_address == kControl &&
             target_record->target_control.target_state_id == kState &&
@@ -617,31 +655,99 @@ int main() {
             target_record->target_control.control_forward.z == 1.0,
         "safe asserted offsets capture minimum pad, facing, state and attack evidence");
 
-  check(!jak1_bones_provenance_trace::Registry::capture_target_control({}, memory.data(),
-                                                                       memory.size())
-             .valid,
-        "a null target context stays uninstrumented");
+  const auto missing_target = jak1_bones_provenance_trace::Registry::capture_target_control(
+      {}, memory.data(), memory.size());
+  check(!missing_target.valid &&
+            missing_target.capture_stage == jak1_target_control_capture::Stage::CONTEXT &&
+            missing_target.capture_result ==
+                jak1_target_control_capture::Result::MISSING_TARGET_ADDRESS,
+        "a null target context reports its missing address");
   auto invalid_target = target_context;
   invalid_target.target_address = static_cast<u32>(memory.size() - 2);
-  check(!jak1_bones_provenance_trace::Registry::capture_target_control(invalid_target,
-                                                                       memory.data(), memory.size())
-             .valid,
-        "an out-of-range target pointer is rejected before fixed-offset reads");
+  const auto invalid_target_span = jak1_bones_provenance_trace::Registry::capture_target_control(
+      invalid_target, memory.data(), memory.size());
+  check(!invalid_target_span.valid &&
+            invalid_target_span.capture_stage == jak1_target_control_capture::Stage::TARGET &&
+            invalid_target_span.capture_result ==
+                jak1_target_control_capture::Result::OBJECT_SPAN_INVALID,
+        "an out-of-range target pointer reports a target object span failure");
   auto wrong_target_type = target_context;
   const u32 wrong_type = 0x400;
   store_value(memory, kTarget - jak1_bones_provenance_trace::kGoalTypeTagBytes, wrong_type);
-  check(!jak1_bones_provenance_trace::Registry::capture_target_control(wrong_target_type,
-                                                                       memory.data(), memory.size())
-             .valid,
-        "a mismatched target runtime type is rejected");
+  const auto mismatched_target_type =
+      jak1_bones_provenance_trace::Registry::capture_target_control(
+          wrong_target_type, memory.data(), memory.size());
+  check(!mismatched_target_type.valid &&
+            mismatched_target_type.capture_stage == jak1_target_control_capture::Stage::TARGET &&
+            mismatched_target_type.capture_result ==
+                jak1_target_control_capture::Result::TYPE_TAG_MISMATCH,
+        "a mismatched target runtime type reports the exact-type rejection");
   store_value(memory, kTarget - jak1_bones_provenance_trace::kGoalTypeTagBytes, kTargetType);
+
+  auto unreadable_target_type = target_context;
+  unreadable_target_type.target_type = static_cast<u32>(memory.size() - 4);
+  store_value(memory, kTarget - jak1_bones_provenance_trace::kGoalTypeTagBytes,
+              unreadable_target_type.target_type);
+  const auto unreadable_type_descriptor =
+      jak1_bones_provenance_trace::Registry::capture_target_control(
+          unreadable_target_type, memory.data(), memory.size());
+  check(!unreadable_type_descriptor.valid &&
+            unreadable_type_descriptor.capture_stage ==
+                jak1_target_control_capture::Stage::TARGET &&
+            unreadable_type_descriptor.capture_result ==
+                jak1_target_control_capture::Result::TYPE_DESCRIPTOR_SPAN_INVALID,
+        "an unreadable target type descriptor reports a bounded metadata read failure");
+  store_value(memory, kTarget - jak1_bones_provenance_trace::kGoalTypeTagBytes, kTargetType);
+
+  const u16 undersized_target = jak1_bones_provenance_trace::kTargetMinimumSize - 1;
+  store_value(memory, kTargetType + jak1_bones_provenance_trace::kTypeAllocatedSizeOffset,
+              undersized_target);
+  const auto target_type_too_small =
+      jak1_bones_provenance_trace::Registry::capture_target_control(
+          target_context, memory.data(), memory.size());
+  check(!target_type_too_small.valid &&
+            target_type_too_small.capture_stage == jak1_target_control_capture::Stage::TARGET &&
+            target_type_too_small.capture_result ==
+                jak1_target_control_capture::Result::TYPE_ALLOCATED_SIZE_TOO_SMALL,
+        "an undersized exact target type reports its asserted layout failure");
+  store_value(memory, kTargetType + jak1_bones_provenance_trace::kTypeAllocatedSizeOffset,
+              target_size);
+
   const u32 unsafe_cpad = static_cast<u32>(memory.size() - 16);
   store_value(memory, kControl + jak1_bones_provenance_trace::kControlCpadOffset, unsafe_cpad);
-  check(!jak1_bones_provenance_trace::Registry::capture_target_control(target_context,
-                                                                       memory.data(), memory.size())
-             .valid,
-        "an out-of-range cpad pointer is rejected before its offset reads");
+  const auto invalid_cpad_span = jak1_bones_provenance_trace::Registry::capture_target_control(
+      target_context, memory.data(), memory.size());
+  check(!invalid_cpad_span.valid &&
+            invalid_cpad_span.capture_stage == jak1_target_control_capture::Stage::CPAD &&
+            invalid_cpad_span.capture_result ==
+                jak1_target_control_capture::Result::OBJECT_SPAN_INVALID,
+        "an out-of-range cpad pointer reports its object span failure");
   store_value(memory, kControl + jak1_bones_provenance_trace::kControlCpadOffset, kCpad);
+
+  const float nonfinite_stick_speed = std::numeric_limits<float>::quiet_NaN();
+  store_value(memory, kCpad + jak1_bones_provenance_trace::kCpadStickSpeedOffset,
+              nonfinite_stick_speed);
+  const auto nonfinite_target_field =
+      jak1_bones_provenance_trace::Registry::capture_target_control(
+          target_context, memory.data(), memory.size());
+  check(!nonfinite_target_field.valid &&
+            nonfinite_target_field.capture_stage == jak1_target_control_capture::Stage::FIELDS &&
+            nonfinite_target_field.capture_result ==
+                jak1_target_control_capture::Result::NONFINITE_FIELD,
+        "a nonfinite control field reports its capture stage without producing a sample");
+  store_value(memory, kCpad + jak1_bones_provenance_trace::kCpadStickSpeedOffset, stick_speed);
+
+  const std::array<float, 4> zero_intent = {};
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlTurnToTargetOffset,
+              zero_intent);
+  const auto invalid_facing = jak1_bones_provenance_trace::Registry::capture_target_control(
+      target_context, memory.data(), memory.size());
+  check(!invalid_facing.valid &&
+            invalid_facing.capture_stage == jak1_target_control_capture::Stage::FACING &&
+            invalid_facing.capture_result == jak1_target_control_capture::Result::INVALID_FACING,
+        "a zero facing vector reports why no normalized target sample was retained");
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlTurnToTargetOffset,
+              forward_velocity);
 
   store_identity(memory, kCamera, 9.f);
   check(registry.record(kOutput, kJoints, kBones, kCount, kCamera, memory.data(), memory.size()) &&

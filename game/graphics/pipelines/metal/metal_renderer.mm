@@ -1007,6 +1007,20 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         merc_stats.eichar_target_control_divergences;
     m_chain_stats.merc_eichar_target_control_attack_boundaries =
         merc_stats.eichar_target_control_attack_boundaries;
+    m_chain_stats.merc_eichar_target_control_capture_attempts =
+        merc_stats.eichar_target_control_capture_attempts;
+    m_chain_stats.merc_eichar_target_control_valid_observations =
+        merc_stats.eichar_target_control_valid_observations;
+    if (merc_stats.eichar_target_control_capture_attempts > 0) {
+      m_chain_stats.last_merc_eichar_target_control_capture_stage =
+          merc_stats.last_eichar_target_control_capture_stage;
+      m_chain_stats.last_merc_eichar_target_control_capture_result =
+          merc_stats.last_eichar_target_control_capture_result;
+    }
+    if (merc_stats.eichar_target_control_valid_observations > 0) {
+      m_chain_stats.last_merc_eichar_target_control_observation =
+          merc_stats.last_eichar_target_control_observation;
+    }
     if (!m_chain_stats.first_merc_palette_health_event.valid() &&
         merc_stats.first_palette_health_event.valid()) {
       m_chain_stats.first_merc_palette_health_event = merc_stats.first_palette_health_event;

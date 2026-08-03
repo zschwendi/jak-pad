@@ -1,0 +1,39 @@
+#pragma once
+
+#include "common/common_types.h"
+
+namespace jak1_target_control_capture {
+
+enum class Stage : u8 {
+  NOT_ATTEMPTED = 0,
+  CONTEXT,
+  TARGET,
+  CONTROL_POINTER,
+  CONTROL,
+  CPAD_POINTER,
+  CPAD,
+  FIELDS,
+  FACING,
+  DEFORMATION,
+  COMPLETE,
+};
+
+enum class Result : u8 {
+  NOT_ATTEMPTED = 0,
+  SUCCESS,
+  MISSING_MEMORY,
+  MISSING_TARGET_ADDRESS,
+  MISSING_TYPE_ADDRESS,
+  OBJECT_SPAN_INVALID,
+  TYPE_TAG_MISMATCH,
+  TYPE_DESCRIPTOR_SPAN_INVALID,
+  TYPE_ALLOCATED_SIZE_TOO_SMALL,
+  POINTER_READ_FAILED,
+  NULL_OBJECT_POINTER,
+  FIELD_READ_FAILED,
+  NONFINITE_FIELD,
+  INVALID_FACING,
+  INVALID_DEFORMATION,
+};
+
+}  // namespace jak1_target_control_capture
