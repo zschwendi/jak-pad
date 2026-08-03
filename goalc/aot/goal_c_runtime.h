@@ -282,7 +282,7 @@ static inline goal_vi goal_vf_ftoi(goal_vf v) {
 }
 
 static inline goal_vf goal_vf_sqrt(goal_vf v) {
-  goal_vf out;
+  goal_vf out = {};
   for (int i = 0; i < 4; i++) {
     out[i] = __builtin_sqrtf(v[i]);
   }
