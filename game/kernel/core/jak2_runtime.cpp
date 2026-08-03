@@ -49,6 +49,36 @@ uint32_t validation_sync_path() {
   return 0;
 }
 
+void validation_send_chain(const void* ee_base, uint32_t chain_offset) {
+  goal_gfx_dma_observe_chain(ee_base, chain_offset);
+}
+
+void validation_texture_upload(const uint8_t* tpage, int mode, uint32_t s7_ptr) {
+  (void)tpage;
+  (void)mode;
+  (void)s7_ptr;
+}
+
+void validation_texture_relocate(uint32_t dst, uint32_t src, uint32_t format) {
+  (void)dst;
+  (void)src;
+  (void)format;
+}
+
+void validation_set_levels(const char* const* names, int count) {
+  (void)names;
+  (void)count;
+}
+
+void validation_set_active_levels(const char* const* names, int count) {
+  (void)names;
+  (void)count;
+}
+
+void validation_set_pmode_alpha(float alpha) {
+  (void)alpha;
+}
+
 void drain_goal_print_buffer() {
   const char* printed = Ptr<char>(PrintBufArea.offset + sizeof(ListenerMessageHeader)).c();
   if (printed[0]) {
@@ -281,9 +311,14 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     if (config->graphics == GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
       goal_gfx_dma_reset();
       goal_gfx_host host = {};
-      host.send_chain = goal_gfx_dma_observe_chain;
+      host.send_chain = validation_send_chain;
       host.vsync = validation_vsync;
       host.sync_path = validation_sync_path;
+      host.texture_upload_now = validation_texture_upload;
+      host.texture_relocate = validation_texture_relocate;
+      host.set_levels = validation_set_levels;
+      host.set_pmode_alp = validation_set_pmode_alpha;
+      host.set_active_levels = validation_set_active_levels;
       if (goal_gfx_host_install(&host) != GOAL_KERNEL_CORE_OK) {
         return fail_start("could not install the Jak 2 DMA-validation graphics host");
       }
