@@ -717,7 +717,9 @@ with no case now fails to compile rather than returning garbage.
   `__mem-move` (the PC port's `ultimate-memcpy` is a call to it, so a stub there means every data
   object in a DGO links against zeroes), `__read-ee-timer`, `__pc-get-mips2c`, and the seven
   `scf-get-*` readers of the PS2 system configuration (see **The boot configuration**), plus the
-  process-lifetime `pc-rand` generator. The loader
+  process-lifetime `pc-rand` generator and the host `flush-cache` no-op. Jak 2 additionally forwards
+  `pc-prof` to the existing global profiler and reports an explicitly inactive mouse when no pointer
+  provider exists. The loader
   half of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the
   pad in `pad.cpp`. `install-handler` retains the vblank and VIF1 GOAL function references but no
   portable frame or DMA path dispatches them yet; everything else - `file-stream-open`,
@@ -725,7 +727,7 @@ with no case now fails to compile rather than returning garbage.
   functions returning 0, so what a frame *computes* is real and what it would have *shown* is not.
 - **Without a host renderer, a frame is simulation only.** When no host installs itself through
   `gfx_host.h` (see **The renderer** above), `reset-graph`, `syncv`, `sync-path`,
-  `put-display-env`, `dma-sync`, `flush-cache`, `__pc-texture-upload-now`, `__pc-texture-relocate`
+  `put-display-env`, `dma-sync`, `__pc-texture-upload-now`, `__pc-texture-relocate`
   and `__pc-set-levels` all report and return 0, and `__send-gfx-dma-chain` goes to
   `dma_capture.cpp`, which measures the chain and drops it. That is what the boot and gameplay
   tests run as, and it is why they measure what a frame *computes* rather than what it shows.
