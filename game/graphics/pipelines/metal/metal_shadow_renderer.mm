@@ -1,10 +1,15 @@
 #include "metal_shadow_renderer.h"
 
+#include <atomic>
+
 #include "common/log/log.h"
+#include "game/graphics/pipelines/metal/metal_pipeline.h"
 
 namespace {
 
 constexpr float kGameHeightJak1 = 448.f;
+
+std::atomic<bool> g_jak1_shadow_output_enabled{true};
 
 // Must match ShadowVsParams in shaders/shadow.metal.
 struct ShadowVsParams {
@@ -14,6 +19,18 @@ struct ShadowVsParams {
 static_assert(sizeof(ShadowVsParams) == 16);
 
 }  // namespace
+
+namespace metal_renderer {
+
+void set_jak1_shadow_output_enabled(bool enabled) {
+  g_jak1_shadow_output_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool jak1_shadow_output_enabled() {
+  return g_jak1_shadow_output_enabled.load(std::memory_order_relaxed);
+}
+
+}  // namespace metal_renderer
 
 bool MetalShadowRenderer::expect(bool condition, const char* what) {
   if (condition) {
@@ -173,7 +190,7 @@ void MetalShadowRenderer::render(DmaFollower& dma,
   m_stats.front_indices = (int)m_next_front_index;
   m_stats.back_indices = (int)m_next_back_index;
 
-  if (!m_failed) {
+  if (!m_failed && metal_renderer::jak1_shadow_output_enabled()) {
     draw(render_state, ctx);
   }
 }

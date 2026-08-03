@@ -2235,6 +2235,21 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
   metal_renderer::unload_all_levels();
 }
 
+void test_jak1_shadow_output_gate() {
+  printf("--- Jak 1 shadow output A/B gate ---\n");
+  metal_renderer::set_jak1_shadow_output_enabled(true);
+  check(metal_renderer::jak1_shadow_output_enabled(),
+        "Jak 1 shadow output defaults to its normal enabled state");
+
+  metal_renderer::set_jak1_shadow_output_enabled(false);
+  check(!metal_renderer::jak1_shadow_output_enabled(),
+        "Jak 1 shadow B mode suppresses only final shadow output");
+
+  metal_renderer::set_jak1_shadow_output_enabled(true);
+  check(metal_renderer::jak1_shadow_output_enabled(),
+        "Jak 1 shadow output restores without stale diagnostic state");
+}
+
 // ---------------------------------------------------------------------------
 // Section: the merc buckets. Builds the Jak 1 merc DMA the way the game does
 // (the 10-quadword setup packet, then PC_PORT model packets carrying the model
@@ -4872,6 +4887,7 @@ int main(int argc, char** argv) {
   printf("[PASS] Metal display created\n");
 
   if (tie_envmap_isolation_only) {
+    test_jak1_shadow_output_gate();
     test_tie_envmap_tree_order(mod, display);
     display.reset();
     mod->exit();

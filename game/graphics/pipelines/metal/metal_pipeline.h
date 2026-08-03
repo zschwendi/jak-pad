@@ -296,6 +296,13 @@ void set_window_hidden(bool hidden);
 // unchanged. Enabled by default; callers must opt out explicitly.
 void set_jak1_tie_envmap_second_pass_enabled(bool enabled);
 
+// Physical A/B diagnostic: disable only the final color-writing composite of
+// Jak 1 shadow volumes. The same shadow DMA and VU work are still consumed so
+// this isolates shadow output from level material and depth behavior. Enabled
+// by default; callers must opt out explicitly.
+void set_jak1_shadow_output_enabled(bool enabled);
+bool jak1_shadow_output_enabled();
+
 // --- texture path (plain C++ mirror of the Objective-C++ API in
 // metal_texture.h, so tests can drive it) ----------------------------------
 
