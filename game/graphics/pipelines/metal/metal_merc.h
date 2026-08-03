@@ -67,6 +67,8 @@ class MetalMerc2 {
     int eichar_target_control_attack_boundaries = 0;
     int eichar_target_control_capture_attempts = 0;
     int eichar_target_control_valid_observations = 0;
+    metal_merc_skin_trace::SkinStats eichar_weighted_skin;
+    metal_merc_skin_trace::DuplicationStats eichar_duplication;
     jak1_target_control_capture::Stage last_eichar_target_control_capture_stage =
         jak1_target_control_capture::Stage::NOT_ATTEMPTED;
     jak1_target_control_capture::Result last_eichar_target_control_capture_result =
@@ -163,6 +165,7 @@ class MetalMerc2 {
   struct ModBuffers {
     id<MTLBuffer> buffer = nil;
     u32 offset = 0;
+    u32 vertex_count = 0;
   };
 
   struct Draw {
@@ -177,6 +180,13 @@ class MetalMerc2 {
     u8 fade[4];
     u8 no_strip;
     ModBuffers mod_vtx;  // vertices for this draw when MOD_VTX is set
+    const metal_merc_skin_trace::DrawProfile* skin_profile;
+    u64 trace_source_base;
+    u64 trace_packet_palette_hash;
+    u32 trace_packet_sequence;
+    u16 trace_bone_count;
+    u16 trace_effect_index;
+    bool trace_source_base_valid;
   };
 
   struct LevelDrawBucket {
@@ -201,6 +211,13 @@ class MetalMerc2 {
     bool disable_fog;
     u32 lights;
     u32 first_bone;
+    const metal_merc_skin_trace::DrawProfile* skin_profile;
+    u64 trace_source_base;
+    u64 trace_packet_palette_hash;
+    u32 trace_packet_sequence;
+    u16 trace_bone_count;
+    u16 trace_effect_index;
+    bool trace_source_base_valid;
   };
 
   void handle_all_dma(DmaFollower& dma,
@@ -283,6 +300,7 @@ class MetalMerc2 {
   bool m_reported_eichar_transform_discontinuity = false;
   metal_merc_transform_trace::Tracker m_eichar_transform_tracker;
   metal_merc_transform_trace::TargetControlTracker m_eichar_target_control_tracker;
+  metal_merc_skin_trace::FrameTracker m_eichar_skin_tracker;
 };
 
 /*!

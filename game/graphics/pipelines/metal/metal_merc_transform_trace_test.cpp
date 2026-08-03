@@ -1,4 +1,5 @@
 #include "game/graphics/pipelines/metal/metal_merc_transform_trace.h"
+#include "game/graphics/pipelines/metal/metal_merc_skin_trace.h"
 
 #include <array>
 #include <cmath>
@@ -171,9 +172,254 @@ metal_merc_transform_trace::TargetControlObservation target_control_observation(
   return out;
 }
 
+void write_yaw(std::array<float, 64>& palette, std::size_t slot, double degrees) {
+  constexpr double kPi = 3.14159265358979323846;
+  const double radians = degrees * kPi / 180.0;
+  const float cosine = static_cast<float>(std::cos(radians));
+  const float sine = static_cast<float>(std::sin(radians));
+  float* matrix = palette.data() +
+                  slot * metal_merc_skin_trace::kShaderMatrixStrideFloats;
+  matrix[0] = cosine;
+  matrix[2] = sine;
+  matrix[5] = 1.f;
+  matrix[8] = -sine;
+  matrix[10] = cosine;
+  matrix[15] = 1.f;
+}
+
+void test_weighted_skin_trace() {
+  using namespace metal_merc_skin_trace;
+
+  std::vector<tfrag3::MercVertex> vertices(4);
+  for (int vertex = 0; vertex < 2; vertex++) {
+    vertices[vertex].weights[0] = 0.5f;
+    vertices[vertex].weights[1] = 0.5f;
+    vertices[vertex].mats[0] = 0;
+    vertices[vertex].mats[1] = 1;
+  }
+  vertices[2].weights[0] = 0.5f;
+  vertices[2].weights[1] = 0.5f;
+  vertices[2].mats[0] = 0;
+  vertices[2].mats[1] = 0;
+  vertices[3].weights[0] = 1.f;
+  vertices[3].mats[0] = 0;
+  const std::vector<u32> indices = {0, 1, 1, 2, 3};
+  tfrag3::MercDraw draw;
+  draw.first_index = 0;
+  draw.index_count = static_cast<u32>(indices.size());
+  const DrawProfile profile =
+      build_draw_profile(vertices, indices, draw, VertexStream::STATIC, 0x101);
+  check(profile.valid && profile.unique_vertex_count == 4 &&
+            profile.multi_bone_vertex_count == 2 && profile.tuple_groups.size() == 1 &&
+            profile.tuple_groups[0].vertex_multiplicity == 2,
+        "weighted skin profile deduplicates draw indices and groups bit-exact multi-bone tuples");
+  const DrawProfile modified_profile =
+      build_draw_profile(vertices, indices, draw, VertexStream::MODIFIED, 0x102);
+  check(modified_profile.valid && modified_profile.stream == VertexStream::MODIFIED &&
+            modified_profile.identity != profile.identity,
+        "modified draw profiles retain their local vertex-stream identity");
+
+  std::array<float, 96> hash_palette_source = {};
+  hash_palette_source[0] = 1.f;
+  hash_palette_source[kShaderMatrixStrideFloats] = 2.f;
+  const u64 relevant_hash = hash_draw_palette(profile, hash_palette_source.data(), 3);
+  auto unused_slot_changed = hash_palette_source;
+  unused_slot_changed[2 * kShaderMatrixStrideFloats] = 99.f;
+  auto nmat_padding_changed = hash_palette_source;
+  nmat_padding_changed[19] = 99.f;
+  nmat_padding_changed[23] = 98.f;
+  nmat_padding_changed[27] = 97.f;
+  auto semantic_lane_changed = hash_palette_source;
+  semantic_lane_changed[18] = 99.f;
+  check(relevant_hash == hash_draw_palette(profile, unused_slot_changed.data(), 3) &&
+            relevant_hash == hash_draw_palette(profile, nmat_padding_changed.data(), 3) &&
+            relevant_hash != hash_draw_palette(profile, semantic_lane_changed.data(), 3),
+        "palette identity ignores unused slots and mat3 padding but retains shader-visible lanes");
+  InfluenceTuple malformed_slot;
+  malformed_slot.weights[0] = 1.f;
+  malformed_slot.matrices[0] = 200;
+  std::array<u64, 2> malformed_slots = {};
+  retain_used_bone_slots(malformed_slot, &malformed_slots);
+  check(malformed_slots[0] == 0 && malformed_slots[1] == 0,
+        "palette identity rejects malformed bone slots without indexing beyond its fixed mask");
+  DrawProfile fixed_slots;
+  fixed_slots.used_bone_slots[0] = 1ull << 3;
+  DrawProfile modified_slots;
+  modified_slots.used_bone_slots[0] = 1ull << 4;
+  DrawProfile all_slots;
+  all_slots.used_bone_slots[0] = 1ull << 5;
+  const std::vector<DrawProfile> fixed_profiles = {fixed_slots};
+  const std::vector<DrawProfile> modified_profiles = {modified_slots};
+  const std::vector<DrawProfile> all_profiles = {all_slots};
+  std::array<u64, 2> disabled_path_slots = {};
+  merge_active_draw_slots(false, true, fixed_profiles, modified_profiles, all_profiles,
+                          &disabled_path_slots);
+  std::array<u64, 2> modified_path_slots = {};
+  merge_active_draw_slots(true, true, fixed_profiles, modified_profiles, all_profiles,
+                          &modified_path_slots);
+  std::array<u64, 2> fallback_path_slots = {};
+  merge_active_draw_slots(true, false, fixed_profiles, modified_profiles, all_profiles,
+                          &fallback_path_slots);
+  check(disabled_path_slots[0] == 0 &&
+            modified_path_slots[0] == ((1ull << 3) | (1ull << 4)) &&
+            fallback_path_slots[0] == (1ull << 5),
+        "packet palette scope follows enabled effects and the selected fixed/mod or fallback path");
+
+  std::vector<tfrag3::MercVertex> capacity_vertices(kMaximumTupleGroupsPerDraw + 1);
+  std::vector<u32> capacity_indices(capacity_vertices.size());
+  for (std::size_t vertex = 0; vertex < capacity_vertices.size(); vertex++) {
+    capacity_vertices[vertex].weights[0] = 0.25f + static_cast<float>(vertex) / 1000.f;
+    capacity_vertices[vertex].weights[1] = 0.75f - static_cast<float>(vertex) / 1000.f;
+    capacity_vertices[vertex].mats[0] = 0;
+    capacity_vertices[vertex].mats[1] = 1;
+    capacity_indices[vertex] = static_cast<u32>(vertex);
+  }
+  tfrag3::MercDraw capacity_draw;
+  capacity_draw.first_index = 0;
+  capacity_draw.index_count = static_cast<u32>(capacity_indices.size());
+  const DrawProfile bounded_profile = build_draw_profile(
+      capacity_vertices, capacity_indices, capacity_draw, VertexStream::STATIC, 0x103);
+  check(bounded_profile.tuple_groups.size() == kMaximumTupleGroupsPerDraw &&
+            bounded_profile.capacity_dropped_vertices == 1,
+        "profile construction caps tuple grouping and records unprofiled vertices");
+
+  std::array<float, 64> coherent_palette = {};
+  write_yaw(coherent_palette, 0, 89.0);
+  write_yaw(coherent_palette, 1, 89.0);
+  const BasisObservation coherent =
+      analyze_weighted_basis(profile.tuple_groups[0].tuple, coherent_palette.data(), 2);
+  check(coherent.valid && std::abs(coherent.axis_ratio - 1.0) < 1e-4 &&
+            !coherent.collapse_candidate,
+        "common +89/+89 weighted yaw keeps a well-conditioned basis");
+
+  std::array<float, 64> opposing_palette = {};
+  write_yaw(opposing_palette, 0, 89.0);
+  write_yaw(opposing_palette, 1, -89.0);
+  const BasisObservation opposing =
+      analyze_weighted_basis(profile.tuple_groups[0].tuple, opposing_palette.data(), 2);
+  check(opposing.valid && opposing.axis_ratio > 50.0 && opposing.collapse_candidate,
+        "opposing +89/-89 weighted yaw exposes the flat-silhouette axis collapse");
+
+  std::array<float, 64> low_determinant_palette = {};
+  for (std::size_t slot = 0; slot < 2; slot++) {
+    float* matrix = low_determinant_palette.data() + slot * kShaderMatrixStrideFloats;
+    matrix[0] = 1.f;
+    matrix[5] = 1.f;
+    matrix[8] = 0.998f;
+    matrix[10] = 0.05f;
+    matrix[15] = 1.f;
+  }
+  const BasisObservation low_determinant = analyze_weighted_basis(
+      profile.tuple_groups[0].tuple, low_determinant_palette.data(), 2);
+  check(low_determinant.valid && low_determinant.axis_ratio < 2.0 &&
+            low_determinant.normalized_abs_determinant < 0.06 &&
+            low_determinant.collapse_candidate,
+        "weighted basis flags low determinant even when its axis lengths remain similar");
+
+  const InfluenceTuple repeated_slot = make_influence_tuple(vertices[2]);
+  check(!has_distinct_positive_bones(repeated_slot) &&
+            !analyze_weighted_basis(repeated_slot, coherent_palette.data(), 2).valid,
+        "two positive weights aimed at one slot are not classified as multi-bone skinning");
+
+  const SkinStats coherent_draw =
+      analyze_draw(profile, vertices.data(), vertices.size(), coherent_palette.data(), 2);
+  const SkinStats opposing_draw =
+      analyze_draw(profile, vertices.data(), vertices.size(), opposing_palette.data(), 2);
+  check(coherent_draw.profiled_vertices == 4 && coherent_draw.multi_bone_vertices == 2 &&
+            coherent_draw.affected_vertices == 0 && opposing_draw.affected_vertices == 2 &&
+            opposing_draw.affected_draws == 1 &&
+            opposing_draw.coverage == Coverage::WIDESPREAD,
+        "draw analysis preserves raw vertex multiplicity and derives neutral coverage");
+  std::vector<u8> unaligned_vertices(1 + vertices.size() * sizeof(tfrag3::MercVertex));
+  memcpy(unaligned_vertices.data() + 1, vertices.data(),
+         vertices.size() * sizeof(tfrag3::MercVertex));
+  const SkinStats unaligned_draw =
+      analyze_draw(profile, unaligned_vertices.data() + 1, vertices.size(),
+                   opposing_palette.data(), 2);
+  check(unaligned_draw.affected_vertices == opposing_draw.affected_vertices &&
+            unaligned_draw.profile_tuple_mismatches == 0,
+        "draw analysis reads a 16-byte-or-less aligned Metal vertex stream without typed access");
+  const SkinStats bounded_skin =
+      analyze_draw(bounded_profile, capacity_vertices.data(), capacity_vertices.size(),
+                   coherent_palette.data(), 2);
+  check(bounded_skin.tuple_groups == kMaximumTupleGroupsPerDraw &&
+            bounded_skin.profile_capacity_drops == 1,
+        "per-frame analysis remains bounded and surfaces profile capacity drops");
+  SkinStats combined_skin;
+  combined_skin.add(coherent_draw);
+  combined_skin.add(opposing_draw);
+  check(combined_skin.profiled_base_draws == 2 && combined_skin.multi_bone_vertices == 4 &&
+            combined_skin.affected_vertices == 2 && combined_skin.coverage == Coverage::MIXED &&
+            combined_skin.maximum_axis_ratio > 50.0,
+        "weighted skin stats aggregate raw counts and extrema across Merc buckets");
+
+  std::vector<tfrag3::MercVertex> changed_vertices = vertices;
+  changed_vertices[0].weights[0] = 0.25f;
+  const SkinStats mismatch = analyze_draw(profile, changed_vertices.data(),
+                                          changed_vertices.size(), opposing_palette.data(), 2);
+  check(mismatch.profile_tuple_mismatches == 1 && mismatch.invalid_basis_groups == 1 &&
+            mismatch.affected_vertices == 0,
+        "a changed bound tuple is reported instead of being measured through stale metadata");
+
+  check(classify_coverage(10, 0) == Coverage::NONE &&
+            classify_coverage(10, 2) == Coverage::LOCALIZED &&
+            classify_coverage(10, 5) == Coverage::MIXED &&
+            classify_coverage(10, 9) == Coverage::WIDESPREAD,
+        "coverage labels are deterministic while raw counts remain authoritative");
+
+  FrameTracker tracker;
+  const PacketResult packet_a = tracker.observe_packet(10, true, 0x1000, 0xaa);
+  const PacketResult packet_a_repeat = tracker.observe_packet(10, true, 0x1000, 0xaa);
+  const PacketResult packet_b_conflict = tracker.observe_packet(10, true, 0x1000, 0xbb);
+  check(packet_a.unique_source && packet_a.packet_sequence == 1 && packet_a_repeat.repeated &&
+            !packet_a_repeat.conflicting_palette && packet_b_conflict.repeated &&
+            packet_b_conflict.conflicting_palette,
+        "packet tracker separates same-palette repeats from same-source palette conflicts");
+
+  const DrawResult draw_a =
+      tracker.observe_base_draw(10, true, 0x1000, packet_a.packet_sequence, 0x101, 0xaa);
+  const DrawResult draw_a_repeat = tracker.observe_base_draw(
+      10, true, 0x1000, packet_a_repeat.packet_sequence, 0x101, 0xaa);
+  const DrawResult draw_b_conflict = tracker.observe_base_draw(
+      10, true, 0x1000, packet_b_conflict.packet_sequence, 0x101, 0xbb);
+  check(draw_a.unique && draw_a_repeat.repeated && !draw_a_repeat.conflicting_palette &&
+            draw_b_conflict.repeated && draw_b_conflict.conflicting_palette,
+        "actual base-draw tracker excludes palette from its key and retains palette conflicts");
+  DuplicationStats duplication;
+  retain_packet_result(packet_a, &duplication);
+  retain_packet_result(packet_a_repeat, &duplication);
+  retain_packet_result(packet_b_conflict, &duplication);
+  retain_draw_result(draw_a, &duplication);
+  retain_draw_result(draw_a_repeat, &duplication);
+  retain_draw_result(draw_b_conflict, &duplication);
+  check(duplication.packets == 3 && duplication.unique_source_bases == 1 &&
+            duplication.repeated_packets == 2 &&
+            duplication.repeated_packets_conflicting_palette == 1 &&
+            duplication.actual_base_draws == 3 && duplication.unique_base_draws == 1 &&
+            duplication.repeated_base_draws_conflicting_palette == 1,
+        "duplicate stats retain packet, source, palette and actual-draw counts separately");
+  check(tracker.observe_affected_effect(10, true, 0x1000, packet_a.packet_sequence, 3).unique &&
+            !tracker
+                 .observe_affected_effect(10, true, 0x1000,
+                                          packet_b_conflict.packet_sequence, 3)
+                 .unique &&
+            tracker
+                .observe_affected_effect(10, true, 0x1000,
+                                         packet_b_conflict.packet_sequence, 4)
+                .unique,
+        "affected effects are unique per source and effect within an engine frame");
+
+  const PacketResult next_frame = tracker.observe_packet(11, true, 0x1000, 0xaa);
+  check(next_frame.unique_source &&
+            tracker.observe_base_draw(11, true, 0x1000, next_frame.packet_sequence, 0x101, 0xaa)
+                .unique,
+        "packet and actual-draw duplicate state resets on the engine-frame boundary");
+}
+
 }  // namespace
 
 int main() {
+  test_weighted_skin_trace();
   std::array<float, metal_merc_transform_trace::kMatrixLaneCount> lanes = {};
   lanes[3] = std::numeric_limits<float>::infinity();
   lanes[16] = std::numeric_limits<float>::quiet_NaN();

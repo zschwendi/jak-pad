@@ -29,12 +29,19 @@
 
 #include "common/common_types.h"
 #include "common/custom_data/Tfrag3Data.h"
+#include "game/graphics/pipelines/metal/metal_merc_skin_trace.h"
 
 #import <Metal/Metal.h>
 
 class TexturePool;
 
 using MetalMercBoneSlotMask = std::array<u64, 4>;
+
+struct MetalMercEffectSkinProfiles {
+  std::vector<metal_merc_skin_trace::DrawProfile> all_draws;
+  std::vector<metal_merc_skin_trace::DrawProfile> fixed_draws;
+  std::vector<metal_merc_skin_trace::DrawProfile> modified_draws;
+};
 
 /*!
  * One extracted level's merc data. The merc-scoped analog of the GL loader's
@@ -49,6 +56,7 @@ struct MetalMercLevel {
   id<MTLBuffer> indices = nil;
   std::vector<u64> textures;
   std::vector<std::vector<MetalMercBoneSlotMask>> required_bone_slots_by_model;
+  std::vector<std::vector<MetalMercEffectSkinProfiles>> eichar_skin_profiles_by_model;
   std::string name;
 };
 
@@ -83,6 +91,7 @@ class MetalMercModelPool {
     const tfrag3::MercModel* model = nullptr;
     const MetalMercLevel* level = nullptr;
     const std::vector<MetalMercBoneSlotMask>* required_bone_slots_by_effect = nullptr;
+    const std::vector<MetalMercEffectSkinProfiles>* eichar_skin_profiles_by_effect = nullptr;
   };
 
   // Mirror of Loader::get_merc_model: first match wins.

@@ -24,6 +24,8 @@
 
 #include "game/graphics/display.h"
 #include "game/graphics/gfx.h"
+#include "game/graphics/pipelines/metal/metal_camera_trace.h"
+#include "game/graphics/pipelines/metal/metal_merc_skin_trace.h"
 #include "game/graphics/pipelines/metal/metal_merc_transform_trace.h"
 
 extern const GfxRendererModule gRendererMetal;
@@ -121,6 +123,7 @@ struct ChainStats {
   u64 render_camera_live_mismatches = 0;
   u64 render_camera_packet_mismatches = 0;
   u64 render_camera_alternations = 0;
+  metal_camera_trace::RetainedAlternationObservation last_render_camera_alternation;
   u64 producer_camera_alternations = 0;
   u64 last_camera_alternation_older_frame_id = 0;
   u64 last_camera_alternation_previous_frame_id = 0;
@@ -207,6 +210,8 @@ struct ChainStats {
   int merc_eichar_target_control_attack_boundaries = 0;
   int merc_eichar_target_control_capture_attempts = 0;
   int merc_eichar_target_control_valid_observations = 0;
+  metal_merc_skin_trace::SkinStats merc_eichar_weighted_skin;
+  metal_merc_skin_trace::DuplicationStats merc_eichar_duplication;
   jak1_target_control_capture::Stage last_merc_eichar_target_control_capture_stage =
       jak1_target_control_capture::Stage::NOT_ATTEMPTED;
   jak1_target_control_capture::Result last_merc_eichar_target_control_capture_result =

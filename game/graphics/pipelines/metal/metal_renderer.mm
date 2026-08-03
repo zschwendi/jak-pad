@@ -739,6 +739,12 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
             opts.engine_frame_id, m_background.render_camera_trace.first_packet());
         m_chain_stats.render_camera_alternations =
             m_presentation_state->render_camera.alternations();
+        metal_camera_trace::retain_alternation_observation(
+            render_camera, opts.host_tick_id, opts.chain_ordinal,
+            m_chain_stats.last_render_camera_fingerprint,
+            m_chain_stats.last_render_camera_live_mismatch_qwords,
+            m_chain_stats.last_render_camera_packet_mismatch_qwords,
+            m_chain_stats.last_render_camera_alternation);
         if (render_camera.alternation &&
             !m_presentation_state->render_alternation_reported) {
           m_presentation_state->render_alternation_reported = true;
@@ -1011,6 +1017,8 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         merc_stats.eichar_target_control_capture_attempts;
     m_chain_stats.merc_eichar_target_control_valid_observations =
         merc_stats.eichar_target_control_valid_observations;
+    m_chain_stats.merc_eichar_weighted_skin = merc_stats.eichar_weighted_skin;
+    m_chain_stats.merc_eichar_duplication = merc_stats.eichar_duplication;
     if (merc_stats.eichar_target_control_capture_attempts > 0) {
       m_chain_stats.last_merc_eichar_target_control_capture_stage =
           merc_stats.last_eichar_target_control_capture_stage;

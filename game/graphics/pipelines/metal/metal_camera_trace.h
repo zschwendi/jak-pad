@@ -195,6 +195,52 @@ struct ProducerAlternationObservation {
 
 using RenderAlternationObservation = ProducerAlternationObservation;
 
+struct RetainedAlternationObservation {
+  bool valid = false;
+  u64 older_frame_id = 0;
+  u64 previous_frame_id = 0;
+  u64 current_frame_id = 0;
+  u64 older_fingerprint = 0;
+  u64 previous_fingerprint = 0;
+  u64 current_fingerprint = 0;
+  u64 host_tick_id = 0;
+  u64 chain_ordinal = 0;
+  u64 packet_fingerprint = 0;
+  u16 live_mismatch_qwords = 0;
+  u16 packet_mismatch_qwords = 0;
+  double older_to_previous_distance = 0.0;
+  double previous_to_current_distance = 0.0;
+  double older_to_current_distance = 0.0;
+};
+
+inline void retain_alternation_observation(const RenderAlternationObservation& observation,
+                                           u64 host_tick_id,
+                                           u64 chain_ordinal,
+                                           u64 packet_fingerprint,
+                                           u16 live_mismatch_qwords,
+                                           u16 packet_mismatch_qwords,
+                                           RetainedAlternationObservation& retained) {
+  if (!observation.alternation) {
+    return;
+  }
+
+  retained.valid = true;
+  retained.older_frame_id = observation.older_frame_id;
+  retained.previous_frame_id = observation.previous_frame_id;
+  retained.current_frame_id = observation.current_frame_id;
+  retained.older_fingerprint = observation.older_fingerprint;
+  retained.previous_fingerprint = observation.previous_fingerprint;
+  retained.current_fingerprint = observation.current_fingerprint;
+  retained.host_tick_id = host_tick_id;
+  retained.chain_ordinal = chain_ordinal;
+  retained.packet_fingerprint = packet_fingerprint;
+  retained.live_mismatch_qwords = live_mismatch_qwords;
+  retained.packet_mismatch_qwords = packet_mismatch_qwords;
+  retained.older_to_previous_distance = observation.older_to_previous_distance;
+  retained.previous_to_current_distance = observation.previous_to_current_distance;
+  retained.older_to_current_distance = observation.older_to_current_distance;
+}
+
 /*!
  * Retains exactly two prior snapshots and identifies a strong A/B/A-style return: the
  * current snapshot is at most half as far from the two-frames-ago snapshot as either adjacent leg.

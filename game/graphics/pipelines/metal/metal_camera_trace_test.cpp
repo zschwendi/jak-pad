@@ -221,6 +221,26 @@ int main() {
             alternating_render.alternations() == 1,
         "full view/projection A/B/A returns are counted independently of the producer subset");
 
+  metal_camera_trace::RetainedAlternationObservation retained_render;
+  metal_camera_trace::retain_alternation_observation(render_returned, 700, 800, 900, 0x0101,
+                                                      0x2020, retained_render);
+  check(retained_render.valid && retained_render.older_frame_id == 300 &&
+            retained_render.previous_frame_id == 301 &&
+            retained_render.current_frame_id == 302 && retained_render.host_tick_id == 700 &&
+            retained_render.chain_ordinal == 800 && retained_render.packet_fingerprint == 900 &&
+            retained_render.live_mismatch_qwords == 0x0101 &&
+            retained_render.packet_mismatch_qwords == 0x2020 &&
+            retained_render.older_fingerprint == render_returned.older_fingerprint &&
+            retained_render.previous_fingerprint == render_returned.previous_fingerprint &&
+            retained_render.current_fingerprint == render_returned.current_fingerprint,
+        "the full render A/B/A window retains its frame, chain, packet, and mismatch evidence");
+  const auto ordinary_render = alternating_render.observe(303, scalar_render_snapshot(0.2f));
+  metal_camera_trace::retain_alternation_observation(ordinary_render, 701, 801, 901, 0, 0,
+                                                      retained_render);
+  check(!ordinary_render.alternation && retained_render.current_frame_id == 302 &&
+            retained_render.host_tick_id == 700 && retained_render.packet_fingerprint == 900,
+        "a later ordinary render window does not erase retained full render evidence");
+
   auto durable_event = returned;
   const auto later_non_event = alternating_producer.observe(203, scalar_snapshot(0.2f));
   if (later_non_event.alternation) {

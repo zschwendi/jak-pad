@@ -402,6 +402,8 @@ void MetalMerc2::Stats::add(const Stats& o) {
   eichar_target_control_attack_boundaries += o.eichar_target_control_attack_boundaries;
   eichar_target_control_capture_attempts += o.eichar_target_control_capture_attempts;
   eichar_target_control_valid_observations += o.eichar_target_control_valid_observations;
+  eichar_weighted_skin.add(o.eichar_weighted_skin);
+  eichar_duplication.add(o.eichar_duplication);
   if (o.eichar_target_control_capture_attempts > 0) {
     last_eichar_target_control_capture_stage = o.last_eichar_target_control_capture_stage;
     last_eichar_target_control_capture_result = o.last_eichar_target_control_capture_result;
@@ -606,7 +608,8 @@ void* MetalMerc2::alloc_mod_vtx_buffer(size_t vertex_count,
                                        ModBuffers* out,
                                        Stats* stats) {
   const size_t bytes = vertex_count * sizeof(tfrag3::MercVertex);
-  if (vertex_count == 0 || bytes > MetalStreamBuffer::kPageSize) {
+  if (vertex_count == 0 ||
+      bytes + alignof(tfrag3::MercVertex) > MetalStreamBuffer::kPageSize) {
     stats->mod_vtx_skipped++;
     if (!m_warned_mod_skip) {
       lg::warn("Metal merc: model '{}' has {} modifiable vertices, which does not fit a stream "
@@ -618,9 +621,13 @@ void* MetalMerc2::alloc_mod_vtx_buffer(size_t vertex_count,
   }
   id<MTLBuffer> buffer = nil;
   u32 offset = 0;
-  void* data = ctx.stream->alloc((u32)bytes, &buffer, &offset);
+  void* data = alloc_aligned(ctx.stream, static_cast<u32>(bytes),
+                             alignof(tfrag3::MercVertex), &buffer, &offset);
+  ASSERT(offset % alignof(tfrag3::MercVertex) == 0);
+  ASSERT(reinterpret_cast<uintptr_t>(data) % alignof(tfrag3::MercVertex) == 0);
   out->buffer = buffer;
   out->offset = offset;
+  out->vertex_count = static_cast<u32>(vertex_count);
   return data;
 }
 
@@ -1239,6 +1246,13 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
     stats->models_with_palette_health_issues++;
   }
 
+  const bool trace_eichar = model->name == "eichar-lod0" &&
+                            model_ref->eichar_skin_profiles_by_effect &&
+                            model_ref->eichar_skin_profiles_by_effect->size() ==
+                                model->effects.size();
+  u64 eichar_packet_palette_hash = 0;
+  metal_merc_skin_trace::PacketResult eichar_packet;
+
   float blerc_weights[kMaxBlerc];
   if (model_uses_pc_blerc) {
     memcpy(blerc_weights, input_data, kMaxBlerc * sizeof(float));
@@ -1263,6 +1277,36 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
     model_mod_draws(num_effects, model, input_data, ee0, ctx, mod_buffers, stats);
   }
 
+  const auto uses_modified_draw_path = [&](size_t effect_index) {
+    const auto& effect = model->effects[effect_index];
+    bool use_modified_path =
+        (model_uses_pc_blerc || model_uses_mod) && effect.has_mod_draw;
+    if (use_modified_path && !effect.mod.mod_draw.empty() &&
+        mod_buffers[effect_index].buffer == nil) {
+      // The update was skipped (reported), so the draw path falls back to all_draws.
+      use_modified_path = false;
+    }
+    return use_modified_path;
+  };
+
+  if (trace_eichar) {
+    std::array<u64, 2> packet_used_bone_slots = {};
+    for (size_t effect_index = 0; effect_index < model->effects.size(); effect_index++) {
+      const auto& profiles = model_ref->eichar_skin_profiles_by_effect->at(effect_index);
+      metal_merc_skin_trace::merge_active_draw_slots(
+          current_effect_enable_bits & (1ull << effect_index),
+          uses_modified_draw_path(effect_index), profiles.fixed_draws,
+          profiles.modified_draws, profiles.all_draws, &packet_used_bone_slots);
+    }
+    eichar_packet_palette_hash = metal_merc_skin_trace::hash_palette(
+        reinterpret_cast<const float*>(skel_matrix_buffer), static_cast<size_t>(bone_count),
+        packet_used_bone_slots);
+    eichar_packet = m_eichar_skin_tracker.observe_packet(
+        render_state->engine_frame_id, expected_source_base_valid, expected_source_base,
+        eichar_packet_palette_hash);
+    metal_merc_skin_trace::retain_packet_result(eichar_packet, &stats->eichar_duplication);
+  }
+
   stats->models++;
   stats->effects += (int)model->effects.size();
 
@@ -1281,6 +1325,21 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   args.disable_fog = model_disables_fog;
   args.lights = lights;
   args.first_bone = first_bone;
+  args.skin_profile = nullptr;
+  args.trace_source_base = expected_source_base;
+  args.trace_source_base_valid = expected_source_base_valid;
+  args.trace_packet_palette_hash = eichar_packet_palette_hash;
+  args.trace_packet_sequence = eichar_packet.packet_sequence;
+  args.trace_bone_count = static_cast<u16>(bone_count);
+  args.trace_effect_index = 0;
+  const auto retain_trace_profile = [&](const metal_merc_skin_trace::DrawProfile* profile) {
+    args.skin_profile = profile;
+    args.trace_packet_palette_hash =
+        profile ? metal_merc_skin_trace::hash_draw_palette(
+                      *profile, reinterpret_cast<const float*>(skel_matrix_buffer),
+                      static_cast<size_t>(bone_count))
+                : 0;
+  };
 
   for (size_t ei = 0; ei < model->effects.size(); ei++) {
     args.fade = fade_buffer + 4 * ei;
@@ -1291,19 +1350,20 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
 
     args.ignore_alpha = !!(current_ignore_alpha_bits & (1ull << ei));
     auto& effect = model->effects[ei];
+    const MetalMercEffectSkinProfiles* effect_profiles =
+        trace_eichar ? &model_ref->eichar_skin_profiles_by_effect->at(ei) : nullptr;
+    args.trace_effect_index = static_cast<u16>(ei);
     bool should_envmap = effect.has_envmap && !model_disables_envmap;
-    bool should_mod = (model_uses_pc_blerc || model_uses_mod) && effect.has_mod_draw;
-    if (should_mod && !effect.mod.mod_draw.empty() && mod_buffers[ei].buffer == nil) {
-      // the update was skipped (reported): the unmodified all_draws are the
-      // safe fallback, since mod draws index the per-effect vertex buffer
-      should_mod = false;
-    }
+    const bool should_mod = uses_modified_draw_path(ei);
 
     if (should_mod) {
       // draw as two parts, fixed and mod
 
       // do fixed draws:
-      for (auto& fdraw : effect.mod.fix_draw) {
+      ASSERT(!effect_profiles || effect_profiles->fixed_draws.size() == effect.mod.fix_draw.size());
+      for (size_t draw_idx = 0; draw_idx < effect.mod.fix_draw.size(); draw_idx++) {
+        auto& fdraw = effect.mod.fix_draw[draw_idx];
+        retain_trace_profile(effect_profiles ? &effect_profiles->fixed_draws[draw_idx] : nullptr);
         alloc_normal_draw(fdraw, args);
         if (should_envmap) {
           try_alloc_envmap_draw(fdraw, effect.envmap_mode, effect.envmap_texture, args);
@@ -1311,7 +1371,12 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
       }
 
       // do mod draws:
-      for (auto& mdraw : effect.mod.mod_draw) {
+      ASSERT(!effect_profiles ||
+             effect_profiles->modified_draws.size() == effect.mod.mod_draw.size());
+      for (size_t draw_idx = 0; draw_idx < effect.mod.mod_draw.size(); draw_idx++) {
+        auto& mdraw = effect.mod.mod_draw[draw_idx];
+        retain_trace_profile(effect_profiles ? &effect_profiles->modified_draws[draw_idx]
+                                             : nullptr);
         auto* n = alloc_normal_draw(mdraw, args);
         // modify the draw, set the mod flag and point it at this frame's vertices
         n->flags |= MOD_VTX;
@@ -1326,7 +1391,10 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
       }
     } else {
       // no mod, just do all_draws
-      for (auto& draw : effect.all_draws) {
+      ASSERT(!effect_profiles || effect_profiles->all_draws.size() == effect.all_draws.size());
+      for (size_t draw_idx = 0; draw_idx < effect.all_draws.size(); draw_idx++) {
+        auto& draw = effect.all_draws[draw_idx];
+        retain_trace_profile(effect_profiles ? &effect_profiles->all_draws[draw_idx] : nullptr);
         if (should_envmap) {
           try_alloc_envmap_draw(draw, effect.envmap_mode, effect.envmap_texture, args);
         }
@@ -1375,6 +1443,13 @@ MetalMerc2::Draw* MetalMerc2::alloc_normal_draw(const tfrag3::MercDraw& mdraw,
   Draw* draw = &args.lev_bucket->draws[args.lev_bucket->next_free_draw++];
   draw->flags = 0;
   draw->mod_vtx = {};
+  draw->skin_profile = args.skin_profile;
+  draw->trace_source_base = args.trace_source_base;
+  draw->trace_source_base_valid = args.trace_source_base_valid;
+  draw->trace_packet_palette_hash = args.trace_packet_palette_hash;
+  draw->trace_packet_sequence = args.trace_packet_sequence;
+  draw->trace_bone_count = args.trace_bone_count;
+  draw->trace_effect_index = args.trace_effect_index;
   draw->first_index = mdraw.first_index;
   draw->index_count = mdraw.index_count;
   draw->mode = mdraw.mode;
@@ -1417,6 +1492,13 @@ MetalMerc2::Draw* MetalMerc2::try_alloc_envmap_draw(const tfrag3::MercDraw& mdra
   Draw* draw = &args.lev_bucket->envmap_draws[args.lev_bucket->next_free_envmap_draw++];
   draw->flags = 0;
   draw->mod_vtx = {};
+  draw->skin_profile = args.skin_profile;
+  draw->trace_source_base = args.trace_source_base;
+  draw->trace_source_base_valid = args.trace_source_base_valid;
+  draw->trace_packet_palette_hash = args.trace_packet_palette_hash;
+  draw->trace_packet_sequence = args.trace_packet_sequence;
+  draw->trace_bone_count = args.trace_bone_count;
+  draw->trace_effect_index = args.trace_effect_index;
   draw->first_index = mdraw.first_index;
   draw->index_count = mdraw.index_count;
   draw->mode = envmap_mode;
@@ -1487,6 +1569,9 @@ void MetalMerc2::do_draws(const Draw* draw_array,
   id<MTLRenderCommandEncoder> enc = ctx.enc;
   [enc setVertexBuffer:lev->vertices offset:0 atIndex:0];
   bool normal_vtx_buffer_bound = true;
+  id<MTLBuffer> bound_vertex_buffer = lev->vertices;
+  u32 bound_vertex_offset = 0;
+  size_t bound_vertex_count = lev->level->merc_data.vertices.size();
 
   const u64 placeholder = render_state->texture_pool->get_placeholder_texture();
 
@@ -1506,9 +1591,15 @@ void MetalMerc2::do_draws(const Draw* draw_array,
     if (draw.flags & MOD_VTX) {
       [enc setVertexBuffer:draw.mod_vtx.buffer offset:draw.mod_vtx.offset atIndex:0];
       normal_vtx_buffer_bound = false;
+      bound_vertex_buffer = draw.mod_vtx.buffer;
+      bound_vertex_offset = draw.mod_vtx.offset;
+      bound_vertex_count = draw.mod_vtx.vertex_count;
     } else if (!normal_vtx_buffer_bound) {
       [enc setVertexBuffer:lev->vertices offset:0 atIndex:0];
       normal_vtx_buffer_bound = true;
+      bound_vertex_buffer = lev->vertices;
+      bound_vertex_offset = 0;
+      bound_vertex_count = lev->level->merc_data.vertices.size();
     }
 
     bool use_mipmaps = true;
@@ -1601,6 +1692,56 @@ void MetalMerc2::do_draws(const Draw* draw_array,
     [enc setFragmentBytes:&fs length:sizeof(fs) atIndex:0];
     [enc setFragmentTexture:tex atIndex:0];
     [enc setFragmentSamplerState:ctx.sampler_cache->get(settings.sampler) atIndex:0];
+
+    // EICHAR's grouped profile makes this proportional to its distinct
+    // influence tuples, not its roughly ten thousand vertices. Read the exact
+    // shared vertex and palette buffers currently bound for this base draw.
+    // Envmap is a deliberate second pass and is excluded from every duplicate
+    // and weighted-skin count.
+    if (!envmap && draw.skin_profile) {
+      const u32 palette_offset =
+          bone_base + static_cast<u32>(sizeof(math::Vector4f)) * draw.first_bone;
+      const size_t palette_bytes = draw.trace_bone_count * sizeof(ShaderMercMat);
+      const bool vertex_range_valid = bound_vertex_buffer &&
+                                      bound_vertex_offset <= [bound_vertex_buffer length] &&
+                                      bound_vertex_count <=
+                                          ([bound_vertex_buffer length] - bound_vertex_offset) /
+                                              sizeof(tfrag3::MercVertex);
+      const bool palette_range_valid =
+          bone_buffer && static_cast<u64>(palette_offset) + palette_bytes <= [bone_buffer length];
+      if (vertex_range_valid && palette_range_valid) {
+        const auto* bound_vertices =
+            static_cast<const u8*>([bound_vertex_buffer contents]) + bound_vertex_offset;
+        const auto* bound_palette_bytes =
+            static_cast<const u8*>([bone_buffer contents]) + palette_offset;
+        const auto* bound_palette = reinterpret_cast<const float*>(bound_palette_bytes);
+        const u64 bound_palette_hash = metal_merc_skin_trace::hash_draw_palette(
+            *draw.skin_profile, bound_palette, draw.trace_bone_count);
+
+        auto skin = metal_merc_skin_trace::analyze_draw(
+            *draw.skin_profile, bound_vertices, bound_vertex_count, bound_palette,
+            draw.trace_bone_count);
+        if (skin.affected_draws) {
+          const auto effect = m_eichar_skin_tracker.observe_affected_effect(
+              render_state->engine_frame_id, draw.trace_source_base_valid,
+              draw.trace_source_base, draw.trace_packet_sequence, draw.trace_effect_index);
+          skin.affected_effects = effect.unique;
+          stats->eichar_duplication.capacity_drops += effect.capacity_dropped;
+        }
+        stats->eichar_weighted_skin.add(skin);
+
+        const auto duplicate = m_eichar_skin_tracker.observe_base_draw(
+            render_state->engine_frame_id, draw.trace_source_base_valid,
+            draw.trace_source_base, draw.trace_packet_sequence, draw.skin_profile->identity,
+            bound_palette_hash);
+        metal_merc_skin_trace::retain_draw_result(duplicate, &stats->eichar_duplication);
+        if (bound_palette_hash != draw.trace_packet_palette_hash) {
+          stats->eichar_duplication.bound_palette_hash_mismatches++;
+        }
+      } else {
+        stats->eichar_weighted_skin.profile_tuple_mismatches++;
+      }
+    }
 
     [enc drawIndexedPrimitives:(draw.no_strip ? MTLPrimitiveTypeTriangle
                                               : MTLPrimitiveTypeTriangleStrip)
