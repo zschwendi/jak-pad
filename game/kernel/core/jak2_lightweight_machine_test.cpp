@@ -19,6 +19,10 @@
 #include "game/kernel/core/kernel_game.h"
 #include "game/kernel/jak2/kmachine.h"
 #include "game/kernel/jak2/kscheme.h"
+
+extern "C" {
+#include "jak2_file_stream_valid_test_generated.h"
+}
 #include "game/sce/sif_ee.h"
 
 namespace {
@@ -48,6 +52,20 @@ int main() {
     goal_kernel_core_shutdown();
     return 1;
   }
+
+  const goal_aot_object_file file_stream_valid_fixture = {
+      "jak2_file_stream_valid_test",
+      goal_jak2_file_stream_valid_test_statics,
+      goal_jak2_file_stream_valid_test_static_count,
+      goal_jak2_file_stream_valid_test_functions,
+      goal_jak2_file_stream_valid_test_function_count,
+      goal_jak2_file_stream_valid_test_link,
+  };
+  expect(goal_aot_load(&file_stream_valid_fixture) == GOAL_KERNEL_CORE_OK,
+         "loaded the AOT file-stream validity fixture");
+  const uint32_t file_stream_valid_aot =
+      goal_aot_function_object("jak2_file_stream_valid_test", 0);
+  expect(file_stream_valid_aot != 0, "AOT file-stream validity fixture has a function object");
 
   uint32_t pc_prof = 0;
   uint32_t flush_cache = 0;
@@ -120,13 +138,16 @@ int main() {
     auto buffer_mem = kmalloc(kglobalheap, 16, KMALLOC_MEMSET, "file-stream-buffer-test");
     expect(stream_mem.offset && buffer_mem.offset, "allocated synthetic stream and buffer");
 
-    if (file_functions && stream_mem.offset && buffer_mem.offset) {
+    if (file_functions && file_stream_valid_aot && stream_mem.offset && buffer_mem.offset) {
       expect(goal_aot_call(file_exists, path, 0, 0) == goal_game_false_offset(),
              "missing sandbox path reports false");
       expect(goal_aot_call(make_parent, path, 0, 0) == goal_game_true_offset(),
              "sandbox path parent directory is created");
       expect(goal_aot_call(file_open, stream_mem.offset, path, write_mode) == stream_mem.offset,
              "write stream returns its GOAL object");
+      expect(goal_aot_call(file_stream_valid_aot, stream_mem.offset, 0, 0) ==
+                 goal_game_true_offset(),
+             "AOT file-stream-valid? accepts an open stream");
 
       constexpr char payload[] = "goalpad";
       std::memcpy(buffer_mem.c(), payload, sizeof(payload));
@@ -160,6 +181,9 @@ int main() {
                      stream_mem.offset &&
                  Ptr<FileStream>(stream_mem.offset)->file == -1,
              "failed read open preserves the stream object and signed file error");
+      expect(goal_aot_call(file_stream_valid_aot, stream_mem.offset, 0, 0) ==
+                 goal_game_false_offset(),
+             "AOT file-stream-valid? rejects a failed open");
       expect(goal_aot_call(file_length, stream_mem.offset, 0, 0) == 0 &&
                  goal_aot_call(file_seek, stream_mem.offset, 0, SCE_SEEK_SET) == UINT64_MAX &&
                  goal_aot_call(file_read, stream_mem.offset, buffer_mem.offset, 1) == UINT64_MAX &&
