@@ -3015,6 +3015,7 @@ void test_merc_blerc_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisp
 // ---------------------------------------------------------------------------
 
 constexpr const char* kMercRotModelName = "proof-merc-rot";
+constexpr const char* kMercWeightedRotModelName = "proof-merc-weighted-rot";
 constexpr float kMercRotHalf = 48.f;  // GS units
 constexpr float kGsPerCol = 256.f / 320.f;
 constexpr float kGsPerRow = 112.f / 240.f;
@@ -3105,6 +3106,20 @@ std::unique_ptr<tfrag3::Level> make_merc_rot_test_level() {
   return level;
 }
 
+std::unique_ptr<tfrag3::Level> make_merc_weighted_rot_test_level() {
+  auto level = make_merc_rot_test_level();
+  level->level_name = "metal-proof-merc-weighted-rot";
+  auto& merc = level->merc_data;
+  merc.models[0].name = kMercWeightedRotModelName;
+  for (auto& vertex : merc.vertices) {
+    vertex.weights[0] = 0.5f;
+    vertex.weights[1] = 0.5f;
+    vertex.mats[0] = 0;
+    vertex.mats[1] = 1;
+  }
+  return level;
+}
+
 // One bone whose transform is translate(tx, ty, tz) * rotate_y(angle), written
 // into EE memory the way the game's `bones` does: tmat is the negated 4x4 (the
 // shader computes `-X * p`) in columns, nmat the un-negated 3x3 in columns.
@@ -3130,6 +3145,70 @@ void write_merc_bone_yrot(std::vector<u8>& mem,
     }
   }
   memcpy(&mem[addr], m, sizeof(m));
+}
+
+using CpuMercPosition = std::array<float, 4>;
+
+CpuMercPosition cpu_merc_skin_position(const tfrag3::MercVertex& vertex,
+                                       const std::vector<u8>& mem,
+                                       const std::array<u32, 2>& bone_addresses) {
+  const CpuMercPosition position = {vertex.pos[0], vertex.pos[1], vertex.pos[2], 1.f};
+  CpuMercPosition result = {};
+  for (int influence = 0; influence < 3; influence++) {
+    const float weight = vertex.weights[influence];
+    if (influence > 0 && weight <= 0.f) {
+      continue;
+    }
+    const u8 matrix_slot = vertex.mats[influence];
+    ASSERT(matrix_slot < bone_addresses.size());
+    float matrix[16];
+    memcpy(matrix, mem.data() + bone_addresses[matrix_slot], sizeof(matrix));
+    for (int row = 0; row < 4; row++) {
+      float transformed = 0.f;
+      for (int column = 0; column < 4; column++) {
+        transformed += matrix[column * 4 + row] * position[column];
+      }
+      // Exact position half of merc_skin: the game's tmat is negated and the
+      // shader negates each transformed position before applying its weight.
+      result[row] += -transformed * weight;
+    }
+  }
+  return result;
+}
+
+float cpu_merc_skin_width_pixels(const std::vector<tfrag3::MercVertex>& vertices,
+                                 const std::vector<u8>& mem,
+                                 const std::array<u32, 2>& bone_addresses) {
+  bool have_x = false;
+  float min_x = 0.f;
+  float max_x = 0.f;
+  for (const auto& vertex : vertices) {
+    const float x = cpu_merc_skin_position(vertex, mem, bone_addresses)[0];
+    if (!have_x) {
+      min_x = max_x = x;
+      have_x = true;
+    } else {
+      min_x = std::min(min_x, x);
+      max_x = std::max(max_x, x);
+    }
+  }
+  return have_x ? (max_x - min_x) / kGsPerCol : 0.f;
+}
+
+bool cpu_merc_bone_is_rigid(const std::vector<u8>& mem, u32 address) {
+  float matrix[16];
+  memcpy(matrix, mem.data() + address, sizeof(matrix));
+  const auto norm = [&](int column) {
+    const float* axis = matrix + 4 * column;
+    return std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+  };
+  const float nx = norm(0), ny = norm(1), nz = norm(2);
+  const float determinant =
+      matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9]) -
+      matrix[4] * (matrix[1] * matrix[10] - matrix[2] * matrix[9]) +
+      matrix[8] * (matrix[1] * matrix[6] - matrix[2] * matrix[5]);
+  return std::abs(nx - 1.f) <= 1e-5f && std::abs(ny - 1.f) <= 1e-5f &&
+         std::abs(nz - 1.f) <= 1e-5f && std::abs(std::abs(determinant) - 1.f) <= 1e-5f;
 }
 
 // The lit span of one row / one column of the readback, in pixels.
@@ -3750,6 +3829,124 @@ void test_merc_bone_rotation(const GfxRendererModule* mod, std::shared_ptr<GfxDi
                       .c_str());
     }
   }
+
+  g_ee_main_mem = nullptr;
+}
+
+struct WeightedMercYawResult {
+  bool readback = false;
+  bool bones_rigid = false;
+  bool palette_healthy = false;
+  float cpu_width = 0.f;
+  LitSpan gpu_span;
+  std::array<u8, 112> root_matrix = {};
+};
+
+void test_merc_weighted_bone_rotation(const GfxRendererModule* mod,
+                                      std::shared_ptr<GfxDisplay>& display) {
+  printf("--- merc: coherent rigid bones can produce a collapsed weighted skin ---\n");
+  using namespace jak1;
+
+  auto level = make_merc_weighted_rot_test_level();
+  const auto vertices = level->merc_data.vertices;
+  metal_renderer::MercLevelLoad load;
+  std::string error;
+  if (!metal_renderer::merc_add_level(std::move(level), false, &load, &error)) {
+    printf("[FAIL] merc weighted rot: could not register the test level: %s\n", error.c_str());
+    g_fail_count++;
+    return;
+  }
+  check(load.models == 1 && load.vertices == 8 && load.indices == 8,
+        "merc weighted rot: two-bone 3D cross model registered with the model pool");
+
+  std::vector<u8> mem(kEeSize, 0);
+  g_ee_main_mem = mem.data();
+  constexpr float kTx = 2048.f, kTy = 2048.f;
+  constexpr float kYaw = 89.f * (float)M_PI / 180.f;
+
+  const auto render_case = [&](const char* label, float second_bone_yaw) {
+    WeightedMercYawResult result;
+    ChainBuilder cb(mem);
+    const u32 bone0 = cb.alloc(128), bone1 = cb.alloc(128);
+    const std::array<u32, 2> bone_addresses = {bone0, bone1};
+    write_merc_bone_yrot(mem, bone0, kYaw, kTx, kTy, kMercZ);
+    write_merc_bone_yrot(mem, bone1, second_bone_yaw, kTx, kTy, kMercZ);
+
+    result.bones_rigid =
+        cpu_merc_bone_is_rigid(mem, bone0) && cpu_merc_bone_is_rigid(mem, bone1);
+    result.cpu_width = cpu_merc_skin_width_pixels(vertices, mem, bone_addresses);
+    memcpy(result.root_matrix.data(), mem.data() + bone0, result.root_matrix.size());
+
+    const u8 no_fade[4] = {0, 0, 0, 0};
+    std::vector<ChainBuilder::Transfer> merc;
+    merc.push_back(
+        {vif_stcycl(4, 4), vif_code(VifCode::Kind::STMOD, 0), make_merc_setup_data(), false});
+    merc.push_back({0, 0, std::vector<u8>(32, 0), false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, vif_code(VifCode::Kind::PC_PORT, 0),
+                    make_merc_model_packet(bone0, bone1, no_fade, kMercWeightedRotModelName,
+                                           0.5f, 0.f),
+                    false});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
+    merc.push_back({0, 0, {}, true});
+    cb.set_bucket_content((int)BucketId::MERC_PRIS_LEVEL0, merc);
+
+    mod->send_chain(mem.data(), kChainStart);
+    display->render();
+
+    metal_renderer::FramePixels frame;
+    result.readback = metal_renderer::read_last_frame(&frame);
+    if (result.readback) {
+      result.gpu_span = lit_row(frame);
+    } else {
+      printf("[FAIL] merc weighted rot: could not read back the %s frame\n", label);
+      g_fail_count++;
+    }
+
+    const auto stats = metal_renderer::get_chain_stats();
+    result.palette_healthy =
+        stats.merc_models == 1 && stats.merc_draws == 2 && stats.merc_missing_models == 0 &&
+        stats.merc_missing_bone_slots == 0 && stats.merc_models_with_missing_bone_slots == 0 &&
+        stats.merc_nonfinite_bone_matrices == 0 &&
+        stats.merc_degenerate_bone_matrices == 0 &&
+        stats.merc_incoherent_bone_sources == 0 &&
+        stats.merc_models_with_palette_health_issues == 0;
+    printf("merc weighted rot %s: CPU width %.2f px, GPU span %d..%d (w %d), "
+           "rigid bones %s, palette %s\n",
+           label, result.cpu_width, result.gpu_span.lo, result.gpu_span.hi,
+           result.gpu_span.width(), result.bones_rigid ? "healthy" : "bad",
+           result.palette_healthy ? "healthy" : "bad");
+    return result;
+  };
+
+  // The control applies the same world yaw to both weighted bones. The
+  // mutation leaves the root unchanged and counter-rotates only bone 1. At
+  // nearly 90 degrees, .5 * R(+yaw) + .5 * R(-yaw) cancels the model's X/Z
+  // extent even though both input matrices remain finite, rigid, and coherent.
+  const WeightedMercYawResult control = render_case("control +89/+89", kYaw);
+  const WeightedMercYawResult divergent = render_case("mutation +89/-89", -kYaw);
+
+  check(control.readback && divergent.readback,
+        "merc weighted rot: both deterministic frames have pixel readback");
+  check(control.bones_rigid && divergent.bones_rigid,
+        "merc weighted rot: every individual input bone remains a rigid transform");
+  check(memcmp(control.root_matrix.data(), divergent.root_matrix.data(),
+               control.root_matrix.size()) == 0,
+        "merc weighted rot: the root matrix is byte-identical across the A/B mutation");
+  check(control.palette_healthy && divergent.palette_healthy,
+        "merc weighted rot: existing palette-health diagnostics accept both A/B inputs");
+  check(control.cpu_width > 100.f,
+        "merc weighted rot: common-yaw CPU mirror preserves the 3D cross width");
+  check(std::abs(control.gpu_span.width() - control.cpu_width) <= 3.f,
+        "merc weighted rot: control pixel width matches the exact CPU skinning mirror");
+  check(divergent.cpu_width <= 3.f,
+        "merc weighted rot: counter-yaw CPU mirror collapses to a near-singular stripe");
+  check(std::abs(divergent.gpu_span.width() - divergent.cpu_width) <= 3.f &&
+            divergent.gpu_span.width() <= 5,
+        "merc weighted rot: mutation pixel readback reproduces the predicted flat silhouette");
+  check(control.gpu_span.width() >= 20 * std::max(1, divergent.gpu_span.width()),
+        "merc weighted rot: control and mutation silhouettes are unmistakably distinct");
 
   g_ee_main_mem = nullptr;
 }
@@ -4840,6 +5037,7 @@ int main(int argc, char** argv) {
   test_bones_wrapper_chunk_boundary();
   test_merc_joint_to_present(mod, display);
   test_merc_bone_rotation(mod, display);
+  test_merc_weighted_bone_rotation(mod, display);
   test_generic2_chain(mod, display);
   g_ee_main_mem = nullptr;
 

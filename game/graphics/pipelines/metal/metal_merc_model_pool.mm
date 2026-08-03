@@ -12,6 +12,21 @@
 
 #include "fmt/format.h"
 
+namespace {
+
+enum class SkinDrawList : u8 {
+  ALL = 1,
+  FIXED = 2,
+  MODIFIED = 3,
+};
+
+u64 skin_profile_identity(size_t effect_index, SkinDrawList list, size_t draw_index) {
+  return (static_cast<u64>(effect_index + 1) << 40) |
+         (static_cast<u64>(list) << 32) | static_cast<u64>(draw_index + 1);
+}
+
+}  // namespace
+
 MetalMercModelPool& metal_merc_models() {
   static MetalMercModelPool pool;
   return pool;
@@ -86,13 +101,19 @@ bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
   // keeps the per-model packet path to a few fixed-mask operations and makes
   // their lifetime follow the level across unload/reload.
   entry->required_bone_slots_by_model.resize(merc.models.size());
+  entry->eichar_skin_profiles_by_model.resize(merc.models.size());
   for (size_t model_idx = 0; model_idx < merc.models.size(); model_idx++) {
     const auto& model = merc.models[model_idx];
     auto& effect_masks = entry->required_bone_slots_by_model[model_idx];
     effect_masks.resize(model.effects.size());
+    auto& skin_profiles = entry->eichar_skin_profiles_by_model[model_idx];
+    if (model.name == "eichar-lod0") {
+      skin_profiles.resize(model.effects.size());
+    }
     for (size_t effect_idx = 0; effect_idx < model.effects.size(); effect_idx++) {
+      const auto& effect = model.effects[effect_idx];
       auto& required_slots = effect_masks[effect_idx];
-      for (const auto& draw : model.effects[effect_idx].all_draws) {
+      for (const auto& draw : effect.all_draws) {
         if ((u64)draw.first_index + draw.index_count > merc.indices.size()) {
           continue;
         }
@@ -110,6 +131,31 @@ bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
           }
         }
       }
+
+      if (!skin_profiles.empty()) {
+        auto& effect_profiles = skin_profiles[effect_idx];
+        effect_profiles.all_draws.reserve(effect.all_draws.size());
+        for (size_t draw_idx = 0; draw_idx < effect.all_draws.size(); draw_idx++) {
+          effect_profiles.all_draws.push_back(metal_merc_skin_trace::build_draw_profile(
+              merc.vertices, merc.indices, effect.all_draws[draw_idx],
+              metal_merc_skin_trace::VertexStream::STATIC,
+              skin_profile_identity(effect_idx, SkinDrawList::ALL, draw_idx)));
+        }
+        effect_profiles.fixed_draws.reserve(effect.mod.fix_draw.size());
+        for (size_t draw_idx = 0; draw_idx < effect.mod.fix_draw.size(); draw_idx++) {
+          effect_profiles.fixed_draws.push_back(metal_merc_skin_trace::build_draw_profile(
+              merc.vertices, merc.indices, effect.mod.fix_draw[draw_idx],
+              metal_merc_skin_trace::VertexStream::STATIC,
+              skin_profile_identity(effect_idx, SkinDrawList::FIXED, draw_idx)));
+        }
+        effect_profiles.modified_draws.reserve(effect.mod.mod_draw.size());
+        for (size_t draw_idx = 0; draw_idx < effect.mod.mod_draw.size(); draw_idx++) {
+          effect_profiles.modified_draws.push_back(metal_merc_skin_trace::build_draw_profile(
+              effect.mod.vertices, merc.indices, effect.mod.mod_draw[draw_idx],
+              metal_merc_skin_trace::VertexStream::MODIFIED,
+              skin_profile_identity(effect_idx, SkinDrawList::MODIFIED, draw_idx)));
+        }
+      }
     }
   }
 
@@ -123,7 +169,9 @@ bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
   for (size_t model_idx = 0; model_idx < merc.models.size(); model_idx++) {
     const auto& model = merc.models[model_idx];
     const auto& effect_masks = entry->required_bone_slots_by_model[model_idx];
-    m_by_name[model.name].push_back(Ref{&model, lev, &effect_masks});
+    const auto& skin_profiles = entry->eichar_skin_profiles_by_model[model_idx];
+    m_by_name[model.name].push_back(
+        Ref{&model, lev, &effect_masks, skin_profiles.empty() ? nullptr : &skin_profiles});
   }
   m_levels.push_back(std::move(entry));
   return true;
