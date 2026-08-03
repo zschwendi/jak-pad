@@ -7,10 +7,8 @@
  * object - **code comes from the AOT path; data comes from the DGO.** A v3 object with no
  * registered translation unit is a failure, never a skip.
  *
- * Only the C-driven load exists here so far: `goal_dgo_load` for the boot's KERNEL.CGO and
- * GAME.CGO, and the `dgo-load` / `load_and_link_dgo_from_c` entry points the jak2 kernel names.
- * GOAL's own level loader drives the DGO RPC instead, which for jak2 is still answered by the
- * loudly-failing `rpc-call` stub - a level load fails by name rather than pretending.
+ * Both loader entry paths use that rule: the host's C-driven `goal_dgo_load`, and GOAL's own
+ * one-object-per-frame channel-3 DGO RPC plus `link-begin` / `link-resume` state machine.
  */
 
 #include <cstdio>
@@ -19,29 +17,44 @@
 
 #include "common/link_types.h"
 #include "common/log/log.h"
+#include "common/goal_constants.h"
+#include "common/util/Assert.h"
 #include "common/util/FileUtil.h"
 
+#include "game/common/dgo_rpc_types.h"
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kdgo.h"
 #include "game/kernel/common/klink.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
+#include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/kdgo.h"
 #include "game/kernel/jak2/klink.h"
+#include "game/kernel/jak2/kscheme.h"
+#include "game/runtime.h"
 #include "game/sce/sif_ee.h"
 
 #include "fmt/format.h"
+
+// Defined beside the machine stubs in desktop_seams.cpp.
+u64 goal_kernel_core_machine_stub_report(const char* what);
 
 namespace {
 
 std::string g_error;
 goal_dgo_load_stats g_stats;
+goal_dgo_rpc_stats g_rpc_stats;
 bool g_verbose = false;
 
 void set_error(const std::string& message) {
   g_error = message;
   lg::error("[dgo-loader] {}", message);
+}
+
+bool readable_ee_span(u32 address, u32 size) {
+  return g_ee_main_mem && address >= (u32)EE_MAIN_MEM_LOW_PROTECT &&
+         address <= (u32)EE_MAIN_MEM_SIZE && size <= (u32)EE_MAIN_MEM_SIZE - address;
 }
 
 /*! The archive being read. One at a time, which is all the C-driven load ever asks for. */
@@ -96,7 +109,15 @@ bool read_next_object() {
   }
   header.name[sizeof(header.name) - 1] = '\0';
 
-  const s32 padded = (s32)((header.size + 0xf) & ~0xfu);
+  const u64 padded64 = ((u64)header.size + 0xf) & ~0xfull;
+  if (padded64 > (u64)EE_MAIN_MEM_SIZE - sizeof(header) ||
+      !readable_ee_span(dest.offset, (u32)(sizeof(header) + padded64))) {
+    set_error(fmt::format("object {} ({}) does not fit at #x{:x}", g_dgo.objects_read,
+                          header.name, dest.offset));
+    g_dgo.failed = true;
+    return false;
+  }
+  const s32 padded = (s32)padded64;
   memcpy(dest.c(), &header, sizeof(header));
   if (ee::sceRead(g_dgo.fd, (dest + sizeof(header)).c(), padded) != padded) {
     set_error(fmt::format("short read on object {} ({}), wanted {} bytes", g_dgo.objects_read,
@@ -119,7 +140,10 @@ bool is_data_object(Ptr<u8> object) {
  * Put the native translation of a code object in the heap and run its top-level, exactly as
  * dgo_loader.cpp does for jak1. Returns false and sets the error when there is no translation.
  */
-bool load_code_object(const char* object_name, u32 link_flags, u32 heap) {
+bool load_code_object(const char* object_name,
+                      u32 link_flags,
+                      bool on_goal_stack,
+                      u32 heap) {
   const goal_aot_object_file* aot = goal_aot_registered_object(object_name);
   if (!aot) {
     set_error(fmt::format("the code object '{}' has no native translation", object_name));
@@ -133,13 +157,19 @@ bool load_code_object(const char* object_name, u32 link_flags, u32 heap) {
     }
     goal_aot_forget(aot->tag);
   }
+  const u32 before = global ? 0 : Ptr<kheapinfo>(heap)->current.offset;
   if (goal_aot_load_into(aot, heap) != GOAL_KERNEL_CORE_OK) {
     set_error(fmt::format("could not load the native translation of '{}': {}", object_name,
                           goal_kernel_core_last_error()));
     return false;
   }
+  if (!global) {
+    g_rpc_stats.level_code_bytes += Ptr<kheapinfo>(heap)->current.offset - before;
+  }
   if (link_flags & LINK_FLAG_EXECUTE) {
-    if (goal_aot_run_top_level(aot->tag, nullptr) != GOAL_KERNEL_CORE_OK) {
+    const auto status = on_goal_stack ? goal_aot_run_top_level_here(aot->tag, nullptr)
+                                      : goal_aot_run_top_level(aot->tag, nullptr);
+    if (status != GOAL_KERNEL_CORE_OK) {
       set_error(fmt::format("the top-level of '{}' failed: {}", object_name,
                             goal_kernel_core_last_error()));
       return false;
@@ -271,7 +301,7 @@ void load_and_link_dgo_from_c(const char* name,
       link_and_exec(obj, objName, objSize, heap, linkFlag, jump_from_c_to_goal);
     } else {
       g_stats.code_objects++;
-      if (!load_code_object(objName, linkFlag, heap.offset)) {
+      if (!load_code_object(objName, linkFlag, false, heap.offset)) {
         g_dgo.failed = true;
         break;
       }
@@ -308,10 +338,187 @@ void load_and_link_dgo(u64 name_gstr, u64 heap_info, u64 flag, u64 buffer_size) 
 }  // namespace jak2
 
 // ================================================================================================
+// GOAL's channel-3 DGO RPC and incremental linker entry points
+// ================================================================================================
+
+namespace {
+
+struct DgoRpcCmd {
+  u16 rsvd;
+  u16 result;
+  u32 buffer1;
+  u32 buffer2;
+  u32 buffer_heap_top;
+  char name[16];
+};
+static_assert(sizeof(DgoRpcCmd) == 32, "Jak 2's DGO RPC wire element is exactly 32 bytes");
+
+template <u64 (*Function)(const u64*)>
+u64 stack_arg_shim(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7) {
+  const u64 args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
+  return Function(args);
+}
+
+bool dgo_name(const char source[16], std::string* out) {
+  size_t length = 0;
+  while (length < 16 && source[length]) {
+    length++;
+  }
+  if (!length) {
+    return false;
+  }
+
+  out->assign(source, length);
+  if (*out == "." || *out == "..") {
+    return false;
+  }
+  for (char& c : *out) {
+    if (c == '/' || c == '\\' || c == ':') {
+      return false;
+    }
+    if (c >= 'a' && c <= 'z') {
+      c -= 'a' - 'A';
+    }
+  }
+  return true;
+}
+
+void answer_with_next_object(DgoRpcCmd* reply) {
+  u32 last = 0;
+  const auto object = get_next_dgo(&last);
+  if (!object.offset) {
+    reply->result = DGO_RPC_RESULT_ERROR;
+    close_dgo();
+    return;
+  }
+
+  g_rpc_stats.dgo_objects++;
+  reply->buffer1 = object.offset;
+  reply->result = last ? DGO_RPC_RESULT_DONE : DGO_RPC_RESULT_MORE;
+  if (last) {
+    close_dgo();
+  }
+}
+
+u64 dgo_rpc(u32 function,
+            u32 send_buffer,
+            s32 send_size,
+            u32 recv_buffer,
+            s32 recv_size) {
+  if (send_size != (s32)sizeof(DgoRpcCmd) || recv_size != (s32)sizeof(DgoRpcCmd) ||
+      (send_buffer & 0xf) || (recv_buffer & 0xf) ||
+      !readable_ee_span(send_buffer, sizeof(DgoRpcCmd)) ||
+      !readable_ee_span(recv_buffer, sizeof(DgoRpcCmd))) {
+    return goal_kernel_core_machine_stub_report("rpc-call (Jak 2 DGO, malformed buffers)");
+  }
+
+  DgoRpcCmd cmd;
+  memcpy(&cmd, Ptr<u8>(send_buffer).c(), sizeof(cmd));
+  switch (function) {
+    case DGO_RPC_LOAD_FNO: {
+      g_rpc_stats.dgo_archives++;
+      std::string name;
+      if (!dgo_name(cmd.name, &name)) {
+        cmd.result = DGO_RPC_RESULT_ERROR;
+        close_dgo();
+        break;
+      }
+      begin_loading_dgo(name.c_str(), Ptr<u8>(cmd.buffer1), Ptr<u8>(cmd.buffer2),
+                        Ptr<u8>(cmd.buffer_heap_top));
+      answer_with_next_object(&cmd);
+      break;
+    }
+    case DGO_RPC_LOAD_NEXT_FNO:
+      if (g_dgo.fd < 0 || g_dgo.failed) {
+        cmd.result = DGO_RPC_RESULT_ERROR;
+        close_dgo();
+        break;
+      }
+      // Jak 2 may borrow different buffers between objects, unlike Jak 1.
+      g_dgo.buffer1 = Ptr<u8>(cmd.buffer1);
+      g_dgo.buffer2 = Ptr<u8>(cmd.buffer2);
+      g_dgo.heap_top = Ptr<u8>(cmd.buffer_heap_top);
+      if (!read_next_object()) {
+        cmd.result = DGO_RPC_RESULT_ERROR;
+        close_dgo();
+        break;
+      }
+      answer_with_next_object(&cmd);
+      break;
+    case DGO_RPC_CANCEL_FNO:
+      close_dgo();
+      cmd.result = DGO_RPC_RESULT_ABORTED;
+      break;
+    default:
+      set_error(fmt::format("the Jak 2 DGO RPC was called with function number {}", function));
+      cmd.result = DGO_RPC_RESULT_ERROR;
+      break;
+  }
+
+  memcpy(Ptr<u8>(recv_buffer).c(), &cmd, sizeof(cmd));
+  return 0;
+}
+
+u64 goal_rpc_call(const u64* args) {
+  if (!args) {
+    return goal_kernel_core_machine_stub_report("rpc-call (Jak 2 DGO, missing arguments)");
+  }
+  if ((s32)args[0] == DGO_RPC_CHANNEL) {
+    return dgo_rpc((u32)args[1], (u32)args[3], (s32)args[4], (u32)args[5], (s32)args[6]);
+  }
+  return goal_jak2_sound_rpc_call(args);
+}
+
+u64 goal_rpc_busy(u64 channel) {
+  if ((s32)channel == DGO_RPC_CHANNEL) {
+    return 0;
+  }
+  return goal_jak2_sound_rpc_busy((s32)channel);
+}
+
+u64 goal_link_begin(const u64* args) {
+  const Ptr<u8> object_data((u32)args[0]);
+  const char* name = Ptr<char>((u32)args[1]).c();
+  const u32 flags = (u32)args[4];
+
+  if (is_data_object(object_data)) {
+    g_rpc_stats.linked_data_objects++;
+    return jak2::link_begin(const_cast<u64*>(args));
+  }
+
+  g_rpc_stats.linked_code_objects++;
+  if (!load_code_object(name, flags, true, (u32)args[3])) {
+    lg::error("[dgo-loader] link-begin: {}", g_error);
+    ASSERT_NOT_REACHED_MSG("link-begin was given a code object this build cannot supply");
+  }
+  return 1;
+}
+
+u64 goal_link_resume() {
+  return jak2::link_resume();
+}
+
+}  // namespace
+
+// ================================================================================================
 // The C entry points the host boot drives (dgo_loader.h)
 // ================================================================================================
 
 extern "C" {
+
+void goal_dgo_goal_loader_stats(goal_dgo_rpc_stats* out) {
+  if (out) {
+    *out = g_rpc_stats;
+  }
+}
+
+void goal_dgo_install_goal_loader(void) {
+  g_rpc_stats = {};
+  jak2::make_stack_arg_function_symbol_from_c("rpc-call", (void*)stack_arg_shim<goal_rpc_call>);
+  jak2::make_function_symbol_from_c("rpc-busy?", (void*)goal_rpc_busy);
+  jak2::make_stack_arg_function_symbol_from_c("link-begin", (void*)stack_arg_shim<goal_link_begin>);
+  jak2::make_function_symbol_from_c("link-resume", (void*)goal_link_resume);
+}
 
 goal_kernel_core_status goal_dgo_load(const char* name,
                                       uint32_t link_flags,

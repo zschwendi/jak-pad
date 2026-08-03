@@ -750,7 +750,7 @@ u64 str_rpc(u32 function,
   return 0;
 }
 
-u64 rpc_call(u64* args) {
+u64 rpc_call(const u64* args) {
   if (!args) {
     return reject("rpc-call (Jak 2 sound, missing arguments)");
   }
@@ -783,7 +783,7 @@ u64 rpc_busy(u64 channel) {
   return 0;
 }
 
-template <u64 (*Function)(u64*)>
+template <u64 (*Function)(const u64*)>
 u64 stack_arg_shim(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7) {
   u64 args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
   return Function(args);
@@ -860,6 +860,14 @@ void goal_jak2_sound_player_state_get(goal_jak2_sound_player_state* out) {
   if (out) {
     *out = g_player_state;
   }
+}
+
+uint64_t goal_jak2_sound_rpc_call(const uint64_t* args) {
+  return rpc_call(args);
+}
+
+uint64_t goal_jak2_sound_rpc_busy(int32_t channel) {
+  return rpc_busy((u64)(u32)channel);
 }
 
 }  // extern "C"

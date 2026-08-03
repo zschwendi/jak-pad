@@ -75,6 +75,15 @@ void goal_jak2_sound_rpc_stats_get(goal_jak2_sound_rpc_stats* out);
 
 void goal_jak2_sound_player_state_get(goal_jak2_sound_player_state* out);
 
+/*!
+ * Route one call or busy query through the installed Jak 2 sound responder. These are the
+ * composition boundary used by the DGO channel router; callers should keep channels 0, 1 and 4
+ * under this responder rather than duplicating their protocol.
+ */
+uint64_t goal_jak2_sound_rpc_call(const uint64_t* args);
+
+uint64_t goal_jak2_sound_rpc_busy(int32_t channel);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

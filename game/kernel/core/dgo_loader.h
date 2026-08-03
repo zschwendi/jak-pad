@@ -45,7 +45,8 @@ goal_kernel_core_status goal_dgo_load(const char* name,
  * with this platform's code/data rule applied. See dgo_loader.cpp.
  *
  * Call after `goal_kernel_core_stub_machine_layer`, whose stubs for `rpc-call` and `rpc-busy?`
- * these replace. Calling it clears the counters below.
+ * these replace. For Jak 2, install its sound RPC first; this installer becomes the top-level
+ * router and delegates sound channels 0, 1 and 4 to it. Calling it clears the counters below.
  */
 void goal_dgo_install_goal_loader(void);
 

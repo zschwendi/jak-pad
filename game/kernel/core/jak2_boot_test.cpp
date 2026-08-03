@@ -217,6 +217,9 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
     say("FAILED: could not install the Jak 2 machine seams\n");
     return 1;
   }
+  // Sound owns channels 0, 1 and 4. Install the composed DGO router after it so channel 3 is
+  // available without replacing those handlers.
+  goal_dgo_install_goal_loader();
 
   if (with_game) {
     say("\n=== GAME.CGO (exploratory; expected to stop at the first missing subsystem)\n");

@@ -465,6 +465,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak2-sound-rpc-test jak2-kernel-core)
         add_test(NAME jak2-sound-rpc-test COMMAND jak2-sound-rpc-test)
 
+        add_executable(jak2-dgo-rpc-test kernel/core/jak2_dgo_rpc_test.cpp)
+        target_link_libraries(jak2-dgo-rpc-test jak2-kernel-core)
+        add_test(NAME jak2-dgo-rpc-test COMMAND jak2-dgo-rpc-test)
+
         add_executable(jak2-sblk-preflight-test
                 kernel/core/jak2_sblk_preflight_test.cpp
                 kernel/core/sblk_preflight.cpp)
