@@ -791,7 +791,7 @@ int main(int argc, char** argv) {
   lg::set_flush_level(lg::level::warn);
   lg::initialize();
 
-  if (run_play) {
+  if (run_play && !run_play_gfx_host) {
     return run_play_runtime(data_dir, dispatch_frames, run_play_dma);
   }
 

@@ -73,7 +73,7 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
     "-framework QuartzCore"
     "-framework Foundation")
   set_target_properties(jak2-iphoneos-display-tick-proof PROPERTIES
-    MACOSX_BUNDLE_BUNDLE_NAME "OpenGOAL Jak II Display Tick Proof"
+    MACOSX_BUNDLE_BUNDLE_NAME "Eco Pro Jak II Dev"
     MACOSX_BUNDLE_BUNDLE_VERSION "1"
     MACOSX_BUNDLE_GUI_IDENTIFIER
       "${OPENGOAL_JAK2_IPHONEOS_DISPLAY_TICK_BUNDLE_IDENTIFIER}"
