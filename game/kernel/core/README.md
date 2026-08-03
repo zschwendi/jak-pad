@@ -624,15 +624,19 @@ cmake -S . -B build/ios-jak2-aot-link -G Ninja \
   -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build/ios-jak2-aot-link -j 4 \
-  --target jak1-kernel-core jak2-kernel-core jak2-iphoneos-full-aot-link
+  --target jak1-kernel-core jak2-kernel-core \
+  jak2-iphoneos-aot-corpus jak2-iphoneos-full-aot-link
 ```
 
 Configuration and every build validate the manifest, its declared count, and the exact corpus of
-840 generated C/header pairs. The final executable compiles those 840 units plus
-`aot_boot_manifest.c` with `-fno-strict-aliasing` and links only `jak2-kernel-core`. It must not
-link the Jak 1 AOT product in the same executable because the generated games export overlapping
-symbols. The Ninja build remains unsigned. This is a device-SDK compile/link proof, not the
-shipping GOALPad application or a runtime result.
+840 generated C/header pairs. `jak2-iphoneos-aot-corpus` compiles those 840 units plus
+`aot_boot_manifest.c` with `-fno-strict-aliasing` into
+`libopengoal-jak2-aot-corpus.a`; consumers receive the generated manifest include path and the
+`jak2-kernel-core` dependency through the CMake target. The final executable links that reusable
+archive and retains the complete manifest. It must not link the Jak 1 AOT product in the same
+executable because the generated games export overlapping symbols. The Ninja build remains
+unsigned. This is a device-SDK archive/link proof, not the shipping GOALPad application or a
+runtime result.
 
 The same target can be generated as a normally signable iPhoneOS app bundle without embedding a
 personal team or product identity in the project. Pass a unique bundle identifier and an Apple

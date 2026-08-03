@@ -12,7 +12,7 @@ option(OPENGOAL_BUILD_JAK1_DATA_ARENA_ARM64_INVOKER_ONLY
 option(OPENGOAL_BUILD_JAK1_KERNEL_CORE_ONLY
        "Build only the portable Jak 1 kernel core static library" OFF)
 option(OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY
-       "Build the portable kernels and the complete Jak 2 iPhoneOS AOT link proof" OFF)
+       "Build the portable kernels, Jak 2 iPhoneOS AOT archive, and full link proof" OFF)
 option(OPENGOAL_BUILD_SAFE_ISO_READER_ONLY
        "Build only the bounded, portable ISO9660 reader static library" OFF)
 option(OPENGOAL_BUILD_JAK1_ISO_VALIDATION_ONLY

@@ -18,19 +18,24 @@ add_custom_target(jak2-iphoneos-aot-corpus-check
           -P "${CMAKE_CURRENT_LIST_DIR}/validate_jak2_aot.cmake"
   VERBATIM)
 
-# Jak 1 and Jak 2 generated code export overlapping names. Keep this executable deliberately
-# single-game: the two kernel archives may coexist in the build tree, but this product links only
-# jak2-kernel-core and the validated Jak 2 corpus.
-add_executable(jak2-iphoneos-full-aot-link MACOSX_BUNDLE
-  "${CMAKE_CURRENT_LIST_DIR}/jak2_iphoneos_aot_link_check.cpp"
+# Jak 1 and Jak 2 generated code export overlapping names. Keep this archive deliberately
+# single-game: the two kernel archives may coexist in the build tree, but a product must link only
+# one game's AOT corpus.
+add_library(jak2-iphoneos-aot-corpus STATIC
   "${JAK2_AOT_MANIFEST_C}"
   ${JAK2_AOT_TRANSLATION_UNITS})
-add_dependencies(jak2-iphoneos-full-aot-link jak2-iphoneos-aot-corpus-check)
+add_dependencies(jak2-iphoneos-aot-corpus jak2-iphoneos-aot-corpus-check)
 set_source_files_properties(
   "${JAK2_AOT_MANIFEST_C}" ${JAK2_AOT_TRANSLATION_UNITS}
   PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
-target_include_directories(jak2-iphoneos-full-aot-link PRIVATE "${JAK2_AOT_VALIDATED_DIR}")
-target_link_libraries(jak2-iphoneos-full-aot-link PRIVATE jak2-kernel-core)
+target_include_directories(jak2-iphoneos-aot-corpus PUBLIC "${JAK2_AOT_VALIDATED_DIR}")
+target_link_libraries(jak2-iphoneos-aot-corpus PUBLIC jak2-kernel-core)
+set_target_properties(jak2-iphoneos-aot-corpus PROPERTIES
+  OUTPUT_NAME "opengoal-jak2-aot-corpus")
+
+add_executable(jak2-iphoneos-full-aot-link MACOSX_BUNDLE
+  "${CMAKE_CURRENT_LIST_DIR}/jak2_iphoneos_aot_link_check.cpp")
+target_link_libraries(jak2-iphoneos-full-aot-link PRIVATE jak2-iphoneos-aot-corpus)
 set_target_properties(jak2-iphoneos-full-aot-link PROPERTIES
   MACOSX_BUNDLE_BUNDLE_NAME "OpenGOAL Jak II AOT Link Proof"
   MACOSX_BUNDLE_BUNDLE_VERSION "1"
