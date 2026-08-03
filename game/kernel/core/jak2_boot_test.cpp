@@ -11,8 +11,9 @@
  *
  * Needs a data directory, given by --data-dir or GOALPAD_JAK2_DATA_DIR, and reports that it was
  * skipped when there is none. --with-game goes on to attempt GAME.CGO. --play implies
- * --with-game and calls the real Jak 2 `(play #t #t)` only far enough to report the first
- * title-level DGO request and the next missing subsystem. Both are explicit frontier probes.
+ * --with-game and calls the real Jak 2 `play-boot`, then dispatches the GOAL process it creates
+ * only far enough to report the first title-level DGO request and the next missing subsystem.
+ * Both are explicit frontier probes.
  */
 
 #include <cstdarg>
@@ -186,14 +187,6 @@ void record_packages_in_game_cgo() {
   }
 }
 
-u32 g_play = 0;
-u32 g_true = 0;
-
-/*! `play` allocates stack objects, so enter it on GOAL's own 32-bit-addressable stack. */
-u64 play_on_goal_stack() {
-  return call_goal(Ptr<Function>(g_play), g_true, g_true, 0, s7.offset, g_ee_main_mem);
-}
-
 int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, bool run_play) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
@@ -277,28 +270,42 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
   }
 
   if (run_play) {
-    goal_kernel_core_state state = {};
-    if (goal_kernel_core_get_state(&state) != GOAL_KERNEL_CORE_OK ||
-        goal_kernel_core_lookup("play", nullptr, &g_play) != GOAL_KERNEL_CORE_OK || !g_play) {
-      say("FAILED: Jak 2 play holds nothing\n");
+    uint32_t play_boot = 0;
+    uint32_t dispatcher = 0;
+    if (goal_kernel_core_lookup("play-boot", nullptr, &play_boot) != GOAL_KERNEL_CORE_OK ||
+        !play_boot ||
+        goal_kernel_core_lookup("kernel-dispatcher", nullptr, &dispatcher) != GOAL_KERNEL_CORE_OK ||
+        !dispatcher) {
+      say("FAILED: Jak 2 play-boot or kernel-dispatcher holds nothing\n");
       return 1;
     }
-    g_true = state.true_offset;
 
-    say("\n=== (play #t #t) frontier\n");
-    const u64 play_result = call_goal_on_stack(
-        jak2::make_function_from_native((void*)play_on_goal_stack), goal_kernel_stack_top(),
-        s7.offset, g_ee_main_mem);
+    say("\n=== play-boot frontier\n");
+    const u64 play_boot_result = jak2::call_goal_function_by_name("play-boot");
     drain_goal_print_buffer();
 
     goal_dgo_rpc_stats rpc = {};
-    goal_dgo_goal_loader_stats(&rpc);
-    say("  play returned #x%llx\n", (unsigned long long)play_result);
+    int frames_run = 0;
+    while (frames_run < dispatch_frames) {
+      call_goal_on_stack(Ptr<Function>(dispatcher), goal_kernel_stack_top(), s7.offset,
+                         g_ee_main_mem);
+      frames_run++;
+      drain_goal_print_buffer();
+      goal_dgo_goal_loader_stats(&rpc);
+      if (std::strcmp(rpc.first_dgo_name, "TITLE.DGO") == 0 && rpc.dgo_archives >= 1 &&
+          rpc.dgo_objects >= 1 &&
+          rpc.linked_code_objects + rpc.linked_data_objects >= 1) {
+        break;
+      }
+    }
+
+    say("  play-boot returned #x%llx; dispatched %d frame(s)\n",
+        (unsigned long long)play_boot_result, frames_run);
     say("  channel 3 first request: %s; %d archive(s), %d object(s) "
         "(%d code from AOT, %d data linked)\n",
         rpc.first_dgo_name[0] ? rpc.first_dgo_name : "<none>", rpc.dgo_archives,
         rpc.dgo_objects, rpc.linked_code_objects, rpc.linked_data_objects);
-    report_heap("after play frontier");
+    report_heap("after play-boot frontier");
 
     if (std::strcmp(rpc.first_dgo_name, "TITLE.DGO") != 0 || rpc.dgo_archives < 1 ||
         rpc.dgo_objects < 1 || rpc.linked_code_objects + rpc.linked_data_objects < 1 ||
@@ -307,7 +314,8 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
       return 1;
     }
     say("  proved: Jak 2 play reached TITLE.DGO through the composed channel-3 router\n");
-    say("STOPPED: the host probe has no pad, renderer, or app loop; any missing-machine "
+    say("STOPPED: the host probe ended at the first completed title request; it has no renderer "
+        "or app loop, and any missing-machine "
         "reports above are the next unsupported frontier, not successful behavior.\n");
     return 0;
   }
