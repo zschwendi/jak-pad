@@ -273,6 +273,34 @@ std::vector<u8> version_2_tone_bank() {
   return wrap_sfx_bank(bank, std::vector<u8>{0, 0});
 }
 
+std::vector<u8> shared_reference_budget_sfx_bank() {
+  constexpr size_t kHeaderSize = 64;
+  constexpr size_t kSoundSize = 12;
+  constexpr size_t kGrainSize = 8;
+  constexpr size_t kSoundCount = 259;
+  constexpr size_t kGrainCount = 127;
+  constexpr size_t kFirstSound = kHeaderSize;
+  constexpr size_t kFirstGrain = kFirstSound + kSoundCount * kSoundSize;
+  constexpr size_t kGrainData = kFirstGrain + kGrainCount * kGrainSize;
+  std::vector<u8> bank(kGrainData, 0);
+  write_value(&bank, 0, u32(0x6b6c4253));
+  write_value(&bank, 4, u32(2));
+  write_value(&bank, 22, s16(kSoundCount));
+  write_value(&bank, 24, s16(kGrainCount));
+  write_value(&bank, 28, u32(kFirstSound));
+  write_value(&bank, 32, u32(kFirstGrain));
+  write_value(&bank, 52, u32(kGrainData));
+  for (size_t sound = 0; sound < kSoundCount; sound++) {
+    const s8 references = sound + 1 == kSoundCount ? 1 : s8(kGrainCount);
+    write_value(&bank, kFirstSound + sound * kSoundSize + 4, references);
+    write_value(&bank, kFirstSound + sound * kSoundSize + 8, u32(0));
+  }
+  for (size_t grain = 0; grain < kGrainCount; grain++) {
+    write_value(&bank, kFirstGrain + grain * kGrainSize, u32(24) << 24);
+  }
+  return wrap_sfx_bank(bank);
+}
+
 using GoalEightArgumentFunction =
     u64 (*)(u64, u64, u64, u64, u64, u64, u64, u64);
 using GoalOneArgumentFunction = u64 (*)(u64);
@@ -359,6 +387,7 @@ int main() {
   auto bad_userdata_bank = valid_userdata_bank;
   write_value(&bad_userdata_bank, 24 + 56, u32(0xffffffff));
   auto valid_v2_bank = version_2_tone_bank();
+  auto shared_reference_budget_bank = shared_reference_budget_sfx_bank();
   auto bad_v2_offset_bank = valid_v2_bank;
   write_value(&bad_v2_offset_bank, 24 + 64 + 12, u32(0x01ffffff));
   auto bad_sample_offset_bank = valid_v2_bank;
@@ -371,6 +400,8 @@ int main() {
   check(bool(sblk_preflight::validate(valid_names_bank)), "bounded names-table fixture validates");
   check(bool(sblk_preflight::validate(valid_userdata_bank)), "bounded userdata fixture validates");
   check(bool(sblk_preflight::validate(valid_v2_bank)), "version-2 grain-data fixture validates");
+  check(bool(sblk_preflight::validate(shared_reference_budget_bank)),
+        "exact decoded-grain budget fixture validates");
   check(!sblk_preflight::validate(truncated_bank), "truncated outer attributes are rejected");
   check(!sblk_preflight::validate(overflow_bank), "overflowing outer chunk is rejected");
   check(!sblk_preflight::validate(negative_count_bank), "negative sound count is rejected");
@@ -461,6 +492,7 @@ int main() {
   check(!fixture_error && write_fixture(fixture_root / "iso" / "MIXED.TXT", fixture_bytes) &&
             write_fixture(fixture_root / "iso" / kFullWidthName, fixture_bytes) &&
             write_fixture(fixture_root / "iso" / "VALID.SBK", valid_bank) &&
+            write_fixture(fixture_root / "iso" / "BUDGET.SBK", shared_reference_budget_bank) &&
             write_fixture(fixture_root / "iso" / "TRUNC.SBK", truncated_bank) &&
             write_fixture(fixture_root / "iso" / "OVERFLOW.SBK", overflow_bank) &&
             write_fixture(fixture_root / "iso" / "NEGCOUNT.SBK", negative_count_bank) &&
@@ -488,6 +520,11 @@ int main() {
         "the minimal fixture has a real retained bank handle");
   check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
             "a repeated bank request remains synchronous");
+  reset_bank_command(send, bank_name("budget"));
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "an exact-budget bank load uses no reply buffer");
+  check(LookupBank(bank_name("budget").data()) != nullptr,
+        "the exact-budget fixture decodes through 989snd");
 
   const std::array<const char*, 11> invalid_bank_names = {
       "trunc",    "overflow", "negcount", "sndcnt",  "grainoff", "badtype",
@@ -517,8 +554,8 @@ int main() {
   check(invalid_buffers_untouched, "failed bank requests mutate neither EE buffer");
   check(invalid_banks_absent, "failed bank requests never enter loaded state");
   goal_jak2_sound_rpc_stats_get(&stats);
-  check_u32(stats.bank_requests, 15, "every well-framed bank request is counted");
-  check_u32(stats.banks_loaded, 1, "only the valid minimal bank is loaded");
+  check_u32(stats.bank_requests, 16, "every well-framed bank request is counted");
+  check_u32(stats.banks_loaded, 2, "only valid bank fixtures are loaded");
   check_u32(stats.bank_reuses, 1, "a repeated request reuses the retained bank");
   check_u32(stats.bank_failures, 13, "every invalid, missing, or unsafe bank fails closed");
   check_guards(send, "no-reply command send canaries stay intact");
@@ -656,8 +693,8 @@ int main() {
 
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.version_requests, 2, "rejected calls do not count as handshakes");
-  check_u32(stats.bank_requests, 15, "malformed bank framing is not counted as a request");
-  check_u32(stats.banks_loaded, 1, "malformed calls do not claim another bank load");
+  check_u32(stats.bank_requests, 16, "malformed bank framing is not counted as a request");
+  check_u32(stats.banks_loaded, 2, "malformed calls do not claim another bank load");
   check_u32(stats.bank_failures, 13, "framing rejection is distinct from a bank failure");
   check_u32(stats.str_requests, 9, "rejected STR calls do not count as file requests");
   check_u32(stats.rejected_calls, 24, "every unsupported request is reported");

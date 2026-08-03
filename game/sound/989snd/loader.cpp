@@ -428,15 +428,21 @@ BankHandle Loader::BankLoad(std::span<u8> bank) {
     }
     std::span<u8> midi_data(std::span<u8>(bank).subspan(fa.where[2].offset, fa.where[2].size));
 
-    auto bank = MusicBank::ReadBank(bank_data, sample_data, midi_data);
-    mBanks.emplace_back(bank);
-
-    return bank;
+    std::unique_ptr<SoundBank> decoded_bank(MusicBank::ReadBank(bank_data, sample_data, midi_data));
+    if (!decoded_bank) {
+      return nullptr;
+    }
+    const BankHandle handle = decoded_bank.get();
+    mBanks.emplace_back(std::move(decoded_bank));
+    return handle;
   } else if (fourcc == snd::fourcc("SBlk")) {
-    auto block = SFXBlock::ReadBlock(bank_data, sample_data);
-    mBanks.emplace_back(block);
-
-    return block;
+    std::unique_ptr<SoundBank> decoded_bank(SFXBlock::ReadBlock(bank_data, sample_data));
+    if (!decoded_bank) {
+      return nullptr;
+    }
+    const BankHandle handle = decoded_bank.get();
+    mBanks.emplace_back(std::move(decoded_bank));
+    return handle;
   }
 
   return nullptr;
