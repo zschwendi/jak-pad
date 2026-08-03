@@ -15,6 +15,7 @@
 #include "common/link_types.h"
 
 #include "game/common/dgo_rpc_types.h"
+#include "game/common/str_rpc_types.h"
 #include "game/kernel/common/klink.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/aot_loader.h"
@@ -157,6 +158,19 @@ std::vector<u8> synthetic_dgo() {
   return out;
 }
 
+std::vector<u8> synthetic_animation_str() {
+  constexpr u32 kSection = 0;
+  constexpr std::array<u8, 16> kChunk = {0xff, 0xff, 0xff, 0xff, 0xc0, 0, 0, 0,
+                                         2,    0,    0,    0,    0x5a, 0xa5, 0x11, 0x22};
+  StrFileHeaderJ2 header = {};
+  header.sectors[kSection] = sizeof(header) / SECTOR_SIZE;
+  header.sizes[kSection] = kChunk.size();
+  std::vector<u8> out(sizeof(header) + kChunk.size(), 0);
+  memcpy(out.data(), &header, sizeof(header));
+  memcpy(out.data() + sizeof(header), kChunk.data(), kChunk.size());
+  return out;
+}
+
 bool write_file(const std::filesystem::path& path, const std::vector<u8>& bytes) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   out.write((const char*)bytes.data(), (std::streamsize)bytes.size());
@@ -247,6 +261,9 @@ int main() {
   check(write_file(iso / "SYNTH.DGO", synthetic_dgo()), "write synthetic three-object DGO");
   check(write_file(iso / "DELEGATE.TXT", {'d', 'e', 'l', 'e', 'g', 'a', 't', 'e'}),
         "write synthetic STR delegation fixture");
+  const auto routed_animation = synthetic_animation_str();
+  check(write_file(iso / "TIDINTRO.STR", routed_animation),
+        "write synthetic indexed-animation STR fixture");
 
   check(goal_kernel_core_initialize() == GOAL_KERNEL_CORE_OK, "initialize the Jak 2 kernel core");
   goal_kernel_core_set_data_directory(temp.string().c_str());
@@ -359,6 +376,24 @@ int main() {
             "channel 4 keeps the exact byte count");
   check(memcmp(str_data.data.c(), "delegate", 8) == 0,
         "channel 4 still copies through the sound responder");
+
+  memset(str_send.data.c(), 0, str_send.size);
+  memset(str_recv.data.c(), 0xcc, str_recv.size);
+  memset(str_data.data.c(), 0xdd, str_data.size);
+  str->result = DGO_RPC_RESULT_INIT;
+  str->address = str_data.data.offset;
+  str->section = 0;
+  str->maxlen = str_data.size;
+  strcpy(str->basename, "title-disk-intro");
+  rpc_call(4, 0, 1, str_send.data.offset, sizeof(StrRequest), str_recv.data.offset,
+           sizeof(StrReply), 0);
+  check_u32(str_recv.data.cast<StrReply>().c()->result, DGO_RPC_RESULT_DONE,
+            "channel 4 keeps the indexed-animation reply");
+  check_u32(str_recv.data.cast<StrReply>().c()->maxlen, str_data.size,
+            "channel 4 keeps the indexed-animation byte count");
+  check(memcmp(str_data.data.c(), routed_animation.data() + sizeof(StrFileHeaderJ2),
+               str_data.size) == 0,
+        "channel 4 routes the exact indexed animation bytes");
   for (u32 channel : {0, 1, 3, 4}) {
     check_u32((u32)rpc_busy(channel), 0, "each synchronous implemented channel is not busy");
   }

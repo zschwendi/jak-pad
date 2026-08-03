@@ -1,7 +1,7 @@
 /*!
  * @file jak2_sound_rpc_test.cpp
- * Behavioral coverage for Jak 2's startup state, checked sound-bank playback and ordinary-file STR
- * seams.
+ * Behavioral coverage for Jak 2's startup state, checked sound-bank playback, and ordinary or
+ * chunked STR seams.
  */
 
 #include <algorithm>
@@ -17,6 +17,7 @@
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 
+#include "game/common/str_rpc_types.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/kernel_game.h"
@@ -114,6 +115,16 @@ void check_guards(GuardedBuffer& buffer, const char* what) {
 
 std::vector<u8> snapshot(GuardedBuffer& buffer) {
   return {buffer.data.c(), buffer.data.c() + buffer.size};
+}
+
+std::vector<u8> chunked_str_fixture(const std::array<u8, 48>& chunk, u32 section) {
+  std::vector<u8> result(sizeof(StrFileHeaderJ2) + chunk.size(), 0);
+  StrFileHeaderJ2 header = {};
+  header.sectors[section] = sizeof(StrFileHeaderJ2) / SECTOR_SIZE;
+  header.sizes[section] = chunk.size();
+  memcpy(result.data(), &header, sizeof(header));
+  memcpy(result.data() + sizeof(StrFileHeaderJ2), chunk.data(), chunk.size());
+  return result;
 }
 
 struct StrRequest {
@@ -862,9 +873,21 @@ int main() {
   for (u32 i = 0; i < fixture_bytes.size(); i++) {
     fixture_bytes[i] = (u8)(i ^ 0x5a);
   }
+  std::array<u8, 48> chunk_bytes;
+  for (u32 i = 0; i < chunk_bytes.size(); i++) {
+    chunk_bytes[i] = (u8)(0xc0 ^ i);
+  }
+  const auto chunked_fixture = chunked_str_fixture(chunk_bytes, 3);
+  auto hostile_chunked_fixture = chunked_fixture;
+  const u32 hostile_size = UINT32_MAX;
+  memcpy(hostile_chunked_fixture.data() + sizeof(u32) * (SECTOR_TABLE_SIZE_J2 + 3),
+         &hostile_size, sizeof(hostile_size));
   constexpr const char* kFullWidthName = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
   check(!fixture_error && write_fixture(fixture_root / "iso" / "MIXED.TXT", fixture_bytes) &&
             write_fixture(fixture_root / "iso" / kFullWidthName, fixture_bytes) &&
+            write_fixture(fixture_root / "iso" / "TIDINTRO.STR", chunked_fixture) &&
+            write_fixture(fixture_root / "iso" / "MIZ1ORBS.STR", chunked_fixture) &&
+            write_fixture(fixture_root / "iso" / "BAINTRO.STR", hostile_chunked_fixture) &&
             write_fixture(fixture_root / "iso" / "VALID.SBK", valid_bank) &&
             write_fixture(fixture_root / "iso" / "BUDGET.SBK", shared_reference_budget_bank) &&
             write_fixture(fixture_root / "iso" / "PLAY.SBK", playable_bank) &&
@@ -1059,6 +1082,62 @@ int main() {
   check(memcmp(str_destination.data.c(), fixture_bytes.data(), fixture_bytes.size()) == 0,
         "only the transmitted basename is needed to find the file");
 
+  std::printf("\n== synchronous indexed animation STR loads ==\n");
+  reset_str_request(str_send, str_destination.data.offset, 3, str_destination.size,
+                    "title-disk-intro");
+  memset(str_destination.data.c(), 0xdd, str_destination.size);
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+  check_u32(str_reply->result, 0, "chunked STR success result is done");
+  check_u32(str_reply->maxlen, chunk_bytes.size(), "chunked STR reply reports the exact byte count");
+  check_u32((u32)str_reply->section, 3, "chunked STR reply preserves the section");
+  check(memcmp(str_destination.data.c(), chunk_bytes.data(), chunk_bytes.size()) == 0,
+        "chunked STR copies only the indexed animation bytes");
+  bool chunk_tail_intact = true;
+  for (u32 i = chunk_bytes.size(); i < str_destination.size; i++) {
+    chunk_tail_intact &= str_destination.data.c()[i] == 0xdd;
+  }
+  check(chunk_tail_intact, "chunked STR does not write past the indexed bytes");
+
+  reset_str_request(str_send, str_destination.data.offset, 3, str_destination.size,
+                    "minershort-resolution-1-orbs");
+  memset(str_destination.data.c(), 0xdd, str_destination.size);
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+  check_u32(str_reply->result, 0, "animation ISO-name special words retain their lowercase mapping");
+  check(memcmp(str_destination.data.c(), chunk_bytes.data(), chunk_bytes.size()) == 0,
+        "special-word animation mapping reaches the indexed chunk");
+
+  for (const auto& failure :
+       std::array<std::pair<s32, std::string>, 4>{{{SECTOR_TABLE_SIZE_J2, "title-disk-intro"},
+                                                   {4, "title-disk-intro"},
+                                                   {3, "../title-disk-intro"},
+                                                   {3, "missing-animation"}}}) {
+    reset_str_request(str_send, str_destination.data.offset, failure.first,
+                      str_destination.size, failure.second);
+    memset(str_destination.data.c(), 0xdd, str_destination.size);
+    rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset,
+             kStrReplySize, 0);
+    check_u32(str_reply->result, 1, "invalid or missing animation chunk returns an error");
+    check_u32(str_reply->maxlen, 0, "failed animation chunk returns zero length");
+    check(std::all_of(str_destination.data.c(),
+                      str_destination.data.c() + str_destination.size,
+                      [](u8 byte) { return byte == 0xdd; }),
+          "failed animation chunk leaves the destination untouched");
+  }
+  reset_str_request(str_send, str_destination.data.offset, 3, 16, "title-disk-intro");
+  memset(str_destination.data.c(), 0xdd, str_destination.size);
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+  check_u32(str_reply->result, 1, "an undersized animation destination returns an error");
+  check_u32(str_reply->maxlen, 0, "an undersized animation destination returns zero length");
+  reset_str_request(str_send, str_destination.data.offset, 3, str_destination.size,
+                    "bad-intro");
+  memset(str_destination.data.c(), 0xdd, str_destination.size);
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+  check_u32(str_reply->result, 1, "an overflowing chunk size returns an error");
+  check_u32(str_reply->maxlen, 0, "an overflowing chunk size returns zero length");
+  check(std::all_of(str_destination.data.c(), str_destination.data.c() + str_destination.size,
+                    [](u8 byte) { return byte == 0xdd; }),
+        "an overflowing chunk size leaves the destination untouched");
+
   std::printf("\n== handled STR failures return an error reply ==\n");
   const std::array<std::string, 5> failed_names = {
       "missing.txt", "", "../MIXED.TXT", "sub/MIXED.TXT", "sub\\MIXED.TXT"};
@@ -1090,10 +1169,11 @@ int main() {
   check_u32((u32)rpc_busy(4), 0, "the synchronous STR channel is never busy");
 
   goal_jak2_sound_rpc_stats_get(&stats);
-  check_u32(stats.str_requests, 9, "all ordinary-file STR requests were counted");
-  check_u32(stats.str_reads, 2, "two synthetic STR files were read");
-  check_u32(stats.str_failures, 7, "handled STR failures were counted");
-  check_u32(stats.str_bytes, 17 + fixture_bytes.size(), "STR byte count is exact");
+  check_u32(stats.str_requests, 17, "all ordinary and chunked STR requests were counted");
+  check_u32(stats.str_reads, 4, "two ordinary files and two animation chunks were read");
+  check_u32(stats.str_failures, 13, "handled ordinary and chunked STR failures were counted");
+  check_u32(stats.str_bytes, 17 + fixture_bytes.size() + 2 * chunk_bytes.size(),
+            "STR byte count is exact");
   check_guards(str_send, "STR send-buffer canaries stay intact");
   check_guards(str_recv, "STR receive-buffer canaries stay intact");
   check_guards(str_destination, "STR destination canaries stay intact");
@@ -1136,7 +1216,6 @@ int main() {
   reset_str_request(str_send, str_destination.data.offset, 0, str_destination.size, "mixed.txt");
   memset(str_recv.data.c(), 0xcc, str_recv.size);
   const auto unsupported_str_recv = snapshot(str_recv);
-  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
   rpc_call(4, 1, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
   rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize - 1, str_recv.data.offset,
            kStrReplySize, 0);
@@ -1149,7 +1228,7 @@ int main() {
   rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize,
            EE_MAIN_MEM_SIZE - kStrReplySize + 1, kStrReplySize, 0);
   check(snapshot(str_recv) == unsupported_str_recv,
-        "chunked and malformed STR requests do not mutate the reply");
+        "unsupported-function and malformed STR requests do not mutate the reply");
   check_u32((u32)rpc_busy(3), 0, "an unsupported busy query still returns not-busy");
   check_guards(send, "rejected-call send canaries stay intact");
   check_guards(recv, "rejected-call receive canaries stay intact");
@@ -1159,11 +1238,11 @@ int main() {
   check_u32(stats.bank_requests, 17, "malformed bank framing is not counted as a request");
   check_u32(stats.banks_loaded, 3, "malformed calls do not claim another bank load");
   check_u32(stats.bank_failures, 13, "framing rejection is distinct from a bank failure");
-  check_u32(stats.str_requests, 9, "rejected STR calls do not count as file requests");
+  check_u32(stats.str_requests, 17, "rejected STR calls do not count as file requests");
   check_u32(stats.language_requests, 9, "malformed framing is not a language request");
   check_u32(stats.language_failures, 1, "framing rejection is distinct from language failure");
   check_u32(stats.language_id, 7, "rejected calls preserve the current language");
-  check_u32(stats.rejected_calls, player_rejected_calls + 26,
+  check_u32(stats.rejected_calls, player_rejected_calls + 25,
             "every unsupported request is reported");
 
   std::printf("\n== shutdown and reinitialization ownership ==\n");
