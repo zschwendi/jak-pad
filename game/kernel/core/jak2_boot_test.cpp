@@ -43,6 +43,8 @@ extern "C" {
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
+#include "game/kernel/core/dma_capture.h"
+#include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/jak2_runtime.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
