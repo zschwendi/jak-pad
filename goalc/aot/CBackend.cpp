@@ -868,10 +868,8 @@ std::string FileEmitter::emit_instruction(const FunctionEnv& func, IR* ir) {
   }
 
   if (auto* p = dynamic_cast<IR_SqrtVF*>(ir)) {
-    return fmt::format(
-        "{} = ({})goal_vf_set_x((goal_vf){}, __builtin_sqrtf(goal_vf_x((goal_vf){})));",
-        reg(p->destination()), c_type_for(p->destination()->ireg().reg_class),
-        reg(p->destination()), reg(p->source()));
+    return fmt::format("{} = ({})goal_vf_sqrt((goal_vf){});", reg(p->destination()),
+                       c_type_for(p->destination()->ireg().reg_class), reg(p->source()));
   }
 
   if (auto* p = dynamic_cast<IR_SplatVF*>(ir)) {

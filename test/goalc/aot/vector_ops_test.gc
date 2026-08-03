@@ -165,3 +165,20 @@
     (.nop.vf)
     (.svf dst vf1))
   (none))
+
+(defun aot-test-sqrt ((dst (pointer uint128)) (a (pointer uint128)))
+  (rlet ((vf1 :class vf))
+    (.lvf vf1 a)
+    (.sqrt.vf vf1 vf1 :ftf #b10)
+    (.svf dst vf1))
+  (none))
+
+(defun aot-test-inverse-sqrt
+    ((dst (pointer uint128)) (numerator (pointer uint128)) (denominator (pointer uint128)))
+  (rlet ((vf1 :class vf)
+         (vf2 :class vf))
+    (.lvf vf1 numerator)
+    (.lvf vf2 denominator)
+    (.isqrt.vf vf1 vf1 vf2 :fsf #b1 :ftf #b10)
+    (.svf dst vf1))
+  (none))

@@ -279,6 +279,17 @@ static void test_vu_sync_barriers(void) {
   expect_floats("add between VU sync barriers", 1.5f, 2.25f, 2.f, 104.f);
 }
 
+static void test_scalar_vu_sqrt_results_are_broadcast(void) {
+  put_floats(SRC_A, 1.f, 4.f, 16.f, 64.f);
+  goal_vec_aot_test_sqrt(DST, SRC_A);
+  expect_floats("sqrt.vf selected lane broadcast", 4.f, 4.f, 4.f, 4.f);
+
+  put_floats(SRC_A, 1.f, 8.f, 27.f, 64.f);
+  put_floats(SRC_B, 1.f, 4.f, 16.f, 64.f);
+  goal_vec_aot_test_inverse_sqrt(DST, SRC_A, SRC_B);
+  expect_floats("isqrt.vf selected lanes broadcast", 2.f, 2.f, 2.f, 2.f);
+}
+
 int main(void) {
   goal_test_loader_init();
   goal_test_load_functions(goal_vec_functions, goal_vec_function_count);
@@ -296,6 +307,7 @@ int main(void) {
   test_blend();
   test_outer_product();
   test_vu_sync_barriers();
+  test_scalar_vu_sqrt_results_are_broadcast();
 
   if (g_failures) {
     printf("%d vector operation check(s) failed\n", g_failures);

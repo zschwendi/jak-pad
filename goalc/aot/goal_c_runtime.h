@@ -281,6 +281,14 @@ static inline goal_vi goal_vf_ftoi(goal_vf v) {
   return __builtin_convertvector(v, goal_vi);
 }
 
+static inline goal_vf goal_vf_sqrt(goal_vf v) {
+  goal_vf out;
+  for (int i = 0; i < 4; i++) {
+    out[i] = __builtin_sqrtf(v[i]);
+  }
+  return out;
+}
+
 static inline goal_vf goal_vf_splat(goal_vf v, int lane) {
   goal_vf out = {v[lane], v[lane], v[lane], v[lane]};
   return out;
