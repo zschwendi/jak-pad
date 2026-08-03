@@ -31,7 +31,9 @@ typedef struct goal_jak2_sound_rpc_stats {
 /*!
  * Replace Jak 2's rpc-call/rpc-busy? machine stubs with the synchronous loader and STR responders.
  * The kernel and machine-stub symbol table must already be initialized. This owns one portable,
- * output-backend-free 989snd instance until shutdown.
+ * output-backend-free 989snd instance until shutdown. Loader command 2 has no reply payload: its
+ * zero return is synchronous transport completion, not proof that a bank loaded. Host logs and
+ * goal_jak2_sound_rpc_stats report bank failures.
  */
 goal_kernel_core_status goal_jak2_sound_rpc_install(void);
 

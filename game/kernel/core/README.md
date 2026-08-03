@@ -12,7 +12,9 @@ Jak 2 kernel, with `dgo_loader_jak2.cpp` carrying the C-driven DGO load and the 
 mips2c translations registered through the native-function seam. `sound_rpc_jak2.cpp` answers the
 loader's command-aware framing, IRX 4.0 version handshake, checked SBlk loads, and ordinary STR
 files. A bounded user-local bank is validated in memory before the same bytes reach 989snd, and the
-kernel owns its sound-system shutdown. Playback, streaming, pad, and graphics still report through
+kernel owns its sound-system shutdown. Command 2 has no reply payload: its zero return only means
+the synchronous transport completed, not that a bank loaded; failures are available through host
+logs and `goal_jak2_sound_rpc_stats`. Playback, streaming, pad, and graphics still report through
 the machine stubs. `jak2-sound-rpc-test` covers these seams with original synthetic data only.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
 kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
