@@ -34,7 +34,10 @@ add_library(jak2-iphoneos-aot-corpus STATIC
 add_dependencies(jak2-iphoneos-aot-corpus jak2-iphoneos-aot-corpus-check)
 set_source_files_properties(
   "${JAK2_AOT_MANIFEST_C}" ${JAK2_AOT_TRANSLATION_UNITS}
-  PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
+  # The iPhoneOS-only top-level returns before OpenGOAL's global -O3 setup. AOT GOAL stack backup
+  # sizes are measured against optimized native frames, so compiling this corpus at -O0 can make a
+  # valid process overflow its backup buffer before the first rendered frame.
+  PROPERTIES COMPILE_OPTIONS "-O3;-fno-strict-aliasing")
 target_include_directories(jak2-iphoneos-aot-corpus PUBLIC "${JAK2_AOT_VALIDATED_DIR}")
 target_link_libraries(jak2-iphoneos-aot-corpus PUBLIC jak2-kernel-core)
 set_target_properties(jak2-iphoneos-aot-corpus PROPERTIES
