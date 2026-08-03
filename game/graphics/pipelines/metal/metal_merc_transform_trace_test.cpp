@@ -489,9 +489,20 @@ int main() {
   constexpr u32 kCamera = 0x5000;
   constexpr u32 kCount = 4;
   const auto camera_matrix = pitch_matrix(23.0);
-  const std::array<metal_merc_transform_trace::MatrixSnapshot,
-                   jak1_bones_provenance_trace::kRootAnchorCount>
+  std::array<metal_merc_transform_trace::MatrixSnapshot,
+             jak1_bones_provenance_trace::kRootAnchorCount>
       root_matrices = {yaw_matrix(31.0), yaw_matrix(-47.0), yaw_matrix(68.0)};
+  for (u32 component = 0; component < 3; component++) {
+    root_matrices[0][component] *= 2.0f;
+    root_matrices[1][4 + component] *= 3.0f;
+    root_matrices[2][8 + component] *= 4.0f;
+  }
+  const std::array<std::array<float, 3>, jak1_bones_provenance_trace::kRootAnchorCount>
+      root_scales = {{{1.25f, 2.25f, 3.25f},
+                      {4.5f, 5.5f, 6.5f},
+                      {7.75f, 8.75f, 9.75f}}};
+  const std::array<u32, jak1_bones_provenance_trace::kRootAnchorCount> root_scale_w_bits = {
+      0, 0x80000000u, 0x3f800000u};
   const std::array<metal_merc_transform_trace::MatrixSnapshot,
                    jak1_bones_provenance_trace::kRootAnchorCount>
       bind_pose_matrices = {roll_matrix(-19.0), roll_matrix(37.0), roll_matrix(59.0)};
@@ -500,6 +511,13 @@ int main() {
     store_matrix(memory,
                  kBones + (root + 1) * jak1_bones_provenance_trace::kBoneStride,
                  root_matrices[root]);
+    const u32 scale_address =
+        kBones + (root + 1) * jak1_bones_provenance_trace::kBoneStride +
+        jak1_bones_provenance_trace::kBoneScaleOffset;
+    store_value(memory, scale_address, root_scales[root][0]);
+    store_value(memory, scale_address + sizeof(float), root_scales[root][1]);
+    store_value(memory, scale_address + 2 * sizeof(float), root_scales[root][2]);
+    store_value(memory, scale_address + 3 * sizeof(float), root_scale_w_bits[root]);
   }
   for (u32 joint = 0; joint < jak1_bones_provenance_trace::kRootAnchorCount; joint++) {
     store_matrix(memory,
@@ -515,8 +533,10 @@ int main() {
             recorded->camera.valid && recorded->joints_base == kJoints &&
             recorded->root_anchors[0].valid && recorded->root_anchors[1].valid &&
             recorded->root_anchors[2].valid && recorded->root_bind_poses[0].valid &&
-            recorded->root_bind_poses[1].valid && recorded->root_bind_poses[2].valid,
-        "one record retains camera, bind poses, and align, prejoint and main transforms");
+            recorded->root_bind_poses[1].valid && recorded->root_bind_poses[2].valid &&
+            recorded->root_scales[0].valid && recorded->root_scales[1].valid &&
+            recorded->root_scales[2].valid,
+        "one record retains camera, bind poses, and align, prejoint and main transforms and scales");
   bool bind_pose_bytes_match = recorded.has_value();
   if (recorded) {
     for (u32 joint = 0; joint < jak1_bones_provenance_trace::kRootAnchorCount; joint++) {
@@ -582,6 +602,33 @@ int main() {
   }
   check(root_mapping_matches,
         "root slots 1, 2 and 3 retain their matching align, prejoint and main bind poses");
+  bool root_scale_and_deformation_match = recorded.has_value();
+  std::array<metal_merc_transform_trace::RootAnchorObservation,
+             jak1_bones_provenance_trace::kRootAnchorCount>
+      root_observations = {};
+  if (recorded) {
+    for (u32 root = 0; root < jak1_bones_provenance_trace::kRootAnchorCount; root++) {
+      metal_merc_transform_trace::MatrixSnapshot matrix = {};
+      std::memcpy(matrix.data(), recorded->root_anchors[root].bytes.data(),
+                  recorded->root_anchors[root].bytes.size());
+      const auto& scale = recorded->root_scales[root];
+      root_observations[root] = metal_merc_transform_trace::make_root_anchor_observation(
+          matrix.data(), scale.x, scale.y, scale.z, scale.w_bits);
+      root_scale_and_deformation_match &=
+          root_observations[root].valid && root_observations[root].deformation.valid &&
+          std::abs(root_observations[root].deformation.aspect - static_cast<double>(root + 2)) <
+              1e-6 &&
+          root_observations[root].scale_x == root_scales[root][0] &&
+          root_observations[root].scale_y == root_scales[root][1] &&
+          root_observations[root].scale_z == root_scales[root][2] &&
+          root_observations[root].scale_w_bits == root_scale_w_bits[root];
+    }
+  }
+  const bool node3_parent_scale_cancellation_selected =
+      root_observations[1].valid && root_observations[1].scale_w_bits != 0;
+  check(root_scale_and_deformation_match && node3_parent_scale_cancellation_selected,
+        "root nodes 1-3 retain distinct deformation and raw scale fields while node 3 derives "
+        "parent-scale cancellation from node 2 raw scale.w bits");
   check(correct_composition_matches,
         "non-commuting X camera, Y bone and Z bind rotations match camera * bone * bind");
   check(reversed_order_is_rejected,
@@ -596,6 +643,19 @@ int main() {
   check(!registry.record(memory.size() - 64, kJoints, kBones, kCount, kCamera, memory.data(),
                          memory.size()),
         "the producer registry rejects an output span outside EE memory");
+
+  registry.record_post_flag(0x7000, 0x80, 12);
+  const auto visible_post_flag = registry.latest_post_flag();
+  registry.record_post_flag(0x7000, 0x82, 13);
+  const auto hidden_post_flag = registry.latest_post_flag();
+  check(visible_post_flag && visible_post_flag->serial == 1 && !visible_post_flag->hidden() &&
+            visible_post_flag->draw_status == 0x80 && visible_post_flag->target_attack_id == 12 &&
+            hidden_post_flag && hidden_post_flag->serial == 2 && hidden_post_flag->hidden() &&
+            hidden_post_flag->target_address == 0x7000 && hidden_post_flag->draw_status == 0x82 &&
+            hidden_post_flag->target_attack_id == 13 &&
+            registry.find_output_base(kOutput)->serial == 1,
+        "post-flag samples atomically retain raw visibility and same-sample attack identity "
+        "without requiring a new bones or Merc record");
 
   constexpr u32 kTargetType = 0x100;
   constexpr u32 kControlType = 0x200;
@@ -798,8 +858,8 @@ int main() {
   check(!registry.find_output_base(kOutput) && registry.find_output_base(0x6000 + 63 * 512),
         "the fixed producer ring evicts its oldest record without growing");
   registry.reset();
-  check(!registry.find_output_base(0x6000 + 63 * 512),
-        "reset removes producer provenance from an earlier runtime");
+  check(!registry.find_output_base(0x6000 + 63 * 512) && !registry.latest_post_flag(),
+        "reset removes producer and post-flag provenance from an earlier runtime");
 
   return failures ? 1 : 0;
 }

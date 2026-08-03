@@ -112,6 +112,21 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
         metal_merc_transform_trace::make_deformation_snapshot(root_matrix.data());
     control.output_deformation =
         metal_merc_transform_trace::make_deformation_snapshot(output_matrix);
+    for (std::size_t anchor = 0; anchor < calculation->root_anchors.size(); anchor++) {
+      const auto& anchor_transform = calculation->root_anchors[anchor];
+      const auto& anchor_scale = calculation->root_scales[anchor];
+      auto& anchor_observation = control.root_anchors[anchor];
+      if (!anchor_transform.valid || !anchor_scale.valid) {
+        continue;
+      }
+      metal_merc_transform_trace::MatrixSnapshot anchor_matrix = {};
+      memcpy(anchor_matrix.data(), anchor_transform.bytes.data(), anchor_transform.bytes.size());
+      anchor_observation = metal_merc_transform_trace::make_root_anchor_observation(
+          anchor_matrix.data(), anchor_scale.x, anchor_scale.y, anchor_scale.z,
+          anchor_scale.w_bits);
+    }
+    control.node3_parent_scale_cancellation_selected =
+        control.root_anchors[1].valid && control.root_anchors[1].scale_w_bits != 0;
     control.input_root_translation_x = out.input_translation_x;
     control.input_root_translation_y = out.input_translation_y;
     control.input_root_translation_z = out.input_translation_z;

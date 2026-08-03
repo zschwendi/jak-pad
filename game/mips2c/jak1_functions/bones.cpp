@@ -723,6 +723,22 @@ void link() {
 }
 
 }  // namespace jak1_bones_provenance_observe
+
+namespace jak1_target_post_flag_observe {
+
+u64 execute(void* ctxt) {
+  auto* c = (ExecutionContext*)ctxt;
+  jak1_bones_provenance_trace::registry().record_post_flag(
+      c->sgpr64(a0), c->sgpr64(a1), c->sgpr64(a2));
+  c->gprs[v0].du64[0] = 0;
+  return c->gprs[v0].du64[0];
+}
+
+void link() {
+  gLinkedFunctionTable.reg("jak1-target-post-flag-observe", execute, 0);
+}
+
+}  // namespace jak1_target_post_flag_observe
 } // namespace Mips2C
 
 //--------------------------MIPS2C---------------------

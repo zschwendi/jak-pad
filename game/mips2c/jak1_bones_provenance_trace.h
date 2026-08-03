@@ -19,6 +19,7 @@ constexpr std::size_t kJointStride = 0x50;
 constexpr std::size_t kJointBindPoseOffset = 0x10;
 constexpr std::size_t kGoalBasicPointerBias = BASIC_OFFSET;
 constexpr std::size_t kBoneStride = 96;
+constexpr std::size_t kBoneScaleOffset = kTransformBytes;
 constexpr std::size_t kOutputStride = 128;
 constexpr std::size_t kRootAnchorCount = 3;
 constexpr std::size_t kCalculationCount = 64;
@@ -106,6 +107,24 @@ struct TransformSnapshot {
   std::array<u8, kTransformBytes> bytes = {};
 };
 
+struct BoneScaleSnapshot {
+  bool valid = false;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  u32 w_bits = 0;
+};
+
+struct PostFlagSnapshot {
+  bool valid = false;
+  u64 serial = 0;
+  u32 target_address = 0;
+  u32 draw_status = 0;
+  u64 target_attack_id = 0;
+
+  bool hidden() const { return (draw_status & (1u << 1)) != 0; }
+};
+
 struct Calculation {
   bool valid = false;
   u64 serial = 0;
@@ -117,6 +136,7 @@ struct Calculation {
   TransformSnapshot camera;
   // Bone nodes 1, 2 and 3 are align, prejoint and main respectively.
   std::array<TransformSnapshot, kRootAnchorCount> root_anchors = {};
+  std::array<BoneScaleSnapshot, kRootAnchorCount> root_scales = {};
   std::array<TransformSnapshot, kRootAnchorCount> root_bind_poses = {};
   TargetControlSnapshot target_control;
 };
@@ -157,6 +177,8 @@ class Registry {
       }
       copy_snapshot(ee_memory + bones_base + bone_index * kBoneStride,
                     &calculation.root_anchors[anchor]);
+      copy_scale_snapshot(ee_memory + bones_base + bone_index * kBoneStride + kBoneScaleOffset,
+                          &calculation.root_scales[anchor]);
       const u64 normalized_joints_base = joints_base & 0x7fffffff;
       if (normalized_joints_base < kGoalBasicPointerBias) {
         continue;
@@ -201,10 +223,29 @@ class Registry {
     return latest;
   }
 
+  void record_post_flag(u64 target_address, u64 draw_status, u64 target_attack_id) {
+    m_post_flag = {
+        true,
+        ++m_post_flag_serial,
+        static_cast<u32>(target_address),
+        static_cast<u32>(draw_status),
+        target_attack_id,
+    };
+  }
+
+  std::optional<PostFlagSnapshot> latest_post_flag() const {
+    if (!m_post_flag.valid) {
+      return std::nullopt;
+    }
+    return m_post_flag;
+  }
+
   void reset() {
     m_calculations = {};
     m_next = 0;
     m_serial = 0;
+    m_post_flag = {};
+    m_post_flag_serial = 0;
   }
 
   static TargetControlSnapshot capture_target_control(const TargetCaptureContext& context,
@@ -427,9 +468,19 @@ class Registry {
     std::memcpy(destination->bytes.data(), source, destination->bytes.size());
   }
 
+  static void copy_scale_snapshot(const u8* source, BoneScaleSnapshot* destination) {
+    destination->valid = true;
+    std::memcpy(&destination->x, source, sizeof(destination->x));
+    std::memcpy(&destination->y, source + sizeof(float), sizeof(destination->y));
+    std::memcpy(&destination->z, source + 2 * sizeof(float), sizeof(destination->z));
+    std::memcpy(&destination->w_bits, source + 3 * sizeof(float), sizeof(destination->w_bits));
+  }
+
   std::array<Calculation, kCalculationCount> m_calculations = {};
   std::size_t m_next = 0;
   u64 m_serial = 0;
+  PostFlagSnapshot m_post_flag;
+  u64 m_post_flag_serial = 0;
 };
 
 inline Registry& registry() {

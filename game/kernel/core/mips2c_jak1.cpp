@@ -64,6 +64,7 @@ namespace method_18_collide_edge_work { extern void link(); }
 namespace calc_animation_from_spr { extern void link(); }
 namespace bones_mtx_calc { extern void link(); }
 namespace jak1_bones_provenance_observe { extern void link(); }
+namespace jak1_target_post_flag_observe { extern void link(); }
 namespace cspace_parented_transformq_joint { extern void link(); }
 namespace draw_bones_merc { extern void link(); }
 namespace draw_bones_check_longest_edge_asm { extern void link(); }
@@ -170,6 +171,7 @@ void goal_mips2c_register_jak1(void) {
   calc_animation_from_spr::link();
   bones_mtx_calc::link();
   jak1_bones_provenance_observe::link();
+  jak1_target_post_flag_observe::link();
   cspace_parented_transformq_joint::link();
   draw_bones_merc::link();
   draw_bones_check_longest_edge_asm::link();
