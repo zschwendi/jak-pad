@@ -1196,6 +1196,29 @@ metal_renderer::ChainStats MetalRenderer::chain_stats() {
   return out;
 }
 
+MetalRenderer::CommandBufferCompletion MetalRenderer::wait_for_last_frame() {
+  CommandBufferCompletion result;
+  id<MTLCommandBuffer> commands;
+  {
+    std::lock_guard<std::mutex> lock(m_frame_mutex);
+    commands = m_last_frame_cmds;
+  }
+  if (!commands) {
+    return result;
+  }
+  result.had_command_buffer = true;
+  [commands waitUntilCompleted];
+  result.status = static_cast<int64_t>(commands.status);
+  result.error_code = commands.error ? static_cast<int64_t>(commands.error.code) : 0;
+  result.completed = commands.status == MTLCommandBufferStatusCompleted;
+  if (!result.completed) {
+    const char* message = commands.error ? commands.error.localizedDescription.UTF8String
+                                         : "unknown";
+    lg::error("Metal command buffer failed to complete: {}", message);
+  }
+  return result;
+}
+
 bool MetalRenderer::read_color_target(id<MTLTexture> tex, metal_renderer::FramePixels* out) {
   const int w = (int)tex.width;
   const int h = (int)tex.height;

@@ -153,10 +153,10 @@ stops before it; `JAK1_AOT_BOOT_FRONTIER` in `game/CMakeLists.txt` is the number
 how you find the next frontier. `jak1-data-boot-test` below loads the art and gets past it.
 
 Machine-layer functions are asked for along the way and reported by
-`goal_kernel_core_stub_machine_layer` rather than implemented - the `file-stream-*` and `pc-*`
-PC-port functions. Those files' top-levels ran to completion, but with those calls returning 0, so
-they are known to load rather than known to work. The pad is the exception; see **The controller**
-below, and so are the `scf-get-*` readers; see **The boot configuration** below.
+`goal_kernel_core_stub_machine_layer` when they are not implemented. Jak 2 installs portable
+`file-stream-*` functions and the PC settings path/basic display queries; broader window, input,
+and PC-port functions remain diagnostic stubs. The pad is another exception; see **The
+controller** below, and so are the `scf-get-*` readers; see **The boot configuration** below.
 
 ```sh
 cmake --build build/Release/bin -j 4 --target jak1-data-boot-test
@@ -662,13 +662,20 @@ cmake --build build/ios-jak2-aot-link -j 4 \
 
 Configuration and every build validate the manifest, its declared count, and the exact corpus of
 840 generated C/header pairs. `jak2-iphoneos-aot-corpus` compiles those 840 units plus
-`aot_boot_manifest.c` with `-fno-strict-aliasing` into
+`aot_boot_manifest.c` with `-O3 -fno-strict-aliasing` into
 `libopengoal-jak2-aot-corpus.a`; consumers receive the generated manifest include path and the
 `jak2-kernel-core` dependency through the CMake target. The final executable links that reusable
 archive and retains the complete manifest. It must not link the Jak 1 AOT product in the same
 executable because the generated games export overlapping symbols. The Ninja build remains
 unsigned. This is a device-SDK archive/link proof, not the shipping GOALPad application or a
 runtime result.
+
+The explicit `-O3` is part of the AOT stack contract, not a performance-only preference. This
+iPhoneOS-only CMake path returns before OpenGOAL's global compiler defaults; without a target-local
+option, Xcode compiled the corpus at `-O0`, and the first Jak 2 time-of-day process consumed 960
+bytes at suspension against its valid 896-byte converted backup buffer. The optimized function
+uses the same stack model as the host Release build and passes that boundary without changing the
+game-authored stack request.
 
 The same target can be generated as a normally signable iPhoneOS app bundle without embedding a
 personal team or product identity in the project. Pass a unique bundle identifier and an Apple
@@ -693,10 +700,10 @@ device execution, gameplay, renderer integration, or the shipping application's 
 
 The generated Xcode project also contains an excluded-from-all development target named
 `jak2-iphoneos-display-tick-proof`. It is a programmatic UIKit diagnostic that starts the portable
-Jak 2 runtime on a background queue and offers each main-run-loop `CADisplayLink` callback to the
-portable display-tick coordinator. Each accepted callback synchronously runs exactly one kernel
-dispatcher frame. Inactive and background callbacks are paused rather than accumulated, and a
-return to the foreground never runs catch-up frames.
+Jak 2 runtime, attaches its main-thread-owned Metal layer, and offers each main-run-loop
+`CADisplayLink` callback to the portable display-tick coordinator. Each accepted callback
+synchronously runs exactly one kernel dispatcher frame. Inactive and background callbacks are
+paused rather than accumulated, and a return to the foreground never runs catch-up frames.
 
 The app links the excluded `jak2-iphoneos-runtime` static library and a narrow Objective-C++ Metal
 host. The runtime driver links the validated AOT corpus as a dependency instead of becoming
@@ -726,17 +733,34 @@ xcodebuild -project build/ios-jak2-display-tick/jak.xcodeproj \
 The same development target can be generated for the arm64 iOS Simulator by replacing the SDK
 settings in that configure command with `CMAKE_OSX_SYSROOT=iphonesimulator` and then building with
 `-sdk iphonesimulator -destination 'generic/platform=iOS Simulator'`. The simulator result remains
-a nil-layer development proof and does not replace physical-device validation.
+a development proof and does not replace physical-device validation.
 
-The external host copies each real Jak 2 DMA chain and dispatches its 327 audited DeferredSkip,
-StrictEmpty, or audited Direct buckets synchronously through `MetalRenderer`. It deliberately
-supplies no `CAMetalLayer`, so command-buffer commits, drawables, submissions, and presentations
-must all remain zero. The separate synthetic submit/readback proof covers offscreen command-buffer
-completion and pixels. The on-screen development proof stops after a bounded interval when the
-title DGO, the completed policy dispatch, and the graphics synchronization calls have all been
-observed. It still has no presented surface, audio output, or input UI. A successful run proves
-only the signed display-clock-to-Metal-policy boundary, not a rendered title screen, gameplay, or
-physical-device compatibility.
+The external host copies each real Jak 2 DMA chain synchronously while GOAL owns its emulated
+stack, but it does not call Metal from that callback. After the dispatcher returns to the native
+OS stack, the development app explicitly flushes the copies through `MetalRenderer` and its 327
+audited DeferredSkip, StrictEmpty, or audited Direct buckets. This boundary is required because
+Apple framework calls may require substantially more native stack than a GOAL thread reserves.
+The default host constructor remains nil-layer and preserves the zero-commit unit-test contract.
+The development app attaches its main-thread-owned `CAMetalLayer`, supplies each `CADisplayLink`
+target timestamp, and requires a drawable, presentation request, committed command buffer,
+successful GPU completion, and zero drops or command errors for every accepted chain. The
+simulator SDK cannot observe actual presented callbacks, so simulator success does not claim a
+completed display presentation. A device build does not pass until its presented callback catches
+up to the submitted drawable ID. Startup work is flushed before display ticks begin, failed ticks
+discard partial queued work, and every committed buffer is waited and credited individually.
+
+This deferred native-stack queue is intentionally bounded to the current policy-only Jak 2 table,
+whose payloads are skipped or required empty. It is not yet a general renderer contract: before a
+real bucket reads additional EE state, that state must be copied with the chain or the synchronous
+`sync-path` contract must be restored another way. All host and copied-callback calls are serialized
+on the app's main owner thread, and an attached layer cannot be replaced in flight.
+
+The separate synthetic submit/readback proof continues to own the exact-pixel claim. The on-screen
+development proof stops after a bounded interval when the title DGO, surface-backed policy dispatch,
+and graphics synchronization calls have all been observed. The current gate still requires zero
+game draw calls and has no audio output or input UI. A successful run proves the signed display-
+clock-to-Metal-surface boundary, not a rendered title screen, gameplay, or physical-device
+compatibility.
 
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -823,16 +847,17 @@ with no case now fails to compile rather than returning garbage.
   `__mem-move` (the PC port's `ultimate-memcpy` is a call to it, so a stub there means every data
   object in a DGO links against zeroes), `__read-ee-timer`, `__pc-get-mips2c`, and the seven
   `scf-get-*` readers of the PS2 system configuration (see **The boot configuration**), plus the
-  process-lifetime `pc-rand` generator and the host `flush-cache` no-op. Jak 2 additionally forwards
-  `pc-prof` to the existing global profiler and reports an explicitly inactive mouse when no pointer
-  provider exists. The loader
+  process-lifetime `pc-rand` generator and the host `flush-cache` no-op. Jak 2 additionally installs
+  GOAL's six `file-stream-*` functions and the path/basic display queries needed to initialize PC
+  settings, forwards `pc-prof` to the existing global profiler, and reports an explicitly inactive
+  mouse when no pointer provider exists. The loader
   half of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the
   pad in `pad.cpp`. `install-handler` retains the vblank and VIF1 GOAL function references; an
   installed graphics host dispatches the Jak 2 vblank handler before host pacing. As that host's
   `send_chain` observer, `dma_capture.cpp` validates and measures completed graphics-DMA chains
   before the validation host drops them. A graphics host also turns hardware-only calls such as `reset-graph` into the
-  portable no-ops they are upstream. Other functions such as `file-stream-open` remain
-  diagnostics. Such a frame can execute real game and graphics-boundary work, but without a
+  portable no-ops they are upstream. Broader window, input, and desktop-integration functions
+  remain diagnostics. Such a frame can execute real game and graphics-boundary work, but without a
   renderer what it would have shown is not validated.
 - **Without a host renderer, a frame is simulation only.** When no host installs itself through
   `gfx_host.h` (see **The renderer** above), `reset-graph`, `syncv`, `sync-path`,
@@ -843,11 +868,11 @@ with no case now fails to compile rather than returning garbage.
   it, while `--play-gfx-host` isolates that host without DMA parsing. Jak 1's existing boot and gameplay probes continue
   to route the seam to `dma_capture.cpp`, which measures the chain and drops it. Those headless
   modes establish what a frame *computes*, not what it shows.
-- **File access is data-directory-relative only.** `ee::sceOpen` and friends are real POSIX file
-  descriptors, but every name is resolved under the configured data directory
-  (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
-  names - what `file-stream-open` would be given - are not translated yet, because nothing calls
-  `file-stream-open` here.
+- **File access is sandboxed.** `ee::sceOpen` and friends are real POSIX file descriptors.
+  Relative names are resolved under the configured data directory
+  (`goal_kernel_core_resolve_data_path`), while absolute Application Support paths are passed
+  through. Jak 2's installed `file-stream-*` wrappers use that same boundary, allowing PC settings
+  to remain local to the app sandbox without broadening access outside paths the host supplied.
 - **Streamed VAG audio is experimental.** It plays - see **Sound** above - but the only path that
   is missing, the 'STRV' plugin, is the one where a music sequence queues a stream itself. Because
   `str-is-playing?` now reports a real stream position, cutscenes that used to be skipped instantly

@@ -78,6 +78,13 @@ struct MetalRenderOptions {
 
 class MetalRenderer {
  public:
+  struct CommandBufferCompletion {
+    bool had_command_buffer = false;
+    bool completed = false;
+    int64_t status = 0;
+    int64_t error_code = 0;
+  };
+
   bool init(id<MTLDevice> device);
   id<MTLDevice> device() const { return m_device; }
   id<MTLCommandQueue> queue() const { return m_queue; }
@@ -99,6 +106,10 @@ class MetalRenderer {
                           CAMetalLayer* layer,
                           const u8* chain_data,
                           u32 chain_offset);
+
+  // Wait for the most recently committed surface-backed frame and require successful GPU
+  // completion. A nil-layer dispatch does not create a frame and therefore returns false.
+  CommandBufferCompletion wait_for_last_frame();
 
   // Waits for the last committed frame, then reads back the offscreen game
   // target. Returns false if no frame has been rendered yet.

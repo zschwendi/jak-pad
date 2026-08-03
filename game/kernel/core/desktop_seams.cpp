@@ -13,8 +13,9 @@
  *
  * The exceptions, each marked where it is defined, are the ones with nothing platform-specific
  * left in them once the PS2 hardware is gone: host file I/O (`ee::sceOpen` and friends, against
- * the configured data directory), `__mem-move`, `__read-ee-timer`, `__pc-get-mips2c`, and the
- * `scf-get-*` readers of the PS2 system configuration, `pc-rand`, and `flush-cache`.
+ * the configured data directory), GOAL's file-stream wrapper, the basic PC settings path/display
+ * queries, `__mem-move`, `__read-ee-timer`, `__pc-get-mips2c`, the `scf-get-*` readers of the PS2
+ * system configuration, `pc-rand`, and `flush-cache`.
  *
  * Subsystems intentionally not in this library:
  *   - game/kernel/{common,jak1}/kmachine.cpp   : IOP boot, video, pads, PC-port functions (SDL,
@@ -41,10 +42,12 @@
 
 #include "common/log/log.h"
 #include "common/util/Assert.h"
+#include "common/util/FileUtil.h"
 #include "common/util/Timer.h"
 
 #include "game/kernel/common/Ptr.h"
 #include "game/kernel/common/kboot.h"
+#include "game/kernel/common/kernel_types.h"
 #include "game/kernel/common/kmachine.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/kernel_core.h"
@@ -228,6 +231,119 @@ void decode_time(u32 ptr) {
   ee::sceCdReadClock(Ptr<ee::sceCdCLOCK>(ptr).c());
 }
 
+u64 goal_bool(bool value) {
+  return value ? goal_game_true_offset() : goal_game_false_offset();
+}
+
+u64 portable_file_stream_open(u64 fs, u64 name, u64 mode) {
+  auto* stream = Ptr<FileStream>((u32)fs).c();
+  stream->flags = 0;
+  stream->mode = (u32)mode;
+  stream->name = (u32)name;
+
+  const char* mode_name = goal_game_symbol_name((u32)mode);
+  s32 flags = SCE_TRUNC | SCE_CREAT | SCE_WRONLY;
+  if (!strcmp(mode_name, "read")) {
+    flags = SCE_RDONLY;
+  } else if (!strcmp(mode_name, "append")) {
+    flags = SCE_CREAT | SCE_WRONLY | SCE_APPEND;
+  }
+  stream->file = ee::sceOpen(Ptr<String>((u32)name).c()->data(), flags);
+  return fs;
+}
+
+u64 portable_file_stream_close(u64 fs) {
+  auto* stream = Ptr<FileStream>((u32)fs).c();
+  if (!(stream->flags & 1) && stream->file >= 0) {
+    ee::sceClose(stream->file);
+  }
+  stream->file = -1;
+  stream->flags = 0;
+  return fs;
+}
+
+s32 portable_file_stream_length(u64 fs) {
+  auto* stream = Ptr<FileStream>((u32)fs).c();
+  if (stream->flags & 1) {
+    return 0;
+  }
+  const s32 length = ee::sceLseek(stream->file, 0, SCE_SEEK_END);
+  if (length < 0 || ee::sceLseek(stream->file, 0, SCE_SEEK_SET) < 0) {
+    stream->flags |= 1;
+  }
+  return length;
+}
+
+s32 portable_file_stream_seek(u64 fs, s32 offset, s32 where) {
+  auto* stream = Ptr<FileStream>((u32)fs).c();
+  if (stream->flags & 1) {
+    return -1;
+  }
+  const s32 result = ee::sceLseek(stream->file, offset, where);
+  if (result < 0) {
+    stream->flags |= 1;
+  }
+  return result;
+}
+
+s32 portable_file_stream_read(u64 fs, u64 buffer, s32 size) {
+  auto* stream = Ptr<FileStream>((u32)fs).c();
+  if (stream->flags & 1) {
+    return -1;
+  }
+  const s32 result = ee::sceRead(stream->file, Ptr<u8>((u32)buffer).c(), size);
+  if (result < 0) {
+    stream->flags |= 1;
+  }
+  return result;
+}
+
+s32 portable_file_stream_write(u64 fs, u64 buffer, s32 size) {
+  auto* stream = Ptr<FileStream>((u32)fs).c();
+  if (stream->flags & 1) {
+    return -1;
+  }
+  const s32 result = ee::sceWrite(stream->file, Ptr<u8>((u32)buffer).c(), size);
+  if (result < 0) {
+    stream->flags |= 1;
+  }
+  return result;
+}
+
+u32 portable_pc_get_os() {
+  return goal_game_intern("darwin");
+}
+
+u32 portable_pc_get_display_mode() {
+  return goal_game_intern("windowed");
+}
+
+void portable_pc_get_display_size(u32 width, u32 height) {
+  if (width) {
+    *Ptr<s64>(width).c() = 640;
+  }
+  if (height) {
+    *Ptr<s64>(height).c() = 480;
+  }
+}
+
+s64 portable_pc_get_refresh_rate() {
+  return 60;
+}
+
+u64 portable_pc_is_supported_resolution(u64 width, u64 height) {
+  return goal_bool(width > 0 && height > 0);
+}
+
+u64 portable_pc_filepath_exists(u32 filepath) {
+  return goal_bool(fs::exists(Ptr<String>(filepath).c()->data()));
+}
+
+u64 portable_pc_mkdir_filepath(u32 filepath) {
+  return goal_bool(file_util::create_dir_if_needed_for_file(
+      std::string(Ptr<String>(filepath).c()->data())));
+}
+
 }  // namespace
 
 void goal_kernel_core_install_machine_stubs(const char* const* names, int count) {
@@ -254,6 +370,25 @@ void goal_kernel_core_install_implemented_machine_functions() {
   goal_game_make_function_symbol("scf-get-timeout", (void*)decode_timeout);
   goal_game_make_function_symbol("scf-get-inactive-timeout", (void*)decode_inactive_timeout);
   goal_game_make_function_symbol("install-handler", (void*)InstallHandler);
+}
+
+void goal_kernel_core_install_portable_pc_settings_functions() {
+  goal_game_make_function_symbol("file-stream-open", (void*)portable_file_stream_open);
+  goal_game_make_function_symbol("file-stream-close", (void*)portable_file_stream_close);
+  goal_game_make_function_symbol("file-stream-length", (void*)portable_file_stream_length);
+  goal_game_make_function_symbol("file-stream-seek", (void*)portable_file_stream_seek);
+  goal_game_make_function_symbol("file-stream-read", (void*)portable_file_stream_read);
+  goal_game_make_function_symbol("file-stream-write", (void*)portable_file_stream_write);
+  goal_game_make_function_symbol("pc-get-os", (void*)portable_pc_get_os);
+  goal_game_make_function_symbol("pc-get-display-mode", (void*)portable_pc_get_display_mode);
+  goal_game_make_function_symbol("pc-get-active-display-size", (void*)portable_pc_get_display_size);
+  goal_game_make_function_symbol("pc-get-window-size", (void*)portable_pc_get_display_size);
+  goal_game_make_function_symbol("pc-get-active-display-refresh-rate",
+                                 (void*)portable_pc_get_refresh_rate);
+  goal_game_make_function_symbol("pc-is-supported-resolution?",
+                                 (void*)portable_pc_is_supported_resolution);
+  goal_game_make_function_symbol("pc-filepath-exists?", (void*)portable_pc_filepath_exists);
+  goal_game_make_function_symbol("pc-mkdir-file-path", (void*)portable_pc_mkdir_filepath);
 }
 
 void goal_kernel_core_set_machine_stub_mode(bool abort_when_called) {

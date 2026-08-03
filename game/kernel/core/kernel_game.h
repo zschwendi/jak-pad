@@ -133,3 +133,6 @@ void goal_kernel_core_install_machine_stubs(const char* const* names, int count)
  * __read-ee-timer, __pc-get-mips2c, pc-rand, and the scf-get-* readers of the boot configuration.
  */
 void goal_kernel_core_install_implemented_machine_functions();
+
+/*! Install the portable file and PC-settings subset currently exercised by the Jak 2 host. */
+void goal_kernel_core_install_portable_pc_settings_functions();

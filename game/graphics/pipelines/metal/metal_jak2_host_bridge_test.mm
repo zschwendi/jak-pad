@@ -63,18 +63,47 @@ int main() {
         "the copied host contains every required synchronous callback");
 
   callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  std::memset(static_cast<u8*>(g_ee_main_mem) + kChainOffset, 0,
+              (kBucketCount + 1) * 16);
+  callbacks.sync_path();
+  make_empty_chain();
+  callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  std::memset(static_cast<u8*>(g_ee_main_mem) + kChainOffset, 0,
+              (kBucketCount + 1) * 16);
   callbacks.sync_path();
   callbacks.vsync();
   goal_jak2_metal_host_metrics metrics = {};
   check(goal_jak2_metal_host_get_metrics(host, &metrics),
-        "copied the host metrics after dispatch");
-  check(metrics.chains == 1 && metrics.completed_chains == 1 &&
+        "copied the host metrics before native-stack dispatch");
+  check(metrics.chains == 2 && metrics.sync_paths == 2 && metrics.completed_chains == 0 &&
+            metrics.failed_chains == 0 &&
+            metrics.last_buckets_dispatched == 0,
+        "two chain/barrier pairs copy and queue without entering Metal");
+  check(goal_jak2_metal_host_flush_pending(host),
+        "flushed the copied chain/barrier pairs from the caller's native stack");
+  check(goal_jak2_metal_host_get_metrics(host, &metrics),
+        "copied the host metrics after native-stack dispatch");
+  check(metrics.chains == 2 && metrics.completed_chains == 2 &&
             metrics.failed_chains == 0 && metrics.last_buckets_dispatched == kBucketCount,
-        "one copied 327-bucket chain completed policy dispatch");
+        "both deep-copied 327-bucket chains survived live-EE mutation and completed in order");
+  check(goal_jak2_metal_host_flush_pending(host),
+        "a second flush is an idempotent no-op");
   check(metrics.command_buffers_committed == 0 && metrics.drawables_acquired == 0 &&
             metrics.draws == 0 && metrics.triangles == 0 && metrics.submissions == 0 &&
             metrics.presentations == 0,
         "nil-layer lifecycle dispatches without committing, drawing, or presenting");
+  check(metrics.surface_attached == 0 && metrics.completed_command_buffers == 0 &&
+            metrics.command_buffer_errors == 0 && metrics.drawable_misses == 0,
+        "nil-layer lifecycle retains zero surface and GPU-completion state");
+  check(goal_jak2_metal_host_wait_until_idle(host),
+        "nil-layer host is already idle without inventing a command buffer");
+  make_empty_chain();
+  callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  callbacks.sync_path();
+  check(goal_jak2_metal_host_discard_pending(host) == 2,
+        "failed-tick teardown can discard one queued chain and its barrier");
+  check(goal_jak2_metal_host_flush_pending(host),
+        "flushing after discard is an idempotent no-op");
 
   goal_jak2_metal_host_destroy(host);
   callbacks.send_chain(g_ee_main_mem, kChainOffset);

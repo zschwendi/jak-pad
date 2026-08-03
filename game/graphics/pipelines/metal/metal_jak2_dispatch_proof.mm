@@ -90,6 +90,8 @@ int main() {
           "the real Jak 2 dispatcher consumed all 327 synthetic slots");
     check(stats.command_buffers_committed == 0,
           "nil-layer dispatch commits no Metal command buffer");
+    check(!renderer.wait_for_last_frame().had_command_buffer,
+          "nil-layer dispatch leaves no command buffer for the completion barrier");
     check(stats.drawables_acquired == 0 && stats.drawable_misses == 0,
           "nil-layer dispatch performs no drawable acquisition attempt");
     check(stats.submissions == 0 && stats.presentations_completed == 0 &&

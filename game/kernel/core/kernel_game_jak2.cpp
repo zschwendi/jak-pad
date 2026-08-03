@@ -16,6 +16,7 @@
 #include "common/goal_constants.h"
 #include "common/symbols.h"
 #include "common/util/Assert.h"
+#include "common/util/FileUtil.h"
 
 #include "game/kernel/common/Ptr.h"
 #include "game/kernel/common/fileio.h"
@@ -334,6 +335,7 @@ sqlite::GenericResponse run_sql_query(const std::string& /*query*/) {
 void InitMachineScheme() {
   goal_kernel_core_install_machine_stubs(kJak2MachineFunctionNames, kJak2MachineFunctionCount);
   goal_kernel_core_install_implemented_machine_functions();
+  goal_kernel_core_install_portable_pc_settings_functions();
   make_function_symbol_from_c("pc-prof", (void*)pc_prof);
   make_function_symbol_from_c("mouse-get-data", (void*)mouse_get_data);
   intern_from_c("*stack-top*")->value() = 0x07ffc000;
@@ -346,6 +348,13 @@ void InitMachineScheme() {
   }
   intern_from_c("*kernel-boot-level*")->value() = intern_from_c(DebugBootLevel).offset;
   intern_from_c("*kernel-boot-art-group*")->value() = (u32)make_string_from_c(DebugBootArtGroup);
+  const auto user_dir = file_util::get_user_config_dir();
+  intern_from_c("*pc-user-dir-base-path*")->value() =
+      (u32)make_string_from_c(user_dir.string().c_str());
+  const auto settings_dir = file_util::get_user_settings_dir(g_game_version);
+  intern_from_c("*pc-settings-folder*")->value() =
+      (u32)make_string_from_c(settings_dir.string().c_str());
+  intern_from_c("*pc-settings-built-sha*")->value() = (u32)make_string_from_c("");
   // The DiskBoot branch of the real InitMachineScheme loads GAME.CGO here; the host drives DGO
   // loads itself through goal_dgo_load, so nothing is loaded behind its back.
 }
