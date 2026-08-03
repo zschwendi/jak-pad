@@ -30,8 +30,8 @@
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/common/ksocket.h"
-#include "game/kernel/core/kernel_game.h"
 #include "game/kernel/core/gfx_host_internal.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/kernel/core/mips2c_seam.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/kboot.h"
@@ -42,6 +42,50 @@
 #include "game/runtime.h"
 
 namespace {
+
+void pc_prof(u32 name, ProfNode::Kind kind) {
+  prof().event(Ptr<String>(name).c()->data(), kind);
+}
+
+u64 mouse_get_data(u32 mouse_ptr) {
+  auto* mouse = Ptr<jak2::MouseInfo>(mouse_ptr).c();
+  mouse->active = s7.offset;
+  mouse->valid = s7.offset;
+  mouse->cursor = s7.offset;
+  mouse->status = 0;
+  mouse->button0 = 0;
+  mouse->deltax = 0;
+  mouse->deltay = 0;
+  mouse->wheel = 0;
+  mouse->posx = 0.f;
+  mouse->posy = 0.f;
+  return mouse_ptr;
+}
+
+void read_level_names(u32 level_list, u32 (&levels)[jak2::LEVEL_MAX]) {
+  for (int i = 0; i < jak2::LEVEL_MAX; i++) {
+    levels[i] = *Ptr<u32>(level_list + i * sizeof(u32));
+  }
+}
+
+u64 gfx_set_levels(u32 level_list) {
+  u32 levels[jak2::LEVEL_MAX];
+  read_level_names(level_list, levels);
+  goal_gfx_host_forward_desired_levels(levels, jak2::LEVEL_MAX);
+  return 0;
+}
+
+u64 gfx_set_active_levels(u32 level_list) {
+  u32 levels[jak2::LEVEL_MAX];
+  read_level_names(level_list, levels);
+  goal_gfx_host_forward_active_levels(levels, jak2::LEVEL_MAX);
+  return 0;
+}
+
+u64 gfx_put_display_env(u32 alpha) {
+  goal_gfx_host_forward_pmode_alpha(alpha / 255.f);
+  return 0;
+}
 
 /*!
  * Every GOAL symbol the real jak2::InitMachineScheme fills in: the PS2 library shims, the pad,
@@ -204,49 +248,6 @@ const char* const kJak2MachineFunctionNames[] = {
 };
 constexpr int kJak2MachineFunctionCount =
     int(sizeof(kJak2MachineFunctionNames) / sizeof(const char*));
-
-void pc_prof(u32 name, ProfNode::Kind kind) {
-  prof().event(Ptr<String>(name).c()->data(), kind);
-}
-
-u64 mouse_get_data(u32 mouse_address) {
-  auto* mouse = Ptr<jak2::MouseInfo>(mouse_address).c();
-  const u32 false_value = goal_game_false_offset();
-  mouse->active = false_value;
-  mouse->cursor = false_value;
-  mouse->valid = false_value;
-  mouse->status = 0;
-  mouse->button0 = 0;
-  mouse->deltax = 0;
-  mouse->deltay = 0;
-  mouse->wheel = 0;
-  mouse->posx = 0;
-  mouse->posy = 0;
-  return mouse_address;
-}
-
-u64 gfx_set_levels(u32 level_list) {
-  u32 levels[jak2::LEVEL_MAX];
-  for (int i = 0; i < jak2::LEVEL_MAX; i++) {
-    levels[i] = *Ptr<u32>(level_list + i * sizeof(u32));
-  }
-  goal_gfx_host_forward_levels(levels, jak2::LEVEL_MAX, false);
-  return 0;
-}
-
-u64 gfx_set_active_levels(u32 level_list) {
-  u32 levels[jak2::LEVEL_MAX];
-  for (int i = 0; i < jak2::LEVEL_MAX; i++) {
-    levels[i] = *Ptr<u32>(level_list + i * sizeof(u32));
-  }
-  goal_gfx_host_forward_levels(levels, jak2::LEVEL_MAX, true);
-  return 0;
-}
-
-u64 gfx_put_display_env(u32 alpha) {
-  goal_gfx_host_forward_pmode_alpha(alpha / 255.f);
-  return 0;
-}
 
 }  // namespace
 

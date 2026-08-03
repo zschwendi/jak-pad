@@ -25,8 +25,10 @@ int g_handler_calls = 0;
 int g_chain_calls = 0;
 int g_texture_uploads = 0;
 int g_texture_moves = 0;
+int g_vsync_calls = 0;
+int g_sync_path_calls = 0;
+int g_active_level_calls = 0;
 uint32_t g_chain_offset = 0;
-uint32_t g_sync_path_calls = 0;
 float g_alpha = -1.f;
 std::vector<std::string> g_levels;
 
@@ -54,7 +56,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
 }
 
 uint32_t vsync() {
-  return 1;
+  return (uint32_t)(1 - (g_vsync_calls++ & 1));
 }
 
 uint32_t sync_path() {
@@ -81,6 +83,10 @@ void set_levels(const char* const* names, int count) {
   }
 }
 
+void set_active_levels(const char* const* /*names*/, int /*count*/) {
+  g_active_level_calls++;
+}
+
 void set_alpha(float alpha) {
   g_alpha = alpha;
 }
@@ -103,9 +109,10 @@ int main() {
   host.texture_relocate = texture_move;
   host.set_levels = set_levels;
   host.set_pmode_alp = set_alpha;
+  host.set_active_levels = set_active_levels;
   expect(goal_gfx_host_install(&host) == GOAL_KERNEL_CORE_OK, "installed the Jak 1 graphics host");
   expect(flush_before != 0 && lookup("flush-cache") == flush_before,
-         "graphics host does not replace Jak 1 flush-cache");
+         "graphics host does not replace shared flush-cache");
 
   const uint32_t send = lookup("__send-gfx-dma-chain");
   const uint32_t syncv = lookup("syncv");
@@ -140,19 +147,22 @@ int main() {
   expect(std::fabs(g_alpha - 64.f / 255.f) < 0.0001f,
          "Jak 1 adapter reads blackout alpha from display-env byte 1");
 
+  MasterExit = RuntimeExitStatus::RUNNING;
   vblank_interrupt_handler = goal_game_make_function_from_native((void*)retained_handler);
-  expect(goal_aot_call(syncv, 0, 0, 0) == 1 && g_handler_calls == 0,
-         "Jak 1 syncv preserves parity without dispatching Jak 2's retained handler");
+  const uint64_t odd = goal_aot_call(syncv, 0, 0, 0);
+  const uint64_t even = goal_aot_call(syncv, 0, 0, 0);
+  expect(odd == 1 && even == 0 && g_vsync_calls == 2 && g_handler_calls == 0,
+         "Jak 1 syncv preserves host parity without dispatching Jak 2's retained handler");
   expect(goal_aot_call(syncp, 0, 0, 0) == 37 && g_sync_path_calls == 1,
-         "Jak 1 sync-path forwards its host result");
+         "Jak 1 sync-path forwards its host completion result");
 
   goal_gfx_host_stats stats = {};
   goal_gfx_host_stats_get(&stats);
-  expect(stats.chains == 1 && stats.vsyncs == 1 && stats.sync_paths == 1 &&
+  expect(stats.chains == 1 && stats.vsyncs == 2 && stats.sync_paths == 1 &&
              stats.texture_uploads == 1 && stats.texture_moves == 1 && stats.level_sets == 1 &&
              std::strcmp(stats.last_levels, "village1") == 0 && stats.active_level_sets == 0 &&
-             std::strcmp(stats.last_active_levels, "") == 0,
-         "Jak 1 stats retain desired levels and leave active levels empty");
+             std::strcmp(stats.last_active_levels, "") == 0 && g_active_level_calls == 0,
+         "Jak 1 stats retain desired levels and leave active levels unused");
 
   goal_kernel_core_shutdown();
   std::printf("\n%s (%d failures)\n",

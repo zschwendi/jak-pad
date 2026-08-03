@@ -37,6 +37,8 @@ typedef enum goal_jak2_runtime_graphics {
   GOAL_JAK2_RUNTIME_GRAPHICS_STUBS = 0,
   /*! Synchronously validate and drop DMA; `sync-path` and `syncv` never wait externally. */
   GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION = 1,
+  /*! Count and drop the complete graphics-host boundary without parsing the DMA chain. */
+  GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION = 2,
 } goal_jak2_runtime_graphics;
 
 typedef struct goal_jak2_runtime_config {
@@ -74,6 +76,14 @@ typedef struct goal_jak2_runtime_metrics {
   int32_t host_chains;
   int32_t host_sync_paths;
   int32_t host_syncvs;
+  int32_t host_texture_uploads;
+  int32_t host_texture_relocations;
+  int32_t host_desired_level_calls;
+  int32_t host_active_level_calls;
+  int32_t host_pmode_calls;
+  int32_t host_last_desired_level_count;
+  int32_t host_last_active_level_count;
+  float host_last_pmode_alpha;
 
   int32_t dma_chains;
   int32_t dma_well_formed;

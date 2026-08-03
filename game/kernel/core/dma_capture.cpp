@@ -533,6 +533,7 @@ void goal_gfx_dma_reset(void) {
   g_captured_buckets.clear();
   g_requested_captures.clear();
   g_threshold_dir.clear();
+  g_threshold_payload_bytes = 0;
   g_threshold_remaining = 0;
 }
 

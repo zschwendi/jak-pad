@@ -13,8 +13,9 @@
  * skipped when there is none. --with-game goes on to attempt GAME.CGO. --play implies
  * --with-game and calls the real Jak 2 `play-boot`, then dispatches the GOAL process it creates
  * only far enough to report the first title-level DGO request and the next missing subsystem.
- * --play-dma preserves that mode and additionally waits for one valid 327-bucket graphics-DMA
- * chain. The chain is measured and dropped: this remains a headless probe, not a renderer.
+ * --play-gfx-host counts and drops the complete graphics-host boundary. --play-dma preserves
+ * that mode and additionally waits for one valid 327-bucket graphics-DMA chain. This remains a
+ * headless probe, not a renderer.
  */
 
 #include <cstdarg>
@@ -325,7 +326,11 @@ int run_boot(const std::string& data_dir,
   return 0;
 }
 
-int run_play_runtime(const std::string& data_dir, int dispatch_frames, bool validate_dma) {
+int run_play_runtime(const std::string& data_dir,
+                     int dispatch_frames,
+                     goal_jak2_runtime_graphics graphics) {
+  const bool validate_dma = graphics == GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION;
+  const bool validate_host = graphics != GOAL_JAK2_RUNTIME_GRAPHICS_STUBS;
   const std::string saves_dir =
       (std::filesystem::temp_directory_path() / "goalpad-jak2-boot-saves").string();
   std::filesystem::remove_all(saves_dir);
@@ -333,8 +338,7 @@ int run_play_runtime(const std::string& data_dir, int dispatch_frames, bool vali
   goal_jak2_runtime_config config = {};
   config.data_directory = data_dir.c_str();
   config.saves_directory = saves_dir.c_str();
-  config.graphics = validate_dma ? GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION
-                                 : GOAL_JAK2_RUNTIME_GRAPHICS_STUBS;
+  config.graphics = graphics;
 
   struct RuntimeShutdown {
     ~RuntimeShutdown() {
@@ -369,8 +373,11 @@ int run_play_runtime(const std::string& data_dir, int dispatch_frames, bool vali
     if (validate_dma && metrics.dma_malformed > 0) {
       break;
     }
+    const bool host_frontier = metrics.host_chains > 0 && metrics.host_sync_paths > 0 &&
+                               metrics.host_syncvs > 0;
     if (metrics.title_ready &&
-        (!validate_dma || (metrics.dma_accounting_complete && metrics.dma_found_valid))) {
+        (!validate_dma || (metrics.dma_accounting_complete && metrics.dma_found_valid)) &&
+        (!validate_host || host_frontier)) {
       break;
     }
     if (tick_status == GOAL_JAK2_RUNTIME_EXITED) {
@@ -390,22 +397,33 @@ int run_play_runtime(const std::string& data_dir, int dispatch_frames, bool vali
     say("  graphics DMA after play-boot: %d chain(s), %d well formed, %d malformed; measured "
         "and dropped\n",
         metrics.dma_chains, metrics.dma_well_formed, metrics.dma_malformed);
-    say("  validation graphics host: %d chain(s), %d sync-path call(s), %d syncv call(s); "
-        "callback external waits 0, rendered frames 0, presented frames 0\n",
-        metrics.host_chains, metrics.host_sync_paths, metrics.host_syncvs);
     if (!metrics.dma_accounting_complete) {
       say("FAILED: --play-dma chain totals and per-frame records do not agree\n");
-      return 1;
-    }
-    if (metrics.host_chains != metrics.dma_chains || metrics.host_sync_paths <= 0 ||
-        metrics.host_syncvs <= 0) {
-      say("FAILED: --play-dma did not exercise synchronous DMA, sync-path, and syncv through "
-          "the validation graphics host\n");
       return 1;
     }
     if (metrics.dma_malformed != 0) {
       say("FAILED: --play-dma observed %d malformed graphics-DMA chain(s) after its baseline\n",
           metrics.dma_malformed);
+      return 1;
+    }
+  }
+  if (validate_host) {
+    say("  headless graphics host after play-boot: chains=%d syncv=%d sync-path=%d "
+        "texture-upload=%d texture-relocate=%d desired-levels=%d (last %d) "
+        "active-levels=%d (last %d) pmode=%d (last %.6f)\n",
+        metrics.host_chains, metrics.host_syncvs, metrics.host_sync_paths,
+        metrics.host_texture_uploads, metrics.host_texture_relocations,
+        metrics.host_desired_level_calls, metrics.host_last_desired_level_count,
+        metrics.host_active_level_calls, metrics.host_last_active_level_count,
+        metrics.host_pmode_calls, metrics.host_last_pmode_alpha);
+    if (metrics.host_chains <= 0 || metrics.host_sync_paths <= 0 || metrics.host_syncvs <= 0) {
+      say("FAILED: the headless graphics host requires at least one send-chain, syncv and "
+          "sync-path callback after its baseline\n");
+      return 1;
+    }
+    if (validate_dma && metrics.host_chains != metrics.dma_chains) {
+      say("FAILED: --play-dma host/DMA chain counts disagree: host=%d DMA=%d\n",
+          metrics.host_chains, metrics.dma_chains);
       return 1;
     }
   }
@@ -416,6 +434,15 @@ int run_play_runtime(const std::string& data_dir, int dispatch_frames, bool vali
     return 1;
   }
   say("  proved: Jak 2 play reached TITLE.DGO through the composed channel-3 router\n");
+  if (graphics == GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION) {
+    say("  proved: the title frontier crossed the host graphics boundary: %d chain(s), "
+        "%d syncv, %d sync-path\n",
+        metrics.host_chains, metrics.host_syncvs, metrics.host_sync_paths);
+    say("STOPPED: --play-gfx-host counted and discarded graphics work. It has no renderer, "
+        "drawn output or app loop, and level callbacks were observations rather than a "
+        "success requirement.\n");
+    return 0;
+  }
   if (!validate_dma) {
     say("STOPPED: the host probe ended after the first linked title object; it has no renderer "
         "or app loop, and any missing-machine reports above are the next unsupported frontier, "
@@ -431,6 +458,9 @@ int run_play_runtime(const std::string& data_dir, int dispatch_frames, bool vali
       "%u copied bytes)\n",
       metrics.dma_valid_frame, metrics.dma_valid_tags, metrics.dma_valid_payload_bytes,
       metrics.dma_valid_copied_bytes);
+  say("  proved: the same %d chain(s) crossed send-chain, syncv and sync-path through the "
+      "headless graphics host\n",
+      metrics.host_chains);
   say("STOPPED: --play-dma synchronously measured and dropped the chain; rendered frames 0, "
       "presented frames 0. This validation host has no renderer or app loop.\n");
   return 0;
@@ -444,6 +474,7 @@ int main(int argc, char** argv) {
   bool with_game = false;
   bool run_play = false;
   bool run_play_dma = false;
+  bool run_play_gfx_host = false;
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
     if (arg == "--data-dir" && i + 1 < argc) {
@@ -461,10 +492,18 @@ int main(int argc, char** argv) {
       run_play = true;
       run_play_dma = true;
       with_game = true;
+    } else if (arg == "--play-gfx-host") {
+      run_play = true;
+      run_play_gfx_host = true;
+      with_game = true;
     } else {
       std::fprintf(stderr, "unknown argument %s\n", arg.c_str());
       return 2;
     }
+  }
+  if (run_play_dma && run_play_gfx_host) {
+    std::fprintf(stderr, "--play-dma and --play-gfx-host are mutually exclusive\n");
+    return 2;
   }
   if (data_dir.empty()) {
     const char* env = std::getenv("GOALPAD_JAK2_DATA_DIR");
@@ -484,7 +523,13 @@ int main(int argc, char** argv) {
   lg::initialize();
 
   if (run_play) {
-    return run_play_runtime(data_dir, dispatch_frames, run_play_dma);
+    goal_jak2_runtime_graphics graphics = GOAL_JAK2_RUNTIME_GRAPHICS_STUBS;
+    if (run_play_dma) {
+      graphics = GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION;
+    } else if (run_play_gfx_host) {
+      graphics = GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION;
+    }
+    return run_play_runtime(data_dir, dispatch_frames, graphics);
   }
 
   if (goal_kernel_core_initialize() != GOAL_KERNEL_CORE_OK) {

@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "common/util/Assert.h"
+
 #include "game/kernel/common/Ptr.h"
 #include "game/kernel/common/kernel_types.h"
 #include "game/kernel/common/kscheme.h"
@@ -56,20 +58,15 @@ u64 send_gfx_dma_chain(u32 /*bank*/, u32 chain) {
 }
 
 u64 sync_v(u32 mode) {
+  ASSERT(mode == 0);
   g_stats.vsyncs++;
-  if (mode != 0) {
-    // upstream asserts on this; the frame code only ever passes 0.
-    return 0;
-  }
   goal_game_gfx_before_vsync();
   return g_host.vsync ? g_host.vsync() : report("syncv");
 }
 
 u64 sync_path(u32 mode, u32 timeout) {
+  ASSERT(mode == 0 && timeout == 0);
   g_stats.sync_paths++;
-  if (mode != 0 || timeout != 0) {
-    return 0;
-  }
   return g_host.sync_path ? g_host.sync_path() : report("sync-path");
 }
 
@@ -100,6 +97,7 @@ void forward_levels(const u32* level_name_offsets, int count, bool active) {
     report(symbol);
     return;
   }
+
   std::vector<std::string> levels;
   for (int i = 0; i < count; i++) {
     const u32 arg = level_name_offsets[i];
@@ -127,10 +125,8 @@ void forward_levels(const u32* level_name_offsets, int count, bool active) {
   if (joined != previous) {
     previous = joined;
     if (active) {
-      g_stats.last_active_levels = g_last_active_levels.c_str();
       g_stats.active_level_sets++;
     } else {
-      g_stats.last_levels = g_last_levels.c_str();
       g_stats.level_sets++;
     }
   }
@@ -200,11 +196,16 @@ void goal_gfx_host_stats_get(goal_gfx_host_stats* out) {
 
 }  // extern "C"
 
-void goal_gfx_host_forward_levels(const u32* level_name_offsets, int count, bool active) {
-  if (!level_name_offsets || count < 0) {
-    return;
+void goal_gfx_host_forward_desired_levels(const u32* level_name_offsets, int count) {
+  if (level_name_offsets && count >= 0) {
+    forward_levels(level_name_offsets, count, false);
   }
-  forward_levels(level_name_offsets, count, active);
+}
+
+void goal_gfx_host_forward_active_levels(const u32* level_name_offsets, int count) {
+  if (level_name_offsets && count >= 0) {
+    forward_levels(level_name_offsets, count, true);
+  }
 }
 
 void goal_gfx_host_forward_pmode_alpha(float alpha) {

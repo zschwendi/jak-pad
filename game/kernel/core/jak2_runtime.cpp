@@ -39,14 +39,84 @@ uint32_t g_dispatcher = 0;
 uint64_t g_current_tick = 0;
 bool g_owns_kernel = false;
 goal_gfx_dma_stats g_dma_before = {};
-goal_gfx_host_stats g_gfx_before = {};
+
+struct HostObservations {
+  int chains = 0;
+  int vsyncs = 0;
+  int sync_paths = 0;
+  int texture_uploads = 0;
+  int texture_relocations = 0;
+  int desired_level_calls = 0;
+  int active_level_calls = 0;
+  int pmode_calls = 0;
+  int last_desired_level_count = 0;
+  int last_active_level_count = 0;
+  float last_pmode_alpha = 0.f;
+};
+
+HostObservations g_host_observations = {};
+HostObservations g_host_before = {};
+
+void validation_send_chain(const void* ee_base, uint32_t chain_offset) {
+  g_host_observations.chains++;
+  if (g_metrics.graphics == GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
+    goal_gfx_dma_observe_chain(ee_base, chain_offset);
+  }
+}
 
 uint32_t validation_vsync() {
+  g_host_observations.vsyncs++;
   return static_cast<uint32_t>(g_current_tick & 1);
 }
 
 uint32_t validation_sync_path() {
+  g_host_observations.sync_paths++;
   return 0;
+}
+
+void validation_texture_upload(const uint8_t*, int, uint32_t) {
+  g_host_observations.texture_uploads++;
+}
+
+void validation_texture_relocate(uint32_t, uint32_t, uint32_t) {
+  g_host_observations.texture_relocations++;
+}
+
+void validation_set_desired_levels(const char* const*, int count) {
+  g_host_observations.desired_level_calls++;
+  g_host_observations.last_desired_level_count = count;
+}
+
+void validation_set_active_levels(const char* const*, int count) {
+  g_host_observations.active_level_calls++;
+  g_host_observations.last_active_level_count = count;
+}
+
+void validation_set_pmode_alpha(float alpha) {
+  g_host_observations.pmode_calls++;
+  g_host_observations.last_pmode_alpha = alpha;
+}
+
+HostObservations host_delta(const HostObservations& before, const HostObservations& after) {
+  HostObservations out;
+  out.chains = after.chains - before.chains;
+  out.vsyncs = after.vsyncs - before.vsyncs;
+  out.sync_paths = after.sync_paths - before.sync_paths;
+  out.texture_uploads = after.texture_uploads - before.texture_uploads;
+  out.texture_relocations = after.texture_relocations - before.texture_relocations;
+  out.desired_level_calls = after.desired_level_calls - before.desired_level_calls;
+  out.active_level_calls = after.active_level_calls - before.active_level_calls;
+  out.pmode_calls = after.pmode_calls - before.pmode_calls;
+  if (out.desired_level_calls > 0) {
+    out.last_desired_level_count = after.last_desired_level_count;
+  }
+  if (out.active_level_calls > 0) {
+    out.last_active_level_count = after.last_active_level_count;
+  }
+  if (out.pmode_calls > 0) {
+    out.last_pmode_alpha = after.last_pmode_alpha;
+  }
+  return out;
 }
 
 void drain_goal_print_buffer() {
@@ -172,15 +242,26 @@ void update_metrics() {
   g_metrics.sound_str_failures = sound.str_failures;
   g_metrics.sound_rejected_calls = sound.rejected_calls;
 
-  if (g_metrics.graphics != GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
+  if (g_metrics.graphics == GOAL_JAK2_RUNTIME_GRAPHICS_STUBS) {
     return;
   }
 
-  goal_gfx_host_stats gfx = {};
-  goal_gfx_host_stats_get(&gfx);
-  g_metrics.host_chains = gfx.chains - g_gfx_before.chains;
-  g_metrics.host_sync_paths = gfx.sync_paths - g_gfx_before.sync_paths;
-  g_metrics.host_syncvs = gfx.vsyncs - g_gfx_before.vsyncs;
+  const HostObservations host = host_delta(g_host_before, g_host_observations);
+  g_metrics.host_chains = host.chains;
+  g_metrics.host_sync_paths = host.sync_paths;
+  g_metrics.host_syncvs = host.vsyncs;
+  g_metrics.host_texture_uploads = host.texture_uploads;
+  g_metrics.host_texture_relocations = host.texture_relocations;
+  g_metrics.host_desired_level_calls = host.desired_level_calls;
+  g_metrics.host_active_level_calls = host.active_level_calls;
+  g_metrics.host_pmode_calls = host.pmode_calls;
+  g_metrics.host_last_desired_level_count = host.last_desired_level_count;
+  g_metrics.host_last_active_level_count = host.last_active_level_count;
+  g_metrics.host_last_pmode_alpha = host.last_pmode_alpha;
+
+  if (g_metrics.graphics != GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
+    return;
+  }
 
   goal_gfx_dma_stats dma = {};
   goal_gfx_dma_get_stats(&dma);
@@ -205,6 +286,9 @@ goal_jak2_runtime_status fail_start(std::string message) {
   }
   g_dispatcher = 0;
   g_current_tick = 0;
+  g_dma_before = {};
+  g_host_observations = {};
+  g_host_before = {};
   g_metrics.state = GOAL_JAK2_RUNTIME_FAILED;
   return GOAL_JAK2_RUNTIME_START_FAILED;
 }
@@ -216,7 +300,8 @@ extern "C" {
 goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config* config) {
   if (!config || !config->data_directory || !config->data_directory[0] ||
       (config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_STUBS &&
-       config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION)) {
+       config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION &&
+       config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION)) {
     g_error = "goal_jak2_runtime_start: invalid configuration";
     return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
   }
@@ -235,7 +320,8 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     g_dispatcher = 0;
     g_current_tick = 0;
     g_dma_before = {};
-    g_gfx_before = {};
+    g_host_observations = {};
+    g_host_before = {};
 
     if (goal_kernel_core_set_data_directory(g_data_directory.c_str()) != GOAL_KERNEL_CORE_OK ||
         goal_kernel_core_set_saves_directory(g_saves_directory.c_str()) !=
@@ -279,14 +365,21 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     }
     goal_dgo_install_goal_loader();
 
-    if (config->graphics == GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
-      goal_gfx_dma_reset();
+    if (config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_STUBS) {
+      if (config->graphics == GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
+        goal_gfx_dma_reset();
+      }
       goal_gfx_host host = {};
-      host.send_chain = goal_gfx_dma_observe_chain;
+      host.send_chain = validation_send_chain;
       host.vsync = validation_vsync;
       host.sync_path = validation_sync_path;
+      host.texture_upload_now = validation_texture_upload;
+      host.texture_relocate = validation_texture_relocate;
+      host.set_levels = validation_set_desired_levels;
+      host.set_pmode_alp = validation_set_pmode_alpha;
+      host.set_active_levels = validation_set_active_levels;
       if (goal_gfx_host_install(&host) != GOAL_KERNEL_CORE_OK) {
-        return fail_start("could not install the Jak 2 DMA-validation graphics host");
+        return fail_start("could not install the Jak 2 validation graphics host");
       }
     }
 
@@ -321,7 +414,9 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
 
     if (config->graphics == GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
       goal_gfx_dma_get_stats(&g_dma_before);
-      goal_gfx_host_stats_get(&g_gfx_before);
+    }
+    if (config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_STUBS) {
+      g_host_before = g_host_observations;
     }
     g_metrics.play_boot_result = jak2::call_goal_function_by_name("play-boot");
     drain_goal_print_buffer();
@@ -396,7 +491,8 @@ void goal_jak2_runtime_shutdown(void) {
   g_dispatcher = 0;
   g_current_tick = 0;
   g_dma_before = {};
-  g_gfx_before = {};
+  g_host_observations = {};
+  g_host_before = {};
   g_data_directory.clear();
   g_saves_directory.clear();
   g_metrics = {};

@@ -32,9 +32,9 @@ typedef struct goal_gfx_host {
    *  `GfxRendererModule::send_chain` takes. */
   void (*send_chain)(const void* ee_base, uint32_t chain_offset);
 
-  /*! `syncv`: wait for the renderer to present. Returns 0 or 1 for even/odd frame, which is what
-   *  the PS2's `sceGsSyncV` returned and what `engine/gfx/display.gc` reads. This is the call the
-   *  game's frame rate comes from. */
+  /*! `syncv`: wait for the host's next display opportunity. Returns 0 or 1 for even/odd frame,
+   *  which is what the PS2's `sceGsSyncV` returned and what `engine/gfx/display.gc` reads. The
+   *  callback owns pacing; this seam has no display or timing dependency of its own. */
   uint32_t (*vsync)(void);
 
   /*! `sync-path`: block until the renderer has consumed the chain that was sent. */
@@ -49,17 +49,17 @@ typedef struct goal_gfx_host {
 
   /*! `__pc-set-levels`: which levels' art the renderer should have ready. `names` holds `count`
    *  level nicknames ("village1"), already filtered of the game's "none" placeholders, and is
-   *  only valid for the duration of the call. The game calls this every frame from
-   *  `(method 15 load-state)` in `engine/level/level.gc`. */
+   *  borrowed only for the duration of the call. The host must copy anything it retains. */
   void (*set_levels)(const char* const* names, int count);
 
   /*! `put-display-env`: the only field of the PS2 display environment that survives the port is
    *  the blackout alpha, which the game fades the screen with. 0 is black, 1 is normal. */
   void (*set_pmode_alp)(float alp);
 
-  /*! `__pc-set-active-levels`: the levels currently participating in Jak 2 rendering. Kept
-   *  separate from `set_levels`, which describes the desired/loading set. Jak 1 does not call
-   *  this entry. Appended so existing host member offsets remain unchanged. */
+  /*! `__pc-set-active-levels`: the levels currently participating in Jak 2 rendering. This is
+   *  distinct from `set_levels`, which is the desired/loading set. `names` has the same borrowed
+   *  lifetime as `set_levels`. Jak 1 never calls this entry. Appended to preserve existing member
+   *  offsets. */
   void (*set_active_levels)(const char* const* names, int count);
 } goal_gfx_host;
 
@@ -88,7 +88,8 @@ typedef struct goal_gfx_host_stats {
    *  Owned by this file. */
   const char* last_levels;
   int active_level_sets; /*! __pc-set-active-levels calls whose level list changed */
-  /*! The active levels named by the last `__pc-set-active-levels`, joined with '+'. */
+  /*! The levels named by the last `__pc-set-active-levels`, joined with '+', or "" before the
+   *  first one. Owned by this file. */
   const char* last_active_levels;
 } goal_gfx_host_stats;
 
