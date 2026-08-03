@@ -61,7 +61,7 @@ function(opengoal_embed_metal_library output_variable output_directory)
       VERBATIM)
   add_custom_command(
       OUTPUT "${embed}"
-      COMMAND "${CMAKE_COMMAND}" -DINPUT="${metallib}" -DOUTPUT="${embed}"
+      COMMAND "${CMAKE_COMMAND}" "-DINPUT=${metallib}" "-DOUTPUT=${embed}"
               -DSYMBOL=g_goalpad_metallib
               -P "${OPENGOAL_METAL_PRODUCT_DIR}/embed_metallib.cmake"
       DEPENDS "${metallib}" "${OPENGOAL_METAL_PRODUCT_DIR}/embed_metallib.cmake"
@@ -108,6 +108,7 @@ function(opengoal_add_metal_product target)
       "${OPENGOAL_METAL_ROOT}"
       "${OPENGOAL_METAL_ROOT}/third-party"
       "${OPENGOAL_METAL_ROOT}/third-party/fmt/include"
+      "${OPENGOAL_METAL_ROOT}/third-party/glad/include"
       "${OPENGOAL_METAL_ROOT}/third-party/SDL/include")
   if(TARGET fmt)
     target_link_libraries(${target} PUBLIC fmt)
