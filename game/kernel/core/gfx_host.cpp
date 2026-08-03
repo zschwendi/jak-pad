@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "common/util/Assert.h"
+
 #include "game/kernel/common/Ptr.h"
 #include "game/kernel/common/kernel_types.h"
 #include "game/kernel/common/kscheme.h"
@@ -56,20 +58,15 @@ u64 send_gfx_dma_chain(u32 /*bank*/, u32 chain) {
 }
 
 u64 sync_v(u32 mode) {
+  ASSERT(mode == 0);
   g_stats.vsyncs++;
-  if (mode != 0) {
-    // upstream asserts on this; the frame code only ever passes 0.
-    return 0;
-  }
   goal_game_gfx_before_vsync();
   return g_host.vsync ? g_host.vsync() : report("syncv");
 }
 
 u64 sync_path(u32 mode, u32 timeout) {
+  ASSERT(mode == 0 && timeout == 0);
   g_stats.sync_paths++;
-  if (mode != 0 || timeout != 0) {
-    return 0;
-  }
   return g_host.sync_path ? g_host.sync_path() : report("sync-path");
 }
 
