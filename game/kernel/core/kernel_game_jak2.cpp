@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "common/global_profiler/GlobalProfiler.h"
+#include "common/goal_constants.h"
 #include "common/symbols.h"
 #include "common/util/Assert.h"
 
@@ -22,11 +23,13 @@
 #include "game/kernel/common/klink.h"
 #include "game/kernel/common/klisten.h"
 #include "game/kernel/common/kmalloc.h"
+#include "game/kernel/common/kmachine.h"
 #include "game/kernel/common/kmemcard.h"
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/common/ksocket.h"
 #include "game/kernel/core/kernel_game.h"
+#include "game/kernel/core/gfx_host_internal.h"
 #include "game/kernel/core/mips2c_seam.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/kboot.h"
@@ -206,6 +209,45 @@ void pc_prof(u32 name, ProfNode::Kind kind) {
 
 void flush_cache(u32 /*mode*/) {}
 
+u64 mouse_get_data(u32 mouse_address) {
+  auto* mouse = Ptr<jak2::MouseInfo>(mouse_address).c();
+  const u32 false_value = goal_game_false_offset();
+  mouse->active = false_value;
+  mouse->cursor = false_value;
+  mouse->valid = false_value;
+  mouse->status = 0;
+  mouse->button0 = 0;
+  mouse->deltax = 0;
+  mouse->deltay = 0;
+  mouse->wheel = 0;
+  mouse->posx = 0;
+  mouse->posy = 0;
+  return mouse_address;
+}
+
+u64 gfx_set_levels(u32 level_list) {
+  u32 levels[jak2::LEVEL_MAX];
+  for (int i = 0; i < jak2::LEVEL_MAX; i++) {
+    levels[i] = *Ptr<u32>(level_list + i * sizeof(u32));
+  }
+  goal_gfx_host_forward_levels(levels, jak2::LEVEL_MAX, false);
+  return 0;
+}
+
+u64 gfx_set_active_levels(u32 level_list) {
+  u32 levels[jak2::LEVEL_MAX];
+  for (int i = 0; i < jak2::LEVEL_MAX; i++) {
+    levels[i] = *Ptr<u32>(level_list + i * sizeof(u32));
+  }
+  goal_gfx_host_forward_levels(levels, jak2::LEVEL_MAX, true);
+  return 0;
+}
+
+u64 gfx_put_display_env(u32 alpha) {
+  goal_gfx_host_forward_pmode_alpha(alpha / 255.f);
+  return 0;
+}
+
 }  // namespace
 
 namespace jak2 {
@@ -292,6 +334,7 @@ void InitMachineScheme() {
   goal_kernel_core_install_implemented_machine_functions();
   make_function_symbol_from_c("pc-prof", (void*)pc_prof);
   make_function_symbol_from_c("flush-cache", (void*)flush_cache);
+  make_function_symbol_from_c("mouse-get-data", (void*)mouse_get_data);
   intern_from_c("*stack-top*")->value() = 0x07ffc000;
   intern_from_c("*stack-base*")->value() = 0x07ffffff;
   intern_from_c("*stack-size*")->value() = 0x4000;
@@ -314,6 +357,18 @@ GameVersion goal_game_version() {
 
 void goal_game_shutdown() {
   goal_jak2_sound_rpc_shutdown();
+}
+
+void goal_game_install_gfx_adapters() {
+  goal_game_make_function_symbol("put-display-env", (void*)gfx_put_display_env);
+  goal_game_make_function_symbol("__pc-set-levels", (void*)gfx_set_levels);
+  goal_game_make_function_symbol("__pc-set-active-levels", (void*)gfx_set_active_levels);
+}
+
+void goal_game_gfx_before_vsync() {
+  if (vblank_interrupt_handler && MasterExit == RuntimeExitStatus::RUNNING) {
+    call_goal(Ptr<Function>(vblank_interrupt_handler), 0, 0, 0, s7.offset, g_ee_main_mem);
+  }
 }
 
 void goal_game_init_kernel_globals() {

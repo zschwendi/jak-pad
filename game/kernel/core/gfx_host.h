@@ -56,6 +56,11 @@ typedef struct goal_gfx_host {
   /*! `put-display-env`: the only field of the PS2 display environment that survives the port is
    *  the blackout alpha, which the game fades the screen with. 0 is black, 1 is normal. */
   void (*set_pmode_alp)(float alp);
+
+  /*! `__pc-set-active-levels`: the levels currently participating in Jak 2 rendering. Kept
+   *  separate from `set_levels`, which describes the desired/loading set. Jak 1 does not call
+   *  this entry. Appended so existing host member offsets remain unchanged. */
+  void (*set_active_levels)(const char* const* names, int count);
 } goal_gfx_host;
 
 /*!
@@ -63,8 +68,8 @@ typedef struct goal_gfx_host {
  *
  * Besides the entries above this also implements the PS2 graphics calls that have nothing left to
  * do once the hardware is gone, exactly as upstream's desktop port does: `reset-path`,
- * `reset-graph`, `dma-sync`, `flush-cache`, `gs-put-imr`, `gs-get-imr` and `gs-store-image` all
- * return 0.
+ * `reset-graph`, `dma-sync`, `gs-put-imr`, `gs-get-imr` and `gs-store-image` all return 0.
+ * `flush-cache` stays owned by the per-game machine seam.
  *
  * Call after `goal_kernel_core_stub_machine_layer`, whose stubs these replace, and before the
  * first frame. Passing NULL puts every one of them back on the stub path.
@@ -82,6 +87,9 @@ typedef struct goal_gfx_host_stats {
   /*! The levels named by the last `__pc-set-levels`, joined with '+', or "" before the first one.
    *  Owned by this file. */
   const char* last_levels;
+  int active_level_sets; /*! __pc-set-active-levels calls whose level list changed */
+  /*! The active levels named by the last `__pc-set-active-levels`, joined with '+'. */
+  const char* last_active_levels;
 } goal_gfx_host_stats;
 
 void goal_gfx_host_stats_get(goal_gfx_host_stats* out);

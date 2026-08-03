@@ -461,6 +461,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak1-kernel-core-smoke-test jak1-kernel-core)
         add_test(NAME jak1-kernel-core-smoke-test COMMAND jak1-kernel-core-smoke-test)
 
+        add_executable(jak1-gfx-host-test kernel/core/jak1_gfx_host_test.cpp)
+        target_link_libraries(jak1-gfx-host-test jak1-kernel-core)
+        add_test(NAME jak1-gfx-host-test COMMAND jak1-gfx-host-test)
+
         add_executable(jak2-pad-seam-test kernel/core/jak2_pad_test.cpp)
         target_link_libraries(jak2-pad-seam-test jak2-kernel-core)
         add_test(NAME jak2-pad-seam-test COMMAND jak2-pad-seam-test)
@@ -481,6 +485,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_executable(jak2-dma-boundary-test kernel/core/jak2_dma_boundary_test.cpp)
         target_link_libraries(jak2-dma-boundary-test jak2-kernel-core)
         add_test(NAME jak2-dma-boundary-test COMMAND jak2-dma-boundary-test)
+
+        add_executable(jak2-gfx-host-test kernel/core/jak2_gfx_host_test.cpp)
+        target_link_libraries(jak2-gfx-host-test jak2-kernel-core)
+        add_test(NAME jak2-gfx-host-test COMMAND jak2-gfx-host-test)
 
         add_executable(jak2-sound-rpc-test kernel/core/jak2_sound_rpc_test.cpp)
         target_link_libraries(jak2-sound-rpc-test jak2-kernel-core)

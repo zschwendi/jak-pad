@@ -22,7 +22,8 @@
 #include "game/kernel/common/Ptr.h"
 #include "game/kernel/common/kernel_types.h"
 #include "game/kernel/common/kscheme.h"
-#include "game/kernel/jak1/kscheme.h"
+#include "game/kernel/core/gfx_host_internal.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/runtime.h"
 
 // Defined in desktop_seams.cpp; declared the way dgo_loader.cpp and sound_rpc.cpp declare it.
@@ -34,6 +35,7 @@ goal_gfx_host g_host;
 
 goal_gfx_host_stats g_stats;
 std::string g_last_levels;
+std::string g_last_active_levels;
 
 u64 report(const char* what) {
   return goal_kernel_core_machine_stub_report(what);
@@ -59,6 +61,7 @@ u64 sync_v(u32 mode) {
     // upstream asserts on this; the frame code only ever passes 0.
     return 0;
   }
+  goal_game_gfx_before_vsync();
   return g_host.vsync ? g_host.vsync() : report("syncv");
 }
 
@@ -90,17 +93,20 @@ u64 texture_relocate(u32 dst, u32 src, u32 format) {
   return 0;
 }
 
-/*!
- * Copy of jak1::pc_set_levels: the two level names the load state is holding, with the game's own
- * "none" placeholders dropped.
- */
-u64 set_levels(u32 l0, u32 l1) {
-  if (!g_host.set_levels) {
-    return report("__pc-set-levels");
+void forward_levels(const u32* level_name_offsets, int count, bool active) {
+  auto callback = active ? g_host.set_active_levels : g_host.set_levels;
+  const char* symbol = active ? "__pc-set-active-levels" : "__pc-set-levels";
+  if (!callback) {
+    report(symbol);
+    return;
   }
   std::vector<std::string> levels;
-  for (u32 arg : {l0, l1}) {
+  for (int i = 0; i < count; i++) {
+    const u32 arg = level_name_offsets[i];
     if (!arg) {
+      continue;
+    }
+    if (arg == goal_game_false_offset()) {
       continue;
     }
     const char* name = Ptr<String>(arg).c()->data();
@@ -117,10 +123,16 @@ u64 set_levels(u32 l0, u32 l1) {
     }
     joined += name;
   }
-  if (joined != g_last_levels) {
-    g_last_levels = joined;
-    g_stats.last_levels = g_last_levels.c_str();
-    g_stats.level_sets++;
+  auto& previous = active ? g_last_active_levels : g_last_levels;
+  if (joined != previous) {
+    previous = joined;
+    if (active) {
+      g_stats.last_active_levels = g_last_active_levels.c_str();
+      g_stats.active_level_sets++;
+    } else {
+      g_stats.last_levels = g_last_levels.c_str();
+      g_stats.level_sets++;
+    }
   }
 
   std::vector<const char*> names;
@@ -128,19 +140,7 @@ u64 set_levels(u32 l0, u32 l1) {
   for (const auto& name : levels) {
     names.push_back(name.c_str());
   }
-  g_host.set_levels(names.data(), (int)names.size());
-  return 0;
-}
-
-/*!
- * Copy of jak1::PutDisplayEnv. Everything in the PS2 display environment is gone except byte 1,
- * the blackout alpha the game fades the screen with.
- */
-u64 put_display_env(u32 ptr) {
-  if (g_host.set_pmode_alp) {
-    g_host.set_pmode_alp(Ptr<u8>(ptr).c()[1] / 255.f);
-  }
-  return 0;
+  callback(names.data(), (int)names.size());
 }
 
 // -------------------------------------------------------------------------------------------
@@ -168,23 +168,23 @@ goal_kernel_core_status goal_gfx_host_install(const goal_gfx_host* host) {
   }
   g_stats = goal_gfx_host_stats();
   g_last_levels.clear();
+  g_last_active_levels.clear();
   g_stats.last_levels = g_last_levels.c_str();
+  g_stats.last_active_levels = g_last_active_levels.c_str();
 
-  jak1::make_function_symbol_from_c("__send-gfx-dma-chain", (void*)send_gfx_dma_chain);
-  jak1::make_function_symbol_from_c("syncv", (void*)sync_v);
-  jak1::make_function_symbol_from_c("sync-path", (void*)sync_path);
-  jak1::make_function_symbol_from_c("put-display-env", (void*)put_display_env);
-  jak1::make_function_symbol_from_c("__pc-texture-upload-now", (void*)texture_upload_now);
-  jak1::make_function_symbol_from_c("__pc-texture-relocate", (void*)texture_relocate);
-  jak1::make_function_symbol_from_c("__pc-set-levels", (void*)set_levels);
+  goal_game_make_function_symbol("__send-gfx-dma-chain", (void*)send_gfx_dma_chain);
+  goal_game_make_function_symbol("syncv", (void*)sync_v);
+  goal_game_make_function_symbol("sync-path", (void*)sync_path);
+  goal_game_make_function_symbol("__pc-texture-upload-now", (void*)texture_upload_now);
+  goal_game_make_function_symbol("__pc-texture-relocate", (void*)texture_relocate);
+  goal_game_install_gfx_adapters();
 
-  jak1::make_function_symbol_from_c("reset-path", (void*)nothing_to_do);
-  jak1::make_function_symbol_from_c("reset-graph", (void*)nothing_to_do);
-  jak1::make_function_symbol_from_c("dma-sync", (void*)nothing_to_do);
-  jak1::make_function_symbol_from_c("flush-cache", (void*)nothing_to_do);
-  jak1::make_function_symbol_from_c("gs-put-imr", (void*)nothing_to_do);
-  jak1::make_function_symbol_from_c("gs-get-imr", (void*)nothing_to_do);
-  jak1::make_function_symbol_from_c("gs-store-image", (void*)nothing_to_do);
+  goal_game_make_function_symbol("reset-path", (void*)nothing_to_do);
+  goal_game_make_function_symbol("reset-graph", (void*)nothing_to_do);
+  goal_game_make_function_symbol("dma-sync", (void*)nothing_to_do);
+  goal_game_make_function_symbol("gs-put-imr", (void*)nothing_to_do);
+  goal_game_make_function_symbol("gs-get-imr", (void*)nothing_to_do);
+  goal_game_make_function_symbol("gs-store-image", (void*)nothing_to_do);
 
   return GOAL_KERNEL_CORE_OK;
 }
@@ -194,7 +194,21 @@ void goal_gfx_host_stats_get(goal_gfx_host_stats* out) {
     return;
   }
   g_stats.last_levels = g_last_levels.c_str();
+  g_stats.last_active_levels = g_last_active_levels.c_str();
   *out = g_stats;
 }
 
 }  // extern "C"
+
+void goal_gfx_host_forward_levels(const u32* level_name_offsets, int count, bool active) {
+  if (!level_name_offsets || count < 0) {
+    return;
+  }
+  forward_levels(level_name_offsets, count, active);
+}
+
+void goal_gfx_host_forward_pmode_alpha(float alpha) {
+  if (g_host.set_pmode_alp) {
+    g_host.set_pmode_alp(alpha);
+  }
+}

@@ -17,6 +17,7 @@
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/kernel_game.h"
+#include "game/kernel/core/gfx_host_internal.h"
 #include "game/kernel/core/mips2c_seam.h"
 #include "game/kernel/core/sound_rpc.h"
 #include "game/kernel/jak1/kdgo.h"
@@ -154,6 +155,21 @@ const char* const kJak1MachineFunctionNames[] = {
 constexpr int kJak1MachineFunctionCount =
     int(sizeof(kJak1MachineFunctionNames) / sizeof(const char*));
 
+u64 gfx_set_levels(u32 l0, u32 l1) {
+  const u32 levels[] = {l0, l1};
+  goal_gfx_host_forward_levels(levels, 2, false);
+  return 0;
+}
+
+u64 gfx_put_display_env(u32 ptr) {
+  goal_gfx_host_forward_pmode_alpha(Ptr<u8>(ptr).c()[1] / 255.f);
+  return 0;
+}
+
+u64 flush_cache(u32 /*mode*/) {
+  return 0;
+}
+
 }  // namespace
 
 namespace jak1 {
@@ -170,6 +186,7 @@ namespace jak1 {
 void InitMachineScheme() {
   goal_kernel_core_install_machine_stubs(kJak1MachineFunctionNames, kJak1MachineFunctionCount);
   goal_kernel_core_install_implemented_machine_functions();
+  make_function_symbol_from_c("flush-cache", (void*)flush_cache);
   intern_from_c("*stack-top*")->value = 0x07ffc000;
   intern_from_c("*stack-base*")->value = 0x07ffffff;
   intern_from_c("*stack-size*")->value = 0x4000;
@@ -183,6 +200,13 @@ GameVersion goal_game_version() {
 void goal_game_shutdown() {
   goal_sound_shutdown();
 }
+
+void goal_game_install_gfx_adapters() {
+  goal_game_make_function_symbol("put-display-env", (void*)gfx_put_display_env);
+  goal_game_make_function_symbol("__pc-set-levels", (void*)gfx_set_levels);
+}
+
+void goal_game_gfx_before_vsync() {}
 
 void goal_game_init_kernel_globals() {
   fileio_init_globals();

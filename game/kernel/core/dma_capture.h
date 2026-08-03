@@ -59,6 +59,15 @@ typedef struct goal_gfx_dma_bucket_summary {
  */
 void goal_gfx_dma_install(void);
 
+/*! Clear measurements and pending capture requests without changing the installed send-chain
+ * function. Call this before attaching `goal_gfx_dma_observe_chain` to a graphics host. */
+void goal_gfx_dma_reset(void);
+
+/*! Measure one host-owned chain without taking ownership of `__send-gfx-dma-chain`. This has the
+ * exact signature of `goal_gfx_host::send_chain`, so a renderer host can observe and then render
+ * the same chain instead of competing with `goal_gfx_dma_install` for the GOAL symbol. */
+void goal_gfx_dma_observe_chain(const void* ee_base, uint32_t chain_offset);
+
 /*!
  * Write the chain a *host* is about to render to `path`, without owning `__send-gfx-dma-chain`.
  * `ee_base` and `chain_offset` are the two arguments `goal_gfx_host::send_chain` received, and
