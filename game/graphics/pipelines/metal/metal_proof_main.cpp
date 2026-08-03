@@ -2149,7 +2149,9 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
   const TieCameraState camera_b{"B", -0.43f, -15.f, 13.f, 0.85f, 2.15f, 1.7f,
                                 2.25f, 1.6875f, 9437184.f, -50000.f, 24000.f};
 
-  auto render_camera = [&](const TieCameraState& state, metal_renderer::FramePixels* frame) {
+  auto render_camera = [&](const TieCameraState& state,
+                           bool expect_shine,
+                           metal_renderer::FramePixels* frame) {
     std::vector<u8> mem(kEeSize, 0);
     g_ee_main_mem = mem.data();
     ChainBuilder cb(mem);
@@ -2165,10 +2167,11 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
     }
 
     const auto stats = metal_renderer::get_background_stats();
-    check(stats.tie_draws == 4,
-          fmt::format("TIE camera {} issued both envmap passes per tree", state.name).c_str());
-    check(stats.tie_envmap_second_draws == 2,
-          fmt::format("TIE camera {} issued one shiny draw per tree", state.name).c_str());
+    check(stats.tie_draws == (expect_shine ? 4 : 2),
+          fmt::format("TIE camera {} issued the expected base/shine draw count", state.name)
+              .c_str());
+    check(stats.tie_envmap_second_draws == (expect_shine ? 2 : 0),
+          fmt::format("TIE camera {} issued the expected shiny draw count", state.name).c_str());
     check(stats.missing_levels == 0,
           fmt::format("TIE camera {} found its synthetic level", state.name).c_str());
     check(stats.missing_textures == 0,
@@ -2177,19 +2180,30 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
     const auto identity = tie_frame_identity(*frame);
     printf("  camera %s identity: magenta=%zu blue=%zu white=%zu unexpected=%zu\n", state.name,
            identity.magenta, identity.blue, identity.white, identity.unexpected);
-    check(identity.magenta > 100,
-          fmt::format("TIE camera {} produces a meaningful paired-pass mask", state.name).c_str());
-    check(identity.unexpected == 0,
-          fmt::format("TIE camera {} keeps base and shiny coverage identical", state.name).c_str());
+    if (expect_shine) {
+      check(identity.magenta > 100,
+            fmt::format("TIE camera {} produces a meaningful paired-pass mask", state.name)
+                .c_str());
+      check(identity.unexpected == 0,
+            fmt::format("TIE camera {} keeps base and shiny coverage identical", state.name)
+                .c_str());
+    } else {
+      check(identity.blue > 100 && identity.magenta == 0 && identity.white == 0 &&
+                identity.unexpected == identity.blue,
+            fmt::format("TIE camera {} keeps the blue base while suppressing only shine",
+                        state.name)
+                .c_str());
+    }
     return true;
   };
 
+  metal_renderer::set_jak1_tie_envmap_second_pass_enabled(true);
   metal_renderer::FramePixels frame_a_first;
   metal_renderer::FramePixels frame_b;
   metal_renderer::FramePixels frame_a_second;
-  const bool read_a_first = render_camera(camera_a, &frame_a_first);
-  const bool read_b = render_camera(camera_b, &frame_b);
-  const bool read_a_second = render_camera(camera_a, &frame_a_second);
+  const bool read_a_first = render_camera(camera_a, true, &frame_a_first);
+  const bool read_b = render_camera(camera_b, true, &frame_b);
+  const bool read_a_second = render_camera(camera_a, true, &frame_a_second);
   if (read_a_first && read_b && read_a_second) {
     check(frame_a_first.width == frame_a_second.width &&
               frame_a_first.height == frame_a_second.height &&
@@ -2197,6 +2211,24 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
           "TIE camera A produces an identical frame after A/B/A alternation");
     check(frame_a_first.rgba != frame_b.rgba,
           "TIE camera B changes the coverage exercised between repeated A frames");
+  }
+
+  metal_renderer::set_jak1_tie_envmap_second_pass_enabled(false);
+  metal_renderer::FramePixels frame_a_base_only;
+  const bool read_a_base_only = render_camera(camera_a, false, &frame_a_base_only);
+  if (read_a_first && read_a_base_only) {
+    check(frame_a_first.rgba != frame_a_base_only.rgba,
+          "TIE shine diagnostic changes the synthetic TIE frame");
+  }
+
+  metal_renderer::set_jak1_tie_envmap_second_pass_enabled(true);
+  metal_renderer::FramePixels frame_a_restored;
+  const bool read_a_restored = render_camera(camera_a, true, &frame_a_restored);
+  if (read_a_first && read_a_restored) {
+    check(frame_a_first.width == frame_a_restored.width &&
+              frame_a_first.height == frame_a_restored.height &&
+              frame_a_first.rgba == frame_a_restored.rgba,
+          "TIE shine diagnostic restores the default frame without stale state");
   }
 
   g_ee_main_mem = nullptr;
@@ -4581,6 +4613,7 @@ int main(int argc, char** argv) {
   std::vector<std::string> replay_fr3;
   int replay_frames = 2;
   bool show_window = false;
+  bool tie_envmap_isolation_only = false;
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     if (arg == "--replay" && i + 1 < argc) {
@@ -4595,6 +4628,8 @@ int main(int argc, char** argv) {
       replay_common_fr3 = argv[++i];
     } else if (arg == "--show-window") {
       show_window = true;
+    } else if (arg == "--tie-envmap-isolation-only") {
+      tie_envmap_isolation_only = true;
     } else if (arg == "--fr3" && i + 1 < argc) {
       fr3_path = argv[++i];
     } else if (!arg.empty() && arg[0] != '-' && fr3_path.empty()) {
@@ -4605,6 +4640,7 @@ int main(int argc, char** argv) {
           "                   [--replay <capture.gpdma> [--replay-png <out.png>]\n"
           "                    [--replay-frames <n>] [--replay-common-fr3 <GAME.fr3>]\n"
           "                    [--replay-fr3 <level.fr3>]...]\n"
+          "                   [--tie-envmap-isolation-only]\n"
           "                   [--show-window]\n");
       return 1;
     }
@@ -4637,6 +4673,18 @@ int main(int argc, char** argv) {
     return 1;
   }
   printf("[PASS] Metal display created\n");
+
+  if (tie_envmap_isolation_only) {
+    test_tie_envmap_tree_order(mod, display);
+    display.reset();
+    mod->exit();
+    if (g_fail_count == 0) {
+      printf("METAL TIE ENVMAP ISOLATION PROOF PASSED\n");
+      return 0;
+    }
+    printf("METAL TIE ENVMAP ISOLATION PROOF FAILED: %d check(s) failed\n", g_fail_count);
+    return 1;
+  }
 
   if (!replay_path.empty()) {
     // replay mode: only the captured chain runs, on an otherwise untouched
