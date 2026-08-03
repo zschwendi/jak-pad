@@ -10,12 +10,14 @@ per-game seam in `kernel_game.h`, implemented by `kernel_game_jak1.cpp` and
 everything documented below; `jak2-kernel-core` (**Experimental**) is the same core keyed to the
 Jak 2 kernel, with `dgo_loader_jak2.cpp` carrying the C-driven DGO load and the upstream Jak 2
 mips2c translations registered through the native-function seam. `sound_rpc_jak2.cpp` answers the
-loader's command-aware framing, IRX 4.0 version handshake, checked SBlk loads, and ordinary STR
-files. A bounded user-local bank is validated in memory before the same bytes reach 989snd, and the
-kernel owns its sound-system shutdown. Command 2 has no reply payload: its zero return only means
-the synchronous transport completed, not that a bank loaded; failures are available through host
-logs and `goal_jak2_sound_rpc_stats`. Playback, streaming, pad, and graphics still report through
-the machine stubs. `jak2-sound-rpc-test` covers these seams with original synthetic data only.
+loader's command-aware framing, IRX 4.0 version handshake, checked SBlk loads, ordinary named-SFX
+PLAY/update commands, and ordinary STR files. A bounded user-local bank is validated in memory
+before the same bytes reach 989snd, and unsafe PLAY falloff parameters are rejected before spatial
+volume calculation. The kernel owns its sound-system shutdown. Command 2 has no reply payload: its
+zero return only means the synchronous transport completed, not that a bank loaded; failures are
+available through host logs and `goal_jak2_sound_rpc_stats`. Music, streaming, pad, and graphics
+still report through the machine stubs. `jak2-sound-rpc-test` covers these seams with original
+synthetic data only.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
 kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
 exploratory integration probe; the registered CTest does not enable that mode.
@@ -694,10 +696,10 @@ with no case now fails to compile rather than returning garbage.
   argument array from the C arguments.
 - **Jak 2 remains a headless kernel probe.** Its kernel and GAME.CGO objects load through the AOT
   path, its translated mips2c functions are registered, and its sound loader accepts the IRX 4.0
-  version handshake, ordinary STR files, and validated SBlk banks retained by 989snd. Sound
-  playback, streaming and info-frame updates are not implemented; neither are its pad, graphics,
-  and broader machine seams. Jak 3 and Jak X still use the desktop/x86-oriented paths and remain
-  non-functional in this ARM64 kernel core.
+  version handshake, ordinary STR files, validated SBlk banks retained by 989snd, and ordinary
+  named-SFX PLAY/update commands. Music, streaming and info-frame updates are not implemented;
+  neither are its pad, graphics, and broader machine seams. Jak 3 and Jak X still use the
+  desktop/x86-oriented paths and remain non-functional in this ARM64 kernel core.
 - **Little machine layer.** Almost nothing from `kmachine.cpp` is here.
   `goal_kernel_core_stub_machine_layer` puts a loudly-failing GOAL function object in each of its
   117 symbols so a call says which function was wanted instead of faulting in the guard page. Only
