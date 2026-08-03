@@ -1006,6 +1006,7 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
 
         add_executable(jak2-data-boot-test
                 kernel/core/jak2_boot_test.cpp
+                kernel/core/jak2_runtime.cpp
                 "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.c"
                 ${JAK2_AOT_BOOT_C_SOURCES})
         set_source_files_properties(
