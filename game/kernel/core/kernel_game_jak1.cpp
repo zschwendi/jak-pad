@@ -166,10 +166,6 @@ u64 gfx_put_display_env(u32 ptr) {
   return 0;
 }
 
-u64 flush_cache(u32 /*mode*/) {
-  return 0;
-}
-
 }  // namespace
 
 namespace jak1 {
@@ -186,7 +182,6 @@ namespace jak1 {
 void InitMachineScheme() {
   goal_kernel_core_install_machine_stubs(kJak1MachineFunctionNames, kJak1MachineFunctionCount);
   goal_kernel_core_install_implemented_machine_functions();
-  make_function_symbol_from_c("flush-cache", (void*)flush_cache);
   intern_from_c("*stack-top*")->value = 0x07ffc000;
   intern_from_c("*stack-base*")->value = 0x07ffffff;
   intern_from_c("*stack-size*")->value = 0x4000;

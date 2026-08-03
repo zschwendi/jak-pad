@@ -43,25 +43,6 @@
 
 namespace {
 
-void pc_prof(u32 name, ProfNode::Kind kind) {
-  prof().event(Ptr<String>(name).c()->data(), kind);
-}
-
-u64 mouse_get_data(u32 mouse_ptr) {
-  auto* mouse = Ptr<jak2::MouseInfo>(mouse_ptr).c();
-  mouse->active = s7.offset;
-  mouse->valid = s7.offset;
-  mouse->cursor = s7.offset;
-  mouse->status = 0;
-  mouse->button0 = 0;
-  mouse->deltax = 0;
-  mouse->deltay = 0;
-  mouse->wheel = 0;
-  mouse->posx = 0.f;
-  mouse->posy = 0.f;
-  return mouse_ptr;
-}
-
 /*!
  * Every GOAL symbol the real jak2::InitMachineScheme fills in: the PS2 library shims, the pad,
  * mouse and file-stream entry points, the system-config readers, the sound RPC, and the PC port's
@@ -228,8 +209,6 @@ void pc_prof(u32 name, ProfNode::Kind kind) {
   prof().event(Ptr<String>(name).c()->data(), kind);
 }
 
-void flush_cache(u32 /*mode*/) {}
-
 u64 mouse_get_data(u32 mouse_address) {
   auto* mouse = Ptr<jak2::MouseInfo>(mouse_address).c();
   const u32 false_value = goal_game_false_offset();
@@ -354,7 +333,6 @@ void InitMachineScheme() {
   goal_kernel_core_install_machine_stubs(kJak2MachineFunctionNames, kJak2MachineFunctionCount);
   goal_kernel_core_install_implemented_machine_functions();
   make_function_symbol_from_c("pc-prof", (void*)pc_prof);
-  make_function_symbol_from_c("flush-cache", (void*)flush_cache);
   make_function_symbol_from_c("mouse-get-data", (void*)mouse_get_data);
   intern_from_c("*stack-top*")->value() = 0x07ffc000;
   intern_from_c("*stack-base*")->value() = 0x07ffffff;

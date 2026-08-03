@@ -42,6 +42,7 @@ extern "C" {
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/dma_capture.h"
+#include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
@@ -51,6 +52,16 @@ extern "C" {
 #include "game/runtime.h"
 
 namespace {
+
+uint32_t g_play_dma_dispatch_iteration = 0;
+
+uint32_t play_dma_vsync() {
+  return g_play_dma_dispatch_iteration & 1;
+}
+
+uint32_t play_dma_sync_path() {
+  return 0;
+}
 
 void say(const char* format, ...) __attribute__((format(printf, 1, 2)));
 void say(const char* format, ...) {
@@ -290,9 +301,16 @@ int run_boot(const std::string& data_dir,
   // available without replacing those handlers.
   goal_dgo_install_goal_loader();
   if (run_play_dma) {
-    // Replace only the graphics-DMA stub. The rest of the graphics machine layer remains the
-    // diagnostic stubs, and this seam measures completed chains without rendering or capture.
-    goal_gfx_dma_install();
+    g_play_dma_dispatch_iteration = 0;
+    goal_gfx_dma_reset();
+    goal_gfx_host host = {};
+    host.send_chain = goal_gfx_dma_observe_chain;
+    host.vsync = play_dma_vsync;
+    host.sync_path = play_dma_sync_path;
+    if (goal_gfx_host_install(&host) != GOAL_KERNEL_CORE_OK) {
+      say("FAILED: could not install the synchronous Jak 2 validation graphics host\n");
+      return 1;
+    }
   }
 
   if (with_game) {
@@ -338,8 +356,10 @@ int run_boot(const std::string& data_dir,
 
     say("\n=== play-boot frontier\n");
     goal_gfx_dma_stats dma_before = {};
+    goal_gfx_host_stats gfx_before = {};
     if (run_play_dma) {
       goal_gfx_dma_get_stats(&dma_before);
+      goal_gfx_host_stats_get(&gfx_before);
     }
     const u64 play_boot_result = jak2::call_goal_function_by_name("play-boot");
     drain_goal_print_buffer();
@@ -349,6 +369,9 @@ int run_boot(const std::string& data_dir,
     Jak2DmaWindow dma_window = {};
     int frames_run = 0;
     while (frames_run < dispatch_frames) {
+      if (run_play_dma) {
+        g_play_dma_dispatch_iteration = (uint32_t)(frames_run + 1);
+      }
       call_goal_on_stack(Ptr<Function>(dispatcher), goal_kernel_stack_top(), s7.offset,
                          g_ee_main_mem);
       frames_run++;
@@ -381,11 +404,24 @@ int run_boot(const std::string& data_dir,
     if (run_play_dma) {
       goal_gfx_dma_get_stats(&dma);
       dma_window = audit_jak2_dma_window(dma_before, dma);
+      goal_gfx_host_stats gfx_after = {};
+      goal_gfx_host_stats_get(&gfx_after);
+      const int host_chains = gfx_after.chains - gfx_before.chains;
+      const int host_sync_paths = gfx_after.sync_paths - gfx_before.sync_paths;
+      const int host_vsyncs = gfx_after.vsyncs - gfx_before.vsyncs;
       say("  graphics DMA after play-boot: %d chain(s), %d well formed, %d malformed; measured "
           "and dropped\n",
           dma_window.chains, dma_window.well_formed, dma_window.malformed);
+      say("  validation graphics host: %d chain(s), %d sync-path call(s), %d syncv call(s); "
+          "callback external waits 0, rendered frames 0, presented frames 0\n",
+          host_chains, host_sync_paths, host_vsyncs);
       if (!dma_window.accounting_complete) {
         say("FAILED: --play-dma chain totals and per-frame records do not agree\n");
+        return 1;
+      }
+      if (host_chains != dma_window.chains || host_sync_paths <= 0 || host_vsyncs <= 0) {
+        say("FAILED: --play-dma did not exercise synchronous DMA, sync-path, and syncv through "
+            "the validation graphics host\n");
         return 1;
       }
       if (dma_window.malformed != 0) {
@@ -417,8 +453,8 @@ int run_boot(const std::string& data_dir,
         "%u copied bytes)\n",
         dma_window.valid.frame, dma_window.valid.tags, dma_window.valid.payload_bytes,
         dma_window.valid.copied_bytes);
-    say("STOPPED: --play-dma measured and dropped the chain; this host probe has no renderer or "
-        "app loop, and does not claim drawn output.\n");
+    say("STOPPED: --play-dma synchronously measured and dropped the chain; rendered frames 0, "
+        "presented frames 0. This validation host has no renderer or app loop.\n");
     return 0;
   }
 

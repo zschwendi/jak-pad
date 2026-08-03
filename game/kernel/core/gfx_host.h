@@ -69,7 +69,7 @@ typedef struct goal_gfx_host {
  * Besides the entries above this also implements the PS2 graphics calls that have nothing left to
  * do once the hardware is gone, exactly as upstream's desktop port does: `reset-path`,
  * `reset-graph`, `dma-sync`, `gs-put-imr`, `gs-get-imr` and `gs-store-image` all return 0.
- * `flush-cache` stays owned by the per-game machine seam.
+ * `flush-cache` stays owned by the shared portable machine seam.
  *
  * Call after `goal_kernel_core_stub_machine_layer`, whose stubs these replace, and before the
  * first frame. Passing NULL puts every one of them back on the stub path.
