@@ -10,8 +10,9 @@
  * stdout - so a run that passes is measuring the kernel, not claiming the game works.
  *
  * Needs a data directory, given by --data-dir or GOALPAD_JAK2_DATA_DIR, and reports that it was
- * skipped when there is none. --with-game goes on to attempt GAME.CGO and reports honestly where
- * that stops; it is an exploration flag, not a passing test.
+ * skipped when there is none. --with-game goes on to attempt GAME.CGO. --play implies
+ * --with-game and calls the real Jak 2 `(play #t #t)` only far enough to report the first
+ * title-level DGO request and the next missing subsystem. Both are explicit frontier probes.
  */
 
 #include <cstdarg>
@@ -169,7 +170,15 @@ void register_aot_objects() {
   }
 }
 
-int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
+u32 g_play = 0;
+u32 g_true = 0;
+
+/*! `play` allocates stack objects, so enter it on GOAL's own 32-bit-addressable stack. */
+u64 play_on_goal_stack() {
+  return call_goal(Ptr<Function>(g_play), g_true, g_true, 0, s7.offset, g_ee_main_mem);
+}
+
+int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, bool run_play) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
 
@@ -249,6 +258,42 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
         sound_stats.info_ee);
   }
 
+  if (run_play) {
+    goal_kernel_core_state state = {};
+    if (goal_kernel_core_get_state(&state) != GOAL_KERNEL_CORE_OK ||
+        goal_kernel_core_lookup("play", nullptr, &g_play) != GOAL_KERNEL_CORE_OK || !g_play) {
+      say("FAILED: Jak 2 play holds nothing\n");
+      return 1;
+    }
+    g_true = state.true_offset;
+
+    say("\n=== (play #t #t) frontier\n");
+    const u64 play_result = call_goal_on_stack(
+        jak2::make_function_from_native((void*)play_on_goal_stack), goal_kernel_stack_top(),
+        s7.offset, g_ee_main_mem);
+    drain_goal_print_buffer();
+
+    goal_dgo_rpc_stats rpc = {};
+    goal_dgo_goal_loader_stats(&rpc);
+    say("  play returned #x%llx\n", (unsigned long long)play_result);
+    say("  channel 3 first request: %s; %d archive(s), %d object(s) "
+        "(%d code from AOT, %d data linked)\n",
+        rpc.first_dgo_name[0] ? rpc.first_dgo_name : "<none>", rpc.dgo_archives,
+        rpc.dgo_objects, rpc.linked_code_objects, rpc.linked_data_objects);
+    report_heap("after play frontier");
+
+    if (std::strcmp(rpc.first_dgo_name, "TITLE.DGO") != 0 || rpc.dgo_archives < 1 ||
+        rpc.dgo_objects < 1 || rpc.linked_code_objects + rpc.linked_data_objects < 1 ||
+        rpc.dgo_objects < rpc.linked_code_objects + rpc.linked_data_objects) {
+      say("FAILED: play did not prove a complete first title-level channel-3 request\n");
+      return 1;
+    }
+    say("  proved: Jak 2 play reached TITLE.DGO through the composed channel-3 router\n");
+    say("STOPPED: the host probe has no pad, renderer, or app loop; any missing-machine "
+        "reports above are the next unsupported frontier, not successful behavior.\n");
+    return 0;
+  }
+
   // KernelCheckAndDispatch's loop body, without the listener half: the GOAL kernel's own frame,
   // running processes and states.
   uint32_t dispatcher = 0;
@@ -305,6 +350,7 @@ int main(int argc, char** argv) {
   std::string data_dir;
   int dispatch_frames = 100;
   bool with_game = false;
+  bool run_play = false;
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
     if (arg == "--data-dir" && i + 1 < argc) {
@@ -314,6 +360,9 @@ int main(int argc, char** argv) {
     } else if (arg == "--verbose") {
       goal_dgo_set_verbose(1);
     } else if (arg == "--with-game") {
+      with_game = true;
+    } else if (arg == "--play") {
+      run_play = true;
       with_game = true;
     } else {
       std::fprintf(stderr, "unknown argument %s\n", arg.c_str());
@@ -345,7 +394,7 @@ int main(int argc, char** argv) {
   register_aot_objects();
   std::printf("%d AOT translation units registered by object name\n", goal_aot_boot_file_count);
 
-  const int result = run_boot(data_dir, dispatch_frames, with_game);
+  const int result = run_boot(data_dir, dispatch_frames, with_game, run_play);
 
   goal_aot_reset();
   goal_kernel_core_shutdown();

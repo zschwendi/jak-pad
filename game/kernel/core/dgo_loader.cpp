@@ -469,7 +469,6 @@ u64 dgo_rpc(u32 fno, u32 send_buffer, u32 recv_buffer) {
 
   switch (fno) {
     case DGO_RPC_LOAD_FNO: {
-      g_rpc_stats.dgo_archives++;
       // GOAL builds the name from a level's nickname, so it arrives lowercase and without a
       // directory; the archives on disc are uppercase. This is the same kstrcpyup the C-driven
       // load does.
@@ -478,6 +477,10 @@ u64 dgo_rpc(u32 fno, u32 send_buffer, u32 recv_buffer) {
       name[sizeof(name) - 1] = '\0';
       char upper[16];
       kstrcpyup(upper, name);
+      if (g_rpc_stats.dgo_archives == 0) {
+        std::snprintf(g_rpc_stats.first_dgo_name, sizeof(g_rpc_stats.first_dgo_name), "%s", upper);
+      }
+      g_rpc_stats.dgo_archives++;
       jak1::BeginLoadingDGO(upper, Ptr<u8>(cmd.buffer1), Ptr<u8>(cmd.buffer2),
                             Ptr<u8>(cmd.buffer_heap_top));
       answer_with_next_object(&cmd);

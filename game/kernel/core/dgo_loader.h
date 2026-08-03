@@ -62,6 +62,7 @@ typedef struct goal_dgo_rpc_stats {
   int ramdisk_reads;         /*! windows of one the ramdisk RPC handed back */
   int ramdisk_misses;        /*! ramdisk requests that found nothing to read */
   unsigned level_code_bytes; /*! heap a level's own object files took, in the level's own heap */
+  char first_dgo_name[17];   /*! first archive GOAL asked channel 3 to load, uppercased */
 } goal_dgo_rpc_stats;
 
 void goal_dgo_goal_loader_stats(goal_dgo_rpc_stats* out);

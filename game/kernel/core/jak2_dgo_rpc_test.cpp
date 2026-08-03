@@ -426,6 +426,8 @@ int main() {
 
   goal_dgo_rpc_stats rpc_stats = {};
   goal_dgo_goal_loader_stats(&rpc_stats);
+  check(std::strcmp(rpc_stats.first_dgo_name, "SYNTH.DGO") == 0,
+        "the first channel-3 archive name is retained");
   check_u32((u32)rpc_stats.dgo_archives, 2, "two well-framed DGO loads are counted");
   check_u32((u32)rpc_stats.dgo_objects, 4, "three completed and one cancelled objects are counted");
   check_guards(send, "DGO send canaries stay intact");

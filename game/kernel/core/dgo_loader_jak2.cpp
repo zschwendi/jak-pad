@@ -416,13 +416,18 @@ u64 dgo_rpc(u32 function,
   memcpy(&cmd, Ptr<u8>(send_buffer).c(), sizeof(cmd));
   switch (function) {
     case DGO_RPC_LOAD_FNO: {
-      g_rpc_stats.dgo_archives++;
       std::string name;
       if (!dgo_name(cmd.name, &name)) {
+        g_rpc_stats.dgo_archives++;
         cmd.result = DGO_RPC_RESULT_ERROR;
         close_dgo();
         break;
       }
+      if (g_rpc_stats.dgo_archives == 0) {
+        std::snprintf(g_rpc_stats.first_dgo_name, sizeof(g_rpc_stats.first_dgo_name), "%s",
+                      name.c_str());
+      }
+      g_rpc_stats.dgo_archives++;
       begin_loading_dgo(name.c_str(), Ptr<u8>(cmd.buffer1), Ptr<u8>(cmd.buffer2),
                         Ptr<u8>(cmd.buffer_heap_top));
       answer_with_next_object(&cmd);
