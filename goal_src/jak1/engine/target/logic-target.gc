@@ -674,7 +674,7 @@
   (none))
 
 (#when PC_PORT
-  (def-mips2c jak1-target-post-flag-observe (function uint uint int64 none)))
+  (def-mips2c jak1-target-post-flag-observe (function uint uint int none)))
 
 (defbehavior post-flag-setup target ()
   (if (logtest? (-> self control status) (cshape-moving-flags twall t-act))
