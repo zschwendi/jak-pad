@@ -1139,6 +1139,14 @@ if(APPLE)
         target_link_libraries(jak2-metal-dispatch-proof goalpad-metal-gfx)
         add_test(NAME jak2-metal-dispatch-proof COMMAND jak2-metal-dispatch-proof)
 
+        add_executable(jak2-metal-submit-readback-proof
+            graphics/pipelines/metal/metal_jak2_submit_readback_proof.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_submit_readback_proof.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-submit-readback-proof goalpad-metal-gfx)
+        add_test(NAME jak2-metal-submit-readback-proof COMMAND jak2-metal-submit-readback-proof)
+
         add_executable(goalpad-play
             goalpad_play.cpp
             goalpad_audio.cpp
