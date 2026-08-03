@@ -39,6 +39,24 @@ metal_merc_transform_trace::MatrixSnapshot yaw_matrix(double degrees) {
   return {cosine, 0.f, sine, 0.f, 0.f, 1.f, 0.f, 0.f, -sine, 0.f, cosine, 0.f, 0.f, 0.f, 0.f, 1.f};
 }
 
+metal_merc_transform_trace::MatrixSnapshot pitch_matrix(double degrees) {
+  constexpr double kPi = 3.14159265358979323846;
+  const double radians = degrees * kPi / 180.0;
+  const float cosine = static_cast<float>(std::cos(radians));
+  const float sine = static_cast<float>(std::sin(radians));
+  return {1.f, 0.f, 0.f, 0.f, 0.f, cosine, -sine, 0.f,
+          0.f, sine, cosine, 0.f, 0.f, 0.f, 0.f, 1.f};
+}
+
+metal_merc_transform_trace::MatrixSnapshot roll_matrix(double degrees) {
+  constexpr double kPi = 3.14159265358979323846;
+  const double radians = degrees * kPi / 180.0;
+  const float cosine = static_cast<float>(std::cos(radians));
+  const float sine = static_cast<float>(std::sin(radians));
+  return {cosine, -sine, 0.f, 0.f, sine, cosine, 0.f, 0.f,
+          0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
+}
+
 metal_merc_transform_trace::BasisSnapshot yaw_basis(double degrees) {
   const auto matrix = yaw_matrix(degrees);
   return metal_merc_transform_trace::make_basis_snapshot(matrix.data());
@@ -105,6 +123,12 @@ metal_merc_transform_trace::Event observe_provenance(metal_merc_transform_trace:
 void store_identity(std::vector<u8>& memory, std::size_t address, float translation) {
   const std::array<float, 16> matrix = {1.f, 0.f, 0.f, 0.f, 0.f,         1.f, 0.f, 0.f,
                                         0.f, 0.f, 1.f, 0.f, translation, 0.f, 0.f, 1.f};
+  std::memcpy(memory.data() + address, matrix.data(), sizeof(matrix));
+}
+
+void store_matrix(std::vector<u8>& memory,
+                  std::size_t address,
+                  const metal_merc_transform_trace::MatrixSnapshot& matrix) {
   std::memcpy(memory.data() + address, matrix.data(), sizeof(matrix));
 }
 
@@ -340,17 +364,26 @@ int main() {
   constexpr u32 kBones = 0x3000;
   constexpr u32 kCamera = 0x5000;
   constexpr u32 kCount = 4;
-  for (u32 bone = 0; bone < kCount; bone++) {
-    store_identity(memory, kBones + bone * jak1_bones_provenance_trace::kBoneStride,
-                   static_cast<float>(bone));
+  const auto camera_matrix = pitch_matrix(23.0);
+  const std::array<metal_merc_transform_trace::MatrixSnapshot,
+                   jak1_bones_provenance_trace::kRootAnchorCount>
+      root_matrices = {yaw_matrix(31.0), yaw_matrix(-47.0), yaw_matrix(68.0)};
+  const std::array<metal_merc_transform_trace::MatrixSnapshot,
+                   jak1_bones_provenance_trace::kRootAnchorCount>
+      bind_pose_matrices = {roll_matrix(-19.0), roll_matrix(37.0), roll_matrix(59.0)};
+  store_identity(memory, kBones, 0.f);
+  for (u32 root = 0; root < jak1_bones_provenance_trace::kRootAnchorCount; root++) {
+    store_matrix(memory,
+                 kBones + (root + 1) * jak1_bones_provenance_trace::kBoneStride,
+                 root_matrices[root]);
   }
   for (u32 joint = 0; joint < jak1_bones_provenance_trace::kRootAnchorCount; joint++) {
-    store_identity(memory,
-                   kJointsObject + jak1_bones_provenance_trace::kJointBindPoseOffset +
-                       joint * jak1_bones_provenance_trace::kJointStride,
-                   static_cast<float>(10 + joint));
+    store_matrix(memory,
+                 kJointsObject + jak1_bones_provenance_trace::kJointBindPoseOffset +
+                     joint * jak1_bones_provenance_trace::kJointStride,
+                 bind_pose_matrices[joint]);
   }
-  store_identity(memory, kCamera, 0.f);
+  store_matrix(memory, kCamera, camera_matrix);
   check(registry.record(kOutput, kJoints, kBones, kCount, kCamera, memory.data(), memory.size()),
         "the producer registry records an in-bounds calculation");
   const auto recorded = registry.find_output_base(kOutput);
@@ -372,6 +405,65 @@ int main() {
   }
   check(bind_pose_bytes_match,
         "the GOAL basic a1 pointer bias resolves bind pose +0x10 from the object base");
+  bool root_mapping_matches = recorded.has_value();
+  bool correct_composition_matches = recorded.has_value();
+  bool reversed_order_is_rejected = recorded.has_value();
+  bool crossed_bind_mapping_is_rejected = recorded.has_value();
+  if (recorded) {
+    constexpr double kCompositionTolerance = 1e-6;
+    constexpr double kOrderMismatchFloor = 1e-2;
+    for (u32 root = 0; root < jak1_bones_provenance_trace::kRootAnchorCount; root++) {
+      root_mapping_matches &=
+          std::memcmp(recorded->root_anchors[root].bytes.data(), root_matrices[root].data(),
+                      jak1_bones_provenance_trace::kTransformBytes) == 0 &&
+          std::memcmp(recorded->root_bind_poses[root].bytes.data(),
+                      bind_pose_matrices[root].data(),
+                      jak1_bones_provenance_trace::kTransformBytes) == 0;
+
+      const auto bone_bind = metal_merc_transform_trace::multiply_matrices(
+          root_matrices[root].data(), bind_pose_matrices[root].data());
+      const auto expected = metal_merc_transform_trace::multiply_matrices(
+          camera_matrix.data(), bone_bind.data());
+      correct_composition_matches &=
+          metal_merc_transform_trace::output_composition_distance(
+              camera_matrix.data(), root_matrices[root].data(), bind_pose_matrices[root].data(),
+              expected.data()) < kCompositionTolerance;
+
+      const auto bind_bone = metal_merc_transform_trace::multiply_matrices(
+          bind_pose_matrices[root].data(), root_matrices[root].data());
+      const auto wrong_bone_bind_order = metal_merc_transform_trace::multiply_matrices(
+          camera_matrix.data(), bind_bone.data());
+      const auto camera_bind = metal_merc_transform_trace::multiply_matrices(
+          camera_matrix.data(), bind_pose_matrices[root].data());
+      const auto wrong_camera_bone_order = metal_merc_transform_trace::multiply_matrices(
+          root_matrices[root].data(), camera_bind.data());
+      reversed_order_is_rejected &=
+          metal_merc_transform_trace::output_composition_distance(
+              camera_matrix.data(), root_matrices[root].data(), bind_pose_matrices[root].data(),
+              wrong_bone_bind_order.data()) > kOrderMismatchFloor &&
+          metal_merc_transform_trace::output_composition_distance(
+              camera_matrix.data(), root_matrices[root].data(), bind_pose_matrices[root].data(),
+              wrong_camera_bone_order.data()) > kOrderMismatchFloor;
+
+      const auto& crossed_bind = bind_pose_matrices[(root + 1) % bind_pose_matrices.size()];
+      const auto crossed_bone_bind = metal_merc_transform_trace::multiply_matrices(
+          root_matrices[root].data(), crossed_bind.data());
+      const auto crossed_output = metal_merc_transform_trace::multiply_matrices(
+          camera_matrix.data(), crossed_bone_bind.data());
+      crossed_bind_mapping_is_rejected &=
+          metal_merc_transform_trace::output_composition_distance(
+              camera_matrix.data(), root_matrices[root].data(), bind_pose_matrices[root].data(),
+              crossed_output.data()) > kOrderMismatchFloor;
+    }
+  }
+  check(root_mapping_matches,
+        "root slots 1, 2 and 3 retain their matching align, prejoint and main bind poses");
+  check(correct_composition_matches,
+        "non-commuting X camera, Y bone and Z bind rotations match camera * bone * bind");
+  check(reversed_order_is_rejected,
+        "non-commuting root matrices reject reversed camera, bone and bind order");
+  check(crossed_bind_mapping_is_rejected,
+        "each root rejects the bind pose belonging to the next root slot");
   const auto source_match =
       registry.find_source_address(kOutput + 3 * jak1_bones_provenance_trace::kOutputStride);
   check(source_match && source_match->output_base == kOutput &&
