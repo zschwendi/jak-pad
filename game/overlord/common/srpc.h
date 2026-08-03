@@ -107,7 +107,7 @@ struct SoundRpcStereoMode {
 
 struct SoundRpcSetMidiReg {
   s32 reg;
-  s32 value;
+  s16 value;
 };
 
 struct SoundRpcSetMirrror {

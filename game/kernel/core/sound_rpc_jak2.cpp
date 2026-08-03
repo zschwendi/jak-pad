@@ -9,10 +9,10 @@
  * user-local SBlk once, validates every range the current 989snd parser consumes, then passes those
  * same bytes through 989snd's in-memory bank interface. Loader command 20 selects one of Jak 2's
  * eight bounded language tags without a reply payload. Channel 0 accepts only the startup state
- * commands that do not start playback; it retains master volumes, MIDI settings, reverb, FPS and
- * listener transforms. Channel 4 reads an ordinary file from the configured `iso/` directory into
- * EE memory. Playback, chunked STR files and the rest of the Jak 2 sound protocol remain
- * unimplemented.
+ * commands that do not start playback; it retains master volumes, MIDI registers 3/4/14/16,
+ * reverb, FPS and listener transforms. Channel 4 reads an ordinary file from the configured `iso/`
+ * directory into EE memory. Playback, later MIDI registers, chunked STR files and the rest of the
+ * Jak 2 sound protocol remain unimplemented.
  */
 
 #include <algorithm>
@@ -77,6 +77,7 @@ static_assert(offsetof(jak2::SoundRpcCommand, midi_reg) == 4);
 static_assert(sizeof(SoundRpcSetMidiReg) == 8);
 static_assert(offsetof(SoundRpcSetMidiReg, reg) == 0);
 static_assert(offsetof(SoundRpcSetMidiReg, value) == 4);
+static_assert(sizeof(SoundRpcSetMidiReg::value) == 2);
 static_assert(offsetof(jak2::SoundRpcCommand, reverb) == 4);
 static_assert(sizeof(SoundRpcSetReverb) == 16);
 static_assert(offsetof(SoundRpcSetReverb, core) == 0);
@@ -330,7 +331,7 @@ void apply_player_command(const jak2::SoundRpcCommand& command) {
     } break;
     case jak2::Jak2SoundCommand::set_midi_reg: {
       const s32 reg = command.midi_reg.reg;
-      const s32 value = command.midi_reg.value;
+      const s32 value = static_cast<s32>(command.midi_reg.value);
       g_player_state.midi_registers[reg] = value;
       g_player_state.midi_register_mask |= 1u << reg;
       if (reg == 16) {
@@ -612,6 +613,7 @@ goal_kernel_core_status goal_jak2_sound_rpc_install(void) {
   InitBanks();
   try {
     snd_StartSoundSystem();
+    snd_SetGlobalExcite(0);
   } catch (const std::exception& exception) {
     snd_StopSoundSystem();
     lg::error("[jak2-sound-rpc] could not start 989snd: {}", exception.what());

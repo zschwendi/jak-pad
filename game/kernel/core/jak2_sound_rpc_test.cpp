@@ -23,6 +23,7 @@
 #include "game/overlord/common/sbank.h"
 #include "game/overlord/jak2/srpc.h"
 #include "game/runtime.h"
+#include "game/sound/989snd/ame_handler.h"
 
 namespace {
 
@@ -378,10 +379,16 @@ void set_player_master_volume(GuardedBuffer& buffer, u32 index, u8 groups, s32 v
   command->master_volume.volume = volume;
 }
 
-void set_player_midi(GuardedBuffer& buffer, u32 index, s32 reg, s32 value) {
+void set_player_midi(GuardedBuffer& buffer,
+                     u32 index,
+                     s32 reg,
+                     s16 value,
+                     u16 adjacent_padding = 0) {
   auto* command = reset_player_command(buffer, index, jak2::Jak2SoundCommand::set_midi_reg);
   command->midi_reg.reg = reg;
-  command->midi_reg.value = value;
+  memcpy(reinterpret_cast<u8*>(&command->midi_reg) + 4, &value, sizeof(value));
+  memcpy(reinterpret_cast<u8*>(&command->midi_reg) + 6, &adjacent_padding,
+         sizeof(adjacent_padding));
 }
 
 void set_player_fps(GuardedBuffer& buffer, u32 index, u8 fps) {
@@ -647,7 +654,7 @@ int main() {
   set_player_master_volume(ordered, 0, 0x04, 111);
   set_player_master_volume(ordered, 1, 0x04, 222);
   set_player_midi(ordered, 2, 3, 5);
-  set_player_midi(ordered, 3, 3, 0x12345678);
+  set_player_midi(ordered, 3, 3, -1234, 0x7abc);
   set_player_midi(ordered, 4, 16, 77);
   set_player_fps(ordered, 5, 50);
   set_player_fps(ordered, 6, 60);
@@ -655,9 +662,10 @@ int main() {
   rpc_call(0, 0, 1, ordered.data.offset, ordered.size, 0, 0, 0);
   state = player_state();
   check_s32(state.master_volumes[2], 222, "master-volume commands apply in wire order");
-  check_s32(state.midi_registers[3], 0x12345678,
-            "full-width MIDI commands apply in wire order");
+  check_s32(state.midi_registers[3], -1234,
+            "signed 16-bit MIDI value ignores adjacent padding");
   check_s32(state.midi_registers[16], 77, "global-excite MIDI state is retained");
+  check_u32(snd::GlobalExcite, 77, "global-excite MIDI value reaches 989snd");
   check_u32(state.fps, 60, "FPS commands apply in wire order");
   check(snapshot(ordered) == ordered_bytes, "ordered state batch remains read-only");
   check_guards(ordered, "ordered player batch canaries stay intact");
@@ -967,6 +975,7 @@ int main() {
   check(reset_master_volumes, "reinstall resets every retained master volume");
   check_u32(reinstalled_player_state.midi_register_mask, 0,
             "reinstall clears retained MIDI state");
+  check_u32(snd::GlobalExcite, 0, "reinstall resets actual 989snd global excitement");
   check_u32(reinstalled_player_state.reverb_seen, 0, "reinstall clears retained reverb state");
   check_u32(reinstalled_player_state.fps, 60, "reinstall restores the 60 FPS default");
   check_u32(reinstalled_player_state.ear_transform_seen, 0,
