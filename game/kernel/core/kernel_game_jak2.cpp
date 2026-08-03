@@ -11,6 +11,7 @@
 
 #include <cstring>
 
+#include "common/global_profiler/GlobalProfiler.h"
 #include "common/symbols.h"
 #include "common/util/Assert.h"
 
@@ -199,6 +200,12 @@ const char* const kJak2MachineFunctionNames[] = {
 constexpr int kJak2MachineFunctionCount =
     int(sizeof(kJak2MachineFunctionNames) / sizeof(const char*));
 
+void pc_prof(u32 name, ProfNode::Kind kind) {
+  prof().event(Ptr<String>(name).c()->data(), kind);
+}
+
+void flush_cache(u32 /*mode*/) {}
+
 }  // namespace
 
 namespace jak2 {
@@ -283,6 +290,8 @@ sqlite::GenericResponse run_sql_query(const std::string& /*query*/) {
 void InitMachineScheme() {
   goal_kernel_core_install_machine_stubs(kJak2MachineFunctionNames, kJak2MachineFunctionCount);
   goal_kernel_core_install_implemented_machine_functions();
+  make_function_symbol_from_c("pc-prof", (void*)pc_prof);
+  make_function_symbol_from_c("flush-cache", (void*)flush_cache);
   intern_from_c("*stack-top*")->value() = 0x07ffc000;
   intern_from_c("*stack-base*")->value() = 0x07ffffff;
   intern_from_c("*stack-size*")->value() = 0x4000;
