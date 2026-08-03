@@ -149,6 +149,8 @@ int main() {
         renderer.render_chain_frame(options, nil, empty_chain.data(), kChainBase);
     auto stats = renderer.chain_stats();
     check(!empty_acquired, "the all-empty nil-layer chain acquires no drawable");
+    check(renderer.wait_for_last_frame(),
+          "the all-empty nil-layer command buffer completes successfully");
     check(stats.chains_rendered == 1 && stats.last_buckets_dispatched == kBucketCount,
           "the first chain dispatches all 327 product slots");
     check(stats.command_buffers_committed == 1 && stats.drawable_misses == 1,
@@ -162,6 +164,8 @@ int main() {
         renderer.render_chain_frame(options, nil, marker_chain.data(), kChainBase);
     stats = renderer.chain_stats();
     check(!marker_acquired, "the marker nil-layer chain acquires no drawable");
+    check(renderer.wait_for_last_frame(),
+          "the marker nil-layer command buffer completes successfully");
     check(stats.chains_rendered == 2 && stats.last_buckets_dispatched == kBucketCount,
           "the second chain also dispatches exactly 327 product slots");
     check(stats.command_buffers_committed == 2 && stats.drawable_misses == 2 &&

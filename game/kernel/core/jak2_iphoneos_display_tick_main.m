@@ -1,5 +1,6 @@
 #include "game/kernel/core/display_tick_coordinator.h"
 #include "game/kernel/core/jak2_runtime.h"
+#include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
 #import <QuartzCore/CADisplayLink.h>
 #import <UIKit/UIKit.h>
 
@@ -13,6 +14,8 @@ static void run_runtime_frame(double target_presentation_time, void* context);
  @private
   goal_display_tick_coordinator _coordinator;
   goal_jak2_runtime_metrics _metrics;
+  goal_jak2_metal_host_metrics _metalMetrics;
+  goal_jak2_metal_host* _metalHost;
   BOOL _applicationActive;
   BOOL _bootReady;
   BOOL _proofFinished;
@@ -32,6 +35,7 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 @interface GOALJak2DisplayTickAppDelegate ()
 
 - (void)runRuntimeFrameAtTargetTime:(double)targetPresentationTime;
+- (void)stopRuntime;
 
 @end
 
@@ -64,6 +68,7 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [self.displayLink invalidate];
+  [self stopRuntime];
 }
 
 - (void)createWindow {
@@ -163,22 +168,32 @@ static void run_runtime_frame(double target_presentation_time, void* context);
       dispatch_queue_create("org.opengoal.jak2-display-tick.boot", DISPATCH_QUEUE_SERIAL);
   dispatch_async(queue, ^{
     @autoreleasepool {
+      goal_jak2_metal_host* metalHost = goal_jak2_metal_host_create();
+      goal_gfx_host graphicsHost = {0};
       goal_jak2_runtime_config config = {0};
       config.data_directory = dataPath.fileSystemRepresentation;
       config.saves_directory = savesPath.fileSystemRepresentation;
-      config.graphics = GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION;
-      const goal_jak2_runtime_status result = goal_jak2_runtime_start(&config);
+      config.graphics = GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST;
+      goal_jak2_runtime_status result = GOAL_JAK2_RUNTIME_START_FAILED;
+      if (metalHost && goal_jak2_metal_host_copy_gfx_host(metalHost, &graphicsHost)) {
+        config.external_gfx_host = &graphicsHost;
+        result = goal_jak2_runtime_start(&config);
+      }
       NSString* failure = nil;
       if (result != GOAL_JAK2_RUNTIME_OK) {
         const char* error = goal_jak2_runtime_last_error();
         failure = error && error[0] ? [NSString stringWithUTF8String:error]
-                                    : @"The Jak II runtime did not start.";
+                                    : @"The Jak II Metal host or runtime did not start.";
+        goal_jak2_metal_host_destroy(metalHost);
+        metalHost = NULL;
       }
 
       dispatch_async(dispatch_get_main_queue(), ^{
         if (result == GOAL_JAK2_RUNTIME_OK) {
+          _metalHost = metalHost;
           _bootReady = YES;
           goal_jak2_runtime_get_metrics(&_metrics);
+          goal_jak2_metal_host_get_metrics(_metalHost, &_metalMetrics);
         } else {
           _proofFinished = YES;
           _failureMessage = failure;
@@ -220,9 +235,17 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   (void)notification;
   _applicationActive = NO;
   [self updateTickGate];
+  [self stopRuntime];
+}
+
+- (void)stopRuntime {
   if (_bootReady) {
     goal_jak2_runtime_shutdown();
     _bootReady = NO;
+  }
+  if (_metalHost) {
+    goal_jak2_metal_host_destroy(_metalHost);
+    _metalHost = NULL;
   }
 }
 
@@ -257,16 +280,38 @@ static void run_runtime_frame(double target_presentation_time, void* context);
     [self updateStatus];
     return;
   }
+  if (!goal_jak2_metal_host_get_metrics(_metalHost, &_metalMetrics)) {
+    _failureMessage = @"The Jak II Metal host did not return metrics after its tick.";
+    _proofFinished = YES;
+    [self updateTickGate];
+    [self updateStatus];
+    return;
+  }
+  if (_metalMetrics.failed_chains > 0) {
+    const char* error = goal_jak2_metal_host_last_error(_metalHost);
+    _failureMessage = error && error[0] ? [NSString stringWithUTF8String:error]
+                                        : @"The Jak II Metal host rejected a frame.";
+    _proofFinished = YES;
+    [self updateTickGate];
+    [self updateStatus];
+    return;
+  }
 
   goal_display_tick_stats display = {0};
   goal_display_tick_coordinator_get_stats(&_coordinator, &display);
   const BOOL oneFramePerTick = display.accepted_ticks == _metrics.ticks;
-  const BOOL validDMA = _metrics.dma_accounting_complete && _metrics.dma_found_valid &&
-                        _metrics.dma_malformed == 0 && _metrics.dma_valid_buckets == 327;
+  const BOOL validMetalDispatch =
+      _metalMetrics.chains > 0 &&
+      _metalMetrics.completed_command_buffers == _metalMetrics.chains &&
+      _metalMetrics.failed_chains == 0 && _metalMetrics.last_buckets_dispatched == 327 &&
+      _metalMetrics.command_buffers_committed == _metalMetrics.chains &&
+      _metalMetrics.drawables_acquired == 0 && _metalMetrics.draws == 0 &&
+      _metalMetrics.triangles == 0 && _metalMetrics.submissions == 0 &&
+      _metalMetrics.presentations == 0;
   const BOOL crossedGraphicsHost =
-      _metrics.host_chains > 0 && _metrics.host_sync_paths > 0 && _metrics.host_syncvs > 0;
+      _metalMetrics.sync_paths > 0 && _metalMetrics.vsyncs > 0;
 
-  if (_metrics.title_ready && validDMA && crossedGraphicsHost && oneFramePerTick) {
+  if (_metrics.title_ready && validMetalDispatch && crossedGraphicsHost && oneFramePerTick) {
     _proofFinished = YES;
     _proofPassed = YES;
   } else if (_metrics.ticks >= kMaximumProofTicks) {
@@ -316,24 +361,31 @@ static void run_runtime_frame(double target_presentation_time, void* context);
                           ? [NSString stringWithFormat:@"\nError: %@", _failureMessage]
                           : @"";
   self.statusLabel.text = [NSString
-      stringWithFormat:@"Headless Jak II display-tick proof — %@\n\n"
+      stringWithFormat:@"Offscreen Jak II Metal display-tick proof — %@\n\n"
                         "Data: %@\nSaves: %@\nRuntime: %@\n"
                         "TITLE: %@ (%@)\n\n"
                         "Display callbacks: %llu\nAccepted ticks: %llu\nPaused ticks: %llu\n"
                         "Dispatcher frames: %llu\nLast targetTimestamp: %.6f\n\n"
-                        "Graphics host: %d chain / %d sync-path / %d syncv\n"
-                        "DMA measured and dropped: %d well formed / %d malformed\n"
-                        "Valid DMA: %@ (%d buckets)\n\n"
-                        "Rendered frames: 0\nPresented frames: 0%@",
+                        "Metal host: %llu chain / %llu sync-path / %llu syncv\n"
+                        "Completed offscreen buffers: %llu / failures: %llu\n"
+                        "Last dispatch: %llu buckets / %u copied bytes\n\n"
+                        "Draw calls: %llu\nSubmissions: %llu\nPresented frames: %llu%@",
                        result, _dataPath ?: @"<unavailable>", _savesPath ?: @"<unavailable>",
                        [self runtimeStateName], titleDGO,
                        _metrics.title_ready ? @"ready" : @"not ready",
                        (unsigned long long)display.display_ticks,
                        (unsigned long long)display.accepted_ticks,
                        (unsigned long long)display.paused_ticks, (unsigned long long)_metrics.ticks,
-                       _lastTargetTimestamp, _metrics.host_chains, _metrics.host_sync_paths,
-                       _metrics.host_syncvs, _metrics.dma_well_formed, _metrics.dma_malformed,
-                       _metrics.dma_found_valid ? @"yes" : @"no", _metrics.dma_valid_buckets,
+                       _lastTargetTimestamp, (unsigned long long)_metalMetrics.chains,
+                       (unsigned long long)_metalMetrics.sync_paths,
+                       (unsigned long long)_metalMetrics.vsyncs,
+                       (unsigned long long)_metalMetrics.completed_command_buffers,
+                       (unsigned long long)_metalMetrics.failed_chains,
+                       (unsigned long long)_metalMetrics.last_buckets_dispatched,
+                       _metalMetrics.last_copied_bytes,
+                       (unsigned long long)_metalMetrics.draws,
+                       (unsigned long long)_metalMetrics.submissions,
+                       (unsigned long long)_metalMetrics.presentations,
                        failure];
 }
 

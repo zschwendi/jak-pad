@@ -39,6 +39,7 @@ uint32_t g_dispatcher = 0;
 uint64_t g_current_tick = 0;
 bool g_owns_kernel = false;
 goal_gfx_dma_stats g_dma_before = {};
+goal_gfx_host g_external_host = {};
 
 struct HostObservations {
   int chains = 0;
@@ -289,6 +290,7 @@ goal_jak2_runtime_status fail_start(std::string message) {
   g_dma_before = {};
   g_host_observations = {};
   g_host_before = {};
+  g_external_host = {};
   g_metrics.state = GOAL_JAK2_RUNTIME_FAILED;
   return GOAL_JAK2_RUNTIME_START_FAILED;
 }
@@ -301,8 +303,15 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
   if (!config || !config->data_directory || !config->data_directory[0] ||
       (config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_STUBS &&
        config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION &&
-       config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION)) {
+       config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION &&
+       config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST)) {
     g_error = "goal_jak2_runtime_start: invalid configuration";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  if (config->graphics == GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST &&
+      (!config->external_gfx_host || !config->external_gfx_host->send_chain ||
+       !config->external_gfx_host->vsync || !config->external_gfx_host->sync_path)) {
+    g_error = "goal_jak2_runtime_start: external graphics host is incomplete";
     return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
   }
   if (g_owns_kernel || goal_kernel_core_is_initialized()) {
@@ -322,6 +331,9 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     g_dma_before = {};
     g_host_observations = {};
     g_host_before = {};
+    g_external_host = config->graphics == GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST
+                          ? *config->external_gfx_host
+                          : goal_gfx_host{};
 
     if (goal_kernel_core_set_data_directory(g_data_directory.c_str()) != GOAL_KERNEL_CORE_OK ||
         goal_kernel_core_set_saves_directory(g_saves_directory.c_str()) !=
@@ -369,17 +381,23 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
       if (config->graphics == GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
         goal_gfx_dma_reset();
       }
-      goal_gfx_host host = {};
-      host.send_chain = validation_send_chain;
-      host.vsync = validation_vsync;
-      host.sync_path = validation_sync_path;
-      host.texture_upload_now = validation_texture_upload;
-      host.texture_relocate = validation_texture_relocate;
-      host.set_levels = validation_set_desired_levels;
-      host.set_pmode_alp = validation_set_pmode_alpha;
-      host.set_active_levels = validation_set_active_levels;
-      if (goal_gfx_host_install(&host) != GOAL_KERNEL_CORE_OK) {
-        return fail_start("could not install the Jak 2 validation graphics host");
+      if (config->graphics == GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST) {
+        if (goal_gfx_host_install(&g_external_host) != GOAL_KERNEL_CORE_OK) {
+          return fail_start("could not install the copied Jak 2 external graphics host");
+        }
+      } else {
+        goal_gfx_host host = {};
+        host.send_chain = validation_send_chain;
+        host.vsync = validation_vsync;
+        host.sync_path = validation_sync_path;
+        host.texture_upload_now = validation_texture_upload;
+        host.texture_relocate = validation_texture_relocate;
+        host.set_levels = validation_set_desired_levels;
+        host.set_pmode_alp = validation_set_pmode_alpha;
+        host.set_active_levels = validation_set_active_levels;
+        if (goal_gfx_host_install(&host) != GOAL_KERNEL_CORE_OK) {
+          return fail_start("could not install the Jak 2 validation graphics host");
+        }
       }
     }
 
@@ -493,6 +511,7 @@ void goal_jak2_runtime_shutdown(void) {
   g_dma_before = {};
   g_host_observations = {};
   g_host_before = {};
+  g_external_host = {};
   g_data_directory.clear();
   g_saves_directory.clear();
   g_metrics = {};

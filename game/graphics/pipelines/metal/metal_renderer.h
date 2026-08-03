@@ -100,6 +100,10 @@ class MetalRenderer {
                           const u8* chain_data,
                           u32 chain_offset);
 
+  // Wait for the most recently committed frame and require successful GPU completion. This is
+  // the synchronization contract used by a nil-layer external host; it performs no readback.
+  bool wait_for_last_frame();
+
   // Waits for the last committed frame, then reads back the offscreen game
   // target. Returns false if no frame has been rendered yet.
   bool read_game_frame(metal_renderer::FramePixels* out);

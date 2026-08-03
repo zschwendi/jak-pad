@@ -5,9 +5,8 @@
  *
  * `game/graphics/gfx.cpp` and `game/kernel/common/kmachine.cpp` define these upstream, and both
  * files pull in the whole desktop port: the OpenGL pipeline, the IOP, the listener, and a second
- * copy of the Jak 1 kernel that `jak1-kernel-core` already provides. The `goalpad-metal-gfx`
- * library exists to link the Metal renderer against that portable kernel instead, so it defines
- * the three things the renderer actually uses and nothing else.
+ * kernel. The `goalpad-metal-product` archive instead leaves game-kernel selection to its final
+ * consumer and defines the three runtime globals the renderer actually uses.
  *
  * Only this file is a duplicate. Everything below the `GfxRendererModule` seam is the same source
  * the `runtime` library compiles.

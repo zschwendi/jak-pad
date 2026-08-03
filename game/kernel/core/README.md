@@ -698,9 +698,11 @@ portable display-tick coordinator. Each accepted callback synchronously runs exa
 dispatcher frame. Inactive and background callbacks are paused rather than accumulated, and a
 return to the foreground never runs catch-up frames.
 
-The app links the excluded `jak2-iphoneos-runtime` static library. That runtime driver links the
-validated AOT corpus as a dependency instead of becoming another member of the generated-code
-archive, preserving the manifest-plus-840-translation-unit corpus boundary.
+The app links the excluded `jak2-iphoneos-runtime` static library and a narrow Objective-C++ Metal
+host. The runtime driver links the validated AOT corpus as a dependency instead of becoming
+another member of the generated-code archive, preserving the manifest-plus-840-translation-unit
+corpus boundary. The Metal product archive selects no kernel; this target links it with
+`jak2-kernel-core` only.
 
 The target reads the player's prepared data from the app's `Documents/Jak2` directory, which is
 visible through Files and Finder file sharing. A development launch may override that path with
@@ -724,14 +726,16 @@ xcodebuild -project build/ios-jak2-display-tick/jak.xcodeproj \
 The same development target can be generated for the arm64 iOS Simulator by replacing the SDK
 settings in that configure command with `CMAKE_OSX_SYSROOT=iphonesimulator` and then building with
 `-sdk iphonesimulator -destination 'generic/platform=iOS Simulator'`. The simulator result remains
-a headless development proof and does not replace physical-device validation.
+a nil-layer development proof and does not replace physical-device validation.
 
-This target links the portable runtime driver, Jak 2 AOT corpus, and portable kernel only. It has
-no Metal dependency, rendering surface, audio output, or input UI. The on-screen proof stops after
-a bounded interval when the title DGO, a valid measured-and-dropped DMA chain, and the graphics
-synchronization calls have all been observed. It always reports zero rendered and zero presented
-frames. A successful run is a headless display-clock/runtime-boundary result, not rendered title
-screen, gameplay, or physical-device compatibility evidence.
+The external host copies each real Jak 2 DMA chain, dispatches its 327 audited DeferredSkip or
+StrictEmpty buckets synchronously through `MetalRenderer`, commits an offscreen command buffer,
+and requires successful completion. It deliberately supplies no `CAMetalLayer`: draw calls,
+drawable acquisitions, submissions, and presentations must all remain zero. The on-screen proof
+stops after a bounded interval when the title DGO, the completed policy-only Metal dispatch, and
+the graphics synchronization calls have all been observed. It still has no presented surface,
+audio output, or input UI. A successful run proves only the signed display-clock-to-offscreen-Metal
+boundary, not a rendered title screen, gameplay, or physical-device compatibility.
 
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
