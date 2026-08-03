@@ -49,6 +49,10 @@ int main() {
 
   goal_jak2_metal_host* host = goal_jak2_metal_host_create();
   check(host != nullptr, "created the process-singleton Jak 2 Metal host");
+  if (!host) {
+    goal_kernel_core_shutdown();
+    return 1;
+  }
   check(goal_jak2_metal_host_create() == nullptr,
         "rejected a second live Jak 2 Metal host");
 
