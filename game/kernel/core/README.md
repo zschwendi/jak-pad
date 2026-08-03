@@ -746,6 +746,20 @@ observed. It still has no presented surface, audio output, or input UI. A succes
 only the signed display-clock-to-Metal-policy boundary, not a rendered title screen, gameplay, or
 physical-device compatibility.
 
+**Experimental:** setting `GOALPAD_JAK2_LIFECYCLE_PROOF=1` keeps the same real-runtime, nil-layer
+policy path active for a deterministic six-frame lifecycle proof instead of stopping after the
+first accepted tick. After three foreground ticks, the app drives the same handlers used by its
+inactive, background, and will-enter-foreground notifications and offers one display callback in
+each state. All three callbacks must be discarded without changing the runtime dispatcher or
+Metal-host counters. The app then becomes active again, accepts exactly three more foreground
+ticks without catch-up, and stops its display link with an exact `accepted=6`, `paused=3`,
+`dispatcher=6` result. The default one-tick proof and the separate synthetic CAMetalLayer proof
+remain unchanged.
+
+This opt-in phase driver does not ask the operating system to suspend the process. It proves the
+app's lifecycle handlers, display gate, and running Jak 2 session remain coherent across the
+bounded transitions; simulator success is not physical-device lifecycle evidence.
+
 **Experimental:** setting `GOALPAD_JAK2_CAMETAL_LAYER_PROOF=1` selects a data-independent Metal
 mode in this development target. It creates a real app-owned `CAMetalLayer`, consumes exactly one
 `CADisplayLink` callback, and submits the public synthetic 327-bucket Jak 2 chain through the

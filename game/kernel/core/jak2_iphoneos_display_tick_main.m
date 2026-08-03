@@ -8,10 +8,46 @@
 #import <UIKit/UIKit.h>
 
 static const uint64_t kMaximumProofTicks = 600;
+static const uint64_t kLifecycleProofForegroundTicksBeforePause = 3;
+static const uint64_t kLifecycleProofForegroundTicksAfterResume = 3;
+static const uint64_t kLifecycleProofPausedCallbacks = 3;
 
 @class GOALJak2DisplayTickAppDelegate;
 
 static void run_runtime_frame(double target_presentation_time, void* context);
+
+static BOOL runtime_metrics_match_during_pause(const goal_jak2_runtime_metrics* before,
+                                               const goal_jak2_runtime_metrics* after) {
+  return before->state == after->state && before->ticks == after->ticks &&
+         before->last_dispatch_result == after->last_dispatch_result &&
+         before->master_exit == after->master_exit &&
+         before->dgo_archives == after->dgo_archives &&
+         before->dgo_objects == after->dgo_objects &&
+         before->host_chains == after->host_chains &&
+         before->host_sync_paths == after->host_sync_paths &&
+         before->host_syncvs == after->host_syncvs &&
+         before->sound_bank_failures == after->sound_bank_failures &&
+         before->sound_player_failures == after->sound_player_failures &&
+         before->sound_str_failures == after->sound_str_failures &&
+         before->sound_rejected_calls == after->sound_rejected_calls;
+}
+
+static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics* before,
+                                             const goal_jak2_metal_host_metrics* after) {
+  return before->chains == after->chains &&
+         before->completed_chains == after->completed_chains &&
+         before->failed_chains == after->failed_chains &&
+         before->sync_paths == after->sync_paths && before->vsyncs == after->vsyncs &&
+         before->texture_uploads == after->texture_uploads &&
+         before->texture_relocations == after->texture_relocations &&
+         before->last_copied_bytes == after->last_copied_bytes &&
+         before->last_buckets_dispatched == after->last_buckets_dispatched &&
+         before->command_buffers_committed == after->command_buffers_committed &&
+         before->drawables_acquired == after->drawables_acquired &&
+         before->draws == after->draws && before->triangles == after->triangles &&
+         before->submissions == after->submissions &&
+         before->presentations == after->presentations;
+}
 
 @interface GOALJak2MetalProofView : UIView
 
@@ -52,8 +88,14 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   BOOL _proofPassed;
   BOOL _metalProofEnabled;
   BOOL _metalProofSubmitted;
+  BOOL _lifecycleProofEnabled;
+  BOOL _lifecyclePauseVerified;
+  BOOL _lifecycleResumeVerified;
   uint64_t _metalProofDisplayCallbacks;
   goal_jak2_metal_stats _metalStats;
+  goal_display_tick_stats _lifecycleStatsBeforePause;
+  goal_jak2_runtime_metrics _lifecycleMetricsBeforePause;
+  goal_jak2_metal_host_metrics _lifecycleMetalBeforePause;
   double _lastTargetTimestamp;
   NSString* _dataPath;
   NSString* _savesPath;
@@ -70,6 +112,7 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 @interface GOALJak2DisplayTickAppDelegate ()
 
 - (void)runRuntimeFrameAtTargetTime:(double)targetPresentationTime;
+- (void)runLifecyclePauseCycleAtTargetTime:(double)targetPresentationTime;
 - (void)stopRuntime;
 - (void)submitMetalProofFrame;
 
@@ -84,6 +127,10 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 
   _metalProofEnabled =
       [NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_CAMETAL_LAYER_PROOF"]
+          isEqualToString:@"1"];
+  _lifecycleProofEnabled =
+      !_metalProofEnabled &&
+      [NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_LIFECYCLE_PROOF"]
           isEqualToString:@"1"];
   [self createWindow];
   goal_display_tick_coordinator_init(&_coordinator, run_runtime_frame, (__bridge void*)self);
@@ -455,7 +502,54 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   const BOOL crossedGraphicsHost =
       _metalMetrics.sync_paths > 0 && _metalMetrics.vsyncs > 0;
 
-  if (_metrics.title_ready && validMetalDispatch && crossedGraphicsHost && oneFramePerTick) {
+  if (_lifecycleProofEnabled && !_lifecyclePauseVerified &&
+      _metrics.ticks == kLifecycleProofForegroundTicksBeforePause) {
+    [self runLifecyclePauseCycleAtTargetTime:targetPresentationTime];
+    return;
+  }
+
+  if (_lifecycleProofEnabled && _lifecyclePauseVerified && !_lifecycleResumeVerified &&
+      _metrics.ticks == _lifecycleMetricsBeforePause.ticks + 1) {
+    const BOOL exactlyOneResumedTick =
+        display.accepted_ticks == _lifecycleStatsBeforePause.accepted_ticks + 1 &&
+        display.paused_ticks ==
+            _lifecycleStatsBeforePause.paused_ticks + kLifecycleProofPausedCallbacks;
+    if (!exactlyOneResumedTick) {
+      _proofFinished = YES;
+      _failureMessage = @"The first foreground callback replayed or lost lifecycle ticks.";
+    } else {
+      _lifecycleResumeVerified = YES;
+    }
+  }
+
+  if (_lifecycleProofEnabled && !_proofFinished &&
+      _metrics.ticks == kLifecycleProofForegroundTicksBeforePause +
+                            kLifecycleProofForegroundTicksAfterResume) {
+    const uint64_t expectedAccepted =
+        _lifecycleStatsBeforePause.accepted_ticks + kLifecycleProofForegroundTicksAfterResume;
+    const uint64_t expectedPaused =
+        _lifecycleStatsBeforePause.paused_ticks + kLifecycleProofPausedCallbacks;
+    const BOOL exactBound = display.accepted_ticks == expectedAccepted &&
+                            display.paused_ticks == expectedPaused &&
+                            display.display_ticks == expectedAccepted + expectedPaused &&
+                            _metrics.ticks == expectedAccepted;
+    _proofFinished = YES;
+    _proofPassed = _lifecyclePauseVerified && _lifecycleResumeVerified && exactBound &&
+                   _metrics.title_ready && validMetalDispatch && crossedGraphicsHost &&
+                   oneFramePerTick;
+    if (_proofPassed) {
+      NSLog(@"GOALPAD_JAK2_LIFECYCLE_PROOF PASS accepted=%llu paused=%llu dispatcher=%llu "
+             "chains=%llu completed=%llu failures=%llu",
+            (unsigned long long)display.accepted_ticks,
+            (unsigned long long)display.paused_ticks, (unsigned long long)_metrics.ticks,
+            (unsigned long long)_metalMetrics.chains,
+            (unsigned long long)_metalMetrics.completed_chains,
+            (unsigned long long)_metalMetrics.failed_chains);
+    } else {
+      _failureMessage = @"The bounded lifecycle proof ended without satisfying every gate.";
+    }
+  } else if (!_lifecycleProofEnabled && _metrics.title_ready && validMetalDispatch &&
+             crossedGraphicsHost && oneFramePerTick) {
     _proofFinished = YES;
     _proofPassed = YES;
   } else if (_metrics.ticks >= kMaximumProofTicks) {
@@ -467,6 +561,63 @@ static void run_runtime_frame(double target_presentation_time, void* context);
     [self updateTickGate];
     [self updateStatus];
   }
+}
+
+- (void)runLifecyclePauseCycleAtTargetTime:(double)targetPresentationTime {
+  goal_display_tick_coordinator_get_stats(&_coordinator, &_lifecycleStatsBeforePause);
+  _lifecycleMetricsBeforePause = _metrics;
+  _lifecycleMetalBeforePause = _metalMetrics;
+
+  [self willResignActive:nil];
+  int droppedCallbacks =
+      goal_display_tick_coordinator_tick(&_coordinator, targetPresentationTime + 1.0 / 60.0) == 0;
+  [self didEnterBackground:nil];
+  droppedCallbacks +=
+      goal_display_tick_coordinator_tick(&_coordinator, targetPresentationTime + 2.0 / 60.0) == 0;
+  [self willEnterForeground:nil];
+  droppedCallbacks +=
+      goal_display_tick_coordinator_tick(&_coordinator, targetPresentationTime + 3.0 / 60.0) == 0;
+
+  goal_display_tick_stats afterDisplay = {0};
+  goal_jak2_runtime_metrics afterRuntime = {0};
+  goal_jak2_metal_host_metrics afterMetal = {0};
+  goal_display_tick_coordinator_get_stats(&_coordinator, &afterDisplay);
+  const BOOL copiedRuntime =
+      goal_jak2_runtime_get_metrics(&afterRuntime) == GOAL_JAK2_RUNTIME_OK;
+  const BOOL copiedMetal = goal_jak2_metal_host_get_metrics(_metalHost, &afterMetal) != 0;
+  const BOOL exactPausedAccounting =
+      droppedCallbacks == kLifecycleProofPausedCallbacks &&
+      afterDisplay.display_ticks ==
+          _lifecycleStatsBeforePause.display_ticks + kLifecycleProofPausedCallbacks &&
+      afterDisplay.accepted_ticks == _lifecycleStatsBeforePause.accepted_ticks &&
+      afterDisplay.paused_ticks ==
+          _lifecycleStatsBeforePause.paused_ticks + kLifecycleProofPausedCallbacks;
+  _lifecyclePauseVerified = copiedRuntime && copiedMetal && exactPausedAccounting &&
+                            goal_jak2_runtime_is_running() &&
+                            runtime_metrics_match_during_pause(&_lifecycleMetricsBeforePause,
+                                                               &afterRuntime) &&
+                            metal_metrics_match_during_pause(&_lifecycleMetalBeforePause,
+                                                             &afterMetal);
+  if (!_lifecyclePauseVerified) {
+    _proofFinished = YES;
+    _failureMessage =
+        @"Inactive or background display callbacks advanced the Jak II runtime or Metal host.";
+    [self updateTickGate];
+    [self updateStatus];
+    return;
+  }
+
+  NSLog(@"GOALPAD_JAK2_LIFECYCLE_PROOF PAUSE accepted=%llu paused=%llu dispatcher=%llu",
+        (unsigned long long)afterDisplay.accepted_ticks,
+        (unsigned long long)afterDisplay.paused_ticks,
+        (unsigned long long)afterRuntime.ticks);
+  [self updateStatus];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!_proofFinished &&
+        UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
+      [self didBecomeActive:nil];
+    }
+  });
 }
 
 - (NSString*)runtimeStateName {
@@ -554,8 +705,17 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   NSString* failure = _failureMessage.length > 0
                           ? [NSString stringWithFormat:@"\nError: %@", _failureMessage]
                           : @"";
+  NSString* proofName = _lifecycleProofEnabled ? @"Jak II lifecycle display-tick proof"
+                                                : @"Jak II Metal policy display-tick proof";
+  NSString* lifecycle = _lifecycleProofEnabled
+                            ? [NSString stringWithFormat:
+                                          @"\nLifecycle pause / resume: %@ / %@\n"
+                                           "Bound: 3 foreground + 3 paused + 3 foreground\n",
+                                          _lifecyclePauseVerified ? @"verified" : @"pending",
+                                          _lifecycleResumeVerified ? @"verified" : @"pending"]
+                            : @"";
   self.statusLabel.text = [NSString
-      stringWithFormat:@"Jak II Metal policy display-tick proof — %@\n\n"
+      stringWithFormat:@"%@ — %@\n\n"
                         "Data: %@\nSaves: %@\nRuntime: %@\n"
                         "thread-suspend: source #x%08x/#x%llx / display #x%08x / "
                         "top #x%08x / hook #x%08x/#x%llx / %@\n"
@@ -565,8 +725,9 @@ static void run_runtime_frame(double target_presentation_time, void* context);
                         "Metal host: %llu chain / %llu sync-path / %llu syncv\n"
                         "Completed policy chains: %llu / failures: %llu\n"
                         "Last dispatch: %llu buckets / %u copied bytes\n\n"
-                        "Draw calls: %llu\nSubmissions: %llu\nPresented frames: %llu%@",
-                       result, _dataPath ?: @"<unavailable>", _savesPath ?: @"<unavailable>",
+                        "Draw calls: %llu\nSubmissions: %llu\nPresented frames: %llu%@%@",
+                       proofName, result, _dataPath ?: @"<unavailable>",
+                       _savesPath ?: @"<unavailable>",
                        [self runtimeStateName], _threadSuspendProbe.function_object,
                        (unsigned long long)_threadSuspendProbe.native_entry,
                        _threadSuspendProbe.display_process, _threadSuspendProbe.top_thread,
@@ -590,6 +751,7 @@ static void run_runtime_frame(double target_presentation_time, void* context);
                        (unsigned long long)_metalMetrics.draws,
                        (unsigned long long)_metalMetrics.submissions,
                        (unsigned long long)_metalMetrics.presentations,
+                       lifecycle,
                        failure];
 }
 
