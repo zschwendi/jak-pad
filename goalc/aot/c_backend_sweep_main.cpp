@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "common/custom_data/Jak1SourceObjectPack.h"
+#include "common/custom_data/Jak2SourceObjectPack.h"
 #include "common/log/log.h"
 #include "common/util/FileUtil.h"
 #include "common/util/string_util.h"
@@ -32,6 +33,7 @@
 namespace {
 
 constexpr size_t kJak1AllCodeSourceCount = 518;
+constexpr size_t kJak2AllCodeSourceCount = jak2_source_object_pack::kExpectedObjectCount;
 constexpr const char* kObjectManifestName = jak1_source_object_pack::kManifestName;
 
 struct Options {
@@ -48,7 +50,8 @@ struct Options {
 
 void print_usage() {
   std::fprintf(stderr,
-               "Usage: goalc-cbackend-sweep [--game jak1] [--project-file goal_src/jak1/game.gp]\n"
+               "Usage: goalc-cbackend-sweep [--game jak1|jak2] "
+               "[--project-file goal_src/GAME/game.gp]\n"
                "                            [--target GROUP:all-code]\n"
                "                            [--c-output-dir DIR] [--object-output-dir DIR]\n"
                "                            [--report OUT.tsv]\n"
@@ -61,8 +64,9 @@ void print_usage() {
                "prefix, for building a test fixture on top of a real kernel.\n"
                "--c-output-dir also writes each file's header and aot_boot_manifest.{h,c},\n"
                "which lists every emitted file in build order.\n"
-               "--object-output-dir writes the complete Jak 1 GROUP:all-code v3 object pack and\n"
-               "a checked manifest. It rejects limits, extra sources, alternate games/targets,\n"
+               "--object-output-dir writes the complete Jak 1 or Jak II GROUP:all-code object\n"
+               "pack and a checked manifest. It rejects limits, extra sources, alternate\n"
+               "project files/targets,\n"
                "unsafe or duplicate tags, and existing output directories.\n");
 }
 
@@ -154,14 +158,29 @@ std::optional<std::string> validate_object_pack_request(const Options& options,
   if (options.object_output_dir.empty()) {
     return std::nullopt;
   }
-  if (options.game != "jak1" || options.project_file != "goal_src/jak1/game.gp" ||
-      options.target != "GROUP:all-code" || options.limit != 0 || !options.extra_sources.empty()) {
+  const bool unmodified_graph =
+      options.target == "GROUP:all-code" && options.limit == 0 && options.extra_sources.empty();
+  if (options.game == "jak1") {
+    if (options.project_file != "goal_src/jak1/game.gp" || !unmodified_graph) {
+      return "--object-output-dir requires the unmodified Jak 1 goal_src/jak1/game.gp "
+             "GROUP:all-code graph without --limit or --extra-source.";
+    }
+    if (sources.size() != kJak1AllCodeSourceCount) {
+      return fmt::format("Expected {} Jak 1 GROUP:all-code sources, but found {}.",
+                         kJak1AllCodeSourceCount, sources.size());
+    }
+  } else if (options.game == "jak2") {
+    if (options.project_file != "goal_src/jak2/game.gp" || !unmodified_graph) {
+      return "--object-output-dir requires the unmodified Jak II goal_src/jak2/game.gp "
+             "GROUP:all-code graph without --limit or --extra-source.";
+    }
+    if (sources.size() != kJak2AllCodeSourceCount) {
+      return fmt::format("Expected {} Jak II GROUP:all-code sources, but found {}.",
+                         kJak2AllCodeSourceCount, sources.size());
+    }
+  } else {
     return "--object-output-dir requires the unmodified Jak 1 goal_src/jak1/game.gp "
-           "GROUP:all-code graph without --limit or --extra-source.";
-  }
-  if (sources.size() != kJak1AllCodeSourceCount) {
-    return fmt::format("Expected {} Jak 1 GROUP:all-code sources, but found {}.",
-                       kJak1AllCodeSourceCount, sources.size());
+           "or Jak II goal_src/jak2/game.gp GROUP:all-code graph.";
   }
 
   std::set<std::string> tags;
@@ -241,23 +260,38 @@ std::string object_manifest_text(const std::vector<ObjectManifestEntry>& entries
 
 jak1_source_object_pack::Summary write_and_verify_object_manifest(
     const fs::path& directory,
-    const std::vector<ObjectManifestEntry>& entries) {
-  if (entries.size() != kJak1AllCodeSourceCount) {
+    const std::vector<ObjectManifestEntry>& entries,
+    const std::vector<std::string>& expected_source_files,
+    const std::string& game) {
+  const auto expected_count = game == "jak2" ? kJak2AllCodeSourceCount : kJak1AllCodeSourceCount;
+  if (entries.size() != expected_count) {
     throw std::runtime_error(fmt::format("Object pack has {} entries instead of {}.",
-                                         entries.size(), kJak1AllCodeSourceCount));
+                                         entries.size(), expected_count));
   }
   const auto manifest = object_manifest_text(entries);
   const auto manifest_path = directory / kObjectManifestName;
   file_util::write_binary_file(manifest_path, manifest.data(), manifest.size());
 
   const auto absolute_root = std::filesystem::absolute(std::filesystem::path(directory.string()));
-  auto verified = jak1_source_object_pack::validate(absolute_root);
-  if (!verified) {
-    throw std::runtime_error(fmt::format(
-        "Portable object-pack validation failed ({}): {}",
-        jak1_source_object_pack::error_code_name(verified.error().code), verified.error().message));
+  if (game == "jak2") {
+    auto verified = jak2_source_object_pack::validate(absolute_root, expected_source_files);
+    if (!verified) {
+      throw std::runtime_error(fmt::format(
+          "Jak II object-pack validation failed ({}): {}",
+          jak2_source_object_pack::error_code_name(verified.error().code),
+          verified.error().message));
+    }
+    return verified.take_value();
+  } else {
+    auto verified = jak1_source_object_pack::validate(absolute_root);
+    if (!verified) {
+      throw std::runtime_error(fmt::format(
+          "Portable object-pack validation failed ({}): {}",
+          jak1_source_object_pack::error_code_name(verified.error().code),
+          verified.error().message));
+    }
+    return verified.take_value();
   }
-  return verified.take_value();
 }
 
 /*!
@@ -444,7 +478,8 @@ int main(int argc, char** argv) {
       return 1;
     }
     try {
-      const auto summary = write_and_verify_object_manifest(object_pack->path(), object_manifest);
+      const auto summary = write_and_verify_object_manifest(object_pack->path(), object_manifest,
+                                                            sources, options.game);
       object_pack->commit();
       std::printf("source_object_pack_count=%u aggregate_xxh64=%016llx total_bytes=%llu\n",
                   summary.identity.object_count,
