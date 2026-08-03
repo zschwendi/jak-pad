@@ -40,7 +40,7 @@ struct Result {
 // Validates every range and count consumed by SFXBlock::ReadBlock, plus the immediate sound and
 // sample references that the loader forms. It does not validate the lifetime of an ADPCM stream or
 // every semantic parameter used later during playback because the current Tone model stores no
-// sample length.
+// sample length, and it does not impose a separate memory quota on overlapping sound records.
 Result validate(std::span<const std::uint8_t> file) noexcept;
 const char* error_name(Error error) noexcept;
 

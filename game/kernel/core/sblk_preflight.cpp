@@ -246,9 +246,6 @@ Result validate(std::span<const std::uint8_t> file) noexcept {
     return failure(Error::grain_table, bank, samples);
   }
 
-  // The loader allocates one Grain per sound reference. Keep the aggregate bounded by the bank's
-  // declared total even if malicious sound records overlap the same grain range.
-  std::size_t referenced_grains = 0;
   for (std::size_t sound = 0; sound < std::size_t(sound_count); sound++) {
     const std::size_t sound_record = first_sound + sound * kSoundRecordSize;
     std::int8_t sound_grain_count = -1;
@@ -256,10 +253,6 @@ Result validate(std::span<const std::uint8_t> file) noexcept {
     if (!read(bank_data, sound_record + 4, &sound_grain_count) ||
         !read(bank_data, sound_record + 8, &first_sound_grain_field) || sound_grain_count < 0) {
       return failure(Error::negative_count, bank, samples);
-    }
-    if (!add(referenced_grains, std::size_t(sound_grain_count), &referenced_grains) ||
-        referenced_grains > std::size_t(grain_count)) {
-      return failure(Error::grain_table, bank, samples);
     }
     if (!sound_grain_count) {
       continue;

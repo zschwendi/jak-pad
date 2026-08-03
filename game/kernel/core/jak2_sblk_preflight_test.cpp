@@ -214,7 +214,26 @@ void count_and_table_cases() {
   expect(Error::grain_table, grain_relative_oob, "per-sound grain offset overflow is rejected");
   auto amplified = wrap(v1_bank());
   put<std::int16_t>(amplified.file, amplified.bank + 24, 0);
-  expect(Error::grain_table, amplified, "referenced grains cannot exceed declared grains");
+  expect(Error::grain_table, amplified, "per-sound grains cannot exceed the declared table");
+
+  constexpr std::size_t shared_first_grain = kV2HeaderSize + 2 * kSoundSize;
+  constexpr std::size_t shared_grain_data = shared_first_grain + kV2GrainSize;
+  std::vector<std::uint8_t> shared_grain_bank(shared_grain_data);
+  put(shared_grain_bank, 0, kSblk);
+  put<std::uint32_t>(shared_grain_bank, 4, 2);
+  put<std::int16_t>(shared_grain_bank, 22, 2);
+  put<std::int16_t>(shared_grain_bank, 24, 1);
+  put<std::int16_t>(shared_grain_bank, 26, 0);
+  put<std::uint32_t>(shared_grain_bank, 28, kV2HeaderSize);
+  put<std::uint32_t>(shared_grain_bank, 32, shared_first_grain);
+  put<std::uint32_t>(shared_grain_bank, 52, shared_grain_data);
+  put<std::int8_t>(shared_grain_bank, kV2HeaderSize + 4, 1);
+  put<std::uint32_t>(shared_grain_bank, kV2HeaderSize + 8, 0);
+  put<std::int8_t>(shared_grain_bank, kV2HeaderSize + kSoundSize + 4, 1);
+  put<std::uint32_t>(shared_grain_bank, kV2HeaderSize + kSoundSize + 8, 0);
+  put<std::uint32_t>(shared_grain_bank, shared_first_grain, std::uint32_t(24) << 24);
+  expect_valid(wrap(std::move(shared_grain_bank)),
+               "two sounds may share one declared grain range");
 }
 
 void grain_cases() {
