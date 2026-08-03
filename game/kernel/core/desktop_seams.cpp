@@ -23,7 +23,7 @@
  *   - game/kernel/jak1/kboot.cpp               : desktop boot + GOAL kernel dispatch loop
  *   - game/sce/sif_ee.cpp                      : the EE<->IOP RPC bridge (the file calls it also
  *                                                declares are implemented below)
- *   - game/sce/deci2.cpp, game/system/**       : DECI2 debugger transport and sockets
+ *   - game/sce/deci2.cpp, game/system/         : DECI2 debugger transport and sockets
  *   - game/mips2c/mips2c_table.cpp             : names all four games; core/mips2c_seam.cpp
  *                                                registers the Jak 1 functions instead
  */
