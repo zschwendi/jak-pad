@@ -23,6 +23,10 @@ typedef struct goal_jak2_sound_rpc_stats {
   uint32_t player_batches;
   uint32_t player_commands;
   uint32_t player_failures;
+  uint32_t play_requests;
+  uint32_t sounds_started;
+  uint32_t sound_updates;
+  uint32_t sounds_missing;
   uint32_t bank_requests;
   uint32_t banks_loaded;
   uint32_t bank_reuses;
@@ -55,9 +59,10 @@ typedef struct goal_jak2_sound_player_state {
  * Replace Jak 2's rpc-call/rpc-busy? machine stubs with the synchronous startup-state, loader and
  * STR responders. The kernel and machine-stub symbol table must already be initialized. This owns
  * one portable, output-backend-free 989snd instance until shutdown. Player commands 12, 22, 23,
- * 24 and 28 configure state only; MIDI handling is limited to startup registers 3, 4, 14 and 16.
- * Playback, music and streaming remain unsupported. No-reply RPC returns report synchronous
- * transport completion, while the stats report semantic failures.
+ * 24 and 28 configure state, while command 7 starts or updates ordinary named sounds from checked
+ * SFX banks. MIDI handling is limited to startup registers 3, 4, 14 and 16. Music and streaming
+ * remain unsupported. No-reply RPC returns report synchronous transport completion, while the
+ * stats report semantic failures.
  */
 goal_kernel_core_status goal_jak2_sound_rpc_install(void);
 

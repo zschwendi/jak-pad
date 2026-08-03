@@ -8,11 +8,11 @@
  * the command as the RPC reply. Loader command 2 has no receive buffer; it bounded-reads a
  * user-local SBlk once, validates every range the current 989snd parser consumes, then passes those
  * same bytes through 989snd's in-memory bank interface. Loader command 20 selects one of Jak 2's
- * eight bounded language tags without a reply payload. Channel 0 accepts only the startup state
- * commands that do not start playback; it retains master volumes, MIDI registers 3/4/14/16,
- * reverb, FPS and listener transforms. Channel 4 reads an ordinary file from the configured `iso/`
- * directory into EE memory. Playback, later MIDI registers, chunked STR files and the rest of the
- * Jak 2 sound protocol remain unimplemented.
+ * eight bounded language tags without a reply payload. Channel 0 retains master volumes, MIDI
+ * registers 3/4/14/16, reverb, FPS and listener transforms. Player command 7 starts or updates
+ * ordinary named sounds from those checked SFX banks. Channel 4 reads an ordinary file from the
+ * configured `iso/` directory into EE memory. Music, streaming, later MIDI registers, chunked STR
+ * files and the rest of the Jak 2 sound protocol remain unimplemented.
  */
 
 #include <algorithm>
@@ -32,6 +32,7 @@
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/kscheme.h"
 #include "game/overlord/common/sbank.h"
+#include "game/overlord/common/ssound.h"
 #include "game/overlord/jak2/srpc.h"
 #include "game/runtime.h"
 #include "game/sce/sif_ee.h"
@@ -69,6 +70,24 @@ static_assert(offsetof(jak2::SoundRpcCommand, j2command) == 2);
 static_assert(offsetof(jak2::SoundRpcCommand, set_language) == 4);
 static_assert(sizeof(SoundRpcSetLanguageCommand) == 4);
 static_assert(offsetof(SoundRpcSetLanguageCommand, langauge_id) == 0);
+static_assert(offsetof(jak2::SoundRpcCommand, play) == 4);
+static_assert(sizeof(SoundRpcPlayCommand) == 60);
+static_assert(offsetof(SoundRpcPlayCommand, sound_id) == 0);
+static_assert(offsetof(SoundRpcPlayCommand, pad) == 4);
+static_assert(offsetof(SoundRpcPlayCommand, name) == 12);
+static_assert(offsetof(SoundRpcPlayCommand, parms) == 28);
+static_assert(sizeof(SoundParams) == 32);
+static_assert(offsetof(SoundParams, mask) == 0);
+static_assert(offsetof(SoundParams, pitch_mod) == 2);
+static_assert(offsetof(SoundParams, bend) == 4);
+static_assert(offsetof(SoundParams, fo_min) == 6);
+static_assert(offsetof(SoundParams, fo_max) == 8);
+static_assert(offsetof(SoundParams, fo_curve) == 10);
+static_assert(offsetof(SoundParams, priority) == 11);
+static_assert(offsetof(SoundParams, volume) == 12);
+static_assert(offsetof(SoundParams, trans) == 16);
+static_assert(offsetof(SoundParams, group) == 28);
+static_assert(offsetof(SoundParams, reg) == 29);
 static_assert(offsetof(jak2::SoundRpcCommand, master_volume) == 4);
 static_assert(sizeof(SoundRpcMasterVolCommand) == 8);
 static_assert(offsetof(SoundRpcMasterVolCommand, group) == 0);
@@ -124,6 +143,7 @@ static_assert(sizeof(StrReply) == kStrReplySize);
 goal_jak2_sound_rpc_stats g_stats;
 goal_jak2_sound_player_state g_player_state;
 bool g_installed = false;
+VolumePair g_pan_table[361];
 
 bool readable_ee_span(u32 address, u32 size) {
   return g_ee_main_mem && address >= (u32)EE_MAIN_MEM_LOW_PROTECT &&
@@ -145,6 +165,177 @@ void reset_player_state() {
   std::fill_n(g_player_state.master_volumes, 32, 0x400);
   g_player_state.fps = 60;
   gFPS = 60;
+}
+
+void reset_spatial_sound_state() {
+  ssound_init_globals();
+  for (auto& sound : gSounds) {
+    sound = {};
+  }
+  gEarTrans[0] = {};
+  gEarTrans[1] = {};
+  gCamTrans = {};
+  gCamAngle = 0;
+  gMirrorMode = 0;
+  sLastTick = 0;
+  for (auto& curve : gCurves) {
+    curve = {};
+  }
+}
+
+void build_pan_table() {
+  for (int i = 0; i < 91; i++) {
+    const s16 opposing_front = static_cast<s16>(((i * 0x33ff) / 90) + 0xc00);
+    const s16 rear_right = static_cast<s16>(((i * -0x2800) / 90) + 0x3400);
+    const s16 rear_left = static_cast<s16>(((i * -0xbff) / 90) + 0x3fff);
+
+    g_pan_table[90 - i].left = 0x3fff;
+    g_pan_table[180 - i].left = opposing_front;
+    g_pan_table[270 - i].left = rear_right;
+    g_pan_table[360 - i].left = rear_left;
+
+    g_pan_table[i].right = opposing_front;
+    g_pan_table[90 + i].right = 0x3fff;
+    g_pan_table[180 + i].right = rear_left;
+    g_pan_table[270 + i].right = rear_right;
+  }
+}
+
+std::array<char, 17> normalize_sound_name(const char source[16]) {
+  std::array<char, 17> result{};
+  bool ended = false;
+  for (size_t i = 0; i < 16; i++) {
+    char value = source[i];
+    if (ended || value == '\0') {
+      ended = true;
+      continue;
+    }
+    if (value >= 'a' && value <= 'z') {
+      value -= 'a' - 'A';
+    } else if (value == '-') {
+      value = '_';
+    }
+    result[i] = value;
+  }
+  return result;
+}
+
+void apply_falloff_defaults(SoundParams* params, const char* normalized_name) {
+  SFXUserData data{};
+  const bool found = snd_GetSoundUserData(0, nullptr, -1, const_cast<char*>(normalized_name), &data);
+  if ((params->mask & 0x40) == 0) {
+    params->fo_min = found && data.data[0] ? static_cast<s16>(data.data[0]) : 5;
+  }
+  if ((params->mask & 0x80) == 0) {
+    params->fo_max = found && data.data[1] ? static_cast<s16>(data.data[1]) : 30;
+  }
+  if ((params->mask & 0x100) == 0) {
+    params->fo_curve = found && data.data[2] ? static_cast<s8>(data.data[2]) : 2;
+  }
+}
+
+void apply_sound_registers(const Sound& sound) {
+  if (sound.params.mask & 0x800) {
+    snd_SetSoundReg(sound.sound_handle, 0, sound.params.reg[0]);
+  }
+  if (sound.params.mask & 0x1000) {
+    snd_SetSoundReg(sound.sound_handle, 1, sound.params.reg[1]);
+  }
+  if (sound.params.mask & 0x2000) {
+    snd_SetSoundReg(sound.sound_handle, 2, sound.params.reg[2]);
+  }
+}
+
+void update_location(Sound* sound) {
+  if (!sound->id) {
+    return;
+  }
+  const s32 handle = snd_SoundIsStillPlaying(sound->sound_handle);
+  sound->sound_handle = handle;
+  if (!handle) {
+    sound->id = 0;
+    return;
+  }
+
+  const s32 volume = GetVolume(sound);
+  if (!volume) {
+    snd_StopSound(handle);
+    return;
+  }
+  const s32 pan = sound->params.fo_curve == 1 || sound->params.fo_curve == 10 ? 0 : GetPan(sound);
+  snd_SetSoundVolPan(handle, volume, pan);
+}
+
+void apply_ear_transform(const SoundRpc2SetEarTrans& transform) {
+  const s32 tick = snd_GetTick();
+  const u32 delta = tick - sLastTick;
+  sLastTick = tick;
+  gEarTrans[0] = transform.ear_trans0;
+  gEarTrans[1] = transform.ear_trans1;
+  gCamTrans = transform.cam_trans;
+  gCamAngle = transform.cam_angle;
+
+  for (auto& sound : gSounds) {
+    if (sound.id && !sound.is_music) {
+      if (sound.auto_time) {
+        UpdateAutoVol(&sound, delta);
+      }
+      update_location(&sound);
+    }
+  }
+}
+
+void play_sound(const SoundRpcPlayCommand& command) {
+  g_stats.play_requests++;
+  if (!command.sound_id) {
+    return;
+  }
+
+  if (Sound* sound = LookupSound(command.sound_id)) {
+    sound->params = command.parms;
+    sound->is_music = 0;
+    const auto existing_name = normalize_sound_name(sound->name);
+    apply_falloff_defaults(&sound->params, existing_name.data());
+    UpdateVolume(sound);
+    snd_SetSoundPitchModifier(sound->sound_handle, sound->params.pitch_mod);
+    if (sound->params.mask & 0x4) {
+      snd_SetSoundPitchBend(sound->sound_handle, sound->params.bend);
+    }
+    apply_sound_registers(*sound);
+    g_stats.sound_updates++;
+    return;
+  }
+
+  const auto name = normalize_sound_name(command.name);
+  SFXUserData data{};
+  if (!snd_GetSoundUserData(0, nullptr, -1, const_cast<char*>(name.data()), &data)) {
+    g_stats.sounds_missing++;
+    return;
+  }
+
+  Sound* sound = AllocateSound(true);
+  if (!sound) {
+    g_stats.sounds_missing++;
+    return;
+  }
+  const s64 add_index = sound->add_index;
+  *sound = {};
+  sound->add_index = add_index;
+  memcpy(sound->name, name.data(), sizeof(sound->name));
+  sound->params = command.parms;
+  sound->is_music = 0;
+  sound->bank_entry = nullptr;
+  apply_falloff_defaults(&sound->params, name.data());
+  sound->sound_handle = snd_PlaySoundByNameVolPanPMPB(
+      0, nullptr, const_cast<char*>(name.data()), GetVolume(sound), GetPan(sound),
+      sound->params.pitch_mod, sound->params.bend);
+  if (!sound->sound_handle) {
+    g_stats.sounds_missing++;
+    return;
+  }
+  sound->id = command.sound_id;
+  apply_sound_registers(*sound);
+  g_stats.sounds_started++;
 }
 
 bool normalize_bank_name(const char source[16],
@@ -318,6 +509,9 @@ void retain_vec3(const Vec3w& source, int32_t destination[3]) {
 
 void apply_player_command(const jak2::SoundRpcCommand& command) {
   switch (command.j2command) {
+    case jak2::Jak2SoundCommand::play:
+      play_sound(command.play);
+      break;
     case jak2::Jak2SoundCommand::set_master_volume: {
       const u32 groups = command.master_volume.group.group;
       for (u32 group = 0; group < 32; group++) {
@@ -352,6 +546,7 @@ void apply_player_command(const jak2::SoundRpcCommand& command) {
       retain_vec3(command.ear_trans_j2.ear_trans0, g_player_state.ear_trans0);
       retain_vec3(command.ear_trans_j2.cam_trans, g_player_state.camera_trans);
       g_player_state.camera_angle = command.ear_trans_j2.cam_angle;
+      apply_ear_transform(command.ear_trans_j2);
       break;
     case jak2::Jak2SoundCommand::set_fps:
       g_player_state.fps = command.fps.fps;
@@ -385,10 +580,11 @@ u64 player_rpc(u32 function,
   }
   memcpy(commands.data(), Ptr<u8>(send_buffer).c(), static_cast<size_t>(send_size));
 
-  // Preflight the complete snapshot before changing any state. A PLAY or any other unsupported
-  // command rejects the whole batch instead of applying the configuration entries before it.
+  // Preflight the complete snapshot before changing any state or starting a voice. Any unsupported
+  // command rejects the whole batch instead of applying the supported entries before it.
   for (const auto& command : commands) {
     switch (command.j2command) {
+      case jak2::Jak2SoundCommand::play:
       case jak2::Jak2SoundCommand::set_master_volume:
       case jak2::Jak2SoundCommand::set_reverb:
       case jak2::Jak2SoundCommand::set_ear_trans:
@@ -404,7 +600,7 @@ u64 player_rpc(u32 function,
         }
         break;
       default:
-        return reject_player("rpc-call (Jak 2 player, playback or command is unsupported)");
+        return reject_player("rpc-call (Jak 2 player, command is unsupported)");
     }
   }
 
@@ -608,12 +804,26 @@ goal_kernel_core_status goal_jak2_sound_rpc_install(void) {
   g_stats = {};
   srpc_init_globals();
   reset_player_state();
+  reset_spatial_sound_state();
   gLanguage = kLanguages[0];
   sbank_init_globals();
   InitBanks();
   try {
     snd_StartSoundSystem();
     snd_SetGlobalExcite(0);
+    SetCurve(2, 0, 0);
+    SetCurve(9, 0, 0);
+    SetCurve(11, 0, 0);
+    SetCurve(10, 0, 0);
+    SetCurve(3, 4096, 0);
+    SetCurve(4, 0, 4096);
+    SetCurve(5, 2048, 0);
+    SetCurve(6, 2048, 2048);
+    SetCurve(7, -4096, 0);
+    SetCurve(8, -2048, 0);
+    build_pan_table();
+    snd_SetPanTable(reinterpret_cast<s16*>(g_pan_table));
+    snd_SetPlayBackMode(2);
   } catch (const std::exception& exception) {
     snd_StopSoundSystem();
     lg::error("[jak2-sound-rpc] could not start 989snd: {}", exception.what());
@@ -630,6 +840,7 @@ void goal_jak2_sound_rpc_shutdown(void) {
     return;
   }
   snd_StopSoundSystem();
+  reset_spatial_sound_state();
   sbank_init_globals();
   InitBanks();
   g_installed = false;
