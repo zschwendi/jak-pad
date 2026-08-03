@@ -18,8 +18,9 @@
  * live in is the machine layer: it includes the display, the renderer, Discord and sqlite, none of
  * which exist here. The two functions themselves have no such dependency - they are the PS2 pad
  * state machine and a structure fill - so the copy is verbatim apart from `pad_dma_buf`, which is
- * a kmachine.cpp global and is local here. `desktop_seams.cpp` copies `CacheFlush` for the same
- * reason.
+ * a kmachine.cpp global and is local here. Jak 2's `cpad-info` has the same 132-byte prefix these
+ * functions access, followed by eight old-axis bytes they do not touch. `desktop_seams.cpp` copies
+ * `CacheFlush` for the same reason.
  */
 
 #include "game/kernel/core/pad.h"
@@ -31,7 +32,7 @@
 #include "game/kernel/common/Ptr.h"
 #include "game/kernel/common/kernel_types.h"
 #include "game/kernel/common/kprint.h"
-#include "game/kernel/jak1/kscheme.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/sce/libpad.h"
 
 namespace {
@@ -336,8 +337,8 @@ goal_kernel_core_status goal_pad_install(void) {
   if (!goal_kernel_core_is_initialized()) {
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
-  jak1::make_function_symbol_from_c("cpad-open", (void*)CPadOpen);
-  jak1::make_function_symbol_from_c("cpad-get-data", (void*)CPadGetData);
+  goal_game_make_function_symbol("cpad-open", (void*)CPadOpen);
+  goal_game_make_function_symbol("cpad-get-data", (void*)CPadGetData);
   return GOAL_KERNEL_CORE_OK;
 }
 

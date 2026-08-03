@@ -64,6 +64,9 @@ namespace {
 // game/kernel/common/kmachine.cpp
 // ---------------------------------------------------------------------------------------------
 
+u32 vif1_interrupt_handler = 0;
+u32 vblank_interrupt_handler = 0;
+
 /*!
  * Upstream's CacheFlush is already a no-op on PC (the PS2 cache instructions have no equivalent),
  * so this is a faithful implementation rather than a stub. It is duplicated here only because the
@@ -72,6 +75,20 @@ namespace {
 void CacheFlush(void* mem, int size) {
   (void)mem;
   (void)size;
+}
+
+void InstallHandler(u32 handler_idx, u32 handler_func) {
+  switch (handler_idx) {
+    case 3:
+      vblank_interrupt_handler = handler_func;
+      break;
+    case 5:
+      vif1_interrupt_handler = handler_func;
+      break;
+    default:
+      lg::error("unknown handler: {}\n", handler_idx);
+      ASSERT(false);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -218,6 +235,7 @@ void goal_kernel_core_install_implemented_machine_functions() {
   goal_game_make_function_symbol("scf-get-territory", (void*)decode_territory);
   goal_game_make_function_symbol("scf-get-timeout", (void*)decode_timeout);
   goal_game_make_function_symbol("scf-get-inactive-timeout", (void*)decode_inactive_timeout);
+  goal_game_make_function_symbol("install-handler", (void*)InstallHandler);
 }
 
 void goal_kernel_core_set_machine_stub_mode(bool abort_when_called) {
