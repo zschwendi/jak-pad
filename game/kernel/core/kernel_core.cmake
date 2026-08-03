@@ -232,6 +232,8 @@ set(JAK2_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/dma_capture.cpp"
     # the rest of the graphics machine layer, normalized through a host callback table
     "${CMAKE_CURRENT_LIST_DIR}/gfx_host.cpp"
+    # one foreground display callback runs one frame; paused callbacks are dropped, never queued
+    "${CMAKE_CURRENT_LIST_DIR}/display_tick_coordinator.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma_copy.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma.cpp"
     # the mips2c seam, in place of game/mips2c/mips2c_table.cpp, plus the Jak 2 function library
