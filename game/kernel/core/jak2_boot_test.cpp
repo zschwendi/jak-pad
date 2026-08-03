@@ -283,9 +283,12 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
           sound_stats.str_bytes);
       return 1;
     }
-    say("  sound frontier: language=%u player batches=%u commands=%u failures=%u STR=%u/%u\n",
+    say("  sound frontier: language=%u player batches=%u commands=%u failures=%u "
+        "PLAY=%u started=%u updated=%u missing=%u STR=%u/%u\n",
         sound_stats.language_requests, sound_stats.player_batches, sound_stats.player_commands,
-        sound_stats.player_failures, sound_stats.str_reads, sound_stats.str_requests);
+        sound_stats.player_failures, sound_stats.play_requests, sound_stats.sounds_started,
+        sound_stats.sound_updates, sound_stats.sounds_missing, sound_stats.str_reads,
+        sound_stats.str_requests);
   }
 
   say("\nBOOT: KERNEL.CGO is loaded and the Jak 2 GOAL kernel dispatcher ran %d frames.\n",
