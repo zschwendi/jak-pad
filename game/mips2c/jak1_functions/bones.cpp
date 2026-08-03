@@ -2,6 +2,7 @@
 //--------------------------MIPS2C---------------------
 // clang-format off
 #include "game/mips2c/mips2c_private.h"
+#include "game/mips2c/jak1_bones_provenance_trace.h"
 #include "game/kernel/jak1/kscheme.h"
 using namespace jak1;
 namespace Mips2C::jak1 {
@@ -150,6 +151,9 @@ u64 execute(void* ctxt) {
 //printf("start\n");
   bool bc = false;
   u32 madr, sadr, qwc;
+  jak1_bones_provenance_trace::registry().record(
+      c->sgpr64(a0), c->sgpr64(a2), c->sgpr64(a3), c->sgpr64(t0), g_ee_main_mem,
+      EE_MAIN_MEM_SIZE);
   // hack, added this that should be loaded by the caller.
   //  lqc2 vf28, 0(v1)          ;; [ 60] (set! vf28 (l.vf v1-13)) [v1: matrix ] -> []
   c->lqc2(vf28, 0, t0);
@@ -1387,4 +1391,3 @@ void link() {
 
 } // namespace draw_bones_check_longest_edge_asm
 } // namespace Mips2C
-

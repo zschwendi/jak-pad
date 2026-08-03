@@ -9,12 +9,67 @@
 
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/texture/TexturePool.h"
+#include "game/mips2c/jak1_bones_provenance_trace.h"
 
 #include "fmt/format.h"
 
 namespace {
 
 constexpr float kGameHeightJak1 = 448.f;
+
+metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observation(
+    u32 source_address,
+    u64 source_base,
+    int root_bone,
+    const float* output_matrix) {
+  metal_merc_transform_trace::ProvenanceObservation out;
+  if (source_base > UINT32_MAX) {
+    return out;
+  }
+
+  const auto calculation =
+      jak1_bones_provenance_trace::registry().find_source_address(source_address);
+  if (!calculation) {
+    return out;
+  }
+  out.mapping_checked = true;
+  if (calculation->output_base != source_base || !calculation->camera.valid) {
+    return out;
+  }
+
+  if (root_bone < 1 || root_bone > static_cast<int>(calculation->root_anchors.size()) ||
+      !calculation->root_anchors[root_bone - 1].valid) {
+    return out;
+  }
+  const auto& root = calculation->root_anchors[root_bone - 1];
+  out.input_root_bone = root_bone;
+
+  std::array<u64, jak1_bones_provenance_trace::kRootAnchorCount> root_hashes = {};
+  for (std::size_t anchor = 0; anchor < calculation->root_anchors.size(); anchor++) {
+    const auto& snapshot = calculation->root_anchors[anchor];
+    if (snapshot.valid) {
+      root_hashes[anchor] = fnv64(snapshot.bytes.data(), snapshot.bytes.size());
+    }
+  }
+
+  std::array<float, 16> root_matrix = {};
+  std::array<float, 16> camera_matrix = {};
+  memcpy(root_matrix.data(), root.bytes.data(), root.bytes.size());
+  memcpy(camera_matrix.data(), calculation->camera.bytes.data(), calculation->camera.bytes.size());
+
+  out.producer_serial = calculation->serial;
+  out.input_root_hash = fnv64(root_hashes.data(), sizeof(root_hashes));
+  out.camera_hash = fnv64(calculation->camera.bytes.data(), calculation->camera.bytes.size());
+  out.input_root_basis = metal_merc_transform_trace::make_basis_snapshot(root_matrix.data());
+  out.camera_basis = metal_merc_transform_trace::make_basis_snapshot(camera_matrix.data());
+  out.output_basis = metal_merc_transform_trace::make_basis_snapshot(output_matrix);
+  out.input_translation_x = root_matrix[12];
+  out.input_translation_y = root_matrix[13];
+  out.input_translation_z = root_matrix[14];
+  out.mapping_valid =
+      out.input_root_basis.valid && out.camera_basis.valid && out.output_basis.valid;
+  return out;
+}
 
 // Must match MercVsParams in shaders/merc2.metal.
 struct MercVsParams {
@@ -859,6 +914,19 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   bool model_has_palette_health_issue = false;
   bool expected_source_base_valid = false;
   u64 expected_source_base = 0;
+  int provenance_probe_slot = -1;
+  if (model->name == "eichar-lod0") {
+    const auto slot_is_available = [&](int slot) {
+      const u64 bit = 1ull << (slot % 64);
+      return (required_bone_slots[slot / 64] & bit) && (populated_bone_slots[slot / 64] & bit);
+    };
+    for (int slot = 3; slot >= 1; slot--) {
+      if (slot_is_available(slot)) {
+        provenance_probe_slot = slot;
+        break;
+      }
+    }
+  }
   for (size_t word = 0; word < required_bone_slots.size(); word++) {
     u64 slots_to_inspect = required_bone_slots[word] & populated_bone_slots[word];
     while (slots_to_inspect) {
@@ -920,9 +988,15 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
       }
 
       if (matrix_is_finite && model->name == "eichar-lod0") {
+        metal_merc_transform_trace::ProvenanceObservation provenance;
+        if (slot == provenance_probe_slot) {
+          provenance =
+              make_bones_provenance_observation(source_address, source_base, provenance_probe_slot,
+                                                reinterpret_cast<const float*>(&matrix));
+        }
         const auto discontinuity = m_eichar_transform_tracker.observe(
             render_state->engine_frame_id, slot, fnv64(model->name), fnv64(&matrix, sizeof(matrix)),
-            axis_norm_x, axis_norm_y, axis_norm_z, source_base);
+            axis_norm_x, axis_norm_y, axis_norm_z, source_base, provenance);
         if (discontinuity.valid()) {
           stats->eichar_transform_discontinuities++;
           if (!stats->first_eichar_transform_discontinuity.valid()) {
