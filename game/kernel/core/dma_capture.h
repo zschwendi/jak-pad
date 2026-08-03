@@ -28,6 +28,8 @@ typedef struct goal_gfx_dma_stats {
   int largest_payload_frame;   /*! the 1-based frame that built it */
   int last_texture_uploads;    /*! PC_PORT texture-upload packets in the last chain */
   int largest_payload_uploads; /*! ... and in the largest-payload one */
+  int well_formed_chains; /*! copied chains whose selected-game validation completed */
+  int malformed_chains;   /*! copied chains whose selected-game validation reported a problem */
 } goal_gfx_dma_stats;
 
 /*! One frame's chain, measured. Recorded for every frame; see goal_gfx_dma_get_frame. */
@@ -39,8 +41,10 @@ typedef struct goal_gfx_dma_frame_summary {
   int texture_uploads; /*! PC_PORT (vif1 == 3) texture-upload packets */
   /*! 16-byte bucket-array segments the walk found, or 0 if the chain was not the bucket chain.
    *  Jak 1 has 70 buckets; the walk cannot know that, so anything past index 69 is the chain's
-   *  ending data, which the renderer's bucket dispatch also walks past. */
+   *  ending data, which the renderer's bucket dispatch also walks past. Later-game measurement
+   *  deliberately leaves this 0 until a version-specific renderer owns bucket interpretation. */
   int buckets;
+  int well_formed; /*! nonzero when the selected-game validation completed without a problem */
 } goal_gfx_dma_frame_summary;
 
 /*! One bucket of one captured frame. Only frames that were captured keep this detail. */
@@ -64,7 +68,8 @@ void goal_gfx_dma_install(void);
  * the format the measuring seam writes, so it replays the same way.
  *
  * This is what a capture hotkey in a playable host calls: the frame the player is looking at is
- * the frame that lands on disk. Returns 0 if nothing was written.
+ * the frame that lands on disk. GPDMACAP v2 is Jak 1 only; other games return 0 rather than write
+ * a file with ambiguous replay semantics. Returns 0 if nothing was written.
  */
 int goal_gfx_dma_capture_chain_now(const void* ee_base,
                                    uint32_t chain_offset,

@@ -20,9 +20,11 @@ synchronous transport completed, not that a bank loaded; failures are available 
 and `goal_jak2_sound_rpc_stats`. The shared pushed-state pad seam implements `cpad-open` and
 `cpad-get-data` for Jak 2 as well as Jak 1. `install-handler` faithfully stores, replaces, or clears
 the vblank and VIF1 handler references, but this headless core does not dispatch them yet.
-`pc-rand` uses the same process-lifetime generator as upstream. Music, streaming, and graphics
-still report through the machine stubs. `jak2-pad-seam-test`, `jak2-handler-seam-test`,
-`jak2-pc-rand-test`, and `jak2-sound-rpc-test` cover those seams, while
+`pc-rand` uses the same process-lifetime generator as upstream. Music, streaming, and rendering
+still report through the machine stubs; the graphics-DMA frontier validates, measures, and drops
+completed chains. `jak2-pad-seam-test`, `jak2-handler-seam-test`, `jak2-pc-rand-test`,
+`jak2-light-machine-seams-test`, `jak2-gfx-dma-seam-test`, and `jak2-sound-rpc-test` cover those
+seams, while
 `jak2-dgo-rpc-test` covers the exact 32-byte DGO protocol, composed-router delegation and rejection
 behavior, and incremental AOT-code/data-object linking. All use original synthetic data only.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
@@ -360,9 +362,13 @@ bridge fills in the same seven entries from a `CAMetalLayer`.
 ## Capturing a frame
 
 `__send-gfx-dma-chain` is where a frame's work leaves GOAL. `dma_capture.cpp` follows the chain
-with the same `FixedChunkDmaCopier` the renderer uses, then walks the copy again the way the
-renderer's bucket dispatch does, so every frame is reported as what each bucket was actually given
-rather than only as a size. `--dma-frame-report` prints that table, one line per frame.
+with the same `FixedChunkDmaCopier` the renderer uses, then walks the copy again. For Jak 1 that
+second walk follows the renderer's bucket dispatch and reports what each bucket was given. For the
+headless Jak 2 frontier it verifies terminal completion and the copier's tag and payload totals,
+without assigning Jak 1's CALL/RET envelope or bucket topology. `jak2-gfx-dma-seam-test` covers
+both an empty direct bucket array and one carrying payload. Jak 2 capture files and replay remain
+outside this frontier because the current GPDMACAP format describes the Jak 1 renderer inputs.
+`--dma-frame-report` prints the Jak 1 bucket table, one line per frame.
 
 Two numbers matter and they are not the same. *Payload* is what the chain's tags transfer, which is
 what says whether a frame drew anything. *Copied* is chunk-granular - how far apart in EE memory
@@ -722,9 +728,11 @@ with no case now fails to compile rather than returning garbage.
   provider exists. The loader
   half of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the
   pad in `pad.cpp`. `install-handler` retains the vblank and VIF1 GOAL function references but no
-  portable frame or DMA path dispatches them yet; everything else - `file-stream-open`,
-  `reset-graph` - is a diagnostic and not an implementation. A frame runs with the display and DMA
-  functions returning 0, so what a frame *computes* is real and what it would have *shown* is not.
+  portable frame path dispatches them yet. `dma_capture.cpp` validates and measures completed
+  graphics-DMA chains before dropping them; everything else - `file-stream-open`,
+  `reset-graph` - is a diagnostic and not an implementation. A frame runs with display functions
+  returning 0 and DMA chains measured but not rendered, so what it computes is real and what it
+  would have shown is not.
 - **Without a host renderer, a frame is simulation only.** When no host installs itself through
   `gfx_host.h` (see **The renderer** above), `reset-graph`, `syncv`, `sync-path`,
   `put-display-env`, `dma-sync`, `__pc-texture-upload-now`, `__pc-texture-relocate`

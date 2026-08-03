@@ -8,9 +8,10 @@
  *
  * There is no renderer here, so nothing is drawn. What this does instead is run the same copier -
  * which is where the chain is validated, since following it means reading every tag - then walk
- * the copy a second time the way the renderer's bucket dispatch does, and record what each bucket
- * was actually given. That turns "the frame ran" into "the frame put this many bytes in these
- * buckets", which is a fact about the frame rather than an absence of a crash.
+ * the copy a second time. Jak 1 follows its renderer's bucket dispatch and records what each bucket
+ * received. Later games use a direct bucket array with a different envelope, so until their
+ * renderer is present this seam records only game-neutral tag, payload and texture-upload totals;
+ * that second walk must agree with the copier before the chain is called well formed.
  *
  * A capture writes one frame to a file so the renderer track has a real frame of Jak 1 DMA to
  * replay without the rest of the runtime. A capture is the player's own game data rendered into
@@ -103,7 +104,8 @@
 #include "common/util/Serializer.h"
 
 #include "game/kernel/common/Ptr.h"
-#include "game/kernel/jak1/kscheme.h"
+#include "game/kernel/common/kscheme.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/runtime.h"
 
 #include "third-party/lzokay/lzokay.hpp"
@@ -129,7 +131,7 @@ struct ChainSummary {
   int texture_uploads = 0;
   std::vector<BucketSummary> buckets;
   std::vector<u32> texture_page_addresses;
-  std::string problem;  // empty when the chain was the Jak 1 bucket chain
+  std::string problem;  // empty when the selected game's validation completed
 };
 
 /*!
@@ -140,7 +142,7 @@ struct ChainSummary {
  * A chain that does not have that shape is reported rather than guessed at: `problem` is set and
  * whatever was counted before the mismatch is kept.
  */
-ChainSummary summarize_chain(const DmaData& chain) {
+ChainSummary summarize_jak1_chain(const DmaData& chain) {
   ChainSummary out;
   DmaFollower dma(chain.data.data(), chain.start_offset);
 
@@ -198,6 +200,47 @@ ChainSummary summarize_chain(const DmaData& chain) {
     next_bucket += 16;
   }
   return out;
+}
+
+/*!
+ * Validate a copied chain without assigning any game's bucket topology to it. This is the bounded
+ * Jak 2 frontier: the same copied bytes must be independently walkable to END/REFE and reproduce
+ * the copier's tag and payload totals. Drawing and per-bucket interpretation remain renderer work.
+ */
+ChainSummary summarize_generic_chain(const DmaData& chain) {
+  ChainSummary out;
+  DmaFollower dma(chain.data.data(), chain.start_offset);
+  DmaTag::Kind terminal = DmaTag::Kind::CNT;
+
+  while (!dma.ended()) {
+    terminal = dma.current_tag().kind;
+    const auto transfer = dma.read_and_advance();
+    out.tags++;
+    out.payload_bytes += transfer.size_bytes;
+    if (transfer.size_bytes == 16 && transfer.vifcode0().kind == VifCode::Kind::PC_PORT &&
+        transfer.vif1() == 3) {
+      out.texture_uploads++;
+      u64 page = 0;
+      std::memcpy(&page, transfer.data, sizeof(page));
+      out.texture_page_addresses.push_back((u32)page);
+    }
+  }
+
+  if (terminal != DmaTag::Kind::END && terminal != DmaTag::Kind::REFE) {
+    out.problem = "copied chain did not terminate with END or REFE";
+  } else if (out.tags != chain.stats.num_tags) {
+    out.problem = "second walk did not reproduce the copier's tag count";
+  } else if (out.payload_bytes != (u32)chain.stats.num_data_bytes) {
+    out.problem = "second walk did not reproduce the copier's payload byte count";
+  }
+  return out;
+}
+
+ChainSummary summarize_chain(const DmaData& chain) {
+  if (goal_game_version() == GameVersion::Jak1) {
+    return summarize_jak1_chain(chain);
+  }
+  return summarize_generic_chain(chain);
 }
 
 void append_u32(std::vector<u8>& out, u32 value) {
@@ -305,6 +348,10 @@ u32 g_threshold_payload_bytes = 0;
 int g_threshold_remaining = 0;
 
 bool write_capture(const std::string& path, int frame, const ChainSummary& summary) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] capture files are not defined for this game version");
+    return false;
+  }
   Serializer chain_serializer;
   g_copier->serialize_last_result(chain_serializer);
   const auto chain = chain_serializer.get_save_result();
@@ -383,7 +430,10 @@ u64 send_gfx_dma_chain(u32 bank, u32 chain) {
 
   const ChainSummary summary = summarize_chain(result);
   if (!summary.problem.empty()) {
+    g_stats.malformed_chains++;
     lg::error("[dma-capture] frame {}: {}", frame, summary.problem);
+  } else {
+    g_stats.well_formed_chains++;
   }
   g_stats.last_payload_bytes = summary.payload_bytes;
   g_stats.last_texture_uploads = summary.texture_uploads;
@@ -400,6 +450,7 @@ u64 send_gfx_dma_chain(u32 bank, u32 chain) {
   record.tags = summary.tags;
   record.texture_uploads = summary.texture_uploads;
   record.buckets = summary.problem.empty() ? (int)summary.buckets.size() : 0;
+  record.well_formed = summary.problem.empty();
   g_frames.push_back(record);
 
   std::string path;
@@ -436,13 +487,17 @@ void goal_gfx_dma_install(void) {
   g_requested_captures.clear();
   g_threshold_dir.clear();
   g_threshold_remaining = 0;
-  jak1::make_function_symbol_from_c("__send-gfx-dma-chain", (void*)send_gfx_dma_chain);
+  goal_game_make_function_symbol("__send-gfx-dma-chain", (void*)send_gfx_dma_chain);
 }
 
 int goal_gfx_dma_capture_chain_now(const void* ee_base,
                                    uint32_t chain_offset,
                                    int frame,
                                    const char* path) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] capture files are currently Jak 1 only");
+    return 0;
+  }
   if (!ee_base || !path || !path[0]) {
     return 0;
   }
@@ -473,6 +528,10 @@ int goal_gfx_dma_capture_chain_now(const void* ee_base,
 }
 
 void goal_gfx_dma_capture_frame_to_file(const char* path, int frame) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] capture files are currently Jak 1 only");
+    return;
+  }
   if (!path || !path[0]) {
     return;
   }
@@ -480,6 +539,10 @@ void goal_gfx_dma_capture_frame_to_file(const char* path, int frame) {
 }
 
 void goal_gfx_dma_capture_frames_to_dir(const char* dir, const int* frames, int count) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] capture files are currently Jak 1 only");
+    return;
+  }
   if (!dir || !dir[0] || !frames) {
     return;
   }
@@ -491,6 +554,10 @@ void goal_gfx_dma_capture_frames_to_dir(const char* dir, const int* frames, int 
 }
 
 void goal_gfx_dma_capture_frames_over(const char* dir, uint32_t min_payload_bytes, int count) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] capture files are currently Jak 1 only");
+    return;
+  }
   if (!dir || !dir[0] || count < 1) {
     return;
   }
