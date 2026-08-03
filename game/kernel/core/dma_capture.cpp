@@ -452,13 +452,12 @@ bool write_capture(const std::string& path, int frame, const ChainSummary& summa
  * `(__send-gfx-dma-chain bank chain)`. `bank` is the PS2 DMA channel register address, which means
  * nothing without the hardware; `chain` is the GOAL address the chain starts at.
  */
-u64 send_gfx_dma_chain(u32 bank, u32 chain) {
-  (void)bank;
+void observe_chain(const void* ee_base, u32 chain) {
   if (!g_copier) {
     g_copier = new FixedChunkDmaCopier(EE_MAIN_MEM_SIZE);
   }
 
-  const auto& result = g_copier->run(g_ee_main_mem, chain, false);
+  const auto& result = g_copier->run((const u8*)ee_base, chain, false);
   g_stats.chains++;
   const int frame = g_stats.chains;
   g_stats.last_bytes = (u32)result.data.size();
@@ -511,6 +510,11 @@ u64 send_gfx_dma_chain(u32 bank, u32 chain) {
       buckets.push_back(entry);
     }
   }
+}
+
+u64 send_gfx_dma_chain(u32 bank, u32 chain) {
+  (void)bank;
+  observe_chain(g_ee_main_mem, chain);
   return 0;
 }
 
@@ -519,13 +523,25 @@ u64 send_gfx_dma_chain(u32 bank, u32 chain) {
 extern "C" {
 
 void goal_gfx_dma_install(void) {
+  goal_gfx_dma_reset();
+  goal_game_make_function_symbol("__send-gfx-dma-chain", (void*)send_gfx_dma_chain);
+}
+
+void goal_gfx_dma_reset(void) {
   g_stats = goal_gfx_dma_stats();
   g_frames.clear();
   g_captured_buckets.clear();
   g_requested_captures.clear();
   g_threshold_dir.clear();
+  g_threshold_payload_bytes = 0;
   g_threshold_remaining = 0;
-  goal_game_make_function_symbol("__send-gfx-dma-chain", (void*)send_gfx_dma_chain);
+}
+
+void goal_gfx_dma_observe_chain(const void* ee_base, uint32_t chain_offset) {
+  if (!ee_base) {
+    return;
+  }
+  observe_chain(ee_base, chain_offset);
 }
 
 int goal_gfx_dma_capture_chain_now(const void* ee_base,

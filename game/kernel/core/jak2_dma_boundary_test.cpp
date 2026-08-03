@@ -12,6 +12,7 @@
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dma_capture.h"
+#include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/runtime.h"
 
@@ -144,6 +145,21 @@ int main() {
   expect(stats.chains == 3 && stats.well_formed_chains == 2 && stats.malformed_chains == 1 &&
              stats.chains == stats.well_formed_chains + stats.malformed_chains,
          "accounted for every accepted and malformed chain exactly once");
+
+  goal_gfx_dma_reset();
+  goal_gfx_host host = {};
+  host.send_chain = goal_gfx_dma_observe_chain;
+  expect(goal_gfx_host_install(&host) == GOAL_KERNEL_CORE_OK,
+         "installed DMA measurement as a graphics-host observer");
+  expect(goal_kernel_core_lookup("__send-gfx-dma-chain", nullptr, &send_chain) ==
+                 GOAL_KERNEL_CORE_OK &&
+             send_chain != 0,
+         "graphics host owns the send-chain symbol while the observer measures behind it");
+  build_empty_bucket_chain();
+  goal_aot_call(send_chain, 0x10009000, g_chain, 0);
+  goal_gfx_dma_get_stats(&stats);
+  expect(stats.chains == 1 && stats.well_formed_chains == 1 && stats.malformed_chains == 0,
+         "host observer measured one well-formed 327-bucket chain without symbol competition");
 
   goal_kernel_core_shutdown();
   std::printf("\n%s (%d failures)\n",

@@ -16,6 +16,7 @@
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/kernel_game.h"
+#include "game/kernel/jak2/kmachine.h"
 #include "game/kernel/jak2/kscheme.h"
 #include "game/runtime.h"
 
@@ -24,6 +25,7 @@ namespace {
 enum Event { VblankHandler = 1, HostVsync = 2 };
 
 int g_failures = 0;
+int g_chain_calls = 0;
 int g_vsync_calls = 0;
 int g_sync_path_calls = 0;
 int g_desired_level_calls = 0;
@@ -48,6 +50,12 @@ uint32_t lookup(const char* name) {
 u64 retained_handler() {
   g_order.push_back(VblankHandler);
   return 99;
+}
+
+void send_chain(const void* ee_base, uint32_t chain_offset) {
+  expect(ee_base == g_ee_main_mem && chain_offset != 0,
+         "Jak 2 send-chain receives the live EE arena and GOAL offset");
+  g_chain_calls++;
 }
 
 uint32_t vsync() {
@@ -82,6 +90,7 @@ void set_alpha(float alpha) {
 
 goal_kernel_core_status install_host() {
   goal_gfx_host host = {};
+  host.send_chain = send_chain;
   host.vsync = vsync;
   host.sync_path = sync_path;
   host.set_levels = desired_levels;
@@ -109,6 +118,7 @@ bool allocate_level_list(const char* label,
 }
 
 void reset_observations() {
+  g_chain_calls = 0;
   g_vsync_calls = 0;
   g_sync_path_calls = 0;
   g_desired_level_calls = 0;
@@ -133,18 +143,38 @@ int main() {
   const uint32_t mouse_before = lookup("mouse-get-data");
   expect(flush_before && mouse_before,
          "shared flush-cache and inactive mouse are installed before graphics");
+
+  uint32_t mouse_address = 0;
+  expect(goal_kernel_core_global_alloc(128, "jak2-mouse-test", &mouse_address) ==
+             GOAL_KERNEL_CORE_OK,
+         "allocated a Jak 2 mouse object in the EE arena");
+  std::memset(Ptr<u8>(mouse_address).c(), 0xab, 128);
+  expect(goal_aot_call(mouse_before, mouse_address, 0, 0) == mouse_address,
+         "inactive mouse returns the same object pointer");
+  const auto* mouse = Ptr<jak2::MouseInfo>(mouse_address).c();
+  expect(mouse->active == s7.offset && mouse->cursor == s7.offset &&
+             mouse->valid == s7.offset && mouse->status == 0 && mouse->button0 == 0 &&
+             mouse->deltax == 0 && mouse->deltay == 0 && mouse->wheel == 0 &&
+             mouse->posx == 0 && mouse->posy == 0,
+         "inactive mouse is deterministic, hidden, invalid and button-free");
+  expect(mouse->id == 0xab && mouse->pad2[0] == 0xabababab,
+         "inactive mouse preserves unrelated opaque state and history");
   expect(install_host() == GOAL_KERNEL_CORE_OK,
          "installed a copied, renderer-neutral Jak 2 graphics host");
   expect(lookup("flush-cache") == flush_before && lookup("mouse-get-data") == mouse_before,
          "graphics host does not replace shared flush-cache or inactive mouse");
 
+  const uint32_t send = lookup("__send-gfx-dma-chain");
   const uint32_t syncv = lookup("syncv");
   const uint32_t syncp = lookup("sync-path");
   const uint32_t set_desired = lookup("__pc-set-levels");
   const uint32_t set_active = lookup("__pc-set-active-levels");
   const uint32_t display = lookup("put-display-env");
-  expect(syncv && syncp && set_desired && set_active && display,
+  expect(send && syncv && syncp && set_desired && set_active && display,
          "all Jak 2 sync and residency functions hold native implementations");
+
+  goal_aot_call(send, 0x10009000, mouse_address, 0);
+  expect(g_chain_calls == 1, "Jak 2 DMA chain forwards once through the common host");
 
   MasterExit = RuntimeExitStatus::RUNNING;
   vblank_interrupt_handler = goal_game_make_function_from_native((void*)retained_handler);

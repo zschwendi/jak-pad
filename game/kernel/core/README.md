@@ -22,11 +22,11 @@ and `goal_jak2_sound_rpc_stats`. The shared pushed-state pad seam implements `cp
 the vblank and VIF1 handler references. A complete graphics host dispatches the retained vblank
 handler immediately before its `syncv` callback; without that host the graphics functions remain
 diagnostic stubs. `pc-rand` uses the same process-lifetime generator as upstream. Music and
-streaming still report through the machine stubs. Jak 2 graphics DMA remains on that diagnostic
-stub until a host explicitly calls `goal_gfx_dma_install`; `--play-dma` does so, validates,
-measures, and drops completed chains. `--play-gfx-host` instead installs a complete headless
-counting host and requires the title frontier to call `send-chain`, `syncv`, and `sync-path` before
-it succeeds. It discards every chain and never renders. Plain `--play` retains its title-only
+streaming still report through the machine stubs. `--play-dma` installs a complete synchronous
+headless graphics host and composes DMA measurement behind its `send-chain` callback, so one
+frontier proves host dispatch, `syncv`, `sync-path`, and a valid completed chain without competing
+for the GOAL symbol. `--play-gfx-host` isolates the same host boundary without parsing DMA. Both
+discard every chain and never render. Plain `--play` retains its title-only
 behavior, while the Jak 1 boot and gameplay probes retain their existing DMA measurement and
 capture behavior. `jak1-gfx-host-test`, `jak2-gfx-host-test`, `jak2-pad-seam-test`,
 `jak2-handler-seam-test`, `jak2-pc-rand-test`, `jak2-lightweight-machine-test`,
@@ -37,7 +37,9 @@ behavior, and incremental AOT-code/data-object linking. All use original synthet
 kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
 exploratory integration probe; the registered CTest does not enable that mode.
 `--play` stops after the first linked title object. `--play-dma` additionally installs the
-measurement seam and requires one complete 327-bucket Jak 2 graphics chain before stopping.
+synchronous validation host and requires one complete 327-bucket Jak 2 graphics chain before
+stopping. It requires matching host/DMA chain counts plus at least one `syncv` and `sync-path`
+call, and explicitly reports zero rendered and zero presented frames.
 `--play-gfx-host` instead requires at least one host chain, `syncv`, and `sync-path` call, prints
 all graphics-host callback counts reached by the bounded dispatch, and does not require level
 callbacks when that frontier has not reached them.
@@ -371,6 +373,12 @@ The signatures the host sees are the renderer's, not GOAL's: `send_chain` takes 
 the chain's GOAL pointer, which are exactly `GfxRendererModule::send_chain`'s two arguments.
 `game/goalpad_play.cpp` is the desktop host that fills this in from the Metal renderer; an iPadOS
 bridge fills in the same callbacks from a `CAMetalLayer`.
+
+DMA diagnostics do not need to replace that host. `goal_gfx_dma_reset()` clears the measurement
+window, and a renderer or validation host may call `goal_gfx_dma_observe_chain()` inside its own
+`send_chain` callback before consuming or dropping the same chain. `goal_gfx_dma_install()` remains
+the compatibility helper for headless Jak 1 probes that intentionally let measurement own the
+GOAL symbol directly.
 
 ## Capturing a frame
 
@@ -769,9 +777,9 @@ with no case now fails to compile rather than returning garbage.
   provider exists. The loader
   half of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the
   pad in `pad.cpp`. `install-handler` retains the vblank and VIF1 GOAL function references; an
-  installed graphics host dispatches the Jak 2 vblank handler before host pacing. When explicitly
-  installed, `dma_capture.cpp` validates and measures completed graphics-DMA chains before
-  dropping them. A graphics host also turns hardware-only calls such as `reset-graph` into the
+  installed graphics host dispatches the Jak 2 vblank handler before host pacing. As that host's
+  `send_chain` observer, `dma_capture.cpp` validates and measures completed graphics-DMA chains
+  before the validation host drops them. A graphics host also turns hardware-only calls such as `reset-graph` into the
   portable no-ops they are upstream. Other functions such as `file-stream-open` remain
   diagnostics. Such a frame can execute real game and graphics-boundary work, but without a
   renderer what it would have shown is not validated.
@@ -780,8 +788,8 @@ with no case now fails to compile rather than returning garbage.
   `put-display-env`, `dma-sync`, `__pc-texture-upload-now`, `__pc-texture-relocate`,
   `__pc-set-levels`, and `__pc-set-active-levels` all report and return 0. Jak 2's
   `__send-gfx-dma-chain` also remains a diagnostic stub unless a host installs a graphics seam:
-  `--play-dma` installs only the DMA measurement observer, while `--play-gfx-host` installs the
-  complete counting/discarding host boundary. Jak 1's existing boot and gameplay probes continue
+  `--play-dma` installs the complete counting/discarding host with DMA observation composed behind
+  it, while `--play-gfx-host` isolates that host without DMA parsing. Jak 1's existing boot and gameplay probes continue
   to route the seam to `dma_capture.cpp`, which measures the chain and drops it. Those headless
   modes establish what a frame *computes*, not what it shows.
 - **File access is data-directory-relative only.** `ee::sceOpen` and friends are real POSIX file
