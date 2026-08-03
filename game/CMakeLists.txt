@@ -435,6 +435,13 @@ if(WIN32)
     set_target_properties(gk PROPERTIES VS_DPI_AWARE "PerMonitor")
 endif()
 
+if(GOAL_HOST_TESTS_ENABLED)
+    add_executable(jak2-metal-bucket-table-test
+            graphics/pipelines/metal/metal_jak2_bucket_table.cpp
+            graphics/pipelines/metal/metal_jak2_bucket_table_test.cpp)
+    add_test(NAME jak2-metal-bucket-table-test COMMAND jak2-metal-bucket-table-test)
+endif()
+
 # The portable kernel core is built the same way here as it is for iOS, so that host runs keep the
 # cross-compiled configuration honest. It is a separate target from `runtime` on purpose: it must
 # not gain a dependency on the desktop graphics/IOP/listener code.
