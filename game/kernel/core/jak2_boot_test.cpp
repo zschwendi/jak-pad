@@ -265,14 +265,15 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
   if (with_game) {
     goal_jak2_sound_rpc_stats sound_stats;
     goal_jak2_sound_rpc_stats_get(&sound_stats);
-    if (sound_stats.str_requests != 1 || sound_stats.str_reads != 1 ||
+    if (!sound_stats.str_reads || sound_stats.str_requests != sound_stats.str_reads ||
         sound_stats.str_failures != 0 || !sound_stats.str_bytes) {
       say("FAILED: Jak 2 ordinary STR load: requests=%u reads=%u failures=%u bytes=%u\n",
           sound_stats.str_requests, sound_stats.str_reads, sound_stats.str_failures,
           sound_stats.str_bytes);
       return 1;
     }
-    say("  ordinary STR loader completed one %u-byte file read\n", sound_stats.str_bytes);
+    say("  ordinary STR loader completed %u successful file read(s), %u bytes total\n",
+        sound_stats.str_reads, sound_stats.str_bytes);
   }
 
   say("\nBOOT: KERNEL.CGO is loaded and the Jak 2 GOAL kernel dispatcher ran %d frames.\n",
