@@ -228,8 +228,12 @@ inline double output_composition_distance(const float* camera,
 struct ProvenanceObservation {
   bool mapping_checked = false;
   bool mapping_valid = false;
+  bool output_identity_checked = false;
+  bool output_identity_matches = false;
   int input_root_bone = -1;
   u64 producer_serial = 0;
+  u64 producer_output_hash = 0;
+  u64 renderer_output_hash = 0;
   u64 input_root_hash = 0;
   u64 camera_hash = 0;
   u64 bind_pose_hash = 0;
@@ -428,6 +432,10 @@ struct Event {
   u64 older_producer_serial = 0;
   u64 previous_producer_serial = 0;
   u64 current_producer_serial = 0;
+  u64 previous_producer_output_hash = 0;
+  u64 current_producer_output_hash = 0;
+  u64 previous_renderer_output_hash = 0;
+  u64 current_renderer_output_hash = 0;
   u64 older_input_root_hash = 0;
   u64 previous_input_root_hash = 0;
   u64 current_input_root_hash = 0;
@@ -483,8 +491,9 @@ inline bool retain_provenance_event(const Event& event,
 // Jak's bone transforms may rotate every frame, but a rigid transform preserves the lengths and
 // aspect ratio of its basis vectors. Scale/aspect reports remain adjacent-frame checks. Optional
 // producer provenance retains exactly two older samples so rigid A/B/A facing changes can be
-// attributed to the world root, camera, or post-producer output. Its bind-pose snapshot also checks
-// the current output against camera * bone * bind without depending on a temporal pattern.
+// attributed to the world root, camera, or post-producer output. Its output identity separates a
+// stale/remapped Merc palette from the live producer memory, while its bind-pose snapshot checks the
+// current output against camera * bone * bind without depending on a temporal pattern.
 class Tracker {
  public:
   static constexpr double kDiscontinuityRatio = 2.0;
@@ -528,6 +537,10 @@ class Tracker {
     if (current.provenance.expected_output_valid &&
         current.provenance.output_expected_distance >= kOutputCompositionMismatchDistance) {
       event.issue_mask |= OUTPUT_COMPOSITION_MISMATCH;
+    }
+    if (current.provenance.output_identity_checked &&
+        !current.provenance.output_identity_matches) {
+      event.issue_mask |= SOURCE_MAPPING_DISCONTINUITY;
     }
     if (!history.previous.valid || frame_id != history.previous.frame_id + 1) {
       if (frame_id != history.previous.frame_id) {
@@ -705,6 +718,10 @@ class Tracker {
     event->older_producer_serial = older.provenance.producer_serial;
     event->previous_producer_serial = previous.provenance.producer_serial;
     event->current_producer_serial = current.provenance.producer_serial;
+    event->previous_producer_output_hash = previous.provenance.producer_output_hash;
+    event->current_producer_output_hash = current.provenance.producer_output_hash;
+    event->previous_renderer_output_hash = previous.provenance.renderer_output_hash;
+    event->current_renderer_output_hash = current.provenance.renderer_output_hash;
     event->older_input_root_hash = older.provenance.input_root_hash;
     event->previous_input_root_hash = previous.provenance.input_root_hash;
     event->current_input_root_hash = current.provenance.input_root_hash;

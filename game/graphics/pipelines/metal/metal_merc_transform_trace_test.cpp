@@ -84,6 +84,10 @@ metal_merc_transform_trace::ProvenanceObservation composed_provenance(double inp
   const auto actual = metal_merc_transform_trace::multiply_matrices(error.data(), expected.data());
 
   auto out = provenance(input_degrees, camera_degrees, 0.0, identity);
+  out.output_identity_checked = true;
+  out.output_identity_matches = true;
+  out.producer_output_hash = identity * 11;
+  out.renderer_output_hash = identity * 11;
   out.bind_pose_hash = identity * 7;
   out.output_basis = metal_merc_transform_trace::make_basis_snapshot(actual.data());
   out.output_expected_distance = metal_merc_transform_trace::output_composition_distance(
@@ -578,6 +582,32 @@ int main() {
   check(missing_mapping.issue_mask == metal_merc_transform_trace::SOURCE_MAPPING_DISCONTINUITY,
         "a missing producer record is distinguished from a healthy palette source");
 
+  metal_merc_transform_trace::Tracker output_identity;
+  auto matching_output = provenance(0.0, 0.0, 0.0, 510);
+  matching_output.output_identity_checked = true;
+  matching_output.output_identity_matches = true;
+  matching_output.producer_output_hash = 0xaaaa;
+  matching_output.renderer_output_hash = 0xaaaa;
+  check(!output_identity
+             .observe(510, 7, 0xe1c4a2, 0xaaaa, 1.0, 1.0, 1.0, 0x2000,
+                      matching_output)
+             .valid(),
+        "matching producer-memory and renderer output identities stay quiet");
+  auto mismatched_output = provenance(0.0, 0.0, 0.0, 511);
+  mismatched_output.output_identity_checked = true;
+  mismatched_output.output_identity_matches = false;
+  mismatched_output.producer_output_hash = 0xbbbb;
+  mismatched_output.renderer_output_hash = 0xcccc;
+  const auto palette_transport_mismatch = output_identity.observe(
+      511, 7, 0xe1c4a2, 0xcccc, 1.0, 1.0, 1.0, 0x2000, mismatched_output);
+  check(palette_transport_mismatch.issue_mask ==
+                metal_merc_transform_trace::SOURCE_MAPPING_DISCONTINUITY &&
+            palette_transport_mismatch.previous_producer_output_hash == 0xaaaa &&
+            palette_transport_mismatch.current_producer_output_hash == 0xbbbb &&
+            palette_transport_mismatch.previous_renderer_output_hash == 0xaaaa &&
+            palette_transport_mismatch.current_renderer_output_hash == 0xcccc,
+        "a producer-to-renderer palette mismatch reports 0x40 with both identities");
+
   metal_merc_transform_trace::Tracker unavailable_mapping;
   unavailable_mapping.observe(550, 3, 0xe1c4a2, 1, 1.0, 1.0, 1.0, 0x2000, {});
   check(!unavailable_mapping.observe(551, 3, 0xe1c4a2, 2, 1.0, 1.0, 1.0, 0x2000, {}).valid(),
@@ -625,11 +655,15 @@ int main() {
                                         metal_merc_transform_trace::OUTPUT_COMPOSITION_MISMATCH);
   }
   check(sustained_mismatch_reported &&
+            !(last_composition_mismatch.issue_mask &
+              metal_merc_transform_trace::SOURCE_MAPPING_DISCONTINUITY) &&
+            last_composition_mismatch.current_producer_output_hash ==
+                last_composition_mismatch.current_renderer_output_hash &&
             last_composition_mismatch.current_output_expected_distance >=
                 metal_merc_transform_trace::Tracker::kOutputCompositionMismatchDistance &&
             last_composition_mismatch.previous_output_expected_distance >=
                 metal_merc_transform_trace::Tracker::kOutputCompositionMismatchDistance,
-        "a sustained arbitrary output mismatch reports 0x80 with current and previous evidence");
+        "matching palette identity with bad composition reports 0x80 instead of transport 0x40");
 
   metal_merc_transform_trace::Tracker subthreshold_composition;
   const auto subthreshold = subthreshold_composition.observe(
