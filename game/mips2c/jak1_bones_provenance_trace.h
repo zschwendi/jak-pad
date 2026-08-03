@@ -9,6 +9,7 @@
 #include <optional>
 
 #include "common/common_types.h"
+#include "common/goal_constants.h"
 #include "game/mips2c/jak1_target_control_capture.h"
 
 namespace jak1_bones_provenance_trace {
@@ -16,35 +17,49 @@ namespace jak1_bones_provenance_trace {
 constexpr std::size_t kTransformBytes = 4 * 16;
 constexpr std::size_t kJointStride = 0x50;
 constexpr std::size_t kJointBindPoseOffset = 0x10;
-constexpr std::size_t kGoalBasicPointerBias = 4;
+constexpr std::size_t kGoalBasicPointerBias = BASIC_OFFSET;
 constexpr std::size_t kBoneStride = 96;
 constexpr std::size_t kOutputStride = 128;
 constexpr std::size_t kRootAnchorCount = 3;
 constexpr std::size_t kCalculationCount = 64;
 constexpr u32 kMaximumBoneCount = 128;
 
-// Asserted Jak 1 layouts from decompiler/config/jak1/all-types.gc. The observer verifies the
-// runtime type tag and allocated size before using any of these diagnostic-only offsets.
-constexpr std::size_t kGoalTypeTagBytes = 4;
+// Asserted Jak 1 layouts from decompiler/config/jak1/all-types.gc include the basic-object type
+// tag. Live GOAL basic pointers are BASIC_OFFSET bytes past that tag, so native field reads use the
+// asserted offset minus the pointer bias. Allocated sizes in type descriptors retain the asserted
+// size, while a live object span excludes the tag.
+constexpr std::size_t kGoalTypeTagBytes = BASIC_OFFSET;
 constexpr std::size_t kTypeAllocatedSizeOffset = 8;
-constexpr std::size_t kTargetStateOffset = 56;
-constexpr std::size_t kTargetRootOffset = 112;
-constexpr u16 kTargetMinimumSize = 0x250;
-constexpr std::size_t kControlQuatOffset = 32;
-constexpr std::size_t kControlDirTargOffset = 112;
-constexpr std::size_t kControlQuatForControlOffset = 496;
-constexpr std::size_t kControlCpadOffset = 668;
-constexpr std::size_t kControlTurnToTargetOffset = 720;
-constexpr std::size_t kControlPadMagnitudeOffset = 912;
-constexpr std::size_t kControlTargetAttackIdOffset = 2392;
-constexpr u16 kControlMinimumSize = 0x4a3c;
-constexpr std::size_t kCpadButtonAbsOffset = 44;
-constexpr std::size_t kCpadButtonRelOffset = 60;
-constexpr std::size_t kCpadStickDirectionOffset = 72;
-constexpr std::size_t kCpadStickSpeedOffset = 76;
-constexpr std::size_t kCpadLeftXOffset = 10;
-constexpr std::size_t kCpadLeftYOffset = 11;
-constexpr u16 kCpadMinimumSize = 0x88;
+
+constexpr std::size_t live_basic_offset(std::size_t asserted_offset) {
+  return asserted_offset - kGoalBasicPointerBias;
+}
+
+constexpr std::size_t live_basic_size(u16 asserted_size) {
+  return asserted_size - kGoalBasicPointerBias;
+}
+
+constexpr std::size_t kTargetStateOffset = live_basic_offset(56);
+constexpr std::size_t kTargetRootOffset = live_basic_offset(112);
+constexpr u16 kTargetMinimumAssertedSize = 0x250;
+constexpr std::size_t kTargetMinimumLiveSize = live_basic_size(kTargetMinimumAssertedSize);
+constexpr std::size_t kControlQuatOffset = live_basic_offset(32);
+constexpr std::size_t kControlDirTargOffset = live_basic_offset(112);
+constexpr std::size_t kControlQuatForControlOffset = live_basic_offset(496);
+constexpr std::size_t kControlCpadOffset = live_basic_offset(668);
+constexpr std::size_t kControlTurnToTargetOffset = live_basic_offset(720);
+constexpr std::size_t kControlPadMagnitudeOffset = live_basic_offset(912);
+constexpr std::size_t kControlTargetAttackIdOffset = live_basic_offset(2392);
+constexpr u16 kControlMinimumAssertedSize = 0x4a3c;
+constexpr std::size_t kControlMinimumLiveSize = live_basic_size(kControlMinimumAssertedSize);
+constexpr std::size_t kCpadButtonAbsOffset = live_basic_offset(44);
+constexpr std::size_t kCpadButtonRelOffset = live_basic_offset(60);
+constexpr std::size_t kCpadStickDirectionOffset = live_basic_offset(72);
+constexpr std::size_t kCpadStickSpeedOffset = live_basic_offset(76);
+constexpr std::size_t kCpadLeftXOffset = live_basic_offset(10);
+constexpr std::size_t kCpadLeftYOffset = live_basic_offset(11);
+constexpr u16 kCpadMinimumAssertedSize = 0x88;
+constexpr std::size_t kCpadMinimumLiveSize = live_basic_size(kCpadMinimumAssertedSize);
 
 struct FacingSnapshot {
   bool valid = false;
@@ -223,8 +238,9 @@ class Registry {
       return out;
     }
     out.capture_stage = jak1_target_control_capture::Stage::TARGET;
-    out.capture_result = validate_exact_type(target, target_type, kTargetMinimumSize, ee_memory,
-                                             ee_memory_size);
+    out.capture_result =
+        validate_exact_type(target, target_type, kTargetMinimumAssertedSize, ee_memory,
+                            ee_memory_size);
     if (out.capture_result != jak1_target_control_capture::Result::SUCCESS) {
       return out;
     }
@@ -241,8 +257,9 @@ class Registry {
       return out;
     }
     out.capture_stage = jak1_target_control_capture::Stage::CONTROL;
-    out.capture_result = validate_exact_type(control, control_type, kControlMinimumSize, ee_memory,
-                                             ee_memory_size);
+    out.capture_result =
+        validate_exact_type(control, control_type, kControlMinimumAssertedSize, ee_memory,
+                            ee_memory_size);
     if (out.capture_result != jak1_target_control_capture::Result::SUCCESS) {
       return out;
     }
@@ -260,7 +277,7 @@ class Registry {
     }
     out.capture_stage = jak1_target_control_capture::Stage::CPAD;
     out.capture_result =
-        validate_exact_type(cpad, cpad_type, kCpadMinimumSize, ee_memory, ee_memory_size);
+        validate_exact_type(cpad, cpad_type, kCpadMinimumAssertedSize, ee_memory, ee_memory_size);
     if (out.capture_result != jak1_target_control_capture::Result::SUCCESS) {
       return out;
     }
@@ -343,10 +360,11 @@ class Registry {
 
   static jak1_target_control_capture::Result validate_exact_type(u32 address,
                                                                  u32 expected_type,
-                                                                 u16 minimum_size,
+                                                                 u16 minimum_asserted_size,
                                                                  const u8* memory,
                                                                  std::size_t memory_size) {
-    if (address < kGoalTypeTagBytes || !span_fits(address, minimum_size, memory_size)) {
+    if (address < kGoalTypeTagBytes ||
+        !span_fits(address, live_basic_size(minimum_asserted_size), memory_size)) {
       return jak1_target_control_capture::Result::OBJECT_SPAN_INVALID;
     }
     u32 actual_type = 0;
@@ -361,7 +379,7 @@ class Registry {
                     &allocated_size)) {
       return jak1_target_control_capture::Result::TYPE_DESCRIPTOR_SPAN_INVALID;
     }
-    if (allocated_size < minimum_size) {
+    if (allocated_size < minimum_asserted_size) {
       return jak1_target_control_capture::Result::TYPE_ALLOCATED_SIZE_TOO_SMALL;
     }
     return jak1_target_control_capture::Result::SUCCESS;

@@ -481,7 +481,7 @@ int main() {
 
   auto& registry = jak1_bones_provenance_trace::registry();
   registry.reset();
-  std::vector<u8> memory(0x10000, 0);
+  std::vector<u8> memory(0x20000, 0);
   constexpr u32 kOutput = 0x1000;
   constexpr u32 kJointsObject = 0x2000;
   constexpr u32 kJoints = kJointsObject + jak1_bones_provenance_trace::kGoalBasicPointerBias;
@@ -604,9 +604,11 @@ int main() {
   constexpr u32 kControl = 0x8000;
   constexpr u32 kCpad = 0xd000;
   constexpr u32 kState = 0xe000;
-  const u16 target_size = jak1_bones_provenance_trace::kTargetMinimumSize;
-  const u16 control_size = jak1_bones_provenance_trace::kControlMinimumSize;
-  const u16 cpad_size = jak1_bones_provenance_trace::kCpadMinimumSize;
+  constexpr u32 kDecoyNodeListType = 0x400;
+  constexpr u32 kDecoyNodeList = 0x10000;
+  const u16 target_size = jak1_bones_provenance_trace::kTargetMinimumAssertedSize;
+  const u16 control_size = jak1_bones_provenance_trace::kControlMinimumAssertedSize;
+  const u16 cpad_size = jak1_bones_provenance_trace::kCpadMinimumAssertedSize;
   store_value(memory, kTargetType + jak1_bones_provenance_trace::kTypeAllocatedSizeOffset,
               target_size);
   store_value(memory, kControlType + jak1_bones_provenance_trace::kTypeAllocatedSizeOffset,
@@ -616,6 +618,13 @@ int main() {
   store_value(memory, kControl - jak1_bones_provenance_trace::kGoalTypeTagBytes, kControlType);
   store_value(memory, kCpad - jak1_bones_provenance_trace::kGoalTypeTagBytes, kCpadType);
   store_value(memory, kTarget + jak1_bones_provenance_trace::kTargetRootOffset, kControl);
+  store_value(memory,
+              kTarget + jak1_bones_provenance_trace::kTargetRootOffset +
+                  jak1_bones_provenance_trace::kGoalBasicPointerBias,
+              kDecoyNodeList);
+  store_value(memory,
+              kDecoyNodeList - jak1_bones_provenance_trace::kGoalTypeTagBytes,
+              kDecoyNodeListType);
   store_value(memory, kTarget + jak1_bones_provenance_trace::kTargetStateOffset, kState);
   store_value(memory, kControl + jak1_bones_provenance_trace::kControlCpadOffset, kCpad);
   const std::array<float, 4> identity_quaternion = {0.f, 0.f, 0.f, 1.f};
@@ -670,7 +679,18 @@ int main() {
             target_record->target_control.left_y == left_y &&
             target_record->target_control.intent_forward.z == 1.0 &&
             target_record->target_control.control_forward.z == 1.0,
-        "safe asserted offsets capture minimum pad, facing, state and attack evidence");
+        "live BASIC_OFFSET-adjusted fields ignore the old node-list slot and capture pad, facing, "
+        "state and attack evidence");
+
+  const auto tight_cpad_end = kCpad + jak1_bones_provenance_trace::kCpadMinimumLiveSize;
+  std::vector<u8> tight_memory(memory.begin(), memory.begin() + tight_cpad_end);
+  const auto tight_live_span = jak1_bones_provenance_trace::Registry::capture_target_control(
+      target_context, tight_memory.data(), tight_memory.size());
+  check(tight_live_span.valid &&
+            tight_live_span.capture_stage == jak1_target_control_capture::Stage::COMPLETE &&
+            tight_live_span.capture_result == jak1_target_control_capture::Result::SUCCESS,
+        "an exact live cpad span excludes its preceding type tag while its descriptor retains the "
+        "asserted allocated size");
 
   const auto missing_target = jak1_bones_provenance_trace::Registry::capture_target_control(
       {}, memory.data(), memory.size());
@@ -716,7 +736,7 @@ int main() {
         "an unreadable target type descriptor reports a bounded metadata read failure");
   store_value(memory, kTarget - jak1_bones_provenance_trace::kGoalTypeTagBytes, kTargetType);
 
-  const u16 undersized_target = jak1_bones_provenance_trace::kTargetMinimumSize - 1;
+  const u16 undersized_target = jak1_bones_provenance_trace::kTargetMinimumAssertedSize - 1;
   store_value(memory, kTargetType + jak1_bones_provenance_trace::kTypeAllocatedSizeOffset,
               undersized_target);
   const auto target_type_too_small =
