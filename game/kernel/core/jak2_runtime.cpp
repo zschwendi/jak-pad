@@ -88,10 +88,11 @@ bool register_aot_objects() {
 void record_packages_in_game_cgo() {
   using namespace jak2_symbols;
   for (const char* package : {"engine", "art", "common"}) {
-    jak2::kernel_packages->value() =
+    jak2::kernel_packages->value() = static_cast<u32>(
         jak2::new_pair(s7.offset + FIX_SYM_GLOBAL_HEAP,
                        *((s7 + FIX_SYM_PAIR_TYPE - 1).cast<u32>()),
-                       jak2::make_string_from_c(package), jak2::kernel_packages->value());
+                       static_cast<u32>(jak2::make_string_from_c(package)),
+                       jak2::kernel_packages->value()));
   }
 }
 
