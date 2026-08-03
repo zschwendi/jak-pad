@@ -465,6 +465,12 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak2-sound-rpc-test jak2-kernel-core)
         add_test(NAME jak2-sound-rpc-test COMMAND jak2-sound-rpc-test)
 
+        add_executable(jak2-sblk-preflight-test
+                kernel/core/jak2_sblk_preflight_test.cpp
+                kernel/core/sblk_preflight.cpp)
+        target_compile_features(jak2-sblk-preflight-test PRIVATE cxx_std_20)
+        add_test(NAME jak2-sblk-preflight-test COMMAND jak2-sblk-preflight-test)
+
         # Real Jak 1 GOAL code, compiled ahead of time to C and then to native ARM64 by the host
         # compiler, executed inside the real kernel. goalc-cbackend emits C for the last source it
         # is given, so each object file needs its own run over the same ordered prefix.
