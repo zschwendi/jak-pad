@@ -409,6 +409,8 @@ int main() {
       ordinary_sample_tracker.observe_with_status(805, 3, moderate_anisotropy);
   check(ordinary_sample.capture_attempted && ordinary_sample.valid_observation &&
             !ordinary_sample.event.valid() && ordinary_sample.observation.valid &&
+            ordinary_sample.observation.engine_frame_id == 805 &&
+            ordinary_sample.observation.probe_bone_slot == 3 &&
             std::abs(ordinary_sample.observation.output_deformation.aspect - 1.25) < 1e-6 &&
             ordinary_sample.observation.output_deformation.aspect <
                 metal_merc_transform_trace::Tracker::kDiscontinuityRatio,
@@ -440,27 +442,42 @@ int main() {
           attack_transition.current_target_attack_id == 8,
       "a consecutive target attack id transition retains one attack-boundary event");
   metal_merc_transform_trace::TargetControlTracker square_edge_tracker;
-  const auto square_edge = square_edge_tracker.observe(
-      900, 3,
-      target_control_observation(1.0, 0.0, 1.0, 0.0, 12,
-                                 metal_merc_transform_trace::TargetControlTracker::kSquareButton));
-  check(square_edge.issue_mask == metal_merc_transform_trace::TARGET_CONTROL_ATTACK_BOUNDARY &&
+  auto stationary_square = target_control_observation(
+      0.0, 0.0, 1.0, 0.0, 12,
+      metal_merc_transform_trace::TargetControlTracker::kSquareButton);
+  stationary_square.stick_speed = 0.0;
+  stationary_square.pad_magnitude = 0.0;
+  const auto stationary_square_trace =
+      square_edge_tracker.observe_with_status(900, 3, stationary_square);
+  const auto& square_edge = stationary_square_trace.event;
+  check(stationary_square_trace.valid_observation &&
+            stationary_square_trace.observation.engine_frame_id == 900 &&
+            stationary_square_trace.observation.probe_bone_slot == 3 &&
+            !stationary_square_trace.observation.intent_forward.valid &&
+            square_edge.issue_mask == metal_merc_transform_trace::TARGET_CONTROL_ATTACK_BOUNDARY &&
             square_edge.button0_rel ==
                 metal_merc_transform_trace::TargetControlTracker::kSquareButton,
-        "a Square press edge is retained even before an attack id transition");
+        "a stationary Square press retains its sample and attack boundary without an intent vector");
   metal_merc_transform_trace::TargetControlTracker duplicate_target_control;
-  const auto first_target_control = duplicate_target_control.observe(
+  const auto first_target_control_trace = duplicate_target_control.observe_with_status(
       950, 3, target_control_observation(0.0, 1.0, 0.0, -1.0, 20));
-  const auto duplicate_target_control_event = duplicate_target_control.observe(
+  const auto duplicate_target_control_trace = duplicate_target_control.observe_with_status(
       950, 3,
       target_control_observation(0.0, 1.0, 0.0, 1.0, 99,
                                  metal_merc_transform_trace::TargetControlTracker::kSquareButton));
-  const auto after_duplicate =
-      duplicate_target_control.observe(951, 3, target_control_observation(0.0, 1.0, 0.0, 1.0, 20));
-  check(first_target_control.issue_mask ==
+  const auto after_duplicate_trace = duplicate_target_control.observe_with_status(
+      951, 3, target_control_observation(0.0, 1.0, 0.0, 1.0, 20));
+  check(first_target_control_trace.event.issue_mask ==
                 metal_merc_transform_trace::TARGET_CONTROL_FACING_DIVERGENCE &&
-            !duplicate_target_control_event.valid() && !after_duplicate.valid(),
-        "a duplicate engine frame preserves the first valid target-control observation and history");
+            first_target_control_trace.observation.engine_frame_id == 950 &&
+            first_target_control_trace.observation.probe_bone_slot == 3 &&
+            !duplicate_target_control_trace.capture_attempted &&
+            !duplicate_target_control_trace.valid_observation &&
+            after_duplicate_trace.valid_observation &&
+            after_duplicate_trace.observation.engine_frame_id == 951 &&
+            after_duplicate_trace.observation.probe_bone_slot == 3 &&
+            !after_duplicate_trace.event.valid(),
+        "a duplicate frame cannot overwrite the stamped observation or attack history");
 
   auto& registry = jak1_bones_provenance_trace::registry();
   registry.reset();
@@ -740,12 +757,13 @@ int main() {
   const std::array<float, 4> zero_intent = {};
   store_value(memory, kControl + jak1_bones_provenance_trace::kControlTurnToTargetOffset,
               zero_intent);
-  const auto invalid_facing = jak1_bones_provenance_trace::Registry::capture_target_control(
+  const auto stationary_target = jak1_bones_provenance_trace::Registry::capture_target_control(
       target_context, memory.data(), memory.size());
-  check(!invalid_facing.valid &&
-            invalid_facing.capture_stage == jak1_target_control_capture::Stage::FACING &&
-            invalid_facing.capture_result == jak1_target_control_capture::Result::INVALID_FACING,
-        "a zero facing vector reports why no normalized target sample was retained");
+  check(stationary_target.valid && !stationary_target.intent_forward.valid &&
+            stationary_target.capture_stage == jak1_target_control_capture::Stage::COMPLETE &&
+            stationary_target.capture_result == jak1_target_control_capture::Result::SUCCESS &&
+            stationary_target.button0_rel == square_rel,
+        "a neutral intent still retains finite control and Square evidence");
   store_value(memory, kControl + jak1_bones_provenance_trace::kControlTurnToTargetOffset,
               forward_velocity);
 

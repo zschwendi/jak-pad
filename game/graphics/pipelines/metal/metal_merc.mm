@@ -115,11 +115,16 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
     control.input_root_translation_x = out.input_translation_x;
     control.input_root_translation_y = out.input_translation_y;
     control.input_root_translation_z = out.input_translation_z;
-    control.valid = control.intent_forward.valid && control.desired_forward.valid &&
-                    control.control_forward.valid && control.render_forward.valid &&
-                    control.root_forward.valid && control.camera_basis.valid &&
-                    control.input_root_deformation.valid && control.output_deformation.valid;
-    if (!control.valid) {
+    const bool facing_valid = control.desired_forward.valid && control.control_forward.valid &&
+                              control.render_forward.valid && control.root_forward.valid;
+    const bool deformation_valid = control.camera_basis.valid &&
+                                   control.input_root_deformation.valid &&
+                                   control.output_deformation.valid;
+    control.valid = facing_valid && deformation_valid;
+    if (!facing_valid) {
+      control.capture_stage = jak1_target_control_capture::Stage::FACING;
+      control.capture_result = jak1_target_control_capture::Result::INVALID_FACING;
+    } else if (!deformation_valid) {
       control.capture_stage = jak1_target_control_capture::Stage::DEFORMATION;
       control.capture_result = jak1_target_control_capture::Result::INVALID_DEFORMATION;
     }

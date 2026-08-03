@@ -105,6 +105,8 @@ struct TargetControlObservation {
       jak1_target_control_capture::Stage::NOT_ATTEMPTED;
   jak1_target_control_capture::Result capture_result =
       jak1_target_control_capture::Result::NOT_ATTEMPTED;
+  u64 engine_frame_id = 0;
+  int probe_bone_slot = -1;
   u64 producer_serial = 0;
   u32 source_base = 0;
   u64 camera_hash = 0;
@@ -296,6 +298,8 @@ class TargetControlTracker {
     }
     result.valid_observation = true;
     result.observation = observation;
+    result.observation.engine_frame_id = engine_frame_id;
+    result.observation.probe_bone_slot = bone_slot;
     auto& event = result.event;
 
     auto& previous = m_histories[slot];
@@ -304,7 +308,7 @@ class TargetControlTracker {
     }
     const double intent_control_dot =
         facing_dot(observation.intent_forward, observation.control_forward);
-    if (observation.stick_speed >= kMinimumActiveMagnitude &&
+    if (observation.intent_forward.valid && observation.stick_speed >= kMinimumActiveMagnitude &&
         observation.pad_magnitude >= kMinimumActiveMagnitude && std::isfinite(intent_control_dot) &&
         intent_control_dot < kFacingDivergenceDot) {
       event.issue_mask |= TARGET_CONTROL_FACING_DIVERGENCE;

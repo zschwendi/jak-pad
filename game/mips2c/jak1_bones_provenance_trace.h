@@ -317,8 +317,8 @@ class Registry {
     out.desired_forward = quaternion_forward_xz(dir_targ);
     out.control_forward = quaternion_forward_xz(quat_for_control);
     out.render_forward = quaternion_forward_xz(render_quat);
-    out.valid = out.intent_forward.valid && out.desired_forward.valid &&
-                out.control_forward.valid && out.render_forward.valid;
+    out.valid =
+        out.desired_forward.valid && out.control_forward.valid && out.render_forward.valid;
     if (!out.valid) {
       out.capture_stage = jak1_target_control_capture::Stage::FACING;
       out.capture_result = jak1_target_control_capture::Result::INVALID_FACING;
