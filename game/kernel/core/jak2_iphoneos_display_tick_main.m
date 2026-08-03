@@ -307,7 +307,9 @@ static void run_runtime_frame(double target_presentation_time, void* context);
     goal_jak2_metal_host_destroy(_metalHost);
     _metalHost = NULL;
   }
-  goal_jak2_metal_presenter_shutdown();
+  if (!_metalProofEnabled || !_metalProofSubmitted || _proofFinished) {
+    goal_jak2_metal_presenter_shutdown();
+  }
 }
 
 - (void)updateTickGate {
