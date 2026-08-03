@@ -17,10 +17,11 @@ ordinary STR files. A bounded user-local bank is validated in memory before the 
 upstream Jak 2 mips2c translations are registered through the native-function seam, and the kernel
 owns its sound-system shutdown. Command 2 has no reply payload: its zero return only means the
 synchronous transport completed, not that a bank loaded; failures are available through host logs
-and `goal_jak2_sound_rpc_stats`. Music, streaming, pad, and graphics still report through the
-machine stubs. `jak2-sound-rpc-test` covers the sound seams, while `jak2-dgo-rpc-test` covers the
-exact 32-byte DGO protocol, composed-router delegation and rejection behavior, and incremental
-AOT-code/data-object linking. Both use original synthetic data only.
+and `goal_jak2_sound_rpc_stats`. The shared pushed-state pad seam implements `cpad-open` and
+`cpad-get-data` for Jak 2 as well as Jak 1. Music, streaming, and graphics still report through the
+machine stubs. `jak2-pad-seam-test` and `jak2-sound-rpc-test` cover the input and sound seams, while
+`jak2-dgo-rpc-test` covers the exact 32-byte DGO protocol, composed-router delegation and rejection
+behavior, and incremental AOT-code/data-object linking. All use original synthetic data only.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
 kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
 exploratory integration probe; the registered CTest does not enable that mode.
@@ -235,7 +236,9 @@ copied rather than compiled - over an EE pad library written against the pushed 
 against SDL. GOAL sees the PS2 `cpad-info` structure exactly as `engine/ps2/pad.gc` expects it, so
 `service-cpads`, `cpad-pressed?` and the analog sticks work with no GOAL change. Nothing in the
 library knows about SDL, GameController, a keyboard, or a window. `--pad-seam` checks that contract
-against the real structure and needs no game data; it is registered with CTest.
+against the real Jak 1 structure, and `jak2-pad-seam-test` checks registration plus the shared
+132-byte controller prefix through the Jak 2 symbol table while preserving Jak 2's eight-byte tail.
+Neither test needs game data; both are registered with CTest.
 
 The boot test's own host is a script on the command line:
 
@@ -700,8 +703,9 @@ with no case now fails to compile rather than returning garbage.
 - **Jak 2 remains a headless kernel probe.** Its kernel and GAME.CGO objects load through the AOT
   path, its translated mips2c functions are registered, and its sound loader accepts the IRX 4.0
   version handshake, ordinary STR files, validated SBlk banks retained by 989snd, and ordinary
-  named-SFX PLAY/update commands. Music, streaming and info-frame updates are not implemented;
-  neither are its pad, graphics, and broader machine seams. Jak 3 and Jak X still use the
+  named-SFX PLAY/update commands. Its portable pad seam accepts host-pushed controller state.
+  Music, streaming and info-frame updates are not implemented; neither are its graphics and
+  broader machine seams. Jak 3 and Jak X still use the
   desktop/x86-oriented paths and remain non-functional in this ARM64 kernel core.
 - **Little machine layer.** Almost nothing from `kmachine.cpp` is here.
   `goal_kernel_core_stub_machine_layer` puts a loudly-failing GOAL function object in each of its

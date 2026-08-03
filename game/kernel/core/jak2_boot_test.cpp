@@ -39,6 +39,7 @@ extern "C" {
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/kernel_core.h"
+#include "game/kernel/core/pad.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/klisten.h"
 #include "game/kernel/jak2/kscheme.h"
@@ -222,6 +223,7 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
   // stand in for it and name themselves the first time GOAL calls one.
   jak2::InitListener();
   if (goal_kernel_core_stub_machine_layer(0) != GOAL_KERNEL_CORE_OK ||
+      goal_pad_install() != GOAL_KERNEL_CORE_OK ||
       goal_jak2_sound_rpc_install() != GOAL_KERNEL_CORE_OK) {
     say("FAILED: could not install the Jak 2 machine seams\n");
     return 1;

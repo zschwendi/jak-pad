@@ -461,6 +461,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak1-kernel-core-smoke-test jak1-kernel-core)
         add_test(NAME jak1-kernel-core-smoke-test COMMAND jak1-kernel-core-smoke-test)
 
+        add_executable(jak2-pad-seam-test kernel/core/jak2_pad_test.cpp)
+        target_link_libraries(jak2-pad-seam-test jak2-kernel-core)
+        add_test(NAME jak2-pad-seam-test COMMAND jak2-pad-seam-test)
+
         add_executable(jak2-sound-rpc-test kernel/core/jak2_sound_rpc_test.cpp)
         target_link_libraries(jak2-sound-rpc-test jak2-kernel-core)
         add_test(NAME jak2-sound-rpc-test COMMAND jak2-sound-rpc-test)
