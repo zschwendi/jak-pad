@@ -65,6 +65,7 @@ namespace method_10_collide_edge_hold_list { extern void link(); }
 namespace method_18_collide_edge_work { extern void link(); }
 namespace calc_animation_from_spr { extern void link(); }
 namespace bones_mtx_calc { extern void link(); }
+namespace jak1_bones_provenance_observe { extern void link(); }
 namespace cspace_parented_transformq_joint { extern void link(); }
 namespace draw_bones_merc { extern void link(); }
 namespace draw_bones_check_longest_edge_asm { extern void link(); }
@@ -428,7 +429,8 @@ PerGameVersion<std::unordered_map<std::string, std::vector<void (*)()>>> gMips2C
        jak1::method_10_collide_edge_hold_list::link, jak1::method_18_collide_edge_work::link}},
      {"joint", {jak1::calc_animation_from_spr::link, jak1::cspace_parented_transformq_joint::link}},
      {"bones",
-      {jak1::bones_mtx_calc::link, jak1::draw_bones_merc::link,
+      {jak1::bones_mtx_calc::link, jak1::jak1_bones_provenance_observe::link,
+       jak1::draw_bones_merc::link,
        jak1::draw_bones_check_longest_edge_asm::link}},
      {"merc-blend-shape",
       {jak1::blerc_execute::link, jak1::setup_blerc_chains_for_one_fragment::link}},

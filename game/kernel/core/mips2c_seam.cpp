@@ -70,7 +70,7 @@ struct Mips2CSlot {
   u32 goal_stack_size = 0;
 };
 
-// Jak 1 registers 93 functions, Jak 2 registers 137; one game per process.
+// Jak 1 registers 94 functions, Jak 2 registers 137; one game per process.
 constexpr int kMips2CSlotCount = 160;
 Mips2CSlot g_slots[kMips2CSlotCount];
 int g_slot_count = 0;
@@ -184,4 +184,3 @@ u32 LinkedFunctionTable::get(const std::string& name) {
 void goal_mips2c_reset(void) {
   Mips2C::forget_mips2c_registrations();
 }
-

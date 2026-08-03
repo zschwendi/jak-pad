@@ -352,6 +352,9 @@
   (the-as object (&+ arg0 48)))
 
 (def-mips2c bones-mtx-calc (function int pointer pointer int object none))
+(#when PC_PORT
+  (def-mips2c jak1-bones-provenance-observe
+    (function int pointer pointer int object none)))
 
 (defmacro .cross.vf (out a b)
   `(begin
@@ -512,6 +515,13 @@
           (.lvf vf26 (&-> v1-13 vector 1 quad))
           (.lvf vf27 (&-> v1-13 vector 2 quad))
           (.mov v1-14 vf27)
+          (#when PC_PORT
+            (jak1-bones-provenance-observe
+              (the-as int (-> s4-0 matrix-area))
+              (the-as pointer (-> s4-0 joints))
+              (the-as pointer (-> s4-0 bones))
+              (the-as int (-> s4-0 num-bones))
+              v1-13))
           ;; hack??
           (if *use-new-bones*
             (new-bones-mtx-calc-asm (the (inline-array pris-mtx) (-> s4-0 matrix-area))

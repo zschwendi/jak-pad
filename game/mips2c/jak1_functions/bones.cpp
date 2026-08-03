@@ -151,9 +151,6 @@ u64 execute(void* ctxt) {
 //printf("start\n");
   bool bc = false;
   u32 madr, sadr, qwc;
-  jak1_bones_provenance_trace::registry().record(
-      c->sgpr64(a0), c->sgpr64(a2), c->sgpr64(a3), c->sgpr64(t0), g_ee_main_mem,
-      EE_MAIN_MEM_SIZE);
   // hack, added this that should be loaded by the caller.
   //  lqc2 vf28, 0(v1)          ;; [ 60] (set! vf28 (l.vf v1-13)) [v1: matrix ] -> []
   c->lqc2(vf28, 0, t0);
@@ -692,6 +689,23 @@ void link() {
 }
 
 } // namespace bones_mtx_calc
+
+namespace jak1_bones_provenance_observe {
+
+u64 execute(void* ctxt) {
+  auto* c = (ExecutionContext*)ctxt;
+  jak1_bones_provenance_trace::registry().record(
+      c->sgpr64(a0), c->sgpr64(a2), c->sgpr64(a3), c->sgpr64(t0), g_ee_main_mem,
+      EE_MAIN_MEM_SIZE);
+  c->gprs[v0].du64[0] = 0;
+  return c->gprs[v0].du64[0];
+}
+
+void link() {
+  gLinkedFunctionTable.reg("jak1-bones-provenance-observe", execute, 0);
+}
+
+}  // namespace jak1_bones_provenance_observe
 } // namespace Mips2C
 
 //--------------------------MIPS2C---------------------
