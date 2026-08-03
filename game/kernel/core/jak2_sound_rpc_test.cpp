@@ -1,12 +1,17 @@
 /*!
  * @file jak2_sound_rpc_test.cpp
- * Behavioral coverage for the narrow Jak 2 sound-loader version handshake.
+ * Behavioral coverage for the narrow Jak 2 sound-loader and ordinary-file STR seams.
  */
 
+#include <algorithm>
 #include <array>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
 
 #include "common/goal_constants.h"
 #include "common/log/log.h"
@@ -20,6 +25,8 @@
 namespace {
 
 constexpr u32 kCommandSize = 0x50;
+constexpr u32 kStrRequestSize = 0x40;
+constexpr u32 kStrReplySize = 0x20;
 constexpr u32 kGuardSize = 16;
 int g_failures = 0;
 
@@ -62,6 +69,82 @@ void check_guards(GuardedCommand& buffer, const char* what) {
     intact &= buffer.allocation.c()[kGuardSize + kCommandSize + i] == 0xa5;
   }
   check(intact, what);
+}
+
+struct GuardedBuffer {
+  Ptr<u8> allocation;
+  Ptr<u8> data;
+  u32 size;
+};
+
+GuardedBuffer guarded_buffer(u32 size, const char* name) {
+  auto allocation =
+      kmalloc(kglobalheap, size + 2 * kGuardSize, KMALLOC_MEMSET | KMALLOC_ALIGN_16, name);
+  if (!allocation.offset) {
+    check(false, "allocate a guarded buffer");
+    return {};
+  }
+  memset(allocation.c(), 0xa5, size + 2 * kGuardSize);
+  return {allocation, allocation + kGuardSize, size};
+}
+
+void check_guards(GuardedBuffer& buffer, const char* what) {
+  bool intact = true;
+  for (u32 i = 0; i < kGuardSize; i++) {
+    intact &= buffer.allocation.c()[i] == 0xa5;
+    intact &= buffer.allocation.c()[kGuardSize + buffer.size + i] == 0xa5;
+  }
+  check(intact, what);
+}
+
+std::vector<u8> snapshot(GuardedBuffer& buffer) {
+  return {buffer.data.c(), buffer.data.c() + buffer.size};
+}
+
+struct StrRequest {
+  u16 rsvd;
+  u16 result;
+  u32 address;
+  s32 section;
+  u32 maxlen;
+  u32 dummy[4];
+  char basename[32];
+};
+static_assert(sizeof(StrRequest) == kStrRequestSize);
+
+struct StrReply {
+  u16 rsvd;
+  u16 result;
+  u32 address;
+  s32 section;
+  u32 maxlen;
+  u32 dummy[4];
+};
+static_assert(sizeof(StrReply) == kStrReplySize);
+
+void reset_str_request(GuardedBuffer& buffer,
+                       u32 address,
+                       s32 section,
+                       u32 maxlen,
+                       const std::string& basename) {
+  memset(buffer.data.c(), 0, buffer.size);
+  auto* request = buffer.data.cast<StrRequest>().c();
+  request->rsvd = 0x5aa5;
+  request->result = 666;
+  request->address = address;
+  request->section = section;
+  request->maxlen = maxlen;
+  for (u32 i = 0; i < 4; i++) {
+    request->dummy[i] = 0x11111111 * (i + 1);
+  }
+  memcpy(request->basename, basename.data(),
+         std::min(basename.size(), sizeof(request->basename)));
+}
+
+bool write_fixture(const std::filesystem::path& path, const std::array<u8, 96>& bytes) {
+  std::ofstream output(path, std::ios::binary);
+  output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  return output.good();
 }
 
 using GoalEightArgumentFunction =
@@ -171,6 +254,101 @@ int main() {
   check_u32(stats.version_requests, 2, "two version requests were handled");
   check_u32(stats.info_ee, 0x23456789, "the latest EE info address is retained");
 
+  std::printf("\n== synchronous ordinary-file STR loads ==\n");
+  const auto fixture_root =
+      std::filesystem::temp_directory_path() / "goalpad-jak2-sound-rpc-test";
+  std::error_code fixture_error;
+  std::filesystem::remove_all(fixture_root, fixture_error);
+  std::filesystem::create_directories(fixture_root / "iso", fixture_error);
+  std::array<u8, 96> fixture_bytes;
+  for (u32 i = 0; i < fixture_bytes.size(); i++) {
+    fixture_bytes[i] = (u8)(i ^ 0x5a);
+  }
+  constexpr const char* kFullWidthName = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+  check(!fixture_error && write_fixture(fixture_root / "iso" / "MIXED.TXT", fixture_bytes) &&
+            write_fixture(fixture_root / "iso" / kFullWidthName, fixture_bytes),
+        "create synthetic STR fixtures");
+  goal_kernel_core_set_data_directory(fixture_root.string().c_str());
+
+  auto str_send = guarded_buffer(kStrRequestSize, "jak2-str-send");
+  auto str_recv = guarded_buffer(kStrReplySize, "jak2-str-recv");
+  auto str_destination = guarded_buffer(128, "jak2-str-destination");
+  if (!str_send.data.offset || !str_recv.data.offset || !str_destination.data.offset) {
+    goal_kernel_core_shutdown();
+    return 1;
+  }
+
+  reset_str_request(str_send, str_destination.data.offset, -1, 17, "mixed.txt");
+  memset(str_recv.data.c(), 0xcc, str_recv.size);
+  memset(str_destination.data.c(), 0xdd, str_destination.size);
+  const auto str_original = snapshot(str_send);
+  check_u32((u32)rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset,
+                         kStrReplySize, 0),
+            0, "ordinary-file rpc-call returns synchronously");
+  auto* str_reply = str_recv.data.cast<StrReply>().c();
+  check(snapshot(str_send) == str_original, "STR send buffer remains untouched");
+  check_u32(str_reply->result, 0, "STR success result is done");
+  check_u32(str_reply->maxlen, 17, "STR reply reports the bounded byte count");
+  check_u32(str_reply->address, str_destination.data.offset, "STR reply preserves the address");
+  check_u32((u32)str_reply->section, (u32)-1, "STR reply preserves the section");
+  check(memcmp(str_destination.data.c(), fixture_bytes.data(), 17) == 0,
+        "STR copies the requested prefix into EE memory");
+  bool destination_tail_intact = true;
+  for (u32 i = 17; i < str_destination.size; i++) {
+    destination_tail_intact &= str_destination.data.c()[i] == 0xdd;
+  }
+  check(destination_tail_intact, "STR does not write past maxlen");
+
+  reset_str_request(str_send, str_destination.data.offset, -1, str_destination.size,
+                    kFullWidthName);
+  memset(str_destination.data.c(), 0xdd, str_destination.size);
+  check_u32((u32)rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset,
+                         kStrReplySize, 0),
+            0, "a transmitted 32-byte basename is accepted");
+  check_u32(str_reply->result, 0, "full-width basename load succeeds");
+  check_u32(str_reply->maxlen, fixture_bytes.size(), "full file length is returned");
+  check(memcmp(str_destination.data.c(), fixture_bytes.data(), fixture_bytes.size()) == 0,
+        "only the transmitted basename is needed to find the file");
+
+  std::printf("\n== handled STR failures return an error reply ==\n");
+  const std::array<std::string, 5> failed_names = {
+      "missing.txt", "", "../MIXED.TXT", "sub/MIXED.TXT", "sub\\MIXED.TXT"};
+  for (const auto& name : failed_names) {
+    reset_str_request(str_send, str_destination.data.offset, -1, str_destination.size, name);
+    memset(str_recv.data.c(), 0xcc, str_recv.size);
+    memset(str_destination.data.c(), 0xdd, str_destination.size);
+    rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+    check_u32(str_recv.data.cast<StrReply>().c()->result, 1,
+              "missing or path-like basename returns an error");
+    check_u32(str_recv.data.cast<StrReply>().c()->maxlen, 0,
+              "failed STR load returns zero length");
+    bool destination_unchanged = true;
+    for (u32 i = 0; i < str_destination.size; i++) {
+      destination_unchanged &= str_destination.data.c()[i] == 0xdd;
+    }
+    check(destination_unchanged, "failed STR load leaves the destination untouched");
+  }
+
+  reset_str_request(str_send, EE_MAIN_MEM_SIZE - 8, -1, 16, "mixed.txt");
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+  check_u32(str_recv.data.cast<StrReply>().c()->result, 1,
+            "an end-crossing destination returns an error");
+  check_u32(str_recv.data.cast<StrReply>().c()->maxlen, 0,
+            "an invalid destination returns zero length");
+  reset_str_request(str_send, str_destination.data.offset, -1, 0, "mixed.txt");
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+  check_u32(str_recv.data.cast<StrReply>().c()->result, 1, "a zero maxlen returns an error");
+  check_u32((u32)rpc_busy(4), 0, "the synchronous STR channel is never busy");
+
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.str_requests, 9, "all ordinary-file STR requests were counted");
+  check_u32(stats.str_reads, 2, "two synthetic STR files were read");
+  check_u32(stats.str_failures, 7, "handled STR failures were counted");
+  check_u32(stats.str_bytes, 17 + fixture_bytes.size(), "STR byte count is exact");
+  check_guards(str_send, "STR send-buffer canaries stay intact");
+  check_guards(str_recv, "STR receive-buffer canaries stay intact");
+  check_guards(str_destination, "STR destination canaries stay intact");
+
   std::printf("\n== unsupported requests remain unimplemented ==\n");
   reset_command(send, jak2::Jak2SoundCommand::load_bank, 0x3456789a);
   memset(recv.command.c(), 0xcc, kCommandSize);
@@ -194,15 +372,37 @@ int main() {
   rpc_call(1, 0, 1, send.command.offset, kCommandSize, recv.command.offset, (u64)-1, 0);
   check(snapshot(send) == unsupported_send && snapshot(recv) == unsupported_recv,
         "rejected channels and malformed buffers do not mutate memory");
+
+  reset_str_request(str_send, str_destination.data.offset, 0, str_destination.size, "mixed.txt");
+  memset(str_recv.data.c(), 0xcc, str_recv.size);
+  const auto unsupported_str_recv = snapshot(str_recv);
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+  rpc_call(4, 1, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize - 1, str_recv.data.offset,
+           kStrReplySize, 0);
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset,
+           kStrReplySize - 1, 0);
+  rpc_call(4, 0, 1, 0, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, 0, kStrReplySize, 0);
+  rpc_call(4, 0, 1, EE_MAIN_MEM_SIZE - kStrRequestSize + 1, kStrRequestSize,
+           str_recv.data.offset, kStrReplySize, 0);
+  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize,
+           EE_MAIN_MEM_SIZE - kStrReplySize + 1, kStrReplySize, 0);
+  check(snapshot(str_recv) == unsupported_str_recv,
+        "chunked and malformed STR requests do not mutate the reply");
   check_u32((u32)rpc_busy(3), 0, "an unsupported busy query still returns not-busy");
   check_guards(send, "rejected-call send canaries stay intact");
   check_guards(recv, "rejected-call receive canaries stay intact");
 
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.version_requests, 2, "rejected calls do not count as handshakes");
-  check_u32(stats.rejected_calls, 13, "every unsupported request is reported");
+  check_u32(stats.str_requests, 9, "rejected STR calls do not count as file requests");
+  check_u32(stats.rejected_calls, 21, "every unsupported request is reported");
 
+  goal_kernel_core_set_data_directory(nullptr);
+  std::filesystem::remove_all(fixture_root, fixture_error);
   goal_kernel_core_shutdown();
-  std::printf("\n%s: Jak 2 sound-RPC version seam\n", g_failures ? "FAIL" : "PASS");
+  std::printf("\n%s: Jak 2 sound-RPC version and ordinary-file STR seams\n",
+              g_failures ? "FAIL" : "PASS");
   return g_failures ? 1 : 0;
 }

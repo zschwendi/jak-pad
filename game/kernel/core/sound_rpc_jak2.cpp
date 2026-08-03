@@ -1,21 +1,27 @@
 /*!
  * @file sound_rpc_jak2.cpp
- * Answer Jak 2's sound-loader version handshake without pulling in the IOP or sound engine.
+ * Answer Jak 2's sound-loader version handshake and ordinary-file STR requests without an IOP.
  *
  * `check-irx-version` sends one 0x50-byte command on loader channel 1. Upstream's Jak 2 overlord
  * writes version 4.0 into that command, remembers the requested EE info-block address, and returns
- * the command as the RPC reply. Nothing else in the Jak 2 sound protocol is implemented here.
+ * the command as the RPC reply. Channel 4 reads an ordinary file from the configured `iso/`
+ * directory into EE memory. Chunked STR files and the rest of the Jak 2 sound protocol remain
+ * unimplemented.
  */
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <string>
 
 #include "common/goal_constants.h"
 
+#include "game/common/str_rpc_types.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/kscheme.h"
 #include "game/overlord/jak2/srpc.h"
 #include "game/runtime.h"
+#include "game/sce/sif_ee.h"
 
 // Defined beside the machine stubs in desktop_seams.cpp.
 u64 goal_kernel_core_machine_stub_report(const char* what);
@@ -24,6 +30,10 @@ namespace {
 
 constexpr s32 kLoaderChannel = 1;
 constexpr s32 kCommandSize = 0x50;
+constexpr s32 kStrChannel = 4;
+constexpr u32 kStrFunction = 0;
+constexpr s32 kStrRequestSize = 0x40;
+constexpr s32 kStrReplySize = 0x20;
 constexpr u32 kIrxMajor = 4;
 constexpr u32 kIrxMinor = 0;
 
@@ -33,6 +43,29 @@ static_assert(offsetof(jak2::SoundRpcCommand, irx_version) == 4);
 static_assert(offsetof(SoundRpcGetIrxVersion, major) == 0);
 static_assert(offsetof(SoundRpcGetIrxVersion, minor) == 4);
 static_assert(offsetof(SoundRpcGetIrxVersion, ee_addr) == 8);
+static_assert(sizeof(RPC_Str_Cmd_Jak2) == 0x50);
+static_assert(offsetof(RPC_Str_Cmd_Jak2, basename) == kStrReplySize);
+
+struct StrRequest {
+  u16 rsvd;
+  u16 result;
+  u32 address;
+  s32 section;
+  u32 maxlen;
+  u32 dummy[4];
+  char basename[kStrRequestSize - kStrReplySize];
+};
+static_assert(sizeof(StrRequest) == kStrRequestSize);
+
+struct StrReply {
+  u16 rsvd;
+  u16 result;
+  u32 address;
+  s32 section;
+  u32 maxlen;
+  u32 dummy[4];
+};
+static_assert(sizeof(StrReply) == kStrReplySize);
 
 goal_jak2_sound_rpc_stats g_stats;
 
@@ -46,20 +79,7 @@ u64 reject(const char* what) {
   return goal_kernel_core_machine_stub_report(what);
 }
 
-u64 rpc_call(u64* args) {
-  if (!args) {
-    return reject("rpc-call (Jak 2 sound, missing arguments)");
-  }
-
-  const s32 channel = (s32)args[0];
-  const u32 send_buffer = (u32)args[3];
-  const s32 send_size = (s32)args[4];
-  const u32 recv_buffer = (u32)args[5];
-  const s32 recv_size = (s32)args[6];
-
-  if (channel != kLoaderChannel) {
-    return reject("rpc-call (Jak 2 sound, unimplemented channel)");
-  }
+u64 loader_rpc(u32 send_buffer, s32 send_size, u32 recv_buffer, s32 recv_size) {
   if (send_size != kCommandSize || recv_size != kCommandSize ||
       !readable_ee_span(send_buffer, kCommandSize) ||
       !readable_ee_span(recv_buffer, kCommandSize)) {
@@ -84,8 +104,125 @@ u64 rpc_call(u64* args) {
   return 0;
 }
 
+void write_str_reply(const StrRequest& request, u32 recv_buffer, u16 result, u32 length) {
+  StrReply reply;
+  memcpy(&reply, &request, sizeof(reply));
+  reply.result = result;
+  reply.maxlen = length;
+  memcpy(Ptr<u8>(recv_buffer).c(), &reply, sizeof(reply));
+}
+
+bool uppercase_basename(const StrRequest& request, std::string* out) {
+  char basename[sizeof(request.basename) + 1];
+  memcpy(basename, request.basename, sizeof(request.basename));
+  basename[sizeof(request.basename)] = '\0';
+
+  size_t length = 0;
+  while (basename[length]) {
+    length++;
+  }
+  if (!length) {
+    return false;
+  }
+
+  out->assign(basename, length);
+  if (*out == "." || *out == "..") {
+    return false;
+  }
+  for (char& c : *out) {
+    if (c == '/' || c == '\\' || c == ':') {
+      return false;
+    }
+    if (c >= 'a' && c <= 'z') {
+      c -= 'a' - 'A';
+    }
+  }
+  return true;
+}
+
+bool read_str_file(const StrRequest& request, const std::string& basename, u32* length) {
+  if (!request.maxlen || !readable_ee_span(request.address, request.maxlen)) {
+    return false;
+  }
+
+  const std::string relative = "iso/" + basename;
+  const s32 fd = ee::sceOpen(relative.c_str(), SCE_RDONLY);
+  if (fd < 0) {
+    return false;
+  }
+
+  const s32 file_size = ee::sceLseek(fd, 0, SCE_SEEK_END);
+  if (file_size <= 0 || ee::sceLseek(fd, 0, SCE_SEEK_SET) != 0) {
+    ee::sceClose(fd);
+    return false;
+  }
+  const u32 read_size = std::min((u32)file_size, request.maxlen);
+  const s32 bytes_read = ee::sceRead(fd, Ptr<u8>(request.address).c(), (s32)read_size);
+  ee::sceClose(fd);
+  if (bytes_read != (s32)read_size) {
+    return false;
+  }
+  *length = read_size;
+  return true;
+}
+
+u64 str_rpc(u32 function,
+            u32 send_buffer,
+            s32 send_size,
+            u32 recv_buffer,
+            s32 recv_size) {
+  if (function != kStrFunction) {
+    return reject("rpc-call (Jak 2 STR, unimplemented function)");
+  }
+  if (send_size != kStrRequestSize || recv_size != kStrReplySize ||
+      !readable_ee_span(send_buffer, kStrRequestSize) ||
+      !readable_ee_span(recv_buffer, kStrReplySize)) {
+    return reject("rpc-call (Jak 2 STR, malformed buffers)");
+  }
+
+  StrRequest request;
+  memcpy(&request, Ptr<u8>(send_buffer).c(), sizeof(request));
+  if (request.section >= 0) {
+    return reject("rpc-call (Jak 2 STR, chunked files unimplemented)");
+  }
+
+  g_stats.str_requests++;
+  std::string basename;
+  u32 length = 0;
+  if (uppercase_basename(request, &basename) && read_str_file(request, basename, &length)) {
+    write_str_reply(request, recv_buffer, STR_RPC_RESULT_DONE, length);
+    g_stats.str_reads++;
+    g_stats.str_bytes += length;
+  } else {
+    write_str_reply(request, recv_buffer, STR_RPC_RESULT_ERROR, 0);
+    g_stats.str_failures++;
+  }
+  return 0;
+}
+
+u64 rpc_call(u64* args) {
+  if (!args) {
+    return reject("rpc-call (Jak 2 sound, missing arguments)");
+  }
+
+  const s32 channel = (s32)args[0];
+  const u32 function = (u32)args[1];
+  const u32 send_buffer = (u32)args[3];
+  const s32 send_size = (s32)args[4];
+  const u32 recv_buffer = (u32)args[5];
+  const s32 recv_size = (s32)args[6];
+
+  if (channel == kLoaderChannel) {
+    return loader_rpc(send_buffer, send_size, recv_buffer, recv_size);
+  }
+  if (channel == kStrChannel) {
+    return str_rpc(function, send_buffer, send_size, recv_buffer, recv_size);
+  }
+  return reject("rpc-call (Jak 2 sound, unimplemented channel)");
+}
+
 u64 rpc_busy(u64 channel) {
-  if ((s32)channel != kLoaderChannel) {
+  if ((s32)channel != kLoaderChannel && (s32)channel != kStrChannel) {
     return reject("rpc-busy? (Jak 2 sound, unimplemented channel)");
   }
   return 0;

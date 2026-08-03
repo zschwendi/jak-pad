@@ -2,7 +2,7 @@
 
 /*!
  * @file sound_rpc_jak2.h
- * The first Jak 2 sound-RPC seam: only the loader's IRX-version handshake.
+ * The first Jak 2 sound-RPC seams: the loader's IRX-version handshake and ordinary STR files.
  */
 
 #include <stdint.h>
@@ -16,11 +16,15 @@ extern "C" {
 typedef struct goal_jak2_sound_rpc_stats {
   uint32_t version_requests;
   uint32_t info_ee;
+  uint32_t str_requests;
+  uint32_t str_reads;
+  uint32_t str_failures;
+  uint32_t str_bytes;
   uint32_t rejected_calls;
 } goal_jak2_sound_rpc_stats;
 
 /*!
- * Replace Jak 2's rpc-call/rpc-busy? machine stubs with the synchronous version responder.
+ * Replace Jak 2's rpc-call/rpc-busy? machine stubs with the synchronous version and STR responders.
  * The kernel and machine-stub symbol table must already be initialized.
  */
 goal_kernel_core_status goal_jak2_sound_rpc_install(void);
