@@ -31,6 +31,10 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t drawables_acquired;
   uint64_t draws;
   uint64_t triangles;
+  uint64_t screen_filter_draws;
+  uint64_t screen_filter_triangles;
+  uint64_t last_screen_filter_draws;
+  uint64_t last_screen_filter_triangles;
   uint64_t submissions;
   uint64_t presentations;
   uint64_t completed_command_buffers;

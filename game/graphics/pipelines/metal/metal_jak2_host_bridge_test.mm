@@ -5,6 +5,7 @@
 
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
+#include "game/graphics/pipelines/metal/metal_jak2_test_packets.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/runtime.h"
 
@@ -45,7 +46,10 @@ int main() {
   if (failures) {
     return 1;
   }
-  make_empty_chain();
+  const auto screen_filter_chain =
+      metal_renderer::jak2_test::make_screen_filter_chain(kChainOffset, true);
+  std::memcpy(static_cast<u8*>(g_ee_main_mem) + kChainOffset, screen_filter_chain.data(),
+              screen_filter_chain.size());
 
   goal_jak2_metal_host* host = goal_jak2_metal_host_create();
   check(host != nullptr, "created the process-singleton Jak 2 Metal host");
@@ -64,7 +68,7 @@ int main() {
 
   callbacks.send_chain(g_ee_main_mem, kChainOffset);
   std::memset(static_cast<u8*>(g_ee_main_mem) + kChainOffset, 0,
-              (kBucketCount + 1) * 16);
+              screen_filter_chain.size());
   callbacks.sync_path();
   make_empty_chain();
   callbacks.send_chain(g_ee_main_mem, kChainOffset);
@@ -91,7 +95,11 @@ int main() {
   check(metrics.command_buffers_committed == 0 && metrics.drawables_acquired == 0 &&
             metrics.draws == 0 && metrics.triangles == 0 && metrics.submissions == 0 &&
             metrics.presentations == 0,
-        "nil-layer lifecycle dispatches without committing, drawing, or presenting");
+        "the last nil-layer empty chain commits, draws, and presents nothing");
+  check(metrics.screen_filter_draws == 1 && metrics.screen_filter_triangles == 2 &&
+            metrics.last_screen_filter_draws == 0 &&
+            metrics.last_screen_filter_triangles == 0,
+        "the deep-copied first chain preserves one audited SCREEN_FILTER sprite");
   check(metrics.surface_attached == 0 && metrics.completed_command_buffers == 0 &&
             metrics.command_buffer_errors == 0 && metrics.drawable_misses == 0,
         "nil-layer lifecycle retains zero surface and GPU-completion state");

@@ -59,6 +59,8 @@ void refresh_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.drawable_misses = stats.drawable_misses;
   host->metrics.draws = stats.draw_calls;
   host->metrics.triangles = stats.triangles;
+  host->metrics.last_screen_filter_draws = stats.jak2_screen_filter_draws;
+  host->metrics.last_screen_filter_triangles = stats.jak2_screen_filter_triangles;
   host->metrics.submissions = stats.submissions;
   host->metrics.presentations = stats.presentations_completed;
   host->metrics.presentation_drops = stats.presentation_drops;
@@ -126,11 +128,15 @@ bool flush_pending(goal_jak2_metal_host* host) {
                                                 stats.drawable_misses == before.drawable_misses &&
                                                 stats.submissions == before.submissions;
       if (stats.last_buckets_dispatched != metal_renderer::kJak2MetalBucketCount ||
-          !expected_transport || stats.draw_calls != 0 || stats.triangles != 0 ||
-          stats.presentation_drops != 0 || stats.presentation_order_mismatches != 0) {
+          !expected_transport || stats.draw_calls != stats.jak2_screen_filter_draws ||
+          stats.triangles != stats.jak2_screen_filter_triangles ||
+          stats.jak2_screen_filter_draws < 0 || stats.jak2_screen_filter_draws > 1 ||
+          stats.jak2_screen_filter_triangles != stats.jak2_screen_filter_draws * 2 ||
+          stats.direct_unsupported_blends != 0 || stats.presentation_drops != 0 ||
+          stats.presentation_order_mismatches != 0) {
         record_failure(host, surface_dispatch
-                                 ? "Jak 2 surface renderer violated the policy-only presentation gate"
-                                 : "Jak 2 nil-layer renderer violated the policy-only dispatch gate");
+                                 ? "Jak 2 surface renderer violated the audited presentation gate"
+                                 : "Jak 2 nil-layer renderer violated the audited dispatch gate");
         succeeded = false;
         continue;
       }
@@ -138,6 +144,8 @@ bool flush_pending(goal_jak2_metal_host* host) {
         succeeded = false;
         continue;
       }
+      host->metrics.screen_filter_draws += stats.jak2_screen_filter_draws;
+      host->metrics.screen_filter_triangles += stats.jak2_screen_filter_triangles;
       host->metrics.completed_chains++;
     } catch (const std::exception& error) {
       record_failure(host, error.what());
@@ -230,7 +238,8 @@ bool policy_table_is_audited() {
   }
   for (const auto& descriptor : table) {
     if (descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::StrictEmpty) {
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::StrictEmpty &&
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Direct) {
       return false;
     }
   }

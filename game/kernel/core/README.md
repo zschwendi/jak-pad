@@ -749,18 +749,29 @@ completed display presentation. A device build does not pass until its presented
 up to the submitted drawable ID. Startup work is flushed before display ticks begin, failed ticks
 discard partial queued work, and every committed buffer is waited and credited individually.
 
-This deferred native-stack queue is intentionally bounded to the current policy-only Jak 2 table,
-whose payloads are skipped or required empty. It is not yet a general renderer contract: before a
+This deferred native-stack queue is intentionally bounded to the current Jak 2 policy table. Exactly
+one audited Direct bucket, `SCREEN_FILTER`, reads only state contained in the copied packet; all other
+payloads remain skipped or required empty. It is not yet a general renderer contract: before another
 real bucket reads additional EE state, that state must be copied with the chain or the synchronous
 `sync-path` contract must be restored another way. All host and copied-callback calls are serialized
 on the app's main owner thread, and an attached layer cannot be replaced in flight.
 
 The separate synthetic submit/readback proof continues to own the exact-pixel claim. The on-screen
 development proof stops after a bounded interval when the title DGO, surface-backed policy dispatch,
-and graphics synchronization calls have all been observed. The current gate still requires zero
-game draw calls and has no audio output or input UI. A successful run proves the signed display-
-clock-to-Metal-surface boundary, not a rendered title screen, gameplay, or physical-device
-compatibility.
+graphics synchronization calls, and at least one live `SCREEN_FILTER` draw have all been observed.
+The gate requires exactly two triangles for every screen-filter draw, no draws from another game
+bucket, no unsupported blends, and no surface or command-buffer errors. It has no audio output or
+input UI. A successful run proves the first audited title/cutscene fade bucket and the signed display-
+clock-to-Metal-surface boundary, not a rendered title scene, gameplay, broad renderer coverage, or
+physical-device compatibility.
+
+**Experimental:** the first integrated simulator run completed 120 accepted display ticks and 120
+surface-backed policy chains without a command-buffer error, drawable miss, or dropped presentation
+request, but that prepared title path emitted zero `SCREEN_FILTER` draws. It later stopped while
+linking `title-disk-intro` because the object reported GOAL version 0.0 while the kernel expected
+version 1.0. The exact-pixel synthetic proof validates the bucket implementation; live title
+activation and the prepared-object version mismatch remain under investigation. The on-screen gate
+intentionally does not pass when the live draw count is zero.
 
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)

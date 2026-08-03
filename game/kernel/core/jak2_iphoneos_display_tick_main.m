@@ -407,6 +407,13 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   goal_display_tick_stats display = {0};
   goal_display_tick_coordinator_get_stats(&_coordinator, &display);
   const BOOL oneFramePerTick = display.accepted_ticks == _metrics.ticks;
+  const BOOL validScreenFilter =
+      _metalMetrics.screen_filter_draws > 0 && _metalMetrics.last_screen_filter_draws <= 1 &&
+      _metalMetrics.last_screen_filter_triangles ==
+          _metalMetrics.last_screen_filter_draws * 2 &&
+      _metalMetrics.draws == _metalMetrics.last_screen_filter_draws &&
+      _metalMetrics.triangles == _metalMetrics.last_screen_filter_triangles &&
+      _metalMetrics.screen_filter_triangles == _metalMetrics.screen_filter_draws * 2;
   const BOOL validMetalDispatch =
       _metalMetrics.surface_attached == 1 && _metalMetrics.chains > 0 &&
       _metalMetrics.completed_chains == _metalMetrics.chains &&
@@ -415,8 +422,8 @@ static void run_runtime_frame(double target_presentation_time, void* context);
       _metalMetrics.completed_command_buffers == _metalMetrics.command_buffers_committed &&
       _metalMetrics.command_buffer_errors == 0 &&
       _metalMetrics.drawables_acquired == _metalMetrics.chains &&
-      _metalMetrics.drawable_misses == 0 && _metalMetrics.draws == 0 &&
-      _metalMetrics.triangles == 0 && _metalMetrics.submissions == _metalMetrics.chains &&
+      _metalMetrics.drawable_misses == 0 && validScreenFilter &&
+      _metalMetrics.submissions == _metalMetrics.chains &&
       _metalMetrics.presentation_drops == 0 &&
       _metalMetrics.presentation_order_mismatches == 0;
   const BOOL crossedGraphicsHost =
@@ -492,7 +499,9 @@ static void run_runtime_frame(double target_presentation_time, void* context);
                         "GPU buffers: %llu / %llu committed / %llu errors\n"
                         "Drawables: %llu / %llu misses\n"
                         "Last dispatch: %llu buckets / %u copied bytes\n\n"
-                        "Draw calls: %llu\nPresent requests: %llu\n"
+                        "Last draw calls: %llu\n"
+                        "SCREEN_FILTER total: %llu draws / %llu triangles\n"
+                        "Present requests: %llu\n"
                         "Observed presentations: %llu (supported: %u)\n"
                         "Last presented/submitted ID: %llu / %llu\n"
                         "Presentation drops: %llu%@",
@@ -515,6 +524,8 @@ static void run_runtime_frame(double target_presentation_time, void* context);
                        (unsigned long long)_metalMetrics.last_buckets_dispatched,
                        _metalMetrics.last_copied_bytes,
                        (unsigned long long)_metalMetrics.draws,
+                       (unsigned long long)_metalMetrics.screen_filter_draws,
+                       (unsigned long long)_metalMetrics.screen_filter_triangles,
                        (unsigned long long)_metalMetrics.submissions,
                        (unsigned long long)_metalMetrics.presentations,
                        _metalMetrics.presentation_observation_supported,

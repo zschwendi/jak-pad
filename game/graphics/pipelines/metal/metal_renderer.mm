@@ -343,24 +343,12 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   for (const auto& descriptor : table) {
     const auto bucket_id = static_cast<std::size_t>(descriptor.id);
     const int batch_size = metal_renderer::jak2_metal_direct_batch_size(bucket_id);
-    if (batch_size != 0) {
-      ASSERT(descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip);
+    if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
+      ASSERT(batch_size != 0);
       const char* name = "direct";
       switch (static_cast<jak2::BucketId>(bucket_id)) {
-        case jak2::BucketId::SKY_DRAW:
-          name = "sky-draw";
-          break;
         case jak2::BucketId::SCREEN_FILTER:
           name = "screen-filter";
-          break;
-        case jak2::BucketId::DEBUG2:
-          name = "debug2";
-          break;
-        case jak2::BucketId::DEBUG_NO_ZBUF2:
-          name = "debug-no-zbuf2";
-          break;
-        case jak2::BucketId::DEBUG3:
-          name = "debug3";
           break;
         default:
           ASSERT(false);
@@ -368,9 +356,12 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       m_bucket_renderers[bucket_id] =
           std::make_unique<MetalDirectRenderer>(name, descriptor.id, batch_size);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip) {
+      ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
           fmt::format("jak2-deferred-{}", bucket_id), descriptor.id);
     } else {
+      ASSERT(descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::StrictEmpty);
+      ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] =
           std::make_unique<MetalEmptyBucketRenderer>(fmt::format("bucket-{}", bucket_id),
                                                      descriptor.id);
@@ -984,6 +975,8 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.chains_rendered++;
     m_chain_stats.draw_calls = ctx.draw_calls;
     m_chain_stats.triangles = ctx.triangles;
+    m_chain_stats.jak2_screen_filter_draws = 0;
+    m_chain_stats.jak2_screen_filter_triangles = 0;
     int uploads = 0;
     u64 skipped = 0;
     int unsupported_blends = 0;
@@ -992,13 +985,19 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.ocean_missing_textures = 0;
     MetalMerc2::Stats merc_stats;
     MetalGeneric2::Stats generic_stats;
-    for (auto& r : m_bucket_renderers) {
+    for (std::size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
+      auto& r = m_bucket_renderers[bucket_id];
       if (auto* t = dynamic_cast<MetalTextureBucketRenderer*>(r.get())) {
         uploads += t->last_stats().uploads;
       } else if (auto* s = dynamic_cast<MetalSkipRenderer*>(r.get())) {
         skipped += s->skipped_bytes();
       } else if (auto* d = dynamic_cast<MetalDirectRenderer*>(r.get())) {
         unsupported_blends += d->stats().unsupported_blends;
+        if (m_shared_state.version == GameVersion::Jak2 &&
+            bucket_id == static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)) {
+          m_chain_stats.jak2_screen_filter_draws = d->stats().draw_calls;
+          m_chain_stats.jak2_screen_filter_triangles = d->stats().triangles;
+        }
       } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
         unsupported_blends += sky->direct_stats().unsupported_blends;
       } else if (auto* omf = dynamic_cast<MetalOceanMidAndFar*>(r.get())) {

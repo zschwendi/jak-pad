@@ -1,16 +1,12 @@
-#include <array>
+#import <TargetConditionals.h>
 #include <cstdio>
-#include <cstring>
 #include <vector>
-
-#include "common/dma/gs.h"
 
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
-
+#include "game/graphics/pipelines/metal/metal_jak2_test_packets.h"
 #import <Metal/Metal.h>
-#import <TargetConditionals.h>
 
 extern "C" const unsigned char g_goalpad_metallib[];
 extern "C" const unsigned long g_goalpad_metallib_size;
@@ -18,8 +14,6 @@ extern "C" const unsigned long g_goalpad_metallib_size;
 namespace {
 
 constexpr int kTargetSize = 64;
-constexpr std::size_t kGifQwords = 7;
-constexpr std::size_t kGifBytes = kGifQwords * 16;
 
 int failures = 0;
 
@@ -30,60 +24,7 @@ void check(bool condition, const char* what) {
   }
 }
 
-void put_u64(std::array<u8, kGifBytes>& payload, std::size_t offset, u64 value) {
-  std::memcpy(payload.data() + offset, &value, sizeof(value));
-}
-
-void put_rgbaq(std::array<u8, kGifBytes>& payload, std::size_t offset) {
-  constexpr std::array<u32, 4> kGreen = {0, 255, 0, 128};
-  std::memcpy(payload.data() + offset, kGreen.data(), 16);
-}
-
-void put_xyzf2(std::array<u8, kGifBytes>& payload,
-               std::size_t offset,
-               u32 x,
-               u32 y) {
-  constexpr u64 kZ = 0xffffff;
-  std::memcpy(payload.data() + offset, &x, sizeof(x));
-  std::memcpy(payload.data() + offset + 4, &y, sizeof(y));
-  put_u64(payload, offset + 8, kZ << 4);
-}
-
-std::array<u8, kGifBytes> make_debug_triangle_payload() {
-  std::array<u8, kGifBytes> payload = {};
-
-  // Mirrors Jak II's public add-debug-tri Direct packet shape in
-  // goal_src/jak2/engine/debug/debug.gc: PACKED, PRE TRI with IIP+ABE, and
-  // three RGBAQ/XYZF2 pairs. All colors and coordinates here are synthetic.
-  constexpr u64 kNloop = 1;
-  constexpr u64 kEop = 1ull << 15;
-  constexpr u64 kPre = 1ull << 46;
-  constexpr u64 kPrim = static_cast<u64>(GsPrim::Kind::TRI) | (1ull << 3) | (1ull << 6);
-  constexpr u64 kNreg = 6ull << 60;
-  put_u64(payload, 0, kNloop | kEop | kPre | (kPrim << 47) | kNreg);
-
-  constexpr u64 kRgbaq = static_cast<u64>(GifTag::RegisterDescriptor::RGBAQ);
-  constexpr u64 kXyzf2 = static_cast<u64>(GifTag::RegisterDescriptor::XYZF2);
-  constexpr u64 kRegisters = kRgbaq | (kXyzf2 << 4) | (kRgbaq << 8) |
-                             (kXyzf2 << 12) | (kRgbaq << 16) | (kXyzf2 << 20);
-  put_u64(payload, 8, kRegisters);
-
-  put_rgbaq(payload, 16);
-  put_xyzf2(payload, 32, 0x8000, 0x7800);
-  put_rgbaq(payload, 48);
-  put_xyzf2(payload, 64, 0x7800, 0x8800);
-  put_rgbaq(payload, 80);
-  put_xyzf2(payload, 96, 0x8800, 0x8800);
-  return payload;
-}
-
-bool is_bgra(const std::vector<u8>& pixels,
-             int x,
-             int y,
-             u8 blue,
-             u8 green,
-             u8 red,
-             u8 alpha) {
+bool is_bgra(const std::vector<u8>& pixels, int x, int y, u8 blue, u8 green, u8 red, u8 alpha) {
   const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
   return pixels[offset] == blue && pixels[offset + 1] == green && pixels[offset + 2] == red &&
          pixels[offset + 3] == alpha;
@@ -102,8 +43,8 @@ int main() {
     id<MTLCommandQueue> queue = [device newCommandQueue];
     check(queue != nil, "created a Metal command queue");
 
-    dispatch_data_t library_data = dispatch_data_create(
-        g_goalpad_metallib, g_goalpad_metallib_size, nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    dispatch_data_t library_data = dispatch_data_create(g_goalpad_metallib, g_goalpad_metallib_size,
+                                                        nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
     NSError* library_error = nil;
     id<MTLLibrary> library = [device newLibraryWithData:library_data error:&library_error];
     check(library != nil, "loaded the product's embedded Metal shader library");
@@ -125,11 +66,11 @@ int main() {
       return 1;
     }
 
-    auto* color_desc = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                     width:kTargetSize
-                                    height:kTargetSize
-                                 mipmapped:NO];
+    auto* color_desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                           width:kTargetSize
+                                                          height:kTargetSize
+                                                       mipmapped:NO];
     color_desc.usage = MTLTextureUsageRenderTarget;
 #if TARGET_OS_OSX
     color_desc.storageMode = MTLStorageModeManaged;
@@ -138,11 +79,11 @@ int main() {
 #endif
     id<MTLTexture> color = [device newTextureWithDescriptor:color_desc];
 
-    auto* depth_desc = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
-                                     width:kTargetSize
-                                    height:kTargetSize
-                                 mipmapped:NO];
+    auto* depth_desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                                           width:kTargetSize
+                                                          height:kTargetSize
+                                                       mipmapped:NO];
     depth_desc.usage = MTLTextureUsageRenderTarget;
     depth_desc.storageMode = MTLStorageModePrivate;
     id<MTLTexture> depth = [device newTextureWithDescriptor:depth_desc];
@@ -166,8 +107,7 @@ int main() {
     pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
     pass.stencilAttachment.clearStencil = 0;
 
-    id<MTLRenderCommandEncoder> encoder =
-        [commands renderCommandEncoderWithDescriptor:pass];
+    id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
     check(commands != nil && encoder != nil, "created an offscreen Metal command buffer and pass");
     if (!commands || !encoder) {
       return 1;
@@ -190,17 +130,20 @@ int main() {
     state.game_res_w = kTargetSize;
     state.game_res_h = kTargetSize;
 
-    constexpr std::size_t kDebug3 = static_cast<std::size_t>(jak2::BucketId::DEBUG3);
-    const int batch_size = metal_renderer::jak2_metal_direct_batch_size(kDebug3);
-    check(batch_size == 0x2000, "DEBUG3 retains its audited Jak II Direct batch size");
-    if (batch_size != 0x2000) {
+    constexpr std::size_t kScreenFilter = static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER);
+    const int batch_size = metal_renderer::jak2_metal_direct_batch_size(kScreenFilter);
+    check(batch_size == 256, "SCREEN_FILTER retains its audited Jak II Direct batch size");
+    if (batch_size != 256) {
       return 1;
     }
 
-    MetalDirectRenderer direct("jak2-submit-readback", static_cast<int>(kDebug3), batch_size);
+    MetalDirectRenderer direct("jak2-screen-filter-readback", static_cast<int>(kScreenFilter),
+                               batch_size);
     direct.reset_state();
-    const auto payload = make_debug_triangle_payload();
-    direct.render_gif(payload.data(), static_cast<u32>(payload.size()), &state, context);
+    const auto setup = metal_renderer::jak2_test::make_screen_filter_setup();
+    const auto sprite = metal_renderer::jak2_test::make_screen_filter_sprite();
+    direct.render_gif(setup.data(), static_cast<u32>(setup.size()), &state, context);
+    direct.render_gif(sprite.data(), static_cast<u32>(sprite.size()), &state, context);
     direct.flush_pending(&state, context);
     [encoder endEncoding];
 
@@ -210,9 +153,9 @@ int main() {
     [blit endEncoding];
 #endif
 
-    check(context.draw_calls == 1 && context.triangles == 1 && direct.stats().draw_calls == 1 &&
-              direct.stats().triangles == 1 && direct.stats().unsupported_blends == 0,
-          "one audited Direct payload encoded one supported triangle draw");
+    check(context.draw_calls == 1 && context.triangles == 2 && direct.stats().draw_calls == 1 &&
+              direct.stats().triangles == 2 && direct.stats().unsupported_blends == 0,
+          "the audited SCREEN_FILTER packet encoded one supported sprite draw");
 
     [commands commit];
     [commands waitUntilCompleted];
@@ -229,32 +172,29 @@ int main() {
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
         mipmapLevel:0];
 
-    int green_pixels = 0;
-    int black_pixels = 0;
+    int filtered_pixels = 0;
     int unexpected_pixels = 0;
     for (int y = 0; y < kTargetSize; y++) {
       for (int x = 0; x < kTargetSize; x++) {
-        if (is_bgra(pixels, x, y, 0, 255, 0, 255)) {
-          green_pixels++;
-        } else if (is_bgra(pixels, x, y, 0, 0, 0, 255)) {
-          black_pixels++;
+        if (is_bgra(pixels, x, y, 0, 48, 128, 128)) {
+          filtered_pixels++;
         } else {
           unexpected_pixels++;
         }
       }
     }
-    check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, 0, 255, 0, 255),
-          "readback contains the exact green triangle at target center");
-    check(is_bgra(pixels, 2, 2, 0, 0, 0, 255),
-          "readback retains the exact black clear color outside the triangle");
-    check(green_pixels > 100 && black_pixels > 100 && unexpected_pixels == 0,
-          "readback contains only the synthetic draw and clear colors");
+    check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, 0, 48, 128, 128),
+          "readback contains the exact half-alpha orange filter at target center");
+    check(is_bgra(pixels, 0, 0, 0, 48, 128, 128),
+          "the production full-screen sprite reaches the target corner");
+    check(filtered_pixels == kTargetSize * kTargetSize && unexpected_pixels == 0,
+          "every readback pixel matches the deterministic SCREEN_FILTER blend");
 
     if (failures) {
       std::printf("FAIL: %d Jak II offscreen submit/readback checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak II Direct GIF payload submitted and read back from Metal offscreen\n");
+    std::printf("PASS: Jak II SCREEN_FILTER submitted and read back from Metal offscreen\n");
     return 0;
   }
 }

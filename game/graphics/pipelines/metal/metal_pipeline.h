@@ -160,6 +160,8 @@ struct ChainStats {
   // from the last chain frame
   int draw_calls = 0;
   int triangles = 0;
+  int jak2_screen_filter_draws = 0;
+  int jak2_screen_filter_triangles = 0;
   int tex_uploads = 0;
   int sky_draws = 0;
   int sky_blends = 0;
