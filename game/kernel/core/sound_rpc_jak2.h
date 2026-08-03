@@ -2,7 +2,8 @@
 
 /*!
  * @file sound_rpc_jak2.h
- * The first Jak 2 sound-RPC seams: the loader's IRX-version handshake and ordinary STR files.
+ * The first Jak 2 sound-RPC seams: command-aware loader framing, the IRX-version handshake, and
+ * ordinary STR files. Sound-bank loading remains unimplemented.
  */
 
 #include <stdint.h>
@@ -16,6 +17,8 @@ extern "C" {
 typedef struct goal_jak2_sound_rpc_stats {
   uint32_t version_requests;
   uint32_t info_ee;
+  uint32_t bank_load_requests;
+  uint32_t bank_load_unimplemented;
   uint32_t str_requests;
   uint32_t str_reads;
   uint32_t str_failures;

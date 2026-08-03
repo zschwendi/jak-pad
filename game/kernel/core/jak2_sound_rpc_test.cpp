@@ -254,6 +254,21 @@ int main() {
   check_u32(stats.version_requests, 2, "two version requests were handled");
   check_u32(stats.info_ee, 0x23456789, "the latest EE info address is retained");
 
+  std::printf("\n== no-reply sound-bank command remains explicit and unimplemented ==\n");
+  reset_command(send, jak2::Jak2SoundCommand::load_bank, 0x3456789a);
+  memset(recv.command.c(), 0xcc, kCommandSize);
+  const auto bank_send = snapshot(send);
+  const auto bank_recv = snapshot(recv);
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "a command 2 request uses no reply buffer");
+  check(snapshot(send) == bank_send && snapshot(recv) == bank_recv,
+        "unimplemented bank loading mutates neither EE buffer");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.bank_load_requests, 1, "the well-framed bank request is counted");
+  check_u32(stats.bank_load_unimplemented, 1, "the bank request is reported as unimplemented");
+  check_guards(send, "no-reply command send canaries stay intact");
+  check_guards(recv, "no-reply command receive canaries stay intact");
+
   std::printf("\n== synchronous ordinary-file STR loads ==\n");
   const auto fixture_root =
       std::filesystem::temp_directory_path() / "goalpad-jak2-sound-rpc-test";
@@ -349,14 +364,19 @@ int main() {
   check_guards(str_recv, "STR receive-buffer canaries stay intact");
   check_guards(str_destination, "STR destination canaries stay intact");
 
-  std::printf("\n== unsupported requests remain unimplemented ==\n");
+  std::printf("\n== unsupported and malformed requests remain unimplemented ==\n");
   reset_command(send, jak2::Jak2SoundCommand::load_bank, 0x3456789a);
   memset(recv.command.c(), 0xcc, kCommandSize);
   const auto unsupported_send = snapshot(send);
   const auto unsupported_recv = snapshot(recv);
   rpc_call(1, 0, 1, send.command.offset, kCommandSize, recv.command.offset, kCommandSize, 0);
   check(snapshot(send) == unsupported_send && snapshot(recv) == unsupported_recv,
-        "an unimplemented loader command mutates neither buffer");
+        "a no-reply command with a reply buffer mutates neither buffer");
+  reset_command(send, jak2::Jak2SoundCommand::get_irx_version, 0x3456789a);
+  const auto malformed_send = snapshot(send);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+  rpc_call(1, 0, 1, send.command.offset + 1, kCommandSize, recv.command.offset, kCommandSize, 0);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, recv.command.offset + 1, kCommandSize, 0);
   rpc_call(0, 0, 1, send.command.offset, kCommandSize, recv.command.offset, kCommandSize, 0);
   rpc_call(5, 0, 1, send.command.offset, kCommandSize, recv.command.offset, kCommandSize, 0);
   rpc_call(1, 0, 1, send.command.offset, kCommandSize - 1, recv.command.offset, kCommandSize, 0);
@@ -370,7 +390,7 @@ int main() {
            EE_MAIN_MEM_SIZE - kCommandSize + 1, kCommandSize, 0);
   rpc_call(1, 0, 1, send.command.offset, (u64)-1, recv.command.offset, kCommandSize, 0);
   rpc_call(1, 0, 1, send.command.offset, kCommandSize, recv.command.offset, (u64)-1, 0);
-  check(snapshot(send) == unsupported_send && snapshot(recv) == unsupported_recv,
+  check(snapshot(send) == malformed_send && snapshot(recv) == unsupported_recv,
         "rejected channels and malformed buffers do not mutate memory");
 
   reset_str_request(str_send, str_destination.data.offset, 0, str_destination.size, "mixed.txt");
@@ -396,8 +416,10 @@ int main() {
 
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.version_requests, 2, "rejected calls do not count as handshakes");
+  check_u32(stats.bank_load_requests, 1, "malformed bank framing is not counted as a request");
+  check_u32(stats.bank_load_unimplemented, 1, "no bank request is acknowledged as loaded");
   check_u32(stats.str_requests, 9, "rejected STR calls do not count as file requests");
-  check_u32(stats.rejected_calls, 21, "every unsupported request is reported");
+  check_u32(stats.rejected_calls, 25, "every unsupported request is reported");
 
   goal_kernel_core_set_data_directory(nullptr);
   std::filesystem::remove_all(fixture_root, fixture_error);

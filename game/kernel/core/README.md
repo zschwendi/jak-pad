@@ -10,8 +10,10 @@ per-game seam in `kernel_game.h`, implemented by `kernel_game_jak1.cpp` and
 everything documented below; `jak2-kernel-core` (**Experimental**) is the same core keyed to the
 Jak 2 kernel, with `dgo_loader_jak2.cpp` carrying the C-driven DGO load and the upstream Jak 2
 mips2c translations registered through the native-function seam. `sound_rpc_jak2.cpp` answers only
-the loader's IRX 4.0 version handshake; banks, playback, streaming, pad, and graphics still report
-through the machine stubs. `jak2-sound-rpc-test` covers that handshake without retail data.
+the loader's command-aware framing and IRX 4.0 version handshake; bank-load commands are explicitly
+reported as unimplemented, and playback, streaming, pad, and graphics still report
+through the machine stubs. `jak2-sound-rpc-test` covers the framing, version reply, and explicit
+bank-load rejection without retail data.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
 kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
 exploratory integration probe; the registered CTest does not enable that mode.

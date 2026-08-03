@@ -4,7 +4,8 @@
  *
  * `check-irx-version` sends one 0x50-byte command on loader channel 1. Upstream's Jak 2 overlord
  * writes version 4.0 into that command, remembers the requested EE info-block address, and returns
- * the command as the RPC reply. Channel 4 reads an ordinary file from the configured `iso/`
+ * the command as the RPC reply. Loader command 2 has no receive buffer, but sound-bank loading is
+ * still reported as unimplemented. Channel 4 reads an ordinary file from the configured `iso/`
  * directory into EE memory. Chunked STR files and the rest of the Jak 2 sound protocol remain
  * unimplemented.
  */
@@ -80,28 +81,40 @@ u64 reject(const char* what) {
 }
 
 u64 loader_rpc(u32 send_buffer, s32 send_size, u32 recv_buffer, s32 recv_size) {
-  if (send_size != kCommandSize || recv_size != kCommandSize ||
-      !readable_ee_span(send_buffer, kCommandSize) ||
-      !readable_ee_span(recv_buffer, kCommandSize)) {
-    return reject("rpc-call (Jak 2 sound, malformed version handshake)");
+  if (send_size != kCommandSize || (send_buffer & 0xf) ||
+      !readable_ee_span(send_buffer, kCommandSize)) {
+    return reject("rpc-call (Jak 2 sound, malformed loader command)");
   }
 
   jak2::SoundRpcCommand command;
   memcpy(&command, Ptr<u8>(send_buffer).c(), sizeof(command));
-  if (command.j2command != jak2::Jak2SoundCommand::get_irx_version) {
-    return reject("rpc-call (Jak 2 sound, unimplemented loader command)");
+  switch (command.j2command) {
+    case jak2::Jak2SoundCommand::get_irx_version:
+      if (recv_size != kCommandSize || (recv_buffer & 0xf) ||
+          !readable_ee_span(recv_buffer, kCommandSize)) {
+        return reject("rpc-call (Jak 2 sound, malformed version reply)");
+      }
+
+      command.irx_version.major = kIrxMajor;
+      command.irx_version.minor = kIrxMinor;
+      g_stats.version_requests++;
+      g_stats.info_ee = command.irx_version.ee_addr;
+
+      // Upstream mutates its IOP-side loader buffer, then SIF copies the returned 0x50 bytes to the
+      // EE receive buffer. The game's check-irx-version aliases send and receive, but separate EE
+      // send buffers must remain untouched.
+      memcpy(Ptr<u8>(recv_buffer).c(), &command, sizeof(command));
+      return 0;
+    case jak2::Jak2SoundCommand::load_bank:
+      if (recv_size != 0) {
+        return reject("rpc-call (Jak 2 sound, load-bank unexpectedly requested a reply)");
+      }
+      g_stats.bank_load_requests++;
+      g_stats.bank_load_unimplemented++;
+      return reject("rpc-call (Jak 2 sound, load-bank unimplemented)");
+    default:
+      return reject("rpc-call (Jak 2 sound, unimplemented loader command)");
   }
-
-  command.irx_version.major = kIrxMajor;
-  command.irx_version.minor = kIrxMinor;
-  g_stats.version_requests++;
-  g_stats.info_ee = command.irx_version.ee_addr;
-
-  // Upstream mutates its IOP-side loader buffer, then SIF copies the returned 0x50 bytes to the EE
-  // receive buffer. The game's check-irx-version aliases send and receive, but separate EE send
-  // buffers must remain untouched.
-  memcpy(Ptr<u8>(recv_buffer).c(), &command, sizeof(command));
-  return 0;
 }
 
 void write_str_reply(const StrRequest& request, u32 recv_buffer, u16 result, u32 length) {
