@@ -115,12 +115,11 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     if (!host->layer) {
       if (acquired || host->metrics.command_buffers_committed != 0 ||
           host->metrics.command_buffers_completed != 0 || host->metrics.command_buffer_errors != 0 ||
-          host->metrics.draws != 0 || host->metrics.triangles != 0 ||
           host->metrics.drawables_acquired != 0 || host->metrics.drawable_misses != 0 ||
           host->metrics.submissions != 0 || host->metrics.presentations != 0 ||
           host->metrics.presentation_drops != 0 ||
           host->metrics.presentation_order_mismatches != 0) {
-        record_failure(host, "Jak 2 nil-layer renderer violated the policy-only dispatch gate");
+        record_failure(host, "Jak 2 nil-layer renderer violated the submission-free dispatch gate");
         return;
       }
     } else if (!acquired || host->metrics.unsupported_blends != 0 ||

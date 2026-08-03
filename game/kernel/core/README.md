@@ -756,6 +756,10 @@ ticks without catch-up, and stops its display link with an exact `accepted=6`, `
 `dispatcher=6` result. The default one-tick proof and the separate synthetic CAMetalLayer proof
 remain unchanged.
 
+The nil-layer path may encode offscreen draw commands while auditing later real title chains, but
+it never acquires a drawable or commits, completes, submits, or presents a command buffer. Those
+submission-free counters, rather than an empty draw count, are the lifecycle proof's Metal gate.
+
 This opt-in phase driver does not ask the operating system to suspend the process. It proves the
 app's lifecycle handlers, display gate, and running Jak 2 session remain coherent across the
 bounded transitions; simulator success is not physical-device lifecycle evidence.
