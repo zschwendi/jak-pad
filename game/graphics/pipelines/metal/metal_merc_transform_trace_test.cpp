@@ -611,9 +611,9 @@ int main() {
       metal_merc_transform_trace::MatrixSnapshot matrix = {};
       std::memcpy(matrix.data(), recorded->root_anchors[root].bytes.data(),
                   recorded->root_anchors[root].bytes.size());
-      const auto& scale = recorded->root_scales[root];
+      const auto& root_scale = recorded->root_scales[root];
       root_observations[root] = metal_merc_transform_trace::make_root_anchor_observation(
-          matrix.data(), scale.x, scale.y, scale.z, scale.w_bits);
+          matrix.data(), root_scale.x, root_scale.y, root_scale.z, root_scale.w_bits);
       root_scale_and_deformation_match &=
           root_observations[root].valid && root_observations[root].deformation.valid &&
           std::abs(root_observations[root].deformation.aspect - static_cast<double>(root + 2)) <
