@@ -13,6 +13,7 @@
 #include "common/symbols.h"
 
 #include "game/kernel/common/kboot.h"
+#include "game/kernel/common/kmachine.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kmemcard.h"
 #include "game/kernel/common/kprint.h"
@@ -134,6 +135,8 @@ goal_kernel_core_status goal_kernel_core_initialize(void) {
     return GOAL_KERNEL_CORE_ALREADY_INITIALIZED;
   }
   clear_error();
+  vif1_interrupt_handler = 0;
+  vblank_interrupt_handler = 0;
 
   if (!map_main_memory()) {
     set_error("failed to map EE main memory");
@@ -175,6 +178,8 @@ void goal_kernel_core_shutdown(void) {
   // A per-game service may retain host allocations whose contents point into the arena below.
   // Release it before resetting loaders or unmapping EE memory.
   goal_game_shutdown();
+  vif1_interrupt_handler = 0;
+  vblank_interrupt_handler = 0;
   // every AOT object file and every mips2c trampoline was placed in the heap that is about to go
   // away
   goal_aot_reset();
