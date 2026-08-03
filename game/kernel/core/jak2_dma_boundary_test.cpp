@@ -103,8 +103,7 @@ int main() {
   }
 
   build_empty_bucket_chain();
-  expect(goal_gfx_dma_capture_chain_now(g_ee_main_mem, g_chain, 1,
-                                        "/private/tmp/goalpad-jak2-must-not-write.gpdma") == 0,
+  expect(goal_gfx_dma_capture_chain_now(g_ee_main_mem, g_chain, 1, "must-not-write.gpdma") == 0,
          "refused to write a Jak 1-only GPDMACAP v2 file for Jak 2");
   goal_aot_call(send_chain, 0x10009000, g_chain, 0);
 
