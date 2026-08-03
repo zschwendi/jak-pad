@@ -19,11 +19,14 @@
  */
 
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <random>
 #include <string>
+#include <system_error>
 
 extern "C" {
 #include "aot_boot_manifest.h"
@@ -331,9 +334,31 @@ int run_play_runtime(const std::string& data_dir,
                      goal_jak2_runtime_graphics graphics) {
   const bool validate_dma = graphics == GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION;
   const bool validate_host = graphics != GOAL_JAK2_RUNTIME_GRAPHICS_STUBS;
-  const std::string saves_dir =
-      (std::filesystem::temp_directory_path() / "goalpad-jak2-boot-saves").string();
-  std::filesystem::remove_all(saves_dir);
+  std::random_device random;
+  const auto token = (static_cast<uint64_t>(random()) << 32) ^ random();
+  const auto saves_path = std::filesystem::temp_directory_path() /
+                          ("goalpad-jak2-boot-saves-" + std::to_string(token));
+  std::error_code directory_error;
+  if (!std::filesystem::create_directory(saves_path, directory_error)) {
+    say("FAILED: could not exclusively create a temporary Jak 2 saves directory: %s\n",
+        directory_error ? directory_error.message().c_str() : "path already exists");
+    return 1;
+  }
+
+  struct TemporarySavesCleanup {
+    std::filesystem::path path;
+    ~TemporarySavesCleanup() {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+      if (error) {
+        std::fprintf(stderr, "warning: could not remove temporary Jak 2 saves directory (%d)\n",
+                     error.value());
+      }
+    }
+  };
+  // This must outlive the shutdown guard below so the runtime releases its save files first.
+  TemporarySavesCleanup temporary_saves{saves_path};
+  const std::string saves_dir = saves_path.string();
 
   goal_jak2_runtime_config config = {};
   config.data_directory = data_dir.c_str();
