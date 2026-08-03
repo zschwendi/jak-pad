@@ -1,8 +1,12 @@
 #include "aot_boot_manifest.h"
 #include "game/kernel/core/kernel_core.h"
+#include "game/kernel/core/pad.h"
 
 int main() {
   goal_kernel_core_shutdown();
+  if (goal_pad_install() != GOAL_KERNEL_CORE_NOT_INITIALIZED) {
+    return 1;
+  }
   if (goal_aot_boot_file_count != 840) {
     return 1;
   }
