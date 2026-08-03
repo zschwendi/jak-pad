@@ -673,6 +673,9 @@
   0
   (none))
 
+(#when PC_PORT
+  (def-mips2c jak1-target-post-flag-observe (function uint uint int64 none)))
+
 (defbehavior post-flag-setup target ()
   (if (logtest? (-> self control status) (cshape-moving-flags twall t-act))
     (set-time! (-> self control last-time-touching-actor)))
@@ -684,6 +687,12 @@
     (if (time-elapsed? (-> self control unknown-dword80) (-> self control unknown-dword81))
       (target-timed-invulnerable-off self)))
   (set! (-> self control unknown-symbol40) #f)
+  (#when PC_PORT
+    (when (= self *target*)
+      (jak1-target-post-flag-observe
+        (the-as uint self)
+        (the-as uint (-> self draw status))
+        (-> self control target-attack-id))))
   0
   (none))
 

@@ -46,6 +46,15 @@ struct DeformationSnapshot {
   double normalized_abs_determinant = 0.0;
 };
 
+struct RootAnchorObservation {
+  bool valid = false;
+  DeformationSnapshot deformation;
+  double scale_x = 0.0;
+  double scale_y = 0.0;
+  double scale_z = 0.0;
+  u32 scale_w_bits = 0;
+};
+
 inline FacingSnapshot make_facing_snapshot(double x, double z) {
   FacingSnapshot out;
   const double length = std::sqrt(x * x + z * z);
@@ -99,6 +108,24 @@ inline DeformationSnapshot make_deformation_snapshot(const float* matrix,
   return out;
 }
 
+inline RootAnchorObservation make_root_anchor_observation(const float* matrix,
+                                                           double scale_x,
+                                                           double scale_y,
+                                                           double scale_z,
+                                                           u32 scale_w_bits) {
+  RootAnchorObservation out;
+  if (!matrix) {
+    return out;
+  }
+  out.valid = true;
+  out.deformation = make_deformation_snapshot(matrix);
+  out.scale_x = scale_x;
+  out.scale_y = scale_y;
+  out.scale_z = scale_z;
+  out.scale_w_bits = scale_w_bits;
+  return out;
+}
+
 struct TargetControlObservation {
   bool valid = false;
   jak1_target_control_capture::Stage capture_stage =
@@ -131,6 +158,8 @@ struct TargetControlObservation {
   BasisSnapshot camera_basis;
   DeformationSnapshot input_root_deformation;
   DeformationSnapshot output_deformation;
+  std::array<RootAnchorObservation, 3> root_anchors = {};
+  bool node3_parent_scale_cancellation_selected = false;
   double input_root_translation_x = 0.0;
   double input_root_translation_y = 0.0;
   double input_root_translation_z = 0.0;
