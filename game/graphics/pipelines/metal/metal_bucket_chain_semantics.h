@@ -21,6 +21,7 @@ constexpr MetalBucketChainLayout bucket_chain_layout(GameVersion version) {
     case GameVersion::JakX:
       return MetalBucketChainLayout::Unsupported;
   }
+  return MetalBucketChainLayout::Unsupported;
 }
 
 inline bool is_strict_empty_bucket_tag(MetalBucketChainLayout layout, const DmaTag& tag) {

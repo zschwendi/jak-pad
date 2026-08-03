@@ -13,9 +13,9 @@
  * register state, and encodes the batch into the frame's game-target encoder.
  *
  * GS blend modes the GL renderer rejects are counted and logged once instead
- * of logged per draw; GS states the GL renderer asserts on (they never occur
- * in Jak 1 data) assert here too, so divergence from the reference renderer
- * is loud rather than silent.
+ * of logged per draw; GS states the GL renderer asserts on remain assertions
+ * here too, so divergence from the reference renderer is loud rather than
+ * silent.
  */
 
 #include <array>

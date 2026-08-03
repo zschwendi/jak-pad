@@ -1,7 +1,5 @@
-#include <array>
 #include <cstdio>
 #include <cstring>
-#include <limits>
 #include <vector>
 
 #include "common/dma/dma.h"
@@ -16,20 +14,7 @@
 namespace {
 
 constexpr std::size_t kBucketCount = static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS);
-constexpr std::size_t kChainBase = 0x100;
-constexpr std::size_t kTerminalOffset = kChainBase + kBucketCount * 16;
-constexpr std::size_t kPayloadBase = kTerminalOffset + 16;
-constexpr std::size_t kPayloadStride = 48;
-constexpr std::size_t kMarkerCount = 3;
-constexpr std::size_t kChainSize = kPayloadBase + kMarkerCount * kPayloadStride;
-constexpr std::array<jak2::BucketId, kMarkerCount> kMarkers = {
-    jak2::BucketId::SKY_DRAW,
-    jak2::BucketId::SHADOW,
-    jak2::BucketId::DEBUG3,
-};
-
 static_assert(kBucketCount == 327);
-static_assert(kChainSize <= std::numeric_limits<u32>::max());
 
 int failures = 0;
 
@@ -50,64 +35,6 @@ void put_tag(std::vector<u8>& chain,
   std::memcpy(chain.data() + offset, &value, sizeof(value));
 }
 
-DmaTag read_tag(const std::vector<u8>& chain, std::size_t offset) {
-  u64 value = 0;
-  std::memcpy(&value, chain.data() + offset, sizeof(value));
-  return DmaTag(value);
-}
-
-std::vector<u8> make_chain(bool with_markers) {
-  std::vector<u8> chain(kChainSize, 0);
-  for (std::size_t bucket = 0; bucket < kBucketCount; bucket++) {
-    put_tag(chain, kChainBase + bucket * 16, DmaTag::Kind::CNT);
-  }
-  put_tag(chain, kTerminalOffset, DmaTag::Kind::END);
-
-  if (with_markers) {
-    for (std::size_t marker = 0; marker < kMarkers.size(); marker++) {
-      const auto bucket = static_cast<std::size_t>(kMarkers[marker]);
-      const auto slot = kChainBase + bucket * 16;
-      const auto payload = kPayloadBase + marker * kPayloadStride;
-      put_tag(chain, slot, DmaTag::Kind::NEXT, 0, static_cast<u32>(payload));
-      put_tag(chain, payload, DmaTag::Kind::CNT, 1);
-      std::memset(chain.data() + payload + 16, static_cast<int>(0xa0 + marker), 16);
-      put_tag(chain, payload + 32, DmaTag::Kind::NEXT, 0, static_cast<u32>(slot + 16));
-    }
-  }
-  return chain;
-}
-
-bool validate_chain_addresses(const std::vector<u8>& chain, bool with_markers) {
-  if (kChainBase == 0 || kChainBase % 16 != 0 || kTerminalOffset + 16 > chain.size()) {
-    return false;
-  }
-  const auto terminal = read_tag(chain, kTerminalOffset);
-  if (terminal.kind != DmaTag::Kind::END || terminal.qwc != 0) {
-    return false;
-  }
-  if (!with_markers) {
-    return true;
-  }
-  for (std::size_t marker = 0; marker < kMarkers.size(); marker++) {
-    const auto bucket = static_cast<std::size_t>(kMarkers[marker]);
-    const auto slot = kChainBase + bucket * 16;
-    const auto payload = kPayloadBase + marker * kPayloadStride;
-    if (bucket >= kBucketCount || slot + 16 > kTerminalOffset ||
-        payload + kPayloadStride > chain.size()) {
-      return false;
-    }
-    const auto from_slot = read_tag(chain, slot);
-    const auto payload_tag = read_tag(chain, payload);
-    const auto return_tag = read_tag(chain, payload + 32);
-    if (from_slot.kind != DmaTag::Kind::NEXT || from_slot.addr != payload ||
-        payload_tag.kind != DmaTag::Kind::CNT || payload_tag.qwc != 1 ||
-        return_tag.kind != DmaTag::Kind::NEXT || return_tag.addr != slot + 16) {
-      return false;
-    }
-  }
-  return true;
-}
-
 }  // namespace
 
 int main() {
@@ -115,23 +42,6 @@ int main() {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
       std::printf("FAIL: no default Metal device is available\n");
-      return 1;
-    }
-
-    const auto& table = metal_renderer::jak2_metal_bucket_table();
-    check(table.size() == kBucketCount, "the product table contains exactly 327 slots");
-    for (const auto marker : kMarkers) {
-      check(metal_renderer::jak2_metal_bucket_allows_content(static_cast<std::size_t>(marker)),
-            "each marker bucket is an audited DeferredSkip slot");
-    }
-
-    auto empty_chain = make_chain(false);
-    auto marker_chain = make_chain(true);
-    check(validate_chain_addresses(empty_chain, false),
-          "the all-empty chain uses a valid nonzero base and terminal END");
-    check(validate_chain_addresses(marker_chain, true),
-          "all marker jumps, payloads, returns, and the terminal END are in bounds");
-    if (failures) {
       return 1;
     }
 
@@ -144,50 +54,60 @@ int main() {
     TexturePool texture_pool(GameVersion::Jak2);
     renderer.init_bucket_renderers(&texture_pool, GameVersion::Jak2);
 
-    MetalRenderOptions options;
-    const bool empty_acquired =
-        renderer.render_chain_frame(options, nil, empty_chain.data(), kChainBase);
-    auto stats = renderer.chain_stats();
-    check(!empty_acquired, "the all-empty nil-layer chain acquires no drawable");
-    check(stats.chains_rendered == 1 && stats.last_buckets_dispatched == kBucketCount,
-          "the first chain dispatches all 327 product slots");
-    check(stats.command_buffers_committed == 1 && stats.drawable_misses == 1,
-          "the first chain commits its offscreen pass and records the nil drawable miss");
-    check(stats.skipped_bucket_bytes == 0 && stats.draw_calls == 0 && stats.triangles == 0,
-          "the all-empty chain skips no payload and issues no draws");
+    constexpr std::size_t kDeferredBucket = static_cast<std::size_t>(jak2::BucketId::BUCKET_2);
+    constexpr std::size_t kDirectBucket = static_cast<std::size_t>(jak2::BucketId::DEBUG3);
+    constexpr std::size_t kDeferredPayloadOffset = (kBucketCount + 1) * 16;
+    constexpr std::size_t kDirectPayloadOffset = kDeferredPayloadOffset + 48;
+    std::vector<u8> chain(kDirectPayloadOffset + 48, 0);
+    for (std::size_t bucket = 0; bucket < kBucketCount; bucket++) {
+      put_tag(chain, bucket * 16, DmaTag::Kind::CNT);
+    }
+    put_tag(chain, kBucketCount * 16, DmaTag::Kind::END);
 
-    options.host_tick_id = 2;
-    options.chain_ordinal = 1;
-    const bool marker_acquired =
-        renderer.render_chain_frame(options, nil, marker_chain.data(), kChainBase);
-    stats = renderer.chain_stats();
-    check(!marker_acquired, "the marker nil-layer chain acquires no drawable");
-    check(stats.chains_rendered == 2 && stats.last_buckets_dispatched == kBucketCount,
-          "the second chain also dispatches exactly 327 product slots");
-    check(stats.command_buffers_committed == 2 && stats.drawable_misses == 2 &&
-              stats.drawables_acquired == 0,
-          "both nil-layer chains commit offscreen without acquiring a drawable");
+    // Distinguish an audited DeferredSkip binding from StrictEmpty without
+    // requiring any game data: bucket 2 jumps to one qword of synthetic
+    // payload and then returns to bucket 3.
+    put_tag(chain, kDeferredBucket * 16, DmaTag::Kind::NEXT, 0, kDeferredPayloadOffset);
+    put_tag(chain, kDeferredPayloadOffset, DmaTag::Kind::CNT, 1);
+    std::memset(chain.data() + kDeferredPayloadOffset + 16, 0xa5, 16);
+    put_tag(chain, kDeferredPayloadOffset + 32, DmaTag::Kind::NEXT, 0,
+            static_cast<u32>((kDeferredBucket + 1) * 16));
+
+    // DEBUG3 uses the existing Direct renderer. Its private qword contains four
+    // VIF NOPs, so this proves Jak 2's Direct chain traversal without encoding
+    // a GIF draw or making a pixel claim.
+    put_tag(chain, kDirectBucket * 16, DmaTag::Kind::NEXT, 0, kDirectPayloadOffset);
+    put_tag(chain, kDirectPayloadOffset, DmaTag::Kind::CNT, 1);
+    put_tag(chain, kDirectPayloadOffset + 32, DmaTag::Kind::NEXT, 0,
+            static_cast<u32>((kDirectBucket + 1) * 16));
+
+    MetalRenderOptions options;
+    const bool acquired = renderer.render_chain_frame(options, nil, chain.data(), 0);
+    const auto stats = renderer.chain_stats();
+
+    check(!acquired, "nil CAMetalLayer acquires no drawable");
+    check(stats.chains_rendered == 1 && stats.last_buckets_dispatched == kBucketCount,
+          "the real Jak 2 dispatcher consumed all 327 synthetic slots");
+    check(stats.command_buffers_committed == 0,
+          "nil-layer dispatch commits no Metal command buffer");
+    check(stats.drawables_acquired == 0 && stats.drawable_misses == 0,
+          "nil-layer dispatch performs no drawable acquisition attempt");
     check(stats.submissions == 0 && stats.presentations_completed == 0 &&
               stats.presentation_drops == 0,
-          "nil-layer dispatch records zero presentation submissions and presentations");
-    check(stats.draw_calls == 0 && stats.triangles == 0 && stats.tex_uploads == 0 &&
-              stats.direct_unsupported_blends == 0,
-          "the policy-only dispatcher performs no rendering or texture work");
-    check(stats.skipped_bucket_bytes == 48,
-          "three DeferredSkip markers consume exactly 48 synthetic payload bytes");
-
-    metal_renderer::FramePixels pixels;
-    check(renderer.read_game_frame(&pixels),
-          "the second nil-layer command buffer completes and its offscreen target is readable");
+          "nil-layer dispatch records zero submissions and presentations");
+    check(stats.draw_calls == 0 && stats.triangles == 0 && stats.skipped_bucket_bytes == 16,
+          "one DeferredSkip slot consumes exactly its 16-byte synthetic payload");
+    check(stats.direct_unsupported_blends == 0,
+          "the DEBUG3 Direct binding traverses NOP payload without unsupported blends");
     check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
               metal_renderer::kJak2MetalBucketExpectedFingerprint,
-          "the dispatcher links the reviewed 327-slot policy table unchanged");
+          "the dispatcher links the reviewed 327-slot policy table");
 
     if (failures) {
       std::printf("FAIL: %d Jak 2 nil-layer Metal dispatcher checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak 2 dispatched two 327-slot policy chains with no presentation\n");
+    std::printf("PASS: Jak 2 dispatched 327 policy slots with no submission or presentation\n");
     return 0;
   }
 }

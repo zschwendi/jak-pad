@@ -342,7 +342,32 @@ void MetalRenderer::init_bucket_renderers_jak2() {
 
   for (const auto& descriptor : table) {
     const auto bucket_id = static_cast<std::size_t>(descriptor.id);
-    if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip) {
+    const int batch_size = metal_renderer::jak2_metal_direct_batch_size(bucket_id);
+    if (batch_size != 0) {
+      ASSERT(descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip);
+      const char* name = "direct";
+      switch (static_cast<jak2::BucketId>(bucket_id)) {
+        case jak2::BucketId::SKY_DRAW:
+          name = "sky-draw";
+          break;
+        case jak2::BucketId::SCREEN_FILTER:
+          name = "screen-filter";
+          break;
+        case jak2::BucketId::DEBUG2:
+          name = "debug2";
+          break;
+        case jak2::BucketId::DEBUG_NO_ZBUF2:
+          name = "debug-no-zbuf2";
+          break;
+        case jak2::BucketId::DEBUG3:
+          name = "debug3";
+          break;
+        default:
+          ASSERT(false);
+      }
+      m_bucket_renderers[bucket_id] =
+          std::make_unique<MetalDirectRenderer>(name, descriptor.id, batch_size);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip) {
       m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
           fmt::format("jak2-deferred-{}", bucket_id), descriptor.id);
     } else {
@@ -892,7 +917,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     }
 #endif
 
-    id<CAMetalDrawable> drawable = [layer nextDrawable];
+    id<CAMetalDrawable> drawable = layer ? [layer nextDrawable] : nil;
     if (drawable) {
       drawable_acquired = true;
       m_chain_stats.drawables_acquired++;
@@ -941,16 +966,18 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
       }];
 #endif
       schedule_present(cmds, drawable, opts);
-    } else {
+    } else if (layer) {
       m_chain_stats.drawable_misses++;
     }
 
-    [cmds commit];
-    m_chain_stats.command_buffers_committed++;
-    {
-      std::lock_guard<std::mutex> lock(m_frame_mutex);
-      m_last_frame_cmds = cmds;
-      m_frame_count++;
+    if (layer) {
+      [cmds commit];
+      m_chain_stats.command_buffers_committed++;
+      {
+        std::lock_guard<std::mutex> lock(m_frame_mutex);
+        m_last_frame_cmds = cmds;
+        m_frame_count++;
+      }
     }
 
     // frame stats for tests / debugging

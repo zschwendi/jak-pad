@@ -68,6 +68,25 @@ int main() {
   check(!metal_renderer::jak2_metal_bucket_allows_content(table.size()),
         "policy rejects an out-of-range bucket ID");
 
+  std::size_t direct = 0;
+  for (std::size_t i = 0; i < table.size(); i++) {
+    direct += metal_renderer::jak2_metal_direct_batch_size(i) != 0;
+  }
+  check(direct == 5 &&
+            metal_renderer::jak2_metal_direct_batch_size(
+                static_cast<std::size_t>(jak2::BucketId::SKY_DRAW)) == 1024 &&
+            metal_renderer::jak2_metal_direct_batch_size(
+                static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)) == 256 &&
+            metal_renderer::jak2_metal_direct_batch_size(
+                static_cast<std::size_t>(jak2::BucketId::DEBUG2)) == 0x8000 &&
+            metal_renderer::jak2_metal_direct_batch_size(
+                static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF2)) == 0x8000 &&
+            metal_renderer::jak2_metal_direct_batch_size(
+                static_cast<std::size_t>(jak2::BucketId::DEBUG3)) == 0x2000,
+        "only the five existing Jak 2 Direct bindings receive their reference batch sizes");
+  check(metal_renderer::jak2_metal_direct_batch_size(table.size()) == 0,
+        "out-of-range buckets do not receive a Direct binding");
+
   if (failures) {
     std::printf("FAIL: %d Jak 2 Metal bucket table checks failed\n", failures);
     return 1;

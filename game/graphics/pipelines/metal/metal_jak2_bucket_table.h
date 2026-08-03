@@ -26,5 +26,6 @@ const std::array<Jak2MetalBucketDescriptor, kJak2MetalBucketCount>& jak2_metal_b
 
 std::uint64_t jak2_metal_bucket_table_fingerprint();
 bool jak2_metal_bucket_allows_content(std::size_t bucket_id);
+int jak2_metal_direct_batch_size(std::size_t bucket_id);
 
 }  // namespace metal_renderer

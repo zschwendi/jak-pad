@@ -94,7 +94,7 @@ class MetalRenderer {
   // Renders one frame from the game's DMA chain (the copied chain from
   // send_chain): walks the selected game's chain and hands each bucket to its
   // renderer, then runs the present pass when a layer is supplied. A nil layer
-  // still commits the offscreen game pass without scheduling presentation.
+  // validates dispatch and encoding without committing a command buffer.
   bool render_chain_frame(const MetalRenderOptions& opts,
                           CAMetalLayer* layer,
                           const u8* chain_data,

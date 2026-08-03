@@ -149,4 +149,20 @@ bool jak2_metal_bucket_allows_content(std::size_t bucket_id) {
          kTable[bucket_id].behavior == Jak2MetalBucketBehavior::DeferredSkip;
 }
 
+int jak2_metal_direct_batch_size(std::size_t bucket_id) {
+  switch (static_cast<BucketId>(bucket_id)) {
+    case BucketId::SKY_DRAW:
+      return 1024;
+    case BucketId::SCREEN_FILTER:
+      return 256;
+    case BucketId::DEBUG2:
+    case BucketId::DEBUG_NO_ZBUF2:
+      return 0x8000;
+    case BucketId::DEBUG3:
+      return 0x2000;
+    default:
+      return 0;
+  }
+}
+
 }  // namespace metal_renderer
