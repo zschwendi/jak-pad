@@ -30,9 +30,13 @@ discard every chain and never render. Plain `--play` retains its title-only
 behavior, while the Jak 1 boot and gameplay probes retain their existing DMA measurement and
 capture behavior. `jak1-gfx-host-test`, `jak2-gfx-host-test`, `jak2-pad-seam-test`,
 `jak2-handler-seam-test`, `jak2-pc-rand-test`, `jak2-lightweight-machine-test`,
-`jak2-dma-boundary-test`, and `jak2-sound-rpc-test` cover those seams, while
+`jak2-dma-boundary-test`, `jak2-display-tick-coordinator-test`, and
+`jak2-sound-rpc-test` cover those seams, while
 `jak2-dgo-rpc-test` covers the exact 32-byte DGO protocol, composed-router delegation and rejection
 behavior, and incremental AOT-code/data-object linking. All use original synthetic data only.
+`display_tick_coordinator` is the matching portable host gate: while foregrounded, one display
+callback synchronously runs one supplied frame; while paused, callbacks are discarded without a
+queue or timestamp-derived catch-up. It does not own a display link, renderer, or presentation.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
 kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
 exploratory integration probe; the registered CTest does not enable that mode.
