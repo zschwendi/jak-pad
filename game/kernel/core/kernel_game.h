@@ -59,6 +59,16 @@ void goal_game_install_gfx_adapters();
 void goal_game_gfx_before_vsync();
 
 // ------------------------------------------------------------------------------------------
+// audio output
+// ------------------------------------------------------------------------------------------
+
+/*! The fixed output rate of the selected game's 989snd instance. */
+int goal_game_sound_sample_rate();
+
+/*! Pull interleaved stereo signed 16-bit frames from the selected game's installed sound owner. */
+int goal_game_sound_pull_audio(int16_t* out, int frames);
+
+// ------------------------------------------------------------------------------------------
 // symbols and types
 // ------------------------------------------------------------------------------------------
 

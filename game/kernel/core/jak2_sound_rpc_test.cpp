@@ -19,6 +19,7 @@
 
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/kernel_core.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/kernel/core/sblk_preflight.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/overlord/common/sbank.h"
@@ -579,6 +580,15 @@ int main() {
 
   check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_NOT_INITIALIZED,
         "installation rejects an uninitialized kernel");
+  check_s32(goal_game_sound_sample_rate(), 48000,
+            "the game-neutral audio seam reports the Jak 2 mixer rate");
+  std::array<s16, 8> stopped_audio;
+  stopped_audio.fill(0x1234);
+  check_s32(goal_game_sound_pull_audio(stopped_audio.data(), stopped_audio.size() / 2), 0,
+            "the game-neutral audio seam does not pull before sound installation");
+  check(std::all_of(stopped_audio.begin(), stopped_audio.end(),
+                    [](s16 sample) { return sample == 0x1234; }),
+        "an uninstalled audio pull leaves the host buffer untouched");
   if (goal_kernel_core_initialize() != GOAL_KERNEL_CORE_OK) {
     std::printf("FAIL kernel initialization: %s\n", goal_kernel_core_last_error());
     return 1;
@@ -992,10 +1002,10 @@ int main() {
   check_u32(stats.sounds_missing, 0, "same-ID update ignores its replacement name");
 
   std::array<s16, 1024> audio{};
-  check_s32(snd_PullAudio(audio.data(), audio.size() / 2), audio.size() / 2,
-            "989snd renders the requested synthetic stereo frames");
+  check_s32(goal_game_sound_pull_audio(audio.data(), audio.size() / 2), audio.size() / 2,
+            "the game-neutral seam renders requested synthetic stereo frames");
   check(std::any_of(audio.begin(), audio.end(), [](s16 sample) { return sample != 0; }),
-        "PLAY produces nonzero samples through snd_PullAudio");
+        "PLAY produces nonzero samples through the game-neutral audio seam");
 
   auto missing_play = guarded_buffer(kCommandSize, "jak2-player-missing");
   set_player_play(missing_play, 0, 0x7003, bank_name("not-there"));
@@ -1206,6 +1216,12 @@ int main() {
   }
   goal_jak2_sound_rpc_shutdown();
   check(!goal_jak2_sound_rpc_is_installed(), "explicit sound shutdown releases ownership");
+  stopped_audio.fill(0x2345);
+  check_s32(goal_game_sound_pull_audio(stopped_audio.data(), stopped_audio.size() / 2), 0,
+            "the game-neutral audio seam stops pulling after sound shutdown");
+  check(std::all_of(stopped_audio.begin(), stopped_audio.end(),
+                    [](s16 sample) { return sample == 0x2345; }),
+        "a stopped audio pull leaves the host buffer untouched");
   if (reinit_send.command.offset && rpc_call) {
     reset_bank_command(reinit_send, bank_name("valid"));
     rpc_call(1, 0, 1, reinit_send.command.offset, kCommandSize, 0, 0, 0);

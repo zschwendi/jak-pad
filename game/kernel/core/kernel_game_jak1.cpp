@@ -204,6 +204,14 @@ void goal_game_install_gfx_adapters() {
 
 void goal_game_gfx_before_vsync() {}
 
+int goal_game_sound_sample_rate() {
+  return goal_sound_sample_rate();
+}
+
+int goal_game_sound_pull_audio(int16_t* out, int frames) {
+  return goal_sound_pull_audio(out, frames);
+}
+
 void goal_game_init_kernel_globals() {
   fileio_init_globals();
   kboot_init_globals_common();

@@ -40,6 +40,7 @@
 #include "game/kernel/jak2/kmachine.h"
 #include "game/kernel/jak2/kscheme.h"
 #include "game/runtime.h"
+#include "game/sound/sndshim.h"
 
 namespace {
 
@@ -369,6 +370,17 @@ void goal_game_gfx_before_vsync() {
   if (vblank_interrupt_handler && MasterExit == RuntimeExitStatus::RUNNING) {
     call_goal(Ptr<Function>(vblank_interrupt_handler), 0, 0, 0, s7.offset, g_ee_main_mem);
   }
+}
+
+int goal_game_sound_sample_rate() {
+  return 48000;
+}
+
+int goal_game_sound_pull_audio(int16_t* out, int frames) {
+  if (!goal_jak2_sound_rpc_is_installed()) {
+    return 0;
+  }
+  return snd_PullAudio(out, frames);
 }
 
 void goal_game_init_kernel_globals() {
