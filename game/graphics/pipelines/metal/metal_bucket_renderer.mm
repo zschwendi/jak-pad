@@ -3,6 +3,7 @@
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
+#include "game/graphics/pipelines/metal/metal_bucket_chain_semantics.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/texture/TexturePool.h"
 
@@ -64,36 +65,52 @@ void MetalFrameContext::resume_pass_with_framebuffer_copy(id<MTLTexture> snapsho
 void MetalEmptyBucketRenderer::render(DmaFollower& dma,
                                       MetalSharedRenderState* render_state,
                                       MetalFrameContext& /*ctx*/) {
-  auto first_tag = dma.current_tag();
-  dma.read_and_advance();
-  ASSERT(first_tag.kind == DmaTag::Kind::NEXT && first_tag.qwc == 0);
+  const auto layout = metal_renderer::bucket_chain_layout(render_state->version);
+  ASSERT_MSG(layout != metal_renderer::MetalBucketChainLayout::Unsupported,
+             fmt::format("Metal bucket renderer {} ({}) does not support game version {}", m_my_id,
+                         m_name, (int)render_state->version));
+  if (layout == metal_renderer::MetalBucketChainLayout::Jak1DefaultRegs) {
+    auto first_tag = dma.current_tag();
+    dma.read_and_advance();
+    ASSERT(first_tag.kind == DmaTag::Kind::NEXT && first_tag.qwc == 0);
 
-  auto call_tag = dma.current_tag();
-  dma.read_and_advance();
-  ASSERT_MSG(call_tag.kind == DmaTag::Kind::CALL && call_tag.qwc == 0,
-             fmt::format("Metal bucket renderer {} ({}) was supposed to be empty, but wasn't",
-                         m_my_id, m_name));
+    auto call_tag = dma.current_tag();
+    dma.read_and_advance();
+    ASSERT_MSG(call_tag.kind == DmaTag::Kind::CALL && call_tag.qwc == 0,
+               fmt::format("Metal bucket renderer {} ({}) was supposed to be empty, but wasn't",
+                           m_my_id, m_name));
 
-  ASSERT(dma.current_tag_offset() == render_state->default_regs_buffer);
-  dma.read_and_advance();
-  ASSERT(dma.current_tag().kind == DmaTag::Kind::RET);
-  dma.read_and_advance();
+    ASSERT(dma.current_tag_offset() == render_state->default_regs_buffer);
+    dma.read_and_advance();
+    ASSERT(dma.current_tag().kind == DmaTag::Kind::RET);
+    dma.read_and_advance();
 
-  auto to_next_buffer = dma.current_tag();
-  ASSERT(to_next_buffer.kind == DmaTag::Kind::NEXT);
-  ASSERT(to_next_buffer.qwc == 0);
-  dma.read_and_advance();
+    auto to_next_buffer = dma.current_tag();
+    ASSERT(to_next_buffer.kind == DmaTag::Kind::NEXT);
+    ASSERT(to_next_buffer.qwc == 0);
+    dma.read_and_advance();
 
-  ASSERT(dma.current_tag_offset() == render_state->next_bucket);
+    ASSERT(dma.current_tag_offset() == render_state->next_bucket);
+  } else {
+    const auto first_tag = dma.current_tag();
+    dma.read_and_advance();
+    ASSERT_MSG(metal_renderer::is_strict_empty_bucket_tag(layout, first_tag),
+               fmt::format("Metal bucket renderer {} ({}) was supposed to be empty, but wasn't",
+                           m_my_id, m_name));
+    ASSERT(dma.current_tag_offset() == render_state->next_bucket);
+  }
 }
 
 void MetalSkipRenderer::render(DmaFollower& dma,
                                MetalSharedRenderState* render_state,
                                MetalFrameContext& /*ctx*/) {
+  const auto layout = metal_renderer::bucket_chain_layout(render_state->version);
+  ASSERT(layout != metal_renderer::MetalBucketChainLayout::Unsupported);
   u64 bytes = 0;
   while (dma.current_tag_offset() != render_state->next_bucket) {
     bytes += dma.read_and_advance().size_bytes;
-    if (dma.current_tag_offset() == render_state->default_regs_buffer) {
+    if (layout == metal_renderer::MetalBucketChainLayout::Jak1DefaultRegs &&
+        dma.current_tag_offset() == render_state->default_regs_buffer) {
       // the bucket-ending bounce through the default-registers chain is
       // structure, not content; don't count it
       dma.read_and_advance();  // cnt

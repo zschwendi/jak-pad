@@ -3,6 +3,7 @@
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
+#include "game/graphics/pipelines/metal/metal_bucket_chain_semantics.h"
 #include "game/graphics/texture/TexturePool.h"
 
 #include "fmt/format.h"
@@ -67,6 +68,8 @@ MetalDirectRenderer::MetalDirectRenderer(const std::string& name, int my_id, int
 void MetalDirectRenderer::render(DmaFollower& dma,
                                  MetalSharedRenderState* render_state,
                                  MetalFrameContext& ctx) {
+  const auto layout = metal_renderer::bucket_chain_layout(render_state->version);
+  ASSERT(layout != metal_renderer::MetalBucketChainLayout::Unsupported);
   // rendering from a bucket starts from a totally reset state
   reset_state();
 
@@ -76,7 +79,8 @@ void MetalDirectRenderer::render(DmaFollower& dma,
       render_vif(data.vif0(), data.vif1(), data.data, data.size_bytes, render_state, ctx);
     }
 
-    if (dma.current_tag_offset() == render_state->default_regs_buffer) {
+    if (layout == metal_renderer::MetalBucketChainLayout::Jak1DefaultRegs &&
+        dma.current_tag_offset() == render_state->default_regs_buffer) {
       dma.read_and_advance();  // cnt
       ASSERT(dma.current_tag().kind == DmaTag::Kind::RET);
       dma.read_and_advance();  // ret

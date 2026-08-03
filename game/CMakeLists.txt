@@ -436,6 +436,10 @@ if(WIN32)
 endif()
 
 if(GOAL_HOST_TESTS_ENABLED)
+    add_executable(metal-bucket-chain-semantics-test
+            graphics/pipelines/metal/metal_bucket_chain_semantics_test.cpp)
+    add_test(NAME metal-bucket-chain-semantics-test COMMAND metal-bucket-chain-semantics-test)
+
     add_executable(jak2-metal-bucket-table-test
             graphics/pipelines/metal/metal_jak2_bucket_table.cpp
             graphics/pipelines/metal/metal_jak2_bucket_table_test.cpp)

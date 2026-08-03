@@ -136,8 +136,8 @@ class MetalBucketRenderer {
 };
 
 /*!
- * Mirror of the GL EmptyBucketRenderer (Jak 1 form): asserts the bucket
- * contains only the empty-bucket structure and consumes it.
+ * Mirror of the GL EmptyBucketRenderer: accepts Jak 1's default-register
+ * envelope or Jak 2's strict zero-qwc CNT slot and consumes exactly one bucket.
  */
 class MetalEmptyBucketRenderer : public MetalBucketRenderer {
  public:
