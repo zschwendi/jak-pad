@@ -31,13 +31,16 @@ metal_merc_transform_trace::Event observe(metal_merc_transform_trace::Tracker& t
   return tracker.observe(frame_id, slot, 0x1234, frame_id * 17, x, y, z, 0x1000);
 }
 
-metal_merc_transform_trace::BasisSnapshot yaw_basis(double degrees) {
+metal_merc_transform_trace::MatrixSnapshot yaw_matrix(double degrees) {
   constexpr double kPi = 3.14159265358979323846;
   const double radians = degrees * kPi / 180.0;
   const float cosine = static_cast<float>(std::cos(radians));
   const float sine = static_cast<float>(std::sin(radians));
-  const std::array<float, 12> matrix = {cosine, 0.f, sine,  0.f, 0.f,    1.f,
-                                        0.f,    0.f, -sine, 0.f, cosine, 0.f};
+  return {cosine, 0.f, sine, 0.f, 0.f, 1.f, 0.f, 0.f, -sine, 0.f, cosine, 0.f, 0.f, 0.f, 0.f, 1.f};
+}
+
+metal_merc_transform_trace::BasisSnapshot yaw_basis(double degrees) {
+  const auto matrix = yaw_matrix(degrees);
   return metal_merc_transform_trace::make_basis_snapshot(matrix.data());
 }
 
@@ -45,7 +48,36 @@ metal_merc_transform_trace::ProvenanceObservation provenance(double input_degree
                                                              double camera_degrees,
                                                              double output_degrees,
                                                              u64 identity,
-                                                             bool mapping_valid = true) {
+                                                             bool mapping_valid = true);
+
+metal_merc_transform_trace::ProvenanceObservation composed_provenance(double input_degrees,
+                                                                      double camera_degrees,
+                                                                      double bind_degrees,
+                                                                      double output_error_degrees,
+                                                                      u64 identity) {
+  const auto input = yaw_matrix(input_degrees);
+  const auto camera = yaw_matrix(camera_degrees);
+  const auto bind = yaw_matrix(bind_degrees);
+  const auto bone_bind = metal_merc_transform_trace::multiply_matrices(input.data(), bind.data());
+  const auto expected =
+      metal_merc_transform_trace::multiply_matrices(camera.data(), bone_bind.data());
+  const auto error = yaw_matrix(output_error_degrees);
+  const auto actual = metal_merc_transform_trace::multiply_matrices(error.data(), expected.data());
+
+  auto out = provenance(input_degrees, camera_degrees, 0.0, identity);
+  out.bind_pose_hash = identity * 7;
+  out.output_basis = metal_merc_transform_trace::make_basis_snapshot(actual.data());
+  out.output_expected_distance = metal_merc_transform_trace::output_composition_distance(
+      camera.data(), input.data(), bind.data(), actual.data());
+  out.expected_output_valid = std::isfinite(out.output_expected_distance);
+  return out;
+}
+
+metal_merc_transform_trace::ProvenanceObservation provenance(double input_degrees,
+                                                             double camera_degrees,
+                                                             double output_degrees,
+                                                             u64 identity,
+                                                             bool mapping_valid) {
   metal_merc_transform_trace::ProvenanceObservation out;
   out.mapping_checked = true;
   out.mapping_valid = mapping_valid;
@@ -224,10 +256,55 @@ int main() {
   check(!translation_only.observe(601, 3, 0xe1c4a2, 2, 1.0, 1.0, 1.0, 0x2000, translated_b).valid(),
         "ordinary translation is retained as evidence without becoming a facing or scale issue");
 
+  metal_merc_transform_trace::Tracker composed_motion;
+  const std::array<std::array<double, 2>, 4> arbitrary_motion = {
+      std::array<double, 2>{0.0, 0.0}, {75.0, 12.0}, {165.0, -25.0}, {270.0, 40.0}};
+  bool composed_motion_quiet = true;
+  for (std::size_t frame = 0; frame < arbitrary_motion.size(); frame++) {
+    const auto event = composed_motion.observe(
+        700 + frame, 3, 0xe1c4a2, frame, 1.0, 1.0, 1.0, 0x2000,
+        composed_provenance(arbitrary_motion[frame][0], arbitrary_motion[frame][1], 17.0, 0.0,
+                            700 + frame));
+    composed_motion_quiet &=
+        !(event.issue_mask & metal_merc_transform_trace::OUTPUT_COMPOSITION_MISMATCH);
+  }
+  check(
+      composed_motion_quiet,
+      "arbitrary root spin and camera motion stay quiet when camera * bone * bind matches output");
+
+  metal_merc_transform_trace::Tracker composition_mismatch;
+  bool sustained_mismatch_reported = true;
+  metal_merc_transform_trace::Event last_composition_mismatch;
+  for (u64 frame = 710; frame < 713; frame++) {
+    last_composition_mismatch = composition_mismatch.observe(
+        frame, 3, 0xe1c4a2, frame, 1.0, 1.0, 1.0, 0x2000,
+        composed_provenance((frame - 710) * 35.0, (frame - 710) * -8.0, 17.0, 20.0, frame));
+    sustained_mismatch_reported =
+        sustained_mismatch_reported && (last_composition_mismatch.issue_mask &
+                                        metal_merc_transform_trace::OUTPUT_COMPOSITION_MISMATCH);
+  }
+  check(sustained_mismatch_reported &&
+            last_composition_mismatch.current_output_expected_distance >=
+                metal_merc_transform_trace::Tracker::kOutputCompositionMismatchDistance &&
+            last_composition_mismatch.previous_output_expected_distance >=
+                metal_merc_transform_trace::Tracker::kOutputCompositionMismatchDistance,
+        "a sustained arbitrary output mismatch reports 0x80 with current and previous evidence");
+
+  metal_merc_transform_trace::Tracker subthreshold_composition;
+  const auto subthreshold = subthreshold_composition.observe(
+      720, 3, 0xe1c4a2, 1, 1.0, 1.0, 1.0, 0x2000, composed_provenance(0.0, 0.0, 0.0, 0.05, 720));
+  const auto over_threshold = subthreshold_composition.observe(
+      721, 3, 0xe1c4a2, 2, 1.0, 1.0, 1.0, 0x2000, composed_provenance(0.0, 0.0, 0.0, 0.2, 721));
+  check(!(subthreshold.issue_mask & metal_merc_transform_trace::OUTPUT_COMPOSITION_MISMATCH) &&
+            (over_threshold.issue_mask & metal_merc_transform_trace::OUTPUT_COMPOSITION_MISMATCH),
+        "the composition comparator is quiet below 1e-3 RMS and reports above it");
+
   auto& registry = jak1_bones_provenance_trace::registry();
   registry.reset();
   std::vector<u8> memory(0x10000, 0);
   constexpr u32 kOutput = 0x1000;
+  constexpr u32 kJointsObject = 0x2000;
+  constexpr u32 kJoints = kJointsObject + jak1_bones_provenance_trace::kGoalBasicPointerBias;
   constexpr u32 kBones = 0x3000;
   constexpr u32 kCamera = 0x5000;
   constexpr u32 kCount = 4;
@@ -235,29 +312,50 @@ int main() {
     store_identity(memory, kBones + bone * jak1_bones_provenance_trace::kBoneStride,
                    static_cast<float>(bone));
   }
+  for (u32 joint = 0; joint < jak1_bones_provenance_trace::kRootAnchorCount; joint++) {
+    store_identity(memory,
+                   kJointsObject + jak1_bones_provenance_trace::kJointBindPoseOffset +
+                       joint * jak1_bones_provenance_trace::kJointStride,
+                   static_cast<float>(10 + joint));
+  }
   store_identity(memory, kCamera, 0.f);
-  check(registry.record(kOutput, kBones, kCount, kCamera, memory.data(), memory.size()),
+  check(registry.record(kOutput, kJoints, kBones, kCount, kCamera, memory.data(), memory.size()),
         "the producer registry records an in-bounds calculation");
   const auto recorded = registry.find_output_base(kOutput);
   check(recorded && recorded->serial == 1 && recorded->bone_count == kCount &&
-            recorded->camera.valid && recorded->root_anchors[0].valid &&
-            recorded->root_anchors[1].valid && recorded->root_anchors[2].valid,
-        "one record retains camera plus align, prejoint and main transforms");
+            recorded->camera.valid && recorded->joints_base == kJoints &&
+            recorded->root_anchors[0].valid && recorded->root_anchors[1].valid &&
+            recorded->root_anchors[2].valid && recorded->root_bind_poses[0].valid &&
+            recorded->root_bind_poses[1].valid && recorded->root_bind_poses[2].valid,
+        "one record retains camera, bind poses, and align, prejoint and main transforms");
+  bool bind_pose_bytes_match = recorded.has_value();
+  if (recorded) {
+    for (u32 joint = 0; joint < jak1_bones_provenance_trace::kRootAnchorCount; joint++) {
+      bind_pose_bytes_match &= std::memcmp(recorded->root_bind_poses[joint].bytes.data(),
+                                           memory.data() + kJointsObject +
+                                               jak1_bones_provenance_trace::kJointBindPoseOffset +
+                                               joint * jak1_bones_provenance_trace::kJointStride,
+                                           jak1_bones_provenance_trace::kTransformBytes) == 0;
+    }
+  }
+  check(bind_pose_bytes_match,
+        "the GOAL basic a1 pointer bias resolves bind pose +0x10 from the object base");
   const auto source_match =
       registry.find_source_address(kOutput + 3 * jak1_bones_provenance_trace::kOutputStride);
   check(source_match && source_match->output_base == kOutput &&
             !registry.find_source_address(kOutput + 1),
         "source lookup accepts an aligned palette member and rejects a misaligned address");
-  check(!registry.record(memory.size() - 64, kBones, kCount, kCamera, memory.data(), memory.size()),
+  check(!registry.record(memory.size() - 64, kJoints, kBones, kCount, kCamera, memory.data(),
+                         memory.size()),
         "the producer registry rejects an output span outside EE memory");
 
   store_identity(memory, kCamera, 9.f);
-  check(registry.record(kOutput, kBones, kCount, kCamera, memory.data(), memory.size()) &&
+  check(registry.record(kOutput, kJoints, kBones, kCount, kCamera, memory.data(), memory.size()) &&
             registry.find_output_base(kOutput)->serial == 2,
         "reused output storage resolves to the newest producer calculation");
   for (u32 index = 0; index < jak1_bones_provenance_trace::kCalculationCount; index++) {
     const u32 output = 0x6000 + index * 512;
-    registry.record(output, kBones, kCount, kCamera, memory.data(), memory.size());
+    registry.record(output, kJoints, kBones, kCount, kCamera, memory.data(), memory.size());
   }
   check(!registry.find_output_base(kOutput) && registry.find_output_base(0x6000 + 63 * 512),
         "the fixed producer ring evicts its oldest record without growing");

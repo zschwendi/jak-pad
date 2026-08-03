@@ -996,14 +996,26 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.merc_incoherent_bone_sources = merc_stats.incoherent_bone_sources;
     m_chain_stats.merc_models_with_palette_health_issues =
         merc_stats.models_with_palette_health_issues;
+    m_chain_stats.merc_eichar_palette_health_issues = merc_stats.eichar_palette_health_issues;
     m_chain_stats.merc_eichar_transform_discontinuities =
         merc_stats.eichar_transform_discontinuities;
+    m_chain_stats.merc_eichar_output_composition_mismatches =
+        merc_stats.eichar_output_composition_mismatches;
     if (!m_chain_stats.first_merc_palette_health_event.valid() &&
         merc_stats.first_palette_health_event.valid()) {
       m_chain_stats.first_merc_palette_health_event = merc_stats.first_palette_health_event;
     }
     if (merc_stats.last_palette_health_event.valid()) {
       m_chain_stats.last_merc_palette_health_event = merc_stats.last_palette_health_event;
+    }
+    if (!m_chain_stats.first_merc_eichar_palette_health_event.valid() &&
+        merc_stats.first_eichar_palette_health_event.valid()) {
+      m_chain_stats.first_merc_eichar_palette_health_event =
+          merc_stats.first_eichar_palette_health_event;
+    }
+    if (merc_stats.last_eichar_palette_health_event.valid()) {
+      m_chain_stats.last_merc_eichar_palette_health_event =
+          merc_stats.last_eichar_palette_health_event;
     }
     if (!m_chain_stats.first_merc_eichar_transform_discontinuity.valid() &&
         merc_stats.first_eichar_transform_discontinuity.valid()) {
@@ -1013,6 +1025,15 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     if (merc_stats.last_eichar_transform_discontinuity.valid()) {
       m_chain_stats.last_merc_eichar_transform_discontinuity =
           merc_stats.last_eichar_transform_discontinuity;
+    }
+    if (!m_chain_stats.first_merc_eichar_output_composition_mismatch.valid() &&
+        merc_stats.first_eichar_output_composition_mismatch.valid()) {
+      m_chain_stats.first_merc_eichar_output_composition_mismatch =
+          merc_stats.first_eichar_output_composition_mismatch;
+    }
+    if (merc_stats.last_eichar_output_composition_mismatch.valid()) {
+      m_chain_stats.last_merc_eichar_output_composition_mismatch =
+          merc_stats.last_eichar_output_composition_mismatch;
     }
     m_chain_stats.tex_uploads = uploads;
     m_chain_stats.skipped_bucket_bytes = skipped;

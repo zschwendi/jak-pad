@@ -198,12 +198,18 @@ struct ChainStats {
   int merc_degenerate_bone_matrices = 0;
   int merc_incoherent_bone_sources = 0;
   int merc_models_with_palette_health_issues = 0;
+  int merc_eichar_palette_health_issues = 0;
   int merc_eichar_transform_discontinuities = 0;
+  int merc_eichar_output_composition_mismatches = 0;
   // Retained across clean frames so an intermittent one-frame failure remains inspectable.
   MercPaletteHealthEvent first_merc_palette_health_event;
   MercPaletteHealthEvent last_merc_palette_health_event;
+  MercPaletteHealthEvent first_merc_eichar_palette_health_event;
+  MercPaletteHealthEvent last_merc_eichar_palette_health_event;
   metal_merc_transform_trace::Event first_merc_eichar_transform_discontinuity;
   metal_merc_transform_trace::Event last_merc_eichar_transform_discontinuity;
+  metal_merc_transform_trace::Event first_merc_eichar_output_composition_mismatch;
+  metal_merc_transform_trace::Event last_merc_eichar_output_composition_mismatch;
   // eye renderer, from the last chain frame
   int eyes_composed = 0;
   int eye_draws = 0;

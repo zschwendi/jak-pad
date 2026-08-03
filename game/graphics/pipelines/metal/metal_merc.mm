@@ -42,6 +42,7 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
     return out;
   }
   const auto& root = calculation->root_anchors[root_bone - 1];
+  const auto& bind_pose = calculation->root_bind_poses[root_bone - 1];
   out.input_root_bone = root_bone;
 
   std::array<u64, jak1_bones_provenance_trace::kRootAnchorCount> root_hashes = {};
@@ -52,8 +53,8 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
     }
   }
 
-  std::array<float, 16> root_matrix = {};
-  std::array<float, 16> camera_matrix = {};
+  metal_merc_transform_trace::MatrixSnapshot root_matrix = {};
+  metal_merc_transform_trace::MatrixSnapshot camera_matrix = {};
   memcpy(root_matrix.data(), root.bytes.data(), root.bytes.size());
   memcpy(camera_matrix.data(), calculation->camera.bytes.data(), calculation->camera.bytes.size());
 
@@ -63,6 +64,14 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
   out.input_root_basis = metal_merc_transform_trace::make_basis_snapshot(root_matrix.data());
   out.camera_basis = metal_merc_transform_trace::make_basis_snapshot(camera_matrix.data());
   out.output_basis = metal_merc_transform_trace::make_basis_snapshot(output_matrix);
+  if (bind_pose.valid) {
+    metal_merc_transform_trace::MatrixSnapshot bind_pose_matrix = {};
+    memcpy(bind_pose_matrix.data(), bind_pose.bytes.data(), bind_pose.bytes.size());
+    out.bind_pose_hash = fnv64(bind_pose.bytes.data(), bind_pose.bytes.size());
+    out.output_expected_distance = metal_merc_transform_trace::output_composition_distance(
+        camera_matrix.data(), root_matrix.data(), bind_pose_matrix.data(), output_matrix);
+    out.expected_output_valid = std::isfinite(out.output_expected_distance);
+  }
   out.input_translation_x = root_matrix[12];
   out.input_translation_y = root_matrix[13];
   out.input_translation_z = root_matrix[14];
@@ -315,12 +324,20 @@ void MetalMerc2::Stats::add(const Stats& o) {
   degenerate_bone_matrices += o.degenerate_bone_matrices;
   incoherent_bone_sources += o.incoherent_bone_sources;
   models_with_palette_health_issues += o.models_with_palette_health_issues;
+  eichar_palette_health_issues += o.eichar_palette_health_issues;
   eichar_transform_discontinuities += o.eichar_transform_discontinuities;
+  eichar_output_composition_mismatches += o.eichar_output_composition_mismatches;
   if (!first_palette_health_event.valid() && o.first_palette_health_event.valid()) {
     first_palette_health_event = o.first_palette_health_event;
   }
   if (o.last_palette_health_event.valid()) {
     last_palette_health_event = o.last_palette_health_event;
+  }
+  if (!first_eichar_palette_health_event.valid() && o.first_eichar_palette_health_event.valid()) {
+    first_eichar_palette_health_event = o.first_eichar_palette_health_event;
+  }
+  if (o.last_eichar_palette_health_event.valid()) {
+    last_eichar_palette_health_event = o.last_eichar_palette_health_event;
   }
   if (!first_eichar_transform_discontinuity.valid() &&
       o.first_eichar_transform_discontinuity.valid()) {
@@ -328,6 +345,13 @@ void MetalMerc2::Stats::add(const Stats& o) {
   }
   if (o.last_eichar_transform_discontinuity.valid()) {
     last_eichar_transform_discontinuity = o.last_eichar_transform_discontinuity;
+  }
+  if (!first_eichar_output_composition_mismatch.valid() &&
+      o.first_eichar_output_composition_mismatch.valid()) {
+    first_eichar_output_composition_mismatch = o.first_eichar_output_composition_mismatch;
+  }
+  if (o.last_eichar_output_composition_mismatch.valid()) {
+    last_eichar_output_composition_mismatch = o.last_eichar_output_composition_mismatch;
   }
 }
 
@@ -1003,6 +1027,13 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
             stats->first_eichar_transform_discontinuity = discontinuity;
           }
           stats->last_eichar_transform_discontinuity = discontinuity;
+          if (discontinuity.issue_mask & metal_merc_transform_trace::OUTPUT_COMPOSITION_MISMATCH) {
+            stats->eichar_output_composition_mismatches++;
+            if (!stats->first_eichar_output_composition_mismatch.valid()) {
+              stats->first_eichar_output_composition_mismatch = discontinuity;
+            }
+            stats->last_eichar_output_composition_mismatch = discontinuity;
+          }
           if (!m_reported_eichar_transform_discontinuity) {
             lg::error(
                 "Metal merc: model '{}' required bone slot {} has consecutive-frame transform "
@@ -1057,6 +1088,13 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
         stats->first_palette_health_event = event;
       }
       stats->last_palette_health_event = event;
+      if (model->name == "eichar-lod0") {
+        stats->eichar_palette_health_issues++;
+        if (!stats->first_eichar_palette_health_event.valid()) {
+          stats->first_eichar_palette_health_event = event;
+        }
+        stats->last_eichar_palette_health_event = event;
+      }
 
       if (!m_reported_palette_health_issue) {
         lg::error(

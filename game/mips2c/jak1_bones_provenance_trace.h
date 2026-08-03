@@ -11,6 +11,9 @@
 namespace jak1_bones_provenance_trace {
 
 constexpr std::size_t kTransformBytes = 4 * 16;
+constexpr std::size_t kJointStride = 0x50;
+constexpr std::size_t kJointBindPoseOffset = 0x10;
+constexpr std::size_t kGoalBasicPointerBias = 4;
 constexpr std::size_t kBoneStride = 96;
 constexpr std::size_t kOutputStride = 128;
 constexpr std::size_t kRootAnchorCount = 3;
@@ -26,24 +29,27 @@ struct Calculation {
   bool valid = false;
   u64 serial = 0;
   u32 output_base = 0;
+  u32 joints_base = 0;
   u32 bones_base = 0;
   u32 camera_base = 0;
   u32 bone_count = 0;
   TransformSnapshot camera;
   // Bone nodes 1, 2 and 3 are align, prejoint and main respectively.
   std::array<TransformSnapshot, kRootAnchorCount> root_anchors = {};
+  std::array<TransformSnapshot, kRootAnchorCount> root_bind_poses = {};
 };
 
 class Registry {
  public:
   bool record(u64 output_base,
+              u64 joints_base,
               u64 bones_base,
               u64 bone_count,
               u64 camera_base,
               const u8* ee_memory,
               std::size_t ee_memory_size) {
     if (!ee_memory || !bone_count || bone_count > kMaximumBoneCount || output_base > UINT32_MAX ||
-        bones_base > UINT32_MAX || camera_base > UINT32_MAX ||
+        joints_base > UINT32_MAX || bones_base > UINT32_MAX || camera_base > UINT32_MAX ||
         !span_fits(output_base, bone_count * kOutputStride, ee_memory_size) ||
         !span_fits(bones_base, bone_count * kBoneStride, ee_memory_size) ||
         !span_fits(camera_base, kTransformBytes, ee_memory_size)) {
@@ -54,6 +60,7 @@ class Registry {
     calculation.valid = true;
     calculation.serial = ++m_serial;
     calculation.output_base = static_cast<u32>(output_base);
+    calculation.joints_base = static_cast<u32>(joints_base);
     calculation.bones_base = static_cast<u32>(bones_base);
     calculation.camera_base = static_cast<u32>(camera_base);
     calculation.bone_count = static_cast<u32>(bone_count);
@@ -66,6 +73,15 @@ class Registry {
       }
       copy_snapshot(ee_memory + bones_base + bone_index * kBoneStride,
                     &calculation.root_anchors[anchor]);
+      const u64 normalized_joints_base = joints_base & 0x7fffffff;
+      if (normalized_joints_base < kGoalBasicPointerBias) {
+        continue;
+      }
+      const u64 bind_pose_address = normalized_joints_base - kGoalBasicPointerBias +
+                                    kJointBindPoseOffset + anchor * kJointStride;
+      if (span_fits(bind_pose_address, kTransformBytes, ee_memory_size)) {
+        copy_snapshot(ee_memory + bind_pose_address, &calculation.root_bind_poses[anchor]);
+      }
     }
 
     m_calculations[m_next] = calculation;

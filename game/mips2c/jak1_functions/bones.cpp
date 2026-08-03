@@ -695,7 +695,7 @@ namespace jak1_bones_provenance_observe {
 u64 execute(void* ctxt) {
   auto* c = (ExecutionContext*)ctxt;
   jak1_bones_provenance_trace::registry().record(
-      c->sgpr64(a0), c->sgpr64(a2), c->sgpr64(a3), c->sgpr64(t0), g_ee_main_mem,
+      c->sgpr64(a0), c->sgpr64(a1), c->sgpr64(a2), c->sgpr64(a3), c->sgpr64(t0), g_ee_main_mem,
       EE_MAIN_MEM_SIZE);
   c->gprs[v0].du64[0] = 0;
   return c->gprs[v0].du64[0];

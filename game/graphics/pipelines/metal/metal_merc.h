@@ -58,11 +58,17 @@ class MetalMerc2 {
     int degenerate_bone_matrices = 0;
     int incoherent_bone_sources = 0;
     int models_with_palette_health_issues = 0;
+    int eichar_palette_health_issues = 0;
     int eichar_transform_discontinuities = 0;
+    int eichar_output_composition_mismatches = 0;
     metal_renderer::MercPaletteHealthEvent first_palette_health_event;
     metal_renderer::MercPaletteHealthEvent last_palette_health_event;
+    metal_renderer::MercPaletteHealthEvent first_eichar_palette_health_event;
+    metal_renderer::MercPaletteHealthEvent last_eichar_palette_health_event;
     metal_merc_transform_trace::Event first_eichar_transform_discontinuity;
     metal_merc_transform_trace::Event last_eichar_transform_discontinuity;
+    metal_merc_transform_trace::Event first_eichar_output_composition_mismatch;
+    metal_merc_transform_trace::Event last_eichar_output_composition_mismatch;
 
     void add(const Stats& o);
   };

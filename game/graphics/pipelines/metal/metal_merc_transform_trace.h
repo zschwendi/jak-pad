@@ -13,6 +13,7 @@ namespace metal_merc_transform_trace {
 constexpr std::size_t kMatrixLaneCount = 28;
 constexpr std::size_t kBoneSlotCount = 128;
 constexpr std::size_t kBasisComponentCount = 9;
+using MatrixSnapshot = std::array<float, 16>;
 
 inline u32 nonfinite_lane_mask(const float* lanes) {
   u32 mask = 0;
@@ -64,6 +65,31 @@ inline double basis_distance(const BasisSnapshot& a, const BasisSnapshot& b) {
   return std::sqrt(squared_distance / a.components.size());
 }
 
+inline MatrixSnapshot multiply_matrices(const float* left, const float* right) {
+  MatrixSnapshot out = {};
+  if (!left || !right) {
+    return out;
+  }
+  for (std::size_t column = 0; column < 4; column++) {
+    for (std::size_t row = 0; row < 4; row++) {
+      out[column * 4 + row] =
+          left[row] * right[column * 4] + left[4 + row] * right[column * 4 + 1] +
+          left[8 + row] * right[column * 4 + 2] + left[12 + row] * right[column * 4 + 3];
+    }
+  }
+  return out;
+}
+
+inline double output_composition_distance(const float* camera,
+                                          const float* bone,
+                                          const float* bind_pose,
+                                          const float* actual_output) {
+  const auto bone_bind = multiply_matrices(bone, bind_pose);
+  const auto expected_output = multiply_matrices(camera, bone_bind.data());
+  return basis_distance(make_basis_snapshot(expected_output.data()),
+                        make_basis_snapshot(actual_output));
+}
+
 struct ProvenanceObservation {
   bool mapping_checked = false;
   bool mapping_valid = false;
@@ -71,9 +97,12 @@ struct ProvenanceObservation {
   u64 producer_serial = 0;
   u64 input_root_hash = 0;
   u64 camera_hash = 0;
+  u64 bind_pose_hash = 0;
   BasisSnapshot input_root_basis;
   BasisSnapshot camera_basis;
   BasisSnapshot output_basis;
+  bool expected_output_valid = false;
+  double output_expected_distance = 0.0;
   double input_translation_x = 0.0;
   double input_translation_y = 0.0;
   double input_translation_z = 0.0;
@@ -92,6 +121,7 @@ enum DiscontinuityIssue : u8 {
   CAMERA_DRIVEN_ALTERNATION = 1 << 4,
   OUTPUT_STALE = 1 << 5,
   SOURCE_MAPPING_DISCONTINUITY = 1 << 6,
+  OUTPUT_COMPOSITION_MISMATCH = 1 << 7,
 };
 
 struct Event {
@@ -127,6 +157,10 @@ struct Event {
   u64 older_camera_hash = 0;
   u64 previous_camera_hash = 0;
   u64 current_camera_hash = 0;
+  u64 previous_bind_pose_hash = 0;
+  u64 current_bind_pose_hash = 0;
+  double previous_output_expected_distance = 0.0;
+  double current_output_expected_distance = 0.0;
   double input_older_to_previous_distance = 0.0;
   double input_previous_to_current_distance = 0.0;
   double input_older_to_current_distance = 0.0;
@@ -149,12 +183,14 @@ struct Event {
 // Jak's bone transforms may rotate every frame, but a rigid transform preserves the lengths and
 // aspect ratio of its basis vectors. Scale/aspect reports remain adjacent-frame checks. Optional
 // producer provenance retains exactly two older samples so rigid A/B/A facing changes can be
-// attributed to the world root, camera, or post-producer output without affecting rendering.
+// attributed to the world root, camera, or post-producer output. Its bind-pose snapshot also checks
+// the current output against camera * bone * bind without depending on a temporal pattern.
 class Tracker {
  public:
   static constexpr double kDiscontinuityRatio = 2.0;
   static constexpr double kMinimumBasisDistance = 1e-4;
   static constexpr double kReturnDistanceRatio = 0.5;
+  static constexpr double kOutputCompositionMismatchDistance = 1e-3;
 
   Event observe(u64 frame_id,
                 int bone_slot,
@@ -189,8 +225,15 @@ class Tracker {
       history = {};
       return event;
     }
+    if (current.provenance.expected_output_valid &&
+        current.provenance.output_expected_distance >= kOutputCompositionMismatchDistance) {
+      event.issue_mask |= OUTPUT_COMPOSITION_MISMATCH;
+    }
     if (!history.previous.valid || frame_id != history.previous.frame_id + 1) {
       if (frame_id != history.previous.frame_id) {
+        if (event.valid()) {
+          populate_event(&event, bone_slot, model_name_hash, {}, {}, current);
+        }
         history.older = {};
         history.previous = current;
       }
@@ -368,6 +411,10 @@ class Tracker {
     event->older_camera_hash = older.provenance.camera_hash;
     event->previous_camera_hash = previous.provenance.camera_hash;
     event->current_camera_hash = current.provenance.camera_hash;
+    event->previous_bind_pose_hash = previous.provenance.bind_pose_hash;
+    event->current_bind_pose_hash = current.provenance.bind_pose_hash;
+    event->previous_output_expected_distance = previous.provenance.output_expected_distance;
+    event->current_output_expected_distance = current.provenance.output_expected_distance;
     event->previous_input_translation_x = previous.provenance.input_translation_x;
     event->previous_input_translation_y = previous.provenance.input_translation_y;
     event->previous_input_translation_z = previous.provenance.input_translation_z;
