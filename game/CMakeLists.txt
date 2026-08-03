@@ -469,6 +469,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak2-handler-seam-test jak2-kernel-core)
         add_test(NAME jak2-handler-seam-test COMMAND jak2-handler-seam-test)
 
+        add_executable(jak2-pc-rand-test kernel/core/jak2_pc_rand_test.cpp)
+        target_link_libraries(jak2-pc-rand-test jak2-kernel-core)
+        add_test(NAME jak2-pc-rand-test COMMAND jak2-pc-rand-test)
+
         add_executable(jak2-sound-rpc-test kernel/core/jak2_sound_rpc_test.cpp)
         target_link_libraries(jak2-sound-rpc-test jak2-kernel-core)
         add_test(NAME jak2-sound-rpc-test COMMAND jak2-sound-rpc-test)

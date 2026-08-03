@@ -312,11 +312,11 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
     if (std::strcmp(rpc.first_dgo_name, "TITLE.DGO") != 0 || rpc.dgo_archives < 1 ||
         rpc.dgo_objects < 1 || rpc.linked_code_objects + rpc.linked_data_objects < 1 ||
         rpc.dgo_objects < rpc.linked_code_objects + rpc.linked_data_objects) {
-      say("FAILED: play did not prove a complete first title-level channel-3 request\n");
+      say("FAILED: play did not link a first title-level channel-3 object\n");
       return 1;
     }
     say("  proved: Jak 2 play reached TITLE.DGO through the composed channel-3 router\n");
-    say("STOPPED: the host probe ended at the first completed title request; it has no renderer "
+    say("STOPPED: the host probe ended after the first linked title object; it has no renderer "
         "or app loop, and any missing-machine "
         "reports above are the next unsupported frontier, not successful behavior.\n");
     return 0;

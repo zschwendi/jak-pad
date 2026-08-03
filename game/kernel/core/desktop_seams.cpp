@@ -14,7 +14,7 @@
  * The exceptions, each marked where it is defined, are the ones with nothing platform-specific
  * left in them once the PS2 hardware is gone: host file I/O (`ee::sceOpen` and friends, against
  * the configured data directory), `__mem-move`, `__read-ee-timer`, `__pc-get-mips2c`, and the
- * `scf-get-*` readers of the PS2 system configuration.
+ * `scf-get-*` readers of the PS2 system configuration, and `pc-rand`.
  *
  * Subsystems intentionally not in this library:
  *   - game/kernel/{common,jak1}/kmachine.cpp   : IOP boot, video, pads, PC-port functions (SDL,
@@ -31,6 +31,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -174,6 +175,12 @@ u64 pc_get_mips2c(u32 name) {
   return Mips2C::gLinkedFunctionTable.get(Ptr<String>(name).c()->data());
 }
 
+std::mt19937 extra_random_generator;
+
+u32 pc_rand() {
+  return extra_random_generator();
+}
+
 /*!
  * The system-configuration readers, from game/kernel/common/kmachine.cpp's `Decode*`. They read
  * the `masterConfig` block that kernel_core.cpp fills in on behalf of the absent
@@ -228,6 +235,7 @@ void goal_kernel_core_install_implemented_machine_functions() {
   goal_game_make_function_symbol("__mem-move", (void*)pc_mem_move);
   goal_game_make_function_symbol("__read-ee-timer", (void*)read_ee_timer);
   goal_game_make_function_symbol("__pc-get-mips2c", (void*)pc_get_mips2c);
+  goal_game_make_function_symbol("pc-rand", (void*)pc_rand);
   goal_game_make_function_symbol("scf-get-language", (void*)decode_language);
   goal_game_make_function_symbol("scf-get-time", (void*)decode_time);
   goal_game_make_function_symbol("scf-get-aspect", (void*)decode_aspect);
