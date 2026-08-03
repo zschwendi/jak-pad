@@ -47,6 +47,8 @@ int main() {
   }
   make_empty_chain();
 
+  check(goal_jak2_metal_host_create_presenting(nullptr) == nullptr,
+        "rejected presenting mode without an app-owned CAMetalLayer");
   goal_jak2_metal_host* host = goal_jak2_metal_host_create();
   check(host != nullptr, "created the process-singleton Jak 2 Metal host");
   if (!host) {
@@ -71,10 +73,15 @@ int main() {
   check(metrics.chains == 1 && metrics.completed_chains == 1 &&
             metrics.failed_chains == 0 && metrics.last_buckets_dispatched == kBucketCount,
         "one copied 327-bucket chain completed policy dispatch");
-  check(metrics.command_buffers_committed == 0 && metrics.drawables_acquired == 0 &&
+  check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
+            metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
+            metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&
             metrics.draws == 0 && metrics.triangles == 0 && metrics.submissions == 0 &&
-            metrics.presentations == 0,
+            metrics.presentations == 0 && metrics.presentation_drops == 0 &&
+            metrics.presentation_order_mismatches == 0 && metrics.unsupported_blends == 0,
         "nil-layer lifecycle dispatches without committing, drawing, or presenting");
+  check(!goal_jak2_metal_host_wait_for_last_frame(host, 0.01, 0),
+        "nil-layer mode rejects a completion wait without changing its dispatch result");
 
   goal_jak2_metal_host_destroy(host);
   callbacks.send_chain(g_ee_main_mem, kChainOffset);
