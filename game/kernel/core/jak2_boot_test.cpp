@@ -41,8 +41,7 @@ extern "C" {
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
-#include "game/kernel/core/dma_capture.h"
-#include "game/kernel/core/gfx_host.h"
+#include "game/kernel/core/jak2_runtime.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
@@ -52,16 +51,6 @@ extern "C" {
 #include "game/runtime.h"
 
 namespace {
-
-uint32_t g_play_dma_dispatch_iteration = 0;
-
-uint32_t play_dma_vsync() {
-  return g_play_dma_dispatch_iteration & 1;
-}
-
-uint32_t play_dma_sync_path() {
-  return 0;
-}
 
 void say(const char* format, ...) __attribute__((format(printf, 1, 2)));
 void say(const char* format, ...) {
@@ -201,54 +190,9 @@ void record_packages_in_game_cgo() {
   }
 }
 
-struct Jak2DmaWindow {
-  int chains = 0;
-  int well_formed = 0;
-  int malformed = 0;
-  bool accounting_complete = false;
-  bool found_valid = false;
-  goal_gfx_dma_frame_summary valid = {};
-};
-
-Jak2DmaWindow audit_jak2_dma_window(const goal_gfx_dma_stats& before,
-                                    const goal_gfx_dma_stats& after) {
-  Jak2DmaWindow out;
-  out.chains = after.chains - before.chains;
-  out.well_formed = after.well_formed_chains - before.well_formed_chains;
-  out.malformed = after.malformed_chains - before.malformed_chains;
-  if (out.chains < 0 || out.well_formed < 0 || out.malformed < 0 ||
-      out.chains != out.well_formed + out.malformed) {
-    return out;
-  }
-
-  int recorded_well_formed = 0;
-  int recorded_malformed = 0;
-  for (int frame = before.chains + 1; frame <= after.chains; frame++) {
-    goal_gfx_dma_frame_summary candidate = {};
-    if (!goal_gfx_dma_get_frame(frame, &candidate) || candidate.frame != frame) {
-      return out;
-    }
-    if (candidate.well_formed) {
-      recorded_well_formed++;
-      if (!out.found_valid && candidate.buckets == 327 && candidate.tags > 0 &&
-          candidate.copied_bytes > 0) {
-        out.valid = candidate;
-        out.found_valid = true;
-      }
-    } else {
-      recorded_malformed++;
-    }
-  }
-  out.accounting_complete = recorded_well_formed == out.well_formed &&
-                            recorded_malformed == out.malformed;
-  return out;
-}
-
 int run_boot(const std::string& data_dir,
              int dispatch_frames,
-             bool with_game,
-             bool run_play,
-             bool run_play_dma) {
+             bool with_game) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
 
@@ -300,18 +244,6 @@ int run_boot(const std::string& data_dir,
   // Sound owns channels 0, 1 and 4. Install the composed DGO router after it so channel 3 is
   // available without replacing those handlers.
   goal_dgo_install_goal_loader();
-  if (run_play_dma) {
-    g_play_dma_dispatch_iteration = 0;
-    goal_gfx_dma_reset();
-    goal_gfx_host host = {};
-    host.send_chain = goal_gfx_dma_observe_chain;
-    host.vsync = play_dma_vsync;
-    host.sync_path = play_dma_sync_path;
-    if (goal_gfx_host_install(&host) != GOAL_KERNEL_CORE_OK) {
-      say("FAILED: could not install the synchronous Jak 2 validation graphics host\n");
-      return 1;
-    }
-  }
 
   if (with_game) {
     say("\n=== GAME.CGO (exploratory; expected to stop at the first missing subsystem)\n");
@@ -341,121 +273,6 @@ int run_boot(const std::string& data_dir,
     }
     say("  sound loader answered IRX 4.0 and retained info block #x%x\n",
         sound_stats.info_ee);
-  }
-
-  if (run_play) {
-    uint32_t play_boot = 0;
-    uint32_t dispatcher = 0;
-    if (goal_kernel_core_lookup("play-boot", nullptr, &play_boot) != GOAL_KERNEL_CORE_OK ||
-        !play_boot ||
-        goal_kernel_core_lookup("kernel-dispatcher", nullptr, &dispatcher) != GOAL_KERNEL_CORE_OK ||
-        !dispatcher) {
-      say("FAILED: Jak 2 play-boot or kernel-dispatcher holds nothing\n");
-      return 1;
-    }
-
-    say("\n=== play-boot frontier\n");
-    goal_gfx_dma_stats dma_before = {};
-    goal_gfx_host_stats gfx_before = {};
-    if (run_play_dma) {
-      goal_gfx_dma_get_stats(&dma_before);
-      goal_gfx_host_stats_get(&gfx_before);
-    }
-    const u64 play_boot_result = jak2::call_goal_function_by_name("play-boot");
-    drain_goal_print_buffer();
-
-    goal_dgo_rpc_stats rpc = {};
-    goal_gfx_dma_stats dma = {};
-    Jak2DmaWindow dma_window = {};
-    int frames_run = 0;
-    while (frames_run < dispatch_frames) {
-      if (run_play_dma) {
-        g_play_dma_dispatch_iteration = (uint32_t)(frames_run + 1);
-      }
-      call_goal_on_stack(Ptr<Function>(dispatcher), goal_kernel_stack_top(), s7.offset,
-                         g_ee_main_mem);
-      frames_run++;
-      drain_goal_print_buffer();
-      goal_dgo_goal_loader_stats(&rpc);
-      const bool title_ready = std::strcmp(rpc.first_dgo_name, "TITLE.DGO") == 0 &&
-                               rpc.dgo_archives >= 1 && rpc.dgo_objects >= 1 &&
-                               rpc.linked_code_objects + rpc.linked_data_objects >= 1;
-      if (run_play_dma) {
-        goal_gfx_dma_get_stats(&dma);
-        dma_window = audit_jak2_dma_window(dma_before, dma);
-      }
-      if (run_play_dma && dma_window.malformed > 0) {
-        break;
-      }
-      if (title_ready &&
-          (!run_play_dma || (dma_window.accounting_complete && dma_window.found_valid))) {
-        break;
-      }
-    }
-
-    say("  play-boot returned #x%llx; dispatched %d frame(s)\n",
-        (unsigned long long)play_boot_result, frames_run);
-    say("  channel 3 first request: %s; %d archive(s), %d object(s) "
-        "(%d code from AOT, %d data linked)\n",
-        rpc.first_dgo_name[0] ? rpc.first_dgo_name : "<none>", rpc.dgo_archives,
-        rpc.dgo_objects, rpc.linked_code_objects, rpc.linked_data_objects);
-    report_heap("after play-boot frontier");
-
-    if (run_play_dma) {
-      goal_gfx_dma_get_stats(&dma);
-      dma_window = audit_jak2_dma_window(dma_before, dma);
-      goal_gfx_host_stats gfx_after = {};
-      goal_gfx_host_stats_get(&gfx_after);
-      const int host_chains = gfx_after.chains - gfx_before.chains;
-      const int host_sync_paths = gfx_after.sync_paths - gfx_before.sync_paths;
-      const int host_vsyncs = gfx_after.vsyncs - gfx_before.vsyncs;
-      say("  graphics DMA after play-boot: %d chain(s), %d well formed, %d malformed; measured "
-          "and dropped\n",
-          dma_window.chains, dma_window.well_formed, dma_window.malformed);
-      say("  validation graphics host: %d chain(s), %d sync-path call(s), %d syncv call(s); "
-          "callback external waits 0, rendered frames 0, presented frames 0\n",
-          host_chains, host_sync_paths, host_vsyncs);
-      if (!dma_window.accounting_complete) {
-        say("FAILED: --play-dma chain totals and per-frame records do not agree\n");
-        return 1;
-      }
-      if (host_chains != dma_window.chains || host_sync_paths <= 0 || host_vsyncs <= 0) {
-        say("FAILED: --play-dma did not exercise synchronous DMA, sync-path, and syncv through "
-            "the validation graphics host\n");
-        return 1;
-      }
-      if (dma_window.malformed != 0) {
-        say("FAILED: --play-dma observed %d malformed graphics-DMA chain(s) after its baseline\n",
-            dma_window.malformed);
-        return 1;
-      }
-    }
-
-    if (std::strcmp(rpc.first_dgo_name, "TITLE.DGO") != 0 || rpc.dgo_archives < 1 ||
-        rpc.dgo_objects < 1 || rpc.linked_code_objects + rpc.linked_data_objects < 1 ||
-        rpc.dgo_objects < rpc.linked_code_objects + rpc.linked_data_objects) {
-      say("FAILED: play did not link a first title-level channel-3 object\n");
-      return 1;
-    }
-    say("  proved: Jak 2 play reached TITLE.DGO through the composed channel-3 router\n");
-    if (!run_play_dma) {
-      say("STOPPED: the host probe ended after the first linked title object; it has no renderer "
-          "or app loop, and any missing-machine "
-          "reports above are the next unsupported frontier, not successful behavior.\n");
-      return 0;
-    }
-
-    if (!dma_window.found_valid) {
-      say("FAILED: --play-dma did not observe a valid 327-bucket graphics-DMA chain\n");
-      return 1;
-    }
-    say("  proved: graphics DMA frame %d completed 327 buckets (%d tags, %u payload bytes, "
-        "%u copied bytes)\n",
-        dma_window.valid.frame, dma_window.valid.tags, dma_window.valid.payload_bytes,
-        dma_window.valid.copied_bytes);
-    say("STOPPED: --play-dma synchronously measured and dropped the chain; rendered frames 0, "
-        "presented frames 0. This validation host has no renderer or app loop.\n");
-    return 0;
   }
 
   // KernelCheckAndDispatch's loop body, without the listener half: the GOAL kernel's own frame,
@@ -508,6 +325,117 @@ int run_boot(const std::string& data_dir,
   return 0;
 }
 
+int run_play_runtime(const std::string& data_dir, int dispatch_frames, bool validate_dma) {
+  const std::string saves_dir =
+      (std::filesystem::temp_directory_path() / "goalpad-jak2-boot-saves").string();
+  std::filesystem::remove_all(saves_dir);
+
+  goal_jak2_runtime_config config = {};
+  config.data_directory = data_dir.c_str();
+  config.saves_directory = saves_dir.c_str();
+  config.graphics = validate_dma ? GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION
+                                 : GOAL_JAK2_RUNTIME_GRAPHICS_STUBS;
+
+  struct RuntimeShutdown {
+    ~RuntimeShutdown() {
+      goal_jak2_runtime_shutdown();
+    }
+  } shutdown;
+
+  say("%d AOT translation units registered by object name\n", goal_aot_boot_file_count);
+  say("data directory: %s\n", data_dir.c_str());
+  say("\n=== reusable play-boot runtime\n");
+  if (goal_jak2_runtime_start(&config) != GOAL_JAK2_RUNTIME_OK) {
+    say("FAILED: %s\n", goal_jak2_runtime_last_error());
+    return 1;
+  }
+
+  goal_jak2_runtime_metrics metrics = {};
+  goal_jak2_runtime_get_metrics(&metrics);
+  say("  KERNEL.CGO: %d objects; GAME.CGO: %d objects (%d code, %d data)\n",
+      metrics.kernel_objects, metrics.game_objects, metrics.game_code_objects,
+      metrics.game_data_objects);
+  say("  GOAL kernel version %u.%u; sound info #x%x\n", metrics.kernel_version >> 0x13,
+      (metrics.kernel_version >> 3) & 0xffff, metrics.sound_info_ee);
+
+  goal_jak2_runtime_status tick_status = GOAL_JAK2_RUNTIME_OK;
+  while (metrics.ticks < static_cast<uint64_t>(dispatch_frames)) {
+    tick_status = goal_jak2_runtime_tick();
+    if (tick_status != GOAL_JAK2_RUNTIME_OK && tick_status != GOAL_JAK2_RUNTIME_EXITED) {
+      say("FAILED: %s\n", goal_jak2_runtime_last_error());
+      return 1;
+    }
+    goal_jak2_runtime_get_metrics(&metrics);
+    if (validate_dma && metrics.dma_malformed > 0) {
+      break;
+    }
+    if (metrics.title_ready &&
+        (!validate_dma || (metrics.dma_accounting_complete && metrics.dma_found_valid))) {
+      break;
+    }
+    if (tick_status == GOAL_JAK2_RUNTIME_EXITED) {
+      break;
+    }
+  }
+
+  say("  play-boot returned #x%llx; dispatched %llu frame(s)\n",
+      (unsigned long long)metrics.play_boot_result, (unsigned long long)metrics.ticks);
+  say("  channel 3 first request: %s; %d archive(s), %d object(s) "
+      "(%d code from AOT, %d data linked)\n",
+      metrics.first_dgo_name[0] ? metrics.first_dgo_name : "<none>", metrics.dgo_archives,
+      metrics.dgo_objects, metrics.dgo_code_objects, metrics.dgo_data_objects);
+  report_heap("after play-boot frontier");
+
+  if (validate_dma) {
+    say("  graphics DMA after play-boot: %d chain(s), %d well formed, %d malformed; measured "
+        "and dropped\n",
+        metrics.dma_chains, metrics.dma_well_formed, metrics.dma_malformed);
+    say("  validation graphics host: %d chain(s), %d sync-path call(s), %d syncv call(s); "
+        "callback external waits 0, rendered frames 0, presented frames 0\n",
+        metrics.host_chains, metrics.host_sync_paths, metrics.host_syncvs);
+    if (!metrics.dma_accounting_complete) {
+      say("FAILED: --play-dma chain totals and per-frame records do not agree\n");
+      return 1;
+    }
+    if (metrics.host_chains != metrics.dma_chains || metrics.host_sync_paths <= 0 ||
+        metrics.host_syncvs <= 0) {
+      say("FAILED: --play-dma did not exercise synchronous DMA, sync-path, and syncv through "
+          "the validation graphics host\n");
+      return 1;
+    }
+    if (metrics.dma_malformed != 0) {
+      say("FAILED: --play-dma observed %d malformed graphics-DMA chain(s) after its baseline\n",
+          metrics.dma_malformed);
+      return 1;
+    }
+  }
+
+  if (!metrics.title_ready || metrics.dgo_objects < metrics.dgo_code_objects +
+                                                       metrics.dgo_data_objects) {
+    say("FAILED: play did not link a first title-level channel-3 object\n");
+    return 1;
+  }
+  say("  proved: Jak 2 play reached TITLE.DGO through the composed channel-3 router\n");
+  if (!validate_dma) {
+    say("STOPPED: the host probe ended after the first linked title object; it has no renderer "
+        "or app loop, and any missing-machine reports above are the next unsupported frontier, "
+        "not successful behavior.\n");
+    return 0;
+  }
+
+  if (!metrics.dma_found_valid) {
+    say("FAILED: --play-dma did not observe a valid 327-bucket graphics-DMA chain\n");
+    return 1;
+  }
+  say("  proved: graphics DMA frame %d completed 327 buckets (%d tags, %u payload bytes, "
+      "%u copied bytes)\n",
+      metrics.dma_valid_frame, metrics.dma_valid_tags, metrics.dma_valid_payload_bytes,
+      metrics.dma_valid_copied_bytes);
+  say("STOPPED: --play-dma synchronously measured and dropped the chain; rendered frames 0, "
+      "presented frames 0. This validation host has no renderer or app loop.\n");
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -555,6 +483,10 @@ int main(int argc, char** argv) {
   lg::set_flush_level(lg::level::warn);
   lg::initialize();
 
+  if (run_play) {
+    return run_play_runtime(data_dir, dispatch_frames, run_play_dma);
+  }
+
   if (goal_kernel_core_initialize() != GOAL_KERNEL_CORE_OK) {
     std::printf("FAIL: %s\n", goal_kernel_core_last_error());
     return 1;
@@ -563,7 +495,7 @@ int main(int argc, char** argv) {
   register_aot_objects();
   std::printf("%d AOT translation units registered by object name\n", goal_aot_boot_file_count);
 
-  const int result = run_boot(data_dir, dispatch_frames, with_game, run_play, run_play_dma);
+  const int result = run_boot(data_dir, dispatch_frames, with_game);
 
   goal_aot_reset();
   goal_kernel_core_shutdown();
