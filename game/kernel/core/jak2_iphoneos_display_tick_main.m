@@ -525,9 +525,11 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
       _metalMetrics.completed_chains == _metalMetrics.chains &&
       _metalMetrics.failed_chains == 0 && _metalMetrics.last_buckets_dispatched == 327 &&
       _metalMetrics.command_buffers_committed == 0 &&
-      _metalMetrics.drawables_acquired == 0 && _metalMetrics.draws == 0 &&
-      _metalMetrics.triangles == 0 && _metalMetrics.submissions == 0 &&
-      _metalMetrics.presentations == 0;
+      _metalMetrics.command_buffers_completed == 0 && _metalMetrics.command_buffer_errors == 0 &&
+      _metalMetrics.drawables_acquired == 0 && _metalMetrics.drawable_misses == 0 &&
+      _metalMetrics.submissions == 0 && _metalMetrics.presentations == 0 &&
+      _metalMetrics.presentation_drops == 0 &&
+      _metalMetrics.presentation_order_mismatches == 0;
   const BOOL crossedGraphicsHost =
       _metalMetrics.sync_paths > 0 && _metalMetrics.vsyncs > 0;
 
