@@ -1,7 +1,7 @@
 include("${CMAKE_CURRENT_LIST_DIR}/validate_jak2_aot.cmake")
 
 set(OPENGOAL_JAK2_IPHONEOS_BUNDLE_IDENTIFIER
-    "org.openg...Jak2AOTLinkProof"
+    "org.example.Jak2AOTLinkProof"
     CACHE STRING "Bundle identifier for the Jak 2 iPhoneOS AOT link proof")
 set(OPENGOAL_JAK2_IPHONEOS_DEVELOPMENT_TEAM
     ""
