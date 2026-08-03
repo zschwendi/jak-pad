@@ -13,7 +13,8 @@
  * skipped when there is none. --with-game goes on to attempt GAME.CGO. --play implies
  * --with-game and calls the real Jak 2 `play-boot`, then dispatches the GOAL process it creates
  * only far enough to report the first title-level DGO request and the next missing subsystem.
- * Both are explicit frontier probes.
+ * --play-dma preserves that mode and additionally waits for one valid 327-bucket graphics-DMA
+ * chain. The chain is measured and dropped: this remains a headless probe, not a renderer.
  */
 
 #include <cstdarg>
@@ -40,6 +41,7 @@ extern "C" {
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
+#include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
@@ -188,7 +190,25 @@ void record_packages_in_game_cgo() {
   }
 }
 
-int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, bool run_play) {
+bool find_valid_jak2_dma_frame(int first_frame,
+                               int last_frame,
+                               goal_gfx_dma_frame_summary* out) {
+  for (int frame = first_frame; frame <= last_frame; frame++) {
+    goal_gfx_dma_frame_summary candidate = {};
+    if (goal_gfx_dma_get_frame(frame, &candidate) && candidate.well_formed &&
+        candidate.buckets == 327 && candidate.tags > 0 && candidate.copied_bytes > 0) {
+      *out = candidate;
+      return true;
+    }
+  }
+  return false;
+}
+
+int run_boot(const std::string& data_dir,
+             int dispatch_frames,
+             bool with_game,
+             bool run_play,
+             bool run_play_dma) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
 
@@ -240,6 +260,11 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
   // Sound owns channels 0, 1 and 4. Install the composed DGO router after it so channel 3 is
   // available without replacing those handlers.
   goal_dgo_install_goal_loader();
+  if (run_play_dma) {
+    // Replace only the graphics-DMA stub. The rest of the graphics machine layer remains the
+    // diagnostic stubs, and this seam measures completed chains without rendering or capture.
+    goal_gfx_dma_install();
+  }
 
   if (with_game) {
     say("\n=== GAME.CGO (exploratory; expected to stop at the first missing subsystem)\n");
@@ -283,10 +308,17 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
     }
 
     say("\n=== play-boot frontier\n");
+    goal_gfx_dma_stats dma_before = {};
+    if (run_play_dma) {
+      goal_gfx_dma_get_stats(&dma_before);
+    }
     const u64 play_boot_result = jak2::call_goal_function_by_name("play-boot");
     drain_goal_print_buffer();
 
     goal_dgo_rpc_stats rpc = {};
+    goal_gfx_dma_stats dma = {};
+    goal_gfx_dma_frame_summary valid_dma = {};
+    bool found_valid_dma = false;
     int frames_run = 0;
     while (frames_run < dispatch_frames) {
       call_goal_on_stack(Ptr<Function>(dispatcher), goal_kernel_stack_top(), s7.offset,
@@ -294,9 +326,14 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
       frames_run++;
       drain_goal_print_buffer();
       goal_dgo_goal_loader_stats(&rpc);
-      if (std::strcmp(rpc.first_dgo_name, "TITLE.DGO") == 0 && rpc.dgo_archives >= 1 &&
-          rpc.dgo_objects >= 1 &&
-          rpc.linked_code_objects + rpc.linked_data_objects >= 1) {
+      const bool title_ready = std::strcmp(rpc.first_dgo_name, "TITLE.DGO") == 0 &&
+                               rpc.dgo_archives >= 1 && rpc.dgo_objects >= 1 &&
+                               rpc.linked_code_objects + rpc.linked_data_objects >= 1;
+      if (run_play_dma) {
+        goal_gfx_dma_get_stats(&dma);
+        found_valid_dma = find_valid_jak2_dma_frame(dma_before.chains + 1, dma.chains, &valid_dma);
+      }
+      if (title_ready && (!run_play_dma || found_valid_dma)) {
         break;
       }
     }
@@ -316,9 +353,29 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
       return 1;
     }
     say("  proved: Jak 2 play reached TITLE.DGO through the composed channel-3 router\n");
-    say("STOPPED: the host probe ended after the first linked title object; it has no renderer "
-        "or app loop, and any missing-machine "
-        "reports above are the next unsupported frontier, not successful behavior.\n");
+    if (!run_play_dma) {
+      say("STOPPED: the host probe ended after the first linked title object; it has no renderer "
+          "or app loop, and any missing-machine "
+          "reports above are the next unsupported frontier, not successful behavior.\n");
+      return 0;
+    }
+
+    goal_gfx_dma_get_stats(&dma);
+    found_valid_dma = find_valid_jak2_dma_frame(dma_before.chains + 1, dma.chains, &valid_dma);
+    say("  graphics DMA after play-boot: %d chain(s), %d well formed, %d malformed; measured and "
+        "dropped\n",
+        dma.chains - dma_before.chains,
+        dma.well_formed_chains - dma_before.well_formed_chains,
+        dma.malformed_chains - dma_before.malformed_chains);
+    if (!found_valid_dma) {
+      say("FAILED: --play-dma did not observe a valid 327-bucket graphics-DMA chain\n");
+      return 1;
+    }
+    say("  proved: graphics DMA frame %d completed 327 buckets (%d tags, %u payload bytes, "
+        "%u copied bytes)\n",
+        valid_dma.frame, valid_dma.tags, valid_dma.payload_bytes, valid_dma.copied_bytes);
+    say("STOPPED: --play-dma measured and dropped the chain; this host probe has no renderer or "
+        "app loop, and does not claim drawn output.\n");
     return 0;
   }
 
@@ -379,6 +436,7 @@ int main(int argc, char** argv) {
   int dispatch_frames = 100;
   bool with_game = false;
   bool run_play = false;
+  bool run_play_dma = false;
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
     if (arg == "--data-dir" && i + 1 < argc) {
@@ -391,6 +449,10 @@ int main(int argc, char** argv) {
       with_game = true;
     } else if (arg == "--play") {
       run_play = true;
+      with_game = true;
+    } else if (arg == "--play-dma") {
+      run_play = true;
+      run_play_dma = true;
       with_game = true;
     } else {
       std::fprintf(stderr, "unknown argument %s\n", arg.c_str());
@@ -422,7 +484,7 @@ int main(int argc, char** argv) {
   register_aot_objects();
   std::printf("%d AOT translation units registered by object name\n", goal_aot_boot_file_count);
 
-  const int result = run_boot(data_dir, dispatch_frames, with_game, run_play);
+  const int result = run_boot(data_dir, dispatch_frames, with_game, run_play, run_play_dma);
 
   goal_aot_reset();
   goal_kernel_core_shutdown();

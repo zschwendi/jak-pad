@@ -8,9 +8,9 @@
  *
  * There is no renderer here, so nothing is drawn. What this does instead is run the same copier -
  * which is where the chain is validated, since following it means reading every tag - then walk
- * the copy a second time the way the renderer's bucket dispatch does, and record what each bucket
- * was actually given. That turns "the frame ran" into "the frame put this many bytes in these
- * buckets", which is a fact about the frame rather than an absence of a crash.
+ * the copy a second time the way the selected game's bucket dispatch does, and record what each
+ * bucket was actually given. That turns "the frame ran" into "the frame put this many bytes in
+ * these buckets", which is a fact about the frame rather than an absence of a crash.
  *
  * A capture writes one frame to a file so the renderer track has a real frame of Jak 1 DMA to
  * replay without the rest of the runtime. A capture is the player's own game data rendered into
@@ -103,7 +103,9 @@
 #include "common/util/Serializer.h"
 
 #include "game/kernel/common/Ptr.h"
-#include "game/kernel/jak1/kscheme.h"
+#include "game/graphics/opengl_renderer/buckets.h"
+#include "game/kernel/common/kscheme.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/runtime.h"
 
 #include "third-party/lzokay/lzokay.hpp"
@@ -129,8 +131,31 @@ struct ChainSummary {
   int texture_uploads = 0;
   std::vector<BucketSummary> buckets;
   std::vector<u32> texture_page_addresses;
-  std::string problem;  // empty when the chain was the Jak 1 bucket chain
+  std::string problem;  // empty when the selected game's bucket validation completed
 };
+
+void measure_transfer(const DmaTransfer& transfer,
+                      ChainSummary& chain,
+                      BucketSummary* bucket) {
+  chain.tags++;
+  chain.payload_bytes += transfer.size_bytes;
+  if (bucket) {
+    bucket->payload_bytes += transfer.size_bytes;
+    if (transfer.size_bytes > 0) {
+      bucket->transfers++;
+    }
+  }
+  if (transfer.size_bytes == 16 && transfer.vifcode0().kind == VifCode::Kind::PC_PORT &&
+      transfer.vif1() == 3) {
+    chain.texture_uploads++;
+    if (bucket) {
+      bucket->texture_uploads++;
+    }
+    u64 page = 0;
+    std::memcpy(&page, transfer.data, sizeof(page));
+    chain.texture_page_addresses.push_back((u32)page);
+  }
+}
 
 /*!
  * Walk a copied chain the way `OpenGLRenderer::dispatch_buckets_jak1` does: an initial CALL to the
@@ -140,7 +165,7 @@ struct ChainSummary {
  * A chain that does not have that shape is reported rather than guessed at: `problem` is set and
  * whatever was counted before the mismatch is kept.
  */
-ChainSummary summarize_chain(const DmaData& chain) {
+ChainSummary summarize_jak1_chain(const DmaData& chain) {
   ChainSummary out;
   DmaFollower dma(chain.data.data(), chain.start_offset);
 
@@ -198,6 +223,62 @@ ChainSummary summarize_chain(const DmaData& chain) {
     next_bucket += 16;
   }
   return out;
+}
+
+/*!
+ * Walk the direct bucket array exactly as `OpenGLRenderer::dispatch_buckets_jak2` does. Each
+ * bucket's transfers must return to the next 16-byte entry, and the chain after the 327th bucket
+ * must terminate normally. The second walk must also reproduce the copier's totals.
+ */
+ChainSummary summarize_jak2_chain(const DmaData& chain) {
+  constexpr int kBucketCount = (int)jak2::BucketId::MAX_BUCKETS;
+  static_assert(kBucketCount == 327);
+
+  ChainSummary out;
+  DmaFollower dma(chain.data.data(), chain.start_offset);
+  const u32 buckets_base = dma.current_tag_offset();
+
+  for (int bucket_id = 0; bucket_id < kBucketCount; bucket_id++) {
+    const u32 next_bucket = buckets_base + (u32)(bucket_id + 1) * 16;
+    BucketSummary bucket;
+    while (!dma.ended() && dma.current_tag_offset() != next_bucket) {
+      measure_transfer(dma.read_and_advance(), out, &bucket);
+    }
+    if (dma.current_tag_offset() != next_bucket) {
+      out.problem = "Jak 2 chain ended before the 327-bucket array completed";
+      return out;
+    }
+    out.buckets.push_back(bucket);
+  }
+
+  DmaTag::Kind terminal = DmaTag::Kind::CNT;
+  while (!dma.ended()) {
+    terminal = dma.current_tag().kind;
+    measure_transfer(dma.read_and_advance(), out, nullptr);
+  }
+
+  if (terminal != DmaTag::Kind::END && terminal != DmaTag::Kind::REFE) {
+    out.problem = "Jak 2 chain did not terminate with END or REFE";
+  } else if (out.tags != chain.stats.num_tags) {
+    out.problem = "Jak 2 bucket walk did not reproduce the copier's tag count";
+  } else if (out.payload_bytes != (u32)chain.stats.num_data_bytes) {
+    out.problem = "Jak 2 bucket walk did not reproduce the copier's payload byte count";
+  }
+  return out;
+}
+
+ChainSummary summarize_chain(const DmaData& chain) {
+  switch (goal_game_version()) {
+    case GameVersion::Jak1:
+      return summarize_jak1_chain(chain);
+    case GameVersion::Jak2:
+      return summarize_jak2_chain(chain);
+    default: {
+      ChainSummary out;
+      out.problem = "graphics-DMA measurement is not defined for this game version";
+      return out;
+    }
+  }
 }
 
 void append_u32(std::vector<u8>& out, u32 value) {
@@ -305,6 +386,10 @@ u32 g_threshold_payload_bytes = 0;
 int g_threshold_remaining = 0;
 
 bool write_capture(const std::string& path, int frame, const ChainSummary& summary) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] GPDMACAP v2 files are defined only for Jak 1");
+    return false;
+  }
   Serializer chain_serializer;
   g_copier->serialize_last_result(chain_serializer);
   const auto chain = chain_serializer.get_save_result();
@@ -383,7 +468,10 @@ u64 send_gfx_dma_chain(u32 bank, u32 chain) {
 
   const ChainSummary summary = summarize_chain(result);
   if (!summary.problem.empty()) {
+    g_stats.malformed_chains++;
     lg::error("[dma-capture] frame {}: {}", frame, summary.problem);
+  } else {
+    g_stats.well_formed_chains++;
   }
   g_stats.last_payload_bytes = summary.payload_bytes;
   g_stats.last_texture_uploads = summary.texture_uploads;
@@ -400,6 +488,7 @@ u64 send_gfx_dma_chain(u32 bank, u32 chain) {
   record.tags = summary.tags;
   record.texture_uploads = summary.texture_uploads;
   record.buckets = summary.problem.empty() ? (int)summary.buckets.size() : 0;
+  record.well_formed = summary.problem.empty();
   g_frames.push_back(record);
 
   std::string path;
@@ -436,13 +525,17 @@ void goal_gfx_dma_install(void) {
   g_requested_captures.clear();
   g_threshold_dir.clear();
   g_threshold_remaining = 0;
-  jak1::make_function_symbol_from_c("__send-gfx-dma-chain", (void*)send_gfx_dma_chain);
+  goal_game_make_function_symbol("__send-gfx-dma-chain", (void*)send_gfx_dma_chain);
 }
 
 int goal_gfx_dma_capture_chain_now(const void* ee_base,
                                    uint32_t chain_offset,
                                    int frame,
                                    const char* path) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] GPDMACAP v2 files are defined only for Jak 1");
+    return 0;
+  }
   if (!ee_base || !path || !path[0]) {
     return 0;
   }
@@ -473,6 +566,10 @@ int goal_gfx_dma_capture_chain_now(const void* ee_base,
 }
 
 void goal_gfx_dma_capture_frame_to_file(const char* path, int frame) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] GPDMACAP v2 files are defined only for Jak 1");
+    return;
+  }
   if (!path || !path[0]) {
     return;
   }
@@ -480,6 +577,10 @@ void goal_gfx_dma_capture_frame_to_file(const char* path, int frame) {
 }
 
 void goal_gfx_dma_capture_frames_to_dir(const char* dir, const int* frames, int count) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] GPDMACAP v2 files are defined only for Jak 1");
+    return;
+  }
   if (!dir || !dir[0] || !frames) {
     return;
   }
@@ -491,6 +592,10 @@ void goal_gfx_dma_capture_frames_to_dir(const char* dir, const int* frames, int 
 }
 
 void goal_gfx_dma_capture_frames_over(const char* dir, uint32_t min_payload_bytes, int count) {
+  if (goal_game_version() != GameVersion::Jak1) {
+    lg::error("[dma-capture] GPDMACAP v2 files are defined only for Jak 1");
+    return;
+  }
   if (!dir || !dir[0] || count < 1) {
     return;
   }

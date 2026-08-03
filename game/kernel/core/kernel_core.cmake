@@ -152,7 +152,8 @@ endif()
 # implementation of that seam next to the jak2 kernel translation units. Smaller than the jak1
 # library on purpose - the sound path has loader framing, checked SBlk loads, ordinary named SFX
 # playback and ordinary STR files; the shared pushed-state pad seam handles controllers; music,
-# streaming, and graphics remain machine stubs that report loudly. dgo_loader_jak2.cpp carries
+# streaming, and rendering remain machine stubs that report loudly. The graphics-DMA seam can
+# validate and measure completed chains but deliberately drops them. dgo_loader_jak2.cpp carries
 # only the C-driven load so far.
 set(JAK2_KERNEL_CORE_SOURCES
     # common support
@@ -227,6 +228,10 @@ set(JAK2_KERNEL_CORE_SOURCES
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/sfxgrain.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/vagvoice.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/util.cpp"
+    # __send-gfx-dma-chain: validate and measure the chain, then drop it without rendering
+    "${CMAKE_CURRENT_LIST_DIR}/dma_capture.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma_copy.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma.cpp"
     # the mips2c seam, in place of game/mips2c/mips2c_table.cpp, plus the Jak 2 function library
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_seam.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_jak2.cpp"
