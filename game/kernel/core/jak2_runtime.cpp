@@ -30,6 +30,7 @@ extern "C" {
 #include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/kernel_core.h"
+#include "game/kernel/core/kernel_game.h"
 #include "game/kernel/core/pad.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/klisten.h"
@@ -40,6 +41,19 @@ namespace {
 
 // The linked Jak II gkernel table places (method thread-suspend cpu-thread) at index 22.
 constexpr int kThreadSuspendFunctionIndex = 22;
+
+bool copy_goal_bytes(uint32_t object, int offset, void* out, size_t size) {
+  if (!g_ee_main_mem || !object || !out || offset < 0 || size > EE_MAIN_MEM_SIZE) {
+    return false;
+  }
+  const uint64_t address = static_cast<uint64_t>(object) + static_cast<uint64_t>(offset);
+  if (address < EE_MAIN_MEM_LOW_PROTECT ||
+      address > static_cast<uint64_t>(EE_MAIN_MEM_SIZE) - size) {
+    return false;
+  }
+  std::memcpy(out, g_ee_main_mem + address, size);
+  return true;
+}
 
 goal_jak2_runtime_metrics g_metrics = {};
 std::string g_error;
@@ -480,20 +494,37 @@ goal_jak2_runtime_status goal_jak2_runtime_probe_thread_suspend(
       goal_aot_function_object("gkernel", kThreadSuspendFunctionIndex);
   out->expected_native_entry =
       reinterpret_cast<uintptr_t>(&goal_native_thread_suspend);
-  if (g_ee_main_mem && out->function_object &&
-      out->function_object <= EE_MAIN_MEM_SIZE - sizeof(out->native_entry)) {
-    std::memcpy(&out->native_entry, g_ee_main_mem + out->function_object,
-                sizeof(out->native_entry));
+  copy_goal_bytes(out->function_object, 0, &out->native_entry, sizeof(out->native_entry));
+
+  if (goal_kernel_core_lookup("*dproc*", nullptr, &out->display_process) ==
+          GOAL_KERNEL_CORE_OK &&
+      out->display_process != goal_game_false_offset()) {
+    out->hook_available = 1;
+    const auto& process_offsets = goal_game_process_offsets();
+    copy_goal_bytes(out->display_process, process_offsets.top_thread, &out->top_thread,
+                    sizeof(out->top_thread));
+    copy_goal_bytes(out->top_thread, kGoalCpuThreadSuspendHookOffset,
+                    &out->hook_function_object, sizeof(out->hook_function_object));
+    copy_goal_bytes(out->hook_function_object, 0, &out->hook_native_entry,
+                    sizeof(out->hook_native_entry));
   }
-  out->matches_expected =
+
+  const bool source_matches =
       out->native_entry != 0 && out->native_entry == out->expected_native_entry;
+  const bool hook_matches =
+      !out->hook_available ||
+      (out->top_thread != 0 && out->hook_function_object == out->function_object &&
+       out->hook_native_entry == out->expected_native_entry);
+  out->matches_expected = source_matches && hook_matches;
   if (!out->matches_expected) {
-    char message[256];
+    char message[384];
     std::snprintf(message, sizeof(message),
-                  "Jak 2 thread-suspend probe failed: object #x%08x has native #x%llx; expected "
-                  "#x%llx",
+                  "Jak 2 thread-suspend probe failed: source #x%08x/#x%llx, display "
+                  "#x%08x, top thread #x%08x, hook #x%08x/#x%llx; expected #x%llx",
                   out->function_object,
                   static_cast<unsigned long long>(out->native_entry),
+                  out->display_process, out->top_thread, out->hook_function_object,
+                  static_cast<unsigned long long>(out->hook_native_entry),
                   static_cast<unsigned long long>(out->expected_native_entry));
     g_error = message;
     return GOAL_JAK2_RUNTIME_START_FAILED;

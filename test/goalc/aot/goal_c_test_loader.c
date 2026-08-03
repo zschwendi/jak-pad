@@ -21,6 +21,8 @@
 #define FUNCTION_OBJECT_SIZE 16
 
 uint8_t* g_goal_mem = 0;
+uint64_t g_goal_mem_size = GOAL_MEM_SIZE;
+uint64_t g_goal_mem_low_protect = 0;
 uint64_t g_goal_s7 = 0;
 uint64_t g_goal_current_process = 0;
 

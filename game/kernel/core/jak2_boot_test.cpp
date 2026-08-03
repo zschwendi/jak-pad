@@ -410,6 +410,17 @@ int run_play_runtime(const std::string& data_dir,
     }
   }
 
+  goal_jak2_thread_suspend_probe suspend_probe = {};
+  if (goal_jak2_runtime_probe_thread_suspend(&suspend_probe) != GOAL_JAK2_RUNTIME_OK ||
+      !suspend_probe.hook_available) {
+    say("FAILED: %s\n", goal_jak2_runtime_last_error());
+    return 1;
+  }
+  say("  thread-suspend source #x%x/#x%llx; display #x%x top #x%x hook #x%x/#x%llx\n",
+      suspend_probe.function_object, (unsigned long long)suspend_probe.native_entry,
+      suspend_probe.display_process, suspend_probe.top_thread, suspend_probe.hook_function_object,
+      (unsigned long long)suspend_probe.hook_native_entry);
+
   say("  play-boot returned #x%llx; dispatched %llu frame(s)\n",
       (unsigned long long)metrics.play_boot_result, (unsigned long long)metrics.ticks);
   say("  channel 3 first request: %s; %d archive(s), %d object(s) "

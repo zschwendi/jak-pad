@@ -13,6 +13,9 @@
  */
 
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +40,12 @@ typedef uint8_t goal_vbu __attribute__((vector_size(16)));
 
 /*! Base of GOAL memory. A GOAL pointer p refers to g_goal_mem + p. */
 extern uint8_t* g_goal_mem;
+
+/*! Bytes mapped at g_goal_mem, for checked AOT function-object loads. */
+extern uint64_t g_goal_mem_size;
+
+/*! First readable GOAL address in g_goal_mem. */
+extern uint64_t g_goal_mem_low_protect;
 
 /*! GOAL address of the symbol table (the "#f" symbol). */
 extern uint64_t g_goal_s7;
@@ -120,9 +129,37 @@ typedef struct {
  * The x86-64 backend jumps to g_goal_mem + p, because JIT-compiled GOAL code lives inside GOAL
  * memory. AOT code lives in __TEXT and cannot be reached through a 32-bit GOAL pointer, so the
  * loader stores the 64-bit native entry point at the function object's code address instead.
- * Cost is one load, the same as the x86-64 indirect call.
+ * A missing entry is a corrupt function object. Diagnose it at the exact generated call site
+ * instead of allowing an indirect branch to address zero.
  */
-#define GOAL_FN(p) (*(void**)GOAL_PTR(p, 0))
+static inline void* goal_aot_function_entry(uint64_t object, const char* file, int line) {
+  void* entry = 0;
+  if (!g_goal_mem || !object || object < g_goal_mem_low_protect || object > g_goal_mem_size ||
+      g_goal_mem_size - object < sizeof(entry)) {
+    fprintf(stderr,
+            "AOT function call at %s:%d has invalid GOAL object #x%llx "
+            "(process #x%llx, readable range #x%llx-#x%llx)\n",
+            file, line, (unsigned long long)object,
+            (unsigned long long)g_goal_current_process,
+            (unsigned long long)g_goal_mem_low_protect,
+            (unsigned long long)g_goal_mem_size);
+    fflush(stderr);
+    abort();
+  }
+  memcpy(&entry, GOAL_PTR(object, 0), sizeof(entry));
+  if (!entry) {
+    fprintf(stderr,
+            "AOT function call at %s:%d found no native entry in GOAL object #x%llx "
+            "(process #x%llx)\n",
+            file, line, (unsigned long long)object,
+            (unsigned long long)g_goal_current_process);
+    fflush(stderr);
+    abort();
+  }
+  return entry;
+}
+
+#define GOAL_FN(p) goal_aot_function_entry((uint64_t)(p), __FILE__, __LINE__)
 
 static inline uint64_t goal_load_u(const void* p, int size) {
   switch (size) {

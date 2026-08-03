@@ -59,7 +59,12 @@ typedef struct goal_jak2_runtime_config {
 typedef struct goal_jak2_thread_suspend_probe {
   uint32_t function_object;
   uintptr_t native_entry;
+  uint32_t display_process;
+  uint32_t top_thread;
+  uint32_t hook_function_object;
+  uintptr_t hook_native_entry;
   uintptr_t expected_native_entry;
+  int32_t hook_available;
   int32_t matches_expected;
 } goal_jak2_thread_suspend_probe;
 

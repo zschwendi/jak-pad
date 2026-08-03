@@ -28,6 +28,10 @@ struct GoalGameProcessOffsets {
   int stack_frame_top;
 };
 
+/*! cpu-thread.suspend-hook relative to the basic's object pointer. The thread layout is shared by
+ * the supported games; unlike process, this field does not need a per-game seam. */
+inline constexpr int kGoalCpuThreadSuspendHookOffset = 12;
+
 // ------------------------------------------------------------------------------------------
 // identity and initialization
 // ------------------------------------------------------------------------------------------

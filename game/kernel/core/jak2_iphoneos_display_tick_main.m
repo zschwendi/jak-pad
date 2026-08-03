@@ -254,9 +254,14 @@ static void run_runtime_frame(double target_presentation_time, void* context);
         goal_jak2_metal_host_destroy(metalHost);
         metalHost = NULL;
       } else {
-        NSLog(@"GOALPAD_JAK2_THREAD_SUSPEND_PROBE PASS object=#x%08x native=#x%llx",
+        NSLog(@"GOALPAD_JAK2_THREAD_SUSPEND_PROBE PASS source=#x%08x/#x%llx "
+               "display=#x%08x top=#x%08x hook=#x%08x/#x%llx (%@)",
               _threadSuspendProbe.function_object,
-              (unsigned long long)_threadSuspendProbe.native_entry);
+              (unsigned long long)_threadSuspendProbe.native_entry,
+              _threadSuspendProbe.display_process, _threadSuspendProbe.top_thread,
+              _threadSuspendProbe.hook_function_object,
+              (unsigned long long)_threadSuspendProbe.hook_native_entry,
+              _threadSuspendProbe.hook_available ? @"valid" : @"pending");
       }
 
       dispatch_async(dispatch_get_main_queue(), ^{
@@ -396,12 +401,17 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 
 - (void)runRuntimeFrameAtTargetTime:(double)targetPresentationTime {
   _lastTargetTimestamp = targetPresentationTime;
-  const goal_jak2_runtime_status result = goal_jak2_runtime_tick();
+  goal_jak2_runtime_status result = goal_jak2_runtime_tick();
+  if (result == GOAL_JAK2_RUNTIME_OK && !_threadSuspendProbe.hook_available) {
+    result = goal_jak2_runtime_probe_thread_suspend(&_threadSuspendProbe);
+  }
   if (result != GOAL_JAK2_RUNTIME_OK) {
     const char* error = goal_jak2_runtime_last_error();
     _failureMessage = error && error[0] ? [NSString stringWithUTF8String:error]
                                         : @"The Jak II runtime tick failed.";
     _proofFinished = YES;
+    [self stopRuntime];
+    goal_jak2_runtime_get_metrics(&_metrics);
     [self updateTickGate];
     [self updateStatus];
     return;
@@ -547,7 +557,8 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   self.statusLabel.text = [NSString
       stringWithFormat:@"Jak II Metal policy display-tick proof — %@\n\n"
                         "Data: %@\nSaves: %@\nRuntime: %@\n"
-                        "thread-suspend: object #x%08x / native #x%llx / %@\n"
+                        "thread-suspend: source #x%08x/#x%llx / display #x%08x / "
+                        "top #x%08x / hook #x%08x/#x%llx / %@\n"
                         "TITLE: %@ (%@)\n\n"
                         "Display callbacks: %llu\nAccepted ticks: %llu\nPaused ticks: %llu\n"
                         "Dispatcher frames: %llu\nLast targetTimestamp: %.6f\n\n"
@@ -558,7 +569,13 @@ static void run_runtime_frame(double target_presentation_time, void* context);
                        result, _dataPath ?: @"<unavailable>", _savesPath ?: @"<unavailable>",
                        [self runtimeStateName], _threadSuspendProbe.function_object,
                        (unsigned long long)_threadSuspendProbe.native_entry,
-                       _threadSuspendProbe.matches_expected ? @"valid" : @"invalid", titleDGO,
+                       _threadSuspendProbe.display_process, _threadSuspendProbe.top_thread,
+                       _threadSuspendProbe.hook_function_object,
+                       (unsigned long long)_threadSuspendProbe.hook_native_entry,
+                       _threadSuspendProbe.matches_expected
+                           ? (_threadSuspendProbe.hook_available ? @"valid" : @"pending")
+                           : @"invalid",
+                       titleDGO,
                        _metrics.title_ready ? @"ready" : @"not ready",
                        (unsigned long long)display.display_ticks,
                        (unsigned long long)display.accepted_ticks,

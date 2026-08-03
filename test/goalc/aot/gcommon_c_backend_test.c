@@ -6,6 +6,12 @@
 
 #include <string.h>
 
+#if defined(__APPLE__) || defined(__linux__)
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #include "gcommon_generated.h"
 
 #include "test/goalc/aot/goal_c_test_loader.h"
@@ -107,6 +113,37 @@ int main(void) {
     *goal_symbol_slot("fact") = (int32_t)goal_function_addr("gcommon", fact_index);
     check_s64("fact", goal_gcommon_fact(5), 120);
     check_s64("fact 1", goal_gcommon_fact(1), 1);
+
+#if defined(__APPLE__) || defined(__linux__)
+    fflush(NULL);
+    const pid_t child = fork();
+    if (child == 0) {
+      void* missing = NULL;
+      memcpy(g_goal_mem + goal_function_addr("gcommon", fact_index), &missing, sizeof(missing));
+      (void)goal_gcommon_fact(2);
+      _exit(0);
+    }
+    int status = 0;
+    if (child < 0 || waitpid(child, &status, 0) != child || !WIFSIGNALED(status) ||
+        WTERMSIG(status) != SIGABRT) {
+      printf("FAIL zero native entry did not abort at the indirect AOT call\n");
+      g_failures++;
+    }
+
+    fflush(NULL);
+    const pid_t protected_child = fork();
+    if (protected_child == 0) {
+      g_goal_mem_low_protect = goal_function_addr("gcommon", fact_index) + 1;
+      (void)goal_gcommon_fact(2);
+      _exit(0);
+    }
+    status = 0;
+    if (protected_child < 0 || waitpid(protected_child, &status, 0) != protected_child ||
+        !WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT) {
+      printf("FAIL protected GOAL address did not abort before the native-entry load\n");
+      g_failures++;
+    }
+#endif
   }
 
   /* list walking: loads through GOAL pointers, the empty-pair symbol, and tag arithmetic */

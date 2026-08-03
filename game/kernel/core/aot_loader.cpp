@@ -18,6 +18,8 @@
 // The GOAL machine state the emitted C reads. goal_c_runtime.h declares them; the loader owns them.
 extern "C" {
 uint8_t* g_goal_mem = nullptr;
+uint64_t g_goal_mem_size = EE_MAIN_MEM_SIZE;
+uint64_t g_goal_mem_low_protect = EE_MAIN_MEM_LOW_PROTECT;
 uint64_t g_goal_s7 = 0;
 }
 
