@@ -1002,6 +1002,11 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.merc_eichar_provenance_events = merc_stats.eichar_provenance_events;
     m_chain_stats.merc_eichar_output_composition_mismatches =
         merc_stats.eichar_output_composition_mismatches;
+    m_chain_stats.merc_eichar_target_control_events = merc_stats.eichar_target_control_events;
+    m_chain_stats.merc_eichar_target_control_divergences =
+        merc_stats.eichar_target_control_divergences;
+    m_chain_stats.merc_eichar_target_control_attack_boundaries =
+        merc_stats.eichar_target_control_attack_boundaries;
     if (!m_chain_stats.first_merc_palette_health_event.valid() &&
         merc_stats.first_palette_health_event.valid()) {
       m_chain_stats.first_merc_palette_health_event = merc_stats.first_palette_health_event;
@@ -1043,6 +1048,15 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     if (merc_stats.last_eichar_output_composition_mismatch.valid()) {
       m_chain_stats.last_merc_eichar_output_composition_mismatch =
           merc_stats.last_eichar_output_composition_mismatch;
+    }
+    if (!m_chain_stats.first_merc_eichar_target_control_event.valid() &&
+        merc_stats.first_eichar_target_control_event.valid()) {
+      m_chain_stats.first_merc_eichar_target_control_event =
+          merc_stats.first_eichar_target_control_event;
+    }
+    if (merc_stats.last_eichar_target_control_event.valid()) {
+      m_chain_stats.last_merc_eichar_target_control_event =
+          merc_stats.last_eichar_target_control_event;
     }
     m_chain_stats.tex_uploads = uploads;
     m_chain_stats.skipped_bucket_bytes = skipped;

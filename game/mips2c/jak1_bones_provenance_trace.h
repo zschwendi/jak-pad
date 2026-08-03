@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -20,6 +22,61 @@ constexpr std::size_t kRootAnchorCount = 3;
 constexpr std::size_t kCalculationCount = 64;
 constexpr u32 kMaximumBoneCount = 128;
 
+// Asserted Jak 1 layouts from decompiler/config/jak1/all-types.gc. The observer verifies the
+// runtime type tag and allocated size before using any of these diagnostic-only offsets.
+constexpr std::size_t kGoalTypeTagBytes = 4;
+constexpr std::size_t kTypeAllocatedSizeOffset = 8;
+constexpr std::size_t kTargetStateOffset = 56;
+constexpr std::size_t kTargetRootOffset = 112;
+constexpr u16 kTargetMinimumSize = 0x250;
+constexpr std::size_t kControlQuatOffset = 32;
+constexpr std::size_t kControlDirTargOffset = 112;
+constexpr std::size_t kControlQuatForControlOffset = 496;
+constexpr std::size_t kControlCpadOffset = 668;
+constexpr std::size_t kControlTurnToTargetOffset = 720;
+constexpr std::size_t kControlPadMagnitudeOffset = 912;
+constexpr std::size_t kControlTargetAttackIdOffset = 2392;
+constexpr u16 kControlMinimumSize = 0x4a3c;
+constexpr std::size_t kCpadButtonAbsOffset = 44;
+constexpr std::size_t kCpadButtonRelOffset = 60;
+constexpr std::size_t kCpadStickDirectionOffset = 72;
+constexpr std::size_t kCpadStickSpeedOffset = 76;
+constexpr std::size_t kCpadLeftXOffset = 10;
+constexpr std::size_t kCpadLeftYOffset = 11;
+constexpr u16 kCpadMinimumSize = 0x88;
+
+struct FacingSnapshot {
+  bool valid = false;
+  double x = 0.0;
+  double z = 0.0;
+};
+
+struct TargetControlSnapshot {
+  bool valid = false;
+  u32 target_address = 0;
+  u32 control_address = 0;
+  u32 target_state_id = 0;
+  u64 target_attack_id = 0;
+  u32 button0_abs = 0;
+  u32 button0_rel = 0;
+  u8 left_x = 0;
+  u8 left_y = 0;
+  double stick_direction = 0.0;
+  double stick_speed = 0.0;
+  double pad_magnitude = 0.0;
+  FacingSnapshot intent_forward;
+  FacingSnapshot desired_forward;
+  FacingSnapshot control_forward;
+  FacingSnapshot render_forward;
+};
+
+struct TargetCaptureContext {
+  u32 target_address = 0;
+  u32 target_type = 0;
+  u32 control_info_type = 0;
+  u32 cpad_info_type = 0;
+};
+
 struct TransformSnapshot {
   bool valid = false;
   std::array<u8, kTransformBytes> bytes = {};
@@ -37,6 +94,7 @@ struct Calculation {
   // Bone nodes 1, 2 and 3 are align, prejoint and main respectively.
   std::array<TransformSnapshot, kRootAnchorCount> root_anchors = {};
   std::array<TransformSnapshot, kRootAnchorCount> root_bind_poses = {};
+  TargetControlSnapshot target_control;
 };
 
 class Registry {
@@ -47,7 +105,8 @@ class Registry {
               u64 bone_count,
               u64 camera_base,
               const u8* ee_memory,
-              std::size_t ee_memory_size) {
+              std::size_t ee_memory_size,
+              const TargetCaptureContext& target_context = {}) {
     if (!ee_memory || !bone_count || bone_count > kMaximumBoneCount || output_base > UINT32_MAX ||
         joints_base > UINT32_MAX || bones_base > UINT32_MAX || camera_base > UINT32_MAX ||
         !span_fits(output_base, bone_count * kOutputStride, ee_memory_size) ||
@@ -65,6 +124,7 @@ class Registry {
     calculation.camera_base = static_cast<u32>(camera_base);
     calculation.bone_count = static_cast<u32>(bone_count);
     copy_snapshot(ee_memory + camera_base, &calculation.camera);
+    calculation.target_control = capture_target_control(target_context, ee_memory, ee_memory_size);
 
     for (std::size_t anchor = 0; anchor < calculation.root_anchors.size(); anchor++) {
       const std::size_t bone_index = anchor + 1;
@@ -123,7 +183,154 @@ class Registry {
     m_serial = 0;
   }
 
+  static TargetControlSnapshot capture_target_control(const TargetCaptureContext& context,
+                                                      const u8* ee_memory,
+                                                      std::size_t ee_memory_size) {
+    TargetControlSnapshot out;
+    if (!ee_memory || !context.target_address || !context.target_type ||
+        !context.control_info_type || !context.cpad_info_type) {
+      return out;
+    }
+
+    const u32 target = normalize_goal_pointer(context.target_address);
+    const u32 target_type = normalize_goal_pointer(context.target_type);
+    const u32 control_type = normalize_goal_pointer(context.control_info_type);
+    const u32 cpad_type = normalize_goal_pointer(context.cpad_info_type);
+    if (!target || !target_type || !control_type || !cpad_type ||
+        !object_has_exact_type(target, target_type, kTargetMinimumSize, ee_memory,
+                               ee_memory_size)) {
+      return out;
+    }
+
+    u32 raw_control = 0;
+    if (!read_value(ee_memory, ee_memory_size, target + kTargetRootOffset, &raw_control)) {
+      return out;
+    }
+    const u32 control = normalize_goal_pointer(raw_control);
+    if (!object_has_exact_type(control, control_type, kControlMinimumSize, ee_memory,
+                               ee_memory_size)) {
+      return out;
+    }
+
+    u32 raw_cpad = 0;
+    if (!read_value(ee_memory, ee_memory_size, control + kControlCpadOffset, &raw_cpad)) {
+      return out;
+    }
+    const u32 cpad = normalize_goal_pointer(raw_cpad);
+    if (!object_has_exact_type(cpad, cpad_type, kCpadMinimumSize, ee_memory, ee_memory_size)) {
+      return out;
+    }
+
+    std::array<float, 4> dir_targ = {};
+    std::array<float, 4> quat_for_control = {};
+    std::array<float, 4> render_quat = {};
+    std::array<float, 4> turn_to_target = {};
+    float stick_direction = 0.0f;
+    float stick_speed = 0.0f;
+    float pad_magnitude = 0.0f;
+    if (!read_value(ee_memory, ee_memory_size, control + kControlDirTargOffset, &dir_targ) ||
+        !read_value(ee_memory, ee_memory_size, control + kControlQuatForControlOffset,
+                    &quat_for_control) ||
+        !read_value(ee_memory, ee_memory_size, control + kControlQuatOffset, &render_quat) ||
+        !read_value(ee_memory, ee_memory_size, control + kControlTurnToTargetOffset,
+                    &turn_to_target) ||
+        !read_value(ee_memory, ee_memory_size, cpad + kCpadStickDirectionOffset,
+                    &stick_direction) ||
+        !read_value(ee_memory, ee_memory_size, cpad + kCpadStickSpeedOffset, &stick_speed) ||
+        !read_value(ee_memory, ee_memory_size, control + kControlPadMagnitudeOffset,
+                    &pad_magnitude) ||
+        !all_finite(dir_targ) || !all_finite(quat_for_control) || !all_finite(render_quat) ||
+        !all_finite(turn_to_target) || !std::isfinite(stick_direction) ||
+        !std::isfinite(stick_speed) || !std::isfinite(pad_magnitude)) {
+      return out;
+    }
+
+    u32 raw_state = 0;
+    read_value(ee_memory, ee_memory_size, target + kTargetStateOffset, &raw_state);
+    const u32 state = normalize_goal_pointer(raw_state);
+    out.target_state_id = span_fits(state, kGoalTypeTagBytes, ee_memory_size) ? state : 0;
+    out.target_address = target;
+    out.control_address = control;
+    read_value(ee_memory, ee_memory_size, control + kControlTargetAttackIdOffset,
+               &out.target_attack_id);
+    read_value(ee_memory, ee_memory_size, cpad + kCpadButtonAbsOffset, &out.button0_abs);
+    read_value(ee_memory, ee_memory_size, cpad + kCpadButtonRelOffset, &out.button0_rel);
+    read_value(ee_memory, ee_memory_size, cpad + kCpadLeftXOffset, &out.left_x);
+    read_value(ee_memory, ee_memory_size, cpad + kCpadLeftYOffset, &out.left_y);
+    out.stick_direction = stick_direction;
+    out.stick_speed = stick_speed;
+    out.pad_magnitude = pad_magnitude;
+    out.intent_forward = normalize_xz(turn_to_target[0], turn_to_target[2]);
+    out.desired_forward = quaternion_forward_xz(dir_targ);
+    out.control_forward = quaternion_forward_xz(quat_for_control);
+    out.render_forward = quaternion_forward_xz(render_quat);
+    out.valid = out.intent_forward.valid && out.desired_forward.valid &&
+                out.control_forward.valid && out.render_forward.valid;
+    return out;
+  }
+
  private:
+  static u32 normalize_goal_pointer(u32 address) { return address & 0x7fffffff; }
+
+  template <typename T>
+  static bool read_value(const u8* memory, std::size_t memory_size, u64 address, T* out) {
+    if (!out || !span_fits(address, sizeof(T), memory_size)) {
+      return false;
+    }
+    std::memcpy(out, memory + address, sizeof(T));
+    return true;
+  }
+
+  static bool object_has_exact_type(u32 address,
+                                    u32 expected_type,
+                                    u16 minimum_size,
+                                    const u8* memory,
+                                    std::size_t memory_size) {
+    if (address < kGoalTypeTagBytes || !span_fits(address, minimum_size, memory_size)) {
+      return false;
+    }
+    u32 actual_type = 0;
+    u16 allocated_size = 0;
+    return read_value(memory, memory_size, address - kGoalTypeTagBytes, &actual_type) &&
+           normalize_goal_pointer(actual_type) == expected_type &&
+           read_value(memory, memory_size, expected_type + kTypeAllocatedSizeOffset,
+                      &allocated_size) &&
+           allocated_size >= minimum_size;
+  }
+
+  static bool all_finite(const std::array<float, 4>& values) {
+    return std::all_of(values.begin(), values.end(),
+                       [](float value) { return std::isfinite(value); });
+  }
+
+  static FacingSnapshot normalize_xz(double x, double z) {
+    FacingSnapshot out;
+    const double length = std::sqrt(x * x + z * z);
+    if (!std::isfinite(length) || length <= 1e-12) {
+      return out;
+    }
+    out.valid = true;
+    out.x = x / length;
+    out.z = z / length;
+    return out;
+  }
+
+  static FacingSnapshot quaternion_forward_xz(const std::array<float, 4>& quaternion) {
+    const double x = quaternion[0];
+    const double y = quaternion[1];
+    const double z = quaternion[2];
+    const double w = quaternion[3];
+    const double norm = std::sqrt(x * x + y * y + z * z + w * w);
+    if (!std::isfinite(norm) || norm <= 1e-12) {
+      return {};
+    }
+    const double nx = x / norm;
+    const double ny = y / norm;
+    const double nz = z / norm;
+    const double nw = w / norm;
+    return normalize_xz(2.0 * (nx * nz + nw * ny), 1.0 - 2.0 * (nx * nx + ny * ny));
+  }
+
   static bool span_fits(u64 start, u64 size, std::size_t memory_size) {
     return start <= memory_size && size <= memory_size - start;
   }

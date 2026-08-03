@@ -62,6 +62,9 @@ class MetalMerc2 {
     int eichar_transform_discontinuities = 0;
     int eichar_provenance_events = 0;
     int eichar_output_composition_mismatches = 0;
+    int eichar_target_control_events = 0;
+    int eichar_target_control_divergences = 0;
+    int eichar_target_control_attack_boundaries = 0;
     metal_renderer::MercPaletteHealthEvent first_palette_health_event;
     metal_renderer::MercPaletteHealthEvent last_palette_health_event;
     metal_renderer::MercPaletteHealthEvent first_eichar_palette_health_event;
@@ -72,6 +75,8 @@ class MetalMerc2 {
     metal_merc_transform_trace::Event last_eichar_provenance_event;
     metal_merc_transform_trace::Event first_eichar_output_composition_mismatch;
     metal_merc_transform_trace::Event last_eichar_output_composition_mismatch;
+    metal_merc_transform_trace::TargetControlEvent first_eichar_target_control_event;
+    metal_merc_transform_trace::TargetControlEvent last_eichar_target_control_event;
 
     void add(const Stats& o);
   };
@@ -269,6 +274,7 @@ class MetalMerc2 {
   bool m_reported_palette_health_issue = false;
   bool m_reported_eichar_transform_discontinuity = false;
   metal_merc_transform_trace::Tracker m_eichar_transform_tracker;
+  metal_merc_transform_trace::TargetControlTracker m_eichar_target_control_tracker;
 };
 
 /*!

@@ -692,16 +692,33 @@ void link() {
 
 namespace jak1_bones_provenance_observe {
 
+struct Cache {
+  Ptr<Symbol> target;
+  Ptr<Symbol> target_type;
+  Ptr<Symbol> control_info_type;
+  Ptr<Symbol> cpad_info_type;
+} cache;
+
 u64 execute(void* ctxt) {
   auto* c = (ExecutionContext*)ctxt;
+  const jak1_bones_provenance_trace::TargetCaptureContext target_context = {
+      cache.target->value,
+      cache.target_type->value,
+      cache.control_info_type->value,
+      cache.cpad_info_type->value,
+  };
   jak1_bones_provenance_trace::registry().record(
       c->sgpr64(a0), c->sgpr64(a1), c->sgpr64(a2), c->sgpr64(a3), c->sgpr64(t0), g_ee_main_mem,
-      EE_MAIN_MEM_SIZE);
+      EE_MAIN_MEM_SIZE, target_context);
   c->gprs[v0].du64[0] = 0;
   return c->gprs[v0].du64[0];
 }
 
 void link() {
+  cache.target = intern_from_c("*target*");
+  cache.target_type = intern_from_c("target");
+  cache.control_info_type = intern_from_c("control-info");
+  cache.cpad_info_type = intern_from_c("cpad-info");
   gLinkedFunctionTable.reg("jak1-bones-provenance-observe", execute, 0);
 }
 

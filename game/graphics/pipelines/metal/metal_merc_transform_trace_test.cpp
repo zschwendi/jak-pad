@@ -132,6 +132,38 @@ void store_matrix(std::vector<u8>& memory,
   std::memcpy(memory.data() + address, matrix.data(), sizeof(matrix));
 }
 
+template <typename T>
+void store_value(std::vector<u8>& memory, std::size_t address, const T& value) {
+  std::memcpy(memory.data() + address, &value, sizeof(value));
+}
+
+metal_merc_transform_trace::TargetControlObservation target_control_observation(
+    double intent_x,
+    double intent_z,
+    double control_x,
+    double control_z,
+    u64 attack_id,
+    u32 button_rel = 0) {
+  metal_merc_transform_trace::TargetControlObservation out;
+  out.valid = true;
+  out.producer_serial = attack_id + 100;
+  out.source_base = 0x2000;
+  out.target_state_id = 0x3000;
+  out.target_attack_id = attack_id;
+  out.button0_rel = button_rel;
+  out.left_x = 255;
+  out.left_y = 127;
+  out.stick_direction = -1.5707963267948966;
+  out.stick_speed = 1.0;
+  out.pad_magnitude = 1.0;
+  out.intent_forward = metal_merc_transform_trace::make_facing_snapshot(intent_x, intent_z);
+  out.desired_forward = out.intent_forward;
+  out.control_forward = metal_merc_transform_trace::make_facing_snapshot(control_x, control_z);
+  out.render_forward = out.control_forward;
+  out.root_forward = out.control_forward;
+  return out;
+}
+
 }  // namespace
 
 int main() {
@@ -355,6 +387,34 @@ int main() {
             (over_threshold.issue_mask & metal_merc_transform_trace::OUTPUT_COMPOSITION_MISMATCH),
         "the composition comparator is quiet below 1e-3 RMS and reports above it");
 
+  metal_merc_transform_trace::TargetControlTracker target_control_tracker;
+  const auto facing_ok =
+      target_control_tracker.observe(800, 3, target_control_observation(0.0, 1.0, 0.0, 1.0, 7));
+  check(!facing_ok.valid(), "matching active intent and control facing stay quiet");
+  const auto facing_mismatch =
+      target_control_tracker.observe(801, 3, target_control_observation(0.0, 1.0, 0.0, -1.0, 7));
+  check(
+      facing_mismatch.issue_mask == metal_merc_transform_trace::TARGET_CONTROL_FACING_DIVERGENCE &&
+          facing_mismatch.intent_control_dot == -1.0 && facing_mismatch.control_render_dot == 1.0 &&
+          facing_mismatch.render_root_dot == 1.0,
+      "opposed active intent and control facing report bounded divergence evidence");
+  const auto attack_transition =
+      target_control_tracker.observe(802, 3, target_control_observation(0.0, 1.0, 0.0, 1.0, 8));
+  check(
+      attack_transition.issue_mask == metal_merc_transform_trace::TARGET_CONTROL_ATTACK_BOUNDARY &&
+          attack_transition.previous_target_attack_id == 7 &&
+          attack_transition.current_target_attack_id == 8,
+      "a consecutive target attack id transition retains one attack-boundary event");
+  metal_merc_transform_trace::TargetControlTracker square_edge_tracker;
+  const auto square_edge = square_edge_tracker.observe(
+      900, 3,
+      target_control_observation(1.0, 0.0, 1.0, 0.0, 12,
+                                 metal_merc_transform_trace::TargetControlTracker::kSquareButton));
+  check(square_edge.issue_mask == metal_merc_transform_trace::TARGET_CONTROL_ATTACK_BOUNDARY &&
+            square_edge.button0_rel ==
+                metal_merc_transform_trace::TargetControlTracker::kSquareButton,
+        "a Square press edge is retained even before an attack id transition");
+
   auto& registry = jak1_bones_provenance_trace::registry();
   registry.reset();
   std::vector<u8> memory(0x10000, 0);
@@ -472,6 +532,103 @@ int main() {
   check(!registry.record(memory.size() - 64, kJoints, kBones, kCount, kCamera, memory.data(),
                          memory.size()),
         "the producer registry rejects an output span outside EE memory");
+
+  constexpr u32 kTargetType = 0x100;
+  constexpr u32 kControlType = 0x200;
+  constexpr u32 kCpadType = 0x300;
+  constexpr u32 kTarget = 0x7000;
+  constexpr u32 kControl = 0x8000;
+  constexpr u32 kCpad = 0xd000;
+  constexpr u32 kState = 0xe000;
+  const u16 target_size = jak1_bones_provenance_trace::kTargetMinimumSize;
+  const u16 control_size = jak1_bones_provenance_trace::kControlMinimumSize;
+  const u16 cpad_size = jak1_bones_provenance_trace::kCpadMinimumSize;
+  store_value(memory, kTargetType + jak1_bones_provenance_trace::kTypeAllocatedSizeOffset,
+              target_size);
+  store_value(memory, kControlType + jak1_bones_provenance_trace::kTypeAllocatedSizeOffset,
+              control_size);
+  store_value(memory, kCpadType + jak1_bones_provenance_trace::kTypeAllocatedSizeOffset, cpad_size);
+  store_value(memory, kTarget - jak1_bones_provenance_trace::kGoalTypeTagBytes, kTargetType);
+  store_value(memory, kControl - jak1_bones_provenance_trace::kGoalTypeTagBytes, kControlType);
+  store_value(memory, kCpad - jak1_bones_provenance_trace::kGoalTypeTagBytes, kCpadType);
+  store_value(memory, kTarget + jak1_bones_provenance_trace::kTargetRootOffset, kControl);
+  store_value(memory, kTarget + jak1_bones_provenance_trace::kTargetStateOffset, kState);
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlCpadOffset, kCpad);
+  const std::array<float, 4> identity_quaternion = {0.f, 0.f, 0.f, 1.f};
+  const std::array<float, 4> forward_velocity = {0.f, 0.f, 16384.f, 0.f};
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlDirTargOffset,
+              identity_quaternion);
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlQuatForControlOffset,
+              identity_quaternion);
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlQuatOffset,
+              identity_quaternion);
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlTurnToTargetOffset,
+              forward_velocity);
+  const float stick_direction = 0.f;
+  const float stick_speed = 1.f;
+  const float pad_magnitude = 1.f;
+  const u64 attack_id = 41;
+  const u32 square_abs = metal_merc_transform_trace::TargetControlTracker::kSquareButton;
+  const u32 square_rel = metal_merc_transform_trace::TargetControlTracker::kSquareButton;
+  const u8 left_x = 128;
+  const u8 left_y = 0;
+  store_value(memory, kCpad + jak1_bones_provenance_trace::kCpadStickDirectionOffset,
+              stick_direction);
+  store_value(memory, kCpad + jak1_bones_provenance_trace::kCpadStickSpeedOffset, stick_speed);
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlPadMagnitudeOffset,
+              pad_magnitude);
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlTargetAttackIdOffset,
+              attack_id);
+  store_value(memory, kCpad + jak1_bones_provenance_trace::kCpadButtonAbsOffset, square_abs);
+  store_value(memory, kCpad + jak1_bones_provenance_trace::kCpadButtonRelOffset, square_rel);
+  store_value(memory, kCpad + jak1_bones_provenance_trace::kCpadLeftXOffset, left_x);
+  store_value(memory, kCpad + jak1_bones_provenance_trace::kCpadLeftYOffset, left_y);
+
+  const jak1_bones_provenance_trace::TargetCaptureContext target_context = {
+      kTarget, kTargetType, kControlType, kCpadType};
+  jak1_bones_provenance_trace::Registry target_registry;
+  check(target_registry.record(kOutput, kJoints, kBones, kCount, kCamera, memory.data(),
+                               memory.size(), target_context),
+        "target-control capture stays attached to a valid producer calculation");
+  const auto target_record = target_registry.find_output_base(kOutput);
+  check(target_record && target_record->target_control.valid &&
+            target_record->target_control.target_address == kTarget &&
+            target_record->target_control.control_address == kControl &&
+            target_record->target_control.target_state_id == kState &&
+            target_record->target_control.target_attack_id == attack_id &&
+            target_record->target_control.button0_abs == square_abs &&
+            target_record->target_control.button0_rel == square_rel &&
+            target_record->target_control.left_x == left_x &&
+            target_record->target_control.left_y == left_y &&
+            target_record->target_control.intent_forward.z == 1.0 &&
+            target_record->target_control.control_forward.z == 1.0,
+        "safe asserted offsets capture minimum pad, facing, state and attack evidence");
+
+  check(!jak1_bones_provenance_trace::Registry::capture_target_control({}, memory.data(),
+                                                                       memory.size())
+             .valid,
+        "a null target context stays uninstrumented");
+  auto invalid_target = target_context;
+  invalid_target.target_address = static_cast<u32>(memory.size() - 2);
+  check(!jak1_bones_provenance_trace::Registry::capture_target_control(invalid_target,
+                                                                       memory.data(), memory.size())
+             .valid,
+        "an out-of-range target pointer is rejected before fixed-offset reads");
+  auto wrong_target_type = target_context;
+  const u32 wrong_type = 0x400;
+  store_value(memory, kTarget - jak1_bones_provenance_trace::kGoalTypeTagBytes, wrong_type);
+  check(!jak1_bones_provenance_trace::Registry::capture_target_control(wrong_target_type,
+                                                                       memory.data(), memory.size())
+             .valid,
+        "a mismatched target runtime type is rejected");
+  store_value(memory, kTarget - jak1_bones_provenance_trace::kGoalTypeTagBytes, kTargetType);
+  const u32 unsafe_cpad = static_cast<u32>(memory.size() - 16);
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlCpadOffset, unsafe_cpad);
+  check(!jak1_bones_provenance_trace::Registry::capture_target_control(target_context,
+                                                                       memory.data(), memory.size())
+             .valid,
+        "an out-of-range cpad pointer is rejected before its offset reads");
+  store_value(memory, kControl + jak1_bones_provenance_trace::kControlCpadOffset, kCpad);
 
   store_identity(memory, kCamera, 9.f);
   check(registry.record(kOutput, kJoints, kBones, kCount, kCamera, memory.data(), memory.size()) &&

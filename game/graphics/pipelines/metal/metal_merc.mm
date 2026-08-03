@@ -75,6 +75,35 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
   out.input_translation_x = root_matrix[12];
   out.input_translation_y = root_matrix[13];
   out.input_translation_z = root_matrix[14];
+  const auto& target = calculation->target_control;
+  if (target.valid) {
+    auto& control = out.target_control;
+    control.valid = true;
+    control.producer_serial = calculation->serial;
+    control.source_base = calculation->output_base;
+    control.target_state_id = target.target_state_id;
+    control.target_attack_id = target.target_attack_id;
+    control.button0_abs = target.button0_abs;
+    control.button0_rel = target.button0_rel;
+    control.left_x = target.left_x;
+    control.left_y = target.left_y;
+    control.stick_direction = target.stick_direction;
+    control.stick_speed = target.stick_speed;
+    control.pad_magnitude = target.pad_magnitude;
+    control.intent_forward = {target.intent_forward.valid, target.intent_forward.x,
+                              target.intent_forward.z};
+    control.desired_forward = {target.desired_forward.valid, target.desired_forward.x,
+                               target.desired_forward.z};
+    control.control_forward = {target.control_forward.valid, target.control_forward.x,
+                               target.control_forward.z};
+    control.render_forward = {target.render_forward.valid, target.render_forward.x,
+                              target.render_forward.z};
+    control.root_forward = metal_merc_transform_trace::make_facing_snapshot(
+        out.input_root_basis.components[6], out.input_root_basis.components[8]);
+    control.valid = control.intent_forward.valid && control.desired_forward.valid &&
+                    control.control_forward.valid && control.render_forward.valid &&
+                    control.root_forward.valid;
+  }
   out.mapping_valid =
       out.input_root_basis.valid && out.camera_basis.valid && out.output_basis.valid;
   return out;
@@ -328,6 +357,9 @@ void MetalMerc2::Stats::add(const Stats& o) {
   eichar_transform_discontinuities += o.eichar_transform_discontinuities;
   eichar_provenance_events += o.eichar_provenance_events;
   eichar_output_composition_mismatches += o.eichar_output_composition_mismatches;
+  eichar_target_control_events += o.eichar_target_control_events;
+  eichar_target_control_divergences += o.eichar_target_control_divergences;
+  eichar_target_control_attack_boundaries += o.eichar_target_control_attack_boundaries;
   if (!first_palette_health_event.valid() && o.first_palette_health_event.valid()) {
     first_palette_health_event = o.first_palette_health_event;
   }
@@ -359,6 +391,12 @@ void MetalMerc2::Stats::add(const Stats& o) {
   }
   if (o.last_eichar_output_composition_mismatch.valid()) {
     last_eichar_output_composition_mismatch = o.last_eichar_output_composition_mismatch;
+  }
+  if (!first_eichar_target_control_event.valid() && o.first_eichar_target_control_event.valid()) {
+    first_eichar_target_control_event = o.first_eichar_target_control_event;
+  }
+  if (o.last_eichar_target_control_event.valid()) {
+    last_eichar_target_control_event = o.last_eichar_target_control_event;
   }
 }
 
@@ -1024,6 +1062,23 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
           provenance =
               make_bones_provenance_observation(source_address, source_base, provenance_probe_slot,
                                                 reinterpret_cast<const float*>(&matrix));
+          const auto target_control = m_eichar_target_control_tracker.observe(
+              render_state->engine_frame_id, slot, provenance.target_control);
+          if (target_control.valid()) {
+            stats->eichar_target_control_events++;
+            if (target_control.issue_mask &
+                metal_merc_transform_trace::TARGET_CONTROL_FACING_DIVERGENCE) {
+              stats->eichar_target_control_divergences++;
+            }
+            if (target_control.issue_mask &
+                metal_merc_transform_trace::TARGET_CONTROL_ATTACK_BOUNDARY) {
+              stats->eichar_target_control_attack_boundaries++;
+            }
+            if (!stats->first_eichar_target_control_event.valid()) {
+              stats->first_eichar_target_control_event = target_control;
+            }
+            stats->last_eichar_target_control_event = target_control;
+          }
         }
         const auto discontinuity = m_eichar_transform_tracker.observe(
             render_state->engine_frame_id, slot, fnv64(model->name), fnv64(&matrix, sizeof(matrix)),

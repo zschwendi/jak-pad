@@ -30,6 +30,48 @@ struct BasisSnapshot {
   std::array<double, kBasisComponentCount> components = {};
 };
 
+struct FacingSnapshot {
+  bool valid = false;
+  double x = 0.0;
+  double z = 0.0;
+};
+
+inline FacingSnapshot make_facing_snapshot(double x, double z) {
+  FacingSnapshot out;
+  const double length = std::sqrt(x * x + z * z);
+  if (!std::isfinite(length) || length <= 1e-12) {
+    return out;
+  }
+  out.valid = true;
+  out.x = x / length;
+  out.z = z / length;
+  return out;
+}
+
+inline double facing_dot(const FacingSnapshot& a, const FacingSnapshot& b) {
+  return a.valid && b.valid ? a.x * b.x + a.z * b.z : std::numeric_limits<double>::quiet_NaN();
+}
+
+struct TargetControlObservation {
+  bool valid = false;
+  u64 producer_serial = 0;
+  u32 source_base = 0;
+  u32 target_state_id = 0;
+  u64 target_attack_id = 0;
+  u32 button0_abs = 0;
+  u32 button0_rel = 0;
+  u8 left_x = 0;
+  u8 left_y = 0;
+  double stick_direction = 0.0;
+  double stick_speed = 0.0;
+  double pad_magnitude = 0.0;
+  FacingSnapshot intent_forward;
+  FacingSnapshot desired_forward;
+  FacingSnapshot control_forward;
+  FacingSnapshot render_forward;
+  FacingSnapshot root_forward;
+};
+
 // Extracts the direction of each 3D basis vector while deliberately removing scale. Both the
 // world-space bone transforms and Merc matrices store four-float vectors, hence the default stride.
 inline BasisSnapshot make_basis_snapshot(const float* matrix, std::size_t vector_stride = 4) {
@@ -106,11 +148,114 @@ struct ProvenanceObservation {
   double input_translation_x = 0.0;
   double input_translation_y = 0.0;
   double input_translation_z = 0.0;
+  TargetControlObservation target_control;
 
   bool valid() const {
     return mapping_checked && mapping_valid && input_root_basis.valid && camera_basis.valid &&
            output_basis.valid;
   }
+};
+
+enum TargetControlIssue : u8 {
+  TARGET_CONTROL_FACING_DIVERGENCE = 1 << 0,
+  TARGET_CONTROL_ATTACK_BOUNDARY = 1 << 1,
+};
+
+struct TargetControlEvent {
+  u8 issue_mask = 0;
+  u64 engine_frame_id = 0;
+  u64 producer_serial = 0;
+  u32 source_base = 0;
+  u32 target_state_id = 0;
+  u64 previous_target_attack_id = 0;
+  u64 current_target_attack_id = 0;
+  u32 button0_abs = 0;
+  u32 button0_rel = 0;
+  u8 left_x = 0;
+  u8 left_y = 0;
+  double stick_direction = 0.0;
+  double stick_speed = 0.0;
+  double pad_magnitude = 0.0;
+  FacingSnapshot intent_forward;
+  FacingSnapshot desired_forward;
+  FacingSnapshot control_forward;
+  FacingSnapshot render_forward;
+  FacingSnapshot root_forward;
+  double intent_control_dot = 0.0;
+  double control_render_dot = 0.0;
+  double render_root_dot = 0.0;
+
+  bool valid() const { return issue_mask != 0; }
+};
+
+class TargetControlTracker {
+ public:
+  static constexpr u32 kSquareButton = 1u << 15;
+  static constexpr double kMinimumActiveMagnitude = 0.7;
+  static constexpr double kFacingDivergenceDot = 0.0;
+
+  TargetControlEvent observe(u64 engine_frame_id,
+                             int bone_slot,
+                             const TargetControlObservation& observation) {
+    TargetControlEvent event;
+    if (!engine_frame_id || bone_slot < 0 || bone_slot >= static_cast<int>(m_histories.size()) ||
+        !observation.valid) {
+      return event;
+    }
+
+    auto& previous = m_histories[bone_slot];
+    const double intent_control_dot =
+        facing_dot(observation.intent_forward, observation.control_forward);
+    if (observation.stick_speed >= kMinimumActiveMagnitude &&
+        observation.pad_magnitude >= kMinimumActiveMagnitude && std::isfinite(intent_control_dot) &&
+        intent_control_dot < kFacingDivergenceDot) {
+      event.issue_mask |= TARGET_CONTROL_FACING_DIVERGENCE;
+    }
+    const bool consecutive = previous.valid && previous.engine_frame_id + 1 == engine_frame_id;
+    if ((observation.button0_rel & kSquareButton) ||
+        (consecutive && previous.target_attack_id != observation.target_attack_id)) {
+      event.issue_mask |= TARGET_CONTROL_ATTACK_BOUNDARY;
+    }
+
+    if (event.valid()) {
+      event.engine_frame_id = engine_frame_id;
+      event.producer_serial = observation.producer_serial;
+      event.source_base = observation.source_base;
+      event.target_state_id = observation.target_state_id;
+      event.previous_target_attack_id = previous.target_attack_id;
+      event.current_target_attack_id = observation.target_attack_id;
+      event.button0_abs = observation.button0_abs;
+      event.button0_rel = observation.button0_rel;
+      event.left_x = observation.left_x;
+      event.left_y = observation.left_y;
+      event.stick_direction = observation.stick_direction;
+      event.stick_speed = observation.stick_speed;
+      event.pad_magnitude = observation.pad_magnitude;
+      event.intent_forward = observation.intent_forward;
+      event.desired_forward = observation.desired_forward;
+      event.control_forward = observation.control_forward;
+      event.render_forward = observation.render_forward;
+      event.root_forward = observation.root_forward;
+      event.intent_control_dot = intent_control_dot;
+      event.control_render_dot =
+          facing_dot(observation.control_forward, observation.render_forward);
+      event.render_root_dot = facing_dot(observation.render_forward, observation.root_forward);
+    }
+
+    previous.valid = true;
+    previous.engine_frame_id = engine_frame_id;
+    previous.target_attack_id = observation.target_attack_id;
+    return event;
+  }
+
+ private:
+  struct History {
+    bool valid = false;
+    u64 engine_frame_id = 0;
+    u64 target_attack_id = 0;
+  };
+
+  std::array<History, kBoneSlotCount> m_histories = {};
 };
 
 enum DiscontinuityIssue : u8 {

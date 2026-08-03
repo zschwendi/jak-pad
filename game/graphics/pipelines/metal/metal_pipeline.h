@@ -202,6 +202,9 @@ struct ChainStats {
   int merc_eichar_transform_discontinuities = 0;
   int merc_eichar_provenance_events = 0;
   int merc_eichar_output_composition_mismatches = 0;
+  int merc_eichar_target_control_events = 0;
+  int merc_eichar_target_control_divergences = 0;
+  int merc_eichar_target_control_attack_boundaries = 0;
   // Retained across clean frames so an intermittent one-frame failure remains inspectable.
   MercPaletteHealthEvent first_merc_palette_health_event;
   MercPaletteHealthEvent last_merc_palette_health_event;
@@ -213,6 +216,8 @@ struct ChainStats {
   metal_merc_transform_trace::Event last_merc_eichar_provenance_event;
   metal_merc_transform_trace::Event first_merc_eichar_output_composition_mismatch;
   metal_merc_transform_trace::Event last_merc_eichar_output_composition_mismatch;
+  metal_merc_transform_trace::TargetControlEvent first_merc_eichar_target_control_event;
+  metal_merc_transform_trace::TargetControlEvent last_merc_eichar_target_control_event;
   // eye renderer, from the last chain frame
   int eyes_composed = 0;
   int eye_draws = 0;
