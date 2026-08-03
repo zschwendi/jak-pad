@@ -151,10 +151,11 @@ endif()
 # core translation units reach the game through kernel_game.h, and this target compiles the jak2
 # implementation of that seam next to the jak2 kernel translation units. Smaller than the jak1
 # library on purpose - the sound path has loader framing, checked SBlk loads, ordinary named SFX
-# playback and ordinary STR files; the shared pushed-state pad seam handles controllers; music,
-# streaming, and rendering remain machine stubs that report loudly. The graphics-DMA seam can
-# validate and measure completed chains but deliberately drops them. dgo_loader_jak2.cpp carries
-# only the C-driven load so far.
+# playback and ordinary STR files; the shared pushed-state pad seam handles controllers. Music and
+# streaming remain machine stubs that report loudly. The graphics-host seam forwards complete
+# chains, pacing, synchronization, texture operations, desired/active level sets, and display
+# alpha to a host; the headless probes only count or measure those chains and deliberately drop
+# them. dgo_loader_jak2.cpp carries both C-driven loads and native channel-3 incremental RPC.
 set(JAK2_KERNEL_CORE_SOURCES
     # common support
     "${JAK1_KERNEL_CORE_ROOT}/common/cross_os_debug/xdbg.cpp"
@@ -228,7 +229,7 @@ set(JAK2_KERNEL_CORE_SOURCES
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/sfxgrain.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/vagvoice.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/util.cpp"
-    # __send-gfx-dma-chain: validate and measure the chain, then drop it without rendering
+    # optional __send-gfx-dma-chain observer: validate and measure, then drop without rendering
     "${CMAKE_CURRENT_LIST_DIR}/dma_capture.cpp"
     # display pacing, renderer completion and level residency through host callbacks
     "${CMAKE_CURRENT_LIST_DIR}/gfx_host.cpp"

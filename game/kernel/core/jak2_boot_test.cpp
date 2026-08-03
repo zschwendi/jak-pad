@@ -14,7 +14,10 @@
  * --with-game and calls the real Jak 2 `play-boot`, then dispatches the GOAL process it creates
  * only far enough to report the first title-level DGO request and the next missing subsystem.
  * --play-dma preserves that mode and additionally waits for one valid 327-bucket graphics-DMA
- * chain. The chain is measured and dropped: this remains a headless probe, not a renderer.
+ * chain. The chain is measured and dropped. --play-gfx-host instead installs the complete
+ * graphics-host boundary and requires the title frontier to call send-chain, syncv and sync-path.
+ * Its callbacks only count and pace synthetically: both modes remain headless probes, not
+ * renderers.
  */
 
 #include <cstdarg>
@@ -42,6 +45,7 @@ extern "C" {
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/dma_capture.h"
+#include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
@@ -233,11 +237,102 @@ Jak2DmaWindow audit_jak2_dma_window(const goal_gfx_dma_stats& before,
   return out;
 }
 
+struct HeadlessGfxHostStats {
+  int chains = 0;
+  int vsyncs = 0;
+  int sync_paths = 0;
+  int texture_uploads = 0;
+  int texture_relocations = 0;
+  int desired_level_calls = 0;
+  int active_level_calls = 0;
+  int pmode_calls = 0;
+  int last_desired_level_count = 0;
+  int last_active_level_count = 0;
+  float last_pmode_alpha = 0.f;
+};
+
+HeadlessGfxHostStats g_headless_gfx;
+
+void headless_send_chain(const void* ee_base, uint32_t chain_offset) {
+  (void)ee_base;
+  (void)chain_offset;
+  g_headless_gfx.chains++;
+}
+
+uint32_t headless_vsync() {
+  g_headless_gfx.vsyncs++;
+  return (g_headless_gfx.vsyncs & 1) ? 1 : 0;
+}
+
+uint32_t headless_sync_path() {
+  g_headless_gfx.sync_paths++;
+  return 0;
+}
+
+void headless_texture_upload(const uint8_t* tpage, int mode, uint32_t s7_ptr) {
+  (void)tpage;
+  (void)mode;
+  (void)s7_ptr;
+  g_headless_gfx.texture_uploads++;
+}
+
+void headless_texture_relocate(uint32_t dst, uint32_t src, uint32_t format) {
+  (void)dst;
+  (void)src;
+  (void)format;
+  g_headless_gfx.texture_relocations++;
+}
+
+void headless_set_desired_levels(const char* const* names, int count) {
+  (void)names;
+  g_headless_gfx.desired_level_calls++;
+  g_headless_gfx.last_desired_level_count = count;
+}
+
+void headless_set_active_levels(const char* const* names, int count) {
+  (void)names;
+  g_headless_gfx.active_level_calls++;
+  g_headless_gfx.last_active_level_count = count;
+}
+
+void headless_set_pmode_alpha(float alpha) {
+  g_headless_gfx.pmode_calls++;
+  g_headless_gfx.last_pmode_alpha = alpha;
+}
+
+HeadlessGfxHostStats headless_gfx_delta(const HeadlessGfxHostStats& before,
+                                        const HeadlessGfxHostStats& after) {
+  HeadlessGfxHostStats out;
+  out.chains = after.chains - before.chains;
+  out.vsyncs = after.vsyncs - before.vsyncs;
+  out.sync_paths = after.sync_paths - before.sync_paths;
+  out.texture_uploads = after.texture_uploads - before.texture_uploads;
+  out.texture_relocations = after.texture_relocations - before.texture_relocations;
+  out.desired_level_calls = after.desired_level_calls - before.desired_level_calls;
+  out.active_level_calls = after.active_level_calls - before.active_level_calls;
+  out.pmode_calls = after.pmode_calls - before.pmode_calls;
+  if (out.desired_level_calls > 0) {
+    out.last_desired_level_count = after.last_desired_level_count;
+  }
+  if (out.active_level_calls > 0) {
+    out.last_active_level_count = after.last_active_level_count;
+  }
+  if (out.pmode_calls > 0) {
+    out.last_pmode_alpha = after.last_pmode_alpha;
+  }
+  return out;
+}
+
+bool headless_gfx_frontier_reached(const HeadlessGfxHostStats& window) {
+  return window.chains > 0 && window.vsyncs > 0 && window.sync_paths > 0;
+}
+
 int run_boot(const std::string& data_dir,
              int dispatch_frames,
              bool with_game,
              bool run_play,
-             bool run_play_dma) {
+             bool run_play_dma,
+             bool run_play_gfx_host) {
   goal_kernel_core_set_data_directory(data_dir.c_str());
   say("data directory: %s\n", data_dir.c_str());
 
@@ -293,6 +388,21 @@ int run_boot(const std::string& data_dir,
     // Replace only the graphics-DMA stub. The rest of the graphics machine layer remains the
     // diagnostic stubs, and this seam measures completed chains without rendering or capture.
     goal_gfx_dma_install();
+  } else if (run_play_gfx_host) {
+    g_headless_gfx = {};
+    goal_gfx_host host = {};
+    host.send_chain = headless_send_chain;
+    host.vsync = headless_vsync;
+    host.sync_path = headless_sync_path;
+    host.texture_upload_now = headless_texture_upload;
+    host.texture_relocate = headless_texture_relocate;
+    host.set_levels = headless_set_desired_levels;
+    host.set_pmode_alp = headless_set_pmode_alpha;
+    host.set_active_levels = headless_set_active_levels;
+    if (goal_gfx_host_install(&host) != GOAL_KERNEL_CORE_OK) {
+      say("FAILED: could not install the headless Jak 2 graphics host\n");
+      return 1;
+    }
   }
 
   if (with_game) {
@@ -341,12 +451,14 @@ int run_boot(const std::string& data_dir,
     if (run_play_dma) {
       goal_gfx_dma_get_stats(&dma_before);
     }
+    const HeadlessGfxHostStats gfx_before = g_headless_gfx;
     const u64 play_boot_result = jak2::call_goal_function_by_name("play-boot");
     drain_goal_print_buffer();
 
     goal_dgo_rpc_stats rpc = {};
     goal_gfx_dma_stats dma = {};
     Jak2DmaWindow dma_window = {};
+    HeadlessGfxHostStats gfx_window = {};
     int frames_run = 0;
     while (frames_run < dispatch_frames) {
       call_goal_on_stack(Ptr<Function>(dispatcher), goal_kernel_stack_top(), s7.offset,
@@ -360,12 +472,15 @@ int run_boot(const std::string& data_dir,
       if (run_play_dma) {
         goal_gfx_dma_get_stats(&dma);
         dma_window = audit_jak2_dma_window(dma_before, dma);
+      } else if (run_play_gfx_host) {
+        gfx_window = headless_gfx_delta(gfx_before, g_headless_gfx);
       }
       if (run_play_dma && dma_window.malformed > 0) {
         break;
       }
       if (title_ready &&
-          (!run_play_dma || (dma_window.accounting_complete && dma_window.found_valid))) {
+          (!run_play_dma || (dma_window.accounting_complete && dma_window.found_valid)) &&
+          (!run_play_gfx_host || headless_gfx_frontier_reached(gfx_window))) {
         break;
       }
     }
@@ -394,6 +509,17 @@ int run_boot(const std::string& data_dir,
         return 1;
       }
     }
+    if (run_play_gfx_host) {
+      gfx_window = headless_gfx_delta(gfx_before, g_headless_gfx);
+      say("  headless graphics host after play-boot: chains=%d syncv=%d sync-path=%d "
+          "texture-upload=%d texture-relocate=%d desired-levels=%d (last %d) "
+          "active-levels=%d (last %d) pmode=%d (last %.6f)\n",
+          gfx_window.chains, gfx_window.vsyncs, gfx_window.sync_paths,
+          gfx_window.texture_uploads, gfx_window.texture_relocations,
+          gfx_window.desired_level_calls, gfx_window.last_desired_level_count,
+          gfx_window.active_level_calls, gfx_window.last_active_level_count,
+          gfx_window.pmode_calls, gfx_window.last_pmode_alpha);
+    }
 
     if (std::strcmp(rpc.first_dgo_name, "TITLE.DGO") != 0 || rpc.dgo_archives < 1 ||
         rpc.dgo_objects < 1 || rpc.linked_code_objects + rpc.linked_data_objects < 1 ||
@@ -402,6 +528,20 @@ int run_boot(const std::string& data_dir,
       return 1;
     }
     say("  proved: Jak 2 play reached TITLE.DGO through the composed channel-3 router\n");
+    if (run_play_gfx_host) {
+      if (!headless_gfx_frontier_reached(gfx_window)) {
+        say("FAILED: --play-gfx-host requires at least one send-chain, syncv and sync-path "
+            "callback after its baseline\n");
+        return 1;
+      }
+      say("  proved: the title frontier crossed the host graphics boundary: %d chain(s), "
+          "%d syncv, %d sync-path\n",
+          gfx_window.chains, gfx_window.vsyncs, gfx_window.sync_paths);
+      say("STOPPED: --play-gfx-host counted and discarded graphics work. It has no renderer, "
+          "drawn output or app loop, and level callbacks were observations rather than a "
+          "success requirement.\n");
+      return 0;
+    }
     if (!run_play_dma) {
       say("STOPPED: the host probe ended after the first linked title object; it has no renderer "
           "or app loop, and any missing-machine "
@@ -480,6 +620,7 @@ int main(int argc, char** argv) {
   bool with_game = false;
   bool run_play = false;
   bool run_play_dma = false;
+  bool run_play_gfx_host = false;
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
     if (arg == "--data-dir" && i + 1 < argc) {
@@ -497,10 +638,18 @@ int main(int argc, char** argv) {
       run_play = true;
       run_play_dma = true;
       with_game = true;
+    } else if (arg == "--play-gfx-host") {
+      run_play = true;
+      run_play_gfx_host = true;
+      with_game = true;
     } else {
       std::fprintf(stderr, "unknown argument %s\n", arg.c_str());
       return 2;
     }
+  }
+  if (run_play_dma && run_play_gfx_host) {
+    std::fprintf(stderr, "--play-dma and --play-gfx-host are mutually exclusive\n");
+    return 2;
   }
   if (data_dir.empty()) {
     const char* env = std::getenv("GOALPAD_JAK2_DATA_DIR");
@@ -527,7 +676,8 @@ int main(int argc, char** argv) {
   register_aot_objects();
   std::printf("%d AOT translation units registered by object name\n", goal_aot_boot_file_count);
 
-  const int result = run_boot(data_dir, dispatch_frames, with_game, run_play, run_play_dma);
+  const int result =
+      run_boot(data_dir, dispatch_frames, with_game, run_play, run_play_dma, run_play_gfx_host);
 
   goal_aot_reset();
   goal_kernel_core_shutdown();

@@ -19,15 +19,18 @@ owns its sound-system shutdown. Command 2 has no reply payload: its zero return 
 synchronous transport completed, not that a bank loaded; failures are available through host logs
 and `goal_jak2_sound_rpc_stats`. The shared pushed-state pad seam implements `cpad-open` and
 `cpad-get-data` for Jak 2 as well as Jak 1. `install-handler` faithfully stores, replaces, or clears
-the vblank and VIF1 handler references, but this headless core does not dispatch them yet.
-`pc-rand` uses the same process-lifetime generator as upstream. Music, streaming, and rendering
-still report through the machine stubs. Jak 2 graphics DMA remains on that diagnostic stub until a
-host explicitly calls `goal_gfx_dma_install`; `--play-dma` does so, validates, measures, and drops
-completed chains. Plain `--play` retains its title-only behavior, while the Jak 1 boot and gameplay
-probes retain their existing DMA measurement and capture behavior. `jak2-pad-seam-test`,
-`jak2-handler-seam-test`, `jak2-pc-rand-test`,
-`jak2-lightweight-machine-test`, `jak2-dma-boundary-test`, and `jak2-sound-rpc-test` cover those
-seams, while
+the vblank and VIF1 handler references. A complete graphics host dispatches the retained vblank
+handler immediately before its `syncv` callback; without that host the graphics functions remain
+diagnostic stubs. `pc-rand` uses the same process-lifetime generator as upstream. Music and
+streaming still report through the machine stubs. Jak 2 graphics DMA remains on that diagnostic
+stub until a host explicitly calls `goal_gfx_dma_install`; `--play-dma` does so, validates,
+measures, and drops completed chains. `--play-gfx-host` instead installs a complete headless
+counting host and requires the title frontier to call `send-chain`, `syncv`, and `sync-path` before
+it succeeds. It discards every chain and never renders. Plain `--play` retains its title-only
+behavior, while the Jak 1 boot and gameplay probes retain their existing DMA measurement and
+capture behavior. `jak1-gfx-host-test`, `jak2-gfx-host-test`, `jak2-pad-seam-test`,
+`jak2-handler-seam-test`, `jak2-pc-rand-test`, `jak2-lightweight-machine-test`,
+`jak2-dma-boundary-test`, and `jak2-sound-rpc-test` cover those seams, while
 `jak2-dgo-rpc-test` covers the exact 32-byte DGO protocol, composed-router delegation and rejection
 behavior, and incremental AOT-code/data-object linking. All use original synthetic data only.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
@@ -35,6 +38,9 @@ kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GA
 exploratory integration probe; the registered CTest does not enable that mode.
 `--play` stops after the first linked title object. `--play-dma` additionally installs the
 measurement seam and requires one complete 327-bucket Jak 2 graphics chain before stopping.
+`--play-gfx-host` instead requires at least one host chain, `syncv`, and `sync-path` call, prints
+all graphics-host callback counts reached by the bounded dispatch, and does not require level
+callbacks when that frontier has not reached them.
 `jak2-thread-switch-test` drives the native ARM64 thread routines through the Jak 2 process and
 thread layouts.
 
@@ -342,27 +348,29 @@ host.vsync             = ...;  /* syncv: block until the renderer presented   */
 host.sync_path         = ...;  /* sync-path                                   */
 host.texture_upload_now = ...; /* __pc-texture-upload-now                     */
 host.texture_relocate  = ...;  /* __pc-texture-relocate                       */
-host.set_levels        = ...;  /* __pc-set-levels: which levels' art to have  */
+host.set_levels        = ...;  /* __pc-set-levels: desired/loading levels     */
 host.set_pmode_alp     = ...;  /* put-display-env's blackout alpha            */
+host.set_active_levels = ...;  /* __pc-set-active-levels: Jak 2 active levels */
 goal_gfx_host_install(&host);
 ```
 
 `goal_gfx_host_install` also implements the PS2 graphics calls that have nothing left to do once
-the hardware is gone - `reset-path`, `reset-graph`, `dma-sync`, `flush-cache` and the GS IMR pair -
-returning 0, which is what upstream's desktop port does. Every entry may be left NULL, in which
-case that function keeps the machine layer's reporting stub.
+the hardware is gone - `reset-path`, `reset-graph`, `dma-sync`, the GS IMR pair, and
+`gs-store-image` - returning 0, which is what upstream's desktop port does. The shared portable
+machine seam owns the `flush-cache` no-op. Every entry may be left NULL, in which case that
+function keeps the machine layer's reporting stub.
 
-`__pc-set-levels` is the one that is more than a forward. GOAL calls it every frame from
-`(method 15 load-state)` in `engine/level/level.gc` with the two levels the load state is holding,
-and the seam drops the game's `"none"` placeholders and hands the host the names that are left. It
-is how the renderer learns which levels' `.fr3` art to have on the GPU without anything being
-hardcoded: the game says `title+village1` while the title screen plays, `village1` once the title
-level is discarded, and `misty+village1` as soon as the player walks toward the water.
+The level callbacks are more than forwards. Jak 1 passes its two desired level names directly to
+`__pc-set-levels`. Jak 2 passes a pointer to its six-entry desired-level array and separately calls
+`__pc-set-active-levels` with its six-entry active-level array. The game adapters decode those
+different layouts, and the shared seam drops `"none"` placeholders before borrowing the remaining
+names to the host. This is how the renderer learns which levels' art to have on the GPU without
+anything being hardcoded.
 
 The signatures the host sees are the renderer's, not GOAL's: `send_chain` takes EE main memory and
 the chain's GOAL pointer, which are exactly `GfxRendererModule::send_chain`'s two arguments.
 `game/goalpad_play.cpp` is the desktop host that fills this in from the Metal renderer; an iPadOS
-bridge fills in the same seven entries from a `CAMetalLayer`.
+bridge fills in the same callbacks from a `CAMetalLayer`.
 
 ## Capturing a frame
 
@@ -744,8 +752,10 @@ with no case now fails to compile rather than returning garbage.
   path, its translated mips2c functions are registered, and its sound loader accepts the IRX 4.0
   version handshake, ordinary STR files, validated SBlk banks retained by 989snd, and ordinary
   named-SFX PLAY/update commands. Its portable pad seam accepts host-pushed controller state.
-  Music, streaming and info-frame updates are not implemented; neither are its graphics and
-  broader machine seams. Jak 3 and Jak X still use the
+  Its graphics machine boundary now has per-game desired/active-level adapters, host callbacks,
+  and pre-`syncv` vblank dispatch, but the kernel probe installs only a counting/discarding host
+  and has no renderer or drawn output. Music, streaming and info-frame updates are not
+  implemented; neither are its broader machine seams. Jak 3 and Jak X still use the
   desktop/x86-oriented paths and remain non-functional in this ARM64 kernel core.
 - **Little machine layer.** Almost nothing from `kmachine.cpp` is here.
   `goal_kernel_core_stub_machine_layer` puts a loudly-failing GOAL function object in each of its
@@ -758,20 +768,22 @@ with no case now fails to compile rather than returning garbage.
   `pc-prof` to the existing global profiler and reports an explicitly inactive mouse when no pointer
   provider exists. The loader
   half of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the
-  pad in `pad.cpp`. `install-handler` retains the vblank and VIF1 GOAL function references but no
-  portable frame path dispatches them yet. When explicitly installed, `dma_capture.cpp` validates
-  and measures completed graphics-DMA chains before dropping them; everything else -
-  `file-stream-open`, `reset-graph` - is a diagnostic and not an implementation. Such a frame runs
-  with display functions returning 0 and DMA chains measured but not rendered, so what it computes
-  is real and what it would have shown is not.
+  pad in `pad.cpp`. `install-handler` retains the vblank and VIF1 GOAL function references; an
+  installed graphics host dispatches the Jak 2 vblank handler before host pacing. When explicitly
+  installed, `dma_capture.cpp` validates and measures completed graphics-DMA chains before
+  dropping them. A graphics host also turns hardware-only calls such as `reset-graph` into the
+  portable no-ops they are upstream. Other functions such as `file-stream-open` remain
+  diagnostics. Such a frame can execute real game and graphics-boundary work, but without a
+  renderer what it would have shown is not validated.
 - **Without a host renderer, a frame is simulation only.** When no host installs itself through
   `gfx_host.h` (see **The renderer** above), `reset-graph`, `syncv`, `sync-path`,
-  `put-display-env`, `dma-sync`, `__pc-texture-upload-now`, `__pc-texture-relocate`
-  and `__pc-set-levels` all report and return 0. Jak 2's `__send-gfx-dma-chain` also remains a
-  diagnostic stub unless a host calls `goal_gfx_dma_install`; `--play-dma` is the boot mode that
-  performs that installation. Jak 1's existing boot and gameplay probes continue to route the seam
-  to `dma_capture.cpp`, which measures the chain and drops it. Those measurement modes establish
-  what a frame *computes*, not what it shows.
+  `put-display-env`, `dma-sync`, `__pc-texture-upload-now`, `__pc-texture-relocate`,
+  `__pc-set-levels`, and `__pc-set-active-levels` all report and return 0. Jak 2's
+  `__send-gfx-dma-chain` also remains a diagnostic stub unless a host installs a graphics seam:
+  `--play-dma` installs only the DMA measurement observer, while `--play-gfx-host` installs the
+  complete counting/discarding host boundary. Jak 1's existing boot and gameplay probes continue
+  to route the seam to `dma_capture.cpp`, which measures the chain and drops it. Those headless
+  modes establish what a frame *computes*, not what it shows.
 - **File access is data-directory-relative only.** `ee::sceOpen` and friends are real POSIX file
   descriptors, but every name is resolved under the configured data directory
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file
