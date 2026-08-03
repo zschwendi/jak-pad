@@ -29,6 +29,7 @@ extern "C" {
 #include "common/goal_constants.h"
 #include "common/link_types.h"
 #include "common/log/log.h"
+#include "common/symbols.h"
 
 #include "game/kernel/common/kboot.h"
 #include "game/kernel/common/klink.h"
@@ -171,6 +172,17 @@ void register_aot_objects() {
   }
 }
 
+/*! Record the base packages that the rebuilt GAME.CGO already contains. */
+void record_packages_in_game_cgo() {
+  using namespace jak2_symbols;
+  for (const char* package : {"engine", "art", "common"}) {
+    jak2::kernel_packages->value() =
+        jak2::new_pair(s7.offset + FIX_SYM_GLOBAL_HEAP,
+                       *((s7 + FIX_SYM_PAIR_TYPE - 1).cast<u32>()),
+                       jak2::make_string_from_c(package), jak2::kernel_packages->value());
+  }
+}
+
 u32 g_play = 0;
 u32 g_true = 0;
 
@@ -245,6 +257,7 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
     say("  %d objects: %d code, %d data; heap use %u -> %u bytes\n", stats.objects,
         stats.code_objects, stats.data_objects, stats.heap_used_before, stats.heap_used_after);
     report_heap("after GAME.CGO");
+    record_packages_in_game_cgo();
 
     goal_jak2_sound_rpc_stats sound_stats;
     goal_jak2_sound_rpc_stats_get(&sound_stats);
