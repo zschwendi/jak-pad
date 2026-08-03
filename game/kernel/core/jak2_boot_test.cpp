@@ -175,7 +175,11 @@ void register_aot_objects() {
   }
 }
 
-/*! Record the base packages that the rebuilt GAME.CGO already contains. */
+/*!
+ * GAME.CGO contains the release builds of ENGINE.CGO, ART.CGO and COMMON.CGO, so those archives
+ * do not exist separately in the prepared data. Mirror the three entries that Jak 2's real
+ * InitMachineScheme adds after loading GAME.CGO. This keeps `load-package` from requesting them.
+ */
 void record_packages_in_game_cgo() {
   using namespace jak2_symbols;
   for (const char* package : {"engine", "art", "common"}) {
@@ -256,6 +260,7 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game, b
         stats.code_objects, stats.data_objects, stats.heap_used_before, stats.heap_used_after);
     report_heap("after GAME.CGO");
     record_packages_in_game_cgo();
+    say("  recorded engine, art and common in *kernel-packages*\n");
 
     goal_jak2_sound_rpc_stats sound_stats;
     goal_jak2_sound_rpc_stats_get(&sound_stats);

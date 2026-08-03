@@ -637,8 +637,29 @@ Configuration and every build validate the manifest, its declared count, and the
 840 generated C/header pairs. The final executable compiles those 840 units plus
 `aot_boot_manifest.c` with `-fno-strict-aliasing` and links only `jak2-kernel-core`. It must not
 link the Jak 1 AOT product in the same executable because the generated games export overlapping
-symbols. This is a device-SDK compile/link proof, not the shipping GOALPad application, a signing
-proof, or a runtime result.
+symbols. The Ninja build remains unsigned. This is a device-SDK compile/link proof, not the
+shipping GOALPad application or a runtime result.
+
+The same target can be generated as a normally signable iPhoneOS app bundle without embedding a
+personal team or product identity in the project. Pass a unique bundle identifier and an Apple
+development team to opt into Xcode automatic signing:
+
+```sh
+cmake -S . -B build/ios-jak2-aot-signed -G Xcode \
+  -DOPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY=ON \
+  -DOPENGOAL_JAK2_AOT_DIR="$PWD/build/Release/bin/game/aot-boot-jak2" \
+  -DOPENGOAL_JAK2_IPHONEOS_BUNDLE_IDENTIFIER=org.example.Jak2AOTLinkProof \
+  -DOPENGOAL_JAK2_IPHONEOS_DEVELOPMENT_TEAM=TEAMID1234 \
+  -DBUILD_TESTING=OFF -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0
+xcodebuild -project build/ios-jak2-aot-signed/jak.xcodeproj \
+  -scheme jak2-iphoneos-full-aot-link -configuration Release -sdk iphoneos \
+  -destination 'generic/platform=iOS' -allowProvisioningUpdates build
+```
+
+An empty development-team setting keeps Xcode code signing disabled. A successful signed generic
+iOS build proves only bundle formation, final linking, and signing. It does not prove launch,
+device execution, gameplay, renderer integration, or the shipping application's runtime bridge.
 
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
