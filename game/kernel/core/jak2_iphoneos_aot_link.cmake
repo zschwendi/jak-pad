@@ -64,11 +64,24 @@ set_target_properties(jak2-iphoneos-full-aot-link PROPERTIES
 
 if(CMAKE_GENERATOR STREQUAL "Xcode")
   enable_language(OBJC)
+  enable_language(OBJCXX)
+
+  include("${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_product.cmake")
+  opengoal_add_metal_product(jak2-iphoneos-metal-product)
+  add_library(jak2-iphoneos-metal-host STATIC EXCLUDE_FROM_ALL
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_host_bridge.mm")
+  set_source_files_properties(
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_host_bridge.mm"
+    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(jak2-iphoneos-metal-host PUBLIC
+    jak2-iphoneos-metal-product
+    jak2-kernel-core)
 
   add_executable(jak2-iphoneos-display-tick-proof MACOSX_BUNDLE EXCLUDE_FROM_ALL
     "${CMAKE_CURRENT_LIST_DIR}/jak2_iphoneos_display_tick_main.m")
   target_link_libraries(jak2-iphoneos-display-tick-proof PRIVATE
     jak2-iphoneos-runtime
+    jak2-iphoneos-metal-host
     "-framework UIKit"
     "-framework QuartzCore"
     "-framework Foundation")

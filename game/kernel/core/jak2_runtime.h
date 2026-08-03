@@ -11,6 +11,8 @@
 
 #include <stdint.h>
 
+struct goal_gfx_host;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,6 +41,8 @@ typedef enum goal_jak2_runtime_graphics {
   GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION = 1,
   /*! Count and drop the complete graphics-host boundary without parsing the DMA chain. */
   GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION = 2,
+  /*! Install a copied host supplied by the app. The app retains any state its callbacks use. */
+  GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST = 3,
 } goal_jak2_runtime_graphics;
 
 typedef struct goal_jak2_runtime_config {
@@ -47,6 +51,8 @@ typedef struct goal_jak2_runtime_config {
   /*! Local gameplay-save directory. Empty selects the portable kernel's existing fallback. */
   const char* saves_directory;
   goal_jak2_runtime_graphics graphics;
+  /*! Required only for EXTERNAL_HOST. Read and copied synchronously by runtime_start. */
+  const struct goal_gfx_host* external_gfx_host;
 } goal_jak2_runtime_config;
 
 /*! A copied snapshot. It owns no pointers into the GOAL heap or graphics host. */

@@ -83,6 +83,7 @@ set(RUNTIME_SOURCE
         graphics/texture/jak3_tpage_dir.cpp
         graphics/texture/TextureConverter.cpp
         graphics/texture/TexturePool.cpp
+        graphics/texture/TexturePoolDebug.cpp
         ${OG_ASM_FUNCS_FILE}
         kernel/common/fileio.cpp
         kernel/common/kboot.cpp
@@ -343,25 +344,10 @@ set(RUNTIME_SOURCE
 
 if(APPLE)
     # experimental Metal graphics pipeline (see game/graphics/pipelines/metal/)
+    include(graphics/pipelines/metal/metal_product.cmake)
     set(METAL_PIPELINE_SOURCES
-        graphics/pipelines/metal/metal_bucket_renderer.mm
-        graphics/pipelines/metal/metal_direct_renderer.mm
-        graphics/pipelines/metal/metal_eye_renderer.mm
-        graphics/pipelines/metal/metal_generic2.mm
-        graphics/pipelines/metal/metal_shadow_renderer.mm
-        graphics/pipelines/metal/metal_level_data.mm
-        graphics/pipelines/metal/metal_merc.mm
-        graphics/pipelines/metal/metal_merc_model_pool.mm
-        graphics/pipelines/metal/metal_ocean_renderer.mm
-        graphics/pipelines/metal/metal_pipeline.mm
-        graphics/pipelines/metal/metal_pso_cache.mm
-        graphics/pipelines/metal/metal_renderer.mm
-        graphics/pipelines/metal/metal_shrub.mm
-        graphics/pipelines/metal/metal_sky_renderer.mm
-        graphics/pipelines/metal/metal_sprite_renderer.mm
-        graphics/pipelines/metal/metal_texture.mm
-        graphics/pipelines/metal/metal_tfrag.mm
-        graphics/pipelines/metal/metal_tie.mm)
+        ${OPENGOAL_METAL_RENDERER_SOURCES}
+        ${OPENGOAL_METAL_WINDOW_SHELL_SOURCE})
     list(APPEND RUNTIME_SOURCE ${METAL_PIPELINE_SOURCES})
     set_source_files_properties(${METAL_PIPELINE_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -375,37 +361,8 @@ if(APPLE)
     # MSL shaders are checked-in source compiled at build time to a metallib and
     # embedded in the runtime as a byte array. No shader compilation happens at
     # runtime, which keeps the app signing-clean for iPadOS.
-    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-        set(METAL_SDK iphoneos)
-    else()
-        set(METAL_SDK macosx)
-    endif()
-    set(METAL_SHADER_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/scaffold.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/direct.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/sprite.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/background.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/ocean.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/merc2.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/eye.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/generic.metal
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/shaders/shadow.metal)
-    set(METAL_LIB ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad.metallib)
-    add_custom_command(
-        OUTPUT ${METAL_LIB}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders
-        COMMAND xcrun -sdk ${METAL_SDK} metal -Wall -Werror -o ${METAL_LIB} ${METAL_SHADER_SOURCES}
-        DEPENDS ${METAL_SHADER_SOURCES}
-        COMMENT "Compiling MSL shaders to ${METAL_LIB}")
-    set(METAL_LIB_EMBED ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders/goalpad_metallib_embed.c)
-    set(METAL_EMBED_SCRIPT
-        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/pipelines/metal/embed_metallib.cmake)
-    add_custom_command(
-        OUTPUT ${METAL_LIB_EMBED}
-        COMMAND ${CMAKE_COMMAND} -DINPUT=${METAL_LIB} -DOUTPUT=${METAL_LIB_EMBED}
-                -DSYMBOL=g_goalpad_metallib -P ${METAL_EMBED_SCRIPT}
-        DEPENDS ${METAL_LIB} ${METAL_EMBED_SCRIPT}
-        COMMENT "Embedding ${METAL_LIB}")
+    opengoal_embed_metal_library(
+        METAL_LIB_EMBED "${CMAKE_CURRENT_BINARY_DIR}/metal_shaders")
     list(APPEND RUNTIME_SOURCE ${METAL_LIB_EMBED})
 endif()
 
@@ -1094,49 +1051,27 @@ if(APPLE)
     # runtime. The only file that is not shared is metal_host_seams.cpp, which defines the three
     # runtime globals the renderer reads.
     if(TARGET jak1-kernel-core AND GOAL_HOST_TESTS_ENABLED)
+        opengoal_add_metal_product(goalpad-metal-product "${METAL_LIB_EMBED}")
         add_library(goalpad-metal-gfx STATIC
-            ${METAL_PIPELINE_SOURCES}
-            ${METAL_LIB_EMBED}
-            graphics/pipelines/metal/metal_jak2_bucket_table.cpp
-            graphics/pipelines/metal/metal_host_seams.cpp
-            graphics/pipelines/metal/metal_kernel_bridge.cpp
-            graphics/pipelines/metal/metal_texture_upload_handler.cpp
-            graphics/opengl_renderer/dma_helpers.cpp
-            graphics/texture/jak1_tpage_dir.cpp
-            graphics/texture/jak2_tpage_dir.cpp
-            graphics/texture/jak3_tpage_dir.cpp
-            graphics/texture/TextureConverter.cpp
-            graphics/texture/TexturePool.cpp
-            # the VU1 emulators, shared with the GL renderer
-            graphics/opengl_renderer/Shadow_PS2.cpp
-            graphics/opengl_renderer/ShadowVu.cpp
-            graphics/opengl_renderer/ocean/OceanMid_PS2.cpp
-            graphics/opengl_renderer/ocean/OceanNear_PS2.cpp
-            graphics/opengl_renderer/ocean/OceanTexture_VU.cpp
-            # common pieces jak1-kernel-core does not already compile
-            "${CMAKE_SOURCE_DIR}/common/custom_data/TFrag3Data.cpp"
-            "${CMAKE_SOURCE_DIR}/common/custom_data/pack_helpers.cpp"
-            "${CMAKE_SOURCE_DIR}/common/dma/gs.cpp"
+            ${OPENGOAL_METAL_WINDOW_SHELL_SOURCE}
+            # Jak 1's kernel does not compile these desktop support units. They stay in the
+            # Jak 1-only wrapper rather than contaminating the kernel-neutral product archive.
             "${CMAKE_SOURCE_DIR}/common/global_profiler/GlobalProfiler.cpp"
-            "${CMAKE_SOURCE_DIR}/common/texture/texture_slots.cpp"
             "${CMAKE_SOURCE_DIR}/common/util/compress.cpp"
-            "${CMAKE_SOURCE_DIR}/common/util/FrameLimiter.cpp"
             "${CMAKE_SOURCE_DIR}/common/versions/versions.cpp")
-        set_source_files_properties(${METAL_PIPELINE_SOURCES}
+        set_source_files_properties(${OPENGOAL_METAL_WINDOW_SHELL_SOURCE}
             TARGET_DIRECTORY goalpad-metal-gfx
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-        # imgui: TexturePool's debug view calls it. No debug UI is created here, but the
-        # translation unit is shared with the GL renderer, which has one.
-        target_link_libraries(goalpad-metal-gfx PUBLIC jak1-kernel-core SDL3::SDL3 imgui
-            libzstd_static
-            "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+        target_link_libraries(goalpad-metal-gfx PUBLIC
+            goalpad-metal-product jak1-kernel-core SDL3::SDL3 imgui libzstd_static)
 
         add_executable(jak2-metal-dispatch-proof
             graphics/pipelines/metal/metal_jak2_dispatch_proof.mm)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_dispatch_proof.mm
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-        target_link_libraries(jak2-metal-dispatch-proof goalpad-metal-gfx)
+        target_link_libraries(jak2-metal-dispatch-proof
+            goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak2-metal-dispatch-proof COMMAND jak2-metal-dispatch-proof)
 
         add_executable(jak2-metal-submit-readback-proof
@@ -1146,6 +1081,21 @@ if(APPLE)
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_link_libraries(jak2-metal-submit-readback-proof goalpad-metal-gfx)
         add_test(NAME jak2-metal-submit-readback-proof COMMAND jak2-metal-submit-readback-proof)
+
+        add_library(goalpad-jak2-metal-host STATIC
+            graphics/pipelines/metal/metal_jak2_host_bridge.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_host_bridge.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(goalpad-jak2-metal-host PUBLIC
+            goalpad-metal-product jak2-kernel-core)
+        add_executable(jak2-metal-host-bridge-test
+            graphics/pipelines/metal/metal_jak2_host_bridge_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_host_bridge_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-host-bridge-test goalpad-jak2-metal-host)
+        add_test(NAME jak2-metal-host-bridge-test COMMAND jak2-metal-host-bridge-test)
 
         add_executable(goalpad-play
             goalpad_play.cpp
