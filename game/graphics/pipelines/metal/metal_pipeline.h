@@ -296,6 +296,15 @@ void set_window_hidden(bool hidden);
 // unchanged. Enabled by default; callers must opt out explicitly.
 void set_jak1_tie_envmap_second_pass_enabled(bool enabled);
 
+// Physical A/B diagnostic: bypass texture sampling only for both draws of Jak
+// 1's envmapped TIE category. The same geometry, visibility, depth/blend state,
+// draw order, base pass, and reflective second pass remain active. This uses
+// the background shader's existing no-texture path to distinguish sampled
+// texture/UV/mip identity from geometry/draw/depth-state behavior. Enabled by default;
+// callers must opt out explicitly.
+void set_jak1_tie_envmap_texture_sampling_enabled(bool enabled);
+bool jak1_tie_envmap_texture_sampling_enabled();
+
 // Physical A/B diagnostic: disable only the final color-writing composite of
 // Jak 1 shadow volumes. The same shadow DMA and VU work are still consumed so
 // this isolates shadow output from level material and depth behavior. Enabled

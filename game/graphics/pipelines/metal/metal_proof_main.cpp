@@ -2151,6 +2151,7 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
 
   auto render_camera = [&](const TieCameraState& state,
                            bool expect_shine,
+                           bool expect_texture_sampling,
                            metal_renderer::FramePixels* frame) {
     std::vector<u8> mem(kEeSize, 0);
     g_ee_main_mem = mem.data();
@@ -2181,12 +2182,20 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
     printf("  camera %s identity: magenta=%zu blue=%zu white=%zu unexpected=%zu\n", state.name,
            identity.magenta, identity.blue, identity.white, identity.unexpected);
     if (expect_shine) {
-      check(identity.magenta > 100,
-            fmt::format("TIE camera {} produces a meaningful paired-pass mask", state.name)
-                .c_str());
-      check(identity.unexpected == 0,
-            fmt::format("TIE camera {} keeps base and shiny coverage identical", state.name)
-                .c_str());
+      if (expect_texture_sampling) {
+        check(identity.magenta > 100,
+              fmt::format("TIE camera {} produces a meaningful paired-pass mask", state.name)
+                  .c_str());
+        check(identity.unexpected == 0,
+              fmt::format("TIE camera {} keeps base and shiny coverage identical", state.name)
+                  .c_str());
+      } else {
+        check(identity.white > 100 && identity.magenta == 0 && identity.blue == 0 &&
+                  identity.unexpected == identity.white,
+              fmt::format("TIE camera {} keeps both passes while bypassing their textures",
+                          state.name)
+                  .c_str());
+      }
     } else {
       check(identity.blue > 100 && identity.magenta == 0 && identity.white == 0 &&
                 identity.unexpected == identity.blue,
@@ -2198,12 +2207,13 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
   };
 
   metal_renderer::set_jak1_tie_envmap_second_pass_enabled(true);
+  metal_renderer::set_jak1_tie_envmap_texture_sampling_enabled(true);
   metal_renderer::FramePixels frame_a_first;
   metal_renderer::FramePixels frame_b;
   metal_renderer::FramePixels frame_a_second;
-  const bool read_a_first = render_camera(camera_a, true, &frame_a_first);
-  const bool read_b = render_camera(camera_b, true, &frame_b);
-  const bool read_a_second = render_camera(camera_a, true, &frame_a_second);
+  const bool read_a_first = render_camera(camera_a, true, true, &frame_a_first);
+  const bool read_b = render_camera(camera_b, true, true, &frame_b);
+  const bool read_a_second = render_camera(camera_a, true, true, &frame_a_second);
   if (read_a_first && read_b && read_a_second) {
     check(frame_a_first.width == frame_a_second.width &&
               frame_a_first.height == frame_a_second.height &&
@@ -2215,7 +2225,7 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
 
   metal_renderer::set_jak1_tie_envmap_second_pass_enabled(false);
   metal_renderer::FramePixels frame_a_base_only;
-  const bool read_a_base_only = render_camera(camera_a, false, &frame_a_base_only);
+  const bool read_a_base_only = render_camera(camera_a, false, true, &frame_a_base_only);
   if (read_a_first && read_a_base_only) {
     check(frame_a_first.rgba != frame_a_base_only.rgba,
           "TIE shine diagnostic changes the synthetic TIE frame");
@@ -2223,12 +2233,37 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
 
   metal_renderer::set_jak1_tie_envmap_second_pass_enabled(true);
   metal_renderer::FramePixels frame_a_restored;
-  const bool read_a_restored = render_camera(camera_a, true, &frame_a_restored);
+  const bool read_a_restored = render_camera(camera_a, true, true, &frame_a_restored);
   if (read_a_first && read_a_restored) {
     check(frame_a_first.width == frame_a_restored.width &&
               frame_a_first.height == frame_a_restored.height &&
               frame_a_first.rgba == frame_a_restored.rgba,
           "TIE shine diagnostic restores the default frame without stale state");
+  }
+
+  check(metal_renderer::jak1_tie_envmap_texture_sampling_enabled(),
+        "TIE envmap texture sampling defaults to its normal enabled state");
+  metal_renderer::set_jak1_tie_envmap_texture_sampling_enabled(false);
+  check(!metal_renderer::jak1_tie_envmap_texture_sampling_enabled(),
+        "TIE envmap texture A/B mode bypasses only envmapped TIE texture sampling");
+  metal_renderer::FramePixels frame_a_untextured;
+  const bool read_a_untextured = render_camera(camera_a, true, false, &frame_a_untextured);
+  if (read_a_first && read_a_untextured) {
+    check(frame_a_first.rgba != frame_a_untextured.rgba,
+          "TIE envmap texture A/B mode changes the synthetic TIE frame");
+  }
+
+  metal_renderer::set_jak1_tie_envmap_texture_sampling_enabled(true);
+  check(metal_renderer::jak1_tie_envmap_texture_sampling_enabled(),
+        "TIE envmap texture sampling restores without stale diagnostic state");
+  metal_renderer::FramePixels frame_a_texture_restored;
+  const bool read_a_texture_restored =
+      render_camera(camera_a, true, true, &frame_a_texture_restored);
+  if (read_a_first && read_a_texture_restored) {
+    check(frame_a_first.width == frame_a_texture_restored.width &&
+              frame_a_first.height == frame_a_texture_restored.height &&
+              frame_a_first.rgba == frame_a_texture_restored.rgba,
+          "TIE envmap texture diagnostic restores the default frame byte-for-byte");
   }
 
   g_ee_main_mem = nullptr;

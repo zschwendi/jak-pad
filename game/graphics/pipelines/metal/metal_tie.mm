@@ -20,6 +20,7 @@ namespace {
 constexpr u32 kWindWorkBytes = 84 * 16;
 
 std::atomic<bool> g_jak1_tie_envmap_second_pass_enabled{true};
+std::atomic<bool> g_jak1_tie_envmap_texture_sampling_enabled{true};
 
 }  // namespace
 
@@ -27,6 +28,14 @@ namespace metal_renderer {
 
 void set_jak1_tie_envmap_second_pass_enabled(bool enabled) {
   g_jak1_tie_envmap_second_pass_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+void set_jak1_tie_envmap_texture_sampling_enabled(bool enabled) {
+  g_jak1_tie_envmap_texture_sampling_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool jak1_tie_envmap_texture_sampling_enabled() {
+  return g_jak1_tie_envmap_texture_sampling_enabled.load(std::memory_order_relaxed);
 }
 
 }  // namespace metal_renderer
@@ -276,6 +285,9 @@ void MetalTie3::render_tree(int geom,
 
   MetalBackgroundFsParams fs_params;
   metal_fill_background_fs_params(*render_state, &fs_params);
+  if (use_envmap && !metal_renderer::jak1_tie_envmap_texture_sampling_enabled()) {
+    fs_params.gfx_hack_no_tex = 1;
+  }
 
   [enc setVertexBuffer:tree.buffers->vertices offset:0 atIndex:0];
   [enc setVertexTexture:tree.buffers->time_of_day atIndex:1];
