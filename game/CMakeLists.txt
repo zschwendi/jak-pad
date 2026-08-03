@@ -446,8 +446,44 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak2-pc-rand-test jak2-kernel-core)
         add_test(NAME jak2-pc-rand-test COMMAND jak2-pc-rand-test)
 
+        # `file-stream-valid?` is a GOAL macro, so exercise its emitted C rather than duplicating
+        # the comparison in the native machine test. File I/O is the 50th Jak 2 object; the sweep
+        # loads that real prefix to compile the one-function fixture and only that fixture is linked.
+        set(JAK2_AOT_FILE_STREAM_DIR
+                "${CMAKE_CURRENT_BINARY_DIR}/aot-jak2-file-stream-valid")
+        set(JAK2_AOT_FILE_STREAM_FIXTURE
+                "${CMAKE_SOURCE_DIR}/test/goalc/aot/jak2_file_stream_valid_test.gc")
+        set(JAK2_AOT_FILE_STREAM_C
+                "${JAK2_AOT_FILE_STREAM_DIR}/jak2_file_stream_valid_test.c")
+        set(JAK2_AOT_FILE_STREAM_H
+                "${JAK2_AOT_FILE_STREAM_DIR}/jak2_file_stream_valid_test_generated.h")
+        file(GLOB_RECURSE JAK2_AOT_FILE_STREAM_GOAL_SOURCES CONFIGURE_DEPENDS
+                "${CMAKE_SOURCE_DIR}/goal_src/jak2/*.gc")
+        add_custom_command(
+                OUTPUT "${JAK2_AOT_FILE_STREAM_C}" "${JAK2_AOT_FILE_STREAM_H}"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${JAK2_AOT_FILE_STREAM_DIR}"
+                COMMAND $<TARGET_FILE:goalc-cbackend-sweep>
+                        --game jak2
+                        --project-path "${CMAKE_SOURCE_DIR}"
+                        --limit 50
+                        --extra-source test/goalc/aot/jak2_file_stream_valid_test.gc
+                        --c-output-dir "${JAK2_AOT_FILE_STREAM_DIR}"
+                        --report "${JAK2_AOT_FILE_STREAM_DIR}/coverage.tsv"
+                DEPENDS goalc-cbackend-sweep ${JAK2_AOT_FILE_STREAM_GOAL_SOURCES}
+                        "${CMAKE_SOURCE_DIR}/goal_src/jak1/pc/pckernel-h.gc"
+                        "${CMAKE_SOURCE_DIR}/goal_src/jak1/pc/debug/pc-debug-common.gc"
+                        "${CMAKE_SOURCE_DIR}/goal_src/goal-lib.gc"
+                        "${CMAKE_SOURCE_DIR}/goal_src/jak2/game.gp"
+                        "${JAK2_AOT_FILE_STREAM_FIXTURE}"
+                COMMENT "Emitting the Jak 2 file-stream validity AOT fixture")
+
         add_executable(jak2-lightweight-machine-test
-                kernel/core/jak2_lightweight_machine_test.cpp)
+                kernel/core/jak2_lightweight_machine_test.cpp
+                "${JAK2_AOT_FILE_STREAM_C}")
+        set_source_files_properties("${JAK2_AOT_FILE_STREAM_C}"
+                PROPERTIES COMPILE_OPTIONS "-fno-strict-aliasing")
+        target_include_directories(jak2-lightweight-machine-test
+                PRIVATE "${JAK2_AOT_FILE_STREAM_DIR}")
         target_link_libraries(jak2-lightweight-machine-test jak2-kernel-core)
         add_test(NAME jak2-lightweight-machine-test COMMAND jak2-lightweight-machine-test)
 

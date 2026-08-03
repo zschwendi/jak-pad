@@ -1,0 +1,6 @@
+;;-*-Lisp-*-
+(in-package goal)
+
+(defun jak2-file-stream-valid-aot-test ((stream file-stream))
+  (file-stream-valid? stream)
+  )
