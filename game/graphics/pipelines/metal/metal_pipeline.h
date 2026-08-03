@@ -98,6 +98,8 @@ struct MercPaletteHealthEvent {
 // frames really dispatched buckets and that deferred content is counted.
 struct ChainStats {
   u64 chains_rendered = 0;
+  u64 command_buffers_committed = 0;
+  u64 last_buckets_dispatched = 0;
   u64 drawables_acquired = 0;
   u64 drawable_misses = 0;
   u64 late_present_submissions = 0;

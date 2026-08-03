@@ -9,6 +9,7 @@
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_generic2.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
@@ -334,6 +335,24 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   }
 }
 
+void MetalRenderer::init_bucket_renderers_jak2() {
+  const auto& table = metal_renderer::jak2_metal_bucket_table();
+  ASSERT(table.size() == static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS));
+  m_bucket_renderers.resize(table.size());
+
+  for (const auto& descriptor : table) {
+    const auto bucket_id = static_cast<std::size_t>(descriptor.id);
+    if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip) {
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+          fmt::format("jak2-deferred-{}", bucket_id), descriptor.id);
+    } else {
+      m_bucket_renderers[bucket_id] =
+          std::make_unique<MetalEmptyBucketRenderer>(fmt::format("bucket-{}", bucket_id),
+                                                     descriptor.id);
+    }
+  }
+}
+
 void MetalRenderer::init_bucket_renderers(TexturePool* pool, GameVersion version) {
   m_texture_pool = pool;
   m_shared_state.version = version;
@@ -341,9 +360,11 @@ void MetalRenderer::init_bucket_renderers(TexturePool* pool, GameVersion version
     case GameVersion::Jak1:
       init_bucket_renderers_jak1();
       break;
+    case GameVersion::Jak2:
+      init_bucket_renderers_jak2();
+      break;
     default:
-      // Jak 2/3 tables arrive with their renderers; only Jak 1 is in scope
-      ASSERT_MSG(false, "Metal bucket renderers only support Jak 1");
+      ASSERT_MSG(false, "Metal bucket renderers only support Jak 1 and Jak 2");
   }
 }
 
@@ -619,8 +640,25 @@ void MetalRenderer::dispatch_buckets_jak1(DmaFollower dma, MetalFrameContext& ct
     // should have ended at the start of the next bucket
     ASSERT(dma.current_tag_offset() == m_shared_state.next_bucket);
     m_shared_state.next_bucket += 16;
+    m_chain_stats.last_buckets_dispatched++;
     metal_vif_interrupt_callback((int)bucket_id);
   }
+}
+
+void MetalRenderer::dispatch_buckets_jak2(DmaFollower dma, MetalFrameContext& ctx) {
+  m_shared_state.buckets_base = dma.current_tag_offset();
+  m_shared_state.next_bucket = m_shared_state.buckets_base + 16;
+  m_shared_state.default_regs_buffer = 0;
+
+  for (size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
+    auto& renderer = m_bucket_renderers[bucket_id];
+    renderer->render(dma, &m_shared_state, ctx);
+    ASSERT(dma.current_tag_offset() == m_shared_state.next_bucket);
+    m_shared_state.next_bucket += 16;
+    m_chain_stats.last_buckets_dispatched++;
+    metal_vif_interrupt_callback((int)bucket_id + 1);
+  }
+  metal_vif_interrupt_callback((int)m_bucket_renderers.size());
 }
 
 bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
@@ -694,7 +732,17 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     ctx.game_color = m_game_color;
     ctx.game_depth = m_game_depth;
 
-    dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset), ctx);
+    m_chain_stats.last_buckets_dispatched = 0;
+    switch (m_shared_state.version) {
+      case GameVersion::Jak1:
+        dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset), ctx);
+        break;
+      case GameVersion::Jak2:
+        dispatch_buckets_jak2(DmaFollower(chain_data, chain_offset), ctx);
+        break;
+      default:
+        ASSERT_MSG(false, "Metal DMA dispatch only supports Jak 1 and Jak 2");
+    }
     [ctx.enc endEncoding];
 
     m_chain_stats.last_host_tick_id = opts.host_tick_id;
@@ -898,6 +946,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     }
 
     [cmds commit];
+    m_chain_stats.command_buffers_committed++;
     {
       std::lock_guard<std::mutex> lock(m_frame_mutex);
       m_last_frame_cmds = cmds;

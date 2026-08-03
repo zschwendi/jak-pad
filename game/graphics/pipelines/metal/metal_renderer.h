@@ -82,8 +82,9 @@ class MetalRenderer {
   id<MTLDevice> device() const { return m_device; }
   id<MTLCommandQueue> queue() const { return m_queue; }
 
-  // Builds the Jak 1 bucket renderer table. Must be called once the texture
-  // pool exists (the sky blender registers its output textures with it).
+  // Builds the selected game's bucket renderer table. Must be called once the
+  // texture pool exists (the Jak 1 sky blender registers its output textures
+  // with it).
   void init_bucket_renderers(TexturePool* pool, GameVersion version);
 
   // Renders one frame: game passes into the offscreen target, then the present
@@ -91,8 +92,9 @@ class MetalRenderer {
   void render_frame(const MetalRenderOptions& opts, CAMetalLayer* layer);
 
   // Renders one frame from the game's DMA chain (the copied chain from
-  // send_chain): walks the chain like OpenGLRenderer::dispatch_buckets_jak1
-  // and hands each bucket to its renderer, then runs the present pass.
+  // send_chain): walks the selected game's chain and hands each bucket to its
+  // renderer, then runs the present pass when a layer is supplied. A nil layer
+  // still commits the offscreen game pass without scheduling presentation.
   bool render_chain_frame(const MetalRenderOptions& opts,
                           CAMetalLayer* layer,
                           const u8* chain_data,
@@ -135,7 +137,9 @@ class MetalRenderer {
   void setup_frame(const MetalRenderOptions& opts);
   void encode_game_passes(id<MTLCommandBuffer> cmds);
   void init_bucket_renderers_jak1();
+  void init_bucket_renderers_jak2();
   void dispatch_buckets_jak1(DmaFollower dma, MetalFrameContext& ctx);
+  void dispatch_buckets_jak2(DmaFollower dma, MetalFrameContext& ctx);
   void encode_present_pass(id<MTLCommandBuffer> cmds,
                            id<MTLTexture> target,
                            const MetalRenderOptions& opts);

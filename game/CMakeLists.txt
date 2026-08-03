@@ -368,6 +368,7 @@ if(APPLE)
     # plain C++ parts of the Metal path (testable / kernel-header-safe without
     # Objective-C++)
     list(APPEND RUNTIME_SOURCE
+        graphics/pipelines/metal/metal_jak2_bucket_table.cpp
         graphics/pipelines/metal/metal_kernel_bridge.cpp
         graphics/pipelines/metal/metal_texture_upload_handler.cpp)
 
@@ -1096,6 +1097,7 @@ if(APPLE)
         add_library(goalpad-metal-gfx STATIC
             ${METAL_PIPELINE_SOURCES}
             ${METAL_LIB_EMBED}
+            graphics/pipelines/metal/metal_jak2_bucket_table.cpp
             graphics/pipelines/metal/metal_host_seams.cpp
             graphics/pipelines/metal/metal_kernel_bridge.cpp
             graphics/pipelines/metal/metal_texture_upload_handler.cpp
@@ -1128,6 +1130,14 @@ if(APPLE)
         target_link_libraries(goalpad-metal-gfx PUBLIC jak1-kernel-core SDL3::SDL3 imgui
             libzstd_static
             "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+
+        add_executable(jak2-metal-dispatch-proof
+            graphics/pipelines/metal/metal_jak2_dispatch_proof.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_dispatch_proof.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-dispatch-proof goalpad-metal-gfx)
+        add_test(NAME jak2-metal-dispatch-proof COMMAND jak2-metal-dispatch-proof)
 
         add_executable(goalpad-play
             goalpad_play.cpp
