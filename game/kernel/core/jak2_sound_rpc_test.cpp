@@ -345,6 +345,13 @@ void reset_bank_command(GuardedCommand& buffer, const std::array<char, 16>& name
   memcpy(buffer.command->load_bank.bank_name, name.data(), name.size());
 }
 
+void reset_language_command(GuardedCommand& buffer, u32 language_id) {
+  memset(buffer.command.c(), 0, kCommandSize);
+  buffer.command->rsvd1 = 0x5aa5;
+  buffer.command->j2command = jak2::Jak2SoundCommand::set_language;
+  buffer.command->set_language.langauge_id = language_id;
+}
+
 std::array<u8, kCommandSize> snapshot(GuardedCommand& buffer) {
   std::array<u8, kCommandSize> result;
   memcpy(result.data(), buffer.command.c(), result.size());
@@ -436,6 +443,8 @@ int main() {
   check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_OK,
         "Jak 2 sound loader and 989snd install");
   check(goal_jak2_sound_rpc_is_installed(), "the Jak 2 sound owner reports installed");
+  check(gLanguage && strcmp(gLanguage, "ENG") == 0,
+        "sound installation starts from the English language default");
   check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_ALREADY_INITIALIZED,
         "a duplicate install preserves the owned 989snd instance");
 
@@ -478,6 +487,38 @@ int main() {
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.version_requests, 2, "two version requests were handled");
   check_u32(stats.info_ee, 0x23456789, "the latest EE info address is retained");
+
+  std::printf("\n== exact-buffer no-reply language selection ==\n");
+  constexpr std::array<const char*, 8> kExpectedLanguages = {"ENG", "FRE", "GER", "SPA",
+                                                              "ITA", "JAP", "KOR", "UKE"};
+  memset(recv.command.c(), 0xcc, kCommandSize);
+  const auto language_recv = snapshot(recv);
+  for (u32 language_id = 0; language_id < static_cast<u32>(kExpectedLanguages.size());
+       language_id++) {
+    reset_language_command(send, language_id);
+    const auto language_send = snapshot(send);
+    check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+              "a valid language selection remains synchronous");
+    check(snapshot(send) == language_send && snapshot(recv) == language_recv,
+          "a valid language selection mutates neither EE buffer");
+    check(gLanguage && strcmp(gLanguage, kExpectedLanguages[language_id]) == 0,
+          "each language id selects its wire tag");
+  }
+
+  reset_language_command(send, static_cast<u32>(kExpectedLanguages.size()));
+  const auto invalid_language_send = snapshot(send);
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "an invalid language id fails synchronously");
+  check(snapshot(send) == invalid_language_send && snapshot(recv) == language_recv,
+        "an invalid language leaves both EE buffers untouched");
+  check(gLanguage && strcmp(gLanguage, "UKE") == 0,
+        "an invalid language id preserves the last valid language");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.language_requests, 9, "every well-framed language request is counted");
+  check_u32(stats.language_failures, 1, "the invalid language id is counted as a failure");
+  check_u32(stats.language_id, 7, "language stats retain the last valid id");
+  check_guards(send, "no-reply language send canaries stay intact");
+  check_guards(recv, "no-reply language receive canaries stay intact");
 
   const auto fixture_root =
       std::filesystem::temp_directory_path() / "goalpad-jak2-sound-rpc-test";
@@ -649,6 +690,12 @@ int main() {
   rpc_call(1, 0, 1, send.command.offset, kCommandSize, recv.command.offset, kCommandSize, 0);
   check(snapshot(send) == unsupported_send && snapshot(recv) == unsupported_recv,
         "a no-reply command with a reply buffer mutates neither buffer");
+  reset_language_command(send, 0);
+  const auto malformed_language_send = snapshot(send);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, recv.command.offset, 0, 0);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, kCommandSize, 0);
+  check(snapshot(send) == malformed_language_send && snapshot(recv) == unsupported_recv,
+        "set-language rejects any receive pointer or receive size without mutating buffers");
   reset_command(send, jak2::Jak2SoundCommand::get_irx_version, 0x3456789a);
   const auto malformed_send = snapshot(send);
   rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
@@ -697,9 +744,13 @@ int main() {
   check_u32(stats.banks_loaded, 2, "malformed calls do not claim another bank load");
   check_u32(stats.bank_failures, 13, "framing rejection is distinct from a bank failure");
   check_u32(stats.str_requests, 9, "rejected STR calls do not count as file requests");
-  check_u32(stats.rejected_calls, 24, "every unsupported request is reported");
+  check_u32(stats.language_requests, 9, "malformed framing is not a language request");
+  check_u32(stats.language_failures, 1, "framing rejection is distinct from language failure");
+  check_u32(stats.language_id, 7, "rejected calls preserve the current language");
+  check_u32(stats.rejected_calls, 26, "every unsupported request is reported");
 
   std::printf("\n== shutdown and reinitialization ownership ==\n");
+  gSoundEnable = 0;
   goal_kernel_core_shutdown();
   check(!goal_jak2_sound_rpc_is_installed(), "kernel shutdown stops its owned 989snd instance");
   check(goal_kernel_core_initialize() == GOAL_KERNEL_CORE_OK,
@@ -708,6 +759,9 @@ int main() {
         "machine stubs reinstall after shutdown");
   check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_OK,
         "the Jak 2 sound owner reinstalls after shutdown");
+  check(gLanguage && strcmp(gLanguage, "ENG") == 0,
+        "reinstall restores the English language default");
+  check(gSoundEnable == 1, "reinstall restores the common sound-enabled default");
   auto reinit_send = guarded_command("jak2-sound-rpc-reinit-send");
   rpc_call = native_entry<GoalEightArgumentFunction>("rpc-call");
   if (reinit_send.command.offset && rpc_call) {
@@ -725,6 +779,16 @@ int main() {
     check_u32(stats.bank_failures, 1, "a stale loader call fails safely after sound shutdown");
     check(LookupBank(bank_name("valid").data()) == nullptr,
           "shutdown clears the retained bank state before rejecting a stale call");
+  }
+  if (reinit_send.command.offset && rpc_call) {
+    gLanguage = "UKE";
+    reset_language_command(reinit_send, 0);
+    rpc_call(1, 0, 1, reinit_send.command.offset, kCommandSize, 0, 0, 0);
+    goal_jak2_sound_rpc_stats_get(&stats);
+    check_u32(stats.language_failures, 1,
+              "a stale language call fails safely after sound shutdown");
+    check(gLanguage && strcmp(gLanguage, "UKE") == 0,
+          "a stale language call cannot mutate stopped sound state");
   }
   goal_jak2_sound_rpc_shutdown();
   check(!goal_jak2_sound_rpc_is_installed(), "sound shutdown is idempotent");

@@ -1,13 +1,14 @@
 /*!
  * @file sound_rpc_jak2.cpp
- * Answer Jak 2's sound-loader version handshake, bank loads and ordinary-file STR requests
- * without an IOP.
+ * Answer Jak 2's sound-loader version handshake, bank loads, language selection and ordinary-file
+ * STR requests without an IOP.
  *
  * `check-irx-version` sends one 0x50-byte command on loader channel 1. Upstream's Jak 2 overlord
  * writes version 4.0 into that command, remembers the requested EE info-block address, and returns
  * the command as the RPC reply. Loader command 2 has no receive buffer; it bounded-reads a
  * user-local SBlk once, validates every range the current 989snd parser consumes, then passes those
- * same bytes through 989snd's in-memory bank interface. Channel 4 reads an ordinary file from the
+ * same bytes through 989snd's in-memory bank interface. Loader command 20 selects one of Jak 2's
+ * eight bounded language tags without a reply payload. Channel 4 reads an ordinary file from the
  * configured `iso/` directory into EE memory. Chunked STR files and the rest of the Jak 2 sound
  * protocol remain unimplemented.
  */
@@ -48,6 +49,8 @@ constexpr s32 kStrRequestSize = 0x40;
 constexpr s32 kStrReplySize = 0x20;
 constexpr u32 kIrxMajor = 4;
 constexpr u32 kIrxMinor = 0;
+constexpr std::array<const char*, 8> kLanguages = {"ENG", "FRE", "GER", "SPA",
+                                                    "ITA", "JAP", "KOR", "UKE"};
 constexpr size_t kBankStemSize = 8;
 constexpr size_t kMaxBankFileSize = 64 * 1024 * 1024;
 
@@ -56,6 +59,9 @@ static_assert(sizeof(snd::Grain) == 48,
 
 static_assert(sizeof(jak2::SoundRpcCommand) == kCommandSize);
 static_assert(offsetof(jak2::SoundRpcCommand, j2command) == 2);
+static_assert(offsetof(jak2::SoundRpcCommand, set_language) == 4);
+static_assert(sizeof(SoundRpcSetLanguageCommand) == 4);
+static_assert(offsetof(SoundRpcSetLanguageCommand, langauge_id) == 0);
 static_assert(offsetof(jak2::SoundRpcCommand, irx_version) == 4);
 static_assert(offsetof(SoundRpcGetIrxVersion, major) == 0);
 static_assert(offsetof(SoundRpcGetIrxVersion, minor) == 4);
@@ -238,6 +244,24 @@ bool load_bank(const char source_name[16]) {
   }
 }
 
+bool set_language(u32 language_id) {
+  g_stats.language_requests++;
+  if (!g_installed) {
+    g_stats.language_failures++;
+    lg::error("[jak2-sound-rpc] rejected a language request while 989snd is stopped");
+    return false;
+  }
+  if (language_id >= kLanguages.size()) {
+    g_stats.language_failures++;
+    lg::error("[jak2-sound-rpc] rejected invalid language id {}", language_id);
+    return false;
+  }
+
+  gLanguage = kLanguages[language_id];
+  g_stats.language_id = language_id;
+  return true;
+}
+
 u64 loader_rpc(u32 send_buffer, s32 send_size, u32 recv_buffer, s32 recv_size) {
   if (send_size != kCommandSize || (send_buffer & 0xf) ||
       !readable_ee_span(send_buffer, kCommandSize)) {
@@ -268,6 +292,12 @@ u64 loader_rpc(u32 send_buffer, s32 send_size, u32 recv_buffer, s32 recv_size) {
         return reject("rpc-call (Jak 2 sound, load-bank unexpectedly requested a reply)");
       }
       load_bank(command.load_bank.bank_name);
+      return 0;
+    case jak2::Jak2SoundCommand::set_language:
+      if (recv_buffer != 0 || recv_size != 0) {
+        return reject("rpc-call (Jak 2 sound, set-language unexpectedly requested a reply)");
+      }
+      set_language(command.set_language.langauge_id);
       return 0;
     default:
       return reject("rpc-call (Jak 2 sound, unimplemented loader command)");
@@ -417,6 +447,8 @@ goal_kernel_core_status goal_jak2_sound_rpc_install(void) {
   }
 
   g_stats = {};
+  srpc_init_globals();
+  gLanguage = kLanguages[0];
   sbank_init_globals();
   InitBanks();
   try {

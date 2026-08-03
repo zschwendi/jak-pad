@@ -202,9 +202,10 @@ set(JAK2_KERNEL_CORE_SOURCES
     # the Jak 2 sound loader's 4.0 version handshake, checked banks, and ordinary STR files
     "${CMAKE_CURRENT_LIST_DIR}/sblk_preflight.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/sound_rpc_jak2.cpp"
-    # the common bank table and output-backend-free 989snd instance owned by the loader seam
+    # the common bank/RPC state and output-backend-free 989snd instance owned by the loader seam
     "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/sbank.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/soundcommon.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/srpc.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/sdshim.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/sndshim.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/common/envelope.cpp"
