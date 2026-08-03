@@ -36,6 +36,7 @@ extern "C" {
 #include "common/link_types.h"
 #include "common/log/log.h"
 #include "common/symbols.h"
+#include "common/util/FileUtil.h"
 
 #include "game/kernel/common/kboot.h"
 #include "game/kernel/common/klink.h"
@@ -359,6 +360,7 @@ int run_play_runtime(const std::string& data_dir,
   // This must outlive the shutdown guard below so the runtime releases its save files first.
   TemporarySavesCleanup temporary_saves{saves_path};
   const std::string saves_dir = saves_path.string();
+  file_util::override_user_config_dir(fs::path(saves_dir), true);
 
   goal_jak2_runtime_config config = {};
   config.data_directory = data_dir.c_str();
