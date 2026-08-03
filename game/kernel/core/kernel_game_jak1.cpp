@@ -6,6 +6,7 @@
 
 #include "common/symbols.h"
 
+#include "game/kernel/common/Ptr.h"
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kboot.h"
 #include "game/kernel/common/kdgo.h"
@@ -16,6 +17,7 @@
 #include "game/kernel/common/kmemcard.h"
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
+#include "game/kernel/core/gfx_host_internal.h"
 #include "game/kernel/core/kernel_game.h"
 #include "game/kernel/core/mips2c_seam.h"
 #include "game/kernel/core/sound_rpc.h"
@@ -154,6 +156,17 @@ const char* const kJak1MachineFunctionNames[] = {
 constexpr int kJak1MachineFunctionCount =
     int(sizeof(kJak1MachineFunctionNames) / sizeof(const char*));
 
+u64 gfx_set_levels(u32 level0, u32 level1) {
+  const u32 levels[] = {level0, level1};
+  goal_gfx_host_forward_desired_levels(levels, 2);
+  return 0;
+}
+
+u64 gfx_put_display_env(u32 display_env) {
+  goal_gfx_host_forward_pmode_alpha(Ptr<u8>(display_env).c()[1] / 255.f);
+  return 0;
+}
+
 }  // namespace
 
 namespace jak1 {
@@ -183,6 +196,13 @@ GameVersion goal_game_version() {
 void goal_game_shutdown() {
   goal_sound_shutdown();
 }
+
+void goal_game_install_gfx_adapters() {
+  goal_game_make_function_symbol("put-display-env", (void*)gfx_put_display_env);
+  goal_game_make_function_symbol("__pc-set-levels", (void*)gfx_set_levels);
+}
+
+void goal_game_gfx_before_vsync() {}
 
 void goal_game_init_kernel_globals() {
   fileio_init_globals();

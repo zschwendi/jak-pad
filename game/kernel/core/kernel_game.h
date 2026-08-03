@@ -51,6 +51,13 @@ void goal_game_register_mips2c();
 /*! Release per-game services that must not outlive the common kernel arena. */
 void goal_game_shutdown();
 
+/*! Install the selected game's GOAL-facing graphics adapters. gfx_host.cpp owns the host
+ * callbacks; these adapters only decode the game's argument layouts. */
+void goal_game_install_gfx_adapters();
+
+/*! Run the selected game's work immediately before the host's display-paced sync callback. */
+void goal_game_gfx_before_vsync();
+
 // ------------------------------------------------------------------------------------------
 // symbols and types
 // ------------------------------------------------------------------------------------------

@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include "common/global_profiler/GlobalProfiler.h"
+#include "common/goal_constants.h"
 #include "common/symbols.h"
 #include "common/util/Assert.h"
 
@@ -24,10 +25,12 @@
 #include "game/kernel/common/klink.h"
 #include "game/kernel/common/klisten.h"
 #include "game/kernel/common/kmalloc.h"
+#include "game/kernel/common/kmachine.h"
 #include "game/kernel/common/kmemcard.h"
 #include "game/kernel/common/kprint.h"
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/common/ksocket.h"
+#include "game/kernel/core/gfx_host_internal.h"
 #include "game/kernel/core/kernel_game.h"
 #include "game/kernel/core/mips2c_seam.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
@@ -57,6 +60,31 @@ u64 mouse_get_data(u32 mouse_ptr) {
   mouse->posx = 0.f;
   mouse->posy = 0.f;
   return mouse_ptr;
+}
+
+void read_level_names(u32 level_list, u32 (&levels)[jak2::LEVEL_MAX]) {
+  for (int i = 0; i < jak2::LEVEL_MAX; i++) {
+    levels[i] = *Ptr<u32>(level_list + i * sizeof(u32));
+  }
+}
+
+u64 gfx_set_levels(u32 level_list) {
+  u32 levels[jak2::LEVEL_MAX];
+  read_level_names(level_list, levels);
+  goal_gfx_host_forward_desired_levels(levels, jak2::LEVEL_MAX);
+  return 0;
+}
+
+u64 gfx_set_active_levels(u32 level_list) {
+  u32 levels[jak2::LEVEL_MAX];
+  read_level_names(level_list, levels);
+  goal_gfx_host_forward_active_levels(levels, jak2::LEVEL_MAX);
+  return 0;
+}
+
+u64 gfx_put_display_env(u32 alpha) {
+  goal_gfx_host_forward_pmode_alpha(alpha / 255.f);
+  return 0;
 }
 
 /*!
@@ -329,6 +357,18 @@ GameVersion goal_game_version() {
 
 void goal_game_shutdown() {
   goal_jak2_sound_rpc_shutdown();
+}
+
+void goal_game_install_gfx_adapters() {
+  goal_game_make_function_symbol("put-display-env", (void*)gfx_put_display_env);
+  goal_game_make_function_symbol("__pc-set-levels", (void*)gfx_set_levels);
+  goal_game_make_function_symbol("__pc-set-active-levels", (void*)gfx_set_active_levels);
+}
+
+void goal_game_gfx_before_vsync() {
+  if (vblank_interrupt_handler && MasterExit == RuntimeExitStatus::RUNNING) {
+    call_goal(Ptr<Function>(vblank_interrupt_handler), 0, 0, 0, s7.offset, g_ee_main_mem);
+  }
 }
 
 void goal_game_init_kernel_globals() {
