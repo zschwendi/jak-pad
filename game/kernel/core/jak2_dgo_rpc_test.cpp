@@ -293,6 +293,54 @@ int main() {
   check_u32((u32)player.master_volumes[0], 321,
             "channel 0 still reaches the sound player responder");
 
+  constexpr u32 kRoutedPlayerCommands = 3;
+  auto hostile_play_batch =
+      guarded_buffer(kRoutedPlayerCommands * kSoundCommandSize, "dgo-hostile-play-batch");
+  memset(hostile_play_batch.data.c(), 0, hostile_play_batch.size);
+  auto* routed_commands = hostile_play_batch.data.cast<jak2::SoundRpcCommand>().c();
+  routed_commands[0].rsvd1 = 0x5aa5;
+  routed_commands[0].j2command = jak2::Jak2SoundCommand::set_master_volume;
+  routed_commands[0].master_volume.group.group = 1;
+  routed_commands[0].master_volume.volume = 999;
+  routed_commands[1].rsvd1 = 0x5aa5;
+  routed_commands[1].j2command = jak2::Jak2SoundCommand::play;
+  routed_commands[1].play.sound_id = 0x7001;
+  memcpy(routed_commands[1].play.name, "HOSTILE", 7);
+  routed_commands[1].play.parms.mask = 0x100;
+  routed_commands[1].play.parms.fo_curve = -1;
+  routed_commands[2].rsvd1 = 0x5aa5;
+  routed_commands[2].j2command = jak2::Jak2SoundCommand::set_fps;
+  routed_commands[2].fps.fps = 50;
+
+  std::array<u8, kRoutedPlayerCommands * kSoundCommandSize> hostile_play_bytes;
+  memcpy(hostile_play_bytes.data(), hostile_play_batch.data.c(), hostile_play_bytes.size());
+  goal_jak2_sound_player_state player_before_rejection = {};
+  goal_jak2_sound_player_state_get(&player_before_rejection);
+  goal_jak2_sound_rpc_stats stats_before_rejection = {};
+  goal_jak2_sound_rpc_stats_get(&stats_before_rejection);
+
+  check_u32((u32)rpc_call(0, 0, 1, hostile_play_batch.data.offset, hostile_play_batch.size, 0, 0,
+                          0),
+            0, "routed hostile PLAY batch rejects synchronously");
+  goal_jak2_sound_player_state player_after_rejection = {};
+  goal_jak2_sound_player_state_get(&player_after_rejection);
+  check(memcmp(&player_after_rejection, &player_before_rejection,
+               sizeof(player_before_rejection)) == 0,
+        "routed hostile PLAY rejects the full batch before state mutation");
+  check(memcmp(hostile_play_bytes.data(), hostile_play_batch.data.c(),
+               hostile_play_bytes.size()) == 0,
+        "routed hostile PLAY leaves the complete EE batch untouched");
+
+  goal_jak2_sound_rpc_stats expected_rejection_stats = stats_before_rejection;
+  expected_rejection_stats.player_failures++;
+  expected_rejection_stats.rejected_calls++;
+  goal_jak2_sound_rpc_stats stats_after_rejection = {};
+  goal_jak2_sound_rpc_stats_get(&stats_after_rejection);
+  check(memcmp(&stats_after_rejection, &expected_rejection_stats,
+               sizeof(expected_rejection_stats)) == 0,
+        "routed hostile PLAY preserves all stats except rejection counters");
+  check_guards(hostile_play_batch, "routed hostile PLAY batch canaries stay intact");
+
   auto str_send = guarded_buffer(sizeof(StrRequest), "dgo-str-send");
   auto str_recv = guarded_buffer(sizeof(StrReply), "dgo-str-recv");
   auto str_data = guarded_buffer(16, "dgo-str-data");

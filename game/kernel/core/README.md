@@ -8,16 +8,19 @@ The shared translation units here never name a game: everything game-specific go
 per-game seam in `kernel_game.h`, implemented by `kernel_game_jak1.cpp` and
 `kernel_game_jak2.cpp`. One game per library, chosen at link time: `jak1-kernel-core` is
 everything documented below; `jak2-kernel-core` (**Experimental**) is the same core keyed to the
-Jak 2 kernel, with `dgo_loader_jak2.cpp` carrying the C-driven DGO load and the upstream Jak 2
-mips2c translations registered through the native-function seam. `sound_rpc_jak2.cpp` answers the
-loader's command-aware framing, IRX 4.0 version handshake, checked SBlk loads, ordinary named-SFX
-PLAY/update commands, and ordinary STR files. A bounded user-local bank is validated in memory
-before the same bytes reach 989snd, and unsafe PLAY falloff parameters are rejected before spatial
-volume calculation. The kernel owns its sound-system shutdown. Command 2 has no reply payload: its
-zero return only means the synchronous transport completed, not that a bank loaded; failures are
-available through host logs and `goal_jak2_sound_rpc_stats`. Music, streaming, pad, and graphics
-still report through the machine stubs. `jak2-sound-rpc-test` covers these seams with original
-synthetic data only.
+Jak 2 kernel, with `dgo_loader_jak2.cpp` carrying both the C-driven DGO load and the native
+channel-3 incremental begin/continue/cancel RPC. Its top-level router answers DGO traffic while
+delegating sound channels 0, 1, and 4 to `sound_rpc_jak2.cpp`, which handles command-aware framing,
+the IRX 4.0 version handshake, checked SBlk loads, ordinary named-SFX PLAY/update commands, and
+ordinary STR files. A bounded user-local bank is validated in memory before the same bytes reach
+989snd, and unsafe PLAY falloff parameters are rejected before spatial volume calculation. The
+upstream Jak 2 mips2c translations are registered through the native-function seam, and the kernel
+owns its sound-system shutdown. Command 2 has no reply payload: its zero return only means the
+synchronous transport completed, not that a bank loaded; failures are available through host logs
+and `goal_jak2_sound_rpc_stats`. Music, streaming, pad, and graphics still report through the
+machine stubs. `jak2-sound-rpc-test` covers the sound seams, while `jak2-dgo-rpc-test` covers the
+exact 32-byte DGO protocol, composed-router delegation and rejection behavior, and incremental
+AOT-code/data-object linking. Both use original synthetic data only.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
 kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
 exploratory integration probe; the registered CTest does not enable that mode.
