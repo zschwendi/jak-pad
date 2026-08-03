@@ -113,6 +113,6 @@ void goal_kernel_core_install_machine_stubs(const char* const* names, int count)
 
 /*!
  * Overwrite the stubs that are not machine-specific at all with real implementations: __mem-move,
- * __read-ee-timer, __pc-get-mips2c, and the scf-get-* readers of the boot configuration.
+ * __read-ee-timer, __pc-get-mips2c, pc-rand, and the scf-get-* readers of the boot configuration.
  */
 void goal_kernel_core_install_implemented_machine_functions();

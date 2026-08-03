@@ -19,9 +19,10 @@ owns its sound-system shutdown. Command 2 has no reply payload: its zero return 
 synchronous transport completed, not that a bank loaded; failures are available through host logs
 and `goal_jak2_sound_rpc_stats`. The shared pushed-state pad seam implements `cpad-open` and
 `cpad-get-data` for Jak 2 as well as Jak 1. `install-handler` faithfully stores, replaces, or clears
-the vblank and VIF1 handler references, but this headless core does not dispatch them yet. Music,
-streaming, and graphics still report through the machine stubs. `jak2-pad-seam-test`,
-`jak2-handler-seam-test`, and `jak2-sound-rpc-test` cover those seams, while
+the vblank and VIF1 handler references, but this headless core does not dispatch them yet.
+`pc-rand` uses the same process-lifetime generator as upstream. Music, streaming, and graphics
+still report through the machine stubs. `jak2-pad-seam-test`, `jak2-handler-seam-test`,
+`jak2-pc-rand-test`, and `jak2-sound-rpc-test` cover those seams, while
 `jak2-dgo-rpc-test` covers the exact 32-byte DGO protocol, composed-router delegation and rejection
 behavior, and incremental AOT-code/data-object linking. All use original synthetic data only.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
@@ -715,7 +716,8 @@ with no case now fails to compile rather than returning garbage.
   the ones that are not machine-specific at all are implemented in `desktop_seams.cpp`:
   `__mem-move` (the PC port's `ultimate-memcpy` is a call to it, so a stub there means every data
   object in a DGO links against zeroes), `__read-ee-timer`, `__pc-get-mips2c`, and the seven
-  `scf-get-*` readers of the PS2 system configuration (see **The boot configuration**). The loader
+  `scf-get-*` readers of the PS2 system configuration (see **The boot configuration**), plus the
+  process-lifetime `pc-rand` generator. The loader
   half of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the
   pad in `pad.cpp`. `install-handler` retains the vblank and VIF1 GOAL function references but no
   portable frame or DMA path dispatches them yet; everything else - `file-stream-open`,
