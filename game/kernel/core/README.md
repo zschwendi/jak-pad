@@ -771,9 +771,30 @@ does not expose the retained physical drawable callback, so that counter must re
 and command-buffer completion is the simulator gate.
 
 The synthetic Metal mode does not consume the game's DMA, display a title screen, prove gameplay,
-or establish physical-device compatibility. Future real-DMA presentation should extend the
-external product host rather than treating this bounded synthetic presenter as a second runtime
-renderer.
+or establish physical-device compatibility.
+
+**Experimental:** setting `GOALPAD_JAK2_REAL_DMA_CAMETAL_LAYER_PROOF=1` keeps the normal Jak 2
+runtime and external graphics-host route, but gives that existing host an app-owned
+`CAMetalLayer`. It does not use the synthetic presenter or create another renderer. The first
+game-built DMA chain within a maximum of three runtime ticks must be the proof's only chain,
+dispatch all 327 audited bucket slots, acquire one drawable, commit and complete one command
+buffer, and submit one drawable. Drawable misses, late submissions, GPU errors, presentation drops,
+presentation-order mismatches, unsupported direct blends, and bucket-policy failures are fatal.
+The host initializes the renderer's placeholder texture before accepting the first real chain.
+
+After the first real chain is submitted, the display link pauses while a bounded five-second wait
+checks command-buffer completion. A physical-device run additionally requires one presentation
+callback per submission. The iOS Simulator SDK does not expose that callback, so its gate requires
+successful command-buffer completion and zero presentation callbacks. The proof reports exact
+chain, bucket, copied/skipped-byte, draw, triangle, drawable, commit, completion, submission, and
+presentation counters.
+
+This mode is intentionally diagnostic. The current Jak 2 policy table still defers most content;
+a PASS with zero draw calls proves only that a real game-built chain reached a drawable and
+completed on the GPU. A clear or otherwise incomplete image is not a rendered title-screen or
+gameplay claim, and simulator success is not physical-device compatibility evidence. The default
+nil-layer one-tick proof, `GOALPAD_JAK2_LIFECYCLE_PROOF`, and the independent synthetic
+`GOALPAD_JAK2_CAMETAL_LAYER_PROOF` remain unchanged.
 
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
