@@ -725,10 +725,11 @@ xcodebuild -project build/ios-jak2-display-tick/jak.xcodeproj \
 
 The same development target can be generated for the arm64 iOS Simulator by replacing the SDK
 settings in that configure command with `CMAKE_OSX_SYSROOT=iphonesimulator` and then building with
-`-sdk iphonesimulator -destination 'generic/platform=iOS Simulator'`. The simulator result remains
-a nil-layer development proof and does not replace physical-device validation.
+`-sdk iphonesimulator -destination 'generic/platform=iOS Simulator'`. The simulator result does not
+replace physical-device validation.
 
-The external host copies each real Jak 2 DMA chain and dispatches its 327 audited DeferredSkip,
+Without an opt-in environment variable, the external host copies each real Jak 2 DMA chain and
+dispatches its 327 audited DeferredSkip,
 StrictEmpty, or audited Direct buckets synchronously through `MetalRenderer`. It deliberately
 supplies no `CAMetalLayer`, so command-buffer commits, drawables, submissions, and presentations
 must all remain zero. The separate synthetic submit/readback proof covers offscreen command-buffer
@@ -737,6 +738,21 @@ title DGO, the completed policy dispatch, and the graphics synchronization calls
 observed. It still has no presented surface, audio output, or input UI. A successful run proves
 only the signed display-clock-to-Metal-policy boundary, not a rendered title screen, gameplay, or
 physical-device compatibility.
+
+**Experimental:** setting `GOALPAD_JAK2_CAMETAL_LAYER_PROOF=1` selects a data-independent Metal
+mode in this development target. It creates a real app-owned `CAMetalLayer`, consumes exactly one
+`CADisplayLink` callback, and submits the public synthetic 327-bucket Jak 2 chain through the
+existing product dispatcher. The synthetic chain contains no game data and encodes no draw. The
+display link is paused immediately after submission, and PASS is emitted only after bounded GPU
+completion with exactly one drawable, command-buffer commit, completion, and submission and no
+miss, late submission, command-buffer error, presentation drop, or ordering error. iOS Simulator
+does not expose the retained physical drawable callback, so that counter must remain zero there
+and command-buffer completion is the simulator gate.
+
+The synthetic Metal mode does not consume the game's DMA, display a title screen, prove gameplay,
+or establish physical-device compatibility. Future real-DMA presentation should extend the
+external product host rather than treating this bounded synthetic presenter as a second runtime
+renderer.
 
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)

@@ -1,7 +1,10 @@
 #include "game/kernel/core/display_tick_coordinator.h"
+#include "game/kernel/core/jak2_metal_presenter.h"
 #include "game/kernel/core/jak2_runtime.h"
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
 #import <QuartzCore/CADisplayLink.h>
+#import <QuartzCore/CAMetalLayer.h>
+#import <TargetConditionals.h>
 #import <UIKit/UIKit.h>
 
 static const uint64_t kMaximumProofTicks = 600;
@@ -9,6 +12,32 @@ static const uint64_t kMaximumProofTicks = 600;
 @class GOALJak2DisplayTickAppDelegate;
 
 static void run_runtime_frame(double target_presentation_time, void* context);
+
+@interface GOALJak2MetalProofView : UIView
+
+@property(nonatomic, readonly) CAMetalLayer* metalLayer;
+
+@end
+
+@implementation GOALJak2MetalProofView
+
++ (Class)layerClass {
+  return CAMetalLayer.class;
+}
+
+- (CAMetalLayer*)metalLayer {
+  return (CAMetalLayer*)self.layer;
+}
+
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  const CGFloat scale = self.window ? self.window.screen.scale : UIScreen.mainScreen.scale;
+  self.metalLayer.contentsScale = scale;
+  self.metalLayer.drawableSize =
+      CGSizeMake(self.bounds.size.width * scale, self.bounds.size.height * scale);
+}
+
+@end
 
 @interface GOALJak2DisplayTickAppDelegate : UIResponder <UIApplicationDelegate> {
  @private
@@ -20,6 +49,10 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   BOOL _bootReady;
   BOOL _proofFinished;
   BOOL _proofPassed;
+  BOOL _metalProofEnabled;
+  BOOL _metalProofSubmitted;
+  uint64_t _metalProofDisplayCallbacks;
+  goal_jak2_metal_stats _metalStats;
   double _lastTargetTimestamp;
   NSString* _dataPath;
   NSString* _savesPath;
@@ -29,6 +62,7 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 @property(nonatomic, strong) UIWindow* window;
 @property(nonatomic, strong) UILabel* statusLabel;
 @property(nonatomic, strong) CADisplayLink* displayLink;
+@property(nonatomic, strong) GOALJak2MetalProofView* metalProofView;
 
 @end
 
@@ -36,6 +70,7 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 
 - (void)runRuntimeFrameAtTargetTime:(double)targetPresentationTime;
 - (void)stopRuntime;
+- (void)submitMetalProofFrame;
 
 @end
 
@@ -46,10 +81,25 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   (void)application;
   (void)launchOptions;
 
+  _metalProofEnabled =
+      [NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_CAMETAL_LAYER_PROOF"]
+          isEqualToString:@"1"];
   [self createWindow];
   goal_display_tick_coordinator_init(&_coordinator, run_runtime_frame, (__bridge void*)self);
   [self observeLifecycle];
   [self createDisplayLink];
+
+  if (_metalProofEnabled) {
+    if (!goal_jak2_metal_presenter_start(self.metalProofView.metalLayer)) {
+      const char* error = goal_jak2_metal_presenter_last_error();
+      _proofFinished = YES;
+      _failureMessage = error && error[0] ? [NSString stringWithUTF8String:error]
+                                          : @"The Jak II Metal presenter did not start.";
+    }
+    [self updateTickGate];
+    [self updateStatus];
+    return YES;
+  }
 
   NSError* pathError = nil;
   if (![self preparePaths:&pathError]) {
@@ -74,7 +124,15 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 - (void)createWindow {
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController* controller = [[UIViewController alloc] init];
-  controller.view.backgroundColor = UIColor.blackColor;
+  if (_metalProofEnabled) {
+    GOALJak2MetalProofView* metalView =
+        [[GOALJak2MetalProofView alloc] initWithFrame:self.window.bounds];
+    metalView.backgroundColor = UIColor.blackColor;
+    controller.view = metalView;
+    self.metalProofView = metalView;
+  } else {
+    controller.view.backgroundColor = UIColor.blackColor;
+  }
 
   UILabel* label = [[UILabel alloc] init];
   label.translatesAutoresizingMaskIntoConstraints = NO;
@@ -94,6 +152,8 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   self.statusLabel = label;
   self.window.rootViewController = controller;
   [self.window makeKeyAndVisible];
+  [controller.view setNeedsLayout];
+  [controller.view layoutIfNeeded];
 }
 
 - (void)observeLifecycle {
@@ -247,9 +307,15 @@ static void run_runtime_frame(double target_presentation_time, void* context);
     goal_jak2_metal_host_destroy(_metalHost);
     _metalHost = NULL;
   }
+  goal_jak2_metal_presenter_shutdown();
 }
 
 - (void)updateTickGate {
+  if (_metalProofEnabled) {
+    goal_display_tick_coordinator_set_foreground(&_coordinator, 0);
+    self.displayLink.paused = !(_applicationActive && !_metalProofSubmitted && !_proofFinished);
+    return;
+  }
   const BOOL shouldRun = _applicationActive && _bootReady && !_proofFinished;
   goal_display_tick_coordinator_set_foreground(&_coordinator, shouldRun ? 1 : 0);
   self.displayLink.paused = !shouldRun;
@@ -257,7 +323,62 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 
 - (void)displayTick:(CADisplayLink*)link {
   _lastTargetTimestamp = link.targetTimestamp;
+  if (_metalProofEnabled) {
+    _metalProofDisplayCallbacks++;
+    _metalProofSubmitted = YES;
+    self.displayLink.paused = YES;
+    [self submitMetalProofFrame];
+    return;
+  }
   goal_display_tick_coordinator_tick(&_coordinator, link.targetTimestamp);
+}
+
+- (void)submitMetalProofFrame {
+  if (!goal_jak2_metal_presenter_render(0.0)) {
+    const char* error = goal_jak2_metal_presenter_last_error();
+    _proofFinished = YES;
+    _failureMessage = error && error[0] ? [NSString stringWithUTF8String:error]
+                                        : @"The Jak II Metal proof frame was not submitted.";
+    [self updateStatus];
+    return;
+  }
+  if (!goal_jak2_metal_presenter_get_stats(&_metalStats)) {
+    _proofFinished = YES;
+    _failureMessage = @"The Jak II Metal presenter did not return submission counters.";
+    [self updateStatus];
+    return;
+  }
+  [self updateStatus];
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    const int completed = goal_jak2_metal_presenter_wait_for_completion();
+    goal_jak2_metal_stats stats = {0};
+    const int copiedStats = goal_jak2_metal_presenter_get_stats(&stats);
+    const char* error = completed ? "" : goal_jak2_metal_presenter_last_error();
+    NSString* failure = error && error[0] ? [NSString stringWithUTF8String:error]
+                                          : @"The Jak II Metal proof frame did not complete.";
+    dispatch_async(dispatch_get_main_queue(), ^{
+      _metalStats = stats;
+      _proofFinished = YES;
+      _proofPassed = completed != 0 && copiedStats != 0 && _metalProofDisplayCallbacks == 1;
+      if (!_proofPassed) {
+        if (!copiedStats) {
+          _failureMessage = @"The Jak II Metal presenter did not return completion counters.";
+        } else if (completed && _metalProofDisplayCallbacks != 1) {
+          _failureMessage = @"The Metal proof consumed more than one display callback.";
+        } else {
+          _failureMessage = failure;
+        }
+      } else {
+        NSLog(@"GOALPAD_JAK2_CAMETAL_LAYER_PROOF PASS callbacks=1 attempts=1 chains=1 "
+               "buckets=327 skipped=16 draws=0 triangles=0 acquired=1 misses=0 committed=1 "
+               "completed=1 errors=0 submissions=1 late=0 presentation_callbacks=%llu",
+              (unsigned long long)_metalStats.presentations_completed);
+      }
+      [self updateTickGate];
+      [self updateStatus];
+    });
+  });
 }
 
 - (void)runRuntimeFrameAtTargetTime:(double)targetPresentationTime {
@@ -342,6 +463,56 @@ static void run_runtime_frame(double target_presentation_time, void* context);
 }
 
 - (void)updateStatus {
+  if (_metalProofEnabled) {
+    NSString* result = @"WAITING FOR DISPLAY";
+    if (_proofPassed) {
+      result = @"PASS";
+    } else if (_proofFinished) {
+      result = @"FAILED";
+    } else if (_metalProofSubmitted) {
+      result = @"WAITING FOR GPU";
+    }
+    NSString* failure = _failureMessage.length > 0
+                            ? [NSString stringWithFormat:@"\nError: %@", _failureMessage]
+                            : @"";
+#if TARGET_OS_SIMULATOR
+    NSString* callbackNote = @"Simulator drawable presentation callbacks: unavailable (0 required)";
+#else
+    NSString* callbackNote = @"Physical drawable presentation callbacks: exactly one required";
+#endif
+    self.statusLabel.text = [NSString
+        stringWithFormat:@"Jak II CAMetalLayer presentation proof — %@\n\n"
+                          "Frame: public synthetic 327-bucket chain (no game data, no draw)\n"
+                          "Display callbacks: %llu (exactly one required)\n"
+                          "CADisplayLink targetTimestamp observed: %.6f\n"
+                          "Metal presentation time used: immediate (0)\n\n"
+                          "Attempts / chains / buckets: %llu / %llu / %llu\n"
+                          "Skipped bytes / draws / triangles: %llu / %d / %d\n"
+                          "Drawable acquired / missed: %llu / %llu\n"
+                          "Command buffers committed / completed / errors: %llu / %llu / %llu\n"
+                          "Submissions / late: %llu / %llu\n"
+                          "Presentation callbacks / drops / order mismatches: %llu / %llu / %llu\n"
+                          "%@%@",
+                         result, (unsigned long long)_metalProofDisplayCallbacks,
+                         _lastTargetTimestamp, (unsigned long long)_metalStats.render_attempts,
+                         (unsigned long long)_metalStats.chains_rendered,
+                         (unsigned long long)_metalStats.buckets_dispatched,
+                         (unsigned long long)_metalStats.skipped_bucket_bytes,
+                         _metalStats.draw_calls, _metalStats.triangles,
+                         (unsigned long long)_metalStats.drawables_acquired,
+                         (unsigned long long)_metalStats.drawable_misses,
+                         (unsigned long long)_metalStats.command_buffers_committed,
+                         (unsigned long long)_metalStats.command_buffers_completed,
+                         (unsigned long long)_metalStats.command_buffer_errors,
+                         (unsigned long long)_metalStats.submissions,
+                         (unsigned long long)_metalStats.late_present_submissions,
+                         (unsigned long long)_metalStats.presentations_completed,
+                         (unsigned long long)_metalStats.presentation_drops,
+                         (unsigned long long)_metalStats.presentation_order_mismatches, callbackNote,
+                         failure];
+    return;
+  }
+
   goal_display_tick_stats display = {0};
   goal_display_tick_coordinator_get_stats(&_coordinator, &display);
 

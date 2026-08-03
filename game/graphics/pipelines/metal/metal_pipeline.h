@@ -99,6 +99,10 @@ struct MercPaletteHealthEvent {
 struct ChainStats {
   u64 chains_rendered = 0;
   u64 command_buffers_committed = 0;
+  u64 command_buffers_completed = 0;
+  u64 command_buffer_errors = 0;
+  int last_command_buffer_status = 0;
+  s64 last_command_buffer_error_code = 0;
   u64 last_buckets_dispatched = 0;
   u64 drawables_acquired = 0;
   u64 drawable_misses = 0;

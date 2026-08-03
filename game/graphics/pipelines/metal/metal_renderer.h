@@ -100,6 +100,12 @@ class MetalRenderer {
                           const u8* chain_data,
                           u32 chain_offset);
 
+  // Waits for the most recently committed chain frame's completion handler, with a timeout.
+  bool wait_for_last_chain_frame(double timeout_seconds);
+
+  // Physical-device gate: waits for the most recently submitted drawable callback.
+  bool wait_for_last_presentation(double timeout_seconds);
+
   // Waits for the last committed frame, then reads back the offscreen game
   // target. Returns false if no frame has been rendered yet.
   bool read_game_frame(metal_renderer::FramePixels* out);

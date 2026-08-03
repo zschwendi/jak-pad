@@ -1,6 +1,8 @@
 #include "metal_renderer.h"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 
 #include "common/log/log.h"
 #include "common/util/Assert.h"
@@ -26,6 +28,8 @@
 
 struct MetalPresentationState {
   std::mutex mutex;
+  std::condition_variable command_buffer_cv;
+  std::condition_variable presentation_cv;
   metal_camera_trace::PresentationOrderTrace order;
   metal_camera_trace::ProducerAlternationTrace producer_camera;
   metal_camera_trace::RenderAlternationTrace render_camera;
@@ -33,7 +37,12 @@ struct MetalPresentationState {
   u64 last_engine_frame_id = 0;
   u64 last_host_tick_id = 0;
   u64 last_chain_ordinal = 0;
+  u64 command_buffers_completed = 0;
+  u64 command_buffer_errors = 0;
+  int last_command_buffer_status = 0;
+  s64 last_command_buffer_error_code = 0;
   bool mismatch_reported = false;
+  bool command_buffer_error_reported = false;
   bool producer_alternation_reported = false;
   bool render_alternation_reported = false;
 };
@@ -963,6 +972,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
           presentation_state->last_host_tick_id = host_tick_id;
           presentation_state->last_chain_ordinal = chain_ordinal;
         }
+        presentation_state->presentation_cv.notify_all();
       }];
 #endif
       schedule_present(cmds, drawable, opts);
@@ -971,6 +981,31 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     }
 
     if (layer) {
+      const auto completion_state = m_presentation_state;
+      [cmds addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+        const MTLCommandBufferStatus status = completed.status;
+        const s64 error_code = completed.error ? completed.error.code : 0;
+        bool report_error = false;
+        {
+          std::lock_guard<std::mutex> lock(completion_state->mutex);
+          completion_state->last_command_buffer_status = static_cast<int>(status);
+          completion_state->last_command_buffer_error_code = error_code;
+          if (status == MTLCommandBufferStatusCompleted) {
+            completion_state->command_buffers_completed++;
+          } else {
+            completion_state->command_buffer_errors++;
+            if (!completion_state->command_buffer_error_reported) {
+              completion_state->command_buffer_error_reported = true;
+              report_error = true;
+            }
+          }
+        }
+        if (report_error) {
+          lg::error("Metal command buffer failed with status {} and error code {}",
+                    static_cast<int>(status), error_code);
+        }
+        completion_state->command_buffer_cv.notify_all();
+      }];
       [cmds commit];
       m_chain_stats.command_buffers_committed++;
       {
@@ -1177,10 +1212,50 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
   return drawable_acquired;
 }
 
+bool MetalRenderer::wait_for_last_chain_frame(double timeout_seconds) {
+  if (!m_presentation_state || timeout_seconds <= 0.0) {
+    return false;
+  }
+  const u64 expected_completions = m_chain_stats.command_buffers_committed;
+  if (expected_completions == 0) {
+    return false;
+  }
+  std::unique_lock<std::mutex> lock(m_presentation_state->mutex);
+  const bool finished = m_presentation_state->command_buffer_cv.wait_for(
+      lock, std::chrono::duration<double>(timeout_seconds), [&] {
+        return m_presentation_state->command_buffers_completed +
+                   m_presentation_state->command_buffer_errors >=
+               expected_completions;
+      });
+  return finished && m_presentation_state->command_buffer_errors == 0;
+}
+
+bool MetalRenderer::wait_for_last_presentation(double timeout_seconds) {
+  if (!m_presentation_state || timeout_seconds <= 0.0 || m_submission_count == 0) {
+    return false;
+  }
+  const u64 expected_presentations = m_submission_count;
+  std::unique_lock<std::mutex> lock(m_presentation_state->mutex);
+  const bool finished = m_presentation_state->presentation_cv.wait_for(
+      lock, std::chrono::duration<double>(timeout_seconds), [&] {
+        return m_presentation_state->order.presentations() +
+                   m_presentation_state->order.drops() >=
+               expected_presentations;
+      });
+  return finished && m_presentation_state->order.presentations() == expected_presentations &&
+         m_presentation_state->order.drops() == 0 &&
+         m_presentation_state->order.mismatches() == 0;
+}
+
 metal_renderer::ChainStats MetalRenderer::chain_stats() {
   auto out = m_chain_stats;
   if (m_presentation_state) {
     std::lock_guard<std::mutex> lock(m_presentation_state->mutex);
+    out.command_buffers_completed = m_presentation_state->command_buffers_completed;
+    out.command_buffer_errors = m_presentation_state->command_buffer_errors;
+    out.last_command_buffer_status = m_presentation_state->last_command_buffer_status;
+    out.last_command_buffer_error_code =
+        m_presentation_state->last_command_buffer_error_code;
     out.presentations_completed = m_presentation_state->order.presentations();
     out.presentation_drops = m_presentation_state->order.drops();
     out.presentation_order_mismatches = m_presentation_state->order.mismatches();
