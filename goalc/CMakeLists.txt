@@ -132,7 +132,7 @@ target_link_libraries(goalc common Zydis compiler)
 target_link_libraries(goalc-simple common Zydis compiler)
 target_link_libraries(goalc-cbackend common Zydis compiler)
 target_link_libraries(goalc-cbackend-sweep
-                      common Zydis compiler jak1-source-object-pack jak2-source-object-pack)
+                      common Zydis compiler jak2-source-object-pack)
 target_link_libraries(jak2-source-object-pack-verify
                       PRIVATE compiler jak2-source-object-pack)
 target_compile_features(jak2-source-object-pack-verify PRIVATE cxx_std_20)
