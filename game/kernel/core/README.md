@@ -680,6 +680,43 @@ An empty development-team setting keeps Xcode code signing disabled. A successfu
 iOS build proves only bundle formation, final linking, and signing. It does not prove launch,
 device execution, gameplay, renderer integration, or the shipping application's runtime bridge.
 
+The generated Xcode project also contains an excluded-from-all development target named
+`jak2-iphoneos-display-tick-proof`. It is a programmatic UIKit diagnostic that starts the portable
+Jak 2 runtime on a background queue and offers each main-run-loop `CADisplayLink` callback to the
+portable display-tick coordinator. Each accepted callback synchronously runs exactly one kernel
+dispatcher frame. Inactive and background callbacks are paused rather than accumulated, and a
+return to the foreground never runs catch-up frames.
+
+The app links the excluded `jak2-iphoneos-runtime` static library. That runtime driver links the
+validated AOT corpus as a dependency instead of becoming another member of the generated-code
+archive, preserving the manifest-plus-840-translation-unit corpus boundary.
+
+The target reads the player's prepared data from the app's `Documents/Jak2` directory, which is
+visible through Files and Finder file sharing. A development launch may override that path with
+the `GOALPAD_JAK2_DATA_DIR` environment variable. Saves remain local in
+`Application Support/OpenGOAL/jak2/saves`. Configure a distinct bundle identifier and build the
+target explicitly:
+
+```sh
+cmake -S . -B build/ios-jak2-display-tick -G Xcode \
+  -DOPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY=ON \
+  -DOPENGOAL_JAK2_AOT_DIR="$PWD/build/Release/bin/game/aot-boot-jak2" \
+  -DOPENGOAL_JAK2_IPHONEOS_DISPLAY_TICK_BUNDLE_IDENTIFIER=org.example.Jak2DisplayTickProof \
+  -DOPENGOAL_JAK2_IPHONEOS_DEVELOPMENT_TEAM=TEAMID1234 \
+  -DBUILD_TESTING=OFF -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0
+xcodebuild -project build/ios-jak2-display-tick/jak.xcodeproj \
+  -scheme jak2-iphoneos-display-tick-proof -configuration Release -sdk iphoneos \
+  -destination 'generic/platform=iOS' -allowProvisioningUpdates build
+```
+
+This target links the portable runtime driver, Jak 2 AOT corpus, and portable kernel only. It has
+no Metal dependency, rendering surface, audio output, or input UI. The on-screen proof stops after
+a bounded interval when the title DGO, a valid measured-and-dropped DMA chain, and the graphics
+synchronization calls have all been observed. It always reports zero rendered and zero presented
+frames. A successful run is a headless display-clock/runtime-boundary result, not rendered title
+screen, gameplay, or physical-device compatibility evidence.
+
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 GEN=build/Release/bin/game/aot-generated
