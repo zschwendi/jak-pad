@@ -5,8 +5,9 @@
  *
  * Also defines, in namespace jak2, the small pieces of game/kernel/jak2/{kboot,kmachine}.cpp that
  * the jak2 kernel translation units reference at link time but whose real homes are not part of
- * this library: the boot globals and KernelDispatch (kboot.cpp is the desktop entry point), and
- * loud stubs for the sqlite debug interface (kmachine.cpp is the desktop machine layer).
+ * this library: the boot globals and KernelDispatch (kboot.cpp is the desktop entry point), the
+ * portable profiler and no-pointer mouse behavior, and loud stubs for the sqlite debug interface
+ * (kmachine.cpp is the desktop machine layer).
  */
 
 #include <cstring>
@@ -16,6 +17,7 @@
 #include "common/symbols.h"
 #include "common/util/Assert.h"
 
+#include "game/kernel/common/Ptr.h"
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kboot.h"
 #include "game/kernel/common/kdgo.h"
@@ -40,6 +42,25 @@
 #include "game/runtime.h"
 
 namespace {
+
+void pc_prof(u32 name, ProfNode::Kind kind) {
+  prof().event(Ptr<String>(name).c()->data(), kind);
+}
+
+u64 mouse_get_data(u32 mouse_ptr) {
+  auto* mouse = Ptr<jak2::MouseInfo>(mouse_ptr).c();
+  mouse->active = s7.offset;
+  mouse->valid = s7.offset;
+  mouse->cursor = s7.offset;
+  mouse->status = 0;
+  mouse->button0 = 0;
+  mouse->deltax = 0;
+  mouse->deltay = 0;
+  mouse->wheel = 0;
+  mouse->posx = 0.f;
+  mouse->posy = 0.f;
+  return mouse_ptr;
+}
 
 /*!
  * Every GOAL symbol the real jak2::InitMachineScheme fills in: the PS2 library shims, the pad,

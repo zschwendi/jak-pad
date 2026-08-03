@@ -20,14 +20,21 @@ synchronous transport completed, not that a bank loaded; failures are available 
 and `goal_jak2_sound_rpc_stats`. The shared pushed-state pad seam implements `cpad-open` and
 `cpad-get-data` for Jak 2 as well as Jak 1. `install-handler` faithfully stores, replaces, or clears
 the vblank and VIF1 handler references, but this headless core does not dispatch them yet.
-`pc-rand` uses the same process-lifetime generator as upstream. Music, streaming, and graphics
-still report through the machine stubs. `jak2-pad-seam-test`, `jak2-handler-seam-test`,
-`jak2-pc-rand-test`, and `jak2-sound-rpc-test` cover those seams, while
+`pc-rand` uses the same process-lifetime generator as upstream. Music, streaming, and rendering
+still report through the machine stubs. Jak 2 graphics DMA remains on that diagnostic stub until a
+host explicitly calls `goal_gfx_dma_install`; `--play-dma` does so, validates, measures, and drops
+completed chains. Plain `--play` retains its title-only behavior, while the Jak 1 boot and gameplay
+probes retain their existing DMA measurement and capture behavior. `jak2-pad-seam-test`,
+`jak2-handler-seam-test`, `jak2-pc-rand-test`,
+`jak2-lightweight-machine-test`, `jak2-dma-boundary-test`, and `jak2-sound-rpc-test` cover those
+seams, while
 `jak2-dgo-rpc-test` covers the exact 32-byte DGO protocol, composed-router delegation and rejection
 behavior, and incremental AOT-code/data-object linking. All use original synthetic data only.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
 kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
 exploratory integration probe; the registered CTest does not enable that mode.
+`--play` stops after the first linked title object. `--play-dma` additionally installs the
+measurement seam and requires one complete 327-bucket Jak 2 graphics chain before stopping.
 `jak2-thread-switch-test` drives the native ARM64 thread routines through the Jak 2 process and
 thread layouts.
 
@@ -360,9 +367,14 @@ bridge fills in the same seven entries from a `CAMetalLayer`.
 ## Capturing a frame
 
 `__send-gfx-dma-chain` is where a frame's work leaves GOAL. `dma_capture.cpp` follows the chain
-with the same `FixedChunkDmaCopier` the renderer uses, then walks the copy again the way the
-renderer's bucket dispatch does, so every frame is reported as what each bucket was actually given
-rather than only as a size. `--dma-frame-report` prints that table, one line per frame.
+with the same `FixedChunkDmaCopier` the renderer uses, then walks the copy again. For Jak 1 that
+second walk follows the renderer's bucket dispatch and reports what each bucket was given. For the
+headless Jak 2 frontier it follows the exact 327-entry direct bucket array, verifies terminal
+completion and the copier's tag and payload totals, and records each bucket without drawing it.
+`jak2-dma-boundary-test` covers an empty array and one carrying a PC-port texture upload. Jak 2
+capture files and replay remain outside this frontier because the current GPDMACAP format
+describes the Jak 1 renderer inputs.
+`--dma-frame-report` prints the Jak 1 bucket table, one line per frame.
 
 Two numbers matter and they are not the same. *Payload* is what the chain's tags transfer, which is
 what says whether a frame drew anything. *Copied* is chunk-granular - how far apart in EE memory
@@ -742,18 +754,24 @@ with no case now fails to compile rather than returning garbage.
   `__mem-move` (the PC port's `ultimate-memcpy` is a call to it, so a stub there means every data
   object in a DGO links against zeroes), `__read-ee-timer`, `__pc-get-mips2c`, and the seven
   `scf-get-*` readers of the PS2 system configuration (see **The boot configuration**), plus the
-  process-lifetime `pc-rand` generator. The loader
+  process-lifetime `pc-rand` generator and the host `flush-cache` no-op. Jak 2 additionally forwards
+  `pc-prof` to the existing global profiler and reports an explicitly inactive mouse when no pointer
+  provider exists. The loader
   half of the machine layer - the DGO and STR RPCs - is implemented in `dgo_loader.cpp`, and the
   pad in `pad.cpp`. `install-handler` retains the vblank and VIF1 GOAL function references but no
-  portable frame or DMA path dispatches them yet; everything else - `file-stream-open`,
-  `reset-graph` - is a diagnostic and not an implementation. A frame runs with the display and DMA
-  functions returning 0, so what a frame *computes* is real and what it would have *shown* is not.
+  portable frame path dispatches them yet. When explicitly installed, `dma_capture.cpp` validates
+  and measures completed graphics-DMA chains before dropping them; everything else -
+  `file-stream-open`, `reset-graph` - is a diagnostic and not an implementation. Such a frame runs
+  with display functions returning 0 and DMA chains measured but not rendered, so what it computes
+  is real and what it would have shown is not.
 - **Without a host renderer, a frame is simulation only.** When no host installs itself through
   `gfx_host.h` (see **The renderer** above), `reset-graph`, `syncv`, `sync-path`,
-  `put-display-env`, `dma-sync`, `flush-cache`, `__pc-texture-upload-now`, `__pc-texture-relocate`
-  and `__pc-set-levels` all report and return 0, and `__send-gfx-dma-chain` goes to
-  `dma_capture.cpp`, which measures the chain and drops it. That is what the boot and gameplay
-  tests run as, and it is why they measure what a frame *computes* rather than what it shows.
+  `put-display-env`, `dma-sync`, `__pc-texture-upload-now`, `__pc-texture-relocate`
+  and `__pc-set-levels` all report and return 0. Jak 2's `__send-gfx-dma-chain` also remains a
+  diagnostic stub unless a host calls `goal_gfx_dma_install`; `--play-dma` is the boot mode that
+  performs that installation. Jak 1's existing boot and gameplay probes continue to route the seam
+  to `dma_capture.cpp`, which measures the chain and drops it. Those measurement modes establish
+  what a frame *computes*, not what it shows.
 - **File access is data-directory-relative only.** `ee::sceOpen` and friends are real POSIX file
   descriptors, but every name is resolved under the configured data directory
   (`goal_kernel_core_resolve_data_path`), and an absolute name is passed through. GOAL's own file

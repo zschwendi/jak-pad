@@ -14,7 +14,7 @@
  * The exceptions, each marked where it is defined, are the ones with nothing platform-specific
  * left in them once the PS2 hardware is gone: host file I/O (`ee::sceOpen` and friends, against
  * the configured data directory), `__mem-move`, `__read-ee-timer`, `__pc-get-mips2c`, and the
- * `scf-get-*` readers of the PS2 system configuration, and `pc-rand`.
+ * `scf-get-*` readers of the PS2 system configuration, `pc-rand`, and `flush-cache`.
  *
  * Subsystems intentionally not in this library:
  *   - game/kernel/{common,jak1}/kmachine.cpp   : IOP boot, video, pads, PC-port functions (SDL,
@@ -23,7 +23,7 @@
  *   - game/kernel/jak1/kboot.cpp               : desktop boot + GOAL kernel dispatch loop
  *   - game/sce/sif_ee.cpp                      : the EE<->IOP RPC bridge (the file calls it also
  *                                                declares are implemented below)
- *   - game/sce/deci2.cpp, game/system/**       : DECI2 debugger transport and sockets
+ *   - game/sce/deci2.cpp, game/system/         : DECI2 debugger transport and sockets
  *   - game/mips2c/mips2c_table.cpp             : names all four games; core/mips2c_seam.cpp
  *                                                registers the Jak 1 functions instead
  */
@@ -182,6 +182,15 @@ u32 pc_rand() {
 }
 
 /*!
+ * Upstream's PC `FlushCache` is empty because the PS2 cache operation has no host equivalent.
+ * Keep this independent of the renderer: GOAL calls it while building DMA data, before a host
+ * renderer is necessarily installed.
+ */
+u64 flush_cache(u32 /*mode*/) {
+  return 0;
+}
+
+/*!
  * The system-configuration readers, from game/kernel/common/kmachine.cpp's `Decode*`. They read
  * the `masterConfig` block that kernel_core.cpp fills in on behalf of the absent
  * game/kernel/jak1/kboot.cpp.
@@ -236,6 +245,7 @@ void goal_kernel_core_install_implemented_machine_functions() {
   goal_game_make_function_symbol("__read-ee-timer", (void*)read_ee_timer);
   goal_game_make_function_symbol("__pc-get-mips2c", (void*)pc_get_mips2c);
   goal_game_make_function_symbol("pc-rand", (void*)pc_rand);
+  goal_game_make_function_symbol("flush-cache", (void*)flush_cache);
   goal_game_make_function_symbol("scf-get-language", (void*)decode_language);
   goal_game_make_function_symbol("scf-get-time", (void*)decode_time);
   goal_game_make_function_symbol("scf-get-aspect", (void*)decode_aspect);
