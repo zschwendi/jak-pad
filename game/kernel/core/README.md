@@ -721,6 +721,11 @@ xcodebuild -project build/ios-jak2-display-tick/jak.xcodeproj \
   -destination 'generic/platform=iOS' -allowProvisioningUpdates build
 ```
 
+The same development target can be generated for the arm64 iOS Simulator by replacing the SDK
+settings in that configure command with `CMAKE_OSX_SYSROOT=iphonesimulator` and then building with
+`-sdk iphonesimulator -destination 'generic/platform=iOS Simulator'`. The simulator result remains
+a headless development proof and does not replace physical-device validation.
+
 This target links the portable runtime driver, Jak 2 AOT corpus, and portable kernel only. It has
 no Metal dependency, rendering surface, audio output, or input UI. The on-screen proof stops after
 a bounded interval when the title DGO, a valid measured-and-dropped DMA chain, and the graphics
