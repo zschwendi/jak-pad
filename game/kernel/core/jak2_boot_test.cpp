@@ -265,15 +265,30 @@ int run_boot(const std::string& data_dir, int dispatch_frames, bool with_game) {
   if (with_game) {
     goal_jak2_sound_rpc_stats sound_stats;
     goal_jak2_sound_rpc_stats_get(&sound_stats);
-    if (!sound_stats.str_reads || sound_stats.str_requests != sound_stats.str_reads ||
-        sound_stats.str_failures != 0 || !sound_stats.str_bytes) {
+    if (!sound_stats.bank_requests || !sound_stats.banks_loaded || sound_stats.bank_failures != 0 ||
+        sound_stats.bank_requests != sound_stats.banks_loaded + sound_stats.bank_reuses) {
+      say("FAILED: Jak 2 checked bank load: requests=%u loaded=%u reused=%u failures=%u\n",
+          sound_stats.bank_requests, sound_stats.banks_loaded, sound_stats.bank_reuses,
+          sound_stats.bank_failures);
+      return 1;
+    }
+    say("  checked bank loader completed %u load(s), %u reuse(s), zero failures\n",
+        sound_stats.banks_loaded, sound_stats.bank_reuses);
+
+    if (sound_stats.str_requests &&
+        (sound_stats.str_requests != sound_stats.str_reads || sound_stats.str_failures != 0 ||
+         !sound_stats.str_bytes)) {
       say("FAILED: Jak 2 ordinary STR load: requests=%u reads=%u failures=%u bytes=%u\n",
           sound_stats.str_requests, sound_stats.str_reads, sound_stats.str_failures,
           sound_stats.str_bytes);
       return 1;
     }
-    say("  ordinary STR loader completed %u successful file read(s), %u bytes total\n",
-        sound_stats.str_reads, sound_stats.str_bytes);
+    say("  sound frontier: language=%u player batches=%u commands=%u failures=%u "
+        "PLAY=%u started=%u updated=%u missing=%u STR=%u/%u\n",
+        sound_stats.language_requests, sound_stats.player_batches, sound_stats.player_commands,
+        sound_stats.player_failures, sound_stats.play_requests, sound_stats.sounds_started,
+        sound_stats.sound_updates, sound_stats.sounds_missing, sound_stats.str_reads,
+        sound_stats.str_requests);
   }
 
   say("\nBOOT: KERNEL.CGO is loaded and the Jak 2 GOAL kernel dispatcher ran %d frames.\n",

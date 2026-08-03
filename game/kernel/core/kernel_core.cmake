@@ -150,9 +150,9 @@ endif()
 # jak2-kernel-core: the same portable kernel, keyed to Jak 2. One game per library: the shared
 # core translation units reach the game through kernel_game.h, and this target compiles the jak2
 # implementation of that seam next to the jak2 kernel translation units. Smaller than the jak1
-# library on purpose - the sound path has only loader framing, checked SBlk loads and ordinary STR
-# files; playback, pad, and graphics remain machine stubs that report loudly. dgo_loader_jak2.cpp
-# carries only the C-driven load so far.
+# library on purpose - the sound path has loader framing, checked SBlk loads, ordinary named SFX
+# playback and ordinary STR files; music, streaming, pad, and graphics remain machine stubs that
+# report loudly. dgo_loader_jak2.cpp carries only the C-driven load so far.
 set(JAK2_KERNEL_CORE_SOURCES
     # common support
     "${JAK1_KERNEL_CORE_ROOT}/common/cross_os_debug/xdbg.cpp"
@@ -202,9 +202,11 @@ set(JAK2_KERNEL_CORE_SOURCES
     # the Jak 2 sound loader's 4.0 version handshake, checked banks, and ordinary STR files
     "${CMAKE_CURRENT_LIST_DIR}/sblk_preflight.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/sound_rpc_jak2.cpp"
-    # the common bank table and output-backend-free 989snd instance owned by the loader seam
+    # the common bank/RPC/player state and output-backend-free 989snd instance owned by this seam
     "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/sbank.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/soundcommon.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/srpc.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/ssound.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/sdshim.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/sndshim.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/game/sound/common/envelope.cpp"

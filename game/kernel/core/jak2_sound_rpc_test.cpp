@@ -1,6 +1,7 @@
 /*!
  * @file jak2_sound_rpc_test.cpp
- * Behavioral coverage for Jak 2's checked sound-bank loader and ordinary-file STR seams.
+ * Behavioral coverage for Jak 2's startup state, checked sound-bank playback and ordinary-file STR
+ * seams.
  */
 
 #include <algorithm>
@@ -23,6 +24,8 @@
 #include "game/overlord/common/sbank.h"
 #include "game/overlord/jak2/srpc.h"
 #include "game/runtime.h"
+#include "game/sound/989snd/ame_handler.h"
+#include "game/sound/sndshim.h"
 
 namespace {
 
@@ -44,6 +47,15 @@ void check_u32(u32 got, u32 expected, const char* what) {
     std::printf("  ok   %-42s #x%08x\n", what, got);
   } else {
     std::printf("  FAIL %-42s got #x%08x, expected #x%08x\n", what, got, expected);
+    g_failures++;
+  }
+}
+
+void check_s32(s32 got, s32 expected, const char* what) {
+  if (got == expected) {
+    std::printf("  ok   %-42s %d\n", what, got);
+  } else {
+    std::printf("  FAIL %-42s got %d, expected %d\n", what, got, expected);
     g_failures++;
   }
 }
@@ -273,6 +285,58 @@ std::vector<u8> version_2_tone_bank() {
   return wrap_sfx_bank(bank, std::vector<u8>{0, 0});
 }
 
+std::vector<u8> playable_named_sfx_bank() {
+  constexpr size_t kHeaderSize = 64;
+  constexpr size_t kDescriptorSize = 12;
+  constexpr size_t kGrainSize = 8;
+  constexpr size_t kToneSize = 24;
+  constexpr size_t kNamesSize = 0x98;
+  constexpr size_t kNameEntrySize = 0x14;
+  constexpr size_t kSampleSize = 16;
+  const size_t first_sound = kHeaderSize;
+  const size_t first_grain = first_sound + kDescriptorSize;
+  const size_t grain_data = first_grain + kGrainSize;
+  const size_t block_names = grain_data + kToneSize;
+  const size_t name_table = block_names + kNamesSize;
+  std::vector<u8> bank(name_table + 2 * kNameEntrySize, 0);
+
+  write_value(&bank, 0, u32(0x6b6c4253));
+  write_value(&bank, 4, u32(2));
+  write_value(&bank, 8, u32(0x100));  // names present
+  write_value(&bank, 22, s16(1));
+  write_value(&bank, 24, s16(1));
+  write_value(&bank, 28, static_cast<u32>(first_sound));
+  write_value(&bank, 32, static_cast<u32>(first_grain));
+  write_value(&bank, 52, static_cast<u32>(grain_data));
+  write_value(&bank, 56, static_cast<u32>(block_names));
+
+  write_value(&bank, first_sound + 0, s8(127));
+  write_value(&bank, first_sound + 1, s8(0));
+  write_value(&bank, first_sound + 2, s16(0));
+  write_value(&bank, first_sound + 4, s8(1));
+  write_value(&bank, first_sound + 8, u32(0));
+
+  write_value(&bank, first_grain, u32(1u << 24));  // TONE at GrainData + 0
+  write_value(&bank, grain_data + 1, s8(127));
+  write_value(&bank, grain_data + 2, s8(60));
+  write_value(&bank, grain_data + 7, s8(127));
+  write_value(&bank, grain_data + 8, s8(12));
+  write_value(&bank, grain_data + 9, s8(12));
+  write_value(&bank, grain_data + 10, u16(0x000f));
+  write_value(&bank, grain_data + 12, u16(0x1fc0));
+  write_value(&bank, grain_data + 16, u32(0));
+
+  memcpy(bank.data() + block_names, "PLAY", 4);
+  write_value(&bank, block_names + 8, u32(kNamesSize));
+  memcpy(bank.data() + name_table, "TEST_TONE", 9);
+  write_value(&bank, name_table + 16, s16(0));
+
+  std::vector<u8> samples(kSampleSize, 0x77);
+  samples[0] = 0;
+  samples[1] = 1;  // end after this synthetic PS-ADPCM block
+  return wrap_sfx_bank(bank, samples);
+}
+
 std::vector<u8> shared_reference_budget_sfx_bank() {
   constexpr size_t kHeaderSize = 64;
   constexpr size_t kSoundSize = 12;
@@ -345,6 +409,82 @@ void reset_bank_command(GuardedCommand& buffer, const std::array<char, 16>& name
   memcpy(buffer.command->load_bank.bank_name, name.data(), name.size());
 }
 
+void reset_language_command(GuardedCommand& buffer, u32 language_id) {
+  memset(buffer.command.c(), 0, kCommandSize);
+  buffer.command->rsvd1 = 0x5aa5;
+  buffer.command->j2command = jak2::Jak2SoundCommand::set_language;
+  buffer.command->set_language.langauge_id = language_id;
+}
+
+jak2::SoundRpcCommand* reset_player_command(GuardedBuffer& buffer,
+                                             u32 index,
+                                             jak2::Jak2SoundCommand command) {
+  auto* result = (buffer.data + index * kCommandSize).cast<jak2::SoundRpcCommand>().c();
+  memset(result, 0, kCommandSize);
+  result->rsvd1 = 0x5aa5;
+  result->j2command = command;
+  return result;
+}
+
+void set_player_master_volume(GuardedBuffer& buffer, u32 index, u8 groups, s32 volume) {
+  auto* command =
+      reset_player_command(buffer, index, jak2::Jak2SoundCommand::set_master_volume);
+  command->master_volume.group.group = groups;
+  command->master_volume.volume = volume;
+}
+
+void set_player_midi(GuardedBuffer& buffer,
+                     u32 index,
+                     s32 reg,
+                     s16 value,
+                     u16 adjacent_padding = 0) {
+  auto* command = reset_player_command(buffer, index, jak2::Jak2SoundCommand::set_midi_reg);
+  command->midi_reg.reg = reg;
+  memcpy(reinterpret_cast<u8*>(&command->midi_reg) + 4, &value, sizeof(value));
+  memcpy(reinterpret_cast<u8*>(&command->midi_reg) + 6, &adjacent_padding,
+         sizeof(adjacent_padding));
+}
+
+void set_player_fps(GuardedBuffer& buffer, u32 index, u8 fps) {
+  auto* command = reset_player_command(buffer, index, jak2::Jak2SoundCommand::set_fps);
+  command->fps.fps = fps;
+}
+
+void set_player_play(GuardedBuffer& buffer,
+                     u32 index,
+                     u32 sound_id,
+                     const std::array<char, 16>& name,
+                     s32 volume = 1024) {
+  auto* command = reset_player_command(buffer, index, jak2::Jak2SoundCommand::play);
+  command->play.sound_id = sound_id;
+  memcpy(command->play.name, name.data(), name.size());
+  command->play.parms.volume = volume;
+}
+
+void set_player_ear(GuardedBuffer& buffer,
+                    u32 index,
+                    const Vec3w& ear1,
+                    const Vec3w& ear0,
+                    const Vec3w& camera,
+                    s32 angle) {
+  auto* command = reset_player_command(buffer, index, jak2::Jak2SoundCommand::set_ear_trans);
+  command->ear_trans_j2.ear_trans1 = ear1;
+  command->ear_trans_j2.ear_trans0 = ear0;
+  command->ear_trans_j2.cam_trans = camera;
+  command->ear_trans_j2.cam_angle = angle;
+}
+
+goal_jak2_sound_player_state player_state() {
+  goal_jak2_sound_player_state result{};
+  goal_jak2_sound_player_state_get(&result);
+  return result;
+}
+
+bool same_player_state(const goal_jak2_sound_player_state& left,
+                       const goal_jak2_sound_player_state& right) {
+  return memcmp(&left, &right, sizeof(left)) == 0;
+}
+
 std::array<u8, kCommandSize> snapshot(GuardedCommand& buffer) {
   std::array<u8, kCommandSize> result;
   memcpy(result.data(), buffer.command.c(), result.size());
@@ -387,6 +527,7 @@ int main() {
   auto bad_userdata_bank = valid_userdata_bank;
   write_value(&bad_userdata_bank, 24 + 56, u32(0xffffffff));
   auto valid_v2_bank = version_2_tone_bank();
+  auto playable_bank = playable_named_sfx_bank();
   auto shared_reference_budget_bank = shared_reference_budget_sfx_bank();
   auto bad_v2_offset_bank = valid_v2_bank;
   write_value(&bad_v2_offset_bank, 24 + 64 + 12, u32(0x01ffffff));
@@ -400,6 +541,8 @@ int main() {
   check(bool(sblk_preflight::validate(valid_names_bank)), "bounded names-table fixture validates");
   check(bool(sblk_preflight::validate(valid_userdata_bank)), "bounded userdata fixture validates");
   check(bool(sblk_preflight::validate(valid_v2_bank)), "version-2 grain-data fixture validates");
+  check(bool(sblk_preflight::validate(playable_bank)),
+        "named playable version-2 fixture validates");
   check(bool(sblk_preflight::validate(shared_reference_budget_bank)),
         "exact decoded-grain budget fixture validates");
   check(!sblk_preflight::validate(truncated_bank), "truncated outer attributes are rejected");
@@ -436,6 +579,8 @@ int main() {
   check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_OK,
         "Jak 2 sound loader and 989snd install");
   check(goal_jak2_sound_rpc_is_installed(), "the Jak 2 sound owner reports installed");
+  check(gLanguage && strcmp(gLanguage, "ENG") == 0,
+        "sound installation starts from the English language default");
   check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_ALREADY_INITIALIZED,
         "a duplicate install preserves the owned 989snd instance");
 
@@ -479,6 +624,189 @@ int main() {
   check_u32(stats.version_requests, 2, "two version requests were handled");
   check_u32(stats.info_ee, 0x23456789, "the latest EE info address is retained");
 
+  std::printf("\n== exact-buffer no-reply language selection ==\n");
+  constexpr std::array<const char*, 8> kExpectedLanguages = {"ENG", "FRE", "GER", "SPA",
+                                                              "ITA", "JAP", "KOR", "UKE"};
+  memset(recv.command.c(), 0xcc, kCommandSize);
+  const auto language_recv = snapshot(recv);
+  for (u32 language_id = 0; language_id < static_cast<u32>(kExpectedLanguages.size());
+       language_id++) {
+    reset_language_command(send, language_id);
+    const auto language_send = snapshot(send);
+    check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+              "a valid language selection remains synchronous");
+    check(snapshot(send) == language_send && snapshot(recv) == language_recv,
+          "a valid language selection mutates neither EE buffer");
+    check(gLanguage && strcmp(gLanguage, kExpectedLanguages[language_id]) == 0,
+          "each language id selects its wire tag");
+  }
+
+  reset_language_command(send, static_cast<u32>(kExpectedLanguages.size()));
+  const auto invalid_language_send = snapshot(send);
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "an invalid language id fails synchronously");
+  check(snapshot(send) == invalid_language_send && snapshot(recv) == language_recv,
+        "an invalid language leaves both EE buffers untouched");
+  check(gLanguage && strcmp(gLanguage, "UKE") == 0,
+        "an invalid language id preserves the last valid language");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.language_requests, 9, "every well-framed language request is counted");
+  check_u32(stats.language_failures, 1, "the invalid language id is counted as a failure");
+  check_u32(stats.language_id, 7, "language stats retain the last valid id");
+  check_guards(send, "no-reply language send canaries stay intact");
+  check_guards(recv, "no-reply language receive canaries stay intact");
+
+  std::printf("\n== atomic startup-state player batch ==\n");
+  const auto initial_player_state = player_state();
+  bool default_master_volumes = true;
+  for (s32 volume : initial_player_state.master_volumes) {
+    default_master_volumes &= volume == 0x400;
+  }
+  check(default_master_volumes, "installation initializes all 32 retained master volumes");
+  check_u32(initial_player_state.fps, 60, "installation initializes the player FPS");
+  check_u32(initial_player_state.midi_register_mask, 0,
+            "installation has no retained MIDI writes");
+  check_u32(initial_player_state.reverb_seen, 0, "installation has no retained reverb command");
+  check_u32(initial_player_state.ear_transform_seen, 0,
+            "installation has no retained listener transform");
+
+  constexpr u32 kStartupPlayerCommands = 10;
+  auto player = guarded_buffer(kStartupPlayerCommands * kCommandSize, "jak2-player-startup");
+  if (!player.data.offset) {
+    goal_kernel_core_shutdown();
+    return 1;
+  }
+  set_player_master_volume(player, 0, 0x01, 1024);
+  set_player_master_volume(player, 1, 0x02, 768);
+  set_player_master_volume(player, 2, 0x24, 1024);
+  set_player_master_volume(player, 3, 0x10, 1024);
+  set_player_midi(player, 4, 14, 0);
+  auto* reverb = reset_player_command(player, 5, jak2::Jak2SoundCommand::set_reverb);
+  reverb->reverb.core = 3;
+  reverb->reverb.reverb = 4;
+  reverb->reverb.left = 0;
+  reverb->reverb.right = 0;
+  set_player_midi(player, 6, 3, 0);
+  set_player_midi(player, 7, 4, 0);
+  set_player_fps(player, 8, 60);
+  auto* ear = reset_player_command(player, 9, jak2::Jak2SoundCommand::set_ear_trans);
+  ear->ear_trans_j2.ear_trans1 = {11, 12, 13};
+  ear->ear_trans_j2.ear_trans0 = {21, 22, 23};
+  ear->ear_trans_j2.cam_trans = {31, 32, 33};
+  ear->ear_trans_j2.cam_angle = 270;
+  const auto startup_player_bytes = snapshot(player);
+
+  check_u32((u32)rpc_busy(0), 0, "the synchronous player channel is never busy");
+  check_u32((u32)rpc_call(0, 0, 1, player.data.offset, player.size, 0, 0, 0), 0,
+            "the exact startup player batch completes synchronously");
+  check(snapshot(player) == startup_player_bytes, "the player batch remains read-only");
+  check_guards(player, "startup player batch canaries stay intact");
+
+  auto state = player_state();
+  check_s32(state.master_volumes[0], 1024, "SFX master volume is retained");
+  check_s32(state.master_volumes[1], 768, "music master volume is retained without playback");
+  check_s32(state.master_volumes[2], 1024, "dialog master volume is retained");
+  check_s32(state.master_volumes[4], 1024, "ambient master volume is retained");
+  check_s32(state.master_volumes[5], 1024, "dialog2 master volume is retained");
+  check_s32(state.master_volumes[31], 0x400, "unaddressable master groups keep their default");
+  check_u32(state.midi_register_mask, (1u << 3) | (1u << 4) | (1u << 14),
+            "only the startup MIDI registers are retained");
+  check_s32(state.midi_registers[3], 0, "mode MIDI register is retained as a no-op");
+  check_s32(state.midi_registers[4], 0, "tune MIDI register is retained as a no-op");
+  check_s32(state.midi_registers[14], 0, "flava MIDI register is retained as a no-op");
+  check_u32(state.reverb_seen, 1, "the explicitly unsupported reverb state is retained");
+  check_u32(state.reverb_core, 3, "reverb core is retained");
+  check_s32(state.reverb_type, 4, "reverb type is retained");
+  check_u32(state.fps, 60, "player FPS is retained");
+  check_u32(state.ear_transform_seen, 1, "listener transform state is retained");
+  check_s32(state.ear_trans1[0], 11, "ear1 wire order is retained");
+  check_s32(state.ear_trans0[0], 21, "ear0 wire order is retained");
+  check_s32(state.camera_trans[0], 31, "camera transform is retained");
+  check_s32(state.camera_angle, 270, "camera angle is retained");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.player_batches, 1, "one startup player batch is applied");
+  check_u32(stats.player_commands, kStartupPlayerCommands,
+            "every startup state command is applied");
+  check_u32(stats.player_failures, 0, "the exact startup player batch has no failure");
+
+  std::printf("\n== player order and atomic rejection ==\n");
+  constexpr u32 kOrderedPlayerCommands = 7;
+  auto ordered = guarded_buffer(kOrderedPlayerCommands * kCommandSize, "jak2-player-order");
+  set_player_master_volume(ordered, 0, 0x04, 111);
+  set_player_master_volume(ordered, 1, 0x04, 222);
+  set_player_midi(ordered, 2, 3, 5);
+  set_player_midi(ordered, 3, 3, -1234, 0x7abc);
+  set_player_midi(ordered, 4, 16, 77);
+  set_player_fps(ordered, 5, 50);
+  set_player_fps(ordered, 6, 60);
+  const auto ordered_bytes = snapshot(ordered);
+  rpc_call(0, 0, 1, ordered.data.offset, ordered.size, 0, 0, 0);
+  state = player_state();
+  check_s32(state.master_volumes[2], 222, "master-volume commands apply in wire order");
+  check_s32(state.midi_registers[3], -1234,
+            "signed 16-bit MIDI value ignores adjacent padding");
+  check_s32(state.midi_registers[16], 77, "global-excite MIDI state is retained");
+  check_u32(snd::GlobalExcite, 77, "global-excite MIDI value reaches 989snd");
+  check_u32(state.fps, 60, "FPS commands apply in wire order");
+  check(snapshot(ordered) == ordered_bytes, "ordered state batch remains read-only");
+  check_guards(ordered, "ordered player batch canaries stay intact");
+
+  auto atomic = guarded_buffer(3 * kCommandSize, "jak2-player-atomic");
+  const auto state_before_rejection = player_state();
+  set_player_master_volume(atomic, 0, 0x02, 333);
+  set_player_play(atomic, 1, 0x7001, bank_name("test-tone"));
+  reset_player_command(atomic, 2, jak2::Jak2SoundCommand::pause_sound);
+  rpc_call(0, 0, 1, atomic.data.offset, atomic.size, 0, 0, 0);
+  check(same_player_state(player_state(), state_before_rejection),
+        "an unsupported command rejects state plus PLAY before mutation");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.play_requests, 0, "atomic rejection starts no earlier PLAY command");
+
+  set_player_master_volume(atomic, 0, 0x02, 444);
+  reset_player_command(atomic, 1, static_cast<jak2::Jak2SoundCommand>(0xffff));
+  set_player_fps(atomic, 2, 50);
+  rpc_call(0, 0, 1, atomic.data.offset, atomic.size, 0, 0, 0);
+  check(same_player_state(player_state(), state_before_rejection),
+        "an unknown command rejects the complete batch atomically");
+
+  set_player_master_volume(atomic, 0, 0x02, 555);
+  set_player_fps(atomic, 1, 0);
+  set_player_fps(atomic, 2, 50);
+  rpc_call(0, 0, 1, atomic.data.offset, atomic.size, 0, 0, 0);
+  check(same_player_state(player_state(), state_before_rejection),
+        "zero FPS rejects the complete batch and preserves FPS");
+
+  set_player_master_volume(atomic, 0, 0x02, 666);
+  set_player_midi(atomic, 1, 2, 1);
+  set_player_fps(atomic, 2, 50);
+  rpc_call(0, 0, 1, atomic.data.offset, atomic.size, 0, 0, 0);
+  check(same_player_state(player_state(), state_before_rejection),
+        "an unsupported MIDI register rejects the complete batch atomically");
+  check_guards(atomic, "atomically rejected player batch canaries stay intact");
+
+  std::printf("\n== strict player framing ==\n");
+  rpc_call(0, 1, 1, player.data.offset, kCommandSize, 0, 0, 0);
+  rpc_call(0, 0, 0, player.data.offset, kCommandSize, 0, 0, 0);
+  rpc_call(0, 0, 1, player.data.offset, kCommandSize, player.data.offset, 0, 0);
+  rpc_call(0, 0, 1, player.data.offset, kCommandSize, 0, 1, 0);
+  rpc_call(0, 0, 1, player.data.offset, 0, 0, 0, 0);
+  rpc_call(0, 0, 1, player.data.offset, kCommandSize - 1, 0, 0, 0);
+  rpc_call(0, 0, 1, player.data.offset, 129 * kCommandSize, 0, 0, 0);
+  rpc_call(0, 0, 1, player.data.offset + 1, kCommandSize, 0, 0, 0);
+  rpc_call(0, 0, 1, EE_MAIN_MEM_SIZE - kCommandSize + 1, kCommandSize, 0, 0, 0);
+  rpc_call(0, 0, 1, player.data.offset,
+           static_cast<u64>(static_cast<s64>(-static_cast<s32>(kCommandSize))), 0, 0, 0);
+  check(same_player_state(player_state(), state_before_rejection),
+        "malformed player framing never mutates retained state");
+  check(snapshot(player) == startup_player_bytes, "malformed framing leaves the EE batch intact");
+  check_guards(player, "malformed player framing preserves canaries");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.player_batches, 2, "rejected batches do not count as applied batches");
+  check_u32(stats.player_commands, kStartupPlayerCommands + kOrderedPlayerCommands,
+            "rejected batches do not count commands as applied");
+  check_u32(stats.player_failures, 14, "every semantic or framing rejection is counted");
+  const u32 player_rejected_calls = stats.rejected_calls;
+
   const auto fixture_root =
       std::filesystem::temp_directory_path() / "goalpad-jak2-sound-rpc-test";
   std::error_code fixture_error;
@@ -493,6 +821,7 @@ int main() {
             write_fixture(fixture_root / "iso" / kFullWidthName, fixture_bytes) &&
             write_fixture(fixture_root / "iso" / "VALID.SBK", valid_bank) &&
             write_fixture(fixture_root / "iso" / "BUDGET.SBK", shared_reference_budget_bank) &&
+            write_fixture(fixture_root / "iso" / "PLAY.SBK", playable_bank) &&
             write_fixture(fixture_root / "iso" / "TRUNC.SBK", truncated_bank) &&
             write_fixture(fixture_root / "iso" / "OVERFLOW.SBK", overflow_bank) &&
             write_fixture(fixture_root / "iso" / "NEGCOUNT.SBK", negative_count_bank) &&
@@ -525,6 +854,11 @@ int main() {
             "an exact-budget bank load uses no reply buffer");
   check(LookupBank(bank_name("budget").data()) != nullptr,
         "the exact-budget fixture decodes through 989snd");
+  reset_bank_command(send, bank_name("play"));
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "the named tone bank load remains synchronous");
+  check(LookupBank(bank_name("play").data()) != nullptr,
+        "the named tone fixture decodes through 989snd");
 
   const std::array<const char*, 11> invalid_bank_names = {
       "trunc",    "overflow", "negcount", "sndcnt",  "grainoff", "badtype",
@@ -554,12 +888,55 @@ int main() {
   check(invalid_buffers_untouched, "failed bank requests mutate neither EE buffer");
   check(invalid_banks_absent, "failed bank requests never enter loaded state");
   goal_jak2_sound_rpc_stats_get(&stats);
-  check_u32(stats.bank_requests, 16, "every well-framed bank request is counted");
-  check_u32(stats.banks_loaded, 2, "only valid bank fixtures are loaded");
+  check_u32(stats.bank_requests, 17, "every well-framed bank request is counted");
+  check_u32(stats.banks_loaded, 3, "only valid bank fixtures are loaded");
   check_u32(stats.bank_reuses, 1, "a repeated request reuses the retained bank");
   check_u32(stats.bank_failures, 13, "every invalid, missing, or unsafe bank fails closed");
   check_guards(send, "no-reply command send canaries stay intact");
   check_guards(recv, "no-reply command receive canaries stay intact");
+
+  std::printf("\n== named SFX PLAY, update and semantic miss ==\n");
+  constexpr u32 kPlaybackCommands = 3;
+  auto playback = guarded_buffer(kPlaybackCommands * kCommandSize, "jak2-player-playback");
+  set_player_master_volume(playback, 0, 0x01, 900);
+  set_player_play(playback, 1, 0x7002, bank_name("test-tone"));
+  set_player_ear(playback, 2, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, 0);
+  const auto playback_bytes = snapshot(playback);
+  check_u32((u32)rpc_call(0, 0, 1, playback.data.offset, playback.size, 0, 0, 0), 0,
+            "mixed state, PLAY and ear commands complete synchronously");
+  check(snapshot(playback) == playback_bytes, "mixed playback batch remains read-only");
+  check_guards(playback, "mixed playback batch canaries stay intact");
+  state = player_state();
+  check_s32(state.master_volumes[0], 900, "state before PLAY applies in wire order");
+  check_u32(state.ear_transform_seen, 1, "ear state after PLAY applies in wire order");
+
+  auto same_id = guarded_buffer(kCommandSize, "jak2-player-same-id");
+  set_player_play(same_id, 0, 0x7002, bank_name("not-there"), 800);
+  const auto same_id_bytes = snapshot(same_id);
+  rpc_call(0, 0, 1, same_id.data.offset, same_id.size, 0, 0, 0);
+  check(snapshot(same_id) == same_id_bytes, "same-ID update remains read-only");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.play_requests, 2, "new and same-ID PLAY commands are counted");
+  check_u32(stats.sounds_started, 1, "only the first PLAY starts a 989snd handler");
+  check_u32(stats.sound_updates, 1, "same-ID PLAY updates the existing handler");
+  check_u32(stats.sounds_missing, 0, "same-ID update ignores its replacement name");
+
+  std::array<s16, 1024> audio{};
+  check_s32(snd_PullAudio(audio.data(), audio.size() / 2), audio.size() / 2,
+            "989snd renders the requested synthetic stereo frames");
+  check(std::any_of(audio.begin(), audio.end(), [](s16 sample) { return sample != 0; }),
+        "PLAY produces nonzero samples through snd_PullAudio");
+
+  auto missing_play = guarded_buffer(kCommandSize, "jak2-player-missing");
+  set_player_play(missing_play, 0, 0x7003, bank_name("not-there"));
+  rpc_call(0, 0, 1, missing_play.data.offset, missing_play.size, 0, 0, 0);
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.play_requests, 3, "a semantic PLAY miss is counted as a request");
+  check_u32(stats.sounds_started, 1, "a semantic miss starts no handler");
+  check_u32(stats.sound_updates, 1, "a semantic miss updates no handler");
+  check_u32(stats.sounds_missing, 1, "a missing loaded-bank name is surfaced in stats");
+  check_guards(same_id, "same-ID player command canaries stay intact");
+  check_guards(missing_play, "semantic-miss player command canaries stay intact");
 
   std::printf("\n== synchronous ordinary-file STR loads ==\n");
   auto str_send = guarded_buffer(kStrRequestSize, "jak2-str-send");
@@ -649,6 +1026,12 @@ int main() {
   rpc_call(1, 0, 1, send.command.offset, kCommandSize, recv.command.offset, kCommandSize, 0);
   check(snapshot(send) == unsupported_send && snapshot(recv) == unsupported_recv,
         "a no-reply command with a reply buffer mutates neither buffer");
+  reset_language_command(send, 0);
+  const auto malformed_language_send = snapshot(send);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, recv.command.offset, 0, 0);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, kCommandSize, 0);
+  check(snapshot(send) == malformed_language_send && snapshot(recv) == unsupported_recv,
+        "set-language rejects any receive pointer or receive size without mutating buffers");
   reset_command(send, jak2::Jak2SoundCommand::get_irx_version, 0x3456789a);
   const auto malformed_send = snapshot(send);
   rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
@@ -693,13 +1076,18 @@ int main() {
 
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.version_requests, 2, "rejected calls do not count as handshakes");
-  check_u32(stats.bank_requests, 16, "malformed bank framing is not counted as a request");
-  check_u32(stats.banks_loaded, 2, "malformed calls do not claim another bank load");
+  check_u32(stats.bank_requests, 17, "malformed bank framing is not counted as a request");
+  check_u32(stats.banks_loaded, 3, "malformed calls do not claim another bank load");
   check_u32(stats.bank_failures, 13, "framing rejection is distinct from a bank failure");
   check_u32(stats.str_requests, 9, "rejected STR calls do not count as file requests");
-  check_u32(stats.rejected_calls, 24, "every unsupported request is reported");
+  check_u32(stats.language_requests, 9, "malformed framing is not a language request");
+  check_u32(stats.language_failures, 1, "framing rejection is distinct from language failure");
+  check_u32(stats.language_id, 7, "rejected calls preserve the current language");
+  check_u32(stats.rejected_calls, player_rejected_calls + 26,
+            "every unsupported request is reported");
 
   std::printf("\n== shutdown and reinitialization ownership ==\n");
+  gSoundEnable = 0;
   goal_kernel_core_shutdown();
   check(!goal_jak2_sound_rpc_is_installed(), "kernel shutdown stops its owned 989snd instance");
   check(goal_kernel_core_initialize() == GOAL_KERNEL_CORE_OK,
@@ -708,8 +1096,38 @@ int main() {
         "machine stubs reinstall after shutdown");
   check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_OK,
         "the Jak 2 sound owner reinstalls after shutdown");
+  check(gLanguage && strcmp(gLanguage, "ENG") == 0,
+        "reinstall restores the English language default");
+  check(gSoundEnable == 1, "reinstall restores the common sound-enabled default");
+  const auto reinstalled_player_state = player_state();
+  bool reset_master_volumes = true;
+  for (s32 volume : reinstalled_player_state.master_volumes) {
+    reset_master_volumes &= volume == 0x400;
+  }
+  check(reset_master_volumes, "reinstall resets every retained master volume");
+  check_u32(reinstalled_player_state.midi_register_mask, 0,
+            "reinstall clears retained MIDI state");
+  check_u32(snd::GlobalExcite, 0, "reinstall resets actual 989snd global excitement");
+  check_u32(reinstalled_player_state.reverb_seen, 0, "reinstall clears retained reverb state");
+  check_u32(reinstalled_player_state.fps, 60, "reinstall restores the 60 FPS default");
+  check_u32(reinstalled_player_state.ear_transform_seen, 0,
+            "reinstall clears retained listener state");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.player_batches, 0, "reinstall resets player batch statistics");
+  check_u32(stats.player_commands, 0, "reinstall resets player command statistics");
+  check_u32(stats.player_failures, 0, "reinstall resets player failure statistics");
   auto reinit_send = guarded_command("jak2-sound-rpc-reinit-send");
+  auto reinit_player = guarded_buffer(kCommandSize, "jak2-sound-rpc-reinit-player");
   rpc_call = native_entry<GoalEightArgumentFunction>("rpc-call");
+  if (reinit_player.data.offset && rpc_call) {
+    set_player_play(reinit_player, 0, 0x7002, bank_name("test-tone"));
+    rpc_call(0, 0, 1, reinit_player.data.offset, kCommandSize, 0, 0, 0);
+    goal_jak2_sound_rpc_stats_get(&stats);
+    check_u32(stats.play_requests, 1, "PLAY remains callable after full reinitialization");
+    check_u32(stats.sounds_started, 0, "reinstall retains no prior loaded-bank voice");
+    check_u32(stats.sound_updates, 0, "reinstall retains no prior same-ID mapping");
+    check_u32(stats.sounds_missing, 1, "reinstall reports the now-unloaded sound name");
+  }
   if (reinit_send.command.offset && rpc_call) {
     reset_bank_command(reinit_send, bank_name("valid"));
     rpc_call(1, 0, 1, reinit_send.command.offset, kCommandSize, 0, 0, 0);
@@ -726,13 +1144,37 @@ int main() {
     check(LookupBank(bank_name("valid").data()) == nullptr,
           "shutdown clears the retained bank state before rejecting a stale call");
   }
+  if (reinit_send.command.offset && rpc_call) {
+    gLanguage = "UKE";
+    reset_language_command(reinit_send, 0);
+    rpc_call(1, 0, 1, reinit_send.command.offset, kCommandSize, 0, 0, 0);
+    goal_jak2_sound_rpc_stats_get(&stats);
+    check_u32(stats.language_failures, 1,
+              "a stale language call fails safely after sound shutdown");
+    check(gLanguage && strcmp(gLanguage, "UKE") == 0,
+          "a stale language call cannot mutate stopped sound state");
+  }
+  if (reinit_player.data.offset && rpc_call) {
+    set_player_fps(reinit_player, 0, 50);
+    const auto stopped_player_state = player_state();
+    const auto stopped_player_bytes = snapshot(reinit_player);
+    rpc_call(0, 0, 1, reinit_player.data.offset, kCommandSize, 0, 0, 0);
+    goal_jak2_sound_rpc_stats_get(&stats);
+    check_u32(stats.player_failures, 1,
+              "a stale player call fails safely after sound shutdown");
+    check(same_player_state(player_state(), stopped_player_state),
+          "a stale player call cannot mutate stopped sound state");
+    check(snapshot(reinit_player) == stopped_player_bytes,
+          "a stale player call leaves its EE buffer untouched");
+    check_guards(reinit_player, "stale player call preserves canaries");
+  }
   goal_jak2_sound_rpc_shutdown();
   check(!goal_jak2_sound_rpc_is_installed(), "sound shutdown is idempotent");
 
   goal_kernel_core_set_data_directory(nullptr);
   std::filesystem::remove_all(fixture_root, fixture_error);
   goal_kernel_core_shutdown();
-  std::printf("\n%s: Jak 2 checked bank-load, version, lifecycle and ordinary STR seams\n",
+  std::printf("\n%s: Jak 2 startup state, named SFX, checked bank, lifecycle and STR seams\n",
               g_failures ? "FAIL" : "PASS");
   return g_failures ? 1 : 0;
 }
