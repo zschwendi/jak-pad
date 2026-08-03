@@ -204,6 +204,9 @@ class TargetControlTracker {
     }
 
     auto& previous = m_histories[bone_slot];
+    if (previous.valid && previous.engine_frame_id == engine_frame_id) {
+      return event;
+    }
     const double intent_control_dot =
         facing_dot(observation.intent_forward, observation.control_forward);
     if (observation.stick_speed >= kMinimumActiveMagnitude &&

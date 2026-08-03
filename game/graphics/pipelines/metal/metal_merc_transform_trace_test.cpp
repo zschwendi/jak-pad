@@ -414,6 +414,19 @@ int main() {
             square_edge.button0_rel ==
                 metal_merc_transform_trace::TargetControlTracker::kSquareButton,
         "a Square press edge is retained even before an attack id transition");
+  metal_merc_transform_trace::TargetControlTracker duplicate_target_control;
+  const auto first_target_control = duplicate_target_control.observe(
+      950, 3, target_control_observation(0.0, 1.0, 0.0, -1.0, 20));
+  const auto duplicate_target_control_event = duplicate_target_control.observe(
+      950, 3,
+      target_control_observation(0.0, 1.0, 0.0, 1.0, 99,
+                                 metal_merc_transform_trace::TargetControlTracker::kSquareButton));
+  const auto after_duplicate =
+      duplicate_target_control.observe(951, 3, target_control_observation(0.0, 1.0, 0.0, 1.0, 20));
+  check(first_target_control.issue_mask ==
+                metal_merc_transform_trace::TARGET_CONTROL_FACING_DIVERGENCE &&
+            !duplicate_target_control_event.valid() && !after_duplicate.valid(),
+        "a duplicate engine frame preserves the first valid target-control observation and history");
 
   auto& registry = jak1_bones_provenance_trace::registry();
   registry.reset();
