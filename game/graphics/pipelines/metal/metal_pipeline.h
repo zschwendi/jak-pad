@@ -280,6 +280,11 @@ void set_s7_override(u32 s7_ptr);
 // appears and nothing steals focus. Must be called before make_display.
 void set_window_hidden(bool hidden);
 
+// Physical A/B diagnostic: disable only Jak 1 TIE's reflective second pass.
+// The envmapped base geometry, Merc envmaps, camera, and all other buckets are
+// unchanged. Enabled by default; callers must opt out explicitly.
+void set_jak1_tie_envmap_second_pass_enabled(bool enabled);
+
 // --- texture path (plain C++ mirror of the Objective-C++ API in
 // metal_texture.h, so tests can drive it) ----------------------------------
 

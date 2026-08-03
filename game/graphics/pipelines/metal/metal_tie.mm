@@ -6,6 +6,7 @@
 #include "game/graphics/pipelines/metal/metal_tie.h"
 
 #include <algorithm>
+#include <atomic>
 
 #include "common/log/log.h"
 
@@ -18,7 +19,17 @@ namespace {
 // in sync, and its size is what proves the packet is the one we think it is.
 constexpr u32 kWindWorkBytes = 84 * 16;
 
+std::atomic<bool> g_jak1_tie_envmap_second_pass_enabled{true};
+
 }  // namespace
+
+namespace metal_renderer {
+
+void set_jak1_tie_envmap_second_pass_enabled(bool enabled) {
+  g_jak1_tie_envmap_second_pass_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+}  // namespace metal_renderer
 
 MetalTie3::MetalTie3(const std::string& name, int my_id, int level_id)
     : MetalBucketRenderer(name, my_id), m_level_id(level_id) {
@@ -170,9 +181,13 @@ void MetalTie3::render(DmaFollower& dma,
   // envmapped pass then completes both draws for one tree before advancing to
   // the next, so a later tree's base draw can replace an earlier tree's shine.
   render_all_trees(geom, tfrag3::TieCategory::NORMAL, render_state, ctx);
+  const bool draw_envmap_second_pass =
+      g_jak1_tie_envmap_second_pass_enabled.load(std::memory_order_relaxed);
   for (size_t i = 0; i < m_trees[geom].size(); i++) {
     render_tree(geom, (int)i, tfrag3::TieCategory::NORMAL_ENVMAP, render_state, ctx);
-    render_tree(geom, (int)i, tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW, render_state, ctx);
+    if (draw_envmap_second_pass) {
+      render_tree(geom, (int)i, tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW, render_state, ctx);
+    }
   }
 }
 
