@@ -150,9 +150,9 @@ endif()
 # jak2-kernel-core: the same portable kernel, keyed to Jak 2. One game per library: the shared
 # core translation units reach the game through kernel_game.h, and this target compiles the jak2
 # implementation of that seam next to the jak2 kernel translation units. Smaller than the jak1
-# library on purpose - only the sound-loader version handshake exists; banks, playback, pad, and
-# graphics remain machine stubs that report loudly. dgo_loader_jak2.cpp carries only the C-driven
-# load so far.
+# library on purpose - the sound path has only loader framing, checked SBlk loads and ordinary STR
+# files; playback, pad, and graphics remain machine stubs that report loudly. dgo_loader_jak2.cpp
+# carries only the C-driven load so far.
 set(JAK2_KERNEL_CORE_SOURCES
     # common support
     "${JAK1_KERNEL_CORE_ROOT}/common/cross_os_debug/xdbg.cpp"
@@ -199,8 +199,29 @@ set(JAK2_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/aot_loader.cpp"
     # synchronous DGO reader, in place of game/kernel/jak2/kdgo.cpp
     "${CMAKE_CURRENT_LIST_DIR}/dgo_loader_jak2.cpp"
-    # only the Jak 2 sound loader's 4.0 version handshake; no banks, player, streams, or mixer
+    # the Jak 2 sound loader's 4.0 version handshake, checked banks, and ordinary STR files
+    "${CMAKE_CURRENT_LIST_DIR}/sblk_preflight.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/sound_rpc_jak2.cpp"
+    # the common bank table and output-backend-free 989snd instance owned by the loader seam
+    "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/sbank.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/overlord/common/soundcommon.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/sdshim.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/sndshim.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/common/envelope.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/common/synth.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/common/voice.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/ame_handler.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/blocksound_handler.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/lfo.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/loader.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/midi_handler.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/musicbank.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/player.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/plugin.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/sfxblock.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/sfxgrain.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/vagvoice.cpp"
+    "${JAK1_KERNEL_CORE_ROOT}/game/sound/989snd/util.cpp"
     # the mips2c seam, in place of game/mips2c/mips2c_table.cpp, plus the Jak 2 function library
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_seam.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/mips2c_jak2.cpp"
@@ -217,6 +238,16 @@ list(APPEND JAK2_KERNEL_CORE_SOURCES ${JAK2_MIPS2C_SOURCES})
 
 add_library(jak2-kernel-core STATIC ${JAK2_KERNEL_CORE_SOURCES})
 target_compile_features(jak2-kernel-core PUBLIC cxx_std_20)
+set(JAK2_KERNEL_CORE_SOUND_SOURCES ${JAK2_KERNEL_CORE_SOURCES})
+list(FILTER JAK2_KERNEL_CORE_SOUND_SOURCES INCLUDE REGEX "/game/(sound|overlord)/")
+if(NOT MSVC)
+  set_source_files_properties(
+    ${JAK2_KERNEL_CORE_SOUND_SOURCES} TARGET_DIRECTORY jak2-kernel-core
+    PROPERTIES COMPILE_OPTIONS
+               "-Wno-unknown-warning-option;-Wno-unused-private-field;-Wno-unused-parameter;-Wno-shadow;-Wno-deprecated-declarations"
+  )
+endif()
+target_compile_definitions(jak2-kernel-core PUBLIC GOALPAD_SND_NO_CUBEB=1)
 target_include_directories(
   jak2-kernel-core
   PUBLIC "${JAK1_KERNEL_CORE_ROOT}" "${JAK1_KERNEL_CORE_ROOT}/third-party"

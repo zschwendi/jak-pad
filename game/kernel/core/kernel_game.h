@@ -48,6 +48,9 @@ void goal_game_init_machine_scheme();
  * the game's library has not been ported: a lookup then fails loudly by name. */
 void goal_game_register_mips2c();
 
+/*! Release per-game services that must not outlive the common kernel arena. */
+void goal_game_shutdown();
+
 // ------------------------------------------------------------------------------------------
 // symbols and types
 // ------------------------------------------------------------------------------------------

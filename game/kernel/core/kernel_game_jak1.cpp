@@ -18,6 +18,7 @@
 #include "game/kernel/common/kscheme.h"
 #include "game/kernel/core/kernel_game.h"
 #include "game/kernel/core/mips2c_seam.h"
+#include "game/kernel/core/sound_rpc.h"
 #include "game/kernel/jak1/kdgo.h"
 #include "game/kernel/jak1/klisten.h"
 #include "game/kernel/jak1/kscheme.h"
@@ -177,6 +178,10 @@ void InitMachineScheme() {
 
 GameVersion goal_game_version() {
   return GameVersion::Jak1;
+}
+
+void goal_game_shutdown() {
+  goal_sound_shutdown();
 }
 
 void goal_game_init_kernel_globals() {

@@ -27,6 +27,7 @@
 #include "game/kernel/common/ksocket.h"
 #include "game/kernel/core/kernel_game.h"
 #include "game/kernel/core/mips2c_seam.h"
+#include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/kboot.h"
 #include "game/kernel/jak2/kdgo.h"
 #include "game/kernel/jak2/klisten.h"
@@ -300,6 +301,10 @@ void InitMachineScheme() {
 
 GameVersion goal_game_version() {
   return GameVersion::Jak2;
+}
+
+void goal_game_shutdown() {
+  goal_jak2_sound_rpc_shutdown();
 }
 
 void goal_game_init_kernel_globals() {

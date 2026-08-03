@@ -1,6 +1,6 @@
 /*!
  * @file jak2_sound_rpc_test.cpp
- * Behavioral coverage for the narrow Jak 2 sound-loader and ordinary-file STR seams.
+ * Behavioral coverage for Jak 2's checked sound-bank loader and ordinary-file STR seams.
  */
 
 #include <algorithm>
@@ -18,7 +18,9 @@
 
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/kernel_core.h"
+#include "game/kernel/core/sblk_preflight.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
+#include "game/overlord/common/sbank.h"
 #include "game/overlord/jak2/srpc.h"
 #include "game/runtime.h"
 
@@ -147,6 +149,130 @@ bool write_fixture(const std::filesystem::path& path, const std::array<u8, 96>& 
   return output.good();
 }
 
+bool write_fixture(const std::filesystem::path& path, const std::vector<u8>& bytes) {
+  std::ofstream output(path, std::ios::binary);
+  output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  return output.good();
+}
+
+template <typename T>
+void write_value(std::vector<u8>* data, size_t offset, T value) {
+  memcpy(data->data() + offset, &value, sizeof(value));
+}
+
+std::vector<u8> wrap_sfx_bank(const std::vector<u8>& bank, const std::vector<u8>& samples = {}) {
+  constexpr u32 kAttributesSize = 24;
+  std::vector<u8> result(kAttributesSize + bank.size() + samples.size(), 0);
+  write_value(&result, 0, u32(1));
+  write_value(&result, 4, u32(2));
+  write_value(&result, 8, kAttributesSize);
+  write_value(&result, 12, static_cast<u32>(bank.size()));
+  write_value(&result, 16, static_cast<u32>(kAttributesSize + bank.size()));
+  write_value(&result, 20, static_cast<u32>(samples.size()));
+  memcpy(result.data() + kAttributesSize, bank.data(), bank.size());
+  if (!samples.empty()) {
+    memcpy(result.data() + kAttributesSize + bank.size(), samples.data(), samples.size());
+  }
+  return result;
+}
+
+std::vector<u8> minimal_sfx_bank() {
+  std::vector<u8> bank(60, 0);
+  write_value(&bank, 0, u32(0x6b6c4253));  // SBlk
+  write_value(&bank, 4, u32(1));
+  write_value(&bank, 28, u32(bank.size()));
+  write_value(&bank, 32, u32(bank.size()));
+  return wrap_sfx_bank(bank);
+}
+
+std::vector<u8> one_grain_sfx_bank() {
+  constexpr size_t kHeaderSize = 60;
+  constexpr size_t kDescriptorSize = 12;
+  constexpr size_t kGrainSize = 0x28;
+  std::vector<u8> bank(kHeaderSize + kDescriptorSize + kGrainSize, 0);
+  write_value(&bank, 0, u32(0x6b6c4253));
+  write_value(&bank, 4, u32(1));
+  write_value(&bank, 22, s16(1));
+  write_value(&bank, 24, s16(1));
+  write_value(&bank, 28, u32(kHeaderSize));
+  write_value(&bank, 32, u32(kHeaderSize + kDescriptorSize));
+  write_value(&bank, kHeaderSize + 4, s8(1));
+  write_value(&bank, kHeaderSize + 8, u32(0));
+  write_value(&bank, kHeaderSize + kDescriptorSize, u32(0));  // NULL_GRAIN
+  return wrap_sfx_bank(bank);
+}
+
+std::vector<u8> named_sfx_bank() {
+  constexpr size_t kHeaderSize = 60;
+  constexpr size_t kNamesSize = 0x98;
+  constexpr size_t kNameEntrySize = 0x14;
+  std::vector<u8> bank(kHeaderSize + kNamesSize + kNameEntrySize, 0);
+  write_value(&bank, 0, u32(0x6b6c4253));
+  write_value(&bank, 4, u32(1));
+  write_value(&bank, 8, u32(0x100));
+  write_value(&bank, 28, u32(kHeaderSize));
+  write_value(&bank, 32, u32(kHeaderSize));
+  write_value(&bank, 52, u32(kHeaderSize));
+  write_value(&bank, kHeaderSize + 8, u32(kNamesSize));
+  return wrap_sfx_bank(bank);
+}
+
+std::vector<u8> unterminated_names_sfx_bank() {
+  constexpr size_t kHeaderSize = 60;
+  constexpr size_t kDescriptorSize = 12;
+  constexpr size_t kNamesSize = 0x98;
+  constexpr size_t kNameEntrySize = 0x14;
+  const size_t block_names = kHeaderSize + kDescriptorSize;
+  const size_t name_table = block_names + kNamesSize;
+  std::vector<u8> bank(name_table + kNameEntrySize, 0);
+  write_value(&bank, 0, u32(0x6b6c4253));
+  write_value(&bank, 4, u32(1));
+  write_value(&bank, 8, u32(0x100));
+  write_value(&bank, 22, s16(1));
+  write_value(&bank, 28, u32(kHeaderSize));
+  write_value(&bank, 32, u32(block_names));
+  write_value(&bank, 52, static_cast<u32>(block_names));
+  write_value(&bank, block_names + 8, u32(kNamesSize));
+  write_value(&bank, name_table, u32(1));
+  write_value(&bank, name_table + 0x10, s16(0));
+  return wrap_sfx_bank(bank);
+}
+
+std::vector<u8> userdata_sfx_bank() {
+  constexpr size_t kHeaderSize = 60;
+  constexpr size_t kDescriptorSize = 12;
+  std::vector<u8> bank(kHeaderSize + kDescriptorSize + 16, 0);
+  write_value(&bank, 0, u32(0x6b6c4253));
+  write_value(&bank, 4, u32(1));
+  write_value(&bank, 8, u32(0x200));
+  write_value(&bank, 22, s16(1));
+  write_value(&bank, 28, u32(kHeaderSize));
+  write_value(&bank, 32, u32(kHeaderSize + kDescriptorSize));
+  write_value(&bank, 56, u32(kHeaderSize + kDescriptorSize));
+  return wrap_sfx_bank(bank);
+}
+
+std::vector<u8> version_2_tone_bank() {
+  constexpr size_t kHeaderSize = 64;
+  constexpr size_t kDescriptorSize = 12;
+  constexpr size_t kGrainSize = 8;
+  constexpr size_t kToneSize = 24;
+  const size_t grain_data = kHeaderSize + kDescriptorSize + kGrainSize;
+  std::vector<u8> bank(grain_data + kToneSize, 0);
+  write_value(&bank, 0, u32(0x6b6c4253));
+  write_value(&bank, 4, u32(2));
+  write_value(&bank, 22, s16(1));
+  write_value(&bank, 24, s16(1));
+  write_value(&bank, 28, u32(kHeaderSize));
+  write_value(&bank, 32, u32(kHeaderSize + kDescriptorSize));
+  write_value(&bank, 52, static_cast<u32>(grain_data));
+  write_value(&bank, kHeaderSize + 4, s8(1));
+  write_value(&bank, kHeaderSize + 8, u32(0));
+  write_value(&bank, kHeaderSize + kDescriptorSize, u32(1u << 24));  // TONE at GrainData + 0
+  write_value(&bank, grain_data + 16, u32(0));
+  return wrap_sfx_bank(bank, std::vector<u8>{0, 0});
+}
+
 using GoalEightArgumentFunction =
     u64 (*)(u64, u64, u64, u64, u64, u64, u64, u64);
 using GoalOneArgumentFunction = u64 (*)(u64);
@@ -178,6 +304,19 @@ void reset_command(GuardedCommand& buffer, jak2::Jak2SoundCommand command, u32 e
          sizeof(buffer.command->max_size) - sizeof(SoundRpcGetIrxVersion));
 }
 
+std::array<char, 16> bank_name(const char* text) {
+  std::array<char, 16> result{};
+  memcpy(result.data(), text, std::min(strlen(text), result.size()));
+  return result;
+}
+
+void reset_bank_command(GuardedCommand& buffer, const std::array<char, 16>& name) {
+  memset(buffer.command.c(), 0, kCommandSize);
+  buffer.command->rsvd1 = 0x5aa5;
+  buffer.command->j2command = jak2::Jak2SoundCommand::load_bank;
+  memcpy(buffer.command->load_bank.bank_name, name.data(), name.size());
+}
+
 std::array<u8, kCommandSize> snapshot(GuardedCommand& buffer) {
   std::array<u8, kCommandSize> result;
   memcpy(result.data(), buffer.command.c(), result.size());
@@ -199,6 +338,57 @@ int main() {
   lg::set_flush_level(lg::level::warn);
   lg::initialize();
 
+  auto valid_bank = minimal_sfx_bank();
+  auto truncated_bank = valid_bank;
+  truncated_bank.resize(23);
+  auto overflow_bank = valid_bank;
+  write_value(&overflow_bank, 12, u32(0xffffffff));
+  auto negative_count_bank = one_grain_sfx_bank();
+  write_value(&negative_count_bank, 24 + 22, s16(-1));
+  auto negative_sound_grain_count_bank = one_grain_sfx_bank();
+  write_value(&negative_sound_grain_count_bank, 24 + 60 + 4, s8(-1));
+  auto bad_grain_offset_bank = one_grain_sfx_bank();
+  write_value(&bad_grain_offset_bank, 24 + 60 + 8, u32(0xfffffff8));
+  auto bad_grain_type_bank = one_grain_sfx_bank();
+  write_value(&bad_grain_type_bank, 24 + 60 + 12, u32(45));
+  auto valid_names_bank = named_sfx_bank();
+  auto bad_name_hash_bank = valid_names_bank;
+  write_value(&bad_name_hash_bank, 24 + 60 + 0x18, s16(-1));
+  auto bad_name_terminator_bank = unterminated_names_sfx_bank();
+  auto valid_userdata_bank = userdata_sfx_bank();
+  auto bad_userdata_bank = valid_userdata_bank;
+  write_value(&bad_userdata_bank, 24 + 56, u32(0xffffffff));
+  auto valid_v2_bank = version_2_tone_bank();
+  auto bad_v2_offset_bank = valid_v2_bank;
+  write_value(&bad_v2_offset_bank, 24 + 64 + 12, u32(0x01ffffff));
+  auto bad_sample_offset_bank = valid_v2_bank;
+  write_value(&bad_sample_offset_bank, 24 + 64 + 12 + 8 + 16, u32(1));
+
+  std::printf("\n== non-aborting SBlk boundary ==\n");
+  check(bool(sblk_preflight::validate(valid_bank)), "minimal original SBlk fixture validates");
+  check(bool(sblk_preflight::validate(one_grain_sfx_bank())),
+        "one-sound version-1 SBlk fixture validates");
+  check(bool(sblk_preflight::validate(valid_names_bank)), "bounded names-table fixture validates");
+  check(bool(sblk_preflight::validate(valid_userdata_bank)), "bounded userdata fixture validates");
+  check(bool(sblk_preflight::validate(valid_v2_bank)), "version-2 grain-data fixture validates");
+  check(!sblk_preflight::validate(truncated_bank), "truncated outer attributes are rejected");
+  check(!sblk_preflight::validate(overflow_bank), "overflowing outer chunk is rejected");
+  check(!sblk_preflight::validate(negative_count_bank), "negative sound count is rejected");
+  check(!sblk_preflight::validate(negative_sound_grain_count_bank),
+        "negative per-sound grain count is rejected");
+  check(!sblk_preflight::validate(bad_grain_offset_bank),
+        "nested per-sound grain offset is rejected");
+  check(!sblk_preflight::validate(bad_grain_type_bank),
+        "out-of-range grain dispatch type is rejected");
+  check(!sblk_preflight::validate(bad_name_hash_bank), "negative name hash offset is rejected");
+  check(!sblk_preflight::validate(bad_name_terminator_bank),
+        "unterminated name hash chain is rejected");
+  check(!sblk_preflight::validate(bad_userdata_bank), "out-of-range userdata is rejected");
+  check(!sblk_preflight::validate(bad_v2_offset_bank),
+        "out-of-range version-2 GrainData payload is rejected");
+  check(!sblk_preflight::validate(bad_sample_offset_bank),
+        "out-of-range tone sample offset is rejected");
+
   check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_NOT_INITIALIZED,
         "installation rejects an uninitialized kernel");
   if (goal_kernel_core_initialize() != GOAL_KERNEL_CORE_OK) {
@@ -212,7 +402,11 @@ int main() {
   u32 stub_busy = 0;
   goal_kernel_core_lookup("rpc-call", nullptr, &stub_call);
   goal_kernel_core_lookup("rpc-busy?", nullptr, &stub_busy);
-  check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_OK, "Jak 2 sound handshake installs");
+  check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_OK,
+        "Jak 2 sound loader and 989snd install");
+  check(goal_jak2_sound_rpc_is_installed(), "the Jak 2 sound owner reports installed");
+  check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_ALREADY_INITIALIZED,
+        "a duplicate install preserves the owned 989snd instance");
 
   u32 installed_call = 0;
   u32 installed_busy = 0;
@@ -254,22 +448,6 @@ int main() {
   check_u32(stats.version_requests, 2, "two version requests were handled");
   check_u32(stats.info_ee, 0x23456789, "the latest EE info address is retained");
 
-  std::printf("\n== no-reply sound-bank command remains explicit and unimplemented ==\n");
-  reset_command(send, jak2::Jak2SoundCommand::load_bank, 0x3456789a);
-  memset(recv.command.c(), 0xcc, kCommandSize);
-  const auto bank_send = snapshot(send);
-  const auto bank_recv = snapshot(recv);
-  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
-            "a command 2 request uses no reply buffer");
-  check(snapshot(send) == bank_send && snapshot(recv) == bank_recv,
-        "unimplemented bank loading mutates neither EE buffer");
-  goal_jak2_sound_rpc_stats_get(&stats);
-  check_u32(stats.bank_load_requests, 1, "the well-framed bank request is counted");
-  check_u32(stats.bank_load_unimplemented, 1, "the bank request is reported as unimplemented");
-  check_guards(send, "no-reply command send canaries stay intact");
-  check_guards(recv, "no-reply command receive canaries stay intact");
-
-  std::printf("\n== synchronous ordinary-file STR loads ==\n");
   const auto fixture_root =
       std::filesystem::temp_directory_path() / "goalpad-jak2-sound-rpc-test";
   std::error_code fixture_error;
@@ -281,10 +459,72 @@ int main() {
   }
   constexpr const char* kFullWidthName = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
   check(!fixture_error && write_fixture(fixture_root / "iso" / "MIXED.TXT", fixture_bytes) &&
-            write_fixture(fixture_root / "iso" / kFullWidthName, fixture_bytes),
-        "create synthetic STR fixtures");
+            write_fixture(fixture_root / "iso" / kFullWidthName, fixture_bytes) &&
+            write_fixture(fixture_root / "iso" / "VALID.SBK", valid_bank) &&
+            write_fixture(fixture_root / "iso" / "TRUNC.SBK", truncated_bank) &&
+            write_fixture(fixture_root / "iso" / "OVERFLOW.SBK", overflow_bank) &&
+            write_fixture(fixture_root / "iso" / "NEGCOUNT.SBK", negative_count_bank) &&
+            write_fixture(fixture_root / "iso" / "SNDCNT.SBK", negative_sound_grain_count_bank) &&
+            write_fixture(fixture_root / "iso" / "GRAINOFF.SBK", bad_grain_offset_bank) &&
+            write_fixture(fixture_root / "iso" / "BADTYPE.SBK", bad_grain_type_bank) &&
+            write_fixture(fixture_root / "iso" / "NAMEHASH.SBK", bad_name_hash_bank) &&
+            write_fixture(fixture_root / "iso" / "NAMETERM.SBK", bad_name_terminator_bank) &&
+            write_fixture(fixture_root / "iso" / "USERDATA.SBK", bad_userdata_bank) &&
+            write_fixture(fixture_root / "iso" / "V2OFFSET.SBK", bad_v2_offset_bank) &&
+            write_fixture(fixture_root / "iso" / "SAMPLEOF.SBK", bad_sample_offset_bank),
+        "create synthetic STR and sound-bank fixtures");
   goal_kernel_core_set_data_directory(fixture_root.string().c_str());
 
+  std::printf("\n== exact-buffer no-reply sound-bank loads ==\n");
+  reset_bank_command(send, bank_name("valid"));
+  memset(recv.command.c(), 0xcc, kCommandSize);
+  const auto bank_send = snapshot(send);
+  const auto bank_recv = snapshot(recv);
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "a validated command 2 load uses no reply buffer");
+  check(snapshot(send) == bank_send && snapshot(recv) == bank_recv,
+        "successful bank loading mutates neither EE buffer");
+  check(LookupBank(bank_name("valid").data()) != nullptr,
+        "the minimal fixture has a real retained bank handle");
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "a repeated bank request remains synchronous");
+
+  const std::array<const char*, 11> invalid_bank_names = {
+      "trunc",    "overflow", "negcount", "sndcnt",  "grainoff", "badtype",
+      "namehash", "nameterm", "userdata", "v2offset", "sampleof"};
+  bool invalid_buffers_untouched = true;
+  bool invalid_banks_absent = true;
+  for (const char* name : invalid_bank_names) {
+    reset_bank_command(send, bank_name(name));
+    const auto invalid_send = snapshot(send);
+    const auto invalid_recv = snapshot(recv);
+    rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+    invalid_buffers_untouched &= snapshot(send) == invalid_send && snapshot(recv) == invalid_recv;
+    invalid_banks_absent &= LookupBank(bank_name(name).data()) == nullptr;
+  }
+  reset_bank_command(send, bank_name("missing"));
+  const auto missing_send = snapshot(send);
+  const auto missing_recv = snapshot(recv);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+  invalid_buffers_untouched &= snapshot(send) == missing_send && snapshot(recv) == missing_recv;
+  invalid_banks_absent &= LookupBank(bank_name("missing").data()) == nullptr;
+  reset_bank_command(send, bank_name("../unsafe"));
+  const auto unsafe_send = snapshot(send);
+  const auto unsafe_recv = snapshot(recv);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+  invalid_buffers_untouched &= snapshot(send) == unsafe_send && snapshot(recv) == unsafe_recv;
+  invalid_banks_absent &= LookupBank(bank_name("../unsafe").data()) == nullptr;
+  check(invalid_buffers_untouched, "failed bank requests mutate neither EE buffer");
+  check(invalid_banks_absent, "failed bank requests never enter loaded state");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.bank_requests, 15, "every well-framed bank request is counted");
+  check_u32(stats.banks_loaded, 1, "only the valid minimal bank is loaded");
+  check_u32(stats.bank_reuses, 1, "a repeated request reuses the retained bank");
+  check_u32(stats.bank_failures, 13, "every invalid, missing, or unsafe bank fails closed");
+  check_guards(send, "no-reply command send canaries stay intact");
+  check_guards(recv, "no-reply command receive canaries stay intact");
+
+  std::printf("\n== synchronous ordinary-file STR loads ==\n");
   auto str_send = guarded_buffer(kStrRequestSize, "jak2-str-send");
   auto str_recv = guarded_buffer(kStrReplySize, "jak2-str-recv");
   auto str_destination = guarded_buffer(128, "jak2-str-destination");
@@ -416,15 +656,46 @@ int main() {
 
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.version_requests, 2, "rejected calls do not count as handshakes");
-  check_u32(stats.bank_load_requests, 1, "malformed bank framing is not counted as a request");
-  check_u32(stats.bank_load_unimplemented, 1, "no bank request is acknowledged as loaded");
+  check_u32(stats.bank_requests, 15, "malformed bank framing is not counted as a request");
+  check_u32(stats.banks_loaded, 1, "malformed calls do not claim another bank load");
+  check_u32(stats.bank_failures, 13, "framing rejection is distinct from a bank failure");
   check_u32(stats.str_requests, 9, "rejected STR calls do not count as file requests");
-  check_u32(stats.rejected_calls, 25, "every unsupported request is reported");
+  check_u32(stats.rejected_calls, 24, "every unsupported request is reported");
+
+  std::printf("\n== shutdown and reinitialization ownership ==\n");
+  goal_kernel_core_shutdown();
+  check(!goal_jak2_sound_rpc_is_installed(), "kernel shutdown stops its owned 989snd instance");
+  check(goal_kernel_core_initialize() == GOAL_KERNEL_CORE_OK,
+        "the kernel reinitializes after sound teardown");
+  check(goal_kernel_core_stub_machine_layer(0) == GOAL_KERNEL_CORE_OK,
+        "machine stubs reinstall after shutdown");
+  check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_OK,
+        "the Jak 2 sound owner reinstalls after shutdown");
+  auto reinit_send = guarded_command("jak2-sound-rpc-reinit-send");
+  rpc_call = native_entry<GoalEightArgumentFunction>("rpc-call");
+  if (reinit_send.command.offset && rpc_call) {
+    reset_bank_command(reinit_send, bank_name("valid"));
+    rpc_call(1, 0, 1, reinit_send.command.offset, kCommandSize, 0, 0, 0);
+    goal_jak2_sound_rpc_stats_get(&stats);
+    check_u32(stats.banks_loaded, 1, "a bank loads after full shutdown and reinitialization");
+  }
+  goal_jak2_sound_rpc_shutdown();
+  check(!goal_jak2_sound_rpc_is_installed(), "explicit sound shutdown releases ownership");
+  if (reinit_send.command.offset && rpc_call) {
+    reset_bank_command(reinit_send, bank_name("valid"));
+    rpc_call(1, 0, 1, reinit_send.command.offset, kCommandSize, 0, 0, 0);
+    goal_jak2_sound_rpc_stats_get(&stats);
+    check_u32(stats.bank_failures, 1, "a stale loader call fails safely after sound shutdown");
+    check(LookupBank(bank_name("valid").data()) == nullptr,
+          "shutdown clears the retained bank state before rejecting a stale call");
+  }
+  goal_jak2_sound_rpc_shutdown();
+  check(!goal_jak2_sound_rpc_is_installed(), "sound shutdown is idempotent");
 
   goal_kernel_core_set_data_directory(nullptr);
   std::filesystem::remove_all(fixture_root, fixture_error);
   goal_kernel_core_shutdown();
-  std::printf("\n%s: Jak 2 sound-RPC version and ordinary-file STR seams\n",
+  std::printf("\n%s: Jak 2 checked bank-load, version, lifecycle and ordinary STR seams\n",
               g_failures ? "FAIL" : "PASS");
   return g_failures ? 1 : 0;
 }

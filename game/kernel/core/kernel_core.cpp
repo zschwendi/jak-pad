@@ -172,6 +172,9 @@ goal_kernel_core_status goal_kernel_core_initialize(void) {
 }
 
 void goal_kernel_core_shutdown(void) {
+  // A per-game service may retain host allocations whose contents point into the arena below.
+  // Release it before resetting loaders or unmapping EE memory.
+  goal_game_shutdown();
   // every AOT object file and every mips2c trampoline was placed in the heap that is about to go
   // away
   goal_aot_reset();

@@ -1,28 +1,38 @@
 /*!
  * @file sound_rpc_jak2.cpp
- * Answer Jak 2's sound-loader version handshake and ordinary-file STR requests without an IOP.
+ * Answer Jak 2's sound-loader version handshake, bank loads and ordinary-file STR requests
+ * without an IOP.
  *
  * `check-irx-version` sends one 0x50-byte command on loader channel 1. Upstream's Jak 2 overlord
  * writes version 4.0 into that command, remembers the requested EE info-block address, and returns
- * the command as the RPC reply. Loader command 2 has no receive buffer, but sound-bank loading is
- * still reported as unimplemented. Channel 4 reads an ordinary file from the configured `iso/`
- * directory into EE memory. Chunked STR files and the rest of the Jak 2 sound protocol remain
- * unimplemented.
+ * the command as the RPC reply. Loader command 2 has no receive buffer; it bounded-reads a
+ * user-local SBlk once, validates every range the current 989snd parser consumes, then passes those
+ * same bytes through 989snd's in-memory bank interface. Channel 4 reads an ordinary file from the
+ * configured `iso/` directory into EE memory. Chunked STR files and the rest of the Jak 2 sound
+ * protocol remain unimplemented.
  */
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
+#include <exception>
 #include <string>
+#include <vector>
 
 #include "common/goal_constants.h"
+#include "common/log/log.h"
 
 #include "game/common/str_rpc_types.h"
+#include "game/kernel/core/sblk_preflight.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/kscheme.h"
+#include "game/overlord/common/sbank.h"
 #include "game/overlord/jak2/srpc.h"
 #include "game/runtime.h"
 #include "game/sce/sif_ee.h"
+#include "game/sound/sndshim.h"
 
 // Defined beside the machine stubs in desktop_seams.cpp.
 u64 goal_kernel_core_machine_stub_report(const char* what);
@@ -37,6 +47,8 @@ constexpr s32 kStrRequestSize = 0x40;
 constexpr s32 kStrReplySize = 0x20;
 constexpr u32 kIrxMajor = 4;
 constexpr u32 kIrxMinor = 0;
+constexpr size_t kBankStemSize = 8;
+constexpr size_t kMaxBankFileSize = 64 * 1024 * 1024;
 
 static_assert(sizeof(jak2::SoundRpcCommand) == kCommandSize);
 static_assert(offsetof(jak2::SoundRpcCommand, j2command) == 2);
@@ -69,6 +81,7 @@ struct StrReply {
 static_assert(sizeof(StrReply) == kStrReplySize);
 
 goal_jak2_sound_rpc_stats g_stats;
+bool g_installed = false;
 
 bool readable_ee_span(u32 address, u32 size) {
   return g_ee_main_mem && address >= (u32)EE_MAIN_MEM_LOW_PROTECT &&
@@ -78,6 +91,147 @@ bool readable_ee_span(u32 address, u32 size) {
 u64 reject(const char* what) {
   g_stats.rejected_calls++;
   return goal_kernel_core_machine_stub_report(what);
+}
+
+bool normalize_bank_name(const char source[16],
+                         std::array<char, 16>* normalized,
+                         std::string* file_name) {
+  normalized->fill(0);
+  std::string stem;
+  for (size_t i = 0; i < 16 && source[i]; i++) {
+    const unsigned char raw = source[i];
+    const bool safe = (raw >= 'A' && raw <= 'Z') || (raw >= 'a' && raw <= 'z') ||
+                      (raw >= '0' && raw <= '9') || raw == '_' || raw == '-';
+    if (!safe) {
+      return false;
+    }
+
+    char lower = source[i];
+    if (lower >= 'A' && lower <= 'Z') {
+      lower += 'a' - 'A';
+    }
+    (*normalized)[i] = lower;
+
+    if (i < kBankStemSize) {
+      char upper = source[i];
+      if (upper >= 'a' && upper <= 'z') {
+        upper -= 'a' - 'A';
+      }
+      stem.push_back(upper);
+    }
+  }
+  if (stem.empty()) {
+    return false;
+  }
+  *file_name = stem + ".SBK";
+  return true;
+}
+
+bool read_bounded_file(const char* path, std::vector<u8>* data, std::string* error) {
+  FILE* file = std::fopen(path, "rb");
+  if (!file) {
+    *error = "file is missing or unreadable";
+    return false;
+  }
+  if (std::fseek(file, 0, SEEK_END) != 0) {
+    std::fclose(file);
+    *error = "file size could not be read";
+    return false;
+  }
+  const long length = std::ftell(file);
+  if (length <= 0 || static_cast<unsigned long>(length) > kMaxBankFileSize ||
+      std::fseek(file, 0, SEEK_SET) != 0) {
+    std::fclose(file);
+    *error = "file is empty or exceeds the bank-size limit";
+    return false;
+  }
+
+  data->resize(static_cast<size_t>(length));
+  const size_t read = std::fread(data->data(), 1, data->size(), file);
+  const bool close_ok = std::fclose(file) == 0;
+  if (read != data->size() || !close_ok) {
+    data->clear();
+    *error = "file changed or could not be read completely";
+    return false;
+  }
+  return true;
+}
+
+bool load_bank(const char source_name[16]) {
+  g_stats.bank_requests++;
+  if (!g_installed) {
+    g_stats.bank_failures++;
+    lg::error("[jak2-sound-rpc] rejected a bank request while 989snd is stopped");
+    return false;
+  }
+
+  std::array<char, 16> bank_name;
+  std::string file_name;
+  if (!normalize_bank_name(source_name, &bank_name, &file_name)) {
+    g_stats.bank_failures++;
+    lg::error("[jak2-sound-rpc] rejected an invalid fixed-width bank name");
+    return false;
+  }
+  if (LookupBank(bank_name.data())) {
+    g_stats.bank_reuses++;
+    return true;
+  }
+
+  char resolved[1024];
+  const std::string relative = "iso/" + file_name;
+  if (goal_kernel_core_resolve_data_path(relative.c_str(), resolved, sizeof(resolved)) !=
+      GOAL_KERNEL_CORE_OK) {
+    g_stats.bank_failures++;
+    return false;
+  }
+
+  try {
+    std::vector<u8> data;
+    std::string error;
+    if (!read_bounded_file(resolved, &data, &error)) {
+      g_stats.bank_failures++;
+      lg::error("[jak2-sound-rpc] rejected sound bank {}: {}", file_name, error);
+      return false;
+    }
+    const auto preflight = sblk_preflight::validate(data);
+    if (!preflight) {
+      g_stats.bank_failures++;
+      lg::error("[jak2-sound-rpc] rejected sound bank {}: {}", file_name,
+                sblk_preflight::error_name(preflight.error));
+      return false;
+    }
+
+    SoundBank* bank = AllocateBankName(bank_name.data());
+    if (!bank) {
+      g_stats.bank_failures++;
+      lg::error("[jak2-sound-rpc] no bank slot is available for {}", file_name);
+      return false;
+    }
+
+    // The validated vector is the only file snapshot used. The partial-load API copies these same
+    // bytes into 989snd before parsing, avoiding a validate-path/reopen gap.
+    snd_BankLoadFromIOPPartialEx_Start();
+    snd_BankLoadFromIOPPartialEx(data.data(), static_cast<u32>(data.size()), bank->spu_loc,
+                                 bank->spu_size);
+    const snd::BankHandle handle = snd_BankLoadFromIOPPartialEx_Completion();
+    if (!handle) {
+      g_stats.bank_failures++;
+      lg::error("[jak2-sound-rpc] 989snd rejected sound bank {}", file_name);
+      return false;
+    }
+
+    bank->name = bank_name;
+    bank->bank_handle = handle;
+    bank->in_use = true;
+    bank->unk4 = 0;
+    snd_ResolveBankXREFS();
+    g_stats.banks_loaded++;
+    return true;
+  } catch (const std::exception& exception) {
+    g_stats.bank_failures++;
+    lg::error("[jak2-sound-rpc] failed to load sound bank {}: {}", file_name, exception.what());
+    return false;
+  }
 }
 
 u64 loader_rpc(u32 send_buffer, s32 send_size, u32 recv_buffer, s32 recv_size) {
@@ -109,9 +263,8 @@ u64 loader_rpc(u32 send_buffer, s32 send_size, u32 recv_buffer, s32 recv_size) {
       if (recv_size != 0) {
         return reject("rpc-call (Jak 2 sound, load-bank unexpectedly requested a reply)");
       }
-      g_stats.bank_load_requests++;
-      g_stats.bank_load_unimplemented++;
-      return reject("rpc-call (Jak 2 sound, load-bank unimplemented)");
+      load_bank(command.load_bank.bank_name);
+      return 0;
     default:
       return reject("rpc-call (Jak 2 sound, unimplemented loader command)");
   }
@@ -252,14 +405,41 @@ u64 stack_arg_shim(u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a
 extern "C" {
 
 goal_kernel_core_status goal_jak2_sound_rpc_install(void) {
+  if (g_installed) {
+    return GOAL_KERNEL_CORE_ALREADY_INITIALIZED;
+  }
   if (!goal_kernel_core_is_initialized()) {
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
 
   g_stats = {};
+  sbank_init_globals();
+  InitBanks();
+  try {
+    snd_StartSoundSystem();
+  } catch (const std::exception& exception) {
+    snd_StopSoundSystem();
+    lg::error("[jak2-sound-rpc] could not start 989snd: {}", exception.what());
+    return GOAL_KERNEL_CORE_OUT_OF_MEMORY;
+  }
+  g_installed = true;
   jak2::make_stack_arg_function_symbol_from_c("rpc-call", (void*)stack_arg_shim<rpc_call>);
   jak2::make_function_symbol_from_c("rpc-busy?", (void*)rpc_busy);
   return GOAL_KERNEL_CORE_OK;
+}
+
+void goal_jak2_sound_rpc_shutdown(void) {
+  if (!g_installed) {
+    return;
+  }
+  snd_StopSoundSystem();
+  sbank_init_globals();
+  InitBanks();
+  g_installed = false;
+}
+
+int goal_jak2_sound_rpc_is_installed(void) {
+  return g_installed ? 1 : 0;
 }
 
 void goal_jak2_sound_rpc_stats_get(goal_jak2_sound_rpc_stats* out) {
