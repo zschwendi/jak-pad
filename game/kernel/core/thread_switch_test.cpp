@@ -50,6 +50,13 @@ uint64_t goal_call_on_stack_arm64(void* new_sp,
                                   uint64_t a5);
 uint64_t goal_read_stack_pointer(void);
 
+uint64_t goal_native_thread_suspend(uint64_t,
+                                    uint64_t,
+                                    uint64_t,
+                                    uint64_t,
+                                    uint64_t,
+                                    uint64_t);
+
 // goal_thread_test_arm64.s
 uint64_t goal_test_saved_registers(uint64_t (*fn)(uint64_t), uint64_t arg, uint64_t* out);
 }
@@ -57,6 +64,13 @@ uint64_t goal_test_saved_registers(uint64_t (*fn)(uint64_t), uint64_t arg, uint6
 namespace {
 
 int g_failures = 0;
+
+// gkernel's AOT function list keeps the native thread-suspend implementation at index 22. The
+// product crash reached this function object through cpu-thread.suspend-hook, but its native entry
+// had become zero.
+constexpr int kThreadSuspendFunctionIndex = 22;
+u32 g_thread_suspend_object = 0;
+uintptr_t g_thread_suspend_entry = 0;
 
 void fail(const char* what) {
   std::printf("  FAIL %s\n", what);
@@ -115,6 +129,35 @@ u32 symbol_value(const char* name) {
     return 0;
   }
   return value;
+}
+
+bool check_thread_suspend_function(const char* stage, bool capture) {
+  const u32 object = goal_aot_function_object("gkernel", kThreadSuspendFunctionIndex);
+  uintptr_t entry = 0;
+  if (object && object <= EE_MAIN_MEM_SIZE - sizeof(entry)) {
+    std::memcpy(&entry, g_ee_main_mem + object, sizeof(entry));
+  }
+
+  const uintptr_t expected = reinterpret_cast<uintptr_t>(&goal_native_thread_suspend);
+  if (!object || !entry || entry != expected ||
+      (!capture && (object != g_thread_suspend_object || entry != g_thread_suspend_entry))) {
+    std::printf(
+        "  FAIL %-40s object #x%x, native #x%" PRIxPTR ", expected (#x%x, #x%" PRIxPTR
+        ")\n",
+        stage, object, entry, capture ? object : g_thread_suspend_object,
+        capture ? expected : g_thread_suspend_entry);
+    std::fflush(stdout);
+    g_failures++;
+    return false;
+  }
+
+  if (capture) {
+    g_thread_suspend_object = object;
+    g_thread_suspend_entry = entry;
+  }
+  std::printf("  ok   %-40s object #x%x, native #x%" PRIxPTR "\n", stage, object, entry);
+  std::fflush(stdout);
+  return true;
 }
 
 /*!
@@ -244,10 +287,19 @@ void test_thread_suspend_and_resume() {
     fail("tsw-spawn-state-proc");
     return;
   }
+  const u64 hook = call_on_goal_stack("tsw-thread-suspend-hook");
+  check_u64("new thread copied the suspend function", hook, g_thread_suspend_object);
+  if (hook != g_thread_suspend_object ||
+      !check_thread_suspend_function("after process construction", false)) {
+    return;
+  }
   check_log("the init function went to a state", TSW_INIT_RAN,
             TSW_STATE_CODE_RAN | TSW_AFTER_ABANDON_UNREACHABLE);
 
   call_on_goal_stack("tsw-resume");
+  if (!check_thread_suspend_function("after the first suspend", false)) {
+    return;
+  }
   check_log("the state's code ran and suspended", TSW_STATE_CODE_RAN | TSW_BEFORE_SUSPEND,
             TSW_AFTER_SUSPEND | TSW_STATE_CODE_FINISHED);
 
@@ -311,11 +363,19 @@ int main() {
       std::printf("FAIL load %s: %s\n", entry.source, goal_kernel_core_last_error());
       return 1;
     }
+    if (std::strcmp(entry.tag, "gkernel") == 0 &&
+        !check_thread_suspend_function("when gkernel allocated it", true)) {
+      return 1;
+    }
     if (goal_aot_run_top_level(entry.tag, nullptr) != GOAL_KERNEL_CORE_OK) {
       std::printf("FAIL top-level %s: %s\n", entry.source, goal_kernel_core_last_error());
       return 1;
     }
     std::printf("  %s\n", entry.source);
+  }
+
+  if (!check_thread_suspend_function("after fixture initialization", false)) {
+    return 1;
   }
 
   test_primitives();

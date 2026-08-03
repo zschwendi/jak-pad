@@ -6,6 +6,13 @@
 #include <string>
 #include <utility>
 
+extern "C" uint64_t goal_native_thread_suspend(uint64_t,
+                                                uint64_t,
+                                                uint64_t,
+                                                uint64_t,
+                                                uint64_t,
+                                                uint64_t);
+
 extern "C" {
 #include "aot_boot_manifest.h"
 }
@@ -30,6 +37,9 @@ extern "C" {
 #include "game/runtime.h"
 
 namespace {
+
+// The linked Jak II gkernel table places (method thread-suspend cpu-thread) at index 22.
+constexpr int kThreadSuspendFunctionIndex = 22;
 
 goal_jak2_runtime_metrics g_metrics = {};
 std::string g_error;
@@ -453,6 +463,44 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
   }
 }
 
+goal_jak2_runtime_status goal_jak2_runtime_probe_thread_suspend(
+    goal_jak2_thread_suspend_probe* out) {
+  if (!out) {
+    g_error = "goal_jak2_runtime_probe_thread_suspend: out is null";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  *out = {};
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING) {
+    g_error = "goal_jak2_runtime_probe_thread_suspend: runtime is not running";
+    return GOAL_JAK2_RUNTIME_NOT_RUNNING;
+  }
+
+  out->function_object =
+      goal_aot_function_object("gkernel", kThreadSuspendFunctionIndex);
+  out->expected_native_entry =
+      reinterpret_cast<uintptr_t>(&goal_native_thread_suspend);
+  if (g_ee_main_mem && out->function_object &&
+      out->function_object <= EE_MAIN_MEM_SIZE - sizeof(out->native_entry)) {
+    std::memcpy(&out->native_entry, g_ee_main_mem + out->function_object,
+                sizeof(out->native_entry));
+  }
+  out->matches_expected =
+      out->native_entry != 0 && out->native_entry == out->expected_native_entry;
+  if (!out->matches_expected) {
+    char message[256];
+    std::snprintf(message, sizeof(message),
+                  "Jak 2 thread-suspend probe failed: object #x%08x has native #x%llx; expected "
+                  "#x%llx",
+                  out->function_object,
+                  static_cast<unsigned long long>(out->native_entry),
+                  static_cast<unsigned long long>(out->expected_native_entry));
+    g_error = message;
+    return GOAL_JAK2_RUNTIME_START_FAILED;
+  }
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
 goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
   if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
       g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_dispatcher) {
@@ -466,6 +514,13 @@ goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
   }
 
   try {
+    if (g_metrics.ticks == 0) {
+      goal_jak2_thread_suspend_probe probe = {};
+      const auto probe_status = goal_jak2_runtime_probe_thread_suspend(&probe);
+      if (probe_status != GOAL_JAK2_RUNTIME_OK) {
+        return probe_status;
+      }
+    }
     g_current_tick = g_metrics.ticks + 1;
     g_metrics.last_dispatch_result =
         call_goal_on_stack(Ptr<Function>(g_dispatcher), goal_kernel_stack_top(), s7.offset,

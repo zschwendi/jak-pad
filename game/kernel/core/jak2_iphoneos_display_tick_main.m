@@ -43,6 +43,7 @@ static void run_runtime_frame(double target_presentation_time, void* context);
  @private
   goal_display_tick_coordinator _coordinator;
   goal_jak2_runtime_metrics _metrics;
+  goal_jak2_thread_suspend_probe _threadSuspendProbe;
   goal_jak2_metal_host_metrics _metalMetrics;
   goal_jak2_metal_host* _metalHost;
   BOOL _applicationActive;
@@ -238,14 +239,24 @@ static void run_runtime_frame(double target_presentation_time, void* context);
       if (metalHost && goal_jak2_metal_host_copy_gfx_host(metalHost, &graphicsHost)) {
         config.external_gfx_host = &graphicsHost;
         result = goal_jak2_runtime_start(&config);
+        if (result == GOAL_JAK2_RUNTIME_OK) {
+          result = goal_jak2_runtime_probe_thread_suspend(&_threadSuspendProbe);
+        }
       }
       NSString* failure = nil;
       if (result != GOAL_JAK2_RUNTIME_OK) {
         const char* error = goal_jak2_runtime_last_error();
         failure = error && error[0] ? [NSString stringWithUTF8String:error]
                                     : @"The Jak II Metal host or runtime did not start.";
+        if (goal_jak2_runtime_is_running()) {
+          goal_jak2_runtime_shutdown();
+        }
         goal_jak2_metal_host_destroy(metalHost);
         metalHost = NULL;
+      } else {
+        NSLog(@"GOALPAD_JAK2_THREAD_SUSPEND_PROBE PASS object=#x%08x native=#x%llx",
+              _threadSuspendProbe.function_object,
+              (unsigned long long)_threadSuspendProbe.native_entry);
       }
 
       dispatch_async(dispatch_get_main_queue(), ^{
@@ -536,6 +547,7 @@ static void run_runtime_frame(double target_presentation_time, void* context);
   self.statusLabel.text = [NSString
       stringWithFormat:@"Jak II Metal policy display-tick proof — %@\n\n"
                         "Data: %@\nSaves: %@\nRuntime: %@\n"
+                        "thread-suspend: object #x%08x / native #x%llx / %@\n"
                         "TITLE: %@ (%@)\n\n"
                         "Display callbacks: %llu\nAccepted ticks: %llu\nPaused ticks: %llu\n"
                         "Dispatcher frames: %llu\nLast targetTimestamp: %.6f\n\n"
@@ -544,7 +556,9 @@ static void run_runtime_frame(double target_presentation_time, void* context);
                         "Last dispatch: %llu buckets / %u copied bytes\n\n"
                         "Draw calls: %llu\nSubmissions: %llu\nPresented frames: %llu%@",
                        result, _dataPath ?: @"<unavailable>", _savesPath ?: @"<unavailable>",
-                       [self runtimeStateName], titleDGO,
+                       [self runtimeStateName], _threadSuspendProbe.function_object,
+                       (unsigned long long)_threadSuspendProbe.native_entry,
+                       _threadSuspendProbe.matches_expected ? @"valid" : @"invalid", titleDGO,
                        _metrics.title_ready ? @"ready" : @"not ready",
                        (unsigned long long)display.display_ticks,
                        (unsigned long long)display.accepted_ticks,

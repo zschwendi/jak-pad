@@ -147,6 +147,10 @@
 (defun tsw-thread-stack-pointer ()
   (the int (-> *tsw-proc* main-thread sp)))
 
+(defun tsw-thread-suspend-hook ()
+  "The exact function object copied into a newly constructed main thread."
+  (the-as uint (-> *tsw-proc* main-thread suspend-hook)))
+
 (defun tsw-process-dead? ()
   (if (eq? (-> *tsw-proc* status) 'dead) 1 0))
 

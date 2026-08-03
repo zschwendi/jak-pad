@@ -55,6 +55,14 @@ typedef struct goal_jak2_runtime_config {
   const struct goal_gfx_host* external_gfx_host;
 } goal_jak2_runtime_config;
 
+/*! Snapshot of the linked gkernel thread-suspend function object before the first display tick. */
+typedef struct goal_jak2_thread_suspend_probe {
+  uint32_t function_object;
+  uintptr_t native_entry;
+  uintptr_t expected_native_entry;
+  int32_t matches_expected;
+} goal_jak2_thread_suspend_probe;
+
 /*! A copied snapshot. It owns no pointers into the GOAL heap or graphics host. */
 typedef struct goal_jak2_runtime_metrics {
   goal_jak2_runtime_state state;
@@ -116,6 +124,13 @@ typedef struct goal_jak2_runtime_metrics {
  * work is synchronous. A failure tears the kernel down completely before returning.
  */
 goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config* config);
+
+/*!
+ * Copy and validate the linked gkernel thread-suspend function object. The runtime must already be
+ * running. This reads the complete native pointer with memcpy; it does not call or replace it.
+ */
+goal_jak2_runtime_status goal_jak2_runtime_probe_thread_suspend(
+    goal_jak2_thread_suspend_probe* out);
 
 /*! Run exactly one `kernel-dispatcher` call. This function has no loop, sleep, or clock input. */
 goal_jak2_runtime_status goal_jak2_runtime_tick(void);
