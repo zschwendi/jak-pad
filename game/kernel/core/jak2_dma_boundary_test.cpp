@@ -1,7 +1,7 @@
 /*!
- * @file jak2_gfx_dma_test.cpp
- * Prove the headless Jak 2 graphics frontier measures direct bucket-array DMA without treating it
- * as Jak 1's CALL/RET-wrapped chain. No renderer or game data is involved.
+ * @file jak2_dma_boundary_test.cpp
+ * Prove the headless Jak 2 graphics frontier recognizes its exact 327-entry bucket array. The
+ * synthetic chains contain no game data, and the seam measures and drops them without rendering.
  */
 
 #include <cstdio>
@@ -18,6 +18,8 @@
 namespace {
 
 constexpr int kBucketCount = (int)jak2::BucketId::MAX_BUCKETS;
+static_assert(kBucketCount == 327);
+
 u32 g_chain = 0;
 u32 g_payload_chain = 0;
 int g_failures = 0;
@@ -81,7 +83,7 @@ int main() {
              stub_send_chain != 0,
          "machine layer first installed the diagnostic graphics-DMA stub");
 
-  if (goal_kernel_core_global_alloc(0x5000, "jak2-gfx-dma-test", &g_chain) !=
+  if (goal_kernel_core_global_alloc(0x5000, "jak2-dma-boundary-test", &g_chain) !=
       GOAL_KERNEL_CORE_OK) {
     std::printf("FAIL: chain allocation: %s\n", goal_kernel_core_last_error());
     goal_kernel_core_shutdown();
@@ -94,7 +96,7 @@ int main() {
   expect(goal_kernel_core_lookup("__send-gfx-dma-chain", nullptr, &send_chain) ==
                  GOAL_KERNEL_CORE_OK &&
              send_chain != 0 && send_chain != stub_send_chain,
-         "installed the real graphics-DMA measurement function");
+         "installed the game-neutral graphics-DMA measurement function");
   if (!send_chain) {
     goal_kernel_core_shutdown();
     return 1;
@@ -107,27 +109,29 @@ int main() {
 
   goal_gfx_dma_frame_summary frame = {};
   expect(goal_gfx_dma_get_frame(1, &frame) && frame.well_formed &&
-             frame.tags == kBucketCount + 1 && frame.payload_bytes == 0 && frame.buckets == 0,
-         "validated a direct Jak 2 empty-bucket array through END");
+             frame.tags == kBucketCount + 1 && frame.payload_bytes == 0 &&
+             frame.copied_bytes > 0 && frame.buckets == kBucketCount,
+         "validated exactly 327 empty Jak 2 buckets through END");
 
   build_payload_bucket_chain();
   goal_aot_call(send_chain, 0x10009000, g_chain, 0);
   expect(goal_gfx_dma_get_frame(2, &frame) && frame.well_formed &&
              frame.tags == kBucketCount + 3 && frame.payload_bytes == 16 &&
-             frame.texture_uploads == 1 && frame.buckets == 0,
-         "measured a Jak 2 bucket payload without inventing Jak 1 bucket attribution");
+             frame.texture_uploads == 1 && frame.copied_bytes > 0 &&
+             frame.buckets == kBucketCount,
+         "measured payload inside one of the 327 Jak 2 buckets");
 
   goal_gfx_dma_stats stats = {};
   goal_gfx_dma_get_stats(&stats);
   expect(stats.chains == 2 && stats.well_formed_chains == 2 && stats.malformed_chains == 0,
          "reported two well-formed chains and no malformed chains");
   expect(stats.last_payload_bytes == 16 && stats.last_texture_uploads == 1 &&
-             stats.last_bytes != 0,
-         "retained game-neutral payload, upload and copied-byte measurements");
+             stats.last_bytes != 0 && stats.captures == 0 && stats.captured_bytes == 0,
+         "retained DMA measurements without writing a Jak 2 capture");
 
   goal_kernel_core_shutdown();
   std::printf("\n%s (%d failures)\n",
-              g_failures ? "JAK 2 GRAPHICS DMA TEST FAILED" : "JAK 2 GRAPHICS DMA TEST PASSED",
+              g_failures ? "JAK 2 DMA BOUNDARY TEST FAILED" : "JAK 2 DMA BOUNDARY TEST PASSED",
               g_failures);
   return g_failures ? 1 : 0;
 }

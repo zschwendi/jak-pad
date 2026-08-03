@@ -152,8 +152,8 @@ endif()
 # implementation of that seam next to the jak2 kernel translation units. Smaller than the jak1
 # library on purpose - the sound path has loader framing, checked SBlk loads, ordinary named SFX
 # playback and ordinary STR files; the shared pushed-state pad seam handles controllers; music,
-# streaming, and rendering remain machine stubs that report loudly. The graphics-DMA capture seam
-# validates and measures completed chains but deliberately drops them. dgo_loader_jak2.cpp carries
+# streaming, and rendering remain machine stubs that report loudly. The graphics-DMA seam can
+# validate and measure completed chains but deliberately drops them. dgo_loader_jak2.cpp carries
 # only the C-driven load so far.
 set(JAK2_KERNEL_CORE_SOURCES
     # common support

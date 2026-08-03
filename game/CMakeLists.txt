@@ -473,14 +473,14 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak2-pc-rand-test jak2-kernel-core)
         add_test(NAME jak2-pc-rand-test COMMAND jak2-pc-rand-test)
 
-        add_executable(jak2-light-machine-seams-test
-                kernel/core/jak2_light_machine_seams_test.cpp)
-        target_link_libraries(jak2-light-machine-seams-test jak2-kernel-core)
-        add_test(NAME jak2-light-machine-seams-test COMMAND jak2-light-machine-seams-test)
+        add_executable(jak2-lightweight-machine-test
+                kernel/core/jak2_lightweight_machine_test.cpp)
+        target_link_libraries(jak2-lightweight-machine-test jak2-kernel-core)
+        add_test(NAME jak2-lightweight-machine-test COMMAND jak2-lightweight-machine-test)
 
-        add_executable(jak2-gfx-dma-seam-test kernel/core/jak2_gfx_dma_test.cpp)
-        target_link_libraries(jak2-gfx-dma-seam-test jak2-kernel-core)
-        add_test(NAME jak2-gfx-dma-seam-test COMMAND jak2-gfx-dma-seam-test)
+        add_executable(jak2-dma-boundary-test kernel/core/jak2_dma_boundary_test.cpp)
+        target_link_libraries(jak2-dma-boundary-test jak2-kernel-core)
+        add_test(NAME jak2-dma-boundary-test COMMAND jak2-dma-boundary-test)
 
         add_executable(jak2-sound-rpc-test kernel/core/jak2_sound_rpc_test.cpp)
         target_link_libraries(jak2-sound-rpc-test jak2-kernel-core)

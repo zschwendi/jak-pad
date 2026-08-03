@@ -4,12 +4,11 @@
 #include "game/kernel/core/pad.h"
 
 int main() {
-  goal_kernel_core_shutdown();
-  goal_gfx_dma_stats dma = {};
-  goal_gfx_dma_get_stats(&dma);  // retain the capture seam in this isolated static-library link
-  if (dma.chains != 0 || dma.well_formed_chains != 0 || dma.malformed_chains != 0) {
+  void (*volatile retain_dma_install)(void) = goal_gfx_dma_install;
+  if (!retain_dma_install) {
     return 1;
   }
+  goal_kernel_core_shutdown();
   if (goal_pad_install() != GOAL_KERNEL_CORE_NOT_INITIALIZED) {
     return 1;
   }

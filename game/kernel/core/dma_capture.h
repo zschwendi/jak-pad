@@ -28,8 +28,8 @@ typedef struct goal_gfx_dma_stats {
   int largest_payload_frame;   /*! the 1-based frame that built it */
   int last_texture_uploads;    /*! PC_PORT texture-upload packets in the last chain */
   int largest_payload_uploads; /*! ... and in the largest-payload one */
-  int well_formed_chains; /*! copied chains whose selected-game validation completed */
-  int malformed_chains;   /*! copied chains whose selected-game validation reported a problem */
+  int well_formed_chains; /*! chains whose selected-game bucket validation completed */
+  int malformed_chains;   /*! chains whose selected-game bucket validation found a problem */
 } goal_gfx_dma_stats;
 
 /*! One frame's chain, measured. Recorded for every frame; see goal_gfx_dma_get_frame. */
@@ -39,10 +39,8 @@ typedef struct goal_gfx_dma_frame_summary {
   uint32_t payload_bytes; /*! bytes the chain's tags transfer */
   int tags;
   int texture_uploads; /*! PC_PORT (vif1 == 3) texture-upload packets */
-  /*! 16-byte bucket-array segments the walk found, or 0 if the chain was not the bucket chain.
-   *  Jak 1 has 70 buckets; the walk cannot know that, so anything past index 69 is the chain's
-   *  ending data, which the renderer's bucket dispatch also walks past. Later-game measurement
-   *  deliberately leaves this 0 until a version-specific renderer owns bucket interpretation. */
+  /*! 16-byte bucket-array segments the selected-game walk found. Jak 1 keeps its existing
+   *  structural count; a well-formed Jak 2 frame has exactly 327. */
   int buckets;
   int well_formed; /*! nonzero when the selected-game validation completed without a problem */
 } goal_gfx_dma_frame_summary;

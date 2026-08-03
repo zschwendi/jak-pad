@@ -23,13 +23,15 @@ the vblank and VIF1 handler references, but this headless core does not dispatch
 `pc-rand` uses the same process-lifetime generator as upstream. Music, streaming, and rendering
 still report through the machine stubs; the graphics-DMA frontier validates, measures, and drops
 completed chains. `jak2-pad-seam-test`, `jak2-handler-seam-test`, `jak2-pc-rand-test`,
-`jak2-light-machine-seams-test`, `jak2-gfx-dma-seam-test`, and `jak2-sound-rpc-test` cover those
+`jak2-lightweight-machine-test`, `jak2-dma-boundary-test`, and `jak2-sound-rpc-test` cover those
 seams, while
 `jak2-dgo-rpc-test` covers the exact 32-byte DGO protocol, composed-router delegation and rejection
 behavior, and incremental AOT-code/data-object linking. All use original synthetic data only.
 `jak2-data-boot-test` loads the player's own Jak 2 KERNEL.CGO through the AOT path and runs the Jak 2
 kernel dispatcher headless. Its explicit `--with-game` mode also loads all of GAME.CGO as an
 exploratory integration probe; the registered CTest does not enable that mode.
+`--play` stops after the first linked title object. `--play-dma` additionally installs the
+measurement seam and requires one complete 327-bucket Jak 2 graphics chain before stopping.
 `jak2-thread-switch-test` drives the native ARM64 thread routines through the Jak 2 process and
 thread layouts.
 
@@ -364,10 +366,11 @@ bridge fills in the same seven entries from a `CAMetalLayer`.
 `__send-gfx-dma-chain` is where a frame's work leaves GOAL. `dma_capture.cpp` follows the chain
 with the same `FixedChunkDmaCopier` the renderer uses, then walks the copy again. For Jak 1 that
 second walk follows the renderer's bucket dispatch and reports what each bucket was given. For the
-headless Jak 2 frontier it verifies terminal completion and the copier's tag and payload totals,
-without assigning Jak 1's CALL/RET envelope or bucket topology. `jak2-gfx-dma-seam-test` covers
-both an empty direct bucket array and one carrying payload. Jak 2 capture files and replay remain
-outside this frontier because the current GPDMACAP format describes the Jak 1 renderer inputs.
+headless Jak 2 frontier it follows the exact 327-entry direct bucket array, verifies terminal
+completion and the copier's tag and payload totals, and records each bucket without drawing it.
+`jak2-dma-boundary-test` covers an empty array and one carrying a PC-port texture upload. Jak 2
+capture files and replay remain outside this frontier because the current GPDMACAP format
+describes the Jak 1 renderer inputs.
 `--dma-frame-report` prints the Jak 1 bucket table, one line per frame.
 
 Two numbers matter and they are not the same. *Payload* is what the chain's tags transfer, which is
