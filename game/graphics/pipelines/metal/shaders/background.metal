@@ -80,6 +80,13 @@ struct BackgroundFsParams {
 };
 
 struct BackgroundVSOut {
+  float4 pos [[position]];
+  float4 fragment_color;
+  float3 tex_coord;
+  float fogginess;
+};
+
+struct InvariantEtieVSOut {
   float4 pos [[position, invariant]];
   float4 fragment_color;
   float3 tex_coord;
@@ -186,13 +193,13 @@ fragment BackgroundDepth24Out background_depth24_proof_fs(
 // second draw land on exactly the same pixels.
 // ---------------------------------------------------------------------------
 
-vertex BackgroundVSOut etie_base_vs(uint vid [[vertex_id]],
-                                    const device BackgroundVertexIn* verts [[buffer(0)]],
-                                    constant EtieVsParams& p [[buffer(1)]],
-                                    constant BackgroundDrawParams& d [[buffer(2)]],
-                                    texture1d<float> tod [[texture(1)]]) {
+vertex InvariantEtieVSOut etie_base_vs(uint vid [[vertex_id]],
+                                       const device BackgroundVertexIn* verts [[buffer(0)]],
+                                       constant EtieVsParams& p [[buffer(1)]],
+                                       constant BackgroundDrawParams& d [[buffer(2)]],
+                                       texture1d<float> tod [[texture(1)]]) {
   BackgroundVertexIn v = verts[vid];
-  BackgroundVSOut out;
+  InvariantEtieVSOut out;
   float3 position_in = float3(v.position);
 
   float fog1 = p.camera[3].w + p.camera[0].w * position_in.x + p.camera[1].w * position_in.y +
@@ -244,12 +251,12 @@ vertex BackgroundVSOut etie_base_vs(uint vid [[vertex_id]],
  * of tfrag3::PreloadedVertex::nor and `proto_tint` as normalized bytes out of
  * its r/g/b/a; Metal reads the struct directly, so both are unpacked here.
  */
-vertex BackgroundVSOut etie_vs(uint vid [[vertex_id]],
-                               const device BackgroundVertexIn* verts [[buffer(0)]],
-                               constant EtieVsParams& p [[buffer(1)]],
-                               constant BackgroundDrawParams& d [[buffer(2)]]) {
+vertex InvariantEtieVSOut etie_vs(uint vid [[vertex_id]],
+                                  const device BackgroundVertexIn* verts [[buffer(0)]],
+                                  constant EtieVsParams& p [[buffer(1)]],
+                                  constant BackgroundDrawParams& d [[buffer(2)]]) {
   BackgroundVertexIn v = verts[vid];
-  BackgroundVSOut out;
+  InvariantEtieVSOut out;
   float3 position_in = float3(v.position);
 
   // GL_INT_2_10_10_10_REV, normalized: three sign-extended 10-bit fields over 511
