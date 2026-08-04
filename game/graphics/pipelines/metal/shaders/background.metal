@@ -67,7 +67,8 @@ struct EtieVsParams {
 // Must match MetalBackgroundDrawParams in metal_level_data.h.
 struct BackgroundDrawParams {
   int decal;
-  int pad[3];
+  int etie_shine;
+  int pad[2];
 };
 
 // Must match MetalBackgroundFsParams in metal_level_data.h.
@@ -81,13 +82,6 @@ struct BackgroundFsParams {
 
 struct BackgroundVSOut {
   float4 pos [[position]];
-  float4 fragment_color;
-  float3 tex_coord;
-  float fogginess;
-};
-
-struct InvariantEtieVSOut {
-  float4 pos [[position, invariant]];
   float4 fragment_color;
   float3 tex_coord;
   float fogginess;
@@ -188,23 +182,18 @@ fragment BackgroundDepth24Out background_depth24_proof_fs(
 }
 
 // ---------------------------------------------------------------------------
-// etie_base: the base draw of an envmapped TIE. Same output as tfrag3_vs, but
-// it reproduces the game's own perspective math so the base and the shiny
-// second draw land on exactly the same pixels.
+// etie: the base and shiny envmap draws share one vertex entry point. Position
+// math runs before the mode branch so both passes produce the same raster input.
 // ---------------------------------------------------------------------------
 
-vertex InvariantEtieVSOut etie_base_vs(uint vid [[vertex_id]],
-                                       const device BackgroundVertexIn* verts [[buffer(0)]],
-                                       constant EtieVsParams& p [[buffer(1)]],
-                                       constant BackgroundDrawParams& d [[buffer(2)]],
-                                       texture1d<float> tod [[texture(1)]]) {
+vertex BackgroundVSOut etie_shared_vs(uint vid [[vertex_id]],
+                                      const device BackgroundVertexIn* verts [[buffer(0)]],
+                                      constant EtieVsParams& p [[buffer(1)]],
+                                      constant BackgroundDrawParams& d [[buffer(2)]],
+                                      texture1d<float> tod [[texture(1)]]) {
   BackgroundVertexIn v = verts[vid];
-  InvariantEtieVSOut out;
+  BackgroundVSOut out;
   float3 position_in = float3(v.position);
-
-  float fog1 = p.camera[3].w + p.camera[0].w * position_in.x + p.camera[1].w * position_in.y +
-               p.camera[2].w * position_in.z;
-  out.fogginess = 255.0 - clamp(fog1 + p.hvdf_offset.w, p.fog_min, p.fog_max);
 
   float4 vf17 = p.cam_no_persp[3];
   vf17 += p.cam_no_persp[0] * position_in.x;
@@ -226,60 +215,20 @@ vertex InvariantEtieVSOut etie_base_vs(uint vid [[vertex_id]],
   transformed.y *= p.scissor_adjust * p.height_scale;
   out.pos = transformed;
 
-  if (d.decal == 1) {
-    out.fragment_color = float4(1.0, 1.0, 1.0, 1.0);
-  } else {
-    float4 color = tod.read(uint(v.color_index));
-    color *= 2.0;
-    color.a *= 2.0;
-    out.fragment_color = color;
-  }
+  if (d.etie_shine != 0) {
+    // GL_INT_2_10_10_10_REV, normalized: three sign-extended 10-bit fields over 511
+    int3 packed_nor;
+    packed_nor.x = int(v.nor << 22) >> 22;
+    packed_nor.y = int(v.nor << 12) >> 22;
+    packed_nor.z = int(v.nor << 2) >> 22;
+    float3 normal = max(float3(packed_nor) / 511.0, float3(-1.0));
+    out.fogginess = 0.0;
 
-  out.tex_coord = float3(float2(v.st), 0.0);
-  return out;
-}
+    // rotate the normal
+    float3 nrm_vf23 = p.cam_no_persp[0].xyz * normal.x + p.cam_no_persp[1].xyz * normal.y +
+                      p.cam_no_persp[2].xyz * normal.z;
 
-// ---------------------------------------------------------------------------
-// etie: the envmap second draw (the shiny reflective pass)
-// ---------------------------------------------------------------------------
-
-/*!
- * MSL port of etie.vert, line for line, including its VU1 comments. The
- * fragment stage is tfrag3_fs, which is etie.frag character for character.
- *
- * The GL vertex array feeds `normal` as GL_INT_2_10_10_10_REV (normalized) out
- * of tfrag3::PreloadedVertex::nor and `proto_tint` as normalized bytes out of
- * its r/g/b/a; Metal reads the struct directly, so both are unpacked here.
- */
-vertex InvariantEtieVSOut etie_vs(uint vid [[vertex_id]],
-                                  const device BackgroundVertexIn* verts [[buffer(0)]],
-                                  constant EtieVsParams& p [[buffer(1)]],
-                                  constant BackgroundDrawParams& d [[buffer(2)]]) {
-  BackgroundVertexIn v = verts[vid];
-  InvariantEtieVSOut out;
-  float3 position_in = float3(v.position);
-
-  // GL_INT_2_10_10_10_REV, normalized: three sign-extended 10-bit fields over 511
-  int3 packed_nor;
-  packed_nor.x = int(v.nor << 22) >> 22;
-  packed_nor.y = int(v.nor << 12) >> 22;
-  packed_nor.z = int(v.nor << 2) >> 22;
-  float3 normal = max(float3(packed_nor) / 511.0, float3(-1.0));
-
-  out.fogginess = 0.0;
-
-  // rotate the normal
-  float3 nrm_vf23 = p.cam_no_persp[0].xyz * normal.x + p.cam_no_persp[1].xyz * normal.y +
-                    p.cam_no_persp[2].xyz * normal.z;
-
-  // transform the point
-  float4 vf17 = p.cam_no_persp[3];
-  vf17 += p.cam_no_persp[0] * position_in.x;
-  vf17 += p.cam_no_persp[1] * position_in.y;
-  vf17 += p.cam_no_persp[2] * position_in.z;
-
-  // the ETIE math
-  {
+    // the ETIE math
     // nrm.z -= 1                     subw.z vf23, vf23, vf00
     nrm_vf23.z -= 1.0;
     // dot = nrm.xyz * pt.xyz         mul.xyz vf13, vf17, vf23 / esum / mfp
@@ -299,27 +248,22 @@ vertex InvariantEtieVSOut etie_vs(uint vid [[vertex_id]],
     // nrm.xy += vf03.w               addw.xy vf23, vf23, vf03
     nrm_vf23.xy += 0.5;
     out.tex_coord = nrm_vf23;
+    float4 proto_tint = float4(v.rgba) / 255.0;
+    out.fragment_color = proto_tint * p.envmap_tod_tint;
+  } else {
+    float fog1 = p.camera[3].w + p.camera[0].w * position_in.x +
+                 p.camera[1].w * position_in.y + p.camera[2].w * position_in.z;
+    out.fogginess = 255.0 - clamp(fog1 + p.hvdf_offset.w, p.fog_min, p.fog_max);
+    if (d.decal == 1) {
+      out.fragment_color = float4(1.0, 1.0, 1.0, 1.0);
+    } else {
+      float4 color = tod.read(uint(v.color_index));
+      color *= 2.0;
+      color.a *= 2.0;
+      out.fragment_color = color;
+    }
+    out.tex_coord = float3(float2(v.st), 0.0);
   }
-
-  // perspective transform
-  float4 p_proj = float4(p.persp1.x * vf17.x, p.persp1.y * vf17.y, p.persp1.z, p.persp1.w);
-  p_proj += p.persp0 * vf17.z;
-  float pQ = 1.0 / p_proj.w;
-
-  float4 transformed = p_proj * pQ;
-  transformed.w = p_proj.w;
-  transformed.xy -= 2048.0;
-  // GL: z / 8388608 - 1 into [-1, 1]; the same depth in Metal's [0, 1] range
-  transformed.z /= 16777216.0;
-  transformed.x /= 256.0;
-  transformed.y /= -128.0;
-  transformed.xyz *= transformed.w;
-  transformed.y *= p.scissor_adjust * p.height_scale;
-  out.pos = transformed;
-
-  float4 proto_tint = float4(v.rgba) / 255.0;
-  out.fragment_color = proto_tint * p.envmap_tod_tint;
-  (void)d;
   return out;
 }
 

@@ -56,7 +56,7 @@ function(opengoal_embed_metal_library output_variable output_directory)
       OUTPUT "${metallib}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${output_directory}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${module_cache}"
-      COMMAND xcrun -sdk "${metal_sdk}" metal -Wall -Werror -fpreserve-invariance
+      COMMAND xcrun -sdk "${metal_sdk}" metal -Wall -Werror
               "-fmodules-cache-path=${module_cache}" -o "${metallib}"
               ${OPENGOAL_METAL_SHADER_SOURCES}
       DEPENDS ${OPENGOAL_METAL_SHADER_SOURCES}

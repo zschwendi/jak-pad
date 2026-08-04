@@ -142,7 +142,7 @@ id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> device,
   id<MTLFunction> vertex = [library newFunctionWithName:vertex_name];
   id<MTLFunction> fragment = [library newFunctionWithName:@"tfrag3_fs"];
   if (!vertex || !fragment) {
-    std::printf("[FAIL] missing Metal invariant-proof function %s/tfrag3_fs\n",
+    std::printf("[FAIL] missing Metal ETIE parity-proof function %s/tfrag3_fs\n",
                 vertex_name.UTF8String);
     g_failures++;
     return nil;
@@ -159,7 +159,7 @@ id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> device,
   id<MTLRenderPipelineState> pipeline =
       [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
   if (!pipeline) {
-    std::printf("[FAIL] Metal invariant-proof PSO %s/tfrag3_fs: %s\n",
+    std::printf("[FAIL] Metal ETIE parity-proof PSO %s/tfrag3_fs: %s\n",
                 vertex_name.UTF8String, error.localizedDescription.UTF8String);
     g_failures++;
   }
@@ -269,11 +269,12 @@ ProofReadback render(const ProofContext& context,
   etie_params.envmap_tod_tint[1] = 1.f;
   etie_params.envmap_tod_tint[2] = 1.f;
   etie_params.envmap_tod_tint[3] = 1.f;
-  const MetalBackgroundDrawParams draw_params{};
   MetalBackgroundFsParams fs_params{};
   fs_params.alpha_max = 10.f;
 
   for (const auto& proof_pass : passes) {
+    MetalBackgroundDrawParams draw_params{};
+    draw_params.etie_shine = proof_pass.path == BackgroundPath::EtieShine ? 1 : 0;
     [encoder setRenderPipelineState:proof_pass.path == BackgroundPath::EtieBase
                                         ? context.pipelines.base
                                         : context.pipelines.shine];
@@ -316,7 +317,7 @@ destinationBytesPerImage:kDepthReadbackRowBytes * kTargetSize
   [commands waitUntilCompleted];
   if (commands.status != MTLCommandBufferStatusCompleted) {
     if (commands.error) {
-      std::printf("[FAIL] Metal invariant-proof command buffer: %s\n",
+      std::printf("[FAIL] Metal ETIE parity-proof command buffer: %s\n",
                   commands.error.localizedDescription.UTF8String);
     }
     return out;
@@ -347,14 +348,14 @@ bool initialize(ProofContext* context) {
   context->library = [context->device newLibraryWithData:library_data error:&library_error];
   if (!context->queue || !context->library) {
     if (library_error) {
-      std::printf("[FAIL] Metal invariant-proof library: %s\n",
+      std::printf("[FAIL] Metal ETIE parity-proof library: %s\n",
                   library_error.localizedDescription.UTF8String);
     }
     return false;
   }
 
-  context->pipelines.base = make_pipeline(context->device, context->library, @"etie_base_vs");
-  context->pipelines.shine = make_pipeline(context->device, context->library, @"etie_vs");
+  context->pipelines.base = make_pipeline(context->device, context->library, @"etie_shared_vs");
+  context->pipelines.shine = make_pipeline(context->device, context->library, @"etie_shared_vs");
   context->write_depth = make_depth_state(context->device, true);
   context->read_depth = make_depth_state(context->device, false);
 
@@ -426,9 +427,9 @@ bool initialize(ProofContext* context) {
 
 extern "C" bool goalpad_run_metal_background_depth_parity_proof() {
   @autoreleasepool {
-    std::printf("--- Metal ETIE base/shine invariant D32 coverage proof ---\n");
+    std::printf("--- Metal ETIE shared-vertex D32 coverage proof ---\n");
     ProofContext context;
-    check(initialize(&context), "initialized the asset-free Metal invariant proof");
+    check(initialize(&context), "initialized the asset-free Metal ETIE parity proof");
     if (g_failures) {
       return false;
     }
@@ -549,10 +550,10 @@ extern "C" bool goalpad_run_metal_background_depth_parity_proof() {
           "hole detector rejects an adjacent closer half-screen occluder");
 
     if (g_failures) {
-      std::printf("METAL BACKGROUND INVARIANT PROOF FAILED: %d check(s) failed\n", g_failures);
+      std::printf("METAL BACKGROUND ETIE PARITY PROOF FAILED: %d check(s) failed\n", g_failures);
       return false;
     }
-    std::printf("METAL BACKGROUND INVARIANT PROOF PASSED\n");
+    std::printf("METAL BACKGROUND ETIE PARITY PROOF PASSED\n");
     return true;
   }
 }

@@ -237,11 +237,13 @@ struct MetalEtieVsParams {
 };
 static_assert(sizeof(MetalEtieVsParams) == 208, "MetalEtieVsParams size");
 
-// The GL `decal` uniform, set per draw.
+// The GL `decal` uniform plus the Metal ETIE pass selector, set per draw.
 struct MetalBackgroundDrawParams {
   int decal = 0;
-  int pad[3] = {0, 0, 0};
+  int etie_shine = 0;
+  int pad[2] = {0, 0};
 };
+static_assert(sizeof(MetalBackgroundDrawParams) == 16, "MetalBackgroundDrawParams size");
 
 // tfrag3.frag / shrub.frag constants.
 struct MetalBackgroundFsParams {
