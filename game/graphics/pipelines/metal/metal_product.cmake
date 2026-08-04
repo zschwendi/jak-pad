@@ -54,7 +54,7 @@ function(opengoal_embed_metal_library output_variable output_directory)
   add_custom_command(
       OUTPUT "${metallib}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${output_directory}"
-      COMMAND xcrun -sdk "${metal_sdk}" metal -Wall -Werror -o "${metallib}"
+      COMMAND xcrun -sdk "${metal_sdk}" metal -Wall -Werror -fpreserve-invariance -o "${metallib}"
               ${OPENGOAL_METAL_SHADER_SOURCES}
       DEPENDS ${OPENGOAL_METAL_SHADER_SOURCES}
       COMMENT "Compiling MSL shaders to ${metallib}"

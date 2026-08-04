@@ -80,7 +80,7 @@ struct BackgroundFsParams {
 };
 
 struct BackgroundVSOut {
-  float4 pos [[position]];
+  float4 pos [[position, invariant]];
   float4 fragment_color;
   float3 tex_coord;
   float fogginess;
@@ -142,10 +142,10 @@ struct BackgroundDepth24Out {
   float depth [[depth(any)]];
 };
 
-fragment BackgroundDepth24Out tfrag3_fs(BackgroundVSOut in [[stage_in]],
-                                         constant BackgroundFsParams& p [[buffer(0)]],
-                                         texture2d<float> tex [[texture(0)]],
-                                         sampler samp [[sampler(0)]]) {
+fragment float4 tfrag3_fs(BackgroundVSOut in [[stage_in]],
+                          constant BackgroundFsParams& p [[buffer(0)]],
+                          texture2d<float> tex [[texture(0)]],
+                          sampler samp [[sampler(0)]]) {
   float4 color;
   if (p.gfx_hack_no_tex == 0) {
     float4 T0 = tex.sample(samp, in.tex_coord.xy);
@@ -159,10 +159,7 @@ fragment BackgroundDepth24Out tfrag3_fs(BackgroundVSOut in [[stage_in]],
   }
 
   color.rgb = mix(color.rgb, p.fog_color.rgb, clamp(in.fogginess * p.fog_color.a, 0.0, 1.0));
-  BackgroundDepth24Out out;
-  out.color = color;
-  out.depth = quantize_background_depth24(in.pos.z);
-  return out;
+  return color;
 }
 
 // Proof-only fragment entry points used by metal-proof. They let the existing
