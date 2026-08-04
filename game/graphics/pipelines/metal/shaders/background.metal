@@ -132,10 +132,20 @@ vertex BackgroundVSOut tfrag3_vs(uint vid [[vertex_id]],
   return out;
 }
 
-fragment float4 tfrag3_fs(BackgroundVSOut in [[stage_in]],
-                          constant BackgroundFsParams& p [[buffer(0)]],
-                          texture2d<float> tex [[texture(0)]],
-                          sampler samp [[sampler(0)]]) {
+static float quantize_background_depth24(float depth) {
+  constexpr float kDepth24Max = 16777215.0;
+  return round(clamp(depth, 0.0, 1.0) * kDepth24Max) / kDepth24Max;
+}
+
+struct BackgroundDepth24Out {
+  float4 color [[color(0)]];
+  float depth [[depth(any)]];
+};
+
+fragment BackgroundDepth24Out tfrag3_fs(BackgroundVSOut in [[stage_in]],
+                                         constant BackgroundFsParams& p [[buffer(0)]],
+                                         texture2d<float> tex [[texture(0)]],
+                                         sampler samp [[sampler(0)]]) {
   float4 color;
   if (p.gfx_hack_no_tex == 0) {
     float4 T0 = tex.sample(samp, in.tex_coord.xy);
@@ -149,7 +159,10 @@ fragment float4 tfrag3_fs(BackgroundVSOut in [[stage_in]],
   }
 
   color.rgb = mix(color.rgb, p.fog_color.rgb, clamp(in.fogginess * p.fog_color.a, 0.0, 1.0));
-  return color;
+  BackgroundDepth24Out out;
+  out.color = color;
+  out.depth = quantize_background_depth24(in.pos.z);
+  return out;
 }
 
 // Proof-only fragment entry points used by metal-proof. They let the existing
@@ -162,17 +175,11 @@ fragment float4 background_depth32_proof_fs(BackgroundVSOut in [[stage_in]],
   return color;
 }
 
-struct BackgroundDepth24ProofOut {
-  float4 color [[color(0)]];
-  float depth [[depth(any)]];
-};
-
-fragment BackgroundDepth24ProofOut background_depth24_proof_fs(
+fragment BackgroundDepth24Out background_depth24_proof_fs(
     BackgroundVSOut in [[stage_in]], constant float4& color [[buffer(0)]]) {
-  constexpr float kDepth24Max = 16777215.0;
-  BackgroundDepth24ProofOut out;
+  BackgroundDepth24Out out;
   out.color = color;
-  out.depth = round(clamp(in.pos.z, 0.0, 1.0) * kDepth24Max) / kDepth24Max;
+  out.depth = quantize_background_depth24(in.pos.z);
   return out;
 }
 

@@ -20,12 +20,15 @@ constexpr int kTargetSize = 32;
 constexpr float kDepth24Max = 16777215.f;
 
 enum class BackgroundPath { Tfrag3, EtieBase };
+enum class DepthMode { NativeD32, ProofD24, ProductionD24 };
 
 struct ProofPipelines {
   id<MTLRenderPipelineState> tfrag_d32 = nil;
   id<MTLRenderPipelineState> etie_d32 = nil;
   id<MTLRenderPipelineState> tfrag_d24 = nil;
   id<MTLRenderPipelineState> etie_d24 = nil;
+  id<MTLRenderPipelineState> tfrag_production = nil;
+  id<MTLRenderPipelineState> etie_production = nil;
 };
 
 struct ProofPass {
@@ -46,6 +49,9 @@ struct ProofContext {
   id<MTLLibrary> library = nil;
   id<MTLDepthStencilState> depth_state = nil;
   id<MTLTexture> time_of_day = nil;
+  id<MTLTexture> red_texture = nil;
+  id<MTLTexture> blue_texture = nil;
+  id<MTLSamplerState> sampler = nil;
   ProofPipelines pipelines;
   std::array<tfrag3::PreloadedVertex, 4> vertices;
 };
@@ -109,7 +115,23 @@ id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> device,
   return pipeline;
 }
 
-MetalGoalBackgroundCameraData make_camera(float camera_z) {
+id<MTLTexture> make_color_texture(id<MTLDevice> device, const std::array<u8, 4>& rgba) {
+  auto* descriptor =
+      [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                         width:1
+                                                        height:1
+                                                     mipmapped:NO];
+  descriptor.usage = MTLTextureUsageShaderRead;
+  descriptor.storageMode = MTLStorageModeShared;
+  id<MTLTexture> texture = [device newTextureWithDescriptor:descriptor];
+  [texture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
+              mipmapLevel:0
+                withBytes:rgba.data()
+              bytesPerRow:rgba.size()];
+  return texture;
+}
+
+MetalGoalBackgroundCameraData make_camera(float camera_z, float etie_depth_skew = -1000.f) {
   MetalGoalBackgroundCameraData camera{};
   camera.rot[0] = math::Vector4f(1.f, 0.f, 0.f, 0.f);
   camera.rot[1] = math::Vector4f(0.f, 1.f, 0.f, 0.f);
@@ -122,23 +144,32 @@ MetalGoalBackgroundCameraData make_camera(float camera_z) {
   camera.perspective[0].x() = 256.f;
   camera.perspective[1].y() = 128.f;
   camera.perspective[2].w() = 4096.f;
-  camera.perspective[3].z() = -1000.f;
+  camera.perspective[3].z() = etie_depth_skew;
   return camera;
 }
 
 id<MTLRenderPipelineState> pipeline_for(const ProofContext& context,
                                         BackgroundPath path,
-                                        bool quantize_depth) {
+                                        DepthMode mode) {
   if (path == BackgroundPath::Tfrag3) {
-    return quantize_depth ? context.pipelines.tfrag_d24 : context.pipelines.tfrag_d32;
+    if (mode == DepthMode::ProductionD24) {
+      return context.pipelines.tfrag_production;
+    }
+    return mode == DepthMode::ProofD24 ? context.pipelines.tfrag_d24
+                                       : context.pipelines.tfrag_d32;
   }
-  return quantize_depth ? context.pipelines.etie_d24 : context.pipelines.etie_d32;
+  if (mode == DepthMode::ProductionD24) {
+    return context.pipelines.etie_production;
+  }
+  return mode == DepthMode::ProofD24 ? context.pipelines.etie_d24
+                                     : context.pipelines.etie_d32;
 }
 
 ProofReadback render(const ProofContext& context,
                      float camera_z,
-                     bool quantize_depth,
-                     const std::vector<ProofPass>& passes) {
+                     DepthMode mode,
+                     const std::vector<ProofPass>& passes,
+                     float etie_depth_skew = -1000.f) {
   ProofReadback out;
   auto* color_descriptor =
       [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -190,7 +221,7 @@ ProofReadback render(const ProofContext& context,
   [encoder setCullMode:MTLCullModeNone];
   [encoder setDepthStencilState:context.depth_state];
 
-  const auto camera = make_camera(camera_z);
+  const auto camera = make_camera(camera_z, etie_depth_skew);
   MetalBackgroundVsParams tfrag_params{};
   MetalEtieVsParams etie_params{};
   metal_fill_background_vs_params(camera, GameVersion::Jak1, &tfrag_params);
@@ -198,7 +229,7 @@ ProofReadback render(const ProofContext& context,
   const MetalBackgroundDrawParams draw_params{};
 
   for (const auto& proof_pass : passes) {
-    [encoder setRenderPipelineState:pipeline_for(context, proof_pass.path, quantize_depth)];
+    [encoder setRenderPipelineState:pipeline_for(context, proof_pass.path, mode)];
     [encoder setVertexBytes:context.vertices.data()
                      length:sizeof(context.vertices)
                     atIndex:0];
@@ -209,9 +240,19 @@ ProofReadback render(const ProofContext& context,
     }
     [encoder setVertexBytes:&draw_params length:sizeof(draw_params) atIndex:2];
     [encoder setVertexTexture:context.time_of_day atIndex:1];
-    [encoder setFragmentBytes:proof_pass.color.data()
-                       length:sizeof(proof_pass.color)
-                      atIndex:0];
+    if (mode == DepthMode::ProductionD24) {
+      const MetalBackgroundFsParams fs_params{};
+      [encoder setFragmentBytes:&fs_params length:sizeof(fs_params) atIndex:0];
+      [encoder setFragmentTexture:proof_pass.color[0] > proof_pass.color[2]
+                                      ? context.red_texture
+                                      : context.blue_texture
+                            atIndex:0];
+      [encoder setFragmentSamplerState:context.sampler atIndex:0];
+    } else {
+      [encoder setFragmentBytes:proof_pass.color.data()
+                         length:sizeof(proof_pass.color)
+                        atIndex:0];
+    }
     [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
   }
   [encoder endEncoding];
@@ -280,6 +321,10 @@ bool initialize(ProofContext* context) {
       context->device, context->library, @"tfrag3_vs", @"background_depth24_proof_fs");
   context->pipelines.etie_d24 = make_pipeline(
       context->device, context->library, @"etie_base_vs", @"background_depth24_proof_fs");
+  context->pipelines.tfrag_production =
+      make_pipeline(context->device, context->library, @"tfrag3_vs", @"tfrag3_fs");
+  context->pipelines.etie_production =
+      make_pipeline(context->device, context->library, @"etie_base_vs", @"tfrag3_fs");
 
   DrawMode mode{};
   mode.as_int() = 0;
@@ -320,6 +365,13 @@ bool initialize(ProofContext* context) {
                             withBytes:&white
                           bytesPerRow:sizeof(white)];
 
+  context->red_texture = make_color_texture(context->device, {255, 0, 0, 255});
+  context->blue_texture = make_color_texture(context->device, {0, 0, 255, 255});
+  auto* sampler_descriptor = [[MTLSamplerDescriptor alloc] init];
+  sampler_descriptor.minFilter = MTLSamplerMinMagFilterNearest;
+  sampler_descriptor.magFilter = MTLSamplerMinMagFilterNearest;
+  context->sampler = [context->device newSamplerStateWithDescriptor:sampler_descriptor];
+
   constexpr float kHalfExtent = 6000.f;
   constexpr float kWorldZ = -10000.f;
   const float xs[4] = {-kHalfExtent, kHalfExtent, -kHalfExtent, kHalfExtent};
@@ -334,9 +386,11 @@ bool initialize(ProofContext* context) {
     vertex.color_index = 0;
   }
 
-  return context->depth_state && context->time_of_day && context->pipelines.tfrag_d32 &&
+  return context->depth_state && context->time_of_day && context->red_texture &&
+         context->blue_texture && context->sampler && context->pipelines.tfrag_d32 &&
          context->pipelines.etie_d32 && context->pipelines.tfrag_d24 &&
-         context->pipelines.etie_d24;
+         context->pipelines.etie_d24 && context->pipelines.tfrag_production &&
+         context->pipelines.etie_production;
 }
 
 }  // namespace
@@ -361,12 +415,12 @@ extern "C" bool goalpad_run_metal_background_depth_parity_proof() {
     int collapse_count = 0;
     std::vector<float> collapsed_cameras;
     for (float camera_z : kNearbyCameraZ) {
-      const auto tfrag_d32 = render(context, camera_z, false, tfrag_only);
-      const auto etie_d32 = render(context, camera_z, false, etie_only);
-      const auto competing_d32 = render(context, camera_z, false, competing);
-      const auto tfrag_d24 = render(context, camera_z, true, tfrag_only);
-      const auto etie_d24 = render(context, camera_z, true, etie_only);
-      const auto competing_d24 = render(context, camera_z, true, competing);
+      const auto tfrag_d32 = render(context, camera_z, DepthMode::NativeD32, tfrag_only);
+      const auto etie_d32 = render(context, camera_z, DepthMode::NativeD32, etie_only);
+      const auto competing_d32 = render(context, camera_z, DepthMode::NativeD32, competing);
+      const auto tfrag_d24 = render(context, camera_z, DepthMode::ProofD24, tfrag_only);
+      const auto etie_d24 = render(context, camera_z, DepthMode::ProofD24, etie_only);
+      const auto competing_d24 = render(context, camera_z, DepthMode::ProofD24, competing);
       if (!tfrag_d32.ok || !etie_d32.ok || !competing_d32.ok || !tfrag_d24.ok ||
           !etie_d24.ok || !competing_d24.ok) {
         check(false, "completed every depth-parity GPU readback");
@@ -399,12 +453,58 @@ extern "C" bool goalpad_run_metal_background_depth_parity_proof() {
 
     check(collapse_count >= 2,
           "multiple nearby cameras retain distinct D32 depths that collapse to one D24 value");
+
+    const auto production_tfrag =
+        render(context, 0.f, DepthMode::ProductionD24, tfrag_only);
+    const auto production_etie =
+        render(context, 0.f, DepthMode::ProductionD24, etie_only);
+    const auto production_competing =
+        render(context, 0.f, DepthMode::ProductionD24, competing);
+    const auto proof_tfrag = render(context, 0.f, DepthMode::ProofD24, tfrag_only);
+    const auto proof_etie = render(context, 0.f, DepthMode::ProofD24, etie_only);
+    check(production_tfrag.ok && production_etie.ok && production_competing.ok &&
+              proof_tfrag.ok && proof_etie.ok,
+          "production tfrag3_fs depth readbacks completed");
+    check(production_tfrag.depth_bits == proof_tfrag.depth_bits &&
+              production_etie.depth_bits == proof_etie.depth_bits,
+          "production tfrag3_fs uses the proof's shared D24 quantizer");
+    check(is_blue(production_competing.bgra),
+          "production tfrag3_fs lets equalized ETIE base depth pass GEQUAL");
+
+    constexpr float kAdjacentBinEtieDepthSkew = -4500.f;
+    const auto adjacent_tfrag_d32 =
+        render(context, 0.f, DepthMode::NativeD32, tfrag_only, kAdjacentBinEtieDepthSkew);
+    const auto adjacent_etie_d32 =
+        render(context, 0.f, DepthMode::NativeD32, etie_only, kAdjacentBinEtieDepthSkew);
+    const auto adjacent_tfrag_d24 =
+        render(context, 0.f, DepthMode::ProductionD24, tfrag_only, kAdjacentBinEtieDepthSkew);
+    const auto adjacent_etie_d24 =
+        render(context, 0.f, DepthMode::ProductionD24, etie_only, kAdjacentBinEtieDepthSkew);
+    const auto adjacent_competing_d24 =
+        render(context, 0.f, DepthMode::ProductionD24, competing, kAdjacentBinEtieDepthSkew);
+    check(adjacent_tfrag_d32.ok && adjacent_etie_d32.ok && adjacent_tfrag_d24.ok &&
+              adjacent_etie_d24.ok && adjacent_competing_d24.ok,
+          "adjacent-bin negative-control readbacks completed");
+    const u32 adjacent_tfrag_key = depth24_key(adjacent_tfrag_d32.depth);
+    const u32 adjacent_etie_key = depth24_key(adjacent_etie_d32.depth);
+    std::printf(
+        "  adjacent-bin control: TFRAG3 D24=%u (% .9g) ETIE D24=%u (% .9g) color=%u,%u,%u\n",
+        adjacent_tfrag_key, adjacent_tfrag_d24.depth, adjacent_etie_key,
+        adjacent_etie_d24.depth, adjacent_competing_d24.bgra[2],
+        adjacent_competing_d24.bgra[1], adjacent_competing_d24.bgra[0]);
+    check(std::abs(static_cast<int>(adjacent_tfrag_key) -
+                   static_cast<int>(adjacent_etie_key)) == 1 &&
+              adjacent_tfrag_d24.depth_bits != adjacent_etie_d24.depth_bits,
+          "D24 quantization preserves genuinely adjacent depth bins");
+    check(is_blue(adjacent_competing_d24.bgra),
+          "adjacent closer ETIE base remains distinct and passes GEQUAL ordering");
+
     if (collapsed_cameras.size() >= 2) {
       const float camera_a = collapsed_cameras.front();
       const float camera_b = collapsed_cameras.back();
-      const auto a_first = render(context, camera_a, false, competing);
-      const auto b = render(context, camera_b, false, competing);
-      const auto a_second = render(context, camera_a, false, competing);
+      const auto a_first = render(context, camera_a, DepthMode::NativeD32, competing);
+      const auto b = render(context, camera_b, DepthMode::NativeD32, competing);
+      const auto a_second = render(context, camera_a, DepthMode::NativeD32, competing);
       check(a_first.ok && b.ok && a_second.ok,
             "A/B/A production-D32 camera sequence completed");
       check(a_first.depth_bits == a_second.depth_bits && a_first.bgra == a_second.bgra,
