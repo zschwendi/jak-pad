@@ -26,6 +26,9 @@ constexpr Table make_table() {
   const auto defer = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::DeferredSkip;
   };
+  const auto direct = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::Direct;
+  };
 
   // Mirror every renderer explicitly installed by OpenGLRenderer::init_bucket_renderers_jak2.
   defer(BucketId::BUCKET_2);
@@ -92,7 +95,7 @@ constexpr Table make_table() {
   defer(BucketId::DEBUG_NO_ZBUF1);
   defer(BucketId::TEX_ALL_MAP);
   defer(BucketId::PROGRESS);
-  defer(BucketId::SCREEN_FILTER);
+  direct(BucketId::SCREEN_FILTER);
   defer(BucketId::SUBTITLE);
   defer(BucketId::DEBUG2);
   defer(BucketId::DEBUG_NO_ZBUF2);
@@ -130,8 +133,9 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 200);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 199);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 1);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);
 
 }  // namespace
@@ -146,20 +150,16 @@ std::uint64_t jak2_metal_bucket_table_fingerprint() {
 
 bool jak2_metal_bucket_allows_content(std::size_t bucket_id) {
   return bucket_id < kTable.size() &&
-         kTable[bucket_id].behavior == Jak2MetalBucketBehavior::DeferredSkip;
+         kTable[bucket_id].behavior != Jak2MetalBucketBehavior::StrictEmpty;
 }
 
 int jak2_metal_direct_batch_size(std::size_t bucket_id) {
+  if (bucket_id >= kTable.size() || kTable[bucket_id].behavior != Jak2MetalBucketBehavior::Direct) {
+    return 0;
+  }
   switch (static_cast<BucketId>(bucket_id)) {
-    case BucketId::SKY_DRAW:
-      return 1024;
     case BucketId::SCREEN_FILTER:
       return 256;
-    case BucketId::DEBUG2:
-    case BucketId::DEBUG_NO_ZBUF2:
-      return 0x8000;
-    case BucketId::DEBUG3:
-      return 0x2000;
     default:
       return 0;
   }
