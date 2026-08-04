@@ -265,6 +265,10 @@ ProofReadback render(const ProofContext& context,
 
   MetalEtieVsParams etie_params{};
   metal_fill_etie_vs_params(make_camera(camera_offset), GameVersion::Jak1, &etie_params);
+  etie_params.envmap_tod_tint[0] = 1.f;
+  etie_params.envmap_tod_tint[1] = 1.f;
+  etie_params.envmap_tod_tint[2] = 1.f;
+  etie_params.envmap_tod_tint[3] = 1.f;
   const MetalBackgroundDrawParams draw_params{};
   MetalBackgroundFsParams fs_params{};
   fs_params.alpha_max = 10.f;
