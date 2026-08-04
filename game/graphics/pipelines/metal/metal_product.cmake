@@ -51,10 +51,13 @@ function(opengoal_embed_metal_library output_variable output_directory)
   endif()
   set(metallib "${output_directory}/goalpad.metallib")
   set(embed "${output_directory}/goalpad_metallib_embed.c")
+  set(module_cache "${CMAKE_BINARY_DIR}/metal-module-cache")
   add_custom_command(
       OUTPUT "${metallib}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${output_directory}"
-      COMMAND xcrun -sdk "${metal_sdk}" metal -Wall -Werror -fpreserve-invariance -o "${metallib}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${module_cache}"
+      COMMAND xcrun -sdk "${metal_sdk}" metal -Wall -Werror -fpreserve-invariance
+              "-fmodules-cache-path=${module_cache}" -o "${metallib}"
               ${OPENGOAL_METAL_SHADER_SOURCES}
       DEPENDS ${OPENGOAL_METAL_SHADER_SOURCES}
       COMMENT "Compiling MSL shaders to ${metallib}"
