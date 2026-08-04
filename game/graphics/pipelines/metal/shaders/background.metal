@@ -152,6 +152,30 @@ fragment float4 tfrag3_fs(BackgroundVSOut in [[stage_in]],
   return color;
 }
 
+// Proof-only fragment entry points used by metal-proof. They let the existing
+// TFRAG3 and ETIE_BASE vertex paths compete once at native D32 precision and
+// once after fragment-stage D24 quantization. Production pipelines never
+// reference either function.
+fragment float4 background_depth32_proof_fs(BackgroundVSOut in [[stage_in]],
+                                             constant float4& color [[buffer(0)]]) {
+  (void)in;
+  return color;
+}
+
+struct BackgroundDepth24ProofOut {
+  float4 color [[color(0)]];
+  float depth [[depth(any)]];
+};
+
+fragment BackgroundDepth24ProofOut background_depth24_proof_fs(
+    BackgroundVSOut in [[stage_in]], constant float4& color [[buffer(0)]]) {
+  constexpr float kDepth24Max = 16777215.0;
+  BackgroundDepth24ProofOut out;
+  out.color = color;
+  out.depth = round(clamp(in.pos.z, 0.0, 1.0) * kDepth24Max) / kDepth24Max;
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // etie_base: the base draw of an envmapped TIE. Same output as tfrag3_vs, but
 // it reproduces the game's own perspective math so the base and the shiny

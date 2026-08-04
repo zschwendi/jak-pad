@@ -69,6 +69,8 @@
 #include "game/mips2c/mips2c_private.h"
 #include "game/runtime.h"
 
+extern "C" bool goalpad_run_metal_background_depth_parity_proof();
+
 namespace Mips2C::jak1::bones_mtx_calc {
 struct Cache {
   void* fake_scratchpad_data;
@@ -4826,6 +4828,7 @@ int main(int argc, char** argv) {
   int replay_frames = 2;
   bool show_window = false;
   bool tie_envmap_isolation_only = false;
+  bool background_depth_parity_only = false;
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     if (arg == "--replay" && i + 1 < argc) {
@@ -4842,6 +4845,8 @@ int main(int argc, char** argv) {
       show_window = true;
     } else if (arg == "--tie-envmap-isolation-only") {
       tie_envmap_isolation_only = true;
+    } else if (arg == "--background-depth-parity-only") {
+      background_depth_parity_only = true;
     } else if (arg == "--fr3" && i + 1 < argc) {
       fr3_path = argv[++i];
     } else if (!arg.empty() && arg[0] != '-' && fr3_path.empty()) {
@@ -4853,9 +4858,14 @@ int main(int argc, char** argv) {
           "                    [--replay-frames <n>] [--replay-common-fr3 <GAME.fr3>]\n"
           "                    [--replay-fr3 <level.fr3>]...]\n"
           "                   [--tie-envmap-isolation-only]\n"
+          "                   [--background-depth-parity-only]\n"
           "                   [--show-window]\n");
       return 1;
     }
+  }
+
+  if (background_depth_parity_only) {
+    return goalpad_run_metal_background_depth_parity_proof() ? 0 : 1;
   }
 
   const GfxRendererModule* mod = Gfx::GetRenderer(GfxPipeline::Metal);

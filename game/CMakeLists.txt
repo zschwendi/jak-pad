@@ -1075,7 +1075,11 @@ if(APPLE)
     # chain. see game/graphics/pipelines/metal/
     add_executable(metal-proof
         graphics/pipelines/metal/metal_proof_main.cpp
+        graphics/pipelines/metal/metal_background_depth_parity_proof.mm
         graphics/pipelines/metal/metal_chain_replay.cpp)
+    set_source_files_properties(
+        graphics/pipelines/metal/metal_background_depth_parity_proof.mm
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(metal-proof runtime)
 
     # goalpad-play: the game and the renderer in one process.
