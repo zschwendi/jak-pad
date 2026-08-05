@@ -50,16 +50,22 @@ void print_type(const char* name) {
 }  // namespace
 
 int main() {
+  check(!goal_kernel_core_get_portable_display_enabled(),
+        "portable display aspect defaults off for Classic");
   int32_t display_width = 0;
   int32_t display_height = 0;
   goal_kernel_core_get_portable_display_size(&display_width, &display_height);
   check(display_width == 640 && display_height == 480,
         "portable display defaults preserve the 4:3 baseline");
   goal_kernel_core_set_portable_display_size(1366, 1024);
+  goal_kernel_core_set_portable_display_enabled(true);
+  check(goal_kernel_core_get_portable_display_enabled(),
+        "a host can opt into portable display aspect");
   goal_kernel_core_get_portable_display_size(&display_width, &display_height);
   check(display_width == 1366 && display_height == 1024,
         "portable display accepts a host aspect ratio");
   goal_kernel_core_set_portable_display_size(640, 480);
+  goal_kernel_core_set_portable_display_enabled(false);
 
   printf("== goal_kernel_core_initialize ==\n");
   const auto status = goal_kernel_core_initialize();

@@ -59,7 +59,10 @@
 #include "game/sce/libscf.h"
 #include "game/sce/sif_ee.h"
 
+u64 goal_kernel_core_machine_stub_report(const char* what);
+
 namespace {
+std::atomic<bool> g_portable_display_enabled{false};
 std::atomic<int32_t> g_portable_display_width{640};
 std::atomic<int32_t> g_portable_display_height{480};
 
@@ -285,7 +288,10 @@ u32 portable_pc_get_display_mode() {
   return goal_game_intern("windowed");
 }
 
-u64 portable_pc_get_display_size(u32 width, u32 height) {
+u64 portable_pc_get_display_size(u32 width, u32 height, const char* function_name) {
+  if (!g_portable_display_enabled.load(std::memory_order_relaxed)) {
+    return goal_kernel_core_machine_stub_report(function_name);
+  }
   if (width) {
     *Ptr<s64>(width).c() = g_portable_display_width.load(std::memory_order_relaxed);
   }
@@ -293,6 +299,14 @@ u64 portable_pc_get_display_size(u32 width, u32 height) {
     *Ptr<s64>(height).c() = g_portable_display_height.load(std::memory_order_relaxed);
   }
   return 0;
+}
+
+u64 portable_pc_get_active_display_size(u32 width, u32 height) {
+  return portable_pc_get_display_size(width, height, "pc-get-active-display-size");
+}
+
+u64 portable_pc_get_window_size(u32 width, u32 height) {
+  return portable_pc_get_display_size(width, height, "pc-get-window-size");
 }
 
 s64 portable_pc_get_refresh_rate() {
@@ -379,8 +393,17 @@ void goal_kernel_core_install_implemented_machine_functions() {
 }
 
 void goal_kernel_core_install_portable_display_functions() {
-  goal_game_make_function_symbol("pc-get-active-display-size", (void*)portable_pc_get_display_size);
-  goal_game_make_function_symbol("pc-get-window-size", (void*)portable_pc_get_display_size);
+  goal_game_make_function_symbol("pc-get-active-display-size",
+                                 (void*)portable_pc_get_active_display_size);
+  goal_game_make_function_symbol("pc-get-window-size", (void*)portable_pc_get_window_size);
+}
+
+void goal_kernel_core_set_portable_display_enabled(bool enabled) {
+  g_portable_display_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool goal_kernel_core_get_portable_display_enabled() {
+  return g_portable_display_enabled.load(std::memory_order_relaxed);
 }
 
 void goal_kernel_core_set_portable_display_size(int32_t width, int32_t height) {

@@ -142,6 +142,8 @@ void goal_kernel_core_install_implemented_machine_functions();
 void goal_kernel_core_install_portable_display_functions();
 
 /*! Update the size returned by the portable display queries. Defaults to the PS2-like 640x480. */
+void goal_kernel_core_set_portable_display_enabled(bool enabled);
+bool goal_kernel_core_get_portable_display_enabled();
 void goal_kernel_core_set_portable_display_size(int32_t width, int32_t height);
 void goal_kernel_core_get_portable_display_size(int32_t* width, int32_t* height);
 
