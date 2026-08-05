@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "kernel_core.h"
+#include "kernel_game.h"
 
 #include "common/symbols.h"
 
@@ -49,6 +50,17 @@ void print_type(const char* name) {
 }  // namespace
 
 int main() {
+  int32_t display_width = 0;
+  int32_t display_height = 0;
+  goal_kernel_core_get_portable_display_size(&display_width, &display_height);
+  check(display_width == 640 && display_height == 480,
+        "portable display defaults preserve the 4:3 baseline");
+  goal_kernel_core_set_portable_display_size(1366, 1024);
+  goal_kernel_core_get_portable_display_size(&display_width, &display_height);
+  check(display_width == 1366 && display_height == 1024,
+        "portable display accepts a host aspect ratio");
+  goal_kernel_core_set_portable_display_size(640, 480);
+
   printf("== goal_kernel_core_initialize ==\n");
   const auto status = goal_kernel_core_initialize();
   if (status != GOAL_KERNEL_CORE_OK) {

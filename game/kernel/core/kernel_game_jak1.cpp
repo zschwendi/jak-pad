@@ -183,6 +183,7 @@ namespace jak1 {
 void InitMachineScheme() {
   goal_kernel_core_install_machine_stubs(kJak1MachineFunctionNames, kJak1MachineFunctionCount);
   goal_kernel_core_install_implemented_machine_functions();
+  goal_kernel_core_install_portable_display_functions();
   intern_from_c("*stack-top*")->value = 0x07ffc000;
   intern_from_c("*stack-base*")->value = 0x07ffffff;
   intern_from_c("*stack-size*")->value = 0x4000;

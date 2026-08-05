@@ -138,5 +138,12 @@ void goal_kernel_core_install_machine_stubs(const char* const* names, int count)
  */
 void goal_kernel_core_install_implemented_machine_functions();
 
+/*! Install only the portable display queries used by GOAL's automatic aspect-ratio path. */
+void goal_kernel_core_install_portable_display_functions();
+
+/*! Update the size returned by the portable display queries. Defaults to the PS2-like 640x480. */
+void goal_kernel_core_set_portable_display_size(int32_t width, int32_t height);
+void goal_kernel_core_get_portable_display_size(int32_t* width, int32_t* height);
+
 /*! Install the portable file and PC-settings subset currently exercised by the Jak 2 host. */
 void goal_kernel_core_install_portable_pc_settings_functions();
