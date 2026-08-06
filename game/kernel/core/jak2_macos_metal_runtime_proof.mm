@@ -15,6 +15,8 @@
 #include <future>
 #include <string>
 
+#include "common/util/FileUtil.h"
+
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/jak2_runtime.h"
@@ -211,6 +213,7 @@ int main(int argc, char** argv) {
                    saves_error.message().c_str());
       return 1;
     }
+    file_util::override_user_config_dir(fs::path(options.saves_dir), true);
 
     ProofResources resources;
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -242,9 +245,20 @@ int main(int argc, char** argv) {
 
     resources.metal_host = goal_jak2_metal_host_create_presenting(layer);
     goal_gfx_host graphics_host = {};
-    if (!resources.metal_host ||
-        !goal_jak2_metal_host_copy_gfx_host(resources.metal_host, &graphics_host)) {
+    if (!resources.metal_host) {
       std::fprintf(stderr, "Jak II Metal host creation failed\n");
+      return 1;
+    }
+    const std::string fr3_directory =
+        (std::filesystem::path(options.data_dir) / "fr3").string();
+    if (!goal_jak2_metal_host_configure_level_art(resources.metal_host,
+                                                   fr3_directory.c_str())) {
+      std::fprintf(stderr, "Jak II Metal level-art configuration failed: %s\n",
+                   goal_jak2_metal_host_last_error(resources.metal_host));
+      return 1;
+    }
+    if (!goal_jak2_metal_host_copy_gfx_host(resources.metal_host, &graphics_host)) {
+      std::fprintf(stderr, "Jak II Metal host callback copy failed\n");
       return 1;
     }
 
@@ -273,9 +287,9 @@ int main(int argc, char** argv) {
     goal_jak2_metal_host_metrics metal = {};
     goal_jak2_metal_frame_summary frame = {};
     uint64_t baseline_hash = 0;
+    uint64_t baseline_non_black_pixels = 0;
     bool have_baseline = false;
-    bool frame_changed = false;
-    bool saw_later_sky_draw = false;
+    bool saw_strict_later_frame = false;
     bool quit_requested = false;
     bool tick_failed = false;
     const bool require_presentation = options.require_presentation;
@@ -336,21 +350,21 @@ int main(int argc, char** argv) {
         print_frame(frame);
         if (!have_baseline) {
           baseline_hash = frame.hash;
+          baseline_non_black_pixels = frame.non_black_pixels;
           have_baseline = true;
         } else {
-          frame_changed |= frame.hash != baseline_hash;
+          const bool exact_sky_frame = metal.last_sky_draw_draws == 1 &&
+                                       metal.last_sky_draw_triangles == 2 &&
+                                       metal.last_sky_draw_batch_valid != 0;
+          saw_strict_later_frame |= exact_sky_frame && frame.hash != baseline_hash &&
+                                    frame.non_black_pixels > baseline_non_black_pixels;
         }
-        saw_later_sky_draw |= metal.chains >= 2 && metal.last_sky_draw_draws == 1 &&
-                              metal.last_sky_draw_triangles == 2 &&
-                              metal.last_sky_draw_batch_valid != 0;
       }
     }
 
-    const bool later_sky_draw = saw_later_sky_draw;
-    const bool strict_rgb = frame.non_black_pixels > 0;
     const bool passed = !quit_requested && !tick_failed && runtime.title_ready != 0 &&
                         exact_submission_gate(runtime, metal, require_presentation) &&
-                        later_sky_draw && frame_changed && strict_rgb;
+                        saw_strict_later_frame;
     if (passed) {
       std::printf("PASS: bounded Jak II AOT runtime produced an attributed non-black Metal frame.\n");
       return 0;
@@ -358,11 +372,11 @@ int main(int argc, char** argv) {
 
     std::fprintf(
         stderr,
-        "INCOMPLETE: exact=%d title=%d later-sky=%d changed=%d non-black-rgb=%llu quit=%d "
-        "tick-failed=%d\n",
+        "INCOMPLETE: exact=%d title=%d strict-later-frame=%d baseline-non-black=%llu "
+        "last-non-black=%llu quit=%d tick-failed=%d\n",
         exact_submission_gate(runtime, metal, require_presentation), runtime.title_ready,
-        later_sky_draw, frame_changed, static_cast<unsigned long long>(frame.non_black_pixels),
-        quit_requested, tick_failed);
+        saw_strict_later_frame, static_cast<unsigned long long>(baseline_non_black_pixels),
+        static_cast<unsigned long long>(frame.non_black_pixels), quit_requested, tick_failed);
     return 1;
   }
 }

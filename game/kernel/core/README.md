@@ -823,8 +823,12 @@ screen, gameplay, or physical-device compatibility.
 `jak2-metal-runtime-proof` composes that same AOT runtime and external Metal host in a standalone
 ARM64 macOS process. It creates an SDL Metal window on the main thread, runs at most three serial
 runtime ticks, waits for each command buffer before the next tick, and reports the runtime, bucket,
-SKY-batch, and readback counters. It does not link the desktop runtime, the Jak 1 renderer shell,
-or Eco.
+SKY-batch, and readback counters. Before the runtime receives its callback copy, the host
+synchronously loads `<data-dir>/fr3/GAME.fr3` as common art. Real texture upload and relocate
+callbacks then map the game's VRAM slots through that host-owned pool, and each valid basename
+requested by `__pc-set-levels` loads `<data-dir>/fr3/<name>.fr3` once. Those levels remain resident
+until host teardown; active-level selection, eviction, Merc models, and texture animation remain
+outside this checkpoint. It does not link the desktop runtime, the Jak 1 renderer shell, or Eco.
 
 ```sh
 cmake --build build --target jak2-metal-runtime-proof -j2
@@ -835,10 +839,12 @@ build/game/jak2-metal-runtime-proof \
 The window is visible by default. `--hidden` is useful only for diagnostics because an
 uncomposited macOS drawable can be reported as a presentation drop. GPU completion and game-target
 readback are the default automated gate; `--require-presentation` additionally requires retained
-drawable callbacks while the main thread pumps SDL events. Until common/requested FR3 residency,
-the mixed pre-SKY texture-animation bucket, and the later renderer families are implemented, an
-`INCOMPLETE` result with a changed alpha-only frame is expected and must not be reported as a title
-screen or playable game.
+drawable callbacks while the main thread pumps SDL events. `--saves-dir` also roots the proof's PC
+settings so it never reads or writes the player's normal OpenGOAL settings. A strict later frame
+must simultaneously report exactly one `SKY_DRAW` draw and two triangles with a valid batch, a hash
+different from the first frame, and more non-black RGB pixels than that first frame. Until the
+mixed pre-SKY texture-animation bucket and the later renderer families are implemented, an
+`INCOMPLETE` result must not be reported as a title screen or playable game.
 
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)

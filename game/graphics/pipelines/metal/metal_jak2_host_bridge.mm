@@ -2,15 +2,19 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
 #include "common/util/Assert.h"
 
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
+#include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -28,11 +32,23 @@ struct goal_jak2_metal_host {
   MetalRenderOptions options;
   CAMetalLayer* layer = nil;
   std::string error;
+  std::string fr3_directory;
+  std::string fatal_chain_error;
+  std::vector<std::string> requested_level_names;
+  std::vector<std::string> loaded_level_keys;
+  u64 placeholder_handle = 0;
+  bool configuration_attempted = false;
+  bool configured = false;
+  bool callbacks_copied = false;
+  bool inactive = false;
 };
 
 namespace {
 
 goal_jak2_metal_host* g_active_host = nullptr;
+std::mutex g_host_mutex;
+
+constexpr int kJak2LevelSlotCount = 6;
 
 goal_jak2_metal_host* active_host() {
   return g_active_host;
@@ -41,6 +57,35 @@ goal_jak2_metal_host* active_host() {
 void record_failure(goal_jak2_metal_host* host, const char* message) {
   host->metrics.failed_chains++;
   host->error = message;
+}
+
+void fail_closed(goal_jak2_metal_host* host, const std::string& message) {
+  if (host->fatal_chain_error.empty()) {
+    host->fatal_chain_error = message;
+  }
+  host->error = message;
+}
+
+std::string fr3_path(const goal_jak2_metal_host* host, const std::string& name) {
+  const bool has_separator = !host->fr3_directory.empty() && host->fr3_directory.back() == '/';
+  return host->fr3_directory + (has_separator ? "" : "/") + name + ".fr3";
+}
+
+bool is_level_basename(const char* name) {
+  if (!name || !name[0] || std::strcmp(name, ".") == 0 || std::strcmp(name, "..") == 0) {
+    return false;
+  }
+  for (const char* ch = name; *ch; ++ch) {
+    if (*ch == '/' || *ch == '\\') {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool already_requested(const goal_jak2_metal_host* host, const std::string& name) {
+  return std::find(host->requested_level_names.begin(), host->requested_level_names.end(), name) !=
+         host->requested_level_names.end();
 }
 
 void copy_renderer_metrics(goal_jak2_metal_host* host) {
@@ -112,6 +157,7 @@ bool update_draw_region(goal_jak2_metal_host* host) {
 }
 
 void send_chain(const void* ee_base, uint32_t chain_offset) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
   auto* host = active_host();
   if (!host) {
     return;
@@ -120,6 +166,10 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
   ASSERT(chain_offset != 0);
 
   host->metrics.chains++;
+  if (!host->fatal_chain_error.empty()) {
+    record_failure(host, host->fatal_chain_error.c_str());
+    return;
+  }
   try {
     host->options.host_tick_id = host->metrics.chains;
     host->options.chain_ordinal = host->metrics.chains;
@@ -171,6 +221,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
 }
 
 uint32_t vsync() {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
   auto* host = active_host();
   if (!host) {
     return 0;
@@ -180,6 +231,7 @@ uint32_t vsync() {
 }
 
 uint32_t sync_path() {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
   auto* host = active_host();
   if (host) {
     host->metrics.sync_paths++;
@@ -187,22 +239,85 @@ uint32_t sync_path() {
   return 0;
 }
 
-void texture_upload(const uint8_t*, int, uint32_t) {
-  if (auto* host = active_host()) {
-    host->metrics.texture_uploads++;
+void texture_upload(const uint8_t* tpage, int mode, uint32_t s7_ptr) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  auto* host = active_host();
+  if (!host) {
+    return;
+  }
+  host->metrics.texture_uploads++;
+  if (!tpage || !g_ee_main_mem) {
+    fail_closed(host, "Jak 2 texture upload did not provide EE memory");
+    return;
+  }
+  try {
+    host->textures.handle_upload_now(tpage, mode, g_ee_main_mem, s7_ptr, false);
+  } catch (const std::exception& error) {
+    fail_closed(host, error.what());
+  } catch (...) {
+    fail_closed(host, "Jak 2 texture upload threw an unknown exception");
   }
 }
 
-void texture_relocate(uint32_t, uint32_t, uint32_t) {
-  if (auto* host = active_host()) {
-    host->metrics.texture_relocations++;
+void texture_relocate(uint32_t dst, uint32_t src, uint32_t format) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  auto* host = active_host();
+  if (!host) {
+    return;
+  }
+  host->metrics.texture_relocations++;
+  try {
+    host->textures.relocate(dst, src, format);
+  } catch (const std::exception& error) {
+    fail_closed(host, error.what());
+  } catch (...) {
+    fail_closed(host, "Jak 2 texture relocate threw an unknown exception");
   }
 }
 
-void set_levels(const char* const*, int) {}
+void set_levels(const char* const* names, int count) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  auto* host = active_host();
+  if (!host || host->fr3_directory.empty() || !host->fatal_chain_error.empty()) {
+    return;
+  }
+  if (count < 0 || count > kJak2LevelSlotCount || (count && !names)) {
+    fail_closed(host, "Jak 2 set-levels supplied an invalid level list");
+    return;
+  }
+
+  for (int i = 0; i < count; ++i) {
+    if (!is_level_basename(names[i])) {
+      fail_closed(host, "Jak 2 set-levels rejected a non-basename level name");
+      return;
+    }
+    const std::string name = names[i];
+    if (already_requested(host, name)) {
+      continue;
+    }
+    host->requested_level_names.push_back(name);
+    try {
+      std::string error;
+      auto* level = metal_level_data::load_fr3(host->renderer.device(), host->renderer.queue(),
+                                               host->textures, fr3_path(host, name), false, &error);
+      if (!level) {
+        fail_closed(host, "Jak 2 level art load failed for " + name + ": " + error);
+        return;
+      }
+      host->loaded_level_keys.push_back(level->level->level_name);
+    } catch (const std::exception& error) {
+      fail_closed(host, "Jak 2 level art load failed for " + name + ": " + error.what());
+      return;
+    } catch (...) {
+      fail_closed(host, "Jak 2 level art load failed for " + name + ": unknown exception");
+      return;
+    }
+  }
+}
 void set_active_levels(const char* const*, int) {}
 
 void set_pmode_alpha(float alpha) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
   if (auto* host = active_host()) {
     host->options.pmode_alp = alpha;
   }
@@ -249,11 +364,11 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
     delete host;
     return nullptr;
   }
-  if (presenting &&
-      !metal_setup_placeholder(host->renderer.device(), host->renderer.queue(), host->textures)) {
+  if (!metal_setup_placeholder(host->renderer.device(), host->renderer.queue(), host->textures)) {
     delete host;
     return nullptr;
   }
+  host->placeholder_handle = host->textures.get_placeholder_texture();
   host->renderer.init_bucket_renderers(&host->textures, GameVersion::Jak2);
   host->callbacks.send_chain = send_chain;
   host->callbacks.vsync = vsync;
@@ -272,25 +387,79 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
 extern "C" {
 
 goal_jak2_metal_host* goal_jak2_metal_host_create(void) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
   return create_host(nil, false);
 }
 
 goal_jak2_metal_host* goal_jak2_metal_host_create_presenting(
     goal_jak2_metal_host_layer layer) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
   return create_host(layer, true);
 }
 
-int goal_jak2_metal_host_copy_gfx_host(goal_jak2_metal_host* host, goal_gfx_host* out) {
-  if (!host || host != g_active_host || !out) {
+int goal_jak2_metal_host_configure_level_art(goal_jak2_metal_host* host,
+                                             const char* fr3_directory) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (!host || host != g_active_host || host->inactive || !fr3_directory) {
     return 0;
   }
+  const std::string directory = fr3_directory;
+  if (host->configuration_attempted) {
+    if (host->configured && host->fr3_directory == directory) {
+      return 1;
+    }
+    host->error = host->configured ? "Jak 2 level art is already configured for another directory"
+                                   : "Jak 2 level art configuration already failed";
+    return 0;
+  }
+  if (host->callbacks_copied) {
+    fail_closed(host, "Jak 2 level art must be configured before graphics callbacks are copied");
+    return 0;
+  }
+
+  host->configuration_attempted = true;
+  host->fr3_directory = directory;
+  if (directory.empty()) {
+    host->error = "Jak 2 level art directory is empty";
+    return 0;
+  }
+
+  try {
+    std::string error;
+    auto* common = metal_level_data::load_fr3(
+        host->renderer.device(), host->renderer.queue(), host->textures, fr3_path(host, "GAME"),
+        true, &error);
+    if (!common) {
+      host->error = "Jak 2 common level art load failed: " + error;
+      return 0;
+    }
+    host->loaded_level_keys.push_back(common->level->level_name);
+    host->configured = true;
+    host->error.clear();
+    return 1;
+  } catch (const std::exception& error) {
+    host->error = std::string("Jak 2 common level art load failed: ") + error.what();
+  } catch (...) {
+    host->error = "Jak 2 common level art load failed: unknown exception";
+  }
+  return 0;
+}
+
+int goal_jak2_metal_host_copy_gfx_host(goal_jak2_metal_host* host, goal_gfx_host* out) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (!host || host != g_active_host || host->inactive || !out ||
+      (host->configuration_attempted && !host->configured)) {
+    return 0;
+  }
+  host->callbacks_copied = true;
   *out = host->callbacks;
   return 1;
 }
 
 int goal_jak2_metal_host_get_metrics(goal_jak2_metal_host* host,
                                      goal_jak2_metal_host_metrics* out) {
-  if (!host || host != g_active_host || !out) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (!host || host != g_active_host || host->inactive || !out) {
     return 0;
   }
   copy_renderer_metrics(host);
@@ -300,6 +469,7 @@ int goal_jak2_metal_host_get_metrics(goal_jak2_metal_host* host,
 
 int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
                                          goal_jak2_metal_frame_summary* out) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
   if (!out) {
     return 0;
   }
@@ -363,7 +533,8 @@ int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
 int goal_jak2_metal_host_wait_for_last_frame(goal_jak2_metal_host* host,
                                              double timeout_seconds,
                                              int require_presentation) {
-  if (!host || host != g_active_host || !host->layer || timeout_seconds <= 0.0 ||
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (!host || host != g_active_host || host->inactive || !host->layer || timeout_seconds <= 0.0 ||
       host->metrics.chains == 0) {
     return 0;
   }
@@ -396,15 +567,28 @@ int goal_jak2_metal_host_wait_for_last_frame(goal_jak2_metal_host* host,
 }
 
 void goal_jak2_metal_host_destroy(goal_jak2_metal_host* host) {
-  if (!host || host != g_active_host) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (!host || host != g_active_host || host->inactive) {
     return;
   }
+  host->inactive = true;
   g_active_host = nullptr;
+  for (auto key = host->loaded_level_keys.rbegin(); key != host->loaded_level_keys.rend(); ++key) {
+    metal_level_data::unload(host->textures, *key);
+  }
+  host->loaded_level_keys.clear();
+  if (host->placeholder_handle) {
+    metal_texture_release(host->placeholder_handle);
+    host->textures.set_placeholder(0);
+    host->placeholder_handle = 0;
+  }
   delete host;
 }
 
 const char* goal_jak2_metal_host_last_error(goal_jak2_metal_host* host) {
-  return host && host == g_active_host ? host->error.c_str() : "Jak 2 Metal host is not active";
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  return host && host == g_active_host && !host->inactive ? host->error.c_str()
+                                                         : "Jak 2 Metal host is not active";
 }
 
 }  // extern "C"

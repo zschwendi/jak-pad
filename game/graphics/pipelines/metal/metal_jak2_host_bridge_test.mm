@@ -3,11 +3,20 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <string>
+#include <vector>
 
+#include "common/custom_data/Tfrag3Data.h"
 #include "common/dma/dma.h"
 #include "common/dma/gs.h"
+#include "common/util/FileUtil.h"
+#include "common/util/compress.h"
 
 #include "game/graphics/opengl_renderer/buckets.h"
+#include "game/graphics/pipelines/metal/metal_level_data.h"
+#include "game/graphics/pipelines/metal/metal_texture.h"
+#include "game/graphics/texture/TexturePool.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/runtime.h"
 
@@ -23,6 +32,13 @@ constexpr u32 kScreenFilterPayloadOffset = kChainOffset + 0x5000;
 constexpr u32 kDebugNoZbuf2PayloadOffset = kChainOffset + 0x6000;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
+constexpr u16 kTexturePageId = 11;
+constexpr u32 kTexturePageOffset = 0x200000;
+constexpr u32 kTextureObjectOffset = 0x201000;
+constexpr u32 kTextureNameOffset = 0x202000;
+constexpr u32 kTextureVram = 0x700;
+constexpr u32 kRelocatedTextureVram = 0x720;
+constexpr u32 kSyntheticS7 = 0x7f00000;
 
 int failures = 0;
 
@@ -149,6 +165,136 @@ bool sky_batch_is_zero(const goal_jak2_metal_host_metrics& metrics) {
          metrics.last_sky_draw_batch_alpha_afail == 0;
 }
 
+bool write_synthetic_fr3(const std::filesystem::path& path,
+                         const std::string& level_name,
+                         bool with_texture) {
+  tfrag3::Level level;
+  level.level_name = level_name;
+  if (with_texture) {
+    tfrag3::Texture texture;
+    texture.w = 16;
+    texture.h = 16;
+    texture.combo_id = (static_cast<u32>(kTexturePageId) << 16);
+    texture.data.resize(16 * 16, 0xff40c020);
+    texture.debug_name = "host-residency-texture";
+    texture.debug_tpage_name = "host-residency-page";
+    texture.load_to_pool = true;
+    level.textures.push_back(std::move(texture));
+  }
+
+  Serializer serializer;
+  level.serialize(serializer);
+  const auto serialized = serializer.get_save_result();
+  const auto compressed = compression::compress_zstd(serialized.first, serialized.second);
+  if (compressed.empty()) {
+    return false;
+  }
+  file_util::write_binary_file(path, compressed.data(), compressed.size());
+  return std::filesystem::exists(path);
+}
+
+void write_texture_page() {
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  GoalTexturePage page = {};
+  page.id = kTexturePageId;
+  page.length = 1;
+  page.name_ptr = kTextureNameOffset;
+  std::memcpy(ee + kTexturePageOffset, &page, sizeof(page));
+  std::memcpy(ee + kTexturePageOffset + sizeof(page), &kTextureObjectOffset,
+              sizeof(kTextureObjectOffset));
+
+  GoalTexture texture = {};
+  texture.w = 16;
+  texture.h = 16;
+  texture.num_mips = 1;
+  texture.name_ptr = kTextureNameOffset;
+  texture.dest[0] = kTextureVram;
+  std::memcpy(ee + kTextureObjectOffset, &texture, sizeof(texture));
+  const char name[] = "host-residency-texture";
+  std::memcpy(ee + kTextureNameOffset + 4, name, sizeof(name));
+}
+
+void append_qword(std::vector<u8>* data, u64 low, u64 high) {
+  const std::size_t offset = data->size();
+  data->resize(offset + 16);
+  std::memcpy(data->data() + offset, &low, sizeof(low));
+  std::memcpy(data->data() + offset + 8, &high, sizeof(high));
+}
+
+void append_gif_tag(std::vector<u8>* data,
+                    u32 loops,
+                    u64 registers,
+                    u32 register_count,
+                    bool pre,
+                    u64 prim) {
+  const u64 low = loops | (1ull << 15) | (static_cast<u64>(pre) << 46) | (prim << 47) |
+                  (static_cast<u64>(register_count) << 60);
+  append_qword(data, low, registers);
+}
+
+void append_st(std::vector<u8>* data, float s, float t) {
+  const std::size_t offset = data->size();
+  data->resize(offset + 16);
+  const float q = 1.f;
+  std::memcpy(data->data() + offset, &s, sizeof(s));
+  std::memcpy(data->data() + offset + 4, &t, sizeof(t));
+  std::memcpy(data->data() + offset + 8, &q, sizeof(q));
+}
+
+void append_rgbaq(std::vector<u8>* data) {
+  constexpr std::array<u32, 4> kWhite = {128, 128, 128, 128};
+  const std::size_t offset = data->size();
+  data->resize(offset + 16);
+  std::memcpy(data->data() + offset, kWhite.data(), 16);
+}
+
+void append_xyzf2(std::vector<u8>* data, u32 x, u32 y) {
+  constexpr u64 kZ = 0xffffff;
+  append_qword(data, static_cast<u64>(x) | (static_cast<u64>(y) << 32), kZ << 4);
+}
+
+void make_textured_sky_draw_chain(u32 texture_vram) {
+  make_empty_chain();
+  std::vector<u8> payload;
+
+  constexpr u64 kAd = static_cast<u64>(GifTag::RegisterDescriptor::AD);
+  append_gif_tag(&payload, 3, kAd, 1, false, 0);
+  const u64 tex0 = texture_vram | (1ull << 14) | (4ull << 26) | (4ull << 30) | (1ull << 34);
+  append_qword(&payload, tex0, static_cast<u64>(GsRegisterAddress::TEX0_1));
+  append_qword(&payload, (1ull << 5) | (1ull << 6),
+               static_cast<u64>(GsRegisterAddress::TEX1_1));
+  append_qword(&payload, 0b101, static_cast<u64>(GsRegisterAddress::CLAMP_1));
+
+  constexpr u64 kSt = static_cast<u64>(GifTag::RegisterDescriptor::ST);
+  constexpr u64 kRgbaq = static_cast<u64>(GifTag::RegisterDescriptor::RGBAQ);
+  constexpr u64 kXyzf2 = static_cast<u64>(GifTag::RegisterDescriptor::XYZF2);
+  constexpr u64 kRegisters = kSt | (kRgbaq << 4) | (kXyzf2 << 8);
+  constexpr u64 kPrim = static_cast<u64>(GsPrim::Kind::TRI) | (1ull << 3) | (1ull << 4) |
+                        (1ull << 6);
+  append_gif_tag(&payload, 3, kRegisters, 3, true, kPrim);
+  append_st(&payload, 0.f, 0.f);
+  append_rgbaq(&payload);
+  append_xyzf2(&payload, 0x8000, 0x7800);
+  append_st(&payload, 0.f, 1.f);
+  append_rgbaq(&payload);
+  append_xyzf2(&payload, 0x7800, 0x8800);
+  append_st(&payload, 1.f, 1.f);
+  append_rgbaq(&payload);
+  append_xyzf2(&payload, 0x8800, 0x8800);
+
+  const u32 bucket_offset = kChainOffset + kSkyDrawBucket * 16;
+  const u32 next_bucket_offset = bucket_offset + 16;
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kSkyDrawPayloadOffset);
+  const u32 direct = (static_cast<u32>(VifCode::Kind::DIRECT) << 24) |
+                     static_cast<u32>(payload.size() / 16);
+  put_tag(kSkyDrawPayloadOffset, DmaTag::Kind::CNT, static_cast<u16>(payload.size() / 16), 0, 0,
+          direct);
+  std::memcpy(static_cast<u8*>(g_ee_main_mem) + kSkyDrawPayloadOffset + 16, payload.data(),
+              payload.size());
+  put_tag(kSkyDrawPayloadOffset + 16 + payload.size(), DmaTag::Kind::NEXT, 0,
+          next_bucket_offset);
+}
+
 }  // namespace
 
 int main() {
@@ -159,8 +305,54 @@ int main() {
   }
   make_empty_chain();
 
+  const auto fixture_root =
+      std::filesystem::temp_directory_path() / "goalpad-jak2-metal-host-residency-test";
+  std::error_code fixture_error;
+  std::filesystem::remove_all(fixture_root, fixture_error);
+  fixture_error.clear();
+  std::filesystem::create_directories(fixture_root / "fr3", fixture_error);
+  std::filesystem::create_directories(fixture_root / "wrong", fixture_error);
+  check(!fixture_error &&
+            write_synthetic_fr3(fixture_root / "fr3/GAME.fr3", "synthetic-common-key", true) &&
+            write_synthetic_fr3(fixture_root / "fr3/arena.fr3", "synthetic-arena-key", false) &&
+            write_synthetic_fr3(fixture_root / "wrong/arena.fr3", "wrong-directory-key", false),
+        "created public synthetic FR3 level-art fixtures");
+  if (failures) {
+    goal_kernel_core_shutdown();
+    return 1;
+  }
+
+  const std::size_t initial_level_count = metal_level_data::level_count();
+  const std::size_t initial_texture_count = metal_texture_live_count();
+
   check(goal_jak2_metal_host_create_presenting(nullptr) == nullptr,
         "rejected presenting mode without an app-owned CAMetalLayer");
+
+  goal_jak2_metal_host* missing_host = goal_jak2_metal_host_create();
+  check(missing_host != nullptr, "created a host for missing-directory rejection");
+  check(missing_host &&
+            !goal_jak2_metal_host_configure_level_art(
+                missing_host, (fixture_root / "missing").string().c_str()),
+        "rejected a missing FR3 directory");
+  goal_gfx_host rejected_callbacks = {};
+  check(missing_host && !goal_jak2_metal_host_copy_gfx_host(missing_host, &rejected_callbacks),
+        "a failed common-art load cannot publish runtime callbacks");
+  goal_jak2_metal_host_destroy(missing_host);
+  check(metal_level_data::level_count() == initial_level_count &&
+            metal_texture_live_count() == initial_texture_count,
+        "missing-directory rejection released its placeholder without leaking level art");
+
+  goal_jak2_metal_host* wrong_host = goal_jak2_metal_host_create();
+  check(wrong_host != nullptr, "created a host for wrong-directory rejection");
+  check(wrong_host &&
+            !goal_jak2_metal_host_configure_level_art(
+                wrong_host, (fixture_root / "wrong").string().c_str()),
+        "rejected an FR3 directory without GAME.fr3");
+  goal_jak2_metal_host_destroy(wrong_host);
+  check(metal_level_data::level_count() == initial_level_count &&
+            metal_texture_live_count() == initial_texture_count,
+        "wrong-directory rejection left no global Metal resources");
+
   goal_jak2_metal_host* host = goal_jak2_metal_host_create();
   check(host != nullptr, "created the process-singleton Jak 2 Metal host");
   if (!host) {
@@ -169,12 +361,42 @@ int main() {
   }
   check(goal_jak2_metal_host_create() == nullptr,
         "rejected a second live Jak 2 Metal host");
+  const std::string fr3_directory = (fixture_root / "fr3").string();
+  check(goal_jak2_metal_host_configure_level_art(host, fr3_directory.c_str()),
+        "synchronously loaded synthetic GAME.fr3 before publishing callbacks");
+  const std::size_t configured_texture_count = metal_texture_live_count();
+  check(metal_level_data::level_count() == initial_level_count + 1 &&
+            configured_texture_count == initial_texture_count + 2,
+        "common art uses its serialized level key and owns one texture plus the placeholder");
+  check(goal_jak2_metal_host_configure_level_art(host, fr3_directory.c_str()) &&
+            metal_level_data::level_count() == initial_level_count + 1 &&
+            metal_texture_live_count() == configured_texture_count,
+        "same-directory configuration is idempotent");
+  check(!goal_jak2_metal_host_configure_level_art(
+            host, (fixture_root / "wrong").string().c_str()),
+        "rejected reconfiguration to another FR3 directory");
 
   goal_gfx_host callbacks = {};
   check(goal_jak2_metal_host_copy_gfx_host(host, &callbacks),
         "copied the app-owned graphics callback table");
   check(callbacks.send_chain && callbacks.sync_path && callbacks.vsync,
         "the copied host contains every required synchronous callback");
+  check(callbacks.texture_upload_now && callbacks.texture_relocate && callbacks.set_levels,
+        "the copied host contains real texture-residency callbacks");
+
+  const char* arena[] = {"arena"};
+  callbacks.set_levels(arena, 1);
+  check(metal_level_data::level_count() == initial_level_count + 2,
+        "set-levels loaded one requested FR3 under its serialized key");
+  callbacks.set_levels(arena, 1);
+  check(metal_level_data::level_count() == initial_level_count + 2 &&
+            metal_texture_live_count() == configured_texture_count,
+        "set-levels loads each requested basename only once and retains it");
+
+  write_texture_page();
+  callbacks.texture_upload_now(static_cast<u8*>(g_ee_main_mem) + kTexturePageOffset, -1,
+                               kSyntheticS7);
+  callbacks.texture_relocate(kRelocatedTextureVram, kTextureVram, 0);
 
   goal_jak2_metal_frame_summary frame_summary = {1, 1, 1, 1, 1, 1, 1};
   check(!goal_jak2_metal_host_read_last_frame(host, &frame_summary) && is_zero(frame_summary),
@@ -297,14 +519,71 @@ int main() {
             metrics.unsupported_blends == 0,
         "nil-layer SKY_DRAW drawing remains submission- and presentation-free");
 
+  make_textured_sky_draw_chain(kRelocatedTextureVram);
+  callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(host, &metrics),
+        "copied metrics after real upload and relocate callbacks");
+  check(metrics.chains == 5 && metrics.completed_chains == 5 && metrics.failed_chains == 0 &&
+            metrics.texture_uploads == 1 && metrics.texture_relocations == 1,
+        "real texture upload and relocation preserved their host counters");
+  check(metrics.last_sky_draw_batch_valid == 1 &&
+            metrics.last_sky_draw_batch_textured == 1 &&
+            metrics.last_sky_draw_batch_tex0_tbp == kRelocatedTextureVram &&
+            metrics.last_sky_draw_batch_texture_lookup_hit == 1 &&
+            metrics.last_sky_draw_batch_used_placeholder == 0,
+        "SKY_DRAW resolved the configured GAME texture through upload and relocation mapping");
+
+  const char* missing_level[] = {"missing-level"};
+  callbacks.set_levels(missing_level, 1);
+  make_empty_chain();
+  callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(host, &metrics) && metrics.chains == 6 &&
+            metrics.completed_chains == 5 && metrics.failed_chains == 1,
+        "a requested FR3 load failure fails the next renderer chain closed");
+
   goal_jak2_metal_host_destroy(host);
   callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(!goal_jak2_metal_host_get_metrics(host, &metrics),
         "a destroyed host no longer exposes state while stale callbacks remain inert");
+  check(metal_level_data::level_count() == initial_level_count &&
+            metal_texture_live_count() == initial_texture_count,
+        "destroy unloaded recorded serialized keys in reverse and released every texture handle");
   goal_jak2_metal_host* replacement = goal_jak2_metal_host_create();
   check(replacement != nullptr, "host ownership can be re-established after destruction");
+  check(replacement &&
+            goal_jak2_metal_host_configure_level_art(replacement, fr3_directory.c_str()),
+        "a recreated host can own the same FR3 directory after exact teardown");
   goal_jak2_metal_host_destroy(replacement);
+
+  goal_jak2_metal_host* basename_host = goal_jak2_metal_host_create();
+  goal_gfx_host basename_callbacks = {};
+  check(basename_host &&
+            goal_jak2_metal_host_configure_level_art(basename_host, fr3_directory.c_str()) &&
+            goal_jak2_metal_host_copy_gfx_host(basename_host, &basename_callbacks),
+        "created a configured host for basename validation");
+  const char* escaped_level[] = {"../outside"};
+  if (basename_callbacks.set_levels) {
+    basename_callbacks.set_levels(escaped_level, 1);
+  }
+  const char* basename_error = goal_jak2_metal_host_last_error(basename_host);
+  check(basename_error && std::strstr(basename_error, "non-basename"),
+        "set-levels rejects path traversal instead of leaving the FR3 directory");
+  goal_jak2_metal_host_destroy(basename_host);
+
+  goal_jak2_metal_host* late_host = goal_jak2_metal_host_create();
+  goal_gfx_host late_callbacks = {};
+  check(late_host && goal_jak2_metal_host_copy_gfx_host(late_host, &late_callbacks),
+        "created a callback-published host for late-configuration rejection");
+  check(late_host &&
+            !goal_jak2_metal_host_configure_level_art(late_host, fr3_directory.c_str()),
+        "rejected level-art configuration after callbacks were published");
+  goal_jak2_metal_host_destroy(late_host);
+  check(metal_level_data::level_count() == initial_level_count &&
+            metal_texture_live_count() == initial_texture_count,
+        "host recreation and late rejection left no global Metal handles");
+
   goal_kernel_core_shutdown();
+  std::filesystem::remove_all(fixture_root, fixture_error);
 
   if (failures) {
     std::printf("FAIL: %d Jak 2 Metal host lifecycle checks failed\n", failures);

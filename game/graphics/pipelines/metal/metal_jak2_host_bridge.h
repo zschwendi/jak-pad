@@ -87,6 +87,14 @@ goal_jak2_metal_host* goal_jak2_metal_host_create(void);
 goal_jak2_metal_host* goal_jak2_metal_host_create_presenting(
     goal_jak2_metal_host_layer layer);
 
+/*!
+ * Configure host-owned Jak 2 level art before copying the graphics callbacks. `fr3_directory` is
+ * copied, then GAME.fr3 is synchronously loaded as common art. Repeating the same successful
+ * configuration is harmless; a different directory, a late call, or a load failure is rejected.
+ */
+int goal_jak2_metal_host_configure_level_art(goal_jak2_metal_host* host,
+                                             const char* fr3_directory);
+
 /*! Copy the app-owned callback table into `out`; the runtime copies it again during start. */
 int goal_jak2_metal_host_copy_gfx_host(goal_jak2_metal_host* host, goal_gfx_host* out);
 
