@@ -15,10 +15,12 @@ namespace {
 
 constexpr u32 kChainOffset = 0x100000;
 constexpr u32 kBucketCount = static_cast<u32>(jak2::BucketId::MAX_BUCKETS);
+constexpr u32 kSkyDrawBucket = static_cast<u32>(jak2::BucketId::SKY_DRAW);
 constexpr u32 kScreenFilterBucket = static_cast<u32>(jak2::BucketId::SCREEN_FILTER);
 constexpr u32 kDebugNoZbuf2Bucket = static_cast<u32>(jak2::BucketId::DEBUG_NO_ZBUF2);
-constexpr u32 kScreenFilterPayloadOffset = kChainOffset + 0x4000;
-constexpr u32 kDebugNoZbuf2PayloadOffset = kChainOffset + 0x5000;
+constexpr u32 kSkyDrawPayloadOffset = kChainOffset + 0x4000;
+constexpr u32 kScreenFilterPayloadOffset = kChainOffset + 0x5000;
+constexpr u32 kDebugNoZbuf2PayloadOffset = kChainOffset + 0x6000;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 
@@ -109,6 +111,11 @@ void make_screen_filter_chain() {
   make_direct_chain(kScreenFilterBucket, kScreenFilterPayloadOffset);
 }
 
+void make_sky_draw_chain() {
+  static_assert(kSkyDrawBucket == 5);
+  make_direct_chain(kSkyDrawBucket, kSkyDrawPayloadOffset);
+}
+
 void make_debug_no_zbuf2_chain() {
   static_assert(kDebugNoZbuf2Bucket == 325);
   make_direct_chain(kDebugNoZbuf2Bucket, kDebugNoZbuf2PayloadOffset);
@@ -162,6 +169,7 @@ int main() {
             metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
             metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&
             metrics.draws == 0 && metrics.triangles == 0 && metrics.submissions == 0 &&
+            metrics.last_sky_draw_draws == 0 && metrics.last_sky_draw_triangles == 0 &&
             metrics.last_screen_filter_draws == 0 && metrics.last_screen_filter_triangles == 0 &&
             metrics.last_debug_no_zbuf2_draws == 0 &&
             metrics.last_debug_no_zbuf2_triangles == 0 &&
@@ -180,6 +188,7 @@ int main() {
         "the synthetic SCREEN_FILTER chain completed all 327 policy buckets");
   check(metrics.draws == 1 && metrics.triangles == 1 && metrics.last_screen_filter_draws == 1 &&
             metrics.last_screen_filter_triangles == 1 &&
+            metrics.last_sky_draw_draws == 0 && metrics.last_sky_draw_triangles == 0 &&
             metrics.last_debug_no_zbuf2_draws == 0 &&
             metrics.last_debug_no_zbuf2_triangles == 0,
         "SCREEN_FILTER records its deterministic Direct draw and triangle");
@@ -203,6 +212,7 @@ int main() {
   check(metrics.draws == 1 && metrics.triangles == 1 &&
             metrics.last_debug_no_zbuf2_draws == 1 &&
             metrics.last_debug_no_zbuf2_triangles == 1 &&
+            metrics.last_sky_draw_draws == 0 && metrics.last_sky_draw_triangles == 0 &&
             metrics.last_screen_filter_draws == 0 && metrics.last_screen_filter_triangles == 0,
         "DEBUG_NO_ZBUF2 owns the deterministic Direct draw and triangle exactly");
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
@@ -212,6 +222,27 @@ int main() {
             metrics.presentation_drops == 0 && metrics.presentation_order_mismatches == 0 &&
             metrics.unsupported_blends == 0,
         "nil-layer DEBUG_NO_ZBUF2 drawing remains submission- and presentation-free");
+
+  make_sky_draw_chain();
+  callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(host, &metrics),
+        "copied the host metrics after synthetic SKY_DRAW dispatch");
+  check(metrics.chains == 4 && metrics.completed_chains == 4 && metrics.failed_chains == 0 &&
+            metrics.last_buckets_dispatched == kBucketCount,
+        "the synthetic SKY_DRAW chain completed all 327 policy buckets");
+  check(metrics.draws == 1 && metrics.triangles == 1 && metrics.last_sky_draw_draws == 1 &&
+            metrics.last_sky_draw_triangles == 1 && metrics.last_screen_filter_draws == 0 &&
+            metrics.last_screen_filter_triangles == 0 &&
+            metrics.last_debug_no_zbuf2_draws == 0 &&
+            metrics.last_debug_no_zbuf2_triangles == 0,
+        "SKY_DRAW owns the deterministic Direct draw and triangle exactly");
+  check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
+            metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
+            metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&
+            metrics.submissions == 0 && metrics.presentations == 0 &&
+            metrics.presentation_drops == 0 && metrics.presentation_order_mismatches == 0 &&
+            metrics.unsupported_blends == 0,
+        "nil-layer SKY_DRAW drawing remains submission- and presentation-free");
 
   goal_jak2_metal_host_destroy(host);
   callbacks.send_chain(g_ee_main_mem, kChainOffset);

@@ -35,6 +35,8 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t late_present_submissions;
   uint64_t draws;
   uint64_t triangles;
+  uint64_t last_sky_draw_draws;
+  uint64_t last_sky_draw_triangles;
   uint64_t last_screen_filter_draws;
   uint64_t last_screen_filter_triangles;
   uint64_t last_debug_no_zbuf2_draws;

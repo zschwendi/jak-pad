@@ -356,6 +356,9 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ASSERT(batch_size != 0);
       const char* name = "direct";
       switch (static_cast<jak2::BucketId>(bucket_id)) {
+        case jak2::BucketId::SKY_DRAW:
+          name = "sky-draw";
+          break;
         case jak2::BucketId::SCREEN_FILTER:
           name = "screen-filter";
           break;
@@ -1013,6 +1016,8 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.chains_rendered++;
     m_chain_stats.draw_calls = ctx.draw_calls;
     m_chain_stats.triangles = ctx.triangles;
+    m_chain_stats.jak2_sky_draw_draws = 0;
+    m_chain_stats.jak2_sky_draw_triangles = 0;
     m_chain_stats.jak2_screen_filter_draws = 0;
     m_chain_stats.jak2_screen_filter_triangles = 0;
     m_chain_stats.jak2_debug_no_zbuf2_draws = 0;
@@ -1034,7 +1039,11 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
       } else if (auto* d = dynamic_cast<MetalDirectRenderer*>(r.get())) {
         unsupported_blends += d->stats().unsupported_blends;
         if (m_shared_state.version == GameVersion::Jak2 &&
-            bucket_id == static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)) {
+            bucket_id == static_cast<std::size_t>(jak2::BucketId::SKY_DRAW)) {
+          m_chain_stats.jak2_sky_draw_draws = d->stats().draw_calls;
+          m_chain_stats.jak2_sky_draw_triangles = d->stats().triangles;
+        } else if (m_shared_state.version == GameVersion::Jak2 &&
+                   bucket_id == static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)) {
           m_chain_stats.jak2_screen_filter_draws = d->stats().draw_calls;
           m_chain_stats.jak2_screen_filter_triangles = d->stats().triangles;
         } else if (m_shared_state.version == GameVersion::Jak2 &&

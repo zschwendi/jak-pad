@@ -53,6 +53,8 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.late_present_submissions = stats.late_present_submissions;
   host->metrics.draws = stats.draw_calls;
   host->metrics.triangles = stats.triangles;
+  host->metrics.last_sky_draw_draws = stats.jak2_sky_draw_draws;
+  host->metrics.last_sky_draw_triangles = stats.jak2_sky_draw_triangles;
   host->metrics.last_screen_filter_draws = stats.jak2_screen_filter_draws;
   host->metrics.last_screen_filter_triangles = stats.jak2_screen_filter_triangles;
   host->metrics.last_debug_no_zbuf2_draws = stats.jak2_debug_no_zbuf2_draws;
