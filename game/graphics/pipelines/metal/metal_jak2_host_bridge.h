@@ -68,7 +68,8 @@ typedef struct goal_jak2_sprite_texture_upload_metrics {
 
 enum {
   GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
-  GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT = 6,
+  GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
+  GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT = 7,
 };
 
 typedef struct goal_jak2_tfrag_texture_upload_metrics {
@@ -82,6 +83,7 @@ typedef struct goal_jak2_tfrag_texture_upload_metrics {
   uint64_t inert_transfers;
   uint64_t ordinary_descriptors;
   uint64_t direct_setup_transfers;
+  uint64_t gs_setup_transfers;
   uint64_t animator_arrays;
   uint64_t animator_body_transfers;
   uint64_t animator_payload_bytes;
@@ -194,6 +196,8 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_sprite_texture_upload_metrics last_sprite_texture_upload;
   goal_jak2_tfrag_texture_upload_metrics
       tfrag_texture_uploads[GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT];
+  goal_jak2_tfrag_texture_upload_metrics
+      shrub_texture_uploads[GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT];
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

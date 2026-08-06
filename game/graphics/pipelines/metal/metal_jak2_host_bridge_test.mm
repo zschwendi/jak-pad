@@ -206,12 +206,11 @@ bool sky_batch_is_zero(const goal_jak2_metal_host_metrics& metrics) {
          metrics.last_sky_draw_batch_alpha_afail == 0;
 }
 
-bool normal_tfrag_texture_captures_are_empty(
-    const goal_jak2_metal_host_metrics& metrics) {
-  constexpr std::array<u32, GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT> kBuckets = {
-      7, 18, 29, 40, 51, 62};
+bool texture_captures_are_empty(
+    const goal_jak2_tfrag_texture_upload_metrics* uploads,
+    const std::array<u32, GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT>& kBuckets) {
   for (std::size_t i = 0; i < kBuckets.size(); ++i) {
-    const auto& upload = metrics.tfrag_texture_uploads[i];
+    const auto& upload = uploads[i];
     if (upload.bucket_id != kBuckets[i] || upload.captures != 1 ||
         upload.present_captures != 0 || upload.classifications[1] != 1 ||
         upload.transfers != 1 || upload.inert_transfers != 1 || upload.payload_bytes != 0 ||
@@ -533,8 +532,14 @@ int main() {
   check(metrics.chains == 1 && metrics.completed_chains == 1 && metrics.failed_chains == 0 &&
             metrics.last_buckets_dispatched == kBucketCount,
         "one copied 327-bucket chain completed policy dispatch");
-  check(normal_tfrag_texture_captures_are_empty(metrics),
+  constexpr std::array<u32, GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT> kTfragBuckets = {
+      7, 18, 29, 40, 51, 62};
+  constexpr std::array<u32, GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT> kShrubBuckets = {
+      73, 82, 91, 100, 109, 118};
+  check(texture_captures_are_empty(metrics.tfrag_texture_uploads, kTfragBuckets),
         "the host records all six empty normal TFRAG texture setup buckets");
+  check(texture_captures_are_empty(metrics.shrub_texture_uploads, kShrubBuckets),
+        "the host records all six empty normal SHRUB texture setup buckets");
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
             metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
             metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&

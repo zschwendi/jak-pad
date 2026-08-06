@@ -308,33 +308,32 @@ void copy_sprite_texture_upload_metrics(
   }
 }
 
-void record_tfrag_texture_upload_metrics(
-    goal_jak2_metal_host* host,
-    std::size_t index,
+void record_texture_upload_metrics(
+    goal_jak2_tfrag_texture_upload_metrics* out,
     u32 bucket_id,
     const metal_renderer::Jak2CommonTfragTextureUploadCapture& capture) {
   static_assert(GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT ==
                 metal_renderer::kJak2NormalTfragTextureUploadBuckets.size());
-  static_assert(GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT == 6);
-  auto& out = host->metrics.tfrag_texture_uploads[index];
-  out.bucket_id = bucket_id;
-  out.captures++;
-  out.present_captures += capture.present;
+  static_assert(GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT == 7);
+  out->bucket_id = bucket_id;
+  out->captures++;
+  out->present_captures += capture.present;
   const auto classification = static_cast<std::size_t>(capture.classification);
   if (classification < GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT) {
-    out.classifications[classification]++;
+    out->classifications[classification]++;
   }
-  out.transfers += capture.transfer_count;
-  out.payload_bytes += capture.total_payload_bytes;
-  out.inert_transfers += capture.inert_transfers;
-  out.ordinary_descriptors += capture.ordinary_descriptors;
-  out.direct_setup_transfers += capture.direct_setup_transfers;
-  out.animator_arrays += capture.animator_arrays;
-  out.animator_body_transfers += capture.animator_body_transfers;
-  out.animator_payload_bytes += capture.animator_payload_bytes;
-  out.eye_markers += capture.eye_markers;
-  out.other_transfers += capture.other_transfers;
-  out.malformed_transfers += capture.malformed_transfers;
+  out->transfers += capture.transfer_count;
+  out->payload_bytes += capture.total_payload_bytes;
+  out->inert_transfers += capture.inert_transfers;
+  out->ordinary_descriptors += capture.ordinary_descriptors;
+  out->direct_setup_transfers += capture.direct_setup_transfers;
+  out->gs_setup_transfers += capture.gs_setup_transfers;
+  out->animator_arrays += capture.animator_arrays;
+  out->animator_body_transfers += capture.animator_body_transfers;
+  out->animator_payload_bytes += capture.animator_payload_bytes;
+  out->eye_markers += capture.eye_markers;
+  out->other_transfers += capture.other_transfers;
+  out->malformed_transfers += capture.malformed_transfers;
   for (std::size_t i = 0; i < capture.transfer_count; ++i) {
     const auto& transfer = capture.transfers[i];
     const bool ordinary =
@@ -345,13 +344,13 @@ void record_tfrag_texture_upload_metrics(
         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
         transfer.vif1_immediate == 3;
     if (transfer.payload_bytes != 0 && !ordinary) {
-      out.last_nonordinary_payload_bytes = transfer.payload_bytes;
-      out.last_nonordinary_qwc = transfer.qwc;
-      out.last_nonordinary_tag_kind = transfer.tag_kind;
-      out.last_nonordinary_vif0_kind = transfer.vif0_kind;
-      out.last_nonordinary_vif0_immediate = transfer.vif0_immediate;
-      out.last_nonordinary_vif1_kind = transfer.vif1_kind;
-      out.last_nonordinary_vif1_immediate = transfer.vif1_immediate;
+      out->last_nonordinary_payload_bytes = transfer.payload_bytes;
+      out->last_nonordinary_qwc = transfer.qwc;
+      out->last_nonordinary_tag_kind = transfer.tag_kind;
+      out->last_nonordinary_vif0_kind = transfer.vif0_kind;
+      out->last_nonordinary_vif0_immediate = transfer.vif0_immediate;
+      out->last_nonordinary_vif1_kind = transfer.vif1_kind;
+      out->last_nonordinary_vif1_immediate = transfer.vif1_immediate;
     }
   }
 }
@@ -399,37 +398,58 @@ bool execute_ordinary_texture_upload(
 using Jak2TfragTextureUploadPlans =
     std::array<metal_renderer::Jak2NormalTfragTextureUploadPlan,
                metal_renderer::kJak2NormalTfragTextureUploadBuckets.size()>;
+using Jak2ShrubTextureUploadPlans =
+    std::array<metal_renderer::Jak2NormalShrubTextureUploadPlan,
+               metal_renderer::kJak2NormalShrubTextureUploadBuckets.size()>;
 
-struct Jak2TfragTextureUploadDispatch {
+struct Jak2TextureUploadDispatch {
   goal_jak2_metal_host* host = nullptr;
-  const Jak2TfragTextureUploadPlans* plans = nullptr;
+  const Jak2TfragTextureUploadPlans* tfrag_plans = nullptr;
+  const Jak2ShrubTextureUploadPlans* shrub_plans = nullptr;
   const u8* live_ee_memory = nullptr;
   bool* host_texture_mutated = nullptr;
 };
 
-void execute_planned_tfrag_texture_upload(void* opaque, u32 bucket_id) {
-  auto* dispatch = static_cast<Jak2TfragTextureUploadDispatch*>(opaque);
+void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
+  auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
   const auto found = std::find(metal_renderer::kJak2NormalTfragTextureUploadBuckets.begin(),
                                metal_renderer::kJak2NormalTfragTextureUploadBuckets.end(),
                                bucket_id);
-  if (found == metal_renderer::kJak2NormalTfragTextureUploadBuckets.end()) {
+  if (found != metal_renderer::kJak2NormalTfragTextureUploadBuckets.end()) {
+    const std::size_t index = static_cast<std::size_t>(
+        found - metal_renderer::kJak2NormalTfragTextureUploadBuckets.begin());
+    const auto& plan = (*dispatch->tfrag_plans)[index];
+    if (!plan.present) {
+      return;
+    }
+    if (plan.bucket_id != bucket_id) {
+      throw std::runtime_error("Jak 2 normal TFRAG texture-upload dispatch order is inconsistent");
+    }
+    const std::string label =
+        "Jak 2 normal TFRAG texture upload bucket " + std::to_string(bucket_id);
+    execute_ordinary_texture_upload_or_throw(
+        dispatch->host, plan.ordinary, dispatch->live_ee_memory,
+        &dispatch->host->metrics.tfrag_texture_uploads[index].executions, label.c_str(),
+        dispatch->host_texture_mutated);
+    return;
+  }
+
+  const auto shrub = std::find(metal_renderer::kJak2NormalShrubTextureUploadBuckets.begin(),
+                               metal_renderer::kJak2NormalShrubTextureUploadBuckets.end(),
+                               bucket_id);
+  if (shrub == metal_renderer::kJak2NormalShrubTextureUploadBuckets.end()) {
     return;
   }
   const std::size_t index = static_cast<std::size_t>(
-      found - metal_renderer::kJak2NormalTfragTextureUploadBuckets.begin());
-  const auto& plan = (*dispatch->plans)[index];
+      shrub - metal_renderer::kJak2NormalShrubTextureUploadBuckets.begin());
+  const auto& plan = (*dispatch->shrub_plans)[index];
   if (!plan.present) {
     return;
   }
   if (plan.bucket_id != bucket_id) {
-    throw std::runtime_error("Jak 2 normal TFRAG texture-upload dispatch order is inconsistent");
+    throw std::runtime_error("Jak 2 normal SHRUB texture-setup dispatch order is inconsistent");
   }
-  const std::string label =
-      "Jak 2 normal TFRAG texture upload bucket " + std::to_string(bucket_id);
-  execute_ordinary_texture_upload_or_throw(
-      dispatch->host, plan.ordinary, dispatch->live_ee_memory,
-      &dispatch->host->metrics.tfrag_texture_uploads[index].executions, label.c_str(),
-      dispatch->host_texture_mutated);
+  dispatch->host->metrics.shrub_texture_uploads[index].executions++;
 }
 
 bool execute_bucket4_plan(goal_jak2_metal_host* host,
@@ -559,7 +579,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       const auto plan = metal_renderer::plan_jak2_normal_tfrag_texture_upload(
           static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id,
           static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &capture);
-      record_tfrag_texture_upload_metrics(host, i, bucket_id, capture);
+      record_texture_upload_metrics(&host->metrics.tfrag_texture_uploads[i], bucket_id, capture);
       if (!plan) {
         const std::string error = "Jak 2 TFRAG texture-upload plan rejected bucket " +
                                   std::to_string(bucket_id) + " DMA";
@@ -567,6 +587,24 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         return;
       }
       tfrag_texture_plans[i] = *plan;
+    }
+    Jak2ShrubTextureUploadPlans shrub_texture_plans;
+    static_assert(GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT ==
+                  metal_renderer::kJak2NormalShrubTextureUploadBuckets.size());
+    for (std::size_t i = 0; i < metal_renderer::kJak2NormalShrubTextureUploadBuckets.size();
+         ++i) {
+      const u32 bucket_id = metal_renderer::kJak2NormalShrubTextureUploadBuckets[i];
+      metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+      const auto plan = metal_renderer::plan_jak2_normal_shrub_texture_upload(
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id, &capture);
+      record_texture_upload_metrics(&host->metrics.shrub_texture_uploads[i], bucket_id, capture);
+      if (!plan) {
+        const std::string error = "Jak 2 SHRUB texture-setup plan rejected bucket " +
+                                  std::to_string(bucket_id) + " DMA";
+        record_failure(host, error.c_str());
+        return;
+      }
+      shrub_texture_plans[i] = *plan;
     }
     metal_renderer::Jak2Bucket4TextureUploadCapture bucket4_capture;
     const auto bucket4_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
@@ -612,12 +650,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
-    Jak2TfragTextureUploadDispatch tfrag_dispatch{host, &tfrag_texture_plans,
-                                                   static_cast<const u8*>(ee_base),
-                                                   &host_texture_mutated};
+    Jak2TextureUploadDispatch texture_dispatch{host, &tfrag_texture_plans, &shrub_texture_plans,
+                                                static_cast<const u8*>(ee_base),
+                                                &host_texture_mutated};
     auto render_options = host->options;
-    render_options.host_bucket_context = &tfrag_dispatch;
-    render_options.host_bucket_callback = execute_planned_tfrag_texture_upload;
+    render_options.host_bucket_context = &texture_dispatch;
+    render_options.host_bucket_callback = execute_planned_texture_upload;
     const bool acquired = host->renderer.render_chain_frame(
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
     copy_renderer_metrics(host);

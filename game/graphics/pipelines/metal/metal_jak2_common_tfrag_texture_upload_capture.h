@@ -12,6 +12,7 @@ namespace metal_renderer {
 
 constexpr u32 kJak2CommonTfragTextureUploadBucket = 187;
 constexpr std::array<u32, 6> kJak2NormalTfragTextureUploadBuckets = {7, 18, 29, 40, 51, 62};
+constexpr std::array<u32, 6> kJak2NormalShrubTextureUploadBuckets = {73, 82, 91, 100, 109, 118};
 constexpr std::size_t kJak2CommonTfragTextureUploadMaximumTransfers = 64;
 constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
 
@@ -22,6 +23,7 @@ enum class Jak2CommonTfragTextureUploadClass : u8 {
   AnimatorOnly,
   OrdinaryAndAnimator,
   EyeOrOther,
+  GsSetupOnly,
 };
 
 struct Jak2CommonTfragTransferMetadata {
@@ -49,6 +51,7 @@ struct Jak2CommonTfragTextureUploadCapture {
   u32 inert_transfers = 0;
   u32 ordinary_descriptors = 0;
   u32 direct_setup_transfers = 0;
+  u32 gs_setup_transfers = 0;
   u32 animator_arrays = 0;
   u32 animator_body_transfers = 0;
   u64 animator_payload_bytes = 0;
@@ -64,8 +67,13 @@ struct Jak2NormalTfragTextureUploadPlan {
   Jak2Bucket4OrdinaryUploadPlan ordinary;
 };
 
+struct Jak2NormalShrubTextureUploadPlan {
+  u32 bucket_id = 0;
+  bool present = false;
+};
+
 /*!
- * Inspect one audited Jak II TFRAG texture-setup bucket using tag and VIF metadata only.
+ * Inspect one audited Jak II TFRAG or SHRUB texture-setup bucket using tag and VIF metadata only.
  * The capture never reads transfer payload contents, retains no source pointers, and performs no
  * texture-pool or renderer mutation. The fixed-size result owns every recorded scalar and is safe
  * after the source snapshot is reused. Tag locations are relative to the bucket-table entry. Eye
@@ -92,6 +100,18 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
     u32 bucket_id,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+/*!
+ * Plan the exact Direct-only normal SHRUB setup written by Jak II. Both GS payloads are inert for
+ * the matching GL TextureUploadHandler, which is constructed without add_direct; no page pointer
+ * is read and no texture-pool mutation is planned.
+ */
+std::optional<Jak2NormalShrubTextureUploadPlan> plan_jak2_normal_shrub_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id,
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*! Preserve the original TEX_LCOM_TFRAG (bucket 187) capture seam. */

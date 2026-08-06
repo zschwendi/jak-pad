@@ -52,11 +52,11 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 157, "157 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 151, "151 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 3, "three reviewed OpenGL-bound buckets are implemented by Metal Direct");
-  check(host_texture_upload == 8,
-        "eight exact texture-upload buckets are executed synchronously by the host");
+  check(host_texture_upload == 14,
+        "fourteen exact texture/setup buckets are handled synchronously by the host");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
   check(sprite == 1, "one normal Sprite3 bucket is implemented by Metal");
   check(tfragment == 6, "six normal per-level TFRAG buckets are implemented by Metal");
@@ -164,14 +164,19 @@ int main() {
             static_cast<std::size_t>(jak2::BucketId::SHRUB_L4_SHRUB) == 110 &&
             static_cast<std::size_t>(jak2::BucketId::SHRUB_L5_SHRUB) == 119,
         "normal SHRUB keeps the exact audited bucket IDs 74, 83, 92, 101, 110, and 119");
-  check(has_behavior(jak2::BucketId::TEX_L0_SHRUB, Behavior::DeferredSkip) &&
+  check(has_behavior(jak2::BucketId::TEX_L0_SHRUB, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L1_SHRUB, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L2_SHRUB, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L3_SHRUB, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L4_SHRUB, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L5_SHRUB, Behavior::HostTextureUpload) &&
             has_behavior(jak2::BucketId::SHRUB_N_L0_SHRUB, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::BILLBOARD_L0_SHRUB, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::SHRUB_V_L0_SHRUB, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::SHRUB_NT_L0_SHRUB, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::MERC_L0_SHRUB, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::DeferredSkip),
-        "SHRUB texture and every neighboring family remain deferred or strict-empty");
+        "SHRUB Direct-only setup is host-owned while neighboring families remain deferred");
   check(has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_TFRAG, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::DeferredSkip) &&

@@ -113,6 +113,20 @@ std::vector<u8> make_unobserved_direct_first_fixture(u32 bucket_id) {
   return packet;
 }
 
+std::vector<u8> make_normal_shrub_fixture(u32 bucket_id) {
+  std::vector<u8> packet(kMemorySize);
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirectVif | 2);
+  std::fill_n(packet.begin() + kOrdinaryOffset + 16, 32, 0x41);
+  put_tag(&packet, kOrdinaryOffset + 48, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  return packet;
+}
+
 void put_animator_array(std::vector<u8>* packet,
                         u32 offset,
                         u16 opcode,
@@ -153,6 +167,7 @@ bool metadata_matches(const Capture& lhs, const Capture& rhs) {
       lhs.inert_transfers != rhs.inert_transfers ||
       lhs.ordinary_descriptors != rhs.ordinary_descriptors ||
       lhs.direct_setup_transfers != rhs.direct_setup_transfers ||
+      lhs.gs_setup_transfers != rhs.gs_setup_transfers ||
       lhs.animator_arrays != rhs.animator_arrays ||
       lhs.animator_body_transfers != rhs.animator_body_transfers ||
       lhs.animator_payload_bytes != rhs.animator_payload_bytes ||
@@ -203,7 +218,7 @@ void test_exact_empty_and_ordinary_metadata() {
         "a nonzero PC_PORT immediate cannot be classified as the exact ordinary descriptor");
 }
 
-void test_normal_tfrag_bucket_allowlist() {
+void test_texture_bucket_allowlist() {
   for (const u32 bucket_id : metal_renderer::kJak2NormalTfragTextureUploadBuckets) {
     auto result = capture(make_empty_fixture(bucket_id), bucket_id);
     check(result.valid && !result.present &&
@@ -213,6 +228,12 @@ void test_normal_tfrag_bucket_allowlist() {
     check(result.valid && result.present && result.ordinary_descriptors == 1 &&
               result.classification == Classification::OrdinaryOnly,
           "each audited normal TFRAG texture bucket recognizes an ordinary descriptor");
+  }
+
+  for (const u32 bucket_id : metal_renderer::kJak2NormalShrubTextureUploadBuckets) {
+    const auto result = capture(make_empty_fixture(bucket_id), bucket_id);
+    check(result.valid && !result.present && result.classification == Classification::Absent,
+          "each audited normal SHRUB texture bucket accepts an exact empty chain");
   }
 
   const auto packet = make_empty_fixture();
@@ -270,6 +291,35 @@ void test_normal_tfrag_execution_plan() {
              packet.data(), packet.size(), kChainOffset, 7, packet.data(), packet.size())
              .has_value(),
         "the unobserved Direct-before-descriptor order is rejected");
+}
+
+void test_normal_shrub_execution_plan() {
+  for (const u32 bucket_id : metal_renderer::kJak2NormalShrubTextureUploadBuckets) {
+    auto packet = make_normal_shrub_fixture(bucket_id);
+    metal_renderer::Jak2CommonTfragTextureUploadCapture result;
+    const auto plan = metal_renderer::plan_jak2_normal_shrub_texture_upload(
+        packet.data(), packet.size(), kChainOffset, bucket_id, &result);
+    check(plan.has_value() && plan->present && plan->bucket_id == bucket_id && result.valid &&
+              result.classification == Classification::GsSetupOnly &&
+              result.transfer_count == 5 && result.total_payload_bytes == 192 &&
+              result.inert_transfers == 3 && result.gs_setup_transfers == 1 &&
+              result.direct_setup_transfers == 1 && result.ordinary_descriptors == 0 &&
+              result.other_transfers == 0,
+          "each normal SHRUB texture bucket produces one exact Direct-only no-op plan");
+  }
+
+  auto packet = make_normal_shrub_fixture(73);
+  put_u32(&packet, kOrdinaryOffset + 12, kDirectVif | 3);
+  check(!metal_renderer::plan_jak2_normal_shrub_texture_upload(
+             packet.data(), packet.size(), kChainOffset, 73)
+             .has_value(),
+        "a normal SHRUB setup with a non-source Direct length is rejected");
+
+  packet = make_normal_ordinary_fixture(73);
+  check(!metal_renderer::plan_jak2_normal_shrub_texture_upload(
+             packet.data(), packet.size(), kChainOffset, 73)
+             .has_value(),
+        "an unobserved ordinary page descriptor is rejected for normal SHRUB setup");
 }
 
 void test_animator_and_combined_metadata() {
@@ -350,8 +400,9 @@ void test_eye_and_other_work_are_not_promoted() {
   put_tag(&other, kOrdinaryOffset + 48, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
   result = capture(other);
   check(result.valid && result.classification == Classification::EyeOrOther &&
-            result.eye_markers == 0 && result.other_transfers == 1,
-        "unclassified work remains visible and cannot look ordinary-only");
+            result.eye_markers == 0 && result.gs_setup_transfers == 1 &&
+            result.other_transfers == 0,
+        "an isolated GS setup remains visible and cannot look like the exact SHRUB envelope");
 
   std::vector<u8> alternate_inert(kMemorySize);
   put_tag(&alternate_inert, bucket_offset(), DmaTag::Kind::REF, 0, 0, 0, 0);
@@ -484,8 +535,9 @@ void test_transfer_limit_is_enforced() {
 
 int main() {
   test_exact_empty_and_ordinary_metadata();
-  test_normal_tfrag_bucket_allowlist();
+  test_texture_bucket_allowlist();
   test_normal_tfrag_execution_plan();
+  test_normal_shrub_execution_plan();
   test_animator_and_combined_metadata();
   test_payload_contents_are_never_part_of_classification();
   test_capture_owns_metadata_after_snapshot_reuse();
