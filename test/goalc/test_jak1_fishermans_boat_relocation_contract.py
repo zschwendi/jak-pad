@@ -110,25 +110,30 @@ def complete_ride_model(
         raise RuntimeError("destination never became resident")
 
     correction = tuple(dock[index] - animated_boat[index] for index in range(3))
-    target = tuple(animated_target[index] + correction[index] for index in range(3))
+    desired_target = tuple(animated_target[index] + correction[index] for index in range(3))
+    target = animated_target
     trace.extend(
         (
             "snap-boat",
             "reset-rbody",
-            "restore-target",
-            "clear-restore-ground-flags",
         )
     )
     for grounded in ground_results:
+        target = desired_target
+        trace.extend(("place-target:desired-offset", "clear-ground-flags"))
         trace.append(f"ground:{str(grounded).lower()}")
         if grounded:
             break
         trace.append("suspend")
+        target = dock
+        trace.append("clone-overwrite-target:boat-origin")
     else:
         raise RuntimeError("destination ground never became available")
 
     trace.extend(
         (
+            "save-grounded-target",
+            "restore-grounded-transform",
             "end-clone-mode",
             "sync-orientation",
             "sync-collision-history",
@@ -237,16 +242,24 @@ class Jak1FishermansBoatRelocationContractTest(unittest.TestCase):
     def test_atomic_completion_survives_stale_clone_exit_and_first_reevaluation(self) -> None:
         end_mode = "(send-event *target* 'end-mode)"
         restore = "(send-event *target* 'trans 'restore (-> self old-target-pos))"
-        clear_restore_flags = "(logclear! (-> *target* control status) (cshape-moving-flags onsurf onground tsurf))"
-        ground_retry = "(while (not (move-to-ground (-> *target* control) 4096.0 40960.0 #t (-> *target* control root-prim collide-with)))"
+        clear_ground_flags = "(logclear! (-> *target* control status) (cshape-moving-flags onsurf onground tsurf))"
+        placement = "(move-to-point! (-> *target* control) (-> self old-target-pos trans))"
+        ground_retry = "(while (not grounded)"
+        ground_probe = "(set! grounded (move-to-ground (-> *target* control) 4096.0 40960.0 #t (-> *target* control root-prim collide-with)))"
+        save_grounded = "(set! (-> self old-target-pos trans quad) (-> *target* control trans quad))"
         orientation = "(quaternion-copy! (-> *target* control quat-for-control) (-> *target* control quat))"
         history = "(set! (-> *target* control trans-old index quad) (-> *target* control trans quad))"
         commit = "(set-continue! *game-info* arg2)"
         frame_boundary = self.finalizer.rindex("(suspend)")
 
-        self.assertLess(self.finalizer.index(restore), self.finalizer.index(clear_restore_flags))
-        self.assertLess(self.finalizer.index(clear_restore_flags), self.finalizer.index(ground_retry))
-        self.assertLess(self.finalizer.index(ground_retry), self.finalizer.index(end_mode))
+        ground_loop = extract_form(self.finalizer, "(let ((grounded #f))")
+        self.assertLess(ground_loop.index(placement), ground_loop.index(clear_ground_flags))
+        self.assertLess(ground_loop.index(clear_ground_flags), ground_loop.index(ground_probe))
+        self.assertLess(ground_loop.index(ground_probe), ground_loop.index("(when (not grounded)"))
+        self.assertLess(ground_loop.index("(when (not grounded)"), ground_loop.index("(suspend)"))
+        self.assertLess(self.finalizer.index(ground_retry), self.finalizer.index(save_grounded))
+        self.assertLess(self.finalizer.index(save_grounded), self.finalizer.index(restore))
+        self.assertLess(self.finalizer.index(restore), self.finalizer.index(end_mode))
         self.assertLess(self.finalizer.index(end_mode), self.finalizer.index(orientation))
         self.assertLess(self.finalizer.index(orientation), self.finalizer.index(history))
         self.assertLess(self.finalizer.index(history), self.finalizer.index(commit))
@@ -281,12 +294,20 @@ class Jak1FishermansBoatRelocationContractTest(unittest.TestCase):
         failed_ground = result.trace.index("ground:false")
         grounded = result.trace.index("ground:true")
         pre_ground_commit = result.trace[failed_ground:grounded]
-        self.assertLess(result.trace.index("restore-target"), failed_ground)
+        placements = [index for index, event in enumerate(result.trace) if event == "place-target:desired-offset"]
+        self.assertEqual(len(placements), 2)
+        self.assertLess(placements[0], failed_ground)
         self.assertIn("suspend", pre_ground_commit)
+        self.assertIn("clone-overwrite-target:boat-origin", pre_ground_commit)
+        self.assertIn("place-target:desired-offset", pre_ground_commit)
         self.assertNotIn("end-clone-mode", pre_ground_commit)
         self.assertNotIn("continue:misty-start", pre_ground_commit)
         self.assertFalse(any(event.startswith("title:") for event in pre_ground_commit))
         self.assertFalse(any(event.startswith("docked:") for event in pre_ground_commit))
+        self.assertLess(
+            result.trace.index("clone-overwrite-target:boat-origin"), placements[1]
+        )
+        self.assertLess(placements[1], grounded)
         self.assertLess(grounded, result.trace.index("end-clone-mode"))
         self.assertLess(result.trace.index("continue:misty-start"), result.trace.index("frame-boundary"))
         self.assertLess(result.trace.index("frame-boundary"), result.trace.index("owner:misty"))
@@ -378,7 +399,13 @@ class Jak1FishermansBoatRelocationContractTest(unittest.TestCase):
         self.assertFalse(inbound.source_interactable)
         self.assertEqual(inbound.title_events, ())
         for result in (outbound, inbound):
+            placements = [index for index, event in enumerate(result.trace) if event == "place-target:desired-offset"]
+            self.assertEqual(len(placements), 2)
             self.assertLess(result.trace.index("ground:false"), result.trace.index("ground:true"))
+            self.assertLess(
+                result.trace.index("clone-overwrite-target:boat-origin"), placements[1]
+            )
+            self.assertLess(placements[1], result.trace.index("ground:true"))
             self.assertLess(result.trace.index("ground:true"), result.trace.index("end-clone-mode"))
             self.assertLess(result.trace.index("end-clone-mode"), result.trace.index("frame-boundary"))
 
