@@ -842,11 +842,15 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_shared_state.engine_frame_id = opts.engine_frame_id;
     m_shared_state.game_res_w = opts.game_res_w;
     m_shared_state.game_res_h = opts.game_res_h;
+    m_shared_state.animated_texture_slots = opts.animated_texture_slots;
+    m_shared_state.animated_texture_slot_count = opts.animated_texture_slot_count;
     m_shared_state.host_bucket_context = opts.host_bucket_context;
     m_shared_state.host_bucket_callback = opts.host_bucket_callback;
     struct HostBucketCallbackScope {
       MetalSharedRenderState* state;
       ~HostBucketCallbackScope() {
+        state->animated_texture_slots = nullptr;
+        state->animated_texture_slot_count = 0;
         state->host_bucket_context = nullptr;
         state->host_bucket_callback = nullptr;
       }

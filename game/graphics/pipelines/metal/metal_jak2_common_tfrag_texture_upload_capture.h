@@ -100,6 +100,7 @@ struct Jak2Opcode27SkullGemPlan {
 static_assert(sizeof(Jak2Opcode27SkullGemPlan) == 496);
 
 struct Jak2CommonTfragTextureUploadPlan {
+  bool present = false;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
   Jak2Opcode27SkullGemPlan skull_gem;
 };

@@ -27,9 +27,8 @@
  * Not ported, and honestly missing rather than faked:
  *  - wind-instanced draws (trees/flags that sway). They need the per-instance
  *    matrix rebuild the GL renderer does on the CPU each frame.
- *  - negative tree_tex_id texture-animator slots. Until the Jak 2 texture
- *    animator is connected, these draws use the existing placeholder and
- *    increment both anim_slot_draws and missing_textures.
+ *  - texture-animator slots other than the host-published Jak II outputs.
+ *    Unpublished slots use the placeholder and remain counted.
  * Jak 2's per-prototype visibility mask is supported for these static draws.
  * Wind skips remain counted so what is missing from a frame is visible.
  */

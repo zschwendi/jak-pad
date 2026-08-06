@@ -184,6 +184,12 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
         upload.last_nonordinary_tag_kind, upload.last_nonordinary_vif0_kind,
         upload.last_nonordinary_vif0_immediate, upload.last_nonordinary_vif1_kind,
         upload.last_nonordinary_vif1_immediate);
+    for (std::size_t i = 0; i < std::size(upload.opcode_counts); ++i) {
+      if (upload.opcode_counts[i] != 0) {
+        std::printf("%s-textures[%u]-opcode[%zu]=%llu\n", family, upload.bucket_id, i,
+                    static_cast<unsigned long long>(upload.opcode_counts[i]));
+      }
+    }
   };
   for (const auto& upload : metal.tfrag_texture_uploads) {
     print_texture_capture("tfrag", upload);
@@ -191,6 +197,16 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
   for (const auto& upload : metal.shrub_texture_uploads) {
     print_texture_capture("shrub", upload);
   }
+  print_texture_capture("common-tfrag", metal.common_tfrag_texture_upload);
+  std::printf(
+      "common-tfrag-skull-gem: ordinary=%llu prepared=%llu published=%llu "
+      "texture=%llu tbp=%u anim-slot=%u\n",
+      static_cast<unsigned long long>(metal.common_tfrag_ordinary_uploads),
+      static_cast<unsigned long long>(metal.common_tfrag_skull_gem_preparations),
+      static_cast<unsigned long long>(metal.common_tfrag_skull_gem_publications),
+      static_cast<unsigned long long>(metal.common_tfrag_skull_gem_texture),
+      metal.common_tfrag_skull_gem_destination_tbp,
+      metal.common_tfrag_skull_gem_anim_slot);
   std::printf(
       "sky: draws=%llu tris=%llu valid=%u textured=%u vertices=%u rgb-vertices=%u "
       "tbp=%u tcc=%u decal=%u lookup=%u placeholder=%u write-rgb=%u "

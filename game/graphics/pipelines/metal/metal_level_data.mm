@@ -715,10 +715,12 @@ id<MTLTexture> metal_background_texture(const MetalLevelData& level,
       handle = level.textures[tree_tex_id];
     }
   } else {
-    // negative = texture-animator slot. The animator is a Jak 2/3 renderer; a
-    // Jak 1 level should never ask for one, so this is counted rather than
-    // guessed at.
     bg->anim_slot_draws++;
+    const s64 slot = -static_cast<s64>(tree_tex_id) - 1;
+    if (render_state->animated_texture_slots && slot >= 0 &&
+        static_cast<u64>(slot) < render_state->animated_texture_slot_count) {
+      handle = render_state->animated_texture_slots[slot];
+    }
   }
 
   id<MTLTexture> tex = handle ? metal_texture_lookup(handle) : nil;

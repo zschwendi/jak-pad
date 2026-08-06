@@ -223,6 +223,16 @@ bool texture_captures_are_empty(
   return true;
 }
 
+bool texture_capture_is_empty(const goal_jak2_tfrag_texture_upload_metrics& upload,
+                              u32 bucket_id) {
+  return upload.bucket_id == bucket_id && upload.captures == 1 &&
+         upload.present_captures == 0 && upload.classifications[1] == 1 &&
+         upload.transfers == 1 && upload.inert_transfers == 1 && upload.payload_bytes == 0 &&
+         upload.ordinary_descriptors == 0 && upload.animator_arrays == 0 &&
+         upload.eye_markers == 0 && upload.other_transfers == 0 &&
+         upload.malformed_transfers == 0;
+}
+
 bool write_synthetic_fr3(const std::filesystem::path& path,
                          const std::string& level_name,
                          bool with_texture) {
@@ -540,6 +550,13 @@ int main() {
         "the host records all six empty normal TFRAG texture setup buckets");
   check(texture_captures_are_empty(metrics.shrub_texture_uploads, kShrubBuckets),
         "the host records all six empty normal SHRUB texture setup buckets");
+  check(texture_capture_is_empty(metrics.common_tfrag_texture_upload, 187),
+        "the host accepts an exact empty host-owned common TFRAG texture bucket");
+  check(metrics.common_tfrag_ordinary_uploads == 0 &&
+            metrics.common_tfrag_skull_gem_preparations == 0 &&
+            metrics.common_tfrag_skull_gem_publications == 0 &&
+            metrics.common_tfrag_skull_gem_texture == 0,
+        "an empty common TFRAG bucket does not prepare or publish the skull-gem texture");
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
             metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
             metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&

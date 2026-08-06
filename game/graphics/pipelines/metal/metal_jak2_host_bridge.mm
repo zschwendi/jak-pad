@@ -20,6 +20,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
@@ -37,6 +38,7 @@ struct goal_jak2_metal_host {
   TexturePool textures{GameVersion::Jak2};
   MetalRenderer renderer;
   std::unique_ptr<metal_renderer::Jak2Bucket4MixedExecutor> bucket4_mixed_executor;
+  std::unique_ptr<metal_renderer::Jak2Opcode27SkullGemExecutor> skull_gem_executor;
   FixedChunkDmaCopier copier{EE_MAIN_MEM_SIZE};
   goal_gfx_host callbacks = {};
   goal_jak2_metal_host_metrics metrics = {};
@@ -45,6 +47,7 @@ struct goal_jak2_metal_host {
   std::string error;
   std::string fr3_directory;
   std::string fatal_chain_error;
+  MetalLevelData* common_level = nullptr;
   std::vector<std::string> requested_level_names;
   std::vector<std::string> loaded_level_keys;
   u64 placeholder_handle = 0;
@@ -146,6 +149,9 @@ bool load_level_art_pair(goal_jak2_metal_host* host,
       metal_level_data::unload(host->textures, level_key);
       *error = "FR3 loaders disagreed on serialized level key";
       return false;
+    }
+    if (is_common) {
+      host->common_level = level;
     }
     host->loaded_level_keys.push_back(level_key);
     return true;
@@ -331,6 +337,10 @@ void record_texture_upload_metrics(
   out->animator_arrays += capture.animator_arrays;
   out->animator_body_transfers += capture.animator_body_transfers;
   out->animator_payload_bytes += capture.animator_payload_bytes;
+  static_assert(metal_renderer::kJak2CommonTfragTextureAnimatorOpcodeCount == 44);
+  for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
+    out->opcode_counts[i] += capture.opcode_counts[i];
+  }
   out->eye_markers += capture.eye_markers;
   out->other_transfers += capture.other_transfers;
   out->malformed_transfers += capture.malformed_transfers;
@@ -406,12 +416,41 @@ struct Jak2TextureUploadDispatch {
   goal_jak2_metal_host* host = nullptr;
   const Jak2TfragTextureUploadPlans* tfrag_plans = nullptr;
   const Jak2ShrubTextureUploadPlans* shrub_plans = nullptr;
+  const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
+  const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
   const u8* live_ee_memory = nullptr;
   bool* host_texture_mutated = nullptr;
 };
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  if (bucket_id == metal_renderer::kJak2CommonTfragTextureUploadBucket) {
+    if (!dispatch->common_tfrag_plan || !dispatch->common_tfrag_plan->present) {
+      return;
+    }
+    if (!dispatch->skull_gem_prepared || !dispatch->host->skull_gem_executor) {
+      throw std::runtime_error("Jak 2 common TFRAG texture dispatch is incomplete");
+    }
+    execute_ordinary_texture_upload_or_throw(
+        dispatch->host, dispatch->common_tfrag_plan->ordinary, dispatch->live_ee_memory,
+        &dispatch->host->metrics.common_tfrag_ordinary_uploads,
+        "Jak 2 common TFRAG ordinary texture upload", dispatch->host_texture_mutated);
+    if (!dispatch->host->skull_gem_executor->publish(*dispatch->skull_gem_prepared)) {
+      throw std::runtime_error(
+          std::string("Jak 2 skull-gem publication failed: ") +
+          dispatch->host->skull_gem_executor->last_error());
+    }
+    dispatch->host->metrics.common_tfrag_texture_upload.executions++;
+    const auto& stats = dispatch->host->skull_gem_executor->stats();
+    dispatch->host->metrics.common_tfrag_skull_gem_preparations = stats.preparations;
+    dispatch->host->metrics.common_tfrag_skull_gem_publications = stats.publications;
+    dispatch->host->metrics.common_tfrag_skull_gem_texture = stats.texture_handle;
+    dispatch->host->metrics.common_tfrag_skull_gem_destination_tbp = stats.destination_tbp;
+    dispatch->host->metrics.common_tfrag_skull_gem_anim_slot =
+        metal_renderer::kJak2SkullGemAnimatedTextureSlot;
+    return;
+  }
+
   const auto found = std::find(metal_renderer::kJak2NormalTfragTextureUploadBuckets.begin(),
                                metal_renderer::kJak2NormalTfragTextureUploadBuckets.end(),
                                bucket_id);
@@ -606,6 +645,33 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       shrub_texture_plans[i] = *plan;
     }
+    metal_renderer::Jak2CommonTfragTextureUploadCapture common_tfrag_texture_capture;
+    const auto common_tfrag_texture_plan =
+        metal_renderer::plan_jak2_common_tfrag_texture_upload(
+            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE,
+            &common_tfrag_texture_capture);
+    record_texture_upload_metrics(&host->metrics.common_tfrag_texture_upload,
+                                  metal_renderer::kJak2CommonTfragTextureUploadBucket,
+                                  common_tfrag_texture_capture);
+    if (!common_tfrag_texture_plan) {
+      record_failure(host, "Jak 2 common TFRAG texture plan rejected bucket 187 DMA");
+      return;
+    }
+    metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared skull_gem_prepared;
+    if (common_tfrag_texture_plan->present &&
+        (!host->common_level || !host->common_level->level || !host->skull_gem_executor ||
+         !host->skull_gem_executor->prepare(common_tfrag_texture_plan->skull_gem,
+                                            *host->common_level->level,
+                                            &skull_gem_prepared))) {
+      const char* detail = !host->common_level || !host->common_level->level
+                               ? "common level art is unavailable"
+                               : host->skull_gem_executor
+                                     ? host->skull_gem_executor->last_error()
+                                     : "executor is unavailable";
+      record_failure(host, (std::string("Jak 2 skull-gem preparation failed: ") + detail).c_str());
+      return;
+    }
     metal_renderer::Jak2Bucket4TextureUploadCapture bucket4_capture;
     const auto bucket4_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
@@ -650,10 +716,18 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
-    Jak2TextureUploadDispatch texture_dispatch{host, &tfrag_texture_plans, &shrub_texture_plans,
-                                                static_cast<const u8*>(ee_base),
-                                                &host_texture_mutated};
+    Jak2TextureUploadDispatch texture_dispatch{
+        host,
+        &tfrag_texture_plans,
+        &shrub_texture_plans,
+        &*common_tfrag_texture_plan,
+        common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
+        static_cast<const u8*>(ee_base),
+        &host_texture_mutated};
     auto render_options = host->options;
+    const auto& animated_texture_slots = host->skull_gem_executor->animated_texture_slots();
+    render_options.animated_texture_slots = animated_texture_slots.data();
+    render_options.animated_texture_slot_count = animated_texture_slots.size();
     render_options.host_bucket_context = &texture_dispatch;
     render_options.host_bucket_callback = execute_planned_texture_upload;
     const bool acquired = host->renderer.render_chain_frame(
@@ -858,6 +932,9 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
                                        /*host_texture_uploads=*/true);
   host->bucket4_mixed_executor = std::make_unique<metal_renderer::Jak2Bucket4MixedExecutor>(
       host->renderer.device(), host->renderer.queue(), &host->textures);
+  host->skull_gem_executor =
+      std::make_unique<metal_renderer::Jak2Opcode27SkullGemExecutor>(
+          host->renderer.device(), host->renderer.queue(), &host->textures);
   host->callbacks.send_chain = send_chain;
   host->callbacks.vsync = vsync;
   host->callbacks.sync_path = sync_path;
@@ -1071,8 +1148,12 @@ void goal_jak2_metal_host_destroy(goal_jak2_metal_host* host) {
     metal_level_data::unload(host->textures, *key);
   }
   host->loaded_level_keys.clear();
+  host->common_level = nullptr;
   if (host->bucket4_mixed_executor) {
     host->bucket4_mixed_executor->detach_pool();
+  }
+  if (host->skull_gem_executor) {
+    host->skull_gem_executor->detach_pool();
   }
   if (host->placeholder_handle) {
     metal_texture_release(host->placeholder_handle);

@@ -30,6 +30,7 @@ class MetalPoolTexture {
   MetalPoolTexture& operator=(const MetalPoolTexture&) = delete;
 
   bool publish(const u32* rgba, std::size_t pixel_count);
+  bool publish_at(const u32* rgba, std::size_t pixel_count, u32 vram_slot);
   void detach_pool();
 
   u64 handle() const { return m_handle; }

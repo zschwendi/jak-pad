@@ -52,11 +52,11 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 151, "151 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 150, "150 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 3, "three reviewed OpenGL-bound buckets are implemented by Metal Direct");
-  check(host_texture_upload == 14,
-        "fourteen exact texture/setup buckets are handled synchronously by the host");
+  check(host_texture_upload == 15,
+        "fifteen exact texture/setup buckets are handled synchronously by the host");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
   check(sprite == 1, "one normal Sprite3 bucket is implemented by Metal");
   check(tfragment == 6, "six normal per-level TFRAG buckets are implemented by Metal");
@@ -184,6 +184,8 @@ int main() {
         "ocean and representative unimplemented level families remain deferred");
   check(has_behavior(jak2::BucketId::TEX_LCOM_SKY_PRE, Behavior::HostTextureUpload),
         "TEX_LCOM_SKY_PRE is the explicit host texture-upload bucket");
+  check(has_behavior(jak2::BucketId::TEX_LCOM_TFRAG, Behavior::HostTextureUpload),
+        "TEX_LCOM_TFRAG is the exact host-owned skull-gem texture bucket");
   check(has_behavior(jak2::BucketId::TEX_ALL_SPRITE, Behavior::HostTextureUpload) &&
             has_behavior(jak2::BucketId::PARTICLES, Behavior::Sprite),
         "the title sprite texture upload and Sprite3 draw buckets are explicit");

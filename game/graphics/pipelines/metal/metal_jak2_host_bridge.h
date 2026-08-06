@@ -87,6 +87,7 @@ typedef struct goal_jak2_tfrag_texture_upload_metrics {
   uint64_t animator_arrays;
   uint64_t animator_body_transfers;
   uint64_t animator_payload_bytes;
+  uint64_t opcode_counts[44];
   uint64_t eye_markers;
   uint64_t other_transfers;
   uint64_t malformed_transfers;
@@ -114,6 +115,12 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t bucket4_cloud_texture;
   uint64_t bucket4_fog_texture;
   uint64_t sprite_texture_uploads;
+  uint64_t common_tfrag_ordinary_uploads;
+  uint64_t common_tfrag_skull_gem_preparations;
+  uint64_t common_tfrag_skull_gem_publications;
+  uint64_t common_tfrag_skull_gem_texture;
+  uint32_t common_tfrag_skull_gem_destination_tbp;
+  uint32_t common_tfrag_skull_gem_anim_slot;
   uint32_t last_copied_bytes;
   uint64_t last_buckets_dispatched;
   uint64_t command_buffers_committed;
@@ -198,6 +205,7 @@ typedef struct goal_jak2_metal_host_metrics {
       tfrag_texture_uploads[GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT];
   goal_jak2_tfrag_texture_upload_metrics
       shrub_texture_uploads[GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT];
+  goal_jak2_tfrag_texture_upload_metrics common_tfrag_texture_upload;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

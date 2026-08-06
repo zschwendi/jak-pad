@@ -533,6 +533,7 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
   if (out_capture) {
     *out_capture = capture;
   }
+
   if (!is_normal_tfrag_texture_upload_bucket(bucket_id) || !capture.valid) {
     return std::nullopt;
   }
@@ -602,6 +603,7 @@ std::optional<Jak2NormalShrubTextureUploadPlan> plan_jak2_normal_shrub_texture_u
   if (out_capture) {
     *out_capture = capture;
   }
+
   if (!is_normal_shrub_texture_upload_bucket(bucket_id) || !capture.valid) {
     return std::nullopt;
   }
@@ -649,6 +651,13 @@ std::optional<Jak2CommonTfragTextureUploadPlan> plan_jak2_common_tfrag_texture_u
     *out_capture = capture;
   }
 
+  if (capture.valid && !capture.present &&
+      capture.classification == Jak2CommonTfragTextureUploadClass::Absent &&
+      capture.transfer_count == 1 && capture.total_payload_bytes == 0 &&
+      capture.inert_transfers == 1 && metadata_is_strict_empty(capture.transfers[0])) {
+    return Jak2CommonTfragTextureUploadPlan{};
+  }
+
   const bool exact_counts =
       capture.valid && capture.present &&
       capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator &&
@@ -684,6 +693,17 @@ std::optional<Jak2CommonTfragTextureUploadPlan> plan_jak2_common_tfrag_texture_u
     return std::nullopt;
   }
 
+  constexpr u64 kExactOpcode27BodyTag =
+      31ull | (static_cast<u64>(DmaTag::Kind::CNT) << 28);
+  const u64 animator_tag_offset = animator_data_offset - 16;
+  if (read_unaligned<u64>(dma_packet_snapshot + animator_tag_offset) !=
+          kExactOpcode27BodyTag ||
+      read_unaligned<u32>(dma_packet_snapshot + animator_tag_offset + 8) !=
+          (kPcPortVif | kSkullGemOpcode) ||
+      read_unaligned<u32>(dma_packet_snapshot + animator_tag_offset + 12) != 0) {
+    return std::nullopt;
+  }
+
   const u64 page_offset = read_unaligned<u64>(dma_packet_snapshot + descriptor_data_offset);
   const s64 mode = read_unaligned<s64>(dma_packet_snapshot + descriptor_data_offset + 8);
   if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
@@ -691,6 +711,7 @@ std::optional<Jak2CommonTfragTextureUploadPlan> plan_jak2_common_tfrag_texture_u
   }
 
   Jak2CommonTfragTextureUploadPlan plan;
+  plan.present = true;
   plan.ordinary.page_offset = page_offset;
   plan.ordinary.mode = mode;
   std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,

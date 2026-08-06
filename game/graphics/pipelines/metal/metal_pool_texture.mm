@@ -60,11 +60,17 @@ void MetalPoolTexture::detach_pool() {
 }
 
 bool MetalPoolTexture::publish(const u32* rgba, std::size_t pixel_count) {
+  return publish_at(rgba, pixel_count, m_vram_slot);
+}
+
+bool MetalPoolTexture::publish_at(const u32* rgba,
+                                  std::size_t pixel_count,
+                                  u32 vram_slot) {
   const u64 expected_pixels = static_cast<u64>(m_width) * m_height;
   if (!m_device || !m_queue || !m_pool || !rgba || m_width == 0 || m_height == 0 ||
       m_width > std::numeric_limits<u16>::max() ||
       m_height > std::numeric_limits<u16>::max() ||
-      m_vram_slot >= m_pool->all_textures().size() ||
+      vram_slot >= m_pool->all_textures().size() ||
       expected_pixels > std::numeric_limits<std::size_t>::max() ||
       pixel_count != static_cast<std::size_t>(expected_pixels)) {
     return false;
@@ -87,10 +93,11 @@ bool MetalPoolTexture::publish(const u32* rgba, std::size_t pixel_count) {
     std::lock_guard<std::mutex> pool_lock(m_pool->mutex());
     input.id = m_pool->allocate_pc_port_texture();
     input.gpu_texture = handle;
-    GpuTexture* pool_texture = m_pool->give_texture_and_load_to_vram(input, m_vram_slot);
+    GpuTexture* pool_texture = m_pool->give_texture_and_load_to_vram(input, vram_slot);
     m_texture_id = input.id;
     m_handle = handle;
     m_pool_texture = pool_texture;
+    m_vram_slot = vram_slot;
     handle_guard.disarm();
   } else {
     if (!metal_update_texture_rgba8(m_handle, m_queue, reinterpret_cast<const u8*>(rgba),
@@ -98,7 +105,8 @@ bool MetalPoolTexture::publish(const u32* rgba, std::size_t pixel_count) {
       return false;
     }
     std::lock_guard<std::mutex> pool_lock(m_pool->mutex());
-    m_pool->move_existing_to_vram(m_pool_texture, m_vram_slot);
+    m_pool->move_existing_to_vram(m_pool_texture, vram_slot);
+    m_vram_slot = vram_slot;
   }
 
   m_publications++;

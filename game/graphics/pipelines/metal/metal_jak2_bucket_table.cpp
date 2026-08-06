@@ -97,7 +97,7 @@ constexpr Table make_table() {
     defer(level_bucket(BucketId::ETIE_W_L0_WATER, BucketId::ETIE_W_L1_WATER, level));
   }
 
-  defer(BucketId::TEX_LCOM_TFRAG);
+  host_texture_upload(BucketId::TEX_LCOM_TFRAG);
   defer(BucketId::MERC_LCOM_TFRAG);
   defer(BucketId::TEX_LCOM_SHRUB);
   defer(BucketId::MERC_LCOM_SHRUB);
@@ -157,10 +157,10 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 151);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 150);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 3);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 14);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 15);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Visibility) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Sprite) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TFragment) == 6);

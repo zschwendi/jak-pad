@@ -92,6 +92,8 @@ struct MetalSharedRenderState {
   GameVersion version = GameVersion::Jak1;
   int game_res_w = 640;
   int game_res_h = 480;
+  const u64* animated_texture_slots = nullptr;
+  std::size_t animated_texture_slot_count = 0;
   void* host_bucket_context = nullptr;
   MetalHostBucketCallback host_bucket_callback = nullptr;
 };

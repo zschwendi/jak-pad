@@ -378,7 +378,7 @@ void test_common_opcode27_execution_plan() {
   metal_renderer::Jak2CommonTfragTextureUploadCapture result;
   const auto plan = metal_renderer::plan_jak2_common_tfrag_texture_upload(
       packet.data(), packet.size(), kChainOffset, packet.data(), packet.size(), &result);
-  check(plan.has_value() && result.valid && result.present &&
+  check(plan.has_value() && plan->present && result.valid && result.present &&
             result.classification == Classification::OrdinaryAndAnimator &&
             result.transfer_count == 9 && result.total_payload_bytes == 672 &&
             result.inert_transfers == 4 && result.ordinary_descriptors == 1 &&
@@ -409,6 +409,16 @@ void test_common_opcode27_execution_plan() {
             skull_gem.layers[2].end.color[0] == 110.f &&
             skull_gem.layers[2].end.source_padding.back() == 0xb5,
         "all three start/end LayerVals pairs own typed floats and source-copied padding");
+}
+
+void test_empty_common_execution_plan() {
+  auto packet = make_empty_fixture();
+  metal_renderer::Jak2CommonTfragTextureUploadCapture result;
+  const auto plan = metal_renderer::plan_jak2_common_tfrag_texture_upload(
+      packet.data(), packet.size(), kChainOffset, packet.data(), packet.size(), &result);
+  check(plan.has_value() && !plan->present && result.valid && !result.present &&
+            result.classification == Classification::Absent,
+        "an exact empty common bucket produces an explicit absent plan");
 }
 
 void test_common_opcode27_shape_variants_fail_closed() {
@@ -458,6 +468,35 @@ void test_common_opcode27_shape_variants_fail_closed() {
              packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
              .has_value(),
         "a terminal Direct reset other than qwc 10 is rejected");
+}
+
+void test_common_opcode27_raw_body_header_fails_closed() {
+  const auto rejected = [](const std::vector<u8>& packet) {
+    return !metal_renderer::plan_jak2_common_tfrag_texture_upload(
+                packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+                .has_value();
+  };
+
+  auto packet = make_common_execution_fixture();
+  put_u32(&packet, kAnimatorBodyTagOffset + 8, kPcPortVif | (1u << 16) | 27);
+  check(rejected(packet), "opcode-27 VIF0 NUM bits are rejected");
+
+  packet = make_common_execution_fixture();
+  put_u32(&packet, kAnimatorBodyTagOffset + 8, kPcPortVif | (1u << 31) | 27);
+  check(rejected(packet), "opcode-27 VIF0 IRQ is rejected");
+
+  packet = make_common_execution_fixture();
+  put_u32(&packet, kAnimatorBodyTagOffset + 12, 1u << 16);
+  check(rejected(packet), "opcode-27 VIF1 NUM bits are rejected");
+
+  packet = make_common_execution_fixture();
+  put_u32(&packet, kAnimatorBodyTagOffset + 12, 1u << 31);
+  check(rejected(packet), "opcode-27 VIF1 IRQ is rejected");
+
+  packet = make_common_execution_fixture();
+  put_u64(&packet, kAnimatorBodyTagOffset,
+          31ull | (static_cast<u64>(DmaTag::Kind::CNT) << 28) | (1ull << 26));
+  check(rejected(packet), "opcode-27 CNT control bits are rejected");
 }
 
 void test_common_opcode27_payload_validation() {
@@ -737,7 +776,9 @@ int main() {
   test_normal_tfrag_execution_plan();
   test_normal_shrub_execution_plan();
   test_common_opcode27_execution_plan();
+  test_empty_common_execution_plan();
   test_common_opcode27_shape_variants_fail_closed();
+  test_common_opcode27_raw_body_header_fails_closed();
   test_common_opcode27_payload_validation();
   test_common_opcode27_plan_owns_reused_sources();
   test_animator_and_combined_metadata();

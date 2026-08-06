@@ -339,8 +339,8 @@ void metal_update_time_of_day_texture(id<MTLTexture> tex,
                                       u32 count);
 
 // Resolves a draw's texture index to an MTLTexture, following the GL
-// convention that a negative index selects a texture-animator slot (Jak 2/3
-// only - counted and drawn with the placeholder here). Never returns nil.
+// convention that a negative index selects a texture-animator slot (Jak 2/3).
+// Missing slots are counted and use the placeholder. Never returns nil.
 id<MTLTexture> metal_background_texture(const MetalLevelData& level,
                                         s32 tree_tex_id,
                                         MetalSharedRenderState* render_state,

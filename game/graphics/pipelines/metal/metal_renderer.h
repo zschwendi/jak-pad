@@ -75,6 +75,9 @@ struct MetalRenderOptions {
   metal_camera_trace::Snapshot expected_camera;
   bool expected_render_camera_valid = false;
   metal_camera_trace::RenderSnapshot expected_render_camera;
+  // Jak 2/3 background draws encode texture-animator slots as negative texture IDs.
+  const u64* animated_texture_slots = nullptr;
+  std::size_t animated_texture_slot_count = 0;
   // Optional synchronous host work that must stay ordered with Jak II bucket dispatch.
   void* host_bucket_context = nullptr;
   MetalHostBucketCallback host_bucket_callback = nullptr;
