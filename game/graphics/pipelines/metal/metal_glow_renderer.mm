@@ -34,10 +34,31 @@ struct GlowDrawRecord {
   MetalSamplerKey sampler;
 };
 
-MetalSamplerKey sampler_from_adgif(const AdGifData& adgif) {
-  ASSERT((u8)adgif.tex1_addr == (u8)GsRegisterAddress::TEX1_1);
-  const GsTex1 tex1(adgif.tex1_data);
+bool try_make_record(const SpriteGlowOutput& sprite,
+                     u32 index_offset,
+                     GlowDrawRecord* result) {
+  const AdGifData& adgif = sprite.adgif;
+  if ((u8)adgif.tex0_addr != (u8)GsRegisterAddress::TEX0_1) {
+    return false;
+  }
+  const GsTex0 tex0(adgif.tex0_data);
+  if (tex0.tcc() != 1) {
+    return false;
+  }
+  if (tex0.tfx() != GsTex0::TextureFunction::MODULATE) {
+    return false;
+  }
+  if ((u8)adgif.tex1_addr != (u8)GsRegisterAddress::TEX1_1) {
+    return false;
+  }
+  if (adgif.mip_addr != (u32)GsRegisterAddress::MIPTBP1_1) {
+    return false;
+  }
+  if (adgif.alpha_addr != (u32)GsRegisterAddress::ALPHA_1) {
+    return false;
+  }
 
+  const GsTex1 tex1(adgif.tex1_data);
   MetalSamplerKey sampler;
   sampler.min_filter = tex1.mmag() ? MTLSamplerMinMagFilterLinear
                                    : MTLSamplerMinMagFilterNearest;
@@ -45,37 +66,27 @@ MetalSamplerKey sampler_from_adgif(const AdGifData& adgif) {
   sampler.wrap_s = MTLSamplerAddressModeRepeat;
   sampler.wrap_t = MTLSamplerAddressModeRepeat;
 
-  const auto clamp_address = GsRegisterAddress(adgif.clamp_addr);
-  if (clamp_address == GsRegisterAddress::ZBUF_1) {
+  const u8 clamp_address = (u8)adgif.clamp_addr;
+  if (clamp_address == (u8)GsRegisterAddress::ZBUF_1) {
     // The final pass disables depth writes regardless of this inherited GS
     // register; the GL path also leaves the default texture wrapping intact.
-  } else if (clamp_address == GsRegisterAddress::CLAMP_1) {
+  } else if (clamp_address == (u8)GsRegisterAddress::CLAMP_1) {
     const u32 clamp = static_cast<u32>(adgif.clamp_data);
-    ASSERT(clamp == 0b101 || clamp == 0 || clamp == 1 || clamp == 0b100);
+    if (clamp != 0b101 && clamp != 0 && clamp != 1 && clamp != 0b100) {
+      return false;
+    }
     sampler.wrap_s = (clamp & 0b001) ? MTLSamplerAddressModeClampToEdge
                                      : MTLSamplerAddressModeRepeat;
     sampler.wrap_t = (clamp & 0b100) ? MTLSamplerAddressModeClampToEdge
                                      : MTLSamplerAddressModeRepeat;
   } else {
-    ASSERT(false);
+    return false;
   }
-  return sampler;
-}
 
-GlowDrawRecord make_record(const SpriteGlowOutput& sprite, u32 index_offset) {
-  const AdGifData& adgif = sprite.adgif;
-  ASSERT((u8)adgif.tex0_addr == (u8)GsRegisterAddress::TEX0_1);
-  const GsTex0 tex0(adgif.tex0_data);
-  ASSERT(tex0.tcc() == 1);
-  ASSERT(tex0.tfx() == GsTex0::TextureFunction::MODULATE);
-  ASSERT(adgif.mip_addr == (u32)GsRegisterAddress::MIPTBP1_1);
-  ASSERT(adgif.alpha_addr == (u32)GsRegisterAddress::ALPHA_1);
-
-  GlowDrawRecord result;
-  result.tbp = tex0.tbp0();
-  result.index_offset = index_offset;
-  result.sampler = sampler_from_adgif(adgif);
-  return result;
+  result->tbp = tex0.tbp0();
+  result->index_offset = index_offset;
+  result->sampler = sampler;
+  return true;
 }
 
 }  // namespace
@@ -103,16 +114,24 @@ void MetalGlowRenderer::draw_force_visible(const SpriteGlowOutput* sprites,
 
   m_stats.sprites_submitted = static_cast<int>(count);
 
-  std::vector<GlowVertex> vertices(count * 4);
-  std::vector<u32> indices(count * 5);
+  std::vector<GlowVertex> vertices;
+  vertices.reserve(count * 4);
+  std::vector<u32> indices;
+  indices.reserve(count * 5);
   std::vector<GlowDrawRecord> records;
   records.reserve(count);
 
   constexpr float kUvs[4][2] = {{0.f, 0.f}, {1.f, 0.f}, {1.f, 1.f}, {0.f, 1.f}};
   for (std::size_t sprite_idx = 0; sprite_idx < count; sprite_idx++) {
     const SpriteGlowOutput& sprite = sprites[sprite_idx];
-    const u32 vertex_base = static_cast<u32>(sprite_idx * 4);
-    const u32 index_base = static_cast<u32>(sprite_idx * 5);
+    GlowDrawRecord record;
+    if (!try_make_record(sprite, static_cast<u32>(indices.size()), &record)) {
+      m_stats.invalid_records++;
+      continue;
+    }
+
+    const u32 vertex_base = static_cast<u32>(vertices.size());
+    vertices.resize(vertices.size() + 4);
 
     for (u32 corner = 0; corner < 4; corner++) {
       GlowVertex& vertex = vertices[vertex_base + corner];
@@ -127,12 +146,16 @@ void MetalGlowRenderer::draw_force_visible(const SpriteGlowOutput* sprites,
     }
 
     // Exact GL fan-to-strip order, including the fixed restart sentinel.
-    indices[index_base + 0] = vertex_base + 1;
-    indices[index_base + 1] = vertex_base;
-    indices[index_base + 2] = vertex_base + 2;
-    indices[index_base + 3] = vertex_base + 3;
-    indices[index_base + 4] = UINT32_MAX;
-    records.push_back(make_record(sprite, index_base));
+    indices.push_back(vertex_base + 1);
+    indices.push_back(vertex_base);
+    indices.push_back(vertex_base + 2);
+    indices.push_back(vertex_base + 3);
+    indices.push_back(UINT32_MAX);
+    records.push_back(record);
+  }
+
+  if (records.empty()) {
+    return;
   }
 
   id<MTLBuffer> vertex_buffer;

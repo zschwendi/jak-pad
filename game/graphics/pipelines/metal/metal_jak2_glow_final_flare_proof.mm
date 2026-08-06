@@ -18,6 +18,7 @@ namespace {
 
 constexpr int kTargetSize = 64;
 constexpr u32 kFlareTbp = 0x2a0;
+constexpr u32 kMissingFlareTbp = 0x2a1;
 
 int failures = 0;
 
@@ -57,6 +58,21 @@ SpriteGlowOutput make_center_flare() {
   flare.adgif.clamp_addr = (u32)GsRegisterAddress::CLAMP_1;
   flare.adgif.alpha_addr = (u32)GsRegisterAddress::ALPHA_1;
   return flare;
+}
+
+void check_invalid_record(MetalGlowRenderer& renderer,
+                          const SpriteGlowOutput& flare,
+                          MetalSharedRenderState* state,
+                          MetalFrameContext& context,
+                          const char* what) {
+  const int draw_calls_before = context.draw_calls;
+  const int triangles_before = context.triangles;
+  renderer.draw_force_visible(&flare, 1, state, context);
+  check(renderer.stats().sprites_submitted == 1 && renderer.stats().invalid_records == 1 &&
+            renderer.stats().sprites_drawn == 0 && renderer.stats().draw_calls == 0 &&
+            renderer.stats().triangles == 0 && renderer.stats().missing_textures == 0 &&
+            context.draw_calls == draw_calls_before && context.triangles == triangles_before,
+        what);
 }
 
 }  // namespace
@@ -174,16 +190,74 @@ int main() {
     renderer.draw_force_visible(nullptr, 0, &state, context);
     check(renderer.stats().sprites_submitted == 0 && renderer.stats().sprites_drawn == 0 &&
               renderer.stats().draw_calls == 0 && renderer.stats().triangles == 0 &&
-              renderer.stats().missing_textures == 0 && context.draw_calls == 0 &&
-              context.triangles == 0,
+              renderer.stats().missing_textures == 0 && renderer.stats().invalid_records == 0 &&
+              context.draw_calls == 0 && context.triangles == 0,
           "an empty force-visible batch encodes no draw and reports exact zero stats");
+
+    SpriteGlowOutput invalid = make_center_flare();
+    invalid.adgif.tex0_addr = (u32)GsRegisterAddress::TEX0_2;
+    check_invalid_record(renderer, invalid, &state, context,
+                         "an invalid TEX0 address is counted and encodes no draw");
+
+    invalid = make_center_flare();
+    invalid.adgif.tex0_data &= ~(1ull << 34);
+    check_invalid_record(renderer, invalid, &state, context,
+                         "a disabled TEX0 TCC is counted and encodes no draw");
+
+    invalid = make_center_flare();
+    invalid.adgif.tex0_data |= 1ull << 35;
+    check_invalid_record(renderer, invalid, &state, context,
+                         "a non-modulate TEX0 TFX is counted and encodes no draw");
+
+    invalid = make_center_flare();
+    invalid.adgif.tex1_addr = (u32)GsRegisterAddress::TEX1_2;
+    check_invalid_record(renderer, invalid, &state, context,
+                         "an invalid TEX1 address is counted and encodes no draw");
+
+    invalid = make_center_flare();
+    invalid.adgif.mip_addr = (u32)GsRegisterAddress::MIPTBP1_2;
+    check_invalid_record(renderer, invalid, &state, context,
+                         "an invalid MIP address is counted and encodes no draw");
+
+    invalid = make_center_flare();
+    invalid.adgif.alpha_addr = (u32)GsRegisterAddress::ALPHA_2;
+    check_invalid_record(renderer, invalid, &state, context,
+                         "an invalid ALPHA address is counted and encodes no draw");
+
+    invalid = make_center_flare();
+    invalid.adgif.clamp_addr = (u32)GsRegisterAddress::FRAME_1;
+    check_invalid_record(renderer, invalid, &state, context,
+                         "an unsupported CLAMP address is counted and encodes no draw");
+
+    invalid = make_center_flare();
+    invalid.adgif.clamp_data = 0b010;
+    check_invalid_record(renderer, invalid, &state, context,
+                         "an unsupported CLAMP value is counted and encodes no draw");
+    check(pso_cache.pipeline_count() == 0 && sampler_cache.count() == 0,
+          "all rejected records leave the Metal pipeline and sampler caches untouched");
+
+    SpriteGlowOutput missing = make_center_flare();
+    missing.adgif.tex0_data =
+        (missing.adgif.tex0_data & ~0x3fffull) | static_cast<u64>(kMissingFlareTbp);
+    for (auto& position : missing.flare_xyzw) {
+      position.x() += 1024.f;
+    }
+    renderer.draw_force_visible(&missing, 1, &state, context);
+    check(renderer.stats().sprites_submitted == 1 && renderer.stats().invalid_records == 0 &&
+              renderer.stats().sprites_drawn == 1 && renderer.stats().draw_calls == 1 &&
+              renderer.stats().triangles == 2 && renderer.stats().missing_textures == 1 &&
+              context.draw_calls == 1 && context.triangles == 2 &&
+              pso_cache.pipeline_count() == 1 && sampler_cache.count() == 1,
+          "a valid missing TBP uses the placeholder and reports one missing texture draw");
+    context.draw_calls = 0;
+    context.triangles = 0;
 
     const SpriteGlowOutput flare = make_center_flare();
     renderer.draw_force_visible(&flare, 1, &state, context);
     check(renderer.stats().sprites_submitted == 1 && renderer.stats().sprites_drawn == 1 &&
               renderer.stats().draw_calls == 1 && renderer.stats().triangles == 2 &&
-              renderer.stats().missing_textures == 0 && context.draw_calls == 1 &&
-              context.triangles == 2,
+              renderer.stats().missing_textures == 0 && renderer.stats().invalid_records == 0 &&
+              context.draw_calls == 1 && context.triangles == 2,
           "one force-visible flare encodes one two-triangle draw with an exact texture hit");
     [encoder endEncoding];
 

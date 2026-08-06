@@ -22,6 +22,7 @@ class MetalGlowRenderer {
     int draw_calls = 0;
     int triangles = 0;
     int missing_textures = 0;
+    int invalid_records = 0;
   };
 
   void draw_force_visible(const SpriteGlowOutput* sprites,
