@@ -3,7 +3,7 @@
 /*!
  * @file sound_rpc_jak2.h
  * The first Jak 2 sound-RPC seams: command-aware startup state, checked sound-bank loading,
- * language selection, the IRX-version handshake, and ordinary STR files.
+ * language selection, the IRX-version handshake, and ordinary/chunked STR files.
  */
 
 #include <stdint.h>

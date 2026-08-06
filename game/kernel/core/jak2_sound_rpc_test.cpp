@@ -1,7 +1,7 @@
 /*!
  * @file jak2_sound_rpc_test.cpp
- * Behavioral coverage for Jak 2's startup state, checked sound-bank playback and ordinary-file STR
- * seams.
+ * Behavioral coverage for Jak 2's startup state, checked sound-bank playback and ordinary/chunked
+ * STR seams.
  */
 
 #include <algorithm>
@@ -17,6 +17,7 @@
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 
+#include "game/common/str_rpc_types.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/kernel_game.h"
@@ -862,9 +863,53 @@ int main() {
   for (u32 i = 0; i < fixture_bytes.size(); i++) {
     fixture_bytes[i] = (u8)(i ^ 0x5a);
   }
+  std::vector<u8> chunked_str(4 * SECTOR_SIZE, 0);
+  auto* chunked_header = reinterpret_cast<StrFileHeaderJ2*>(chunked_str.data());
+  chunked_header->sectors[0] = 2;
+  chunked_header->sizes[0] = SECTOR_SIZE;
+  chunked_header->sectors[1] = 3;
+  chunked_header->sizes[1] = SECTOR_SIZE;
+  for (u32 i = 0; i < SECTOR_SIZE; i++) {
+    chunked_str[2 * SECTOR_SIZE + i] = (u8)(i ^ 0x96);
+    chunked_str[3 * SECTOR_SIZE + i] = (u8)(i ^ 0x69);
+  }
+
+  auto unaligned_chunked_str = chunked_str;
+  unaligned_chunked_str.pop_back();
+  std::vector<u8> nonzero_after_zero_str(4 * SECTOR_SIZE, 0);
+  auto* nonzero_after_zero_header =
+      reinterpret_cast<StrFileHeaderJ2*>(nonzero_after_zero_str.data());
+  nonzero_after_zero_header->sectors[0] = 2;
+  nonzero_after_zero_header->sizes[0] = 2 * SECTOR_SIZE;
+  nonzero_after_zero_header->sectors[2] = 3;
+  nonzero_after_zero_header->sizes[2] = SECTOR_SIZE;
+  auto descending_chunked_str = chunked_str;
+  auto* descending_header = reinterpret_cast<StrFileHeaderJ2*>(descending_chunked_str.data());
+  descending_header->sectors[0] = 3;
+  descending_header->sectors[1] = 2;
+  auto inside_header_str = chunked_str;
+  reinterpret_cast<StrFileHeaderJ2*>(inside_header_str.data())->sectors[0] = 1;
+  auto mismatched_size_str = chunked_str;
+  reinterpret_cast<StrFileHeaderJ2*>(mismatched_size_str.data())->sizes[0] = SECTOR_SIZE - 1;
+  auto size_without_sector_str = chunked_str;
+  auto* size_without_sector_header =
+      reinterpret_cast<StrFileHeaderJ2*>(size_without_sector_str.data());
+  size_without_sector_header->sectors[1] = 0;
+  size_without_sector_header->sizes[1] = SECTOR_SIZE;
+  auto sector_beyond_file_str = chunked_str;
+  reinterpret_cast<StrFileHeaderJ2*>(sector_beyond_file_str.data())->sectors[1] = UINT32_MAX;
+
   constexpr const char* kFullWidthName = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
   check(!fixture_error && write_fixture(fixture_root / "iso" / "MIXED.TXT", fixture_bytes) &&
             write_fixture(fixture_root / "iso" / kFullWidthName, fixture_bytes) &&
+            write_fixture(fixture_root / "iso" / "TIDINTRO.STR", chunked_str) &&
+            write_fixture(fixture_root / "iso" / "AA.STR", unaligned_chunked_str) &&
+            write_fixture(fixture_root / "iso" / "AB.STR", nonzero_after_zero_str) &&
+            write_fixture(fixture_root / "iso" / "AC.STR", descending_chunked_str) &&
+            write_fixture(fixture_root / "iso" / "AD.STR", inside_header_str) &&
+            write_fixture(fixture_root / "iso" / "AE.STR", mismatched_size_str) &&
+            write_fixture(fixture_root / "iso" / "AF.STR", size_without_sector_str) &&
+            write_fixture(fixture_root / "iso" / "AG.STR", sector_beyond_file_str) &&
             write_fixture(fixture_root / "iso" / "VALID.SBK", valid_bank) &&
             write_fixture(fixture_root / "iso" / "BUDGET.SBK", shared_reference_budget_bank) &&
             write_fixture(fixture_root / "iso" / "PLAY.SBK", playable_bank) &&
@@ -1098,6 +1143,81 @@ int main() {
   check_guards(str_recv, "STR receive-buffer canaries stay intact");
   check_guards(str_destination, "STR destination canaries stay intact");
 
+  std::printf("\n== mapped chunked STR loads and fail-closed table validation ==\n");
+  auto chunk_destination = guarded_buffer(SECTOR_SIZE, "jak2-chunked-str-destination");
+  if (!chunk_destination.data.offset) {
+    goal_kernel_core_shutdown();
+    return 1;
+  }
+  for (s32 section = 0; section < 2; section++) {
+    reset_str_request(str_send, chunk_destination.data.offset, section, chunk_destination.size,
+                      "title-disk-intro");
+    memset(str_recv.data.c(), 0xcc, str_recv.size);
+    memset(chunk_destination.data.c(), 0xdd, chunk_destination.size);
+    const auto chunk_request = snapshot(str_send);
+    check_u32((u32)rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize,
+                           str_recv.data.offset, kStrReplySize, 0),
+              0, "chunked STR rpc-call returns synchronously");
+    str_reply = str_recv.data.cast<StrReply>().c();
+    check(snapshot(str_send) == chunk_request, "chunked STR request remains untouched");
+    check_u32(str_reply->result, 0, "chunked STR success result is done");
+    check_u32(str_reply->maxlen, SECTOR_SIZE, "chunked STR reports its sector span");
+    check_u32(str_reply->address, chunk_destination.data.offset,
+              "chunked STR reply preserves the address");
+    check_s32(str_reply->section, section, "chunked STR reply preserves the section");
+    check(memcmp(chunk_destination.data.c(),
+                 chunked_str.data() + (section + 2) * SECTOR_SIZE, SECTOR_SIZE) == 0,
+          "mapped animation chunk reaches EE memory exactly");
+  }
+
+  struct ChunkFailure {
+    const char* animation;
+    s32 section;
+    u32 address;
+    u32 maxlen;
+  };
+  const std::array<ChunkFailure, 12> chunk_failures = {{
+      {"aa", 0, chunk_destination.data.offset, chunk_destination.size},
+      {"ab", 0, chunk_destination.data.offset, chunk_destination.size},
+      {"ac", 0, chunk_destination.data.offset, chunk_destination.size},
+      {"ad", 0, chunk_destination.data.offset, chunk_destination.size},
+      {"ae", 0, chunk_destination.data.offset, chunk_destination.size},
+      {"af", 0, chunk_destination.data.offset, chunk_destination.size},
+      {"ag", 0, chunk_destination.data.offset, chunk_destination.size},
+      {"zz", 0, chunk_destination.data.offset, chunk_destination.size},
+      {"title-disk-intro", 2, chunk_destination.data.offset, chunk_destination.size},
+      {"title-disk-intro", SECTOR_TABLE_SIZE_J2, chunk_destination.data.offset,
+       chunk_destination.size},
+      {"title-disk-intro", 0, chunk_destination.data.offset, SECTOR_SIZE - 1},
+      {"title-disk-intro", 0, EE_MAIN_MEM_SIZE - 8, 16},
+  }};
+  bool chunk_failures_transactional = true;
+  for (const auto& failure : chunk_failures) {
+    reset_str_request(str_send, failure.address, failure.section, failure.maxlen,
+                      failure.animation);
+    memset(str_recv.data.c(), 0xcc, str_recv.size);
+    memset(chunk_destination.data.c(), 0xdd, chunk_destination.size);
+    const auto failed_request = snapshot(str_send);
+    rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset,
+             kStrReplySize, 0);
+    const auto* failed_reply = str_recv.data.cast<StrReply>().c();
+    chunk_failures_transactional &= snapshot(str_send) == failed_request;
+    chunk_failures_transactional &= failed_reply->result == 1 && failed_reply->maxlen == 0;
+    chunk_failures_transactional &=
+        std::all_of(chunk_destination.data.c(),
+                    chunk_destination.data.c() + chunk_destination.size,
+                    [](u8 byte) { return byte == 0xdd; });
+  }
+  check(chunk_failures_transactional,
+        "malformed tables and invalid chunk requests return error without mutation");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.str_requests, 23, "ordinary and chunked STR requests are counted");
+  check_u32(stats.str_reads, 4, "two ordinary files and two mapped chunks were read");
+  check_u32(stats.str_failures, 19, "all semantic STR failures were counted");
+  check_u32(stats.str_bytes, 17 + fixture_bytes.size() + 2 * SECTOR_SIZE,
+            "ordinary and chunked STR byte counts are exact");
+  check_guards(chunk_destination, "chunked STR destination canaries stay intact");
+
   std::printf("\n== unsupported and malformed requests remain unimplemented ==\n");
   reset_command(send, jak2::Jak2SoundCommand::load_bank, 0x3456789a);
   memset(recv.command.c(), 0xcc, kCommandSize);
@@ -1136,7 +1256,6 @@ int main() {
   reset_str_request(str_send, str_destination.data.offset, 0, str_destination.size, "mixed.txt");
   memset(str_recv.data.c(), 0xcc, str_recv.size);
   const auto unsupported_str_recv = snapshot(str_recv);
-  rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
   rpc_call(4, 1, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset, kStrReplySize, 0);
   rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize - 1, str_recv.data.offset,
            kStrReplySize, 0);
@@ -1149,7 +1268,7 @@ int main() {
   rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize,
            EE_MAIN_MEM_SIZE - kStrReplySize + 1, kStrReplySize, 0);
   check(snapshot(str_recv) == unsupported_str_recv,
-        "chunked and malformed STR requests do not mutate the reply");
+        "malformed STR framing does not mutate the reply");
   check_u32((u32)rpc_busy(3), 0, "an unsupported busy query still returns not-busy");
   check_guards(send, "rejected-call send canaries stay intact");
   check_guards(recv, "rejected-call receive canaries stay intact");
@@ -1159,11 +1278,11 @@ int main() {
   check_u32(stats.bank_requests, 17, "malformed bank framing is not counted as a request");
   check_u32(stats.banks_loaded, 3, "malformed calls do not claim another bank load");
   check_u32(stats.bank_failures, 13, "framing rejection is distinct from a bank failure");
-  check_u32(stats.str_requests, 9, "rejected STR calls do not count as file requests");
+  check_u32(stats.str_requests, 23, "rejected STR calls do not count as file requests");
   check_u32(stats.language_requests, 9, "malformed framing is not a language request");
   check_u32(stats.language_failures, 1, "framing rejection is distinct from language failure");
   check_u32(stats.language_id, 7, "rejected calls preserve the current language");
-  check_u32(stats.rejected_calls, player_rejected_calls + 26,
+  check_u32(stats.rejected_calls, player_rejected_calls + 25,
             "every unsupported request is reported");
 
   std::printf("\n== shutdown and reinitialization ownership ==\n");

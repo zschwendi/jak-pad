@@ -12,8 +12,9 @@ Jak 2 kernel, with `dgo_loader_jak2.cpp` carrying both the C-driven DGO load and
 channel-3 incremental begin/continue/cancel RPC. Its top-level router answers DGO traffic while
 delegating sound channels 0, 1, and 4 to `sound_rpc_jak2.cpp`, which handles command-aware framing,
 the IRX 4.0 version handshake, checked SBlk loads, ordinary named-SFX PLAY/update commands, and
-ordinary STR files. A bounded user-local bank is validated in memory before the same bytes reach
-989snd, and unsafe PLAY falloff parameters are rejected before spatial volume calculation. The
+ordinary files plus source-compatible, fail-closed animation chunks from Jak 2 STR tables. A
+bounded user-local bank is validated in memory before the same bytes reach 989snd, and unsafe PLAY
+falloff parameters are rejected before spatial volume calculation. The
 upstream Jak 2 mips2c translations are registered through the native-function seam, and the kernel
 owns its sound-system shutdown. Command 2 has no reply payload: its zero return only means the
 synchronous transport completed, not that a bank loaded; failures are available through host logs
@@ -924,8 +925,9 @@ with no case now fails to compile rather than returning garbage.
   argument array from the C arguments.
 - **Jak 2 remains a headless kernel probe.** Its kernel and GAME.CGO objects load through the AOT
   path, its translated mips2c functions are registered, and its sound loader accepts the IRX 4.0
-  version handshake, ordinary STR files, validated SBlk banks retained by 989snd, and ordinary
-  named-SFX PLAY/update commands. Its portable pad seam accepts host-pushed controller state.
+  version handshake, ordinary files and validated animation chunks from Jak 2 STR tables, validated
+  SBlk banks retained by 989snd, and ordinary named-SFX PLAY/update commands. Its portable pad seam
+  accepts host-pushed controller state.
   Its graphics machine boundary now has per-game desired/active-level adapters, host callbacks,
   and pre-`syncv` vblank dispatch, but the kernel probe installs only a counting/discarding host
   and has no renderer or drawn output. Music, streaming and info-frame updates are not

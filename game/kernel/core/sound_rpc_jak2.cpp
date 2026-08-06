@@ -1,7 +1,7 @@
 /*!
  * @file sound_rpc_jak2.cpp
  * Answer Jak 2's initial sound state, loader version handshake, bank loads, language selection and
- * ordinary-file STR requests without an IOP.
+ * ordinary and chunked STR requests without an IOP.
  *
  * `check-irx-version` sends one 0x50-byte command on loader channel 1. Upstream's Jak 2 overlord
  * writes version 4.0 into that command, remembers the requested EE info-block address, and returns
@@ -10,9 +10,9 @@
  * same bytes through 989snd's in-memory bank interface. Loader command 20 selects one of Jak 2's
  * eight bounded language tags without a reply payload. Channel 0 retains master volumes, MIDI
  * registers 3/4/14/16, reverb, FPS and listener transforms. Player command 7 starts or updates
- * ordinary named sounds from those checked SFX banks. Channel 4 reads an ordinary file from the
- * configured `iso/` directory into EE memory. Music, streaming, later MIDI registers, chunked STR
- * files and the rest of the Jak 2 sound protocol remain unimplemented.
+ * ordinary named sounds from those checked SFX banks. Channel 4 reads ordinary files and bounded
+ * animation chunks from the configured `iso/` directory into EE memory. Music, audio streaming,
+ * later MIDI registers and the rest of the Jak 2 sound protocol remain unimplemented.
  */
 
 #include <algorithm>
@@ -27,6 +27,7 @@
 
 #include "common/goal_constants.h"
 #include "common/log/log.h"
+#include "common/util/FileUtil.h"
 
 #include "game/common/str_rpc_types.h"
 #include "game/kernel/core/sblk_preflight.h"
@@ -729,7 +730,7 @@ void write_str_reply(const StrRequest& request, u32 recv_buffer, u16 result, u32
   memcpy(Ptr<u8>(recv_buffer).c(), &reply, sizeof(reply));
 }
 
-bool uppercase_basename(const StrRequest& request, std::string* out) {
+bool request_basename(const StrRequest& request, std::string* out) {
   char basename[sizeof(request.basename) + 1];
   memcpy(basename, request.basename, sizeof(request.basename));
   basename[sizeof(request.basename)] = '\0';
@@ -746,15 +747,25 @@ bool uppercase_basename(const StrRequest& request, std::string* out) {
   if (*out == "." || *out == "..") {
     return false;
   }
-  for (char& c : *out) {
+  for (const char c : *out) {
     if (c == '/' || c == '\\' || c == ':') {
       return false;
     }
-    if (c >= 'a' && c <= 'z') {
-      c -= 'a' - 'A';
-    }
   }
   return true;
+}
+
+/*! "TIDINTRO STR" -> "TIDINTRO.STR". */
+std::string file_name_of_iso_name(const char* iso_name) {
+  std::string name(iso_name, 8);
+  while (!name.empty() && name.back() == ' ') {
+    name.pop_back();
+  }
+  std::string extension(iso_name + 8, 3);
+  while (!extension.empty() && extension.back() == ' ') {
+    extension.pop_back();
+  }
+  return name + "." + extension;
 }
 
 bool read_str_file(const StrRequest& request, const std::string& basename, u32* length) {
@@ -762,7 +773,13 @@ bool read_str_file(const StrRequest& request, const std::string& basename, u32* 
     return false;
   }
 
-  const std::string relative = "iso/" + basename;
+  std::string file_name = basename;
+  for (char& c : file_name) {
+    if (c >= 'a' && c <= 'z') {
+      c -= 'a' - 'A';
+    }
+  }
+  const std::string relative = "iso/" + file_name;
   const s32 fd = ee::sceOpen(relative.c_str(), SCE_RDONLY);
   if (fd < 0) {
     return false;
@@ -783,6 +800,99 @@ bool read_str_file(const StrRequest& request, const std::string& basename, u32* 
   return true;
 }
 
+bool valid_chunked_str_header(const StrFileHeaderJ2& header, s32 file_size) {
+  if (file_size < (s32)sizeof(header) || file_size % SECTOR_SIZE) {
+    return false;
+  }
+
+  const u32 end_sector = (u32)file_size / SECTOR_SIZE;
+  bool got_zero = false;
+  for (s32 i = 0; i < SECTOR_TABLE_SIZE_J2; i++) {
+    const u32 sector = header.sectors[i];
+    const u32 size = header.sizes[i];
+    if (!sector) {
+      if (size) {
+        return false;
+      }
+      got_zero = true;
+    } else if (got_zero || sector < sizeof(header) / SECTOR_SIZE || sector >= end_sector) {
+      return false;
+    }
+  }
+
+  for (s32 i = 0; i < SECTOR_TABLE_SIZE_J2 && header.sectors[i]; i++) {
+    const u32 sector = header.sectors[i];
+    const u32 next_sector =
+        i + 1 < SECTOR_TABLE_SIZE_J2 && header.sectors[i + 1] ? header.sectors[i + 1]
+                                                               : end_sector;
+    if (next_sector <= sector || next_sector > end_sector) {
+      return false;
+    }
+    const u64 size = (u64)(next_sector - sector) * SECTOR_SIZE;
+    if (size != header.sizes[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool read_chunked_str_file(const StrRequest& request,
+                           const std::string& animation_name,
+                           u32* length) {
+  if (request.section < 0 || request.section >= SECTOR_TABLE_SIZE_J2 ||
+      animation_name.size() < 2 || !request.maxlen ||
+      !readable_ee_span(request.address, request.maxlen)) {
+    return false;
+  }
+
+  char iso_name[16] = {};
+  file_util::ISONameFromAnimationName(iso_name, animation_name.c_str());
+  const std::string relative = "iso/" + file_name_of_iso_name(iso_name);
+  const s32 fd = ee::sceOpen(relative.c_str(), SCE_RDONLY);
+  if (fd < 0) {
+    return false;
+  }
+
+  StrFileHeaderJ2 header;
+  const s32 file_size = ee::sceLseek(fd, 0, SCE_SEEK_END);
+  const bool got_header = file_size >= 0 && ee::sceLseek(fd, 0, SCE_SEEK_SET) == 0 &&
+                          ee::sceRead(fd, &header, sizeof(header)) == (s32)sizeof(header);
+  if (!got_header || !valid_chunked_str_header(header, file_size)) {
+    ee::sceClose(fd);
+    return false;
+  }
+
+  const u32 chunk_size = header.sizes[request.section];
+  const u64 chunk_offset = (u64)header.sectors[request.section] * SECTOR_SIZE;
+  if (!chunk_size || chunk_size > request.maxlen ||
+      chunk_offset < sizeof(StrFileHeaderJ2) ||
+      chunk_offset > (u64)file_size || chunk_size > (u64)file_size - chunk_offset ||
+      chunk_offset > (u64)std::numeric_limits<s32>::max() ||
+      chunk_size > (u32)std::numeric_limits<s32>::max()) {
+    ee::sceClose(fd);
+    return false;
+  }
+
+  std::vector<u8> chunk;
+  try {
+    chunk.resize(chunk_size);
+  } catch (const std::exception&) {
+    ee::sceClose(fd);
+    return false;
+  }
+  const s32 offset = (s32)chunk_offset;
+  const bool read = ee::sceLseek(fd, offset, SCE_SEEK_SET) == offset &&
+                    ee::sceRead(fd, chunk.data(), (s32)chunk_size) == (s32)chunk_size;
+  const bool closed = ee::sceClose(fd) == 0;
+  if (!read || !closed) {
+    return false;
+  }
+
+  memcpy(Ptr<u8>(request.address).c(), chunk.data(), chunk.size());
+  *length = chunk_size;
+  return true;
+}
+
 u64 str_rpc(u32 function,
             u32 send_buffer,
             s32 send_size,
@@ -799,14 +909,14 @@ u64 str_rpc(u32 function,
 
   StrRequest request;
   memcpy(&request, Ptr<u8>(send_buffer).c(), sizeof(request));
-  if (request.section >= 0) {
-    return reject("rpc-call (Jak 2 STR, chunked files unimplemented)");
-  }
-
   g_stats.str_requests++;
   std::string basename;
   u32 length = 0;
-  if (uppercase_basename(request, &basename) && read_str_file(request, basename, &length)) {
+  const bool valid_name = request_basename(request, &basename);
+  const bool loaded =
+      valid_name && (request.section < 0 ? read_str_file(request, basename, &length)
+                                        : read_chunked_str_file(request, basename, &length));
+  if (loaded) {
     write_str_reply(request, recv_buffer, STR_RPC_RESULT_DONE, length);
     g_stats.str_reads++;
     g_stats.str_bytes += length;
