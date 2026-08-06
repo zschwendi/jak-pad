@@ -120,6 +120,21 @@ void test_bad_fixed_packet_state_fails_closed() {
         "an erase setup with noncanonical fixed GS state is rejected");
 
   fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
+  constexpr u64 kFrameMaskBit = 1ull << 32;
+  constexpr u64 kFixtureFrame = 0x1200 / 32 | (1ull << 16);
+  put_u64(&fixture.ee_memory, fixture.erase_setup_tag_offset + 64,
+          kFixtureFrame | kFrameMaskBit);
+  const auto frame_mask_result = capture(fixture);
+  check(!frame_mask_result.valid && frame_mask_result.malformed_bytes == 160,
+        "an erase setup with nonzero FRAME FBMSK is rejected");
+
+  fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
+  put_u64(&fixture.ee_memory, fixture.erase_setup_tag_offset + 112, 0x8);
+  const auto clamp_result = capture(fixture);
+  check(!clamp_result.valid && clamp_result.malformed_bytes == 160,
+        "an erase setup with CLAMP bits outside 0x5 is rejected");
+
+  fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
   constexpr u64 kTexturedSpritePrimBit = 1ull << 50;
   put_u64(&fixture.ee_memory, fixture.erase_clear_tag_offset + 16,
           1 | (1ull << 15) | (1ull << 46) |
@@ -195,7 +210,7 @@ void test_bad_dma_pointer_fails_closed() {
   auto fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
   const u32 bucket_offset = fixture.chain_offset + 4 * 16;
   const u64 bad_next = (static_cast<u64>(DmaTag::Kind::NEXT) << 28) |
-                       (static_cast<u64>(fixture.ee_memory.size()) << 32);
+                       (static_cast<u64>(fixture.ee_memory.size() + 16) << 32);
   std::memcpy(fixture.ee_memory.data() + bucket_offset, &bad_next, sizeof(bad_next));
   const auto result = capture(fixture);
   check(!result.valid && !result.present && result.malformed_transfers == 1,

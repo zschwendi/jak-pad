@@ -383,7 +383,8 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
       constexpr u64 kExpectedZbuf = 0x130ull | (1ull << 24) | (1ull << 32);
       if (scissor.x0() != 0 || scissor.y0() != 0 || out->erase_width != 16 ||
           out->erase_height != 16 || frame.psm() != GsFrame::PSM::PSMCT32 ||
-          frame.fbw() != (out->erase_width + 63) / 64 ||
+          frame.fbw() != (out->erase_width + 63) / 64 || frame.fbmsk() != 0 ||
+          (out->erase_clamp & ~0x5ull) != 0 ||
           read_unaligned<u64>(ad + 1 * 16) != kExpectedXyOffset ||
           read_unaligned<u64>(ad + 6 * 16) != kExpectedTexa ||
           read_unaligned<u64>(ad + 7 * 16) != kExpectedZbuf ||
