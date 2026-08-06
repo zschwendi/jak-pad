@@ -1,4 +1,5 @@
 #include "game/graphics/pipelines/metal/metal_jak2_merc_dma.h"
+#include "game/graphics/pipelines/metal/metal_merc_dma_dialect.h"
 
 #include <cstdio>
 #include <cstring>
@@ -241,6 +242,31 @@ void test_empty_bucket() {
 void test_bounded_chain_rejections() {
   {
     Fixture fixture;
+    check_rejected(fixture, "an unaligned bucket start is rejected before reading its tag",
+                   fixture.memory.size(), kOpening + 1);
+  }
+  {
+    Fixture fixture;
+    check_rejected(fixture, "an unaligned next-bucket boundary is rejected before recovery",
+                   fixture.memory.size(), kOpening, kBoundary + 1);
+    DmaFollower dma(fixture.memory.data(), kOpening);
+    check(!metal_jak2_merc_dma::recover_to_boundary(
+              &dma, fixture.memory.data(), fixture.memory.size(), kBoundary + 1) &&
+              dma.current_tag_offset() == kOpening,
+          "direct recovery refuses an unaligned boundary without moving the follower");
+  }
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, kOpening, DmaTag::Kind::NEXT, 0, kSetup + 1, 0, 0);
+    check_rejected(fixture, "an unaligned opening NEXT target is rejected before following");
+  }
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, fixture.model0_patch, DmaTag::Kind::NEXT, 0, kModel1 + 1, 0, 0);
+    check_rejected(fixture, "an unaligned model NEXT target is rejected before following");
+  }
+  {
+    Fixture fixture;
     put_tag(&fixture.memory, kOpening, DmaTag::Kind::NEXT, 0,
             static_cast<u32>(fixture.memory.size()), 0, 0);
     check_rejected(fixture, "an out-of-copy opening NEXT target is rejected before following");
@@ -346,6 +372,12 @@ void test_model_packet_edges() {
   }
   {
     ModelOptions options;
+    options.bit_flags = 0x5;
+    check_packet_rejected(make_model_packet("two-update-modes", options),
+                          "update-verts and pc-blerc cannot both be selected");
+  }
+  {
+    ModelOptions options;
     options.bit_flags = 4;
     metal_jak2_merc_dma::ModelPacket parsed;
     check(parse_packet(make_model_packet("exact-blerc", options), &parsed) &&
@@ -408,6 +440,16 @@ void test_malformed_buckets() {
   }
   {
     Fixture fixture;
+    put_tag(&fixture.memory, fixture.model0_patch, DmaTag::Kind::NEXT, 0, kModel0, 0, 0);
+    check_rejected(fixture, "a self-referential model link is rejected");
+  }
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, fixture.model1_patch, DmaTag::Kind::NEXT, 0, kModel0, 0, 0);
+    check_rejected(fixture, "a two-model NEXT cycle is rejected");
+  }
+  {
+    Fixture fixture;
     put_u32(&fixture.memory, fixture.model0_data + 128 + 7 * 16 + 128,
             static_cast<u32>(fixture.memory.size() - 100));
     check_rejected(fixture, "an out-of-range EE matrix pointer is rejected transactionally");
@@ -426,7 +468,70 @@ void test_malformed_buckets() {
   }
 }
 
-void test_jak1_packet_is_not_reinterpreted() {
+void test_preflight_transaction() {
+  {
+    Fixture fixture;
+    u64 tag = 0;
+    std::memcpy(&tag, fixture.memory.data() + kModel1, sizeof(tag));
+    tag = (tag & ~0xffffull) | 0xffffull;
+    put_u64(&fixture.memory, kModel1, tag);
+
+    DmaFollower dma(fixture.memory.data(), kOpening);
+    int malformed = 0;
+    int model_checks = 0;
+    auto outcome = metal_jak2_merc_dma::preflight_bucket(
+        &dma, fixture.memory.data(), fixture.memory.size(), kOpening, kBoundary,
+        fixture.memory.size(), &malformed,
+        [&](const metal_jak2_merc_dma::ModelPacket&, std::string*) {
+          model_checks++;
+          return true;
+        });
+
+    int handle_all_dma_calls = 0;
+    int draw_publications = 0;
+    if (outcome.should_render()) {
+      handle_all_dma_calls++;
+      draw_publications++;
+    }
+    check(outcome.action == metal_jak2_merc_dma::PreflightAction::SkipMalformed &&
+              !outcome.should_render() && outcome.recovered &&
+              dma.current_tag_offset() == kBoundary && malformed == 1 && model_checks == 0 &&
+              outcome.packet.model_count == 0 && outcome.packet.models.empty() &&
+              handle_all_dma_calls == 0 && draw_publications == 0,
+          "malformed preflight resets output, reports once, directly recovers, and cannot publish");
+  }
+  {
+    Fixture fixture;
+    DmaFollower dma(fixture.memory.data(), kOpening);
+    int malformed = 0;
+    int model_checks = 0;
+    auto outcome = metal_jak2_merc_dma::preflight_bucket(
+        &dma, fixture.memory.data(), fixture.memory.size(), kOpening, kBoundary,
+        fixture.memory.size(), &malformed,
+        [&](const metal_jak2_merc_dma::ModelPacket&, std::string* error) {
+          model_checks++;
+          *error = "the packet effect count to match its loaded Merc model";
+          return false;
+        });
+    check(!outcome.should_render() && outcome.recovered &&
+              dma.current_tag_offset() == kBoundary && malformed == 1 && model_checks == 1 &&
+              outcome.packet.models.empty(),
+          "a loaded-model mismatch is also transactionally reset and directly recovered");
+  }
+}
+
+void test_jak1_dialect_is_preserved() {
+  constexpr auto jak1 = metal_merc_dma::dialect(GameVersion::Jak1);
+  constexpr auto jak2 = metal_merc_dma::dialect(GameVersion::Jak2);
+  static_assert(jak1.gs_setup_bytes == 32 && jak1.model_patch_count == 2 &&
+                jak1.water_slot_bytes == 16 && jak1.matrix_slots_offset() == 256);
+  static_assert(jak2.gs_setup_bytes == 48 && jak2.model_patch_count == 1 &&
+                jak2.water_slot_bytes == 0 && jak2.matrix_slots_offset() == 240);
+  check(jak1.gs_setup_bytes == 32 && jak1.model_patch_count == 2 &&
+            jak1.water_slot_bytes == 16 && jak2.gs_setup_bytes == 48 &&
+            jak2.model_patch_count == 1 && jak2.water_slot_bytes == 0,
+        "the production Merc dialect preserves Jak 1 GS, link, and water-slot behavior");
+
   ModelOptions options;
   options.jak1_water_slot = true;
   const auto packet = make_model_packet("jak1-water-slot", options);
@@ -444,7 +549,8 @@ int main() {
   test_bounded_chain_rejections();
   test_model_packet_edges();
   test_malformed_buckets();
-  test_jak1_packet_is_not_reinterpreted();
+  test_preflight_transaction();
+  test_jak1_dialect_is_preserved();
   if (g_failures) {
     std::printf("FAIL: %d Jak 2 Merc DMA checks failed\n", g_failures);
     return 1;

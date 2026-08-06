@@ -84,11 +84,18 @@ inline bool span_is_bounded(std::size_t copy_size,
   return offset <= copy_size && size <= copy_size - offset;
 }
 
+constexpr bool is_qword_aligned(u32 offset) {
+  return (offset & 0xf) == 0;
+}
+
 inline bool read_tag(const u8* copy_base,
                      std::size_t copy_size,
                      u32 offset,
                      TagView* out,
                      std::string* error) {
+  if (!is_qword_aligned(offset)) {
+    return fail(error, "a 16-byte-aligned DMA tag offset");
+  }
   if (!copy_base || !out || !span_is_bounded(copy_size, offset, 16)) {
     return fail(error, "a DMA tag header inside the compacted copy");
   }
@@ -109,9 +116,13 @@ inline bool read_tag(const u8* copy_base,
   if (inline_end > std::numeric_limits<u32>::max()) {
     return fail(error, "a DMA inline end representable by DmaFollower");
   }
-  if (tag.kind == DmaTag::Kind::NEXT &&
-      !span_is_bounded(copy_size, static_cast<std::size_t>(tag.addr), 16)) {
-    return fail(error, "a NEXT target header inside the compacted copy");
+  if (tag.kind == DmaTag::Kind::NEXT) {
+    if (!is_qword_aligned(tag.addr)) {
+      return fail(error, "a 16-byte-aligned NEXT target");
+    }
+    if (!span_is_bounded(copy_size, static_cast<std::size_t>(tag.addr), 16)) {
+      return fail(error, "a NEXT target header inside the compacted copy");
+    }
   }
 
   out->kind = tag.kind;
@@ -144,7 +155,8 @@ inline bool recover_to_boundary(DmaFollower* dma,
                                 const u8* copy_base,
                                 std::size_t copy_size,
                                 u32 next_bucket) {
-  if (!dma || !copy_base || !span_is_bounded(copy_size, next_bucket, 16)) {
+  if (!dma || !copy_base || !is_qword_aligned(next_bucket) ||
+      !span_is_bounded(copy_size, next_bucket, 16)) {
     return false;
   }
   *dma = DmaFollower(copy_base, next_bucket);
@@ -218,6 +230,9 @@ inline bool parse_model_packet(const u8* data,
   if (out->bit_flags & ~kKnownFlagMask) {
     return fail(error, "only known Jak 2 Merc flag bits");
   }
+  if ((out->bit_flags & 0x5) == 0x5) {
+    return fail(error, "mutually exclusive update-verts and pc-blerc flags");
+  }
 
   const u64 valid_effect_mask =
       out->effect_count == 0 ? 0 : ((1ull << out->effect_count) - 1);
@@ -288,6 +303,9 @@ inline bool validate_bucket(const u8* copy_base,
     return fail(error, "a bucket output");
   }
   *out = {};
+  if (!is_qword_aligned(next_bucket)) {
+    return fail(error, "a 16-byte-aligned next bucket boundary");
+  }
   if (!copy_base || !span_is_bounded(copy_size, next_bucket, 16)) {
     return fail(error, "the next bucket header inside the compacted copy");
   }
@@ -347,14 +365,15 @@ inline bool validate_bucket(const u8* copy_base,
   }
 
   u32 current = setup_patch.address;
-  std::vector<u32> visited_offsets;
-  for (u32 guard = 0; guard < 1024; guard++) {
-    for (u32 visited : visited_offsets) {
-      if (visited == current) {
-        return fail(error, "an acyclic Merc model chain");
-      }
+  // Every model/terminal target is aligned and has a complete header in this
+  // copy. There can therefore be no more distinct targets than qword slots.
+  std::vector<bool> visited_offsets(copy_size / 16, false);
+  for (std::size_t link_count = 0; link_count < visited_offsets.size(); link_count++) {
+    const std::size_t current_slot = current / 16;
+    if (visited_offsets[current_slot]) {
+      return fail(error, "an acyclic Merc model chain");
     }
-    visited_offsets.push_back(current);
+    visited_offsets[current_slot] = true;
 
     TagView model;
     if (!read_tag(copy_base, copy_size, current, &model, error)) {
@@ -394,7 +413,57 @@ inline bool validate_bucket(const u8* copy_base,
     }
     current = model_patch.address;
   }
-  return fail(error, "fewer than 1024 Merc model links");
+  return fail(error, "model links bounded by qword slots in the compacted copy");
+}
+
+enum class PreflightAction { Render, SkipEmpty, SkipMalformed };
+
+struct PreflightOutcome {
+  PreflightAction action = PreflightAction::SkipMalformed;
+  Bucket packet;
+  std::string error;
+  bool recovered = false;
+
+  bool should_render() const { return action == PreflightAction::Render; }
+};
+
+template <typename ModelValidator>
+PreflightOutcome preflight_bucket(DmaFollower* dma,
+                                  const u8* copy_base,
+                                  std::size_t copy_size,
+                                  u32 start_offset,
+                                  u32 next_bucket,
+                                  std::size_t ee_memory_size,
+                                  int* malformed_count,
+                                  ModelValidator&& validate_model) {
+  PreflightOutcome result;
+  bool valid = validate_bucket(copy_base, copy_size, start_offset, next_bucket, ee_memory_size,
+                               &result.packet, &result.error);
+  if (valid && !result.packet.empty) {
+    for (const auto& model : result.packet.models) {
+      if (!validate_model(model, &result.error)) {
+        valid = false;
+        break;
+      }
+    }
+  }
+
+  if (valid && !result.packet.empty) {
+    result.action = PreflightAction::Render;
+    return result;
+  }
+
+  result.recovered = recover_to_boundary(dma, copy_base, copy_size, next_bucket);
+  if (valid) {
+    result.action = PreflightAction::SkipEmpty;
+    return result;
+  }
+
+  result.packet = {};
+  if (malformed_count) {
+    (*malformed_count)++;
+  }
+  return result;
 }
 
 }  // namespace metal_jak2_merc_dma
