@@ -206,6 +206,24 @@ bool sky_batch_is_zero(const goal_jak2_metal_host_metrics& metrics) {
          metrics.last_sky_draw_batch_alpha_afail == 0;
 }
 
+bool normal_tfrag_texture_captures_are_empty(
+    const goal_jak2_metal_host_metrics& metrics) {
+  constexpr std::array<u32, GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT> kBuckets = {
+      7, 18, 29, 40, 51, 62};
+  for (std::size_t i = 0; i < kBuckets.size(); ++i) {
+    const auto& upload = metrics.tfrag_texture_uploads[i];
+    if (upload.bucket_id != kBuckets[i] || upload.captures != 1 ||
+        upload.present_captures != 0 || upload.classifications[1] != 1 ||
+        upload.transfers != 1 || upload.inert_transfers != 1 || upload.payload_bytes != 0 ||
+        upload.ordinary_descriptors != 0 || upload.animator_arrays != 0 ||
+        upload.eye_markers != 0 || upload.other_transfers != 0 ||
+        upload.malformed_transfers != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool write_synthetic_fr3(const std::filesystem::path& path,
                          const std::string& level_name,
                          bool with_texture) {
@@ -515,6 +533,8 @@ int main() {
   check(metrics.chains == 1 && metrics.completed_chains == 1 && metrics.failed_chains == 0 &&
             metrics.last_buckets_dispatched == kBucketCount,
         "one copied 327-bucket chain completed policy dispatch");
+  check(normal_tfrag_texture_captures_are_empty(metrics),
+        "the host records all six empty normal TFRAG texture setup buckets");
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
             metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
             metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&

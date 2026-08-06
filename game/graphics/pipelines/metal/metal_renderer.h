@@ -75,6 +75,9 @@ struct MetalRenderOptions {
   metal_camera_trace::Snapshot expected_camera;
   bool expected_render_camera_valid = false;
   metal_camera_trace::RenderSnapshot expected_render_camera;
+  // Optional synchronous host work that must stay ordered with Jak II bucket dispatch.
+  void* host_bucket_context = nullptr;
+  MetalHostBucketCallback host_bucket_callback = nullptr;
 };
 
 class MetalRenderer {

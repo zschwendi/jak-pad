@@ -1,12 +1,14 @@
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -17,6 +19,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
@@ -305,24 +308,85 @@ void copy_sprite_texture_upload_metrics(
   }
 }
 
+void record_tfrag_texture_upload_metrics(
+    goal_jak2_metal_host* host,
+    std::size_t index,
+    u32 bucket_id,
+    const metal_renderer::Jak2CommonTfragTextureUploadCapture& capture) {
+  static_assert(GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT ==
+                metal_renderer::kJak2NormalTfragTextureUploadBuckets.size());
+  static_assert(GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT == 6);
+  auto& out = host->metrics.tfrag_texture_uploads[index];
+  out.bucket_id = bucket_id;
+  out.captures++;
+  out.present_captures += capture.present;
+  const auto classification = static_cast<std::size_t>(capture.classification);
+  if (classification < GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT) {
+    out.classifications[classification]++;
+  }
+  out.transfers += capture.transfer_count;
+  out.payload_bytes += capture.total_payload_bytes;
+  out.inert_transfers += capture.inert_transfers;
+  out.ordinary_descriptors += capture.ordinary_descriptors;
+  out.direct_setup_transfers += capture.direct_setup_transfers;
+  out.animator_arrays += capture.animator_arrays;
+  out.animator_body_transfers += capture.animator_body_transfers;
+  out.animator_payload_bytes += capture.animator_payload_bytes;
+  out.eye_markers += capture.eye_markers;
+  out.other_transfers += capture.other_transfers;
+  out.malformed_transfers += capture.malformed_transfers;
+  for (std::size_t i = 0; i < capture.transfer_count; ++i) {
+    const auto& transfer = capture.transfers[i];
+    const bool ordinary =
+        transfer.payload_bytes == 16 && transfer.qwc == 1 &&
+        transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) &&
+        transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+        transfer.vif0_immediate == 0 &&
+        transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+        transfer.vif1_immediate == 3;
+    if (transfer.payload_bytes != 0 && !ordinary) {
+      out.last_nonordinary_payload_bytes = transfer.payload_bytes;
+      out.last_nonordinary_qwc = transfer.qwc;
+      out.last_nonordinary_tag_kind = transfer.tag_kind;
+      out.last_nonordinary_vif0_kind = transfer.vif0_kind;
+      out.last_nonordinary_vif0_immediate = transfer.vif0_immediate;
+      out.last_nonordinary_vif1_kind = transfer.vif1_kind;
+      out.last_nonordinary_vif1_immediate = transfer.vif1_immediate;
+    }
+  }
+}
+
+void execute_ordinary_texture_upload_or_throw(
+    goal_jak2_metal_host* host,
+    const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
+    const u8* live_ee_memory,
+    uint64_t* execution_count,
+    const char* label,
+    bool* mutation_started = nullptr) {
+  if (ordinary.page_offset > EE_MAIN_MEM_SIZE - ordinary.page_header.size() ||
+      ordinary.mode != -1 ||
+      std::memcmp(live_ee_memory + ordinary.page_offset, ordinary.page_header.data(),
+                  ordinary.page_header.size()) != 0) {
+    throw std::runtime_error(std::string(label) + " changed after planning");
+  }
+  if (mutation_started) {
+    *mutation_started = true;
+  }
+  host->textures.handle_upload_now(live_ee_memory + ordinary.page_offset,
+                                   static_cast<int>(ordinary.mode), g_ee_main_mem,
+                                   metal_offset_of_s7(), false);
+  (*execution_count)++;
+}
+
 bool execute_ordinary_texture_upload(
     goal_jak2_metal_host* host,
     const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
     const u8* live_ee_memory,
     uint64_t* execution_count,
     const char* label) {
-  if (ordinary.page_offset > EE_MAIN_MEM_SIZE - ordinary.page_header.size() ||
-      ordinary.mode != -1 ||
-      std::memcmp(live_ee_memory + ordinary.page_offset, ordinary.page_header.data(),
-                  ordinary.page_header.size()) != 0) {
-    fail_current_chain_closed(host, std::string(label) + " changed after planning");
-    return false;
-  }
   try {
-    host->textures.handle_upload_now(live_ee_memory + ordinary.page_offset,
-                                     static_cast<int>(ordinary.mode), g_ee_main_mem,
-                                     metal_offset_of_s7(), false);
-    (*execution_count)++;
+    execute_ordinary_texture_upload_or_throw(host, ordinary, live_ee_memory, execution_count,
+                                             label);
     return true;
   } catch (const std::exception& error) {
     fail_current_chain_closed(host, error.what());
@@ -330,6 +394,42 @@ bool execute_ordinary_texture_upload(
     fail_current_chain_closed(host, std::string(label) + " threw");
   }
   return false;
+}
+
+using Jak2TfragTextureUploadPlans =
+    std::array<metal_renderer::Jak2NormalTfragTextureUploadPlan,
+               metal_renderer::kJak2NormalTfragTextureUploadBuckets.size()>;
+
+struct Jak2TfragTextureUploadDispatch {
+  goal_jak2_metal_host* host = nullptr;
+  const Jak2TfragTextureUploadPlans* plans = nullptr;
+  const u8* live_ee_memory = nullptr;
+  bool* host_texture_mutated = nullptr;
+};
+
+void execute_planned_tfrag_texture_upload(void* opaque, u32 bucket_id) {
+  auto* dispatch = static_cast<Jak2TfragTextureUploadDispatch*>(opaque);
+  const auto found = std::find(metal_renderer::kJak2NormalTfragTextureUploadBuckets.begin(),
+                               metal_renderer::kJak2NormalTfragTextureUploadBuckets.end(),
+                               bucket_id);
+  if (found == metal_renderer::kJak2NormalTfragTextureUploadBuckets.end()) {
+    return;
+  }
+  const std::size_t index = static_cast<std::size_t>(
+      found - metal_renderer::kJak2NormalTfragTextureUploadBuckets.begin());
+  const auto& plan = (*dispatch->plans)[index];
+  if (!plan.present) {
+    return;
+  }
+  if (plan.bucket_id != bucket_id) {
+    throw std::runtime_error("Jak 2 normal TFRAG texture-upload dispatch order is inconsistent");
+  }
+  const std::string label =
+      "Jak 2 normal TFRAG texture upload bucket " + std::to_string(bucket_id);
+  execute_ordinary_texture_upload_or_throw(
+      dispatch->host, plan.ordinary, dispatch->live_ee_memory,
+      &dispatch->host->metrics.tfrag_texture_uploads[index].executions, label.c_str(),
+      dispatch->host_texture_mutated);
 }
 
 bool execute_bucket4_plan(goal_jak2_metal_host* host,
@@ -451,6 +551,23 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, error.c_str());
       return;
     }
+    Jak2TfragTextureUploadPlans tfrag_texture_plans;
+    for (std::size_t i = 0; i < metal_renderer::kJak2NormalTfragTextureUploadBuckets.size();
+         ++i) {
+      const u32 bucket_id = metal_renderer::kJak2NormalTfragTextureUploadBuckets[i];
+      metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+      const auto plan = metal_renderer::plan_jak2_normal_tfrag_texture_upload(
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id,
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &capture);
+      record_tfrag_texture_upload_metrics(host, i, bucket_id, capture);
+      if (!plan) {
+        const std::string error = "Jak 2 TFRAG texture-upload plan rejected bucket " +
+                                  std::to_string(bucket_id) + " DMA";
+        record_failure(host, error.c_str());
+        return;
+      }
+      tfrag_texture_plans[i] = *plan;
+    }
     metal_renderer::Jak2Bucket4TextureUploadCapture bucket4_capture;
     const auto bucket4_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
@@ -468,16 +585,16 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 bucket 312 texture-upload plan rejected malformed DMA");
       return;
     }
-    host_texture_mutated =
-        !std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(*bucket4_plan) ||
-        sprite_texture_plan->present;
     if (!execute_bucket4_plan(host, *bucket4_plan, static_cast<const u8*>(ee_base))) {
       return;
     }
+    host_texture_mutated =
+        !std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(*bucket4_plan);
     if (!execute_sprite_texture_upload_plan(host, *sprite_texture_plan,
                                             static_cast<const u8*>(ee_base))) {
       return;
     }
+    host_texture_mutated = host_texture_mutated || sprite_texture_plan->present;
     const auto& copied = host->copier.run(ee_base, chain_offset, false);
     host->metrics.last_copied_bytes = static_cast<uint32_t>(copied.data.size());
 
@@ -495,8 +612,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
+    Jak2TfragTextureUploadDispatch tfrag_dispatch{host, &tfrag_texture_plans,
+                                                   static_cast<const u8*>(ee_base),
+                                                   &host_texture_mutated};
+    auto render_options = host->options;
+    render_options.host_bucket_context = &tfrag_dispatch;
+    render_options.host_bucket_callback = execute_planned_tfrag_texture_upload;
     const bool acquired = host->renderer.render_chain_frame(
-        host->options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
+        render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
     copy_renderer_metrics(host);
     if (host->metrics.last_buckets_dispatched != metal_renderer::kJak2MetalBucketCount) {
       record_send_chain_failure(host, "Jak 2 Metal renderer violated its audited bucket policy",

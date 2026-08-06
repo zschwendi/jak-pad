@@ -842,6 +842,15 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_shared_state.engine_frame_id = opts.engine_frame_id;
     m_shared_state.game_res_w = opts.game_res_w;
     m_shared_state.game_res_h = opts.game_res_h;
+    m_shared_state.host_bucket_context = opts.host_bucket_context;
+    m_shared_state.host_bucket_callback = opts.host_bucket_callback;
+    struct HostBucketCallbackScope {
+      MetalSharedRenderState* state;
+      ~HostBucketCallbackScope() {
+        state->host_bucket_context = nullptr;
+        state->host_bucket_callback = nullptr;
+      }
+    } host_bucket_callback_scope{&m_shared_state};
 
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
 

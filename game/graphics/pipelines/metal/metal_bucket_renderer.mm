@@ -137,6 +137,10 @@ void MetalHostHandledRenderer::render(DmaFollower& dma,
                                       MetalFrameContext& /*ctx*/) {
   ASSERT(metal_renderer::bucket_chain_layout(render_state->version) ==
          metal_renderer::MetalBucketChainLayout::Jak2Direct);
+  if (render_state->host_bucket_callback) {
+    render_state->host_bucket_callback(render_state->host_bucket_context,
+                                       static_cast<u32>(m_my_id));
+  }
   while (dma.current_tag_offset() != render_state->next_bucket) {
     dma.read_and_advance();
   }

@@ -13,6 +13,8 @@ namespace {
 constexpr u32 kChainOffset = 0x100;
 constexpr u32 kOrdinaryOffset = 0x4000;
 constexpr u32 kAnimatorOffset = 0x5000;
+constexpr u32 kDirectSetupOffset = 0x6000;
+constexpr u32 kTexturePageOffset = 0x7000;
 constexpr std::size_t kMemorySize = 0x10000;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
@@ -27,8 +29,8 @@ void check(bool condition, const char* message) {
   }
 }
 
-u32 bucket_offset() {
-  return kChainOffset + metal_renderer::kJak2CommonTfragTextureUploadBucket * 16;
+u32 bucket_offset(u32 bucket_id = metal_renderer::kJak2CommonTfragTextureUploadBucket) {
+  return kChainOffset + bucket_id * 16;
 }
 
 void put_u32(std::vector<u8>* memory, u32 offset, u32 value) {
@@ -57,23 +59,56 @@ void put_tag(std::vector<u8>* memory,
   put_u32(memory, offset + 12, vif1);
 }
 
-Capture capture(const std::vector<u8>& packet) {
-  return metal_renderer::capture_jak2_common_tfrag_texture_upload(
-      packet.data(), packet.size(), kChainOffset);
+Capture capture(const std::vector<u8>& packet,
+                u32 bucket_id = metal_renderer::kJak2CommonTfragTextureUploadBucket) {
+  return metal_renderer::capture_jak2_tfrag_texture_upload(packet.data(), packet.size(),
+                                                           kChainOffset, bucket_id);
 }
 
-std::vector<u8> make_empty_fixture() {
+std::vector<u8> make_empty_fixture(
+    u32 bucket_id = metal_renderer::kJak2CommonTfragTextureUploadBucket) {
   std::vector<u8> packet(kMemorySize);
-  put_tag(&packet, bucket_offset(), DmaTag::Kind::CNT, 0, 0, 0, 0);
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::CNT, 0, 0, 0, 0);
   return packet;
 }
 
-std::vector<u8> make_ordinary_fixture() {
+std::vector<u8> make_ordinary_fixture(
+    u32 bucket_id = metal_renderer::kJak2CommonTfragTextureUploadBucket) {
   std::vector<u8> packet(kMemorySize);
-  const u32 end_offset = bucket_offset() + 16;
-  put_tag(&packet, bucket_offset(), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
   put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
   std::fill_n(packet.begin() + kOrdinaryOffset + 16, 16, 0x31);
+  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  return packet;
+}
+
+std::vector<u8> make_normal_ordinary_fixture(u32 bucket_id, s64 mode = -1) {
+  std::vector<u8> packet(kMemorySize);
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
+  put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(mode));
+  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  return packet;
+}
+
+std::vector<u8> make_unobserved_direct_first_fixture(u32 bucket_id) {
+  std::vector<u8> packet(kMemorySize);
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
+  put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(-1));
   put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
   return packet;
 }
@@ -117,6 +152,7 @@ bool metadata_matches(const Capture& lhs, const Capture& rhs) {
       lhs.total_payload_bytes != rhs.total_payload_bytes ||
       lhs.inert_transfers != rhs.inert_transfers ||
       lhs.ordinary_descriptors != rhs.ordinary_descriptors ||
+      lhs.direct_setup_transfers != rhs.direct_setup_transfers ||
       lhs.animator_arrays != rhs.animator_arrays ||
       lhs.animator_body_transfers != rhs.animator_body_transfers ||
       lhs.animator_payload_bytes != rhs.animator_payload_bytes ||
@@ -165,6 +201,75 @@ void test_exact_empty_and_ordinary_metadata() {
   check(result.valid && result.classification == Classification::EyeOrOther &&
             result.ordinary_descriptors == 0 && result.other_transfers == 1,
         "a nonzero PC_PORT immediate cannot be classified as the exact ordinary descriptor");
+}
+
+void test_normal_tfrag_bucket_allowlist() {
+  for (const u32 bucket_id : metal_renderer::kJak2NormalTfragTextureUploadBuckets) {
+    auto result = capture(make_empty_fixture(bucket_id), bucket_id);
+    check(result.valid && !result.present &&
+              result.classification == Classification::Absent,
+          "each audited normal TFRAG texture bucket accepts an exact empty chain");
+    result = capture(make_ordinary_fixture(bucket_id), bucket_id);
+    check(result.valid && result.present && result.ordinary_descriptors == 1 &&
+              result.classification == Classification::OrdinaryOnly,
+          "each audited normal TFRAG texture bucket recognizes an ordinary descriptor");
+  }
+
+  const auto packet = make_empty_fixture();
+  check(!metal_renderer::capture_jak2_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, 8)
+             .valid,
+        "an unaudited bucket cannot enter the TFRAG texture classifier");
+}
+
+void test_normal_tfrag_execution_plan() {
+  for (const u32 bucket_id : metal_renderer::kJak2NormalTfragTextureUploadBuckets) {
+    auto packet = make_normal_ordinary_fixture(bucket_id);
+    metal_renderer::Jak2CommonTfragTextureUploadCapture result;
+    const auto plan = metal_renderer::plan_jak2_normal_tfrag_texture_upload(
+        packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size(),
+        &result);
+    check(plan.has_value() && plan->present && plan->bucket_id == bucket_id &&
+              plan->ordinary.page_offset == kTexturePageOffset && plan->ordinary.mode == -1 &&
+              result.valid && result.classification == Classification::OrdinaryOnly &&
+              result.transfer_count == 5 && result.inert_transfers == 3 &&
+              result.ordinary_descriptors == 1 && result.direct_setup_transfers == 1 &&
+              result.other_transfers == 0 && result.total_payload_bytes == 176,
+          "each normal TFRAG texture bucket produces one owned ordinary upload plan");
+  }
+
+  auto packet = make_normal_ordinary_fixture(7);
+  const auto owned = metal_renderer::plan_jak2_normal_tfrag_texture_upload(
+      packet.data(), packet.size(), kChainOffset, 7, packet.data(), packet.size());
+  std::fill_n(packet.begin() + kTexturePageOffset,
+              metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes, 0xa5);
+  check(owned.has_value() && owned->ordinary.page_header[0] == 0,
+        "the normal TFRAG plan owns its validated page header");
+
+  packet = make_ordinary_fixture(7);
+  check(!metal_renderer::plan_jak2_normal_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, 7, packet.data(), packet.size())
+             .has_value(),
+        "a normal TFRAG descriptor without the exact Direct tail is rejected");
+
+  packet = make_normal_ordinary_fixture(7, 0);
+  check(!metal_renderer::plan_jak2_normal_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, 7, packet.data(), packet.size())
+             .has_value(),
+        "a normal TFRAG descriptor with an unobserved upload mode is rejected");
+
+  packet = make_normal_ordinary_fixture(7);
+  put_u32(&packet, kDirectSetupOffset + 8, 0);
+  check(!metal_renderer::plan_jak2_normal_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, 7, packet.data(), packet.size())
+             .has_value(),
+        "a normal TFRAG packet with a non-FLUSHA tail is rejected");
+
+  packet = make_unobserved_direct_first_fixture(7);
+  check(!metal_renderer::plan_jak2_normal_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, 7, packet.data(), packet.size())
+             .has_value(),
+        "the unobserved Direct-before-descriptor order is rejected");
 }
 
 void test_animator_and_combined_metadata() {
@@ -379,6 +484,8 @@ void test_transfer_limit_is_enforced() {
 
 int main() {
   test_exact_empty_and_ordinary_metadata();
+  test_normal_tfrag_bucket_allowlist();
+  test_normal_tfrag_execution_plan();
   test_animator_and_combined_metadata();
   test_payload_contents_are_never_part_of_classification();
   test_capture_owns_metadata_after_snapshot_reuse();

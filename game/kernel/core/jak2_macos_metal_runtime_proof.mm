@@ -147,6 +147,40 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
       static_cast<unsigned long long>(metal.last_merc_nonfinite_bone_matrices),
       static_cast<unsigned long long>(metal.last_merc_degenerate_bone_matrices),
       static_cast<unsigned long long>(metal.last_merc_incoherent_bone_sources));
+  for (const auto& upload : metal.tfrag_texture_uploads) {
+    std::printf(
+        "tfrag-textures[%u]: captures=%llu present=%llu executed=%llu "
+        "classes=(malformed=%llu absent=%llu "
+        "ordinary=%llu animator=%llu mixed=%llu eye-other=%llu) transfers=%llu payload=%llu "
+        "inert=%llu descriptors=%llu direct-tail=%llu animator-arrays=%llu/%llu "
+        "animator-bytes=%llu "
+        "eye=%llu other=%llu malformed-transfers=%llu "
+        "last-nonordinary=(bytes=%u qwc=%u tag=%u vif=%u:%u/%u:%u)\n",
+        upload.bucket_id, static_cast<unsigned long long>(upload.captures),
+        static_cast<unsigned long long>(upload.present_captures),
+        static_cast<unsigned long long>(upload.executions),
+        static_cast<unsigned long long>(upload.classifications[0]),
+        static_cast<unsigned long long>(upload.classifications[1]),
+        static_cast<unsigned long long>(upload.classifications[2]),
+        static_cast<unsigned long long>(upload.classifications[3]),
+        static_cast<unsigned long long>(upload.classifications[4]),
+        static_cast<unsigned long long>(upload.classifications[5]),
+        static_cast<unsigned long long>(upload.transfers),
+        static_cast<unsigned long long>(upload.payload_bytes),
+        static_cast<unsigned long long>(upload.inert_transfers),
+        static_cast<unsigned long long>(upload.ordinary_descriptors),
+        static_cast<unsigned long long>(upload.direct_setup_transfers),
+        static_cast<unsigned long long>(upload.animator_arrays),
+        static_cast<unsigned long long>(upload.animator_body_transfers),
+        static_cast<unsigned long long>(upload.animator_payload_bytes),
+        static_cast<unsigned long long>(upload.eye_markers),
+        static_cast<unsigned long long>(upload.other_transfers),
+        static_cast<unsigned long long>(upload.malformed_transfers),
+        upload.last_nonordinary_payload_bytes, upload.last_nonordinary_qwc,
+        upload.last_nonordinary_tag_kind, upload.last_nonordinary_vif0_kind,
+        upload.last_nonordinary_vif0_immediate, upload.last_nonordinary_vif1_kind,
+        upload.last_nonordinary_vif1_immediate);
+  }
   std::printf(
       "sky: draws=%llu tris=%llu valid=%u textured=%u vertices=%u rgb-vertices=%u "
       "tbp=%u tcc=%u decal=%u lookup=%u placeholder=%u write-rgb=%u "

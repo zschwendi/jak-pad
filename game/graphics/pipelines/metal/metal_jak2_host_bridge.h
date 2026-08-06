@@ -66,6 +66,37 @@ typedef struct goal_jak2_sprite_texture_upload_metrics {
   int64_t modes[GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS];
 } goal_jak2_sprite_texture_upload_metrics;
 
+enum {
+  GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
+  GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT = 6,
+};
+
+typedef struct goal_jak2_tfrag_texture_upload_metrics {
+  uint32_t bucket_id;
+  uint64_t captures;
+  uint64_t present_captures;
+  uint64_t executions;
+  uint64_t classifications[GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT];
+  uint64_t transfers;
+  uint64_t payload_bytes;
+  uint64_t inert_transfers;
+  uint64_t ordinary_descriptors;
+  uint64_t direct_setup_transfers;
+  uint64_t animator_arrays;
+  uint64_t animator_body_transfers;
+  uint64_t animator_payload_bytes;
+  uint64_t eye_markers;
+  uint64_t other_transfers;
+  uint64_t malformed_transfers;
+  uint32_t last_nonordinary_payload_bytes;
+  uint16_t last_nonordinary_qwc;
+  uint8_t last_nonordinary_tag_kind;
+  uint8_t last_nonordinary_vif0_kind;
+  uint16_t last_nonordinary_vif0_immediate;
+  uint8_t last_nonordinary_vif1_kind;
+  uint16_t last_nonordinary_vif1_immediate;
+} goal_jak2_tfrag_texture_upload_metrics;
+
 typedef struct goal_jak2_metal_host_metrics {
   uint64_t chains;
   uint64_t completed_chains;
@@ -161,6 +192,8 @@ typedef struct goal_jak2_metal_host_metrics {
   int64_t last_command_buffer_error_code;
   goal_jak2_bucket4_texture_upload_metrics last_bucket4_texture_upload;
   goal_jak2_sprite_texture_upload_metrics last_sprite_texture_upload;
+  goal_jak2_tfrag_texture_upload_metrics
+      tfrag_texture_uploads[GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT];
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

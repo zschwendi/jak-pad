@@ -14,6 +14,25 @@ namespace {
 constexpr u16 kStartAnimatorArray = 12;
 constexpr u16 kFinishAnimatorArray = 13;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+constexpr u32 kFlushaVif = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+
+struct GoalTexturePageHeaderLayout {
+  struct Segment {
+    u32 block_data_ptr;
+    u32 size;
+    u32 destination;
+  };
+  u32 file_info_ptr;
+  u32 name_ptr;
+  u32 id;
+  s32 length;
+  u32 mip0_size;
+  u32 size;
+  Segment segments[3];
+  u32 pad[16];
+};
+static_assert(sizeof(GoalTexturePageHeaderLayout) == kJak2Bucket4OrdinaryPageHeaderBytes);
 
 struct CheckedTransfer {
   DmaTag tag{0};
@@ -134,6 +153,12 @@ bool is_ordinary_descriptor(const CheckedTransfer& transfer) {
          transfer.vif0 == kPcPortVif && transfer.vif1 == 3;
 }
 
+bool is_exact_direct_setup(const CheckedTransfer& transfer) {
+  return transfer.tag.kind == DmaTag::Kind::CNT && transfer.tag.qwc == 10 &&
+         transfer.size_bytes == 160 && transfer.vif0 == kFlushaVif &&
+         transfer.vif1 == (kDirectVif | 10);
+}
+
 bool record_transfer(const CheckedTransfer& transfer,
                      u32 bucket_offset,
                      Jak2CommonTfragTextureUploadCapture* out) {
@@ -160,6 +185,10 @@ Jak2CommonTfragTextureUploadClass classify(
   if (capture.eye_markers != 0 || capture.other_transfers != 0) {
     return Jak2CommonTfragTextureUploadClass::EyeOrOther;
   }
+  if (capture.direct_setup_transfers != 0 && capture.ordinary_descriptors == 0 &&
+      capture.animator_arrays == 0) {
+    return Jak2CommonTfragTextureUploadClass::EyeOrOther;
+  }
   if (capture.ordinary_descriptors != 0 && capture.animator_arrays != 0) {
     return Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator;
   }
@@ -172,19 +201,87 @@ Jak2CommonTfragTextureUploadClass classify(
   return Jak2CommonTfragTextureUploadClass::Absent;
 }
 
+bool is_audited_tfrag_texture_upload_bucket(u32 bucket_id) {
+  return bucket_id == kJak2CommonTfragTextureUploadBucket ||
+         std::find(kJak2NormalTfragTextureUploadBuckets.begin(),
+                   kJak2NormalTfragTextureUploadBuckets.end(), bucket_id) !=
+             kJak2NormalTfragTextureUploadBuckets.end();
+}
+
+bool is_normal_tfrag_texture_upload_bucket(u32 bucket_id) {
+  return std::find(kJak2NormalTfragTextureUploadBuckets.begin(),
+                   kJak2NormalTfragTextureUploadBuckets.end(), bucket_id) !=
+         kJak2NormalTfragTextureUploadBuckets.end();
+}
+
+bool metadata_is_inert_next(const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::NEXT) && transfer.qwc == 0 &&
+         transfer.payload_bytes == 0 &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif0_immediate == 0 &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif1_immediate == 0;
+}
+
+bool metadata_is_strict_empty(const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 0 &&
+         transfer.payload_bytes == 0 &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif0_immediate == 0 &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif1_immediate == 0;
+}
+
+bool metadata_is_ordinary_descriptor(const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 1 &&
+         transfer.payload_bytes == 16 &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+         transfer.vif0_immediate == 0 &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif1_immediate == 3;
+}
+
+bool metadata_is_direct_setup(const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 10 &&
+         transfer.payload_bytes == 160 &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::FLUSHA) &&
+         transfer.vif0_immediate == 0 &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::DIRECT) &&
+         transfer.vif1_immediate == 10;
+}
+
+bool page_header_is_valid(const u8* live_ee_memory,
+                          std::size_t live_ee_memory_size,
+                          u64 page_offset) {
+  const std::size_t checked_size =
+      std::min<std::size_t>(live_ee_memory_size, EE_MAIN_MEM_SIZE);
+  if (!live_ee_memory || page_offset == 0 ||
+      !range_is_valid(page_offset, sizeof(GoalTexturePageHeaderLayout), checked_size)) {
+    return false;
+  }
+  const auto header =
+      read_unaligned<GoalTexturePageHeaderLayout>(live_ee_memory + page_offset);
+  if (header.length < 0) {
+    return false;
+  }
+  const u64 texture_pointer_bytes = static_cast<u64>(header.length) * sizeof(u32);
+  return range_is_valid(page_offset + sizeof(header), texture_pointer_bytes, checked_size);
+}
+
 }  // namespace
 
-Jak2CommonTfragTextureUploadCapture capture_jak2_common_tfrag_texture_upload(
+Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
     const u8* dma_packet_snapshot,
     std::size_t dma_packet_snapshot_size,
-    u32 chain_offset) {
+    u32 chain_offset,
+    u32 bucket_id) {
   Jak2CommonTfragTextureUploadCapture out;
-  const u64 bucket_offset64 =
-      static_cast<u64>(chain_offset) + kJak2CommonTfragTextureUploadBucket * 16;
+  const u64 bucket_offset64 = static_cast<u64>(chain_offset) + bucket_id * 16;
   const u64 end_offset64 = bucket_offset64 + 16;
   const std::size_t checked_packet_size =
       std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
-  if (!dma_packet_snapshot || (chain_offset & 15) != 0 ||
+  if (!dma_packet_snapshot || !is_audited_tfrag_texture_upload_bucket(bucket_id) ||
+      (chain_offset & 15) != 0 ||
       bucket_offset64 > std::numeric_limits<u32>::max() ||
       end_offset64 > std::numeric_limits<u32>::max() ||
       !range_is_valid(bucket_offset64, 16, checked_packet_size)) {
@@ -257,6 +354,11 @@ Jak2CommonTfragTextureUploadCapture capture_jak2_common_tfrag_texture_upload(
       out.eye_markers++;
       continue;
     }
+    if (is_exact_direct_setup(transfer)) {
+      out.present = true;
+      out.direct_setup_transfers++;
+      continue;
+    }
     if (is_inert(transfer)) {
       if (transfer.tag.kind == DmaTag::Kind::CNT || transfer.tag.kind == DmaTag::Kind::NEXT) {
         out.inert_transfers++;
@@ -282,6 +384,85 @@ Jak2CommonTfragTextureUploadCapture capture_jak2_common_tfrag_texture_upload(
   out.valid = true;
   out.classification = classify(out);
   return out;
+}
+
+std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture) {
+  const auto capture = capture_jak2_tfrag_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, bucket_id);
+  if (out_capture) {
+    *out_capture = capture;
+  }
+  if (!is_normal_tfrag_texture_upload_bucket(bucket_id) || !capture.valid) {
+    return std::nullopt;
+  }
+
+  Jak2NormalTfragTextureUploadPlan plan;
+  plan.bucket_id = bucket_id;
+  if (!capture.present) {
+    if (capture.classification != Jak2CommonTfragTextureUploadClass::Absent ||
+        capture.transfer_count != 1 || capture.total_payload_bytes != 0 ||
+        capture.inert_transfers != 1 || !metadata_is_strict_empty(capture.transfers[0])) {
+      return std::nullopt;
+    }
+    return plan;
+  }
+
+  const bool exact_counts =
+      capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryOnly &&
+      capture.transfer_count == 5 && capture.total_payload_bytes == 176 &&
+      capture.inert_transfers == 3 && capture.ordinary_descriptors == 1 &&
+      capture.direct_setup_transfers == 1 && capture.animator_arrays == 0 &&
+      capture.eye_markers == 0 && capture.other_transfers == 0 &&
+      capture.malformed_transfers == 0;
+  if (!exact_counts || !metadata_is_inert_next(capture.transfers[0]) ||
+      !metadata_is_inert_next(capture.transfers[2]) ||
+      !metadata_is_inert_next(capture.transfers[4])) {
+    return std::nullopt;
+  }
+
+  const bool descriptor_first = metadata_is_ordinary_descriptor(capture.transfers[1]) &&
+                                metadata_is_direct_setup(capture.transfers[3]);
+  if (!descriptor_first) {
+    return std::nullopt;
+  }
+  const auto& descriptor = capture.transfers[1];
+  const u64 descriptor_tag_offset = static_cast<u64>(chain_offset) + bucket_id * 16 +
+                                    descriptor.relative_tag_offset;
+  const u64 descriptor_data_offset = descriptor_tag_offset + 16;
+  const std::size_t checked_snapshot_size =
+      std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
+  if (!range_is_valid(descriptor_data_offset, 16, checked_snapshot_size)) {
+    return std::nullopt;
+  }
+  const u64 page_offset =
+      read_unaligned<u64>(dma_packet_snapshot + descriptor_data_offset);
+  const s64 mode =
+      read_unaligned<s64>(dma_packet_snapshot + descriptor_data_offset + sizeof(u64));
+  if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
+    return std::nullopt;
+  }
+
+  plan.present = true;
+  plan.ordinary.page_offset = page_offset;
+  plan.ordinary.mode = mode;
+  std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
+              plan.ordinary.page_header.size());
+  return plan;
+}
+
+Jak2CommonTfragTextureUploadCapture capture_jak2_common_tfrag_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset) {
+  return capture_jak2_tfrag_texture_upload(dma_packet_snapshot, dma_packet_snapshot_size,
+                                           chain_offset, kJak2CommonTfragTextureUploadBucket);
 }
 
 }  // namespace metal_renderer

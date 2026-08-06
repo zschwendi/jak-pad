@@ -29,7 +29,7 @@ struct Jak2MetalBucketDescriptor {
 
 inline constexpr std::size_t kJak2MetalBucketCount =
     static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS);
-inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0xe7c72d604f77f16full;
+inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0x0a06ca8359f1cdfdull;
 
 const std::array<Jak2MetalBucketDescriptor, kJak2MetalBucketCount>& jak2_metal_bucket_table();
 

@@ -33,6 +33,8 @@ struct MetalBackgroundState;
 // composes eye textures other renderers sample (metal_eye_renderer.h)
 class MetalEyeRenderer;
 
+using MetalHostBucketCallback = void (*)(void* context, u32 bucket_id);
+
 /*!
  * Per-frame bump allocator for dynamic vertex data. The GL renderers stream
  * vertices with glBufferData per draw; in Metal the data must live in an
@@ -90,6 +92,8 @@ struct MetalSharedRenderState {
   GameVersion version = GameVersion::Jak1;
   int game_res_w = 640;
   int game_res_h = 480;
+  void* host_bucket_context = nullptr;
+  MetalHostBucketCallback host_bucket_callback = nullptr;
 };
 
 /*!
@@ -170,8 +174,8 @@ class MetalSkipRenderer : public MetalBucketRenderer {
 };
 
 /*!
- * Drains a bucket whose side effects were completed synchronously by its host
- * before the immutable DMA snapshot reached the renderer.
+ * Drains a bucket whose side effects are completed synchronously by its host.
+ * A per-frame callback runs at this exact bucket boundary when one is supplied.
  */
 class MetalHostHandledRenderer : public MetalBucketRenderer {
  public:

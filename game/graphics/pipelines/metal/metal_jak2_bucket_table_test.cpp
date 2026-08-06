@@ -52,11 +52,11 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 163, "163 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 157, "157 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 3, "three reviewed OpenGL-bound buckets are implemented by Metal Direct");
-  check(host_texture_upload == 2,
-        "two exact texture-upload buckets are executed synchronously by the host");
+  check(host_texture_upload == 8,
+        "eight exact texture-upload buckets are executed synchronously by the host");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
   check(sprite == 1, "one normal Sprite3 bucket is implemented by Metal");
   check(tfragment == 6, "six normal per-level TFRAG buckets are implemented by Metal");
@@ -78,11 +78,16 @@ int main() {
             has_behavior(jak2::BucketId::TFRAG_L4_TFRAG, Behavior::TFragment) &&
             has_behavior(jak2::BucketId::TFRAG_L5_TFRAG, Behavior::TFragment),
         "all six normal TFRAG level buckets use the explicit Metal TFragment policy");
-  check(has_behavior(jak2::BucketId::TEX_L0_TFRAG, Behavior::DeferredSkip) &&
+  check(has_behavior(jak2::BucketId::TEX_L0_TFRAG, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L1_TFRAG, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L2_TFRAG, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L3_TFRAG, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L4_TFRAG, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::TEX_L5_TFRAG, Behavior::HostTextureUpload) &&
             has_behavior(jak2::BucketId::TFRAG_S_L0_TFRAG, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::TFRAG_T_L0_ALPHA, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::TFRAG_W_L0_WATER, Behavior::DeferredSkip),
-        "texture, scissor, translucent, and water TFRAG neighbors remain unpromoted");
+        "normal texture setup is host-owned while other TFRAG neighbors remain unpromoted");
   check(has_behavior(jak2::BucketId::TIE_L0_TFRAG, Behavior::Tie) &&
             has_behavior(jak2::BucketId::TIE_L1_TFRAG, Behavior::Tie) &&
             has_behavior(jak2::BucketId::TIE_L2_TFRAG, Behavior::Tie) &&
