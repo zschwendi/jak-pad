@@ -99,6 +99,8 @@ struct DgoHeader {
   (define *que-str-lock* '#f)
   (define *dgo-name* (new 'global 'string 64 (the string '#f))))
 
+(define *dgo-load-name* (new 'global 'string 64 (the string '#f)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; STR LOAD
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -217,10 +219,18 @@ struct DgoHeader {
 
 (define *dgo-time* (the time-frame 0))
 
+(defun dgo-load-response-state ((response load-dgo-msg))
+  (cond
+    ((not response) 'pending)
+    ((= (-> response result) (load-msg-result done)) 'done)
+    ((= (-> response result) (load-msg-result more)) 'more)
+    (else 'error)))
+
 (defun dgo-load-begin ((name string) (buffer1 pointer) (buffer2 pointer) (buffer-top pointer))
   "Send a DGO load RPC!"
   ;; remember when we started
   (set! *dgo-time* (-> *display* real-integral-frame-counter))
+  (copy-string<-string *dgo-load-name* name)
   (format 0 "Starting level load clock~%")
   ;; flush pending RPC
   (sync *load-dgo-rpc* #t)
@@ -247,21 +257,22 @@ struct DgoHeader {
     (when (not (check-busy *load-dgo-rpc*))
       ;; it is, try to get a response, if there is a new one.
       (let ((response (the-as load-dgo-msg (pop-last-received *load-dgo-rpc*))))
-        (when response
-          ;; get load location
-          (if (or (= (-> response result) (load-msg-result done)) (= (-> response result) (load-msg-result more)))
-            ;; success! set load location to the location the IOP loaded to.
-            (set! load-location (the-as pointer (-> response b1))))
-          ;; set more flag
-          (if (= (-> response result) (load-msg-result more)) (set! (-> last-object 0) #f))
-          ;; if we're done loading, print the load time.
-          ;; note that this does not include linking/setup of the
-          ;; final object in the level which may take a significant amount of time
-          (if (= (-> response result) (load-msg-result done))
-            ;; this assumes it was stable at the target fps!
-            (format 0
-                    "Elapsed time for level = ~Fs~%"
-                    (* (-> *display* seconds-per-frame) (the float (- (-> *display* real-integral-frame-counter) *dgo-time*))))))))
+        (case (dgo-load-response-state response)
+          (('more)
+           (set! load-location (the-as pointer (-> response b1)))
+           (set! (-> last-object 0) #f))
+          (('done)
+           (set! load-location (the-as pointer (-> response b1)))
+           ;; this does not include linking/setup of the final object.
+           (format 0
+                   "Elapsed time for level = ~Fs~%"
+                   (* (-> *display* seconds-per-frame) (the float (- (-> *display* real-integral-frame-counter) *dgo-time*)))))
+          (('error)
+           (format 0
+                   "ERROR: DGO load ~A failed with RPC status ~D.~%"
+                   *dgo-load-name*
+                   (the int (-> response result)))
+           (crash!)))))
     load-location))
 
 (defun dgo-load-continue ((buffer-top pointer))
