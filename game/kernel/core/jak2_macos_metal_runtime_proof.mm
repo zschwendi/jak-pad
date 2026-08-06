@@ -3,7 +3,7 @@
  * Bounded macOS host for the Jak 2 AOT runtime and its external Metal renderer.
  *
  * This is a development proof, not the desktop OpenGOAL runtime. It uses the portable signed-code
- * path shared with iPadOS, presents at most three real DMA chains, and reports the first renderer
+ * path shared with iPadOS, presents a bounded number of real DMA chains, and reports the first renderer
  * boundary that is still incomplete.
  */
 
@@ -38,7 +38,7 @@ struct Options {
 int usage(const char* program) {
   std::fprintf(
       stderr,
-      "usage: %s --data-dir <prepared-jak2-dir> [--saves-dir <dir>] [--ticks <1-3>] "
+      "usage: %s --data-dir <prepared-jak2-dir> [--saves-dir <dir>] [--ticks <1-60>] "
       "[--hidden] [--require-presentation]\n"
       "       --data-dir defaults to $GOALPAD_JAK2_DATA_DIR\n",
       program);
@@ -57,7 +57,7 @@ bool parse_options(int argc, char** argv, Options* out) {
       out->saves_dir = argv[++i];
     } else if (arg == "--ticks" && i + 1 < argc) {
       out->maximum_ticks = std::atoi(argv[++i]);
-      if (out->maximum_ticks < 1 || out->maximum_ticks > 3) {
+      if (out->maximum_ticks < 1 || out->maximum_ticks > 60) {
         return false;
       }
     } else if (arg == "--hidden") {
@@ -237,8 +237,10 @@ void print_frame(const goal_jak2_metal_frame_summary& frame) {
 
 bool exact_submission_gate(const goal_jak2_runtime_metrics& runtime,
                            const goal_jak2_metal_host_metrics& metal,
+                           int expected_ticks,
                            bool require_presentation) {
-  return metal.chains <= 3 && runtime.ticks == metal.chains &&
+  return runtime.ticks == static_cast<uint64_t>(expected_ticks) &&
+         metal.chains == static_cast<uint64_t>(expected_ticks) &&
          goal_jak2_metal_host_metrics_pass_frame_gate(&metal, require_presentation);
 }
 
@@ -466,7 +468,8 @@ int main(int argc, char** argv) {
     }
 
     const bool passed = !quit_requested && !tick_failed && runtime.title_ready != 0 &&
-                        exact_submission_gate(runtime, metal, require_presentation) &&
+                        exact_submission_gate(runtime, metal, options.maximum_ticks,
+                                              require_presentation) &&
                         saw_attributed_title_sprite_frame;
     if (passed) {
       std::printf("PASS: bounded Jak II AOT runtime produced an attributed non-black Metal frame.\n");
@@ -477,7 +480,8 @@ int main(int argc, char** argv) {
         stderr,
         "INCOMPLETE: exact=%d title=%d attributed-title-sprites=%d baseline-non-black=%llu "
         "last-non-black=%llu quit=%d tick-failed=%d\n",
-        exact_submission_gate(runtime, metal, require_presentation), runtime.title_ready,
+        exact_submission_gate(runtime, metal, options.maximum_ticks, require_presentation),
+        runtime.title_ready,
         saw_attributed_title_sprite_frame,
         static_cast<unsigned long long>(baseline_non_black_pixels),
         static_cast<unsigned long long>(frame.non_black_pixels), quit_requested, tick_failed);
