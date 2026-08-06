@@ -362,8 +362,14 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   constexpr auto first_shrub = static_cast<std::size_t>(jak2::BucketId::SHRUB_L0_SHRUB);
   constexpr auto shrub_stride = static_cast<std::size_t>(jak2::BucketId::SHRUB_L1_SHRUB) -
                                 first_shrub;
+  constexpr auto first_tie = static_cast<std::size_t>(jak2::BucketId::TIE_L0_TFRAG);
+  constexpr auto tie_stride = static_cast<std::size_t>(jak2::BucketId::TIE_L1_TFRAG) - first_tie;
+  constexpr auto first_etie = static_cast<std::size_t>(jak2::BucketId::ETIE_L0_TFRAG);
+  constexpr auto etie_stride = static_cast<std::size_t>(jak2::BucketId::ETIE_L1_TFRAG) -
+                               first_etie;
   const std::vector<tfrag3::TFragmentTreeKind> normal_tfrags = {
       tfrag3::TFragmentTreeKind::NORMAL};
+  std::array<MetalTie3*, jak2::LEVEL_MAX> normal_ties = {};
 
   for (const auto& descriptor : table) {
     const auto bucket_id = static_cast<std::size_t>(descriptor.id);
@@ -393,6 +399,23 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalShrub>(
           fmt::format("shrub-l{}-shrub", level_id), descriptor.id);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Tie) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_tie && (bucket_id - first_tie) % tie_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_tie) / tie_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      auto renderer = std::make_unique<MetalTie3>(fmt::format("tie-l{}-tfrag", level_id),
+                                                  descriptor.id, level_id);
+      normal_ties[level_id] = renderer.get();
+      m_bucket_renderers[bucket_id] = std::move(renderer);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TieEnvmap) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_etie && (bucket_id - first_etie) % etie_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_etie) / etie_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      ASSERT(normal_ties[level_id]);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTieEnvmap>(
+          fmt::format("etie-l{}-tfrag", level_id), descriptor.id, normal_ties[level_id]);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
       ASSERT(batch_size != 0);
       const char* name = "direct";

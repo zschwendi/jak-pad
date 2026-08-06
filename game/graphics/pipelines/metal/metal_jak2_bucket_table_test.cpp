@@ -32,6 +32,8 @@ int main() {
   std::size_t sprite = 0;
   std::size_t tfragment = 0;
   std::size_t shrub = 0;
+  std::size_t tie = 0;
+  std::size_t tie_envmap = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -43,10 +45,12 @@ int main() {
     sprite += table[i].behavior == Behavior::Sprite;
     tfragment += table[i].behavior == Behavior::TFragment;
     shrub += table[i].behavior == Behavior::Shrub;
+    tie += table[i].behavior == Behavior::Tie;
+    tie_envmap += table[i].behavior == Behavior::TieEnvmap;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 181, "181 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 169, "169 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 3, "three reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 2,
@@ -55,6 +59,9 @@ int main() {
   check(sprite == 1, "one normal Sprite3 bucket is implemented by Metal");
   check(tfragment == 6, "six normal per-level TFRAG buckets are implemented by Metal");
   check(shrub == 6, "six normal per-level SHRUB buckets are implemented by Metal");
+  check(tie == 6, "six normal per-level TIE parent buckets are implemented by Metal");
+  check(tie_envmap == 6,
+        "six normal per-level ETIE child buckets are implemented by Metal");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
             metal_renderer::kJak2MetalBucketExpectedFingerprint,
         "the ordered descriptor policy matches its fixed reference fingerprint");
@@ -69,11 +76,46 @@ int main() {
             has_behavior(jak2::BucketId::TFRAG_L5_TFRAG, Behavior::TFragment),
         "all six normal TFRAG level buckets use the explicit Metal TFragment policy");
   check(has_behavior(jak2::BucketId::TEX_L0_TFRAG, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::TIE_L0_TFRAG, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::TFRAG_S_L0_TFRAG, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::TFRAG_T_L0_ALPHA, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::TFRAG_W_L0_WATER, Behavior::DeferredSkip),
-        "texture, TIE, scissor, translucent, and water neighbors remain unpromoted");
+        "texture, scissor, translucent, and water TFRAG neighbors remain unpromoted");
+  check(has_behavior(jak2::BucketId::TIE_L0_TFRAG, Behavior::Tie) &&
+            has_behavior(jak2::BucketId::TIE_L1_TFRAG, Behavior::Tie) &&
+            has_behavior(jak2::BucketId::TIE_L2_TFRAG, Behavior::Tie) &&
+            has_behavior(jak2::BucketId::TIE_L3_TFRAG, Behavior::Tie) &&
+            has_behavior(jak2::BucketId::TIE_L4_TFRAG, Behavior::Tie) &&
+            has_behavior(jak2::BucketId::TIE_L5_TFRAG, Behavior::Tie),
+        "all six normal TIE parent buckets use the explicit Metal Tie policy");
+  check(has_behavior(jak2::BucketId::ETIE_L0_TFRAG, Behavior::TieEnvmap) &&
+            has_behavior(jak2::BucketId::ETIE_L1_TFRAG, Behavior::TieEnvmap) &&
+            has_behavior(jak2::BucketId::ETIE_L2_TFRAG, Behavior::TieEnvmap) &&
+            has_behavior(jak2::BucketId::ETIE_L3_TFRAG, Behavior::TieEnvmap) &&
+            has_behavior(jak2::BucketId::ETIE_L4_TFRAG, Behavior::TieEnvmap) &&
+            has_behavior(jak2::BucketId::ETIE_L5_TFRAG, Behavior::TieEnvmap),
+        "all six normal ETIE child buckets use the explicit Metal TieEnvmap policy");
+  check(static_cast<std::size_t>(jak2::BucketId::TIE_L0_TFRAG) == 9 &&
+            static_cast<std::size_t>(jak2::BucketId::TIE_L1_TFRAG) == 20 &&
+            static_cast<std::size_t>(jak2::BucketId::TIE_L2_TFRAG) == 31 &&
+            static_cast<std::size_t>(jak2::BucketId::TIE_L3_TFRAG) == 42 &&
+            static_cast<std::size_t>(jak2::BucketId::TIE_L4_TFRAG) == 53 &&
+            static_cast<std::size_t>(jak2::BucketId::TIE_L5_TFRAG) == 64 &&
+            static_cast<std::size_t>(jak2::BucketId::ETIE_L0_TFRAG) == 10 &&
+            static_cast<std::size_t>(jak2::BucketId::ETIE_L1_TFRAG) == 21 &&
+            static_cast<std::size_t>(jak2::BucketId::ETIE_L2_TFRAG) == 32 &&
+            static_cast<std::size_t>(jak2::BucketId::ETIE_L3_TFRAG) == 43 &&
+            static_cast<std::size_t>(jak2::BucketId::ETIE_L4_TFRAG) == 54 &&
+            static_cast<std::size_t>(jak2::BucketId::ETIE_L5_TFRAG) == 65,
+        "normal TIE/ETIE retain the audited 9/10 through 64/65 parent-child pairs");
+  check(has_behavior(jak2::BucketId::TIE_S_L0_TFRAG, Behavior::StrictEmpty) &&
+            has_behavior(jak2::BucketId::ETIE_S_L0_TFRAG, Behavior::StrictEmpty) &&
+            has_behavior(jak2::BucketId::TIE_V_L0_TFRAG, Behavior::StrictEmpty) &&
+            has_behavior(jak2::BucketId::TIE_T_L0_ALPHA, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::ETIE_T_L0_ALPHA, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TIE_W_L0_WATER, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::ETIE_W_L0_WATER, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::MERC_L0_TFRAG, Behavior::DeferredSkip),
+        "TIE scissor/vanish remain unbound while translucent, water, and Merc stay deferred");
   check(has_behavior(jak2::BucketId::SHRUB_L0_SHRUB, Behavior::Shrub) &&
             has_behavior(jak2::BucketId::SHRUB_L1_SHRUB, Behavior::Shrub) &&
             has_behavior(jak2::BucketId::SHRUB_L2_SHRUB, Behavior::Shrub) &&
@@ -139,6 +181,11 @@ int main() {
   check(metal_renderer::jak2_metal_bucket_allows_content(
             static_cast<std::size_t>(jak2::BucketId::SHRUB_L0_SHRUB)),
         "implemented normal SHRUB policy allows content");
+  check(metal_renderer::jak2_metal_bucket_allows_content(
+            static_cast<std::size_t>(jak2::BucketId::TIE_L0_TFRAG)) &&
+            metal_renderer::jak2_metal_bucket_allows_content(
+                static_cast<std::size_t>(jak2::BucketId::ETIE_L0_TFRAG)),
+        "implemented normal TIE parent and ETIE child policies allow their source shapes");
   check(metal_renderer::jak2_metal_bucket_allows_content(
             static_cast<std::size_t>(jak2::BucketId::SKY_DRAW)),
         "the promoted SKY_DRAW Direct policy allows content");

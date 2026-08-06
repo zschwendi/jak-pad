@@ -596,7 +596,9 @@ bool policy_table_is_audited() {
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Visibility &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Sprite &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::TFragment &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Shrub) {
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Shrub &&
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Tie &&
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::TieEnvmap) {
       return false;
     }
   }
