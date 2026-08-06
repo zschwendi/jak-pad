@@ -21,6 +21,9 @@ constexpr u16 kEraseDestination = 14;
 constexpr u16 kUploadClut = 15;
 constexpr u16 kGenericUpload = 16;
 constexpr u16 kCloudsAndFog = 41;
+constexpr u32 kExpectedCloudDestination = 256;
+constexpr u32 kExpectedFogDestination = 128;
+constexpr u32 kExpectedFogClutDestination = 192;
 constexpr u32 kMaximumTransfers = 64;
 constexpr u32 kGsMemoryUpperBound = 16 * 1024;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
@@ -329,8 +332,8 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
       out->cloud_destination =
           read_unaligned<s32>(transfer.data + offsetof(SkyInputLayout, cloud_destination));
       const auto input = read_unaligned<SkyInputLayout>(transfer.data);
-      if (transfer.vif1 != 0 || !cloud_input_is_valid(input) || out->cloud_destination < 0 ||
-          static_cast<u32>(out->cloud_destination) >= kGsMemoryUpperBound) {
+      if (transfer.vif1 != 0 || !cloud_input_is_valid(input) ||
+          out->cloud_destination != static_cast<s32>(kExpectedCloudDestination)) {
         record_malformed(out, &transfer);
         return false;
       }
@@ -411,7 +414,7 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
           read_unaligned<u64>(ad + 6 * 16) != kExpectedTexa ||
           read_unaligned<u64>(ad + 7 * 16) != kExpectedZbuf ||
           read_unaligned<u64>(ad + 8 * 16) != 0 ||
-          out->erase_destination >= kGsMemoryUpperBound) {
+          out->erase_destination != kExpectedFogClutDestination) {
         record_malformed(out, &transfer);
         return false;
       }
@@ -465,7 +468,7 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
       out->generic_format = upload.format;
       out->generic_force_to_gpu = upload.force_to_gpu;
       if (upload.width != 256 || upload.height != 1 || upload.format != 19 ||
-          upload.force_to_gpu != 1 || upload.destination >= kGsMemoryUpperBound ||
+          upload.force_to_gpu != 1 || upload.destination != kExpectedFogDestination ||
           !texture_source_range_is_valid(live_ee_memory, upload.data, upload.width, upload.height,
                                          upload.format, live_ee_memory_size)) {
         record_malformed(out, &transfer);

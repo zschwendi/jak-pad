@@ -136,7 +136,7 @@ inline Jak2Bucket4TextureUploadFixture make_jak2_bucket4_texture_upload_fixture(
     const float value = 1.f + static_cast<float>(offset / 4);
     std::memcpy(out.ee_memory.data() + kCloud + 16 + offset, &value, sizeof(value));
   }
-  put_u32(out.ee_memory, kCloud + 16 + 104, 0x1234);
+  put_u32(out.ee_memory, kCloud + 16 + 104, 256);
   out.first_finish_tag_offset = kCloud + 16 + 112;
   put_tag(out.ee_memory, out.first_finish_tag_offset, DmaTag::Kind::CNT, 0, 0,
           vif(VifCode::Kind::PC_PORT, 13), 0);
@@ -161,7 +161,7 @@ inline Jak2Bucket4TextureUploadFixture make_jak2_bucket4_texture_upload_fixture(
                          GifTag::RegisterDescriptor::AD}));
   constexpr u32 kWidth = 16;
   constexpr u32 kHeight = 16;
-  constexpr u32 kEraseDestination = 0x1200;
+  constexpr u32 kEraseDestination = 192;
   constexpr GsRegisterAddress kSetupRegisters[] = {
       GsRegisterAddress::SCISSOR_1, GsRegisterAddress::XYOFFSET_1,
       GsRegisterAddress::FRAME_1,   GsRegisterAddress::TEST_1,
@@ -212,7 +212,7 @@ inline Jak2Bucket4TextureUploadFixture make_jak2_bucket4_texture_upload_fixture(
   const u16 generic_size[2] = {256, 1};
   std::memcpy(out.ee_memory.data() + out.generic_upload_data_offset + 4, generic_size,
               sizeof(generic_size));
-  put_u32(out.ee_memory, out.generic_upload_data_offset + 8, 0x1300);
+  put_u32(out.ee_memory, out.generic_upload_data_offset + 8, 128);
   out.ee_memory[out.generic_upload_data_offset + 12] = 19;
   out.ee_memory[out.generic_upload_data_offset + 13] = 1;
 

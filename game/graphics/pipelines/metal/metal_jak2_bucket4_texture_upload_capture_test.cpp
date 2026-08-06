@@ -53,19 +53,19 @@ void test_exact_observed_grammar() {
             result.opcode_counts[14] == 1 && result.opcode_counts[15] == 1 &&
             result.opcode_counts[16] == 1 && result.opcode_counts[41] == 1,
         "the two animator arrays and exact opcode counts are captured");
-  check(result.cloud_destination == 0x1234, "the cloud destination is captured");
+  check(result.cloud_destination == 256, "the exact cloud destination is captured");
   check(result.erase_width == 16 && result.erase_height == 16 &&
-            result.erase_destination == 0x1200 && result.erase_test == 0x11 &&
+            result.erase_destination == 192 && result.erase_test == 0x11 &&
             result.erase_alpha == 0x22 && result.erase_clamp == 0x1 &&
             result.erase_clear[0] == 17 &&
             result.erase_clear[1] == 34 && result.erase_clear[2] == 51 &&
             result.erase_clear[3] == 68,
         "the erase target, dimensions, and clear state are captured");
   check(result.generic_source == 0x8000 && result.generic_width == 256 &&
-            result.generic_height == 1 && result.generic_destination == 0x1300 &&
+            result.generic_height == 1 && result.generic_destination == 128 &&
             result.generic_format == 19 && result.generic_force_to_gpu == 1,
         "the generic upload descriptor scalars are captured");
-  check(result.clut_source == 0xa000 && result.clut_destination == 0x1200 &&
+  check(result.clut_source == 0xa000 && result.clut_destination == 192 &&
             result.finishes == 2,
         "the CLUT upload and both array finishes are captured");
   check(result.malformed_transfers == 0 && result.unsupported_transfers == 0,
@@ -161,7 +161,7 @@ void test_bad_fixed_packet_state_fails_closed() {
 
   fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
   constexpr u64 kFrameMaskBit = 1ull << 32;
-  constexpr u64 kFixtureFrame = 0x1200 / 32 | (1ull << 16);
+  constexpr u64 kFixtureFrame = 192 / 32 | (1ull << 16);
   put_u64(&fixture.ee_memory, fixture.erase_setup_tag_offset + 64,
           kFixtureFrame | kFrameMaskBit);
   const auto frame_mask_result = capture(fixture);
@@ -302,6 +302,21 @@ void test_nonpositive_cloud_max_time_is_malformed() {
         "a nonpositive cloud max time is rejected before the CPU generator");
 }
 
+void test_live_animator_destinations_are_exact() {
+  auto fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
+  put_u32(&fixture.ee_memory, fixture.sky_input_data_offset + 104, 257);
+  check(!capture(fixture).valid, "a cloud destination other than live slot 256 is rejected");
+
+  fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
+  constexpr u64 kWrongEraseFrame = 224 / 32 | (1ull << 16);
+  put_u64(&fixture.ee_memory, fixture.erase_setup_tag_offset + 64, kWrongEraseFrame);
+  check(!capture(fixture).valid, "an erase and CLUT destination other than live slot 192 is rejected");
+
+  fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
+  put_u32(&fixture.ee_memory, fixture.generic_upload_data_offset + 8, 129);
+  check(!capture(fixture).valid, "a fog destination other than live slot 128 is rejected");
+}
+
 void test_empty_bucket_is_valid_and_absent() {
   std::vector<u8> memory(0x1000);
   constexpr u32 chain_offset = 0x100;
@@ -365,22 +380,22 @@ void test_plan_uses_separate_packet_and_live_domains_and_owns_animator_bytes() {
             mixed.sky.cloud_max == 3.f && mixed.sky.times.front() == 4.f &&
             mixed.sky.times.back() == 14.f && mixed.sky.max_times.front() == 15.f &&
             mixed.sky.max_times.back() == 20.f && mixed.sky.scales.front() == 21.f &&
-            mixed.sky.scales.back() == 26.f && mixed.sky.cloud_destination == 0x1234,
+            mixed.sky.scales.back() == 26.f && mixed.sky.cloud_destination == 256,
         "all meaningful SkyInput scalars are owned by the plan");
   check(mixed.sky.bytes == expected_sky,
         "the exact SkyInput bytes are owned by the plan");
   check(mixed.erase.width == 16 && mixed.erase.height == 16 &&
-            mixed.erase.destination == 0x1200 && mixed.erase.test == 0x11 &&
+            mixed.erase.destination == 192 && mixed.erase.test == 0x11 &&
             mixed.erase.alpha == 0x22 && mixed.erase.clamp == 0x1 &&
             mixed.erase.setup_values[1] == (0x8000ull | (0x8000ull << 32)) &&
             mixed.erase.setup_values[8] == 0 && mixed.erase.clear[0] == 17 &&
             mixed.erase.clear[3] == 68,
         "the exact erase setup and clear scalars are owned by the plan");
   check(mixed.fog.width == 256 && mixed.fog.height == 1 &&
-            mixed.fog.destination == 0x1300 && mixed.fog.format == 19 &&
+            mixed.fog.destination == 128 && mixed.fog.format == 19 &&
             mixed.fog.force_to_gpu == 1 && mixed.fog.indices.front() == 0x5a &&
             mixed.fog.indices.back() == static_cast<u8>(255 ^ 0x5a) &&
-            mixed.fog.clut_destination == 0x1200 && mixed.fog.clut.front() == 7 &&
+            mixed.fog.clut_destination == 192 && mixed.fog.clut.front() == 7 &&
             mixed.fog.clut.back() == static_cast<u8>(1023 * 5 + 7) &&
             mixed.fog.indices == expected_indices && mixed.fog.clut == expected_clut,
         "the exact fog-index and CLUT bytes come from the live EE domain");
@@ -394,7 +409,7 @@ void test_plan_uses_separate_packet_and_live_domains_and_owns_animator_bytes() {
             live.begin() + fixture.clut_source_offset + metal_renderer::kJak2Bucket4ClutBytes,
             0xa5);
   check(mixed.sky.bytes == expected_sky && mixed.sky.fog_height == 1.f &&
-            mixed.sky.cloud_destination == 0x1234 && mixed.fog.indices == expected_indices &&
+            mixed.sky.cloud_destination == 256 && mixed.fog.indices == expected_indices &&
             mixed.fog.clut == expected_clut,
         "packet reuse and live-source poisoning cannot change owned plan bytes");
 }
@@ -457,6 +472,7 @@ int main() {
   test_bad_dma_pointer_fails_closed();
   test_unsupported_opcode_is_counted();
   test_nonpositive_cloud_max_time_is_malformed();
+  test_live_animator_destinations_are_exact();
   test_empty_bucket_is_valid_and_absent();
   test_plan_uses_separate_packet_and_live_domains_and_owns_animator_bytes();
   test_plan_accepts_exact_ordinary_only_and_absent_shapes();
