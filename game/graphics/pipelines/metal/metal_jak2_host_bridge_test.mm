@@ -16,7 +16,9 @@ namespace {
 constexpr u32 kChainOffset = 0x100000;
 constexpr u32 kBucketCount = static_cast<u32>(jak2::BucketId::MAX_BUCKETS);
 constexpr u32 kScreenFilterBucket = static_cast<u32>(jak2::BucketId::SCREEN_FILTER);
+constexpr u32 kDebugNoZbuf2Bucket = static_cast<u32>(jak2::BucketId::DEBUG_NO_ZBUF2);
 constexpr u32 kScreenFilterPayloadOffset = kChainOffset + 0x4000;
+constexpr u32 kDebugNoZbuf2PayloadOffset = kChainOffset + 0x5000;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 
@@ -67,7 +69,7 @@ void put_xyzf2(std::array<u8, kGifBytes>& payload, std::size_t offset, u32 x, u3
   put_u64(payload, offset + 8, kZ << 4);
 }
 
-std::array<u8, kGifBytes> make_screen_filter_triangle() {
+std::array<u8, kGifBytes> make_direct_triangle() {
   std::array<u8, kGifBytes> payload = {};
   constexpr u64 kNloop = 1;
   constexpr u64 kEop = 1ull << 15;
@@ -91,18 +93,25 @@ std::array<u8, kGifBytes> make_screen_filter_triangle() {
   return payload;
 }
 
-void make_screen_filter_chain() {
+void make_direct_chain(u32 bucket, u32 payload_offset) {
   make_empty_chain();
-  const auto payload = make_screen_filter_triangle();
-  const u32 bucket_offset = kChainOffset + kScreenFilterBucket * 16;
+  const auto payload = make_direct_triangle();
+  const u32 bucket_offset = kChainOffset + bucket * 16;
   const u32 next_bucket_offset = bucket_offset + 16;
-  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kScreenFilterPayloadOffset);
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, payload_offset);
   const u32 direct = (static_cast<u32>(VifCode::Kind::DIRECT) << 24) | static_cast<u32>(kGifQwords);
-  put_tag(kScreenFilterPayloadOffset, DmaTag::Kind::CNT, static_cast<u16>(kGifQwords), 0, 0,
-          direct);
-  std::memcpy(static_cast<u8*>(g_ee_main_mem) + kScreenFilterPayloadOffset + 16, payload.data(),
-              payload.size());
-  put_tag(kScreenFilterPayloadOffset + 16 + kGifBytes, DmaTag::Kind::NEXT, 0, next_bucket_offset);
+  put_tag(payload_offset, DmaTag::Kind::CNT, static_cast<u16>(kGifQwords), 0, 0, direct);
+  std::memcpy(static_cast<u8*>(g_ee_main_mem) + payload_offset + 16, payload.data(), payload.size());
+  put_tag(payload_offset + 16 + kGifBytes, DmaTag::Kind::NEXT, 0, next_bucket_offset);
+}
+
+void make_screen_filter_chain() {
+  make_direct_chain(kScreenFilterBucket, kScreenFilterPayloadOffset);
+}
+
+void make_debug_no_zbuf2_chain() {
+  static_assert(kDebugNoZbuf2Bucket == 325);
+  make_direct_chain(kDebugNoZbuf2Bucket, kDebugNoZbuf2PayloadOffset);
 }
 
 bool is_zero(const goal_jak2_metal_frame_summary& summary) {
@@ -154,6 +163,8 @@ int main() {
             metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&
             metrics.draws == 0 && metrics.triangles == 0 && metrics.submissions == 0 &&
             metrics.last_screen_filter_draws == 0 && metrics.last_screen_filter_triangles == 0 &&
+            metrics.last_debug_no_zbuf2_draws == 0 &&
+            metrics.last_debug_no_zbuf2_triangles == 0 &&
             metrics.presentations == 0 && metrics.presentation_drops == 0 &&
             metrics.presentation_order_mismatches == 0 && metrics.unsupported_blends == 0,
         "nil-layer lifecycle dispatches without committing, drawing, or presenting");
@@ -168,7 +179,9 @@ int main() {
             metrics.last_buckets_dispatched == kBucketCount,
         "the synthetic SCREEN_FILTER chain completed all 327 policy buckets");
   check(metrics.draws == 1 && metrics.triangles == 1 && metrics.last_screen_filter_draws == 1 &&
-            metrics.last_screen_filter_triangles == 1,
+            metrics.last_screen_filter_triangles == 1 &&
+            metrics.last_debug_no_zbuf2_draws == 0 &&
+            metrics.last_debug_no_zbuf2_triangles == 0,
         "SCREEN_FILTER records its deterministic Direct draw and triangle");
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
             metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
@@ -179,6 +192,26 @@ int main() {
   frame_summary = {1, 1, 1, 1, 1};
   check(!goal_jak2_metal_host_read_last_frame(host, &frame_summary) && is_zero(frame_summary),
         "nil-layer SCREEN_FILTER encoding still exposes no completed frame readback");
+
+  make_debug_no_zbuf2_chain();
+  callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(host, &metrics),
+        "copied the host metrics after synthetic DEBUG_NO_ZBUF2 dispatch");
+  check(metrics.chains == 3 && metrics.completed_chains == 3 && metrics.failed_chains == 0 &&
+            metrics.last_buckets_dispatched == kBucketCount,
+        "the synthetic DEBUG_NO_ZBUF2 chain completed all 327 policy buckets");
+  check(metrics.draws == 1 && metrics.triangles == 1 &&
+            metrics.last_debug_no_zbuf2_draws == 1 &&
+            metrics.last_debug_no_zbuf2_triangles == 1 &&
+            metrics.last_screen_filter_draws == 0 && metrics.last_screen_filter_triangles == 0,
+        "DEBUG_NO_ZBUF2 owns the deterministic Direct draw and triangle exactly");
+  check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
+            metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
+            metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&
+            metrics.submissions == 0 && metrics.presentations == 0 &&
+            metrics.presentation_drops == 0 && metrics.presentation_order_mismatches == 0 &&
+            metrics.unsupported_blends == 0,
+        "nil-layer DEBUG_NO_ZBUF2 drawing remains submission- and presentation-free");
 
   goal_jak2_metal_host_destroy(host);
   callbacks.send_chain(g_ee_main_mem, kChainOffset);

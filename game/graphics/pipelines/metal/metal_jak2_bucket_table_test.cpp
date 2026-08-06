@@ -36,9 +36,9 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 199, "199 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 198, "198 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
-  check(direct == 1, "one reviewed OpenGL-bound bucket is implemented by Metal Direct");
+  check(direct == 2, "two reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
             metal_renderer::kJak2MetalBucketExpectedFingerprint,
         "the ordered descriptor policy matches its fixed reference fingerprint");
@@ -54,8 +54,11 @@ int main() {
             has_behavior(jak2::BucketId::ETIE_W_L5_WATER, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::DEBUG3, Behavior::DeferredSkip),
         "common, prismatic, water, and tail bindings are deferred");
-  check(has_behavior(jak2::BucketId::SCREEN_FILTER, Behavior::Direct),
-        "SCREEN_FILTER is the sole explicit implemented Direct bucket");
+  check(has_behavior(jak2::BucketId::SCREEN_FILTER, Behavior::Direct) &&
+            has_behavior(jak2::BucketId::DEBUG_NO_ZBUF2, Behavior::Direct),
+        "SCREEN_FILTER and DEBUG_NO_ZBUF2 are the explicit implemented Direct buckets");
+  check(static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF2) == 325,
+        "DEBUG_NO_ZBUF2 retains its verified Jak 2 bucket ID 325");
 
   check(has_behavior(jak2::BucketId::BUCKET_0, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::TFRAG_S_L0_TFRAG, Behavior::StrictEmpty) &&
@@ -73,6 +76,9 @@ int main() {
   check(metal_renderer::jak2_metal_bucket_allows_content(
             static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)),
         "implemented Direct policy allows content");
+  check(metal_renderer::jak2_metal_bucket_allows_content(
+            static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF2)),
+        "the promoted DEBUG_NO_ZBUF2 Direct policy allows content");
   check(!metal_renderer::jak2_metal_bucket_allows_content(table.size()),
         "policy rejects an out-of-range bucket ID");
 
@@ -80,14 +86,16 @@ int main() {
   for (std::size_t i = 0; i < table.size(); i++) {
     direct_batches += metal_renderer::jak2_metal_direct_batch_size(i) != 0;
   }
-  check(direct_batches == 1 &&
+  check(direct_batches == 2 &&
             metal_renderer::jak2_metal_direct_batch_size(
                 static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)) == 256 &&
+            metal_renderer::jak2_metal_direct_batch_size(
+                static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF2)) == 0x8000 &&
             metal_renderer::jak2_metal_direct_batch_size(
                 static_cast<std::size_t>(jak2::BucketId::SKY_DRAW)) == 0 &&
             metal_renderer::jak2_metal_direct_batch_size(
                 static_cast<std::size_t>(jak2::BucketId::DEBUG3)) == 0,
-        "only the explicit SCREEN_FILTER binding receives its reference batch size");
+        "only the two Direct bindings receive their OpenGL reference batch sizes");
   check(metal_renderer::jak2_metal_direct_batch_size(table.size()) == 0,
         "out-of-range buckets do not receive a Direct binding");
 

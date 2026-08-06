@@ -166,6 +166,8 @@ struct ChainStats {
   int triangles = 0;
   int jak2_screen_filter_draws = 0;
   int jak2_screen_filter_triangles = 0;
+  int jak2_debug_no_zbuf2_draws = 0;
+  int jak2_debug_no_zbuf2_triangles = 0;
   int tex_uploads = 0;
   int sky_draws = 0;
   int sky_blends = 0;

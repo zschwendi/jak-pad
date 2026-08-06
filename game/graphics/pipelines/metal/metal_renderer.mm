@@ -359,6 +359,9 @@ void MetalRenderer::init_bucket_renderers_jak2() {
         case jak2::BucketId::SCREEN_FILTER:
           name = "screen-filter";
           break;
+        case jak2::BucketId::DEBUG_NO_ZBUF2:
+          name = "debug-no-zbuf2";
+          break;
         default:
           ASSERT(false);
       }
@@ -1012,6 +1015,8 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.triangles = ctx.triangles;
     m_chain_stats.jak2_screen_filter_draws = 0;
     m_chain_stats.jak2_screen_filter_triangles = 0;
+    m_chain_stats.jak2_debug_no_zbuf2_draws = 0;
+    m_chain_stats.jak2_debug_no_zbuf2_triangles = 0;
     int uploads = 0;
     u64 skipped = 0;
     int unsupported_blends = 0;
@@ -1032,6 +1037,10 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
             bucket_id == static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)) {
           m_chain_stats.jak2_screen_filter_draws = d->stats().draw_calls;
           m_chain_stats.jak2_screen_filter_triangles = d->stats().triangles;
+        } else if (m_shared_state.version == GameVersion::Jak2 &&
+                   bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF2)) {
+          m_chain_stats.jak2_debug_no_zbuf2_draws = d->stats().draw_calls;
+          m_chain_stats.jak2_debug_no_zbuf2_triangles = d->stats().triangles;
         }
       } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
         unsupported_blends += sky->direct_stats().unsupported_blends;
