@@ -198,9 +198,9 @@ size_t level_count();
 // levels, between frames. Returns false when no such level is loaded.
 bool unload(TexturePool& pool, const std::string& name);
 
-// Releases every loaded level (buffers, textures stay in the pool's registry
-// exactly like the GL loader's unload path leaves them to the pool).
-void clear();
+// Releases every loaded level, including its pool entries and Metal texture
+// registry handles.
+void clear(TexturePool& pool);
 
 }  // namespace metal_level_data
 

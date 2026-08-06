@@ -333,6 +333,10 @@ TexturePool* get_texture_pool();
 // the registry handle, or 0 on failure.
 u64 upload_texture_rgba8(const u8* data, int w, int h);
 
+// Number of registry-owned MTLTexture handles. Used by lifecycle proofs to
+// verify that failed and unloaded levels publish no residual resources.
+size_t texture_registry_live_count();
+
 // Mirror of the GL loader's add_texture against the pipeline's pool.
 u64 pool_add_texture(const tfrag3::Texture& tex, bool is_common);
 
@@ -356,7 +360,7 @@ struct LevelLoadResult {
 // streaming Loader does for a level, in one call. Requires a created display.
 LevelLoadResult load_level_fr3(const std::string& path, bool is_common);
 
-// Frees every loaded level.
+// Frees every loaded background and Merc level and their texture handles.
 void unload_all_levels();
 
 // Per-frame background-renderer counters from the last chain frame.

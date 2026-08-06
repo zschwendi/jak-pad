@@ -6,6 +6,8 @@
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/log/log.h"
 
+#include "fmt/format.h"
+
 namespace {
 
 // The Metal analog of the GL texture-name namespace: owns the id<MTLTexture>
@@ -25,6 +27,9 @@ TextureRegistry& registry() {
 }  // namespace
 
 u64 metal_texture_register(id<MTLTexture> tex) {
+  if (!tex) {
+    return 0;
+  }
   auto& r = registry();
   std::lock_guard<std::mutex> lock(r.mutex);
   u64 handle = r.next_handle++;
@@ -57,6 +62,11 @@ u64 metal_upload_texture_rgba8(id<MTLDevice> device,
                                u32 w,
                                u32 h) {
   @autoreleasepool {
+    if (!device || !queue || !data || !w || !h) {
+      lg::error("Metal: invalid texture upload (device {}, queue {}, data {}, {}x{})",
+                device ? "set" : "nil", queue ? "set" : "nil", data ? "set" : "nil", w, h);
+      return 0;
+    }
     auto* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                     width:w
                                                                    height:h
@@ -78,11 +88,25 @@ u64 metal_upload_texture_rgba8(id<MTLDevice> device,
       // GPU mip generation, like glGenerateMipmap on the GL path. The GL upload
       // is synchronous, so wait here too - callers may read/sample immediately.
       id<MTLCommandBuffer> cmds = [queue commandBuffer];
+      if (!cmds) {
+        lg::error("Metal: mipmap command-buffer allocation failed ({}x{})", w, h);
+        return 0;
+      }
       id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
+      if (!blit) {
+        lg::error("Metal: mipmap blit-encoder allocation failed ({}x{})", w, h);
+        return 0;
+      }
       [blit generateMipmapsForTexture:tex];
       [blit endEncoding];
       [cmds commit];
       [cmds waitUntilCompleted];
+      if (cmds.status == MTLCommandBufferStatusError) {
+        const char* message = cmds.error ? [[cmds.error localizedDescription] UTF8String]
+                                         : "unknown Metal error";
+        lg::error("Metal: mipmap generation failed ({}x{}): {}", w, h, message);
+        return 0;
+      }
     }
     return metal_texture_register(tex);
   }
@@ -115,17 +139,29 @@ u64 metal_add_texture(id<MTLDevice> device,
   return handle;
 }
 
-void metal_add_textures(id<MTLDevice> device,
+bool metal_add_textures(id<MTLDevice> device,
                         id<MTLCommandQueue> queue,
                         TexturePool& pool,
                         const std::vector<tfrag3::Texture>& textures,
                         bool is_common,
-                        std::vector<u64>* out) {
+                        std::vector<u64>* out,
+                        std::string* error) {
   out->clear();
   out->reserve(textures.size());
-  for (const auto& tex : textures) {
-    out->push_back(metal_upload_texture_rgba8(device, queue, (const u8*)tex.data.data(), tex.w,
-                                              tex.h));
+  for (size_t i = 0; i < textures.size(); i++) {
+    const auto& tex = textures[i];
+    const u64 handle =
+        metal_upload_texture_rgba8(device, queue, (const u8*)tex.data.data(), tex.w, tex.h);
+    if (!handle) {
+      for (u64 uploaded : *out) {
+        metal_texture_release(uploaded);
+      }
+      out->clear();
+      *error = fmt::format("texture {} ({}/{}, {}x{}) could not be allocated", i,
+                           tex.debug_tpage_name, tex.debug_name, tex.w, tex.h);
+      return false;
+    }
+    out->push_back(handle);
   }
   std::lock_guard<std::mutex> pool_lock(pool.mutex());
   for (size_t i = 0; i < textures.size(); i++) {
@@ -144,6 +180,7 @@ void metal_add_textures(id<MTLDevice> device,
     in.src_data = (const u8*)tex.data.data();
     pool.give_texture(in);
   }
+  return true;
 }
 
 bool metal_setup_placeholder(id<MTLDevice> device, id<MTLCommandQueue> queue, TexturePool& pool) {

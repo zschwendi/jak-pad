@@ -81,8 +81,10 @@ bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
   entry->name = entry->level->level_name;
 
   // textures, the way the GL loader's TextureLoaderStage / load_common do
-  metal_add_textures(m_device, m_queue, *m_texture_pool, entry->level->textures, is_common,
-                     &entry->textures);
+  if (!metal_add_textures(m_device, m_queue, *m_texture_pool, entry->level->textures, is_common,
+                          &entry->textures, error)) {
+    return false;
+  }
 
   // merc geometry: the GL MercLoaderStage's two buffers
   const auto& merc = entry->level->merc_data;
@@ -90,11 +92,23 @@ bool MetalMercModelPool::add_level(std::unique_ptr<tfrag3::Level> level,
     entry->vertices = [m_device newBufferWithBytes:merc.vertices.data()
                                             length:merc.vertices.size() * sizeof(tfrag3::MercVertex)
                                            options:MTLResourceStorageModeShared];
+    if (!entry->vertices) {
+      *error = fmt::format("merc vertex buffer allocation failed for '{}' ({} bytes)", entry->name,
+                           merc.vertices.size() * sizeof(tfrag3::MercVertex));
+      release_level_textures(*entry);
+      return false;
+    }
   }
   if (!merc.indices.empty()) {
     entry->indices = [m_device newBufferWithBytes:merc.indices.data()
                                            length:merc.indices.size() * sizeof(u32)
                                           options:MTLResourceStorageModeShared];
+    if (!entry->indices) {
+      *error = fmt::format("merc index buffer allocation failed for '{}' ({} bytes)", entry->name,
+                           merc.indices.size() * sizeof(u32));
+      release_level_textures(*entry);
+      return false;
+    }
   }
 
   // Palette requirements are immutable level metadata. Computing them here
@@ -197,22 +211,41 @@ bool MetalMercModelPool::remove_level(const std::string& name) {
       m_by_name.erase(refs);
     }
   }
+  release_level_textures(*lev);
+  m_levels.erase(it);
+  return true;
+}
+
+void MetalMercModelPool::clear() {
+  while (!m_levels.empty()) {
+    remove_level(m_levels.back()->name);
+  }
+  m_by_name.clear();
+}
+
+void MetalMercModelPool::shutdown() {
+  clear();
+  m_texture_pool = nullptr;
+  m_queue = nil;
+  m_device = nil;
+}
+
+void MetalMercModelPool::release_level_textures(MetalMercLevel& level) {
+  ASSERT(m_texture_pool);
   {
     std::lock_guard<std::mutex> pool_lock(m_texture_pool->mutex());
-    for (size_t i = 0; i < lev->level->textures.size() && i < lev->textures.size(); i++) {
-      const auto& tex = lev->level->textures[i];
-      if (tex.load_to_pool && lev->textures[i]) {
-        m_texture_pool->unload_texture(PcTextureId::from_combo_id(tex.combo_id), lev->textures[i]);
+    for (size_t i = 0; i < level.level->textures.size() && i < level.textures.size(); i++) {
+      const auto& tex = level.level->textures[i];
+      if (tex.load_to_pool && level.textures[i]) {
+        m_texture_pool->unload_texture(PcTextureId::from_combo_id(tex.combo_id),
+                                       level.textures[i]);
       }
     }
   }
-  for (u64 handle : lev->textures) {
-    if (handle) {
-      metal_texture_release(handle);
-    }
+  for (u64 handle : level.textures) {
+    metal_texture_release(handle);
   }
-  m_levels.erase(it);
-  return true;
+  level.textures.clear();
 }
 
 std::optional<MetalMercModelPool::Ref> MetalMercModelPool::get_merc_model(const char* name) const {

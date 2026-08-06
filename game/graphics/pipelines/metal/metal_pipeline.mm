@@ -145,6 +145,7 @@ bool load_level_art(const std::string& name, bool is_common) {
   metal_renderer::MercLevelLoad merc;
   std::string error;
   if (!metal_renderer::merc_load_fr3(path, is_common, &merc, &error)) {
+    metal_level_data::unload(*g_texture_pool, result.level_name);
     lg::error("Metal: could not load merc models from {}: {}", path, error);
     return false;
   }
@@ -463,6 +464,10 @@ u64 upload_texture_rgba8(const u8* data, int w, int h) {
   return metal_upload_texture_rgba8(g_renderer->device(), g_renderer->queue(), data, w, h);
 }
 
+size_t texture_registry_live_count() {
+  return metal_texture_live_count();
+}
+
 u64 pool_add_texture(const tfrag3::Texture& tex, bool is_common) {
   if (!g_renderer || !g_texture_pool) {
     return 0;
@@ -494,7 +499,11 @@ LevelLoadResult load_level_fr3(const std::string& path, bool is_common) {
 }
 
 void unload_all_levels() {
-  metal_level_data::clear();
+  if (!g_texture_pool) {
+    return;
+  }
+  metal_level_data::clear(*g_texture_pool);
+  metal_merc_models().clear();
 }
 
 BackgroundStats get_background_stats() {
@@ -639,6 +648,7 @@ bool load_common_level_art() {
   const bool ok = load_level_art("GAME", true);
   std::lock_guard<std::mutex> lock(g_level_art.mutex);
   if (!ok) {
+    g_level_art.common_loaded = false;
     g_level_art.stats.load_failures++;
   }
   return ok;
@@ -735,7 +745,22 @@ static std::shared_ptr<GfxDisplay> metal_make_display(int width,
 }
 
 static void metal_exit() {
+  metal_renderer::unload_all_levels();
+  metal_merc_models().shutdown();
+  if (g_texture_pool) {
+    metal_texture_release(g_texture_pool->get_placeholder_texture());
+  }
   g_texture_pool.reset();
+  {
+    std::lock_guard<std::mutex> lock(g_level_art.mutex);
+    g_level_art.directory.clear();
+    g_level_art.wanted.clear();
+    g_level_art.wanted_changed = false;
+    g_level_art.reported_no_directory = false;
+    g_level_art.common_loaded = false;
+    g_level_art.loaded.clear();
+    g_level_art.stats = {};
+  }
   g_chain.copier.reset();
   g_chain.has_data_to_render = false;
   delete g_renderer;

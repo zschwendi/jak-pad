@@ -2130,6 +2130,7 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
   printf("--- DMA chain: Jak 1 TIE envmap tree ordering ---\n");
   using namespace jak1;
 
+  const size_t textures_before_load = metal_renderer::texture_registry_live_count();
   auto level = make_tie_order_test_level();
   Serializer serializer;
   level->serialize(serializer);
@@ -2143,8 +2144,15 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
   check(load.ok, "TIE order proof level loaded");
   if (!load.ok) {
     printf("  error: %s\n", load.error.c_str());
+    check(metal_renderer::texture_registry_live_count() == textures_before_load,
+          "failed TIE level load retains no texture handles");
+    metal_renderer::unload_all_levels();
+    metal_renderer::unload_all_levels();
     return;
   }
+  check(metal_renderer::texture_registry_live_count() ==
+            textures_before_load + level->textures.size(),
+        "TIE level load owns exactly its texture handles");
 
   const TieCameraState camera_a{"A", 0.31f, 19.f, -11.f, 0.4f, 1.8f, 1.35f,
                                 3.25f, 1.625f, 11184810.f, 70000.f, 16000.f};
@@ -2235,6 +2243,64 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
 
   g_ee_main_mem = nullptr;
   metal_renderer::unload_all_levels();
+  check(metal_renderer::texture_registry_live_count() == textures_before_load,
+        "TIE level unload releases every texture handle");
+  metal_renderer::unload_all_levels();
+  check(metal_renderer::texture_registry_live_count() == textures_before_load,
+        "TIE level unload is idempotent");
+}
+
+void test_level_texture_failure_rollback() {
+  printf("--- level load: texture failure rollback ---\n");
+  const size_t textures_before_test = metal_renderer::texture_registry_live_count();
+
+  auto valid_level = make_tie_order_test_level();
+  valid_level->level_name = "metal-proof-valid-before-failure";
+  Serializer valid_serializer;
+  valid_level->serialize(valid_serializer);
+  const auto valid_serialized = valid_serializer.get_save_result();
+  const auto valid_compressed =
+      compression::compress_zstd(valid_serialized.first, valid_serialized.second);
+  const fs::path valid_path =
+      fs::temp_directory_path() / "goalpad-metal-valid-before-failure-proof.fr3";
+  file_util::write_binary_file(valid_path, valid_compressed.data(), valid_compressed.size());
+  const auto valid_load = metal_renderer::load_level_fr3(valid_path.string(), false);
+  std::error_code remove_error;
+  fs::remove(valid_path, remove_error);
+  check(valid_load.ok, "baseline level loads before the failure proof");
+  if (!valid_load.ok) {
+    printf("  error: %s\n", valid_load.error.c_str());
+    metal_renderer::unload_all_levels();
+    return;
+  }
+  const size_t textures_with_valid_level = metal_renderer::texture_registry_live_count();
+  check(textures_with_valid_level == textures_before_test + valid_level->textures.size(),
+        "baseline level owns exactly its texture handles");
+
+  auto failed_level = make_tie_order_test_level();
+  failed_level->level_name = "metal-proof-texture-failure";
+  failed_level->textures[1].w = 0;
+
+  Serializer serializer;
+  failed_level->serialize(serializer);
+  const auto serialized = serializer.get_save_result();
+  const auto compressed = compression::compress_zstd(serialized.first, serialized.second);
+  const fs::path path = fs::temp_directory_path() / "goalpad-metal-texture-failure-proof.fr3";
+  file_util::write_binary_file(path, compressed.data(), compressed.size());
+
+  const auto load = metal_renderer::load_level_fr3(path.string(), false);
+  fs::remove(path, remove_error);
+  check(!load.ok, "level load rejects a failed texture upload");
+  check(load.error.find("texture 1") != std::string::npos,
+        "level load identifies the texture that failed");
+  check(metal_renderer::texture_registry_live_count() == textures_with_valid_level,
+        "failed texture batch releases earlier handles without disturbing valid art");
+  metal_renderer::unload_all_levels();
+  check(metal_renderer::texture_registry_live_count() == textures_before_test,
+        "level clear releases the surviving baseline handles");
+  metal_renderer::unload_all_levels();
+  check(metal_renderer::texture_registry_live_count() == textures_before_test,
+        "failed level remains safe under repeated unload");
 }
 
 void test_jak1_shadow_output_gate() {
@@ -5057,6 +5123,7 @@ int main(int argc, char** argv) {
   // ---- DMA chain path (stage 4) ----
   test_dma_chain(mod, display, level.get());
   test_sprite_chain(mod, display);
+  test_level_texture_failure_rollback();
   test_tie_envmap_tree_order(mod, display);
   test_merc_chain(mod, display);
   test_merc_blerc_chain(mod, display);
