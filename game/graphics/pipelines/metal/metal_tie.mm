@@ -25,14 +25,11 @@ constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kTieSetupStmodVif = static_cast<u32>(VifCode::Kind::STMOD) << 24;
 constexpr u32 kTieSetupUnpackVif = (static_cast<u32>(VifCode::Kind::UNPACK_V4_32) << 24) |
                                     (10u << 16) | 0x3c6u;
-constexpr u32 kTieSetupMscalfVif = 0x80000000u |
-                                    (static_cast<u32>(VifCode::Kind::MSCALF) << 24) | 8u;
-constexpr u32 kTieSetupFlushaVif =
-    0x80000000u | (static_cast<u32>(VifCode::Kind::FLUSHA) << 24);
-constexpr u32 kTieSetupStrowVif =
-    0x80000000u | (static_cast<u32>(VifCode::Kind::STROW) << 24);
+constexpr u32 kTieSetupMscalfVif = (static_cast<u32>(VifCode::Kind::MSCALF) << 24) | 8u;
+constexpr u32 kTieSetupFlushaVif = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+constexpr u32 kTieSetupStrowVif = static_cast<u32>(VifCode::Kind::STROW) << 24;
 constexpr u32 kTieSetupDirectVif =
-    0x80000000u | (static_cast<u32>(VifCode::Kind::DIRECT) << 24) | 2u;
+    (static_cast<u32>(VifCode::Kind::DIRECT) << 24) | 2u;
 
 bool is_nop_vif(u32 vif) {
   return vif == 0 || VifCode(vif).kind == VifCode::Kind::NOP;
@@ -189,6 +186,18 @@ bool MetalTie3::set_up_jak2_common_data_from_dma(DmaFollower& dma,
   auto expect = [&](bool ok, const char* what) {
     return metal_background_expect(ok, m_name, what, bg);
   };
+  auto expect_setup = [&](bool ok, const char* what) {
+    if (ok) {
+      return true;
+    }
+    const auto tag = dma.current_tag();
+    return metal_background_expect(
+        false, m_name,
+        fmt::format("{} (got kind={} qwc={} addr={:#x} spr={} vif0={:#010x} vif1={:#010x})",
+                    what, static_cast<int>(tag.kind), tag.qwc, tag.addr, tag.spr,
+                    dma.current_tag_vif0(), dma.current_tag_vif1()),
+        bg);
+  };
 
   const auto opening_tag = dma.current_tag();
   const u32 opening_vif0 = dma.current_tag_vif0();
@@ -216,39 +225,39 @@ bool MetalTie3::set_up_jak2_common_data_from_dma(DmaFollower& dma,
   }
 
   const auto constants_tag = dma.current_tag();
-  if (!expect(constants_tag.kind == DmaTag::Kind::CNT && constants_tag.qwc == 10 &&
-                  constants_tag.addr == 0 && !constants_tag.spr &&
-                  dma.current_tag_vif0() == kTieSetupStmodVif &&
-                  dma.current_tag_vif1() == kTieSetupUnpackVif,
-              "the exact CNT qwc10 Jak 2 TIE constant setup")) {
+  if (!expect_setup(constants_tag.kind == DmaTag::Kind::CNT && constants_tag.qwc == 10 &&
+                        constants_tag.addr == 0 && !constants_tag.spr &&
+                        dma.current_tag_vif0() == kTieSetupStmodVif &&
+                        dma.current_tag_vif1() == kTieSetupUnpackVif,
+                    "the exact CNT qwc10 Jak 2 TIE constant setup")) {
     return false;
   }
   dma.read_and_advance();
 
   const auto mscalf_tag = dma.current_tag();
-  if (!expect(mscalf_tag.kind == DmaTag::Kind::CNT && mscalf_tag.qwc == 0 &&
-                  mscalf_tag.addr == 0 && !mscalf_tag.spr &&
-                  dma.current_tag_vif0() == kTieSetupMscalfVif &&
-                  dma.current_tag_vif1() == kTieSetupFlushaVif,
-              "the exact zero-qword MSCALF/FLUSHA Jak 2 TIE setup")) {
+  if (!expect_setup(mscalf_tag.kind == DmaTag::Kind::CNT && mscalf_tag.qwc == 0 &&
+                        mscalf_tag.addr == 0 && !mscalf_tag.spr &&
+                        dma.current_tag_vif0() == kTieSetupMscalfVif &&
+                        dma.current_tag_vif1() == kTieSetupFlushaVif,
+                    "the exact zero-qword MSCALF/FLUSHA Jak 2 TIE setup")) {
     return false;
   }
   dma.read_and_advance();
 
   const auto row_tag = dma.current_tag();
-  if (!expect(row_tag.kind == DmaTag::Kind::CNT && row_tag.qwc == 2 && row_tag.addr == 0 &&
-                  !row_tag.spr && dma.current_tag_vif0() == 0 &&
-                  dma.current_tag_vif1() == kTieSetupStrowVif,
-              "the exact CNT qwc2 STROW Jak 2 TIE setup")) {
+  if (!expect_setup(row_tag.kind == DmaTag::Kind::CNT && row_tag.qwc == 2 && row_tag.addr == 0 &&
+                        !row_tag.spr && dma.current_tag_vif0() == 0 &&
+                        dma.current_tag_vif1() == kTieSetupStrowVif,
+                    "the exact CNT qwc2 STROW Jak 2 TIE setup")) {
     return false;
   }
   dma.read_and_advance();
 
   const auto gs_tag = dma.current_tag();
-  if (!expect(gs_tag.kind == DmaTag::Kind::CNT && gs_tag.qwc == 2 && gs_tag.addr == 0 &&
-                  !gs_tag.spr && dma.current_tag_vif0() == 0 &&
-                  dma.current_tag_vif1() == kTieSetupDirectVif,
-              "the exact CNT qwc2 DIRECT Jak 2 TIE GS setup")) {
+  if (!expect_setup(gs_tag.kind == DmaTag::Kind::CNT && gs_tag.qwc == 2 && gs_tag.addr == 0 &&
+                        !gs_tag.spr && dma.current_tag_vif0() == 0 &&
+                        dma.current_tag_vif1() == kTieSetupDirectVif,
+                    "the exact CNT qwc2 DIRECT Jak 2 TIE GS setup")) {
     return false;
   }
   dma.read_and_advance();

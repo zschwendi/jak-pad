@@ -129,6 +129,25 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
       static_cast<unsigned long long>(metal.triangles),
       static_cast<unsigned long long>(metal.skipped_bucket_bytes));
   std::printf(
+      "background: tie=%llu/%llu missing-levels=%llu missing-textures=%llu anim-slots=%llu; "
+      "merc: models=%llu draws=%llu tris=%llu malformed=%llu missing-models=%llu "
+      "bones=(bad-ptr=%llu missing=%llu nonfinite=%llu degenerate=%llu incoherent=%llu)\n",
+      static_cast<unsigned long long>(metal.last_tie_draws),
+      static_cast<unsigned long long>(metal.last_tie_triangles),
+      static_cast<unsigned long long>(metal.last_background_missing_levels),
+      static_cast<unsigned long long>(metal.last_background_missing_textures),
+      static_cast<unsigned long long>(metal.last_background_anim_slot_draws),
+      static_cast<unsigned long long>(metal.last_merc_models),
+      static_cast<unsigned long long>(metal.last_merc_draws),
+      static_cast<unsigned long long>(metal.last_merc_triangles),
+      static_cast<unsigned long long>(metal.last_merc_malformed_dma),
+      static_cast<unsigned long long>(metal.last_merc_missing_models),
+      static_cast<unsigned long long>(metal.last_merc_bad_bone_pointers),
+      static_cast<unsigned long long>(metal.last_merc_missing_bone_slots),
+      static_cast<unsigned long long>(metal.last_merc_nonfinite_bone_matrices),
+      static_cast<unsigned long long>(metal.last_merc_degenerate_bone_matrices),
+      static_cast<unsigned long long>(metal.last_merc_incoherent_bone_sources));
+  std::printf(
       "sky: draws=%llu tris=%llu valid=%u textured=%u vertices=%u rgb-vertices=%u "
       "tbp=%u tcc=%u decal=%u lookup=%u placeholder=%u write-rgb=%u "
       "blend=%u(%u,%u,%u,%u) alpha-test=%u(%u,%u,%u)\n",

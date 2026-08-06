@@ -57,6 +57,7 @@ u32 vif_code(VifCode::Kind kind,
 struct SyntheticChain {
   std::vector<u8> bytes;
   u32 next_bucket = 0;
+  u32 mscalf_offset = 0;
   u32 pc_offset = 0;
   u32 mask_offset = 0;
   u32 tint_offset = 0;
@@ -84,6 +85,11 @@ struct SyntheticChain {
     const u64 dma = static_cast<u64>(qwc) | (static_cast<u64>(kind) << 28) |
                     (static_cast<u64>(address) << 32);
     std::memcpy(bytes.data() + offset, &dma, sizeof(dma));
+  }
+
+  void replace_vifs(u32 offset, u32 vif0, u32 vif1) {
+    std::memcpy(bytes.data() + offset + 8, &vif0, sizeof(vif0));
+    std::memcpy(bytes.data() + offset + 12, &vif1, sizeof(vif1));
   }
 };
 
@@ -160,14 +166,13 @@ SyntheticChain make_parent_chain(const std::vector<u8>& first_mask,
   std::array<u8, 160> constants = {};
   chain.tag(DmaTag::Kind::CNT, 10, 0, vif_code(VifCode::Kind::STMOD),
             vif_code(VifCode::Kind::UNPACK_V4_32, 0x3c6, 10), constants.data());
-  chain.tag(DmaTag::Kind::CNT, 0, 0, vif_code(VifCode::Kind::MSCALF, 8, 0, true),
-            vif_code(VifCode::Kind::FLUSHA, 0, 0, true));
+  chain.mscalf_offset =
+      chain.tag(DmaTag::Kind::CNT, 0, 0, vif_code(VifCode::Kind::MSCALF, 8),
+                vif_code(VifCode::Kind::FLUSHA));
   std::array<u8, 32> row = {};
-  chain.tag(DmaTag::Kind::CNT, 2, 0, 0, vif_code(VifCode::Kind::STROW, 0, 0, true),
-            row.data());
+  chain.tag(DmaTag::Kind::CNT, 2, 0, 0, vif_code(VifCode::Kind::STROW), row.data());
   std::array<u8, 32> direct = {};
-  chain.tag(DmaTag::Kind::CNT, 2, 0, 0, vif_code(VifCode::Kind::DIRECT, 2, 0, true),
-            direct.data());
+  chain.tag(DmaTag::Kind::CNT, 2, 0, 0, vif_code(VifCode::Kind::DIRECT, 2), direct.data());
   const u32 first_control = static_cast<u32>(chain.bytes.size() + 16);
   chain.tag(DmaTag::Kind::NEXT, 0, first_control, 0, 0);
 
@@ -656,6 +661,17 @@ int main() {
               bad_names.background.unexpected_dma == 1 &&
               bad_names.background.camera_trace.packet_count() == 0,
           "an unterminated mask invalidates the parent and its following child fails closed");
+
+    auto irq_setup = make_parent_chain({}, half_red_tint);
+    irq_setup.replace_vifs(irq_setup.mscalf_offset,
+                           vif_code(VifCode::Kind::MSCALF, 8, 0, true),
+                           vif_code(VifCode::Kind::FLUSHA, 0, 0, true));
+    const auto bad_irq = render_sequence(device, queue, &pso_cache, &sampler_cache,
+                                         &texture_pool, &parent, &child, &irq_setup, &empty_child,
+                                         16);
+    check(bad_irq.completed && bad_irq.parent_finished && bad_irq.child_finished &&
+              bad_irq.draw_calls == 0 && bad_irq.background.unexpected_dma == 1,
+          "IRQ-marked TIE setup VIF codes remain distinct from source :msk tags");
 
     for (int bad_field = 0; bad_field < 3; bad_field++) {
       auto wrong = make_parent_chain({}, half_red_tint);
