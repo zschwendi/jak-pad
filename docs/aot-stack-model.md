@@ -134,6 +134,15 @@ is not expected to return), `goal_context_restore` (go back to one from anywhere
 `goal_call_on_stack_arm64` (run a function on a different stack). Everything else is C reading and
 writing GOAL structures.
 
+**Platform graphics callbacks leave the GOAL stack synchronously.** GOAL calls the renderer while
+a process stack is active, but native window, IOSurface and Metal calls can use far more stack than
+the game process reserved. The native-to-GOAL entry trampoline therefore publishes the bottom of
+its suspended native frame, and the graphics-host seam uses `goal_call_on_stack_arm64` to run each
+host callback there before returning to the same GOAL frame. The call remains synchronous: DMA and
+level-name pointers stay borrowed only for the call, and `sync-path` ordering does not change.
+Host callbacks are a nonthrowing ABI. A C++ exception is caught before it can unwind across the
+assembly bridge, and terminates the process after the bridge has restored the GOAL stack.
+
 **Stack copying keeps working.** ARM64 frames contain saved frame pointers that point into the same
 stack region and return addresses that point into `__TEXT`. `thread-suspend` restores the bytes to
 the same addresses, so both stay valid. This is the property that would have been lost if threads

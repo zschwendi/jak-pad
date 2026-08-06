@@ -16,9 +16,13 @@
 #include "game/kernel/core/gfx_host.h"
 
 #include <cstring>
+#include <exception>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
+#include "common/goal_constants.h"
 #include "common/util/Assert.h"
 
 #include "game/kernel/common/Ptr.h"
@@ -32,6 +36,81 @@
 u64 goal_kernel_core_machine_stub_report(const char* what);
 
 namespace {
+
+#if defined(__aarch64__)
+
+extern "C" uint64_t goal_call_on_stack_arm64(void* new_sp,
+                                             void* fn,
+                                             uint64_t a0,
+                                             uint64_t a1,
+                                             uint64_t a2,
+                                             uint64_t a3,
+                                             uint64_t a4,
+                                             uint64_t a5);
+
+struct HostCallbackTask {
+  void (*invoke)(void*) = nullptr;
+  void* context = nullptr;
+  bool threw = false;
+};
+
+uint64_t run_host_callback_task(uint64_t task_value,
+                                uint64_t,
+                                uint64_t,
+                                uint64_t,
+                                uint64_t,
+                                uint64_t) noexcept {
+  auto* task = reinterpret_cast<HostCallbackTask*>(task_value);
+  try {
+    task->invoke(task->context);
+  } catch (...) {
+    task->threw = true;
+  }
+  return 0;
+}
+
+void run_host_callback(void (*invoke)(void*), void* context) {
+  HostCallbackTask task{invoke, context, false};
+  uint8_t marker = 0;
+  const auto current = reinterpret_cast<uintptr_t>(&marker);
+  const auto ee_begin = reinterpret_cast<uintptr_t>(g_ee_main_mem);
+  const bool on_goal_stack =
+      g_ee_main_mem && current >= ee_begin && current < ee_begin + EE_MAIN_MEM_SIZE;
+  if (on_goal_stack) {
+    const uint64_t host_sp = goal_native_host_stack_pointer();
+    ASSERT_MSG(host_sp, "an ARM64 graphics callback on a GOAL stack has no native caller stack");
+    goal_call_on_stack_arm64(reinterpret_cast<void*>(host_sp),
+                             reinterpret_cast<void*>(&run_host_callback_task),
+                             reinterpret_cast<uint64_t>(&task), 0, 0, 0, 0, 0);
+  } else {
+    run_host_callback_task(reinterpret_cast<uint64_t>(&task), 0, 0, 0, 0, 0);
+  }
+  if (task.threw) {
+    std::terminate();
+  }
+}
+
+#endif
+
+template <typename Function>
+auto call_host(Function&& function) -> std::invoke_result_t<Function> {
+  using Result = std::invoke_result_t<Function>;
+#if defined(__aarch64__)
+  if constexpr (std::is_void_v<Result>) {
+    auto call = [&function]() { std::forward<Function>(function)(); };
+    auto invoke = [](void* context) { (*static_cast<decltype(call)*>(context))(); };
+    run_host_callback(invoke, &call);
+  } else {
+    Result result{};
+    auto call = [&function, &result]() { result = std::forward<Function>(function)(); };
+    auto invoke = [](void* context) { (*static_cast<decltype(call)*>(context))(); };
+    run_host_callback(invoke, &call);
+    return result;
+  }
+#else
+  return std::forward<Function>(function)();
+#endif
+}
 
 goal_gfx_host g_host;
 
@@ -50,7 +129,7 @@ u64 report(const char* what) {
 u64 send_gfx_dma_chain(u32 /*bank*/, u32 chain) {
   g_stats.chains++;
   if (g_host.send_chain) {
-    g_host.send_chain(g_ee_main_mem, chain);
+    call_host([&]() { g_host.send_chain(g_ee_main_mem, chain); });
   } else {
     report("__send-gfx-dma-chain");
   }
@@ -61,19 +140,19 @@ u64 sync_v(u32 mode) {
   ASSERT(mode == 0);
   g_stats.vsyncs++;
   goal_game_gfx_before_vsync();
-  return g_host.vsync ? g_host.vsync() : report("syncv");
+  return g_host.vsync ? call_host([&]() { return g_host.vsync(); }) : report("syncv");
 }
 
 u64 sync_path(u32 mode, u32 timeout) {
   ASSERT(mode == 0 && timeout == 0);
   g_stats.sync_paths++;
-  return g_host.sync_path ? g_host.sync_path() : report("sync-path");
+  return g_host.sync_path ? call_host([&]() { return g_host.sync_path(); }) : report("sync-path");
 }
 
 u64 texture_upload_now(u32 page, u32 mode) {
   g_stats.texture_uploads++;
   if (g_host.texture_upload_now) {
-    g_host.texture_upload_now(Ptr<u8>(page).c(), (int)mode, s7.offset);
+    call_host([&]() { g_host.texture_upload_now(Ptr<u8>(page).c(), (int)mode, s7.offset); });
   } else {
     report("__pc-texture-upload-now");
   }
@@ -83,7 +162,7 @@ u64 texture_upload_now(u32 page, u32 mode) {
 u64 texture_relocate(u32 dst, u32 src, u32 format) {
   g_stats.texture_moves++;
   if (g_host.texture_relocate) {
-    g_host.texture_relocate(dst, src, format);
+    call_host([&]() { g_host.texture_relocate(dst, src, format); });
   } else {
     report("__pc-texture-relocate");
   }
@@ -136,7 +215,7 @@ void forward_levels(const u32* level_name_offsets, int count, bool active) {
   for (const auto& name : levels) {
     names.push_back(name.c_str());
   }
-  callback(names.data(), (int)names.size());
+  call_host([&]() { callback(names.data(), (int)names.size()); });
 }
 
 // -------------------------------------------------------------------------------------------
@@ -210,6 +289,6 @@ void goal_gfx_host_forward_active_levels(const u32* level_name_offsets, int coun
 
 void goal_gfx_host_forward_pmode_alpha(float alpha) {
   if (g_host.set_pmode_alp) {
-    g_host.set_pmode_alp(alpha);
+    call_host([&]() { g_host.set_pmode_alp(alpha); });
   }
 }

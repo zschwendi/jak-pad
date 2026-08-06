@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "common/goal_constants.h"
+
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kprint.h"
@@ -104,7 +106,8 @@ uint64_t call_goal_on_stack_asm_arm64(u64 rsp,
                                       u64 u1,
                                       void* fptr,
                                       void* st_ptr,
-                                      void* offset);
+                                      void* offset,
+                                      u64* native_host_sp);
 }
 
 /*!
@@ -121,6 +124,8 @@ static void* goal_function_entry_point(Ptr<Function> f) {
 
 #ifdef __aarch64__
 namespace {
+thread_local u64 g_native_host_sp = 0;
+
 /*!
  * The current process is ambient machine state: x86-64 pins it to r13, and the call trampolines
  * set it on the way in and restore the caller's value on the way out. Ahead-of-time compiled GOAL
@@ -169,8 +174,23 @@ u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   void* fptr = goal_function_entry_point(f);
 #ifdef __aarch64__
   ScopedCurrentProcess pp(st);
+  const auto frame = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
+  const auto ee_begin = reinterpret_cast<uintptr_t>(g_ee_main_mem);
+  const bool caller_is_goal =
+      g_ee_main_mem && frame >= ee_begin && frame < ee_begin + EE_MAIN_MEM_SIZE;
+  return call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset,
+                                      caller_is_goal ? nullptr : &g_native_host_sp);
+#else
+  return call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset, nullptr);
 #endif
-  return call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset);
+}
+
+u64 goal_native_host_stack_pointer() {
+#ifdef __aarch64__
+  return g_native_host_sp;
+#else
+  return 0;
+#endif
 }
 
 /*!

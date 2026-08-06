@@ -30,6 +30,10 @@ int g_vsync_calls = 0;
 int g_sync_path_calls = 0;
 int g_desired_level_calls = 0;
 int g_active_level_calls = 0;
+bool g_callback_stack_in_ee = false;
+uint32_t g_send_function = 0;
+uint32_t g_send_chain_offset = 0;
+uint32_t g_sync_path_function = 0;
 float g_alpha = -1.f;
 std::vector<int> g_order;
 std::vector<std::string> g_desired_levels;
@@ -53,9 +57,22 @@ u64 retained_handler() {
 }
 
 void send_chain(const void* ee_base, uint32_t chain_offset) {
+  uint8_t stack_marker = 0;
+  const auto stack_address = reinterpret_cast<uintptr_t>(&stack_marker);
+  const auto ee_begin = reinterpret_cast<uintptr_t>(g_ee_main_mem);
+  g_callback_stack_in_ee =
+      stack_address >= ee_begin && stack_address < ee_begin + EE_MAIN_MEM_SIZE;
   expect(ee_base == g_ee_main_mem && chain_offset != 0,
          "Jak 2 send-chain receives the live EE arena and GOAL offset");
   g_chain_calls++;
+}
+
+u64 send_chain_from_goal_stack(u64, u64, u64, u64, u64, u64) {
+  return goal_aot_call(g_send_function, 0x10009000, g_send_chain_offset, 0);
+}
+
+u64 sync_path_from_goal_stack(u64, u64, u64, u64, u64, u64) {
+  return goal_aot_call(g_sync_path_function, 0, 0, 0);
 }
 
 uint32_t vsync() {
@@ -123,6 +140,10 @@ void reset_observations() {
   g_sync_path_calls = 0;
   g_desired_level_calls = 0;
   g_active_level_calls = 0;
+  g_callback_stack_in_ee = false;
+  g_send_function = 0;
+  g_send_chain_offset = 0;
+  g_sync_path_function = 0;
   g_alpha = -1.f;
   g_order.clear();
   g_desired_levels.clear();
@@ -173,13 +194,32 @@ int main() {
   expect(send && syncv && syncp && set_desired && set_active && display,
          "all Jak 2 sync and residency functions hold native implementations");
 
-  goal_aot_call(send, 0x10009000, mouse_address, 0);
+  uint32_t caller_stack = 0;
+  constexpr uint32_t kCallerStackBytes = 64 * 1024;
+  expect(goal_kernel_core_global_alloc(kCallerStackBytes, "jak2-gfx-host-caller-stack",
+                                       &caller_stack) == GOAL_KERNEL_CORE_OK,
+         "allocated an isolated GOAL-memory caller stack");
+  g_send_function = send;
+  g_send_chain_offset = mouse_address;
+  const uint32_t caller = goal_game_make_function_from_native((void*)send_chain_from_goal_stack);
+  call_goal_on_stack(Ptr<Function>(caller),
+                     reinterpret_cast<uintptr_t>(g_ee_main_mem + caller_stack + kCallerStackBytes),
+                     s7.offset, g_ee_main_mem);
   expect(g_chain_calls == 1, "Jak 2 DMA chain forwards once through the common host");
+  expect(!g_callback_stack_in_ee,
+         "ARM64 graphics callbacks leave the GOAL stack before entering the host");
 
   MasterExit = RuntimeExitStatus::RUNNING;
   vblank_interrupt_handler = goal_game_make_function_from_native((void*)retained_handler);
   g_order.clear();
-  expect(goal_aot_call(syncp, 0, 0, 0) == 29 && g_sync_path_calls == 1 && g_order.empty(),
+  g_sync_path_function = syncp;
+  const uint32_t sync_path_caller =
+      goal_game_make_function_from_native((void*)sync_path_from_goal_stack);
+  const u64 sync_path_result =
+      call_goal_on_stack(Ptr<Function>(sync_path_caller),
+                         reinterpret_cast<uintptr_t>(g_ee_main_mem + caller_stack + kCallerStackBytes),
+                         s7.offset, g_ee_main_mem);
+  expect(sync_path_result == 29 && g_sync_path_calls == 1 && g_order.empty(),
          "sync-path returns its host result without dispatching the vblank handler");
 
   const char* desired_names[jak2::LEVEL_MAX] = {"title", "none", "#f", "", "city", "title"};
