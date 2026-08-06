@@ -4,6 +4,7 @@
 #include "common/util/Assert.h"
 
 #include "game/graphics/opengl_renderer/dma_helpers.h"
+#include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/texture/TexturePool.h"
 
 #include "fmt/format.h"
@@ -17,7 +18,7 @@ namespace {
 // own limit (Sprite3::do_block_common).
 constexpr int kMaxSpritesPerFlush = 8192;
 
-constexpr float kGameHeightJak1 = 448.f;
+constexpr PerGameVersion<u32> kNormalZbp(448, 304, 304, 304);
 
 // size of sprite-aux-list in GOAL code * SPRITE_MAX_AMOUNT_MULT (as in GL)
 constexpr int kMaxDistortSprites = 256 * 12;
@@ -253,16 +254,29 @@ MetalSpriteRenderer::MetalSpriteRenderer(const std::string& name, int my_id)
   m_current_mode = m_default_mode;
 }
 
-/*!
- * Mirror of Sprite3::render_jak1.
- */
 void MetalSpriteRenderer::render(DmaFollower& dma,
                                  MetalSharedRenderState* render_state,
                                  MetalFrameContext& ctx) {
-  ASSERT_MSG(render_state->version == GameVersion::Jak1,
-             "Metal sprite renderer only supports Jak 1");
   m_stats = {};
 
+  switch (render_state->version) {
+    case GameVersion::Jak1:
+      render_jak1(dma, render_state, ctx);
+      break;
+    case GameVersion::Jak2:
+      render_jak2(dma, render_state, ctx);
+      break;
+    default:
+      ASSERT_MSG(false, "Metal sprite renderer only supports Jak 1 and Jak 2");
+  }
+}
+
+/*!
+ * Mirror of Sprite3::render_jak1.
+ */
+void MetalSpriteRenderer::render_jak1(DmaFollower& dma,
+                                      MetalSharedRenderState* render_state,
+                                      MetalFrameContext& ctx) {
   // NEXT with two nops: the jump from the bucket array into the sprite data
   auto data0 = dma.read_and_advance();
   ASSERT(data0.vif1() == 0);
@@ -278,17 +292,57 @@ void MetalSpriteRenderer::render(DmaFollower& dma,
     return;
   }
 
-  // some DirectRenderer DMA may come first
-  if (render_direct(dma, render_state, ctx)) {
+  if (!render_normal_path(dma, render_state, ctx)) {
     return;
   }
 
+  // the GL renderer consumes the remainder of the bucket the same way
+  while (dma.current_tag_offset() != render_state->next_bucket) {
+    dma.read_and_advance();
+  }
+}
+
+/*!
+ * Mirror of Sprite3::render_jak2 through the normal sprite path. Glow is not
+ * implemented; the exact remainder after its structural NOP/FLUSHE boundary is
+ * measured and reported instead of being silently discarded.
+ */
+void MetalSpriteRenderer::render_jak2(DmaFollower& dma,
+                                      MetalSharedRenderState* render_state,
+                                      MetalFrameContext& ctx) {
+  auto data0 = dma.read_and_advance();
+  ASSERT(data0.vif0() == 0 || data0.vifcode0().kind == VifCode::Kind::MARK);
+  ASSERT(data0.vif1() == 0 || data0.vifcode1().kind == VifCode::Kind::NOP);
+  ASSERT(data0.size_bytes == 0);
+
+  if (dma.current_tag_offset() == render_state->next_bucket) {
+    return;
+  }
+
+  if (!render_normal_path(dma, render_state, ctx)) {
+    return;
+  }
+
+  auto nop_flushe = dma.read_and_advance();
+  ASSERT(nop_flushe.vifcode0().kind == VifCode::Kind::NOP);
+  ASSERT(nop_flushe.vifcode1().kind == VifCode::Kind::FLUSHE);
+  consume_unsupported_jak2_glow_and_residual(dma, render_state);
+}
+
+bool MetalSpriteRenderer::render_normal_path(DmaFollower& dma,
+                                             MetalSharedRenderState* render_state,
+                                             MetalFrameContext& ctx) {
+  // some DirectRenderer DMA may come first
+  if (render_direct(dma, render_state, ctx)) {
+    return false;
+  }
+
   // the distorter: DMA, vertex build and draw, like Sprite3::render_distorter
-  distort_dma(dma);
+  distort_dma(render_state->version, dma);
   distort_setup();
   distort_draw(render_state, ctx);
 
-  handle_sprite_frame_setup(dma);
+  handle_sprite_frame_setup(render_state->version, dma);
   render_3d(dma);
 
   render_2d_group0(dma, render_state, ctx);
@@ -298,10 +352,75 @@ void MetalSpriteRenderer::render(DmaFollower& dma,
 
   render_2d_group1(dma, render_state, ctx);
   flush_sprites(render_state, ctx, true);
+  return true;
+}
 
-  // the GL renderer consumes the remainder of the bucket the same way
+void MetalSpriteRenderer::consume_unsupported_jak2_glow_and_residual(
+    DmaFollower& dma,
+    MetalSharedRenderState* render_state) {
+  auto read_glow_transfer = [&]() {
+    ASSERT_MSG(dma.current_tag_offset() != render_state->next_bucket,
+               "truncated Jak 2 sprite glow DMA");
+    const auto transfer = dma.read_and_advance();
+    m_stats.glow_transfers_skipped++;
+    m_stats.glow_bytes_skipped += transfer.size_bytes;
+    m_stats.unsupported_bytes += transfer.size_bytes;
+    return transfer;
+  };
+
+  if (dma.current_tag_offset() != render_state->next_bucket) {
+    // Follow Sprite3::glow_dma_and_draw exactly far enough to distinguish the
+    // glow payload from the Direct10/final-NEXT tail that render_jak2 drains.
+    auto maybe_consts_setup = read_glow_transfer();
+    if (maybe_consts_setup.size_bytes == sizeof(SpriteGlowConsts)) {
+      auto templ_1 = read_glow_transfer();
+      ASSERT(templ_1.size_bytes == 16 * 0x54);
+
+      auto templ_2 = read_glow_transfer();
+      ASSERT(templ_2.size_bytes == 16 * 0x54);
+
+      auto base_offset = read_glow_transfer();
+      ASSERT(base_offset.size_bytes == 0);
+
+      auto flushe = read_glow_transfer();
+      ASSERT(flushe.size_bytes == 0);
+
+      auto control = read_glow_transfer();
+      while (control.size_bytes == 0 && control.vifcode0().kind == VifCode::Kind::NOP &&
+             control.vifcode1().kind == VifCode::Kind::NOP) {
+        control = read_glow_transfer();
+      }
+      while (control.size_bytes == 16) {
+        auto vec_data = read_glow_transfer();
+        ASSERT(vec_data.size_bytes == 4 * 16);
+        auto shader = read_glow_transfer();
+        ASSERT(shader.size_bytes == 5 * 16);
+        read_glow_transfer();  // MSCALF/call
+        control = read_glow_transfer();
+      }
+      ASSERT(control.size_bytes == 0);
+      ASSERT(control.vifcode0().kind == VifCode::Kind::NOP);
+      ASSERT(control.vifcode1().kind == VifCode::Kind::FLUSHE);
+    }
+  }
+
   while (dma.current_tag_offset() != render_state->next_bucket) {
-    dma.read_and_advance();
+    const auto transfer = dma.read_and_advance();
+    m_stats.post_glow_residual_transfers++;
+    m_stats.post_glow_residual_bytes += transfer.size_bytes;
+    m_stats.unsupported_bytes += transfer.size_bytes;
+  }
+
+  if ((m_stats.glow_transfers_skipped > 0 || m_stats.post_glow_residual_transfers > 0) &&
+      !m_warned_unsupported_glow) {
+    lg::warn(
+        "Metal sprite {}: Jak 2 glow is not ported; skipped {} glow transfers/{} payload bytes "
+        "and consumed {} post-glow residual transfers/{} payload bytes ({} unsupported payload "
+        "bytes total, logged once)",
+        m_name, m_stats.glow_transfers_skipped, m_stats.glow_bytes_skipped,
+        m_stats.post_glow_residual_transfers, m_stats.post_glow_residual_bytes,
+        m_stats.unsupported_bytes);
+    m_warned_unsupported_glow = true;
   }
 }
 
@@ -321,10 +440,25 @@ bool MetalSpriteRenderer::render_direct(DmaFollower& dma,
 }
 
 /*!
- * Mirror of Sprite3::distort_dma (Jak 1 values): walks the distorter's DMA,
+ * Mirror of Sprite3::distort_dma: walks the distorter's DMA,
  * keeping the sine tables and the per-sprite frame data for distort_setup.
  */
-void MetalSpriteRenderer::distort_dma(DmaFollower& dma) {
+void MetalSpriteRenderer::distort_dma(GameVersion version, DmaFollower& dma) {
+  u32 expected_zbp = 0;
+  u32 expected_th = 0;
+  switch (version) {
+    case GameVersion::Jak1:
+      expected_zbp = 0x1c0;
+      expected_th = 8;
+      break;
+    case GameVersion::Jak2:
+      expected_zbp = 0x130;
+      expected_th = 9;
+      break;
+    default:
+      ASSERT_NOT_REACHED();
+  }
+
   // GS setup
   auto setup = dma.read_and_advance();
   ASSERT(setup.vifcode0().kind == VifCode::Kind::NOP);
@@ -352,12 +486,12 @@ void MetalSpriteRenderer::distort_dma(DmaFollower& dma) {
   ASSERT(distorter_setup.gif_tag.eop() == true);
   ASSERT(distorter_setup.gif_tag.nreg() == 6);
   ASSERT(distorter_setup.gif_tag.reg(0) == GifTag::RegisterDescriptor::AD);
-  ASSERT(distorter_setup.zbuf.zbp() == 0x1c0);
+  ASSERT(distorter_setup.zbuf.zbp() == expected_zbp);
   ASSERT(distorter_setup.zbuf.zmsk() == true);
   ASSERT(distorter_setup.zbuf.psm() == TextureFormat::PSMZ24);
   ASSERT(distorter_setup.tex0.tbw() == 8);
   ASSERT(distorter_setup.tex0.tw() == 9);
-  ASSERT(distorter_setup.tex0.th() == 8);
+  ASSERT(distorter_setup.tex0.th() == expected_th);
   ASSERT(distorter_setup.tex1.mmag() == 1);
   ASSERT(distorter_setup.tex1.mmin() == 1);
   ASSERT(distorter_setup.alpha.a_mode() == GsAlpha::BlendMode::SOURCE);
@@ -495,7 +629,6 @@ void MetalSpriteRenderer::distort_setup() {
  */
 void MetalSpriteRenderer::distort_draw(MetalSharedRenderState* render_state,
                                        MetalFrameContext& ctx) {
-  (void)render_state;
   if (m_distort_tri_count == 0) {
     return;
   }
@@ -565,8 +698,8 @@ void MetalSpriteRenderer::distort_draw(MetalSharedRenderState* render_state,
   for (int i = 0; i < 4; i++) {
     params.color[i] = (float)m_distort_sine_tables.color[i] / 255.0f;
   }
-  params.height_scale = 1.f;  // Jak 1
-  params.fb_v_offset = (1.f - kGameHeightJak1 / 512.f) / 2.f;
+  params.height_scale = metal_height_scale(render_state->version);
+  params.fb_v_offset = (1.f - 1.f / metal_scissor_adjust(render_state->version)) / 2.f;
 
   id<MTLRenderCommandEncoder> enc = ctx.enc;
   id<MTLRenderPipelineState> pso = ctx.pso_cache->get_pipeline(pso_key);
@@ -591,9 +724,9 @@ void MetalSpriteRenderer::distort_draw(MetalSharedRenderState* render_state,
 }
 
 /*!
- * Mirror of Sprite3::handle_sprite_frame_setup, Jak 1 branch.
+ * Mirror of Sprite3::handle_sprite_frame_setup.
  */
-void MetalSpriteRenderer::handle_sprite_frame_setup(DmaFollower& dma) {
+void MetalSpriteRenderer::handle_sprite_frame_setup(GameVersion version, DmaFollower& dma) {
   auto direct_data = dma.read_and_advance();
   ASSERT(direct_data.size_bytes == 3 * 16);
   memcpy(m_sprite_direct_setup, direct_data.data, 3 * 16);
@@ -605,7 +738,6 @@ void MetalSpriteRenderer::handle_sprite_frame_setup(DmaFollower& dma) {
   ASSERT(m_sprite_direct_setup[5] == 0x0000000000000008);
 
   auto frame_data = dma.read_and_advance();
-  ASSERT(frame_data.size_bytes == (int)sizeof(SpriteFrameDataJak1));
   ASSERT(frame_data.vifcode0().kind == VifCode::Kind::STCYCL);
   VifCodeStcycl frame_data_stcycl(frame_data.vifcode0());
   ASSERT(frame_data_stcycl.cl == 4);
@@ -614,9 +746,20 @@ void MetalSpriteRenderer::handle_sprite_frame_setup(DmaFollower& dma) {
   VifCodeUnpack frame_data_unpack(frame_data.vifcode1());
   ASSERT(frame_data_unpack.addr_qw == SpriteDataMem::FrameData);
   ASSERT(frame_data_unpack.use_tops_flag == false);
-  SpriteFrameDataJak1 jak1_data;
-  memcpy(&jak1_data, frame_data.data, sizeof(SpriteFrameDataJak1));
-  m_frame_data.from_jak1(jak1_data);
+  switch (version) {
+    case GameVersion::Jak1: {
+      ASSERT(frame_data.size_bytes == (int)sizeof(SpriteFrameDataJak1));
+      SpriteFrameDataJak1 jak1_data;
+      memcpy(&jak1_data, frame_data.data, sizeof(SpriteFrameDataJak1));
+      m_frame_data.from_jak1(jak1_data);
+    } break;
+    case GameVersion::Jak2:
+      ASSERT(frame_data.size_bytes == (int)sizeof(SpriteFrameData));
+      memcpy(&m_frame_data, frame_data.data, sizeof(SpriteFrameData));
+      break;
+    default:
+      ASSERT_NOT_REACHED();
+  }
 
   auto mscalf = dma.read_and_advance();
   ASSERT(mscalf.size_bytes == 0);
@@ -718,7 +861,16 @@ void MetalSpriteRenderer::render_2d_group1(DmaFollower& dma,
     auto run = dma.read_and_advance();
     ASSERT(run.vifcode0().kind == VifCode::Kind::NOP);
     ASSERT(run.vifcode1().kind == VifCode::Kind::MSCAL);
-    ASSERT(run.vifcode1().immediate == SpriteProgMem::Sprites2dHud_Jak1);
+    switch (render_state->version) {
+      case GameVersion::Jak1:
+        ASSERT(run.vifcode1().immediate == SpriteProgMem::Sprites2dHud_Jak1);
+        break;
+      case GameVersion::Jak2:
+        ASSERT(run.vifcode1().immediate == SpriteProgMem::Sprites2dHud_Jak2);
+        break;
+      default:
+        ASSERT_NOT_REACHED();
+    }
 
     do_block_common(SpriteMode::ModeHUD, sprite_count, render_state, ctx);
   }
@@ -737,10 +889,10 @@ void MetalSpriteRenderer::handle_tex1(u64 val) {
   m_current_mode.set_filt_enable(reg.mmag());
 }
 
-void MetalSpriteRenderer::handle_zbuf(u64 val) {
+void MetalSpriteRenderer::handle_zbuf(GameVersion version, u64 val) {
   GsZbuf x(val);
   ASSERT(x.psm() == TextureFormat::PSMZ24);
-  ASSERT(x.zbp() == 448);
+  ASSERT(x.zbp() == kNormalZbp[version]);
   m_current_mode.set_depth_write_enable(!x.zmsk());
 }
 
@@ -806,7 +958,7 @@ void MetalSpriteRenderer::do_block_common(SpriteMode mode,
     handle_tex0(adgif.tex0_data);
     handle_tex1(adgif.tex1_data);
     if (GsRegisterAddress(adgif.clamp_addr) == GsRegisterAddress::ZBUF_1) {
-      handle_zbuf(adgif.clamp_data);
+      handle_zbuf(render_state->version, adgif.clamp_data);
     } else {
       handle_clamp(adgif.clamp_data);
     }
@@ -920,8 +1072,8 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
   vs_params.max_scale = m_frame_data.max_scale;
   vs_params.deg_to_rad = m_frame_data.deg_to_rad;
   vs_params.inv_area = m_frame_data.inv_area;
-  vs_params.height_scale = 1.f;  // Jak 1
-  vs_params.scissor_adjust = 512.f / kGameHeightJak1;
+  vs_params.height_scale = metal_height_scale(render_state->version);
+  vs_params.scissor_adjust = metal_scissor_adjust(render_state->version);
 
   id<MTLRenderCommandEncoder> enc = ctx.enc;
   [enc setVertexBuffer:vbuf offset:voffset atIndex:0];

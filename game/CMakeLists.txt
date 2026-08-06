@@ -1117,6 +1117,15 @@ if(APPLE)
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak2-metal-dispatch-proof COMMAND jak2-metal-dispatch-proof)
 
+        add_executable(jak2-metal-sprite-renderer-test
+            graphics/pipelines/metal/metal_jak2_sprite_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_sprite_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-sprite-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-sprite-renderer-test COMMAND jak2-metal-sprite-renderer-test)
+
         add_executable(jak2-metal-submit-readback-proof
             graphics/pipelines/metal/metal_jak2_submit_readback_proof.mm)
         set_source_files_properties(

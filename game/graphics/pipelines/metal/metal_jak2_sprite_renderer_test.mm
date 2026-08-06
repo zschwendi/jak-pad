@@ -1,0 +1,259 @@
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+#include "common/util/Assert.h"
+
+#include "game/graphics/pipelines/metal/metal_sprite_renderer.h"
+
+namespace {
+
+u32 vif_code(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
+  return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
+}
+
+u32 vif_stcycl(u16 cl, u16 wl) {
+  return vif_code(VifCode::Kind::STCYCL, cl | (wl << 8));
+}
+
+u32 vif_unpack_v4_32(u8 qwc, u16 address, bool tops) {
+  return vif_code(VifCode::Kind::UNPACK_V4_32, address | (tops ? (1 << 15) : 0), qwc);
+}
+
+void write_u64(std::vector<u8>& bytes, std::size_t offset, u64 value) {
+  ASSERT(offset + sizeof(value) <= bytes.size());
+  std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+
+u64 gs_zbuf(u32 zbp, bool masked) {
+  return zbp | (0b0001ull << 24) | (static_cast<u64>(masked) << 32);
+}
+
+u64 gs_tex0(u32 tbp, u32 tbw, u32 psm, u32 tw, u32 th) {
+  return tbp | (static_cast<u64>(tbw) << 14) | (static_cast<u64>(psm) << 20) |
+         (static_cast<u64>(tw) << 26) | (static_cast<u64>(th) << 30);
+}
+
+u64 gs_alpha(u32 a, u32 b, u32 c, u32 d) {
+  return a | (b << 2) | (c << 4) | (d << 6);
+}
+
+struct SyntheticChain {
+  std::vector<u8> bytes;
+
+  void transfer(u32 vif0, u32 vif1, const std::vector<u8>& data = {}) {
+    ASSERT((data.size() & 0xf) == 0);
+    const std::size_t offset = bytes.size();
+    bytes.resize(offset + 16 + data.size(), 0);
+    const u64 tag = static_cast<u64>(data.size() / 16) |
+                    (static_cast<u64>(DmaTag::Kind::CNT) << 28);
+    std::memcpy(bytes.data() + offset, &tag, sizeof(tag));
+    std::memcpy(bytes.data() + offset + 8, &vif0, sizeof(vif0));
+    std::memcpy(bytes.data() + offset + 12, &vif1, sizeof(vif1));
+    if (!data.empty()) {
+      std::memcpy(bytes.data() + offset + 16, data.data(), data.size());
+    }
+  }
+
+  void empty_next() {
+    const std::size_t offset = bytes.size();
+    bytes.resize(offset + 16, 0);
+    const u64 tag = (static_cast<u64>(DmaTag::Kind::NEXT) << 28) |
+                    (static_cast<u64>(offset + 16) << 32);
+    std::memcpy(bytes.data() + offset, &tag, sizeof(tag));
+  }
+
+  u32 finish() {
+    const u32 next_bucket = static_cast<u32>(bytes.size());
+    bytes.resize(bytes.size() + 16, 0);
+    const u64 end = static_cast<u64>(DmaTag::Kind::END) << 28;
+    std::memcpy(bytes.data() + next_bucket, &end, sizeof(end));
+    return next_bucket;
+  }
+};
+
+std::vector<u8> make_distorter_setup() {
+  std::vector<u8> data(7 * 16, 0);
+  const u64 gif_tag_lo = 1 | (1ull << 15) | (6ull << 60);
+  const u64 gif_tag_hi = static_cast<u64>(GifTag::RegisterDescriptor::AD);
+  write_u64(data, 0, gif_tag_lo);
+  write_u64(data, 8, gif_tag_hi);
+  write_u64(data, 16, gs_zbuf(0x130, true));
+  write_u64(data, 32, gs_tex0(0, 8, 0, 9, 9));
+  write_u64(data, 48, (1ull << 5) | (1ull << 6));
+  write_u64(data, 96, gs_alpha(0, 1, 0, 1));
+  return data;
+}
+
+std::vector<u8> make_sine_tables() {
+  std::vector<u8> data(0x8b * 16, 0);
+  const u64 gif_tag_lo = static_cast<u64>(GsPrim::Kind::TRI_STRIP) << 47;
+  write_u64(data, (128 + 9) * 16, gif_tag_lo);
+  return data;
+}
+
+std::vector<u8> make_sprite_direct_setup() {
+  std::vector<u8> data(3 * 16, 0);
+  constexpr u64 words[] = {
+      0x2000000000008001ull, 0xEEEEEEEEEEEEEEEEull, 0x000000000005126Bull,
+      0x0000000000000047ull, 0x0000000000000005ull, 0x0000000000000008ull,
+  };
+  std::memcpy(data.data(), words, sizeof(words));
+  return data;
+}
+
+SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
+                                      bool use_chain3_glow_tail = false) {
+  SyntheticChain chain;
+  chain.empty_next();
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 7),
+                 make_distorter_setup());
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::PC_PORT),
+                 std::vector<u8>(16, 0));
+  chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(0x8b, 0x160, false),
+                 make_sine_tables());
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 3),
+                 make_sprite_direct_setup());
+  chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(0x2a, SpriteDataMem::FrameData, false),
+                 std::vector<u8>(sizeof(SpriteFrameData), 0));
+  chain.transfer(vif_code(VifCode::Kind::MSCALF, SpriteProgMem::Init),
+                 vif_code(VifCode::Kind::FLUSHE));
+  chain.transfer(vif_code(VifCode::Kind::BASE, SpriteDataMem::Buffer0),
+                 vif_code(VifCode::Kind::OFFSET, SpriteDataMem::Buffer1));
+  chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(5, SpriteDataMem::Matrix, false),
+                 std::vector<u8>(sizeof(Sprite3DMatrixData), 0));
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+  chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(80, SpriteDataMem::Matrix, false),
+                 std::vector<u8>(sizeof(SpriteHudMatrixData), 0));
+  if (include_empty_hud_chunk) {
+    chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(1, SpriteDataMem::Header, true),
+                   std::vector<u8>(16, 0));
+    chain.transfer(vif_code(VifCode::Kind::NOP),
+                   vif_unpack_v4_32(0, SpriteDataMem::Vector, true));
+    chain.transfer(vif_code(VifCode::Kind::NOP),
+                   vif_unpack_v4_32(0, SpriteDataMem::Adgif, true));
+    chain.transfer(vif_code(VifCode::Kind::NOP),
+                   vif_code(VifCode::Kind::MSCAL, SpriteProgMem::Sprites2dHud_Jak2));
+  }
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+
+  if (use_chain3_glow_tail) {
+    for (int i = 0; i < 4; i++) {
+      chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(1, 0, false),
+                     std::vector<u8>(16, 0));
+      chain.transfer(0, 0, std::vector<u8>(4 * 16, 0));
+      chain.transfer(0, 0, std::vector<u8>(5 * 16, 0));
+      chain.transfer(vif_code(VifCode::Kind::MSCALF, 10), 0);
+    }
+    chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+  } else {
+    // Exact asset-free shape of the observed chain-2 glow. Payload contents
+    // are synthetic; sizes and structural VIF codes are the contracts the
+    // renderer consumes.
+    chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(24, 0, false),
+                   std::vector<u8>(sizeof(SpriteGlowConsts), 0));
+    chain.transfer(0, 0, std::vector<u8>(0x54 * 16, 0));
+    chain.transfer(0, 0, std::vector<u8>(0x54 * 16, 0));
+    chain.transfer(vif_code(VifCode::Kind::BASE, 0), vif_code(VifCode::Kind::OFFSET, 400));
+    chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+    chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+  }
+
+  // Both observed chains finish with the residual NEXT/DIRECT10/NEXT envelope.
+  chain.empty_next();
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 10),
+                 std::vector<u8>(10 * 16, 0));
+  chain.empty_next();
+  return chain;
+}
+
+void test_empty_jak2_bucket() {
+  SyntheticChain chain;
+  chain.transfer(0, 0);
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().glow_transfers_skipped == 0);
+}
+
+void test_normal_jak2_parser_and_glow_accounting() {
+  auto chain = make_normal_jak2_chain();
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().blocks_2d_grp1 == 0);
+  ASSERT(renderer.stats().count_2d_grp1 == 0);
+  ASSERT(renderer.stats().draw_calls == 0);
+  ASSERT(renderer.stats().glow_transfers_skipped == 6);
+  ASSERT(renderer.stats().glow_bytes_skipped == 24 * 16 + 2 * 0x54 * 16);
+  ASSERT(renderer.stats().post_glow_residual_transfers == 3);
+  ASSERT(renderer.stats().post_glow_residual_bytes == 10 * 16);
+  ASSERT(renderer.stats().unsupported_bytes == 24 * 16 + 2 * 0x54 * 16 + 10 * 16);
+}
+
+void test_jak2_hud_program() {
+  auto chain = make_normal_jak2_chain(true);
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().blocks_2d_grp1 == 1);
+  ASSERT(renderer.stats().count_2d_grp1 == 0);
+  ASSERT(renderer.stats().draw_calls == 0);
+}
+
+void test_chain3_glow_falls_back_to_explicit_residual() {
+  auto chain = make_normal_jak2_chain(false, true);
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().glow_transfers_skipped == 1);
+  ASSERT(renderer.stats().glow_bytes_skipped == 16);
+  ASSERT(renderer.stats().post_glow_residual_transfers == 19);
+  ASSERT(renderer.stats().post_glow_residual_bytes == 49 * 16);
+  ASSERT(renderer.stats().unsupported_bytes == 50 * 16);
+}
+
+}  // namespace
+
+int main() {
+  @autoreleasepool {
+    test_empty_jak2_bucket();
+    test_normal_jak2_parser_and_glow_accounting();
+    test_jak2_hud_program();
+    test_chain3_glow_falls_back_to_explicit_residual();
+  }
+  std::puts("jak2-metal-sprite-renderer-test: PASS");
+  return 0;
+}

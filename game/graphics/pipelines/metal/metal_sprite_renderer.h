@@ -22,8 +22,10 @@
  * same DMA walk and sine-table vertex build, drawn against a snapshot of the
  * frame so far (the game pass is split where GL calls glBlitFramebuffer).
  *
- * Not ported: the Jak 2/3 paths (render_jak2, glow). This renderer is Jak 1
- * only, matching the rest of the Metal bucket table.
+ * The normal Jak 2 Sprite3 path is also supported. Jak 2 glow remains
+ * unimplemented: its post-HUD DMA is drained with explicit transfer/byte stats
+ * and a one-time warning, so enabling the bucket cannot silently claim glow.
+ * Jak 3 remains unsupported.
  */
 
 #include <map>
@@ -57,6 +59,11 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
     int triangles = 0;
     int distort_sprites = 0;
     int missing_textures = 0;
+    int glow_transfers_skipped = 0;
+    u64 glow_bytes_skipped = 0;
+    int post_glow_residual_transfers = 0;
+    u64 post_glow_residual_bytes = 0;
+    u64 unsupported_bytes = 0;
   };
   const Stats& stats() const { return m_stats; }
 
@@ -100,13 +107,24 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
 
  private:
   // DMA walk (mirrors Sprite3's methods of the same names)
+  void render_jak1(DmaFollower& dma,
+                   MetalSharedRenderState* render_state,
+                   MetalFrameContext& ctx);
+  void render_jak2(DmaFollower& dma,
+                   MetalSharedRenderState* render_state,
+                   MetalFrameContext& ctx);
+  bool render_normal_path(DmaFollower& dma,
+                          MetalSharedRenderState* render_state,
+                          MetalFrameContext& ctx);
+  void consume_unsupported_jak2_glow_and_residual(DmaFollower& dma,
+                                                  MetalSharedRenderState* render_state);
   bool render_direct(DmaFollower& dma,
                      MetalSharedRenderState* render_state,
                      MetalFrameContext& ctx);
-  void distort_dma(DmaFollower& dma);
+  void distort_dma(GameVersion version, DmaFollower& dma);
   void distort_setup();
   void distort_draw(MetalSharedRenderState* render_state, MetalFrameContext& ctx);
-  void handle_sprite_frame_setup(DmaFollower& dma);
+  void handle_sprite_frame_setup(GameVersion version, DmaFollower& dma);
   void render_3d(DmaFollower& dma);
   void render_2d_group0(DmaFollower& dma,
                         MetalSharedRenderState* render_state,
@@ -125,7 +143,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
   // GS register handling (identical to Sprite3)
   void handle_tex0(u64 val);
   void handle_tex1(u64 val);
-  void handle_zbuf(u64 val);
+  void handle_zbuf(GameVersion version, u64 val);
   void handle_clamp(u64 val);
   void handle_alpha(u64 val);
 
@@ -171,4 +189,5 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
 
   Stats m_stats;
   bool m_warned_distort_overflow = false;
+  bool m_warned_unsupported_glow = false;
 };
