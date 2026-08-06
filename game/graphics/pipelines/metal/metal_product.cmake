@@ -15,6 +15,7 @@ set(OPENGOAL_METAL_RENDERER_SOURCES
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_merc.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_merc_model_pool.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_ocean_renderer.mm"
+    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_pool_texture.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_pso_cache.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_shrub.mm"

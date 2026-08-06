@@ -1156,6 +1156,15 @@ if(APPLE)
         add_test(NAME jak2-bucket4-texture-upload-capture-test
             COMMAND jak2-bucket4-texture-upload-capture-test)
 
+        add_executable(metal-pool-texture-test
+            graphics/pipelines/metal/metal_pool_texture_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_pool_texture_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(metal-pool-texture-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME metal-pool-texture-test COMMAND metal-pool-texture-test)
+
         add_executable(goalpad-play
             goalpad_play.cpp
             goalpad_audio.cpp

@@ -352,6 +352,7 @@ class TexturePool {
   void move_existing_to_vram(GpuTexture* tex, u32 slot_addr);
 
   std::mutex& mutex() { return m_mutex; }
+  PcTextureId allocate_pc_port_texture();
   PcTextureId allocate_pc_port_texture(GameVersion version);
 
   std::string get_debug_texture_name(PcTextureId id);
@@ -381,6 +382,7 @@ class TexturePool {
 
   u32 m_next_pc_texture_to_allocate = 0;
   u32 m_tpage_dir_size = 0;
+  GameVersion m_version;
 
   std::mutex m_mutex;
 };
