@@ -15,7 +15,8 @@
  * bucket per level draws the NORMAL category, the base draw of the envmapped
  * category, then the envmap second draw. Jak 2 keeps NORMAL in the populated
  * parent bucket and drives the two envmap draws from the immediately following
- * empty ETIE child bucket. This port covers all three:
+ * empty ETIE child bucket. For static draws with non-animated textures, this
+ * slice covers all three:
  *  - NORMAL uses the tfrag3 shader, exactly as GL does.
  *  - NORMAL_ENVMAP's base draw uses the etie_base shader, exactly as GL does
  *    (GL uses the envmap-style math for the base draw to avoid a rounding
@@ -26,6 +27,9 @@
  * Not ported, and honestly missing rather than faked:
  *  - wind-instanced draws (trees/flags that sway). They need the per-instance
  *    matrix rebuild the GL renderer does on the CPU each frame.
+ *  - negative tree_tex_id texture-animator slots. Until the Jak 2 texture
+ *    animator is connected, these draws use the existing placeholder and
+ *    increment both anim_slot_draws and missing_textures.
  * Jak 2's per-prototype visibility mask is supported for these static draws.
  * Wind skips remain counted so what is missing from a frame is visible.
  */

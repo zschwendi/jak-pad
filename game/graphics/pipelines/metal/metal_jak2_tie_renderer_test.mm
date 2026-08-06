@@ -16,6 +16,7 @@
 
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
+#include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/pipelines/metal/metal_tie.h"
 #include "game/graphics/texture/TexturePool.h"
 
@@ -508,6 +509,14 @@ int count_rgba(const std::vector<u8>& pixels, u8 r, u8 g, u8 b, u8 a) {
   return count;
 }
 
+int count_non_black_rgb(const std::vector<u8>& pixels) {
+  int count = 0;
+  for (std::size_t offset = 0; offset + 2 < pixels.size(); offset += 4) {
+    count += pixels[offset] != 0 || pixels[offset + 1] != 0 || pixels[offset + 2] != 0;
+  }
+  return count;
+}
+
 }  // namespace
 
 int main() {
@@ -535,6 +544,11 @@ int main() {
     check(pso_cache.init(device, library), "initialized the Metal pipeline cache");
     sampler_cache.init(device);
     TexturePool texture_pool(GameVersion::Jak2);
+    check(metal_setup_placeholder(device, queue, texture_pool),
+          "published the Metal placeholder texture");
+    const u64 placeholder_handle = texture_pool.get_placeholder_texture();
+    check(placeholder_handle != 0 && metal_texture_lookup(placeholder_handle) != nil,
+          "the counted fallback resolves to a live placeholder texture");
     const auto fixture_path =
         std::filesystem::temp_directory_path() / "goalpad-jak2-normal-tie-test.fr3";
     std::error_code remove_error;
@@ -547,6 +561,9 @@ int main() {
     check(level != nullptr, "loaded the synthetic TIE through the production FR3 path");
     if (!level) {
       std::printf("FR3 load error: %s\n", load_error.c_str());
+      if (placeholder_handle) {
+        metal_texture_release(placeholder_handle);
+      }
       return 1;
     }
 
@@ -724,8 +741,33 @@ int main() {
               jak1.background.unexpected_dma == 0,
           "the independent Jak 1 parent path retains normal and paired envmap rendering");
 
+    auto& named_normal_draw = level->level->tie_trees.at(0).at(0).static_draws.at(0);
+    const s32 static_texture_id = named_normal_draw.tree_tex_id;
+    named_normal_draw.tree_tex_id = -1;
+    const auto animated_fallback =
+        render_sequence(device, queue, &pso_cache, &sampler_cache, &texture_pool, &parent, &child,
+                        &all_parent, nullptr, 61);
+    named_normal_draw.tree_tex_id = static_texture_id;
+    check(animated_fallback.completed && animated_fallback.parent_finished &&
+              animated_fallback.renderer.trees_rendered == 2 &&
+              animated_fallback.renderer.draws == 1 && animated_fallback.renderer.runs == 1 &&
+              animated_fallback.renderer.triangles == 4 && animated_fallback.draw_calls == 1 &&
+              animated_fallback.triangles == 4 &&
+              animated_fallback.background.tie_draws == 1 &&
+              animated_fallback.background.tie_tris == 4 &&
+              animated_fallback.background.anim_slot_draws == 1 &&
+              animated_fallback.background.missing_textures == 1 &&
+              animated_fallback.background.missing_levels == 0 &&
+              animated_fallback.background.unexpected_dma == 0,
+          "one negative texture-animator slot draws once and reports the exact fallback counters");
+    check(count_non_black_rgb(animated_fallback.pixels) > 100,
+          "the unsupported animated slot visibly degrades through the placeholder texture");
+
     check(metal_level_data::unload(texture_pool, kLevelName),
           "released the synthetic TIE level after GPU completion");
+    if (placeholder_handle) {
+      metal_texture_release(placeholder_handle);
+    }
     if (failures) {
       std::printf("FAIL: %d Jak II normal TIE/ETIE renderer checks failed\n", failures);
       return 1;
