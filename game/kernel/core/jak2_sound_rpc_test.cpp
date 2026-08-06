@@ -138,6 +138,17 @@ struct StrReply {
 };
 static_assert(sizeof(StrReply) == kStrReplySize);
 
+bool reply_matches_request(const std::vector<u8>& request,
+                           GuardedBuffer& reply,
+                           u16 result,
+                           u32 maxlen) {
+  StrReply expected;
+  memcpy(&expected, request.data(), sizeof(expected));
+  expected.result = result;
+  expected.maxlen = maxlen;
+  return memcmp(reply.data.c(), &expected, sizeof(expected)) == 0;
+}
+
 void reset_str_request(GuardedBuffer& buffer,
                        u32 address,
                        s32 section,
@@ -863,12 +874,13 @@ int main() {
   for (u32 i = 0; i < fixture_bytes.size(); i++) {
     fixture_bytes[i] = (u8)(i ^ 0x5a);
   }
+  StrFileHeaderJ2 chunked_header = {};
+  chunked_header.sectors[0] = 2;
+  chunked_header.sizes[0] = SECTOR_SIZE;
+  chunked_header.sectors[1] = 3;
+  chunked_header.sizes[1] = SECTOR_SIZE;
   std::vector<u8> chunked_str(4 * SECTOR_SIZE, 0);
-  auto* chunked_header = reinterpret_cast<StrFileHeaderJ2*>(chunked_str.data());
-  chunked_header->sectors[0] = 2;
-  chunked_header->sizes[0] = SECTOR_SIZE;
-  chunked_header->sectors[1] = 3;
-  chunked_header->sizes[1] = SECTOR_SIZE;
+  memcpy(chunked_str.data(), &chunked_header, sizeof(chunked_header));
   for (u32 i = 0; i < SECTOR_SIZE; i++) {
     chunked_str[2 * SECTOR_SIZE + i] = (u8)(i ^ 0x96);
     chunked_str[3 * SECTOR_SIZE + i] = (u8)(i ^ 0x69);
@@ -877,27 +889,37 @@ int main() {
   auto unaligned_chunked_str = chunked_str;
   unaligned_chunked_str.pop_back();
   std::vector<u8> nonzero_after_zero_str(4 * SECTOR_SIZE, 0);
-  auto* nonzero_after_zero_header =
-      reinterpret_cast<StrFileHeaderJ2*>(nonzero_after_zero_str.data());
-  nonzero_after_zero_header->sectors[0] = 2;
-  nonzero_after_zero_header->sizes[0] = 2 * SECTOR_SIZE;
-  nonzero_after_zero_header->sectors[2] = 3;
-  nonzero_after_zero_header->sizes[2] = SECTOR_SIZE;
+  StrFileHeaderJ2 nonzero_after_zero_header = {};
+  nonzero_after_zero_header.sectors[0] = 2;
+  nonzero_after_zero_header.sizes[0] = 2 * SECTOR_SIZE;
+  nonzero_after_zero_header.sectors[2] = 3;
+  nonzero_after_zero_header.sizes[2] = SECTOR_SIZE;
+  memcpy(nonzero_after_zero_str.data(), &nonzero_after_zero_header,
+         sizeof(nonzero_after_zero_header));
   auto descending_chunked_str = chunked_str;
-  auto* descending_header = reinterpret_cast<StrFileHeaderJ2*>(descending_chunked_str.data());
-  descending_header->sectors[0] = 3;
-  descending_header->sectors[1] = 2;
+  auto descending_header = chunked_header;
+  descending_header.sectors[0] = 3;
+  descending_header.sectors[1] = 2;
+  memcpy(descending_chunked_str.data(), &descending_header, sizeof(descending_header));
   auto inside_header_str = chunked_str;
-  reinterpret_cast<StrFileHeaderJ2*>(inside_header_str.data())->sectors[0] = 1;
+  auto inside_header = chunked_header;
+  inside_header.sectors[0] = 1;
+  memcpy(inside_header_str.data(), &inside_header, sizeof(inside_header));
   auto mismatched_size_str = chunked_str;
-  reinterpret_cast<StrFileHeaderJ2*>(mismatched_size_str.data())->sizes[0] = SECTOR_SIZE - 1;
+  auto mismatched_size_header = chunked_header;
+  mismatched_size_header.sizes[0] = SECTOR_SIZE - 1;
+  memcpy(mismatched_size_str.data(), &mismatched_size_header, sizeof(mismatched_size_header));
   auto size_without_sector_str = chunked_str;
-  auto* size_without_sector_header =
-      reinterpret_cast<StrFileHeaderJ2*>(size_without_sector_str.data());
-  size_without_sector_header->sectors[1] = 0;
-  size_without_sector_header->sizes[1] = SECTOR_SIZE;
+  auto size_without_sector_header = chunked_header;
+  size_without_sector_header.sectors[1] = 0;
+  size_without_sector_header.sizes[1] = SECTOR_SIZE;
+  memcpy(size_without_sector_str.data(), &size_without_sector_header,
+         sizeof(size_without_sector_header));
   auto sector_beyond_file_str = chunked_str;
-  reinterpret_cast<StrFileHeaderJ2*>(sector_beyond_file_str.data())->sectors[1] = UINT32_MAX;
+  auto sector_beyond_file_header = chunked_header;
+  sector_beyond_file_header.sectors[1] = UINT32_MAX;
+  memcpy(sector_beyond_file_str.data(), &sector_beyond_file_header,
+         sizeof(sector_beyond_file_header));
 
   constexpr const char* kFullWidthName = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
   check(!fixture_error && write_fixture(fixture_root / "iso" / "MIXED.TXT", fixture_bytes) &&
@@ -1160,6 +1182,8 @@ int main() {
               0, "chunked STR rpc-call returns synchronously");
     str_reply = str_recv.data.cast<StrReply>().c();
     check(snapshot(str_send) == chunk_request, "chunked STR request remains untouched");
+    check(reply_matches_request(chunk_request, str_recv, 0, SECTOR_SIZE),
+          "chunked STR reply changes only result and length");
     check_u32(str_reply->result, 0, "chunked STR success result is done");
     check_u32(str_reply->maxlen, SECTOR_SIZE, "chunked STR reports its sector span");
     check_u32(str_reply->address, chunk_destination.data.offset,
@@ -1200,9 +1224,8 @@ int main() {
     const auto failed_request = snapshot(str_send);
     rpc_call(4, 0, 1, str_send.data.offset, kStrRequestSize, str_recv.data.offset,
              kStrReplySize, 0);
-    const auto* failed_reply = str_recv.data.cast<StrReply>().c();
     chunk_failures_transactional &= snapshot(str_send) == failed_request;
-    chunk_failures_transactional &= failed_reply->result == 1 && failed_reply->maxlen == 0;
+    chunk_failures_transactional &= reply_matches_request(failed_request, str_recv, 1, 0);
     chunk_failures_transactional &=
         std::all_of(chunk_destination.data.c(),
                     chunk_destination.data.c() + chunk_destination.size,
