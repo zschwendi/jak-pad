@@ -391,6 +391,10 @@ void MetalSpriteRenderer::consume_unsupported_jak2_glow_and_residual(
         control = read_glow_transfer();
       }
       while (control.size_bytes == 16) {
+        u32 sprite_count = 0;
+        memcpy(&sprite_count, control.data, sizeof(sprite_count));
+        ASSERT(sprite_count == 1);
+        m_stats.glow_sprites_skipped += sprite_count;
         auto vec_data = read_glow_transfer();
         ASSERT(vec_data.size_bytes == 4 * 16);
         auto shader = read_glow_transfer();
@@ -410,6 +414,8 @@ void MetalSpriteRenderer::consume_unsupported_jak2_glow_and_residual(
     m_stats.post_glow_residual_bytes += transfer.size_bytes;
     m_stats.unsupported_bytes += transfer.size_bytes;
   }
+
+  m_unsupported_bytes_total += m_stats.unsupported_bytes;
 
   if ((m_stats.glow_transfers_skipped > 0 || m_stats.post_glow_residual_transfers > 0) &&
       !m_warned_unsupported_glow) {
@@ -954,6 +960,12 @@ void MetalSpriteRenderer::do_block_common(SpriteMode mode,
       flush_sprites(render_state, ctx, mode == ModeHUD);
     }
 
+    if (render_state->version > GameVersion::Jak1 &&
+        m_vec_data_2d[sprite_idx].matrix() == -1) {
+      m_stats.glow_marked_sprites++;
+      continue;
+    }
+
     auto& adgif = m_adgif[sprite_idx];
     handle_tex0(adgif.tex0_data);
     handle_tex1(adgif.tex1_data);
@@ -1016,6 +1028,7 @@ void MetalSpriteRenderer::do_block_common(SpriteMode mode,
     m_vertices_3d.at(start_vtx_id + 3).info[2] = 2;
 
     ++m_sprite_idx;
+    m_stats.normal_sprites_submitted++;
   }
 }
 

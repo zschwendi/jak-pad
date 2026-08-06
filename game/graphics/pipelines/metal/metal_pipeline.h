@@ -203,8 +203,13 @@ struct ChainStats {
   int sprites_3d = 0;
   int sprites_hud = 0;
   int sprites_distort = 0;  // DMA consumed; distort drawing is not ported
+  int sprite_normal_submitted = 0;
+  int sprite_glow_marked = 0;
+  int sprite_glow_skipped = 0;
   int sprite_draws = 0;
+  int sprite_triangles = 0;
   int sprite_missing_textures = 0;
+  u64 sprite_unsupported_bytes = 0;
   // ocean buckets, from the last chain frame
   int ocean_draws = 0;
   int ocean_triangles = 0;

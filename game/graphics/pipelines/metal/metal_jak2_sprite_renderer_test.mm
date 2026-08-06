@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstddef>
 #include <cstring>
 #include <vector>
 
@@ -103,7 +104,8 @@ std::vector<u8> make_sprite_direct_setup() {
 }
 
 SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
-                                      bool use_chain3_glow_tail = false) {
+                                      bool use_chain3_glow_tail = false,
+                                      bool include_glow_marked_group0 = false) {
   SyntheticChain chain;
   chain.empty_next();
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 7),
@@ -122,6 +124,23 @@ SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
                  vif_code(VifCode::Kind::OFFSET, SpriteDataMem::Buffer1));
   chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(5, SpriteDataMem::Matrix, false),
                  std::vector<u8>(sizeof(Sprite3DMatrixData), 0));
+  if (include_glow_marked_group0) {
+    std::vector<u8> header(16, 0);
+    const u32 sprite_count = 1;
+    std::memcpy(header.data(), &sprite_count, sizeof(sprite_count));
+    chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(1, SpriteDataMem::Header, true), header);
+    std::vector<u8> vector_data(sizeof(SpriteVecData2d), 0);
+    const s32 glow_matrix = -1;
+    std::memcpy(vector_data.data() + offsetof(SpriteVecData2d, flag_rot_sy) + sizeof(float),
+                &glow_matrix, sizeof(glow_matrix));
+    chain.transfer(vif_code(VifCode::Kind::NOP),
+                   vif_unpack_v4_32(3, SpriteDataMem::Vector, true), vector_data);
+    chain.transfer(vif_code(VifCode::Kind::NOP),
+                   vif_unpack_v4_32(5, SpriteDataMem::Adgif, true),
+                   std::vector<u8>(sizeof(AdGifData), 0));
+    chain.transfer(vif_code(VifCode::Kind::NOP),
+                   vif_code(VifCode::Kind::MSCAL, SpriteProgMem::Sprites2dGrp0));
+  }
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
   chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(80, SpriteDataMem::Matrix, false),
                  std::vector<u8>(sizeof(SpriteHudMatrixData), 0));
@@ -225,6 +244,25 @@ void test_jak2_hud_program() {
   ASSERT(renderer.stats().draw_calls == 0);
 }
 
+void test_jak2_glow_marker_is_not_submitted_as_an_ordinary_sprite() {
+  auto chain = make_normal_jak2_chain(false, false, true);
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().count_2d_grp0 == 1);
+  ASSERT(renderer.stats().glow_marked_sprites == 1);
+  ASSERT(renderer.stats().normal_sprites_submitted == 0);
+  ASSERT(renderer.stats().draw_calls == 0);
+}
+
 void test_chain3_glow_falls_back_to_explicit_residual() {
   auto chain = make_normal_jak2_chain(false, true);
   const u32 next_bucket = chain.finish();
@@ -252,6 +290,7 @@ int main() {
     test_empty_jak2_bucket();
     test_normal_jak2_parser_and_glow_accounting();
     test_jak2_hud_program();
+    test_jak2_glow_marker_is_not_submitted_as_an_ordinary_sprite();
     test_chain3_glow_falls_back_to_explicit_residual();
   }
   std::puts("jak2-metal-sprite-renderer-test: PASS");

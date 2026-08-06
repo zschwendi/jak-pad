@@ -1136,7 +1136,8 @@ if(APPLE)
 
         add_library(goalpad-jak2-metal-host STATIC
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
-            graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp)
+            graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")

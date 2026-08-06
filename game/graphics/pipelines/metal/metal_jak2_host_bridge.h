@@ -56,6 +56,14 @@ typedef struct goal_jak2_bucket4_texture_upload_metrics {
   uint32_t unsupported_bytes;
 } goal_jak2_bucket4_texture_upload_metrics;
 
+typedef struct goal_jak2_sprite_texture_upload_metrics {
+  uint32_t valid;
+  uint32_t present;
+  uint32_t upload_count;
+  uint64_t pages[2];
+  int64_t modes[2];
+} goal_jak2_sprite_texture_upload_metrics;
+
 typedef struct goal_jak2_metal_host_metrics {
   uint64_t chains;
   uint64_t completed_chains;
@@ -70,6 +78,7 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t bucket4_fog_publications;
   uint64_t bucket4_cloud_texture;
   uint64_t bucket4_fog_texture;
+  uint64_t sprite_texture_uploads;
   uint32_t last_copied_bytes;
   uint64_t last_buckets_dispatched;
   uint64_t command_buffers_committed;
@@ -105,6 +114,17 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_screen_filter_triangles;
   uint64_t last_debug_no_zbuf2_draws;
   uint64_t last_debug_no_zbuf2_triangles;
+  uint64_t last_sprites_2d;
+  uint64_t last_sprites_3d;
+  uint64_t last_sprites_hud;
+  uint64_t last_sprites_distort;
+  uint64_t last_sprite_normal_submitted;
+  uint64_t last_sprite_glow_marked;
+  uint64_t last_sprite_glow_skipped;
+  uint64_t last_sprite_draws;
+  uint64_t last_sprite_triangles;
+  uint64_t last_sprite_missing_textures;
+  uint64_t last_sprite_unsupported_bytes;
   uint64_t submissions;
   uint64_t presentations;
   uint64_t presentation_drops;
@@ -114,6 +134,7 @@ typedef struct goal_jak2_metal_host_metrics {
   int32_t last_command_buffer_status;
   int64_t last_command_buffer_error_code;
   goal_jak2_bucket4_texture_upload_metrics last_bucket4_texture_upload;
+  goal_jak2_sprite_texture_upload_metrics last_sprite_texture_upload;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

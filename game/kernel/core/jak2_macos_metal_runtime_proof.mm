@@ -180,6 +180,38 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
       bucket4.erase_clear[3], bucket4.generic_source, bucket4.generic_width,
       bucket4.generic_height, bucket4.generic_destination, bucket4.generic_format,
       bucket4.generic_force_to_gpu, bucket4.clut_source, bucket4.clut_destination);
+  const auto& sprite_upload = metal.last_sprite_texture_upload;
+  std::printf(
+      "sprite-upload: valid=%u present=%u count=%u pages=(%#llx,%#llx) "
+      "modes=(%lld,%lld) executed=%llu\n",
+      sprite_upload.valid, sprite_upload.present, sprite_upload.upload_count,
+      static_cast<unsigned long long>(sprite_upload.pages[0]),
+      static_cast<unsigned long long>(sprite_upload.pages[1]),
+      static_cast<long long>(sprite_upload.modes[0]),
+      static_cast<long long>(sprite_upload.modes[1]),
+      static_cast<unsigned long long>(metal.sprite_texture_uploads));
+  std::printf(
+      "sprites: 2d=%llu 3d=%llu hud=%llu distort=%llu normal-submitted=%llu "
+      "glow-marked=%llu glow-skipped=%llu draws=%llu tris=%llu "
+      "missing-textures=%llu unsupported-bytes=%llu; direct: sky=%llu/%llu "
+      "screen-filter=%llu/%llu debug-no-zbuf2=%llu/%llu\n",
+      static_cast<unsigned long long>(metal.last_sprites_2d),
+      static_cast<unsigned long long>(metal.last_sprites_3d),
+      static_cast<unsigned long long>(metal.last_sprites_hud),
+      static_cast<unsigned long long>(metal.last_sprites_distort),
+      static_cast<unsigned long long>(metal.last_sprite_normal_submitted),
+      static_cast<unsigned long long>(metal.last_sprite_glow_marked),
+      static_cast<unsigned long long>(metal.last_sprite_glow_skipped),
+      static_cast<unsigned long long>(metal.last_sprite_draws),
+      static_cast<unsigned long long>(metal.last_sprite_triangles),
+      static_cast<unsigned long long>(metal.last_sprite_missing_textures),
+      static_cast<unsigned long long>(metal.last_sprite_unsupported_bytes),
+      static_cast<unsigned long long>(metal.last_sky_draw_draws),
+      static_cast<unsigned long long>(metal.last_sky_draw_triangles),
+      static_cast<unsigned long long>(metal.last_screen_filter_draws),
+      static_cast<unsigned long long>(metal.last_screen_filter_triangles),
+      static_cast<unsigned long long>(metal.last_debug_no_zbuf2_draws),
+      static_cast<unsigned long long>(metal.last_debug_no_zbuf2_triangles));
 }
 
 void print_frame(const goal_jak2_metal_frame_summary& frame) {
@@ -317,7 +349,7 @@ int main(int argc, char** argv) {
     uint64_t baseline_hash = 0;
     uint64_t baseline_non_black_pixels = 0;
     bool have_baseline = false;
-    bool saw_strict_later_frame = false;
+    bool saw_attributed_title_sprite_frame = false;
     bool quit_requested = false;
     bool tick_failed = false;
     const bool require_presentation = options.require_presentation;
@@ -384,15 +416,39 @@ int main(int argc, char** argv) {
           const bool exact_sky_frame = metal.last_sky_draw_draws == 1 &&
                                        metal.last_sky_draw_triangles == 2 &&
                                        metal.last_sky_draw_batch_valid != 0;
-          saw_strict_later_frame |= exact_sky_frame && frame.hash != baseline_hash &&
-                                    frame.non_black_pixels > baseline_non_black_pixels;
+          const bool exact_sprite_upload =
+              metal.last_sprite_texture_upload.valid != 0 &&
+              metal.last_sprite_texture_upload.present != 0 &&
+              metal.last_sprite_texture_upload.upload_count == 2 &&
+              metal.last_sprite_texture_upload.pages[0] != 0 &&
+              metal.last_sprite_texture_upload.pages[1] != 0 &&
+              metal.last_sprite_texture_upload.modes[0] == -1 &&
+              metal.last_sprite_texture_upload.modes[1] == -1 &&
+              metal.sprite_texture_uploads >= 2;
+          const bool exact_inert_normal_sprite_frame =
+              metal.last_sprites_2d == 64 && metal.last_sprites_3d == 0 &&
+              metal.last_sprites_hud == 0 && metal.last_sprites_distort == 0 &&
+              metal.last_sprite_normal_submitted == 60 && metal.last_sprite_glow_marked == 4 &&
+              metal.last_sprite_glow_skipped == 4 && metal.last_sprite_draws == 2 &&
+              metal.last_sprite_triangles == 120 &&
+              metal.last_sprite_missing_textures == 0;
+          const bool exact_draw_attribution =
+              metal.draws == metal.last_sky_draw_draws + metal.last_screen_filter_draws +
+                                 metal.last_debug_no_zbuf2_draws + metal.last_sprite_draws &&
+              metal.triangles ==
+                  metal.last_sky_draw_triangles + metal.last_screen_filter_triangles +
+                      metal.last_debug_no_zbuf2_triangles + metal.last_sprite_triangles;
+          saw_attributed_title_sprite_frame |=
+              exact_sky_frame && exact_sprite_upload && exact_inert_normal_sprite_frame &&
+              exact_draw_attribution && frame.hash != baseline_hash &&
+              frame.non_black_pixels > baseline_non_black_pixels;
         }
       }
     }
 
     const bool passed = !quit_requested && !tick_failed && runtime.title_ready != 0 &&
                         exact_submission_gate(runtime, metal, require_presentation) &&
-                        saw_strict_later_frame;
+                        saw_attributed_title_sprite_frame;
     if (passed) {
       std::printf("PASS: bounded Jak II AOT runtime produced an attributed non-black Metal frame.\n");
       return 0;
@@ -400,10 +456,11 @@ int main(int argc, char** argv) {
 
     std::fprintf(
         stderr,
-        "INCOMPLETE: exact=%d title=%d strict-later-frame=%d baseline-non-black=%llu "
+        "INCOMPLETE: exact=%d title=%d attributed-title-sprites=%d baseline-non-black=%llu "
         "last-non-black=%llu quit=%d tick-failed=%d\n",
         exact_submission_gate(runtime, metal, require_presentation), runtime.title_ready,
-        saw_strict_later_frame, static_cast<unsigned long long>(baseline_non_black_pixels),
+        saw_attributed_title_sprite_frame,
+        static_cast<unsigned long long>(baseline_non_black_pixels),
         static_cast<unsigned long long>(frame.non_black_pixels), quit_requested, tick_failed);
     return 1;
   }

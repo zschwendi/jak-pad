@@ -358,6 +358,11 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalVisibilityBucketRenderer>(
           "jak2-vis-data", descriptor.id, jak2::LEVEL_MAX);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Sprite) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::PARTICLES));
+      ASSERT(batch_size == 0);
+      m_bucket_renderers[bucket_id] =
+          std::make_unique<MetalSpriteRenderer>("jak2-particles", descriptor.id);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
       ASSERT(batch_size != 0);
       const char* name = "direct";
@@ -1119,8 +1124,14 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         m_chain_stats.sprites_3d = ss.sprites_3d;
         m_chain_stats.sprites_hud = ss.count_2d_grp1;
         m_chain_stats.sprites_distort = ss.distort_sprites;
+        m_chain_stats.sprite_normal_submitted = ss.normal_sprites_submitted;
+        m_chain_stats.sprite_glow_marked = ss.glow_marked_sprites;
+        m_chain_stats.sprite_glow_skipped = ss.glow_sprites_skipped;
         m_chain_stats.sprite_draws = ss.draw_calls;
+        m_chain_stats.sprite_triangles = ss.triangles;
         m_chain_stats.sprite_missing_textures = ss.missing_textures;
+        m_chain_stats.sprite_unsupported_bytes = ss.unsupported_bytes;
+        skipped += sp->unsupported_bytes_total();
       } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {
         merc_stats.add(mc->stats());
       } else if (auto* sh = dynamic_cast<MetalShadowRenderer*>(r.get())) {

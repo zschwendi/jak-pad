@@ -18,6 +18,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
@@ -79,8 +80,8 @@ void fail_current_chain_closed(goal_jak2_metal_host* host, const std::string& me
 
 void record_send_chain_failure(goal_jak2_metal_host* host,
                                const std::string& message,
-                               bool bucket4_mutated) {
-  if (bucket4_mutated) {
+                               bool host_texture_mutated) {
+  if (host_texture_mutated) {
     fail_current_chain_closed(host, message);
   } else {
     record_failure(host, message.c_str());
@@ -146,6 +147,17 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_screen_filter_triangles = stats.jak2_screen_filter_triangles;
   host->metrics.last_debug_no_zbuf2_draws = stats.jak2_debug_no_zbuf2_draws;
   host->metrics.last_debug_no_zbuf2_triangles = stats.jak2_debug_no_zbuf2_triangles;
+  host->metrics.last_sprites_2d = stats.sprites_2d;
+  host->metrics.last_sprites_3d = stats.sprites_3d;
+  host->metrics.last_sprites_hud = stats.sprites_hud;
+  host->metrics.last_sprites_distort = stats.sprites_distort;
+  host->metrics.last_sprite_normal_submitted = stats.sprite_normal_submitted;
+  host->metrics.last_sprite_glow_marked = stats.sprite_glow_marked;
+  host->metrics.last_sprite_glow_skipped = stats.sprite_glow_skipped;
+  host->metrics.last_sprite_draws = stats.sprite_draws;
+  host->metrics.last_sprite_triangles = stats.sprite_triangles;
+  host->metrics.last_sprite_missing_textures = stats.sprite_missing_textures;
+  host->metrics.last_sprite_unsupported_bytes = stats.sprite_unsupported_bytes;
   host->metrics.submissions = stats.submissions;
   host->metrics.presentations = stats.presentations_completed;
   host->metrics.presentation_drops = stats.presentation_drops;
@@ -199,27 +211,47 @@ void copy_bucket4_texture_upload_metrics(
   out.unsupported_bytes = capture.unsupported_bytes;
 }
 
-bool execute_bucket4_ordinary_upload(
+void copy_sprite_texture_upload_metrics(
+    goal_jak2_metal_host* host,
+    const std::optional<metal_renderer::Jak2SpriteTextureUploadPlan>& plan) {
+  auto& out = host->metrics.last_sprite_texture_upload;
+  out = {};
+  out.valid = plan.has_value();
+  if (!plan) {
+    return;
+  }
+  out.present = plan->present;
+  out.upload_count = static_cast<uint32_t>(plan->upload_count);
+  for (std::size_t i = 0;
+       i < plan->upload_count && i < metal_renderer::kJak2SpriteTextureUploadMaximumGroups; ++i) {
+    out.pages[i] = plan->uploads[i].page_offset;
+    out.modes[i] = plan->uploads[i].mode;
+  }
+}
+
+bool execute_ordinary_texture_upload(
     goal_jak2_metal_host* host,
     const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
-    const u8* live_ee_memory) {
+    const u8* live_ee_memory,
+    uint64_t* execution_count,
+    const char* label) {
   if (ordinary.page_offset > EE_MAIN_MEM_SIZE - ordinary.page_header.size() ||
       ordinary.mode != -1 ||
       std::memcmp(live_ee_memory + ordinary.page_offset, ordinary.page_header.data(),
                   ordinary.page_header.size()) != 0) {
-    fail_current_chain_closed(host, "Jak 2 bucket 4 ordinary texture upload changed after planning");
+    fail_current_chain_closed(host, std::string(label) + " changed after planning");
     return false;
   }
   try {
     host->textures.handle_upload_now(live_ee_memory + ordinary.page_offset,
                                      static_cast<int>(ordinary.mode), g_ee_main_mem,
                                      metal_offset_of_s7(), false);
-    host->metrics.bucket4_ordinary_uploads++;
+    (*execution_count)++;
     return true;
   } catch (const std::exception& error) {
     fail_current_chain_closed(host, error.what());
   } catch (...) {
-    fail_current_chain_closed(host, "Jak 2 bucket 4 ordinary texture upload threw");
+    fail_current_chain_closed(host, std::string(label) + " threw");
   }
   return false;
 }
@@ -232,11 +264,15 @@ bool execute_bucket4_plan(goal_jak2_metal_host* host,
   }
   if (const auto* ordinary_only =
           std::get_if<metal_renderer::Jak2Bucket4OrdinaryOnlyPlan>(&plan)) {
-    return execute_bucket4_ordinary_upload(host, ordinary_only->ordinary, live_ee_memory);
+    return execute_ordinary_texture_upload(
+        host, ordinary_only->ordinary, live_ee_memory, &host->metrics.bucket4_ordinary_uploads,
+        "Jak 2 bucket 4 ordinary texture upload");
   }
 
   const auto& mixed = std::get<metal_renderer::Jak2Bucket4MixedPlan>(plan);
-  if (!execute_bucket4_ordinary_upload(host, mixed.ordinary, live_ee_memory)) {
+  if (!execute_ordinary_texture_upload(
+          host, mixed.ordinary, live_ee_memory, &host->metrics.bucket4_ordinary_uploads,
+          "Jak 2 bucket 4 ordinary texture upload")) {
     return false;
   }
   if (!host->bucket4_mixed_executor || !host->bucket4_mixed_executor->execute(mixed)) {
@@ -256,6 +292,25 @@ bool execute_bucket4_plan(goal_jak2_metal_host* host,
   host->metrics.bucket4_cloud_texture =
       host->textures.lookup(static_cast<u32>(mixed.sky.cloud_destination)).value_or(0);
   host->metrics.bucket4_fog_texture = host->textures.lookup(mixed.fog.destination).value_or(0);
+  return true;
+}
+
+bool execute_sprite_texture_upload_plan(
+    goal_jak2_metal_host* host,
+    const metal_renderer::Jak2SpriteTextureUploadPlan& plan,
+    const u8* live_ee_memory) {
+  if (plan.present != (plan.upload_count > 0) ||
+      plan.upload_count > metal_renderer::kJak2SpriteTextureUploadMaximumGroups) {
+    fail_current_chain_closed(host, "Jak 2 bucket 312 texture-upload plan is inconsistent");
+    return false;
+  }
+  for (std::size_t i = 0; i < plan.upload_count; ++i) {
+    if (!execute_ordinary_texture_upload(
+            host, plan.uploads[i], live_ee_memory, &host->metrics.sprite_texture_uploads,
+            "Jak 2 bucket 312 ordinary texture upload")) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -294,7 +349,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     record_failure(host, host->fatal_chain_error.c_str());
     return;
   }
-  bool bucket4_mutated = false;
+  bool host_texture_mutated = false;
   try {
     host->options.host_tick_id = host->metrics.chains;
     host->options.chain_ordinal = host->metrics.chains;
@@ -312,11 +367,24 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 bucket 4 texture-upload capture rejected malformed DMA");
       return;
     }
+    const auto sprite_texture_plan = metal_renderer::plan_jak2_sprite_texture_upload(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+    copy_sprite_texture_upload_metrics(host, sprite_texture_plan);
+    if (!sprite_texture_plan) {
+      record_failure(host, "Jak 2 bucket 312 texture-upload plan rejected malformed DMA");
+      return;
+    }
+    host_texture_mutated =
+        !std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(*bucket4_plan) ||
+        sprite_texture_plan->present;
     if (!execute_bucket4_plan(host, *bucket4_plan, static_cast<const u8*>(ee_base))) {
       return;
     }
-    bucket4_mutated =
-        !std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(*bucket4_plan);
+    if (!execute_sprite_texture_upload_plan(host, *sprite_texture_plan,
+                                            static_cast<const u8*>(ee_base))) {
+      return;
+    }
     const auto& copied = host->copier.run(ee_base, chain_offset, false);
     host->metrics.last_copied_bytes = static_cast<uint32_t>(copied.data.size());
 
@@ -325,7 +393,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     copy_renderer_metrics(host);
     if (host->metrics.last_buckets_dispatched != metal_renderer::kJak2MetalBucketCount) {
       record_send_chain_failure(host, "Jak 2 Metal renderer violated its audited bucket policy",
-                                bucket4_mutated);
+                                host_texture_mutated);
       return;
     }
     const bool exact_presenting_commit_count =
@@ -339,7 +407,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           host->metrics.presentation_order_mismatches != 0) {
         record_send_chain_failure(
             host, "Jak 2 nil-layer renderer violated the submission-free dispatch gate",
-            bucket4_mutated);
+            host_texture_mutated);
         return;
       }
     } else if (!acquired || host->metrics.unsupported_blends != 0 ||
@@ -352,15 +420,15 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_send_chain_failure(
           host, acquired ? "Jak 2 layer-backed submission counters violated their gate"
                          : "Jak 2 CAMetalLayer did not provide a drawable",
-          bucket4_mutated);
+          host_texture_mutated);
       return;
     }
     host->metrics.completed_chains++;
   } catch (const std::exception& error) {
-    record_send_chain_failure(host, error.what(), bucket4_mutated);
+    record_send_chain_failure(host, error.what(), host_texture_mutated);
   } catch (...) {
     record_send_chain_failure(host, "Jak 2 Metal send-chain threw an unknown exception",
-                              bucket4_mutated);
+                              host_texture_mutated);
   }
 }
 
@@ -479,7 +547,8 @@ bool policy_table_is_audited() {
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::StrictEmpty &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Direct &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Visibility) {
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Visibility &&
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Sprite) {
       return false;
     }
   }

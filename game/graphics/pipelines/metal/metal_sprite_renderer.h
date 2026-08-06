@@ -55,6 +55,9 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
     int blocks_2d_grp1 = 0;
     int count_2d_grp1 = 0;
     int sprites_3d = 0;
+    int normal_sprites_submitted = 0;
+    int glow_marked_sprites = 0;
+    int glow_sprites_skipped = 0;
     int draw_calls = 0;
     int triangles = 0;
     int distort_sprites = 0;
@@ -66,6 +69,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
     u64 unsupported_bytes = 0;
   };
   const Stats& stats() const { return m_stats; }
+  u64 unsupported_bytes_total() const { return m_unsupported_bytes_total; }
 
   // Vertex handed to the sprite shader: one per corner, four per sprite. Same
   // 64-byte layout as the GL Sprite3::SpriteVertex3D and shaders/sprite.metal.
@@ -188,6 +192,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
   id<MTLTexture> m_distort_snapshot = nil;
 
   Stats m_stats;
+  u64 m_unsupported_bytes_total = 0;
   bool m_warned_distort_overflow = false;
   bool m_warned_unsupported_glow = false;
 };

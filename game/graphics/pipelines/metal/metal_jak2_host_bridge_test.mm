@@ -31,6 +31,10 @@ constexpr u32 kDebugNoZbuf2Bucket = static_cast<u32>(jak2::BucketId::DEBUG_NO_ZB
 constexpr u32 kSkyDrawPayloadOffset = kChainOffset + 0x4000;
 constexpr u32 kScreenFilterPayloadOffset = kChainOffset + 0x5000;
 constexpr u32 kDebugNoZbuf2PayloadOffset = kChainOffset + 0x6000;
+constexpr u32 kSpriteTextureUploadBucket =
+    static_cast<u32>(jak2::BucketId::TEX_ALL_SPRITE);
+constexpr u32 kSpriteTextureUploadGroupOffset = kChainOffset + 0x10000;
+constexpr u32 kSpriteTextureUploadTailOffset = kChainOffset + 0x11000;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -136,6 +140,32 @@ void make_sky_draw_chain() {
 void make_debug_no_zbuf2_chain() {
   static_assert(kDebugNoZbuf2Bucket == 325);
   make_direct_chain(kDebugNoZbuf2Bucket, kDebugNoZbuf2PayloadOffset);
+}
+
+void make_sprite_texture_upload_chain(s64 mode = -1) {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  std::memset(ee + kSpriteTextureUploadGroupOffset, 0, 96);
+  std::memset(ee + kSpriteTextureUploadTailOffset, 0, 192);
+
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  const u32 bucket_offset = kChainOffset + kSpriteTextureUploadBucket * 16;
+
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kSpriteTextureUploadGroupOffset);
+  put_tag(kSpriteTextureUploadGroupOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
+  const u32 descriptor_offset = kSpriteTextureUploadGroupOffset + 48;
+  put_tag(descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  const u64 page_offset = kTexturePageOffset;
+  std::memcpy(ee + descriptor_offset + 16, &page_offset, sizeof(page_offset));
+  std::memcpy(ee + descriptor_offset + 24, &mode, sizeof(mode));
+  put_tag(descriptor_offset + 32, DmaTag::Kind::NEXT, 0, kSpriteTextureUploadTailOffset);
+
+  put_tag(kSpriteTextureUploadTailOffset, DmaTag::Kind::CNT, 10, 0, kFlusha,
+          kDirect | 10);
+  put_tag(kSpriteTextureUploadTailOffset + 176, DmaTag::Kind::NEXT, 0,
+          bucket_offset + 16);
 }
 
 bool is_zero(const goal_jak2_metal_frame_summary& summary) {
@@ -677,6 +707,68 @@ int main() {
                         "bucket 4 texture-upload capture rejected malformed DMA"),
         "malformed bucket 4 fails before mutation, copying, or dispatch");
   goal_jak2_metal_host_destroy(capture_host);
+
+  goal_jak2_metal_host* sprite_upload_host = goal_jak2_metal_host_create();
+  goal_gfx_host sprite_upload_callbacks = {};
+  check(sprite_upload_host &&
+            goal_jak2_metal_host_copy_gfx_host(sprite_upload_host, &sprite_upload_callbacks),
+        "created a host for bucket-312 sprite texture-upload integration");
+  write_texture_page();
+  make_sprite_texture_upload_chain();
+  sprite_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  goal_jak2_metal_host_metrics sprite_upload_metrics = {};
+  check(sprite_upload_host &&
+            goal_jak2_metal_host_get_metrics(sprite_upload_host, &sprite_upload_metrics),
+        "copied metrics after a valid bucket-312 upload");
+  check(sprite_upload_metrics.chains == 1 &&
+            sprite_upload_metrics.completed_chains == 1 &&
+            sprite_upload_metrics.failed_chains == 0 &&
+            sprite_upload_metrics.sprite_texture_uploads == 1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.valid == 1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.present == 1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.upload_count == 1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.pages[0] == kTexturePageOffset &&
+            sprite_upload_metrics.last_sprite_texture_upload.modes[0] == -1 &&
+            sprite_upload_metrics.skipped_bucket_bytes == 0,
+        "valid bucket 312 executes its exact ordered ordinary upload without skipped bytes");
+
+  make_empty_chain();
+  sprite_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(sprite_upload_host, &sprite_upload_metrics) &&
+            sprite_upload_metrics.chains == 2 &&
+            sprite_upload_metrics.completed_chains == 2 &&
+            sprite_upload_metrics.failed_chains == 0 &&
+            sprite_upload_metrics.sprite_texture_uploads == 1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.valid == 1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.present == 0 &&
+            sprite_upload_metrics.last_sprite_texture_upload.upload_count == 0,
+        "a strict-empty bucket 312 remains valid and does not execute another upload");
+  const uint32_t sprite_empty_copied_bytes = sprite_upload_metrics.last_copied_bytes;
+
+  make_sprite_texture_upload_chain(-2);
+  sprite_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  const char* sprite_upload_error = goal_jak2_metal_host_last_error(sprite_upload_host);
+  check(goal_jak2_metal_host_get_metrics(sprite_upload_host, &sprite_upload_metrics) &&
+            sprite_upload_metrics.chains == 3 &&
+            sprite_upload_metrics.completed_chains == 2 &&
+            sprite_upload_metrics.failed_chains == 1 &&
+            sprite_upload_metrics.sprite_texture_uploads == 1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.valid == 0 &&
+            sprite_upload_metrics.last_copied_bytes == sprite_empty_copied_bytes &&
+            sprite_upload_error &&
+            std::strstr(sprite_upload_error,
+                        "bucket 312 texture-upload plan rejected malformed DMA"),
+        "malformed bucket 312 fails before upload execution, copying, or dispatch");
+
+  make_sprite_texture_upload_chain();
+  sprite_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(sprite_upload_host, &sprite_upload_metrics) &&
+            sprite_upload_metrics.chains == 4 &&
+            sprite_upload_metrics.completed_chains == 3 &&
+            sprite_upload_metrics.failed_chains == 1 &&
+            sprite_upload_metrics.sprite_texture_uploads == 2,
+        "a pre-mutation bucket-312 rejection leaves the host usable by a repaired chain");
+  goal_jak2_metal_host_destroy(sprite_upload_host);
 
   goal_jak2_metal_host* replacement = goal_jak2_metal_host_create();
   check(replacement != nullptr, "host ownership can be re-established after destruction");

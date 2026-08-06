@@ -827,8 +827,10 @@ SKY-batch, and readback counters. Before the runtime receives its callback copy,
 synchronously loads `<data-dir>/fr3/GAME.fr3` as common art. Real texture upload and relocate
 callbacks then map the game's VRAM slots through that host-owned pool, and each valid basename
 requested by `__pc-set-levels` loads `<data-dir>/fr3/<name>.fr3` once. Those levels remain resident
-until host teardown; active-level selection, eviction, Merc models, and texture animation remain
-outside this checkpoint. It does not link the desktop runtime, the Jak 1 renderer shell, or Eco.
+until host teardown; active-level selection, eviction, and Merc models remain outside this
+checkpoint. The exact pre-SKY animator and title sprite-page uploads execute synchronously, and
+normal Jak II Sprite3 DMA is parsed and submitted through Metal. Jak II glow is still measured and
+consumed as unsupported DMA. It does not link the desktop runtime, the Jak 1 renderer shell, or Eco.
 
 ```sh
 cmake --build build --target jak2-metal-runtime-proof -j2
@@ -842,11 +844,14 @@ readback are the default automated gate, so asynchronous presentation callbacks 
 do not decide that mode. `--require-presentation` additionally requires every retained drawable
 callback with no drops or ordering mismatches while the main thread pumps SDL events.
 `--saves-dir` also roots the proof's PC settings so it never reads or writes the player's normal
-OpenGOAL settings. A strict later frame
-must simultaneously report exactly one `SKY_DRAW` draw and two triangles with a valid batch, a hash
-different from the first frame, and more non-black RGB pixels than that first frame. Until the
-mixed pre-SKY texture-animation bucket and the later renderer families are implemented, an
-`INCOMPLETE` result must not be reported as a title screen or playable game.
+OpenGOAL settings. A strict later frame must simultaneously report exactly one `SKY_DRAW` draw and
+two triangles with a valid batch, two exact title sprite-page uploads, the audited normal/glow
+Sprite3 classification, complete draw attribution, a hash different from the first frame, and more
+non-black RGB pixels than that first frame. The observed 64-record normal Sprite3 span contains four
+glow markers and 60 ordinary records with zero input alpha; drawing those ordinary records correctly
+leaves RGB unchanged. The four separate glow records are the next visible renderer gate. Until glow
+or another live draw family produces the attributed non-black frame, an `INCOMPLETE` result must not
+be reported as a title screen or playable game.
 
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)

@@ -28,7 +28,7 @@ inline void put_jak2_synthetic_tag(std::vector<u8>& chain,
 // gives one DeferredSkip bucket a 16-byte marker, and gives SCREEN_FILTER four VIF NOPs. It
 // contains no game data and intentionally encodes no draw.
 inline std::vector<u8> make_jak2_synthetic_metal_chain() {
-  constexpr std::size_t kDeferredBucket = static_cast<std::size_t>(jak2::BucketId::BUCKET_2);
+  constexpr std::size_t kDeferredBucket = static_cast<std::size_t>(jak2::BucketId::BUCKET_3);
   constexpr std::size_t kDirectBucket = static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER);
   constexpr std::size_t kDeferredPayloadOffset = (kJak2SyntheticBucketCount + 1) * 16;
   constexpr std::size_t kDirectPayloadOffset = kDeferredPayloadOffset + 48;
