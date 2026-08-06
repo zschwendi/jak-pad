@@ -7,6 +7,7 @@
  * boundary that is still incomplete.
  */
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/jak2_runtime.h"
+#include "game/kernel/core/pad.h"
 
 #include "third-party/SDL/include/SDL3/SDL.h"
 
@@ -33,13 +35,16 @@ struct Options {
   int maximum_ticks = 3;
   bool hidden = false;
   bool require_presentation = false;
+  bool interactive = false;
+  bool report_pad = false;
+  bool ticks_explicit = false;
 };
 
 int usage(const char* program) {
   std::fprintf(
       stderr,
       "usage: %s --data-dir <prepared-jak2-dir> [--saves-dir <dir>] [--ticks <1-1200>] "
-      "[--hidden] [--require-presentation]\n"
+      "[--hidden] [--require-presentation] [--interactive] [--report-pad]\n"
       "       --data-dir defaults to $GOALPAD_JAK2_DATA_DIR\n",
       program);
   return 2;
@@ -57,6 +62,7 @@ bool parse_options(int argc, char** argv, Options* out) {
       out->saves_dir = argv[++i];
     } else if (arg == "--ticks" && i + 1 < argc) {
       out->maximum_ticks = std::atoi(argv[++i]);
+      out->ticks_explicit = true;
       if (out->maximum_ticks < 1 || out->maximum_ticks > 1200) {
         return false;
       }
@@ -64,8 +70,19 @@ bool parse_options(int argc, char** argv, Options* out) {
       out->hidden = true;
     } else if (arg == "--require-presentation") {
       out->require_presentation = true;
+    } else if (arg == "--interactive") {
+      out->interactive = true;
+    } else if (arg == "--report-pad") {
+      out->report_pad = true;
     } else {
       return false;
+    }
+  }
+  if (out->interactive) {
+    out->hidden = false;
+    out->require_presentation = true;
+    if (!out->ticks_explicit) {
+      out->maximum_ticks = 0;
     }
   }
   return !out->data_dir.empty() && !out->saves_dir.empty();
@@ -76,10 +93,14 @@ struct ProofResources {
   SDL_Window* window = nullptr;
   SDL_MetalView metal_view = nullptr;
   goal_jak2_metal_host* metal_host = nullptr;
+  SDL_Gamepad* gamepad = nullptr;
 
   ~ProofResources() {
     // The runtime retains copied callbacks into metal_host. It must always release them first.
     goal_jak2_runtime_shutdown();
+    if (gamepad) {
+      SDL_CloseGamepad(gamepad);
+    }
     if (metal_host) {
       goal_jak2_metal_host_destroy(metal_host);
     }
@@ -94,6 +115,106 @@ struct ProofResources {
     }
   }
 };
+
+bool requests_quit(const SDL_Event& event) {
+  return event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED ||
+         (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_ESCAPE);
+}
+
+void refresh_gamepad(ProofResources* resources) {
+  if (resources->gamepad && !SDL_GamepadConnected(resources->gamepad)) {
+    SDL_CloseGamepad(resources->gamepad);
+    resources->gamepad = nullptr;
+  }
+  if (resources->gamepad) {
+    return;
+  }
+
+  int count = 0;
+  SDL_JoystickID* ids = SDL_GetGamepads(&count);
+  if (ids) {
+    if (count > 0) {
+      resources->gamepad = SDL_OpenGamepad(ids[0]);
+    }
+    SDL_free(ids);
+  }
+}
+
+uint8_t axis_byte(bool negative, bool positive, int16_t analog) {
+  if (negative || positive) {
+    return negative ? 0 : 255;
+  }
+  return static_cast<uint8_t>(std::clamp((analog + 32768) / 257, 0, 255));
+}
+
+goal_pad_state read_pad(ProofResources* resources) {
+  refresh_gamepad(resources);
+  const bool* keys = SDL_GetKeyboardState(nullptr);
+
+  goal_pad_state pad;
+  goal_pad_state_neutral(&pad);
+  const auto key = [keys](SDL_Scancode code) { return keys && keys[code]; };
+  const auto button = [resources](SDL_GamepadButton code) {
+    return resources->gamepad && SDL_GetGamepadButton(resources->gamepad, code);
+  };
+  const auto axis = [resources](SDL_GamepadAxis code) -> int16_t {
+    return resources->gamepad ? SDL_GetGamepadAxis(resources->gamepad, code) : 0;
+  };
+
+  struct Bind {
+    uint32_t bit;
+    SDL_Scancode key;
+    SDL_GamepadButton button;
+  };
+  static constexpr Bind kBinds[] = {
+      {GOAL_PAD_START, SDL_SCANCODE_RETURN, SDL_GAMEPAD_BUTTON_START},
+      {GOAL_PAD_X, SDL_SCANCODE_SPACE, SDL_GAMEPAD_BUTTON_SOUTH},
+      {GOAL_PAD_CIRCLE, SDL_SCANCODE_E, SDL_GAMEPAD_BUTTON_EAST},
+      {GOAL_PAD_SQUARE, SDL_SCANCODE_F, SDL_GAMEPAD_BUTTON_WEST},
+      {GOAL_PAD_TRIANGLE, SDL_SCANCODE_R, SDL_GAMEPAD_BUTTON_NORTH},
+      {GOAL_PAD_L1, SDL_SCANCODE_Q, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
+      {GOAL_PAD_R1, SDL_SCANCODE_O, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+      {GOAL_PAD_UP, SDL_SCANCODE_UP, SDL_GAMEPAD_BUTTON_DPAD_UP},
+      {GOAL_PAD_DOWN, SDL_SCANCODE_DOWN, SDL_GAMEPAD_BUTTON_DPAD_DOWN},
+      {GOAL_PAD_LEFT, SDL_SCANCODE_LEFT, SDL_GAMEPAD_BUTTON_DPAD_LEFT},
+      {GOAL_PAD_RIGHT, SDL_SCANCODE_RIGHT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
+  };
+  for (const auto& bind : kBinds) {
+    if (key(bind.key) || button(bind.button)) {
+      pad.buttons |= bind.bit;
+    }
+  }
+  if (key(SDL_SCANCODE_1) || axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 8192) {
+    pad.buttons |= GOAL_PAD_L2;
+  }
+  if (key(SDL_SCANCODE_P) || axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8192) {
+    pad.buttons |= GOAL_PAD_R2;
+  }
+
+  pad.left_x = axis_byte(key(SDL_SCANCODE_A), key(SDL_SCANCODE_D),
+                         axis(SDL_GAMEPAD_AXIS_LEFTX));
+  pad.left_y = axis_byte(key(SDL_SCANCODE_W), key(SDL_SCANCODE_S),
+                         axis(SDL_GAMEPAD_AXIS_LEFTY));
+  pad.right_x = axis_byte(key(SDL_SCANCODE_L), key(SDL_SCANCODE_J),
+                          axis(SDL_GAMEPAD_AXIS_RIGHTX));
+  pad.right_y = axis_byte(key(SDL_SCANCODE_I), key(SDL_SCANCODE_K),
+                          axis(SDL_GAMEPAD_AXIS_RIGHTY));
+  return pad;
+}
+
+void report_pad_change(const goal_pad_state& pad) {
+  static goal_pad_state previous = {};
+  static bool have_previous = false;
+  const bool changed = !have_previous || pad.buttons != previous.buttons ||
+                       pad.left_x != previous.left_x || pad.left_y != previous.left_y ||
+                       pad.right_x != previous.right_x || pad.right_y != previous.right_y;
+  if (changed) {
+    std::printf("pad: buttons=%#06x left=(%u,%u) right=(%u,%u) reads=%d\n", pad.buttons,
+                pad.left_x, pad.left_y, pad.right_x, pad.right_y, goal_pad_read_count(0));
+    previous = pad;
+    have_previous = true;
+  }
+}
 
 void print_runtime_metrics(const goal_jak2_runtime_metrics& runtime) {
   std::printf(
@@ -340,7 +461,7 @@ bool wait_for_frame_while_pumping_events(goal_jak2_metal_host* host,
     @autoreleasepool {
       SDL_Event event;
       while (SDL_PollEvent(&event)) {
-        if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+        if (requests_quit(event)) {
           *quit_requested = true;
         }
       }
@@ -374,6 +495,10 @@ int main(int argc, char** argv) {
       return 1;
     }
     resources.sdl_initialized = true;
+    if (options.interactive && !SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+      std::fprintf(stderr, "SDL gamepad initialization failed: %s\n", SDL_GetError());
+      return 1;
+    }
 
     SDL_WindowFlags flags = SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE |
                             SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -384,6 +509,9 @@ int main(int argc, char** argv) {
     if (!resources.window) {
       std::fprintf(stderr, "SDL Metal window creation failed: %s\n", SDL_GetError());
       return 1;
+    }
+    if (options.interactive) {
+      refresh_gamepad(&resources);
     }
     resources.metal_view = SDL_Metal_CreateView(resources.window);
     if (!resources.metal_view) {
@@ -447,17 +575,27 @@ int main(int argc, char** argv) {
     bool tick_failed = false;
     const bool require_presentation = options.require_presentation;
 
-    for (int tick = 0; tick < options.maximum_ticks && !quit_requested; ++tick) {
+    for (int tick = 0;
+         (options.maximum_ticks == 0 || tick < options.maximum_ticks) && !quit_requested; ++tick) {
       @autoreleasepool {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-          if (event.type == SDL_EVENT_QUIT ||
-              event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+          if (requests_quit(event)) {
             quit_requested = true;
           }
         }
         if (quit_requested) {
           break;
+        }
+
+        goal_pad_state pad = {};
+        if (options.interactive) {
+          pad = read_pad(&resources);
+          if (goal_pad_set_state(0, &pad) != GOAL_KERNEL_CORE_OK) {
+            std::fprintf(stderr, "could not push Jak II pad state\n");
+            tick_failed = true;
+            break;
+          }
         }
 
         const uint64_t previous_chains = metal.chains;
@@ -506,10 +644,30 @@ int main(int argc, char** argv) {
           break;
         }
 
-        std::printf("\n-- tick %d --\n", tick + 1);
-        print_runtime_metrics(runtime);
-        print_metal_metrics(metal);
-        print_frame(frame);
+        if (options.interactive && options.report_pad) {
+          report_pad_change(pad);
+        }
+        if (options.interactive) {
+          if (tick == 0 || (tick + 1) % 300 == 0) {
+            std::printf(
+                "health: ticks=%llu title=%d chains=%llu/%llu failed=%llu present=%llu "
+                "draws=%llu tris=%llu frame=%016llx non-black=%llu\n",
+                static_cast<unsigned long long>(runtime.ticks), runtime.title_ready,
+                static_cast<unsigned long long>(metal.completed_chains),
+                static_cast<unsigned long long>(metal.chains),
+                static_cast<unsigned long long>(metal.failed_chains),
+                static_cast<unsigned long long>(metal.presentations),
+                static_cast<unsigned long long>(metal.draws),
+                static_cast<unsigned long long>(metal.triangles),
+                static_cast<unsigned long long>(frame.hash),
+                static_cast<unsigned long long>(frame.non_black_pixels));
+          }
+        } else {
+          std::printf("\n-- tick %d --\n", tick + 1);
+          print_runtime_metrics(runtime);
+          print_metal_metrics(metal);
+          print_frame(frame);
+        }
         if (!have_baseline) {
           baseline_hash = frame.hash;
           baseline_non_black_pixels = frame.non_black_pixels;
@@ -557,6 +715,14 @@ int main(int argc, char** argv) {
               frame.non_black_pixels > baseline_non_black_pixels;
         }
       }
+    }
+
+    if (options.interactive) {
+      if (!tick_failed) {
+        std::printf("STOP: interactive Jak II runtime ended after %llu ticks.\n",
+                    static_cast<unsigned long long>(runtime.ticks));
+      }
+      return tick_failed ? 1 : 0;
     }
 
     const bool passed = !quit_requested && !tick_failed && runtime.title_ready != 0 &&
