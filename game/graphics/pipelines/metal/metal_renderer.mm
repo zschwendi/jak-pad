@@ -350,6 +350,12 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   ASSERT(table.size() == static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS));
   m_bucket_renderers.resize(table.size());
 
+  constexpr auto first_tfrag = static_cast<std::size_t>(jak2::BucketId::TFRAG_L0_TFRAG);
+  constexpr auto tfrag_stride = static_cast<std::size_t>(jak2::BucketId::TFRAG_L1_TFRAG) -
+                                first_tfrag;
+  const std::vector<tfrag3::TFragmentTreeKind> normal_tfrags = {
+      tfrag3::TFragmentTreeKind::NORMAL};
+
   for (const auto& descriptor : table) {
     const auto bucket_id = static_cast<std::size_t>(descriptor.id);
     const int batch_size = metal_renderer::jak2_metal_direct_batch_size(bucket_id);
@@ -363,6 +369,14 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] =
           std::make_unique<MetalSpriteRenderer>("jak2-particles", descriptor.id);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TFragment) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_tfrag && (bucket_id - first_tfrag) % tfrag_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_tfrag) / tfrag_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTFragment>(
+          fmt::format("tfrag-l{}-tfrag", level_id), descriptor.id, normal_tfrags, level_id,
+          false);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
       ASSERT(batch_size != 0);
       const char* name = "direct";

@@ -30,6 +30,7 @@ int main() {
   std::size_t host_texture_upload = 0;
   std::size_t visibility = 0;
   std::size_t sprite = 0;
+  std::size_t tfragment = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -39,27 +40,42 @@ int main() {
     host_texture_upload += table[i].behavior == Behavior::HostTextureUpload;
     visibility += table[i].behavior == Behavior::Visibility;
     sprite += table[i].behavior == Behavior::Sprite;
+    tfragment += table[i].behavior == Behavior::TFragment;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 193, "193 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 187, "187 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 3, "three reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 2,
         "two exact texture-upload buckets are executed synchronously by the host");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
   check(sprite == 1, "one normal Sprite3 bucket is implemented by Metal");
+  check(tfragment == 6, "six normal per-level TFRAG buckets are implemented by Metal");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
             metal_renderer::kJak2MetalBucketExpectedFingerprint,
         "the ordered descriptor policy matches its fixed reference fingerprint");
 
   check(has_behavior(jak2::BucketId::BUCKET_2, Behavior::Visibility),
         "BUCKET_2 is the explicit non-draw visibility-state bucket");
+  check(has_behavior(jak2::BucketId::TFRAG_L0_TFRAG, Behavior::TFragment) &&
+            has_behavior(jak2::BucketId::TFRAG_L1_TFRAG, Behavior::TFragment) &&
+            has_behavior(jak2::BucketId::TFRAG_L2_TFRAG, Behavior::TFragment) &&
+            has_behavior(jak2::BucketId::TFRAG_L3_TFRAG, Behavior::TFragment) &&
+            has_behavior(jak2::BucketId::TFRAG_L4_TFRAG, Behavior::TFragment) &&
+            has_behavior(jak2::BucketId::TFRAG_L5_TFRAG, Behavior::TFragment),
+        "all six normal TFRAG level buckets use the explicit Metal TFragment policy");
+  check(has_behavior(jak2::BucketId::TEX_L0_TFRAG, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TIE_L0_TFRAG, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TFRAG_S_L0_TFRAG, Behavior::StrictEmpty) &&
+            has_behavior(jak2::BucketId::TFRAG_T_L0_ALPHA, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TFRAG_W_L0_WATER, Behavior::DeferredSkip),
+        "texture, TIE, scissor, translucent, and water neighbors remain unpromoted");
   check(has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_TFRAG, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_ALPHA, Behavior::DeferredSkip),
-        "ocean and every level draw family remain deferred");
+        "ocean and representative unimplemented level families remain deferred");
   check(has_behavior(jak2::BucketId::TEX_LCOM_SKY_PRE, Behavior::HostTextureUpload),
         "TEX_LCOM_SKY_PRE is the explicit host texture-upload bucket");
   check(has_behavior(jak2::BucketId::TEX_ALL_SPRITE, Behavior::HostTextureUpload) &&
@@ -92,6 +108,9 @@ int main() {
         "strict-empty policy does not allow content");
   check(metal_renderer::jak2_metal_bucket_allows_content(deferred_id),
         "deferred policy allows content for later implementation");
+  check(metal_renderer::jak2_metal_bucket_allows_content(
+            static_cast<std::size_t>(jak2::BucketId::TFRAG_L0_TFRAG)),
+        "implemented normal TFRAG policy allows content");
   check(metal_renderer::jak2_metal_bucket_allows_content(
             static_cast<std::size_t>(jak2::BucketId::SKY_DRAW)),
         "the promoted SKY_DRAW Direct policy allows content");
