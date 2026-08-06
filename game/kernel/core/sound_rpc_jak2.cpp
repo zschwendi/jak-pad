@@ -1,13 +1,14 @@
 /*!
  * @file sound_rpc_jak2.cpp
- * Answer Jak 2's initial sound state, loader version handshake, bank loads, language selection and
- * ordinary and chunked STR requests without an IOP.
+ * Answer Jak 2's initial sound state, loader version handshake, bank loads and unloads, language
+ * selection and ordinary and chunked STR requests without an IOP.
  *
  * `check-irx-version` sends one 0x50-byte command on loader channel 1. Upstream's Jak 2 overlord
  * writes version 4.0 into that command, remembers the requested EE info-block address, and returns
  * the command as the RPC reply. Loader command 2 has no receive buffer; it bounded-reads a
  * user-local SBlk once, validates every range the current 989snd parser consumes, then passes those
- * same bytes through 989snd's in-memory bank interface. Loader command 20 selects one of Jak 2's
+ * same bytes through 989snd's in-memory bank interface. Loader command 6 releases the retained
+ * 989snd handle and makes its fixed bank slot reusable. Loader command 20 selects one of Jak 2's
  * eight bounded language tags without a reply payload. Channel 0 retains master volumes, MIDI
  * registers 3/4/14/16, reverb, FPS and listener transforms. Player command 7 starts or updates
  * ordinary named sounds from those checked SFX banks. Channel 4 reads ordinary files and bounded
@@ -521,6 +522,34 @@ bool load_bank(const char source_name[16]) {
   }
 }
 
+u64 unload_bank(const char source_name[16]) {
+  if (!g_installed) {
+    return reject("rpc-call (Jak 2 sound, unload-bank while 989snd is stopped)");
+  }
+
+  std::array<char, 16> bank_name;
+  std::string file_name;
+  if (!normalize_bank_name(source_name, &bank_name, &file_name)) {
+    return reject("rpc-call (Jak 2 sound, invalid unload-bank name)");
+  }
+
+  SoundBank* bank = LookupBank(bank_name.data());
+  if (!bank) {
+    return 0;
+  }
+
+  const snd::BankHandle handle = bank->bank_handle;
+  if (handle) {
+    snd_UnloadBank(handle);
+    snd_ResolveBankXREFS();
+  }
+  bank->bank_handle = nullptr;
+  bank->sound_count = 0;
+  bank->unk4 = 0;
+  bank->in_use = false;
+  return 0;
+}
+
 bool set_language(u32 language_id) {
   g_stats.language_requests++;
   if (!g_installed) {
@@ -711,6 +740,11 @@ u64 loader_rpc(u32 send_buffer, s32 send_size, u32 recv_buffer, s32 recv_size) {
       }
       load_bank(command.load_bank.bank_name);
       return 0;
+    case jak2::Jak2SoundCommand::unload_bank:
+      if (recv_buffer != 0 || recv_size != 0) {
+        return reject("rpc-call (Jak 2 sound, unload-bank unexpectedly requested a reply)");
+      }
+      return unload_bank(command.load_bank.bank_name);
     case jak2::Jak2SoundCommand::set_language:
       if (recv_buffer != 0 || recv_size != 0) {
         return reject("rpc-call (Jak 2 sound, set-language unexpectedly requested a reply)");

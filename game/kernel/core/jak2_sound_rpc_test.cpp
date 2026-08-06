@@ -1,7 +1,7 @@
 /*!
  * @file jak2_sound_rpc_test.cpp
- * Behavioral coverage for Jak 2's startup state, checked sound-bank playback and ordinary/chunked
- * STR seams.
+ * Behavioral coverage for Jak 2's startup state, checked sound-bank lifecycle and playback, and
+ * ordinary/chunked STR seams.
  */
 
 #include <algorithm>
@@ -429,10 +429,13 @@ std::array<char, 16> bank_name(const char* text) {
   return result;
 }
 
-void reset_bank_command(GuardedCommand& buffer, const std::array<char, 16>& name) {
+void reset_bank_command(
+    GuardedCommand& buffer,
+    const std::array<char, 16>& name,
+    jak2::Jak2SoundCommand command = jak2::Jak2SoundCommand::load_bank) {
   memset(buffer.command.c(), 0, kCommandSize);
   buffer.command->rsvd1 = 0x5aa5;
-  buffer.command->j2command = jak2::Jak2SoundCommand::load_bank;
+  buffer.command->j2command = command;
   memcpy(buffer.command->load_bank.bank_name, name.data(), name.size());
 }
 
@@ -935,6 +938,7 @@ int main() {
             write_fixture(fixture_root / "iso" / "VALID.SBK", valid_bank) &&
             write_fixture(fixture_root / "iso" / "BUDGET.SBK", shared_reference_budget_bank) &&
             write_fixture(fixture_root / "iso" / "PLAY.SBK", playable_bank) &&
+            write_fixture(fixture_root / "iso" / "REUSE.SBK", playable_bank) &&
             write_fixture(fixture_root / "iso" / "TRUNC.SBK", truncated_bank) &&
             write_fixture(fixture_root / "iso" / "OVERFLOW.SBK", overflow_bank) &&
             write_fixture(fixture_root / "iso" / "NEGCOUNT.SBK", negative_count_bank) &&
@@ -1006,6 +1010,83 @@ int main() {
   check_u32(stats.bank_failures, 13, "every invalid, missing, or unsafe bank fails closed");
   check_guards(send, "no-reply command send canaries stay intact");
   check_guards(recv, "no-reply command receive canaries stay intact");
+
+  std::printf("\n== no-reply sound-bank unload and fixed-slot reuse ==\n");
+  SoundBank* released_slot = LookupBank(bank_name("play").data());
+  const snd::BankHandle released_handle = released_slot ? released_slot->bank_handle : nullptr;
+  auto test_tone = bank_name("TEST_TONE");
+  SFXUserData released_user_data{};
+  check(released_slot && released_handle,
+        "three successful loads leave a retained level-bank slot to release");
+  check(snd_GetSoundUserData(released_handle, nullptr, -1, test_tone.data(),
+                             &released_user_data) != 0,
+        "the retained 989snd handle resolves its synthetic sound before unload");
+
+  reset_bank_command(send, bank_name("play"), jak2::Jak2SoundCommand::unload_bank);
+  const auto unload_send = snapshot(send);
+  const auto unload_recv = snapshot(recv);
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "a bank unload remains synchronous and requests no reply");
+  check(snapshot(send) == unload_send && snapshot(recv) == unload_recv,
+        "a successful unload mutates neither EE buffer");
+  check(LookupBank(bank_name("play").data()) == nullptr,
+        "the unloaded bank name leaves retained lookup state");
+  check(released_slot && !released_slot->in_use && released_slot->bank_handle == nullptr &&
+            released_slot->sound_count == 0 && released_slot->unk4 == 0,
+        "unload clears the reusable slot without changing its fixed capacity");
+  released_user_data = {};
+  check(snd_GetSoundUserData(released_handle, nullptr, -1, test_tone.data(),
+                             &released_user_data) == 0,
+        "unload releases the retained handle from 989snd");
+
+  goal_jak2_sound_rpc_stats_get(&stats);
+  const u32 rejected_before_idempotent_unloads = stats.rejected_calls;
+  reset_bank_command(send, bank_name("play"), jak2::Jak2SoundCommand::unload_bank);
+  const auto repeated_unload_send = snapshot(send);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+  check(snapshot(send) == repeated_unload_send && snapshot(recv) == unload_recv,
+        "a repeated bank unload is an idempotent no-op");
+  reset_bank_command(send, bank_name("unknown"), jak2::Jak2SoundCommand::unload_bank);
+  const auto unknown_unload_send = snapshot(send);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+  check(snapshot(send) == unknown_unload_send && snapshot(recv) == unload_recv,
+        "an unknown bank unload is an idempotent no-op");
+  check(!released_slot->in_use && released_slot->bank_handle == nullptr,
+        "idempotent unloads preserve the released slot");
+
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.rejected_calls, rejected_before_idempotent_unloads,
+            "idempotent unloads are handled rather than rejected");
+  const u32 rejected_before_unload_validation = stats.rejected_calls;
+  reset_bank_command(send, bank_name("../unsafe"), jak2::Jak2SoundCommand::unload_bank);
+  const auto invalid_unload_send = snapshot(send);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+  check(snapshot(send) == invalid_unload_send && snapshot(recv) == unload_recv,
+        "an invalid unload name mutates neither EE buffer");
+  reset_bank_command(send, bank_name("budget"), jak2::Jak2SoundCommand::unload_bank);
+  const auto malformed_unload_send = snapshot(send);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, recv.command.offset, 0, 0);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, kCommandSize, 0);
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check(snapshot(send) == malformed_unload_send && snapshot(recv) == unload_recv,
+        "invalid unload reply framing mutates neither EE buffer");
+  check(LookupBank(bank_name("budget").data()) != nullptr,
+        "malformed unload framing cannot release a retained bank");
+  check_u32(stats.rejected_calls, rejected_before_unload_validation + 3,
+            "invalid unload names and both reply fields are reported");
+
+  reset_bank_command(send, bank_name("reuse"));
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "a replacement bank loads after the explicit release");
+  check(LookupBank(bank_name("reuse").data()) == released_slot,
+        "the replacement reuses the released fixed level-bank slot");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.bank_requests, 18, "replacement loading adds exactly one bank request");
+  check_u32(stats.banks_loaded, 4, "replacement loading succeeds through 989snd");
+  check_u32(stats.bank_reuses, 1, "unload does not masquerade as load reuse");
+  check_u32(stats.bank_failures, 13, "unload and replacement add no bank failures");
+  check_guards(send, "unload/reuse send canaries stay intact");
+  check_guards(recv, "unload/reuse receive canaries stay intact");
 
   auto hostile_falloff = guarded_buffer(kCommandSize, "jak2-player-hostile-falloff");
   set_player_play(hostile_falloff, 0, 0x7006, bank_name("test-tone"));
@@ -1298,9 +1379,10 @@ int main() {
 
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.version_requests, 2, "rejected calls do not count as handshakes");
-  check_u32(stats.bank_requests, 17, "malformed bank framing is not counted as a request");
-  check_u32(stats.banks_loaded, 3, "malformed calls do not claim another bank load");
-  check_u32(stats.bank_failures, 13, "framing rejection is distinct from a bank failure");
+  check_u32(stats.bank_requests, 18, "malformed bank framing is not counted as a request");
+  check_u32(stats.banks_loaded, 4, "malformed calls do not claim another bank load");
+  check_u32(stats.bank_failures, 13,
+            "unload and framing rejection are distinct from a bank failure");
   check_u32(stats.str_requests, 23, "rejected STR calls do not count as file requests");
   check_u32(stats.language_requests, 9, "malformed framing is not a language request");
   check_u32(stats.language_failures, 1, "framing rejection is distinct from language failure");
