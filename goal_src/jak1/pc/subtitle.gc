@@ -432,6 +432,9 @@
       (case msg
         (('subtitle-start) 0)
         (('debug) (go subtitle-debug))))
+  :exit
+    (behavior ()
+      (goalpad-face-prompt-touch-clear! self))
   :code
     (behavior ()
       (loop
@@ -487,6 +490,7 @@
              (awhen (get-scene-by-name *subtitle-text* (-> self cur-channel) (-> self spool-name))
                     ;; during a cutscene, check if user toggled subtitles
                     (when (and (= 'game *master-mode*) (cpad-pressed? 0 square))
+                      (goalpad-face-prompt-touch-clear! self)
                       (not! (-> *pc-settings* subtitles?))
                       (set-state-time)
                       (if (-> *pc-settings* subtitles?)
@@ -525,16 +529,24 @@
       (setup-subtitle-font)
       (draw-subtitle)
       (cond
-        ((!= *master-mode* 'game))
+        ((!= *master-mode* 'game)
+         (goalpad-face-prompt-touch-clear! self))
         ((and (< (time-passed) (seconds 5)) (= (-> self notice-id) (text-id subtitle-hint)))
-         (when (not (-> *pc-settings* subtitles?))
-           (set-scale! (-> self font) (* (-> *SUBTITLE-bank* scale) 1.5))
-           (print-game-subtitle (lookup-text! *common-text* (-> self notice-id) #f) (-> self font) #f 128 22)))
+         (cond
+           ((not (-> *pc-settings* subtitles?))
+            (set-scale! (-> self font) (* (-> *SUBTITLE-bank* scale) 1.5))
+            (print-game-subtitle (lookup-text! *common-text* (-> self notice-id) #f) (-> self font) #f 128 22)
+            (goalpad-face-prompt-touch-publish! self (pad-buttons square)))
+           (else
+            (goalpad-face-prompt-touch-clear! self))))
         ((and (= (-> self cur-channel) (pc-subtitle-channel movie))
               (< (time-passed) (seconds 2))
               (< (mod (time-passed) (seconds 1)) (seconds 0.8)))
+         (goalpad-face-prompt-touch-clear! self)
          (set! (-> self font origin y) (* (-> *SUBTITLE-bank* notice-height) 224))
-         (print-game-subtitle (lookup-text! *common-text* (-> self notice-id) #f) (-> self font) #f 128 22)))
+         (print-game-subtitle (lookup-text! *common-text* (-> self notice-id) #f) (-> self font) #f 128 22))
+        (else
+         (goalpad-face-prompt-touch-clear! self)))
       0))
 
 (defstate subtitle-debug (subtitle)
@@ -544,6 +556,7 @@
         (('debug) (go subtitle-process))))
   :enter
     (behavior ()
+      (goalpad-face-prompt-touch-clear! self)
       (mem-copy! (the pointer (-> self bank-backup)) (the pointer *SUBTITLE-bank*) (size-of subtitle-bank))
       (set-master-mode 'pause))
   :trans
