@@ -16,6 +16,14 @@ namespace {
 
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 
+bool is_nop_vif(u32 vif) {
+  return vif == 0 || VifCode(vif).kind == VifCode::Kind::NOP;
+}
+
+bool is_opening_vif0(u32 vif) {
+  return is_nop_vif(vif) || VifCode(vif).kind == VifCode::Kind::MARK;
+}
+
 bool parse_hidden_proto_names(const DmaTransfer& transfer,
                               std::vector<std::string>* hidden_names) {
   std::vector<std::string> parsed;
@@ -59,8 +67,21 @@ void MetalShrub::render(DmaFollower& dma,
     return metal_background_expect(ok, m_name, what, bg);
   };
 
+  const bool is_jak2 = render_state->version == GameVersion::Jak2;
+  if (is_jak2) {
+    const auto opening_tag = dma.current_tag();
+    if (!expect(opening_tag.kind == DmaTag::Kind::NEXT && opening_tag.qwc == 0 &&
+                    !opening_tag.spr && is_opening_vif0(dma.current_tag_vif0()) &&
+                    is_nop_vif(dma.current_tag_vif1()),
+                "an empty Jak 2 NEXT opening with NOP or MARK VIF state")) {
+      metal_finish_bucket(dma, *render_state);
+      return;
+    }
+  }
+
   auto data0 = dma.read_and_advance();
-  if (!expect(data0.size_bytes == 0 &&
+  if (!is_jak2 &&
+      !expect(data0.size_bytes == 0 &&
                   (data0.vif1() == 0 || data0.vifcode1().kind == VifCode::Kind::NOP),
               "the bucket to open with an empty NEXT")) {
     metal_finish_bucket(dma, *render_state);
@@ -76,40 +97,74 @@ void MetalShrub::render(DmaFollower& dma,
     return;
   }
 
-  auto pc_port_data = dma.read_and_advance();
-  const bool is_jak2 = render_state->version == GameVersion::Jak2;
-  const bool have_data =
-      expect(pc_port_data.size_bytes == sizeof(MetalTfragPcPortData) &&
-                 (!is_jak2 || (pc_port_data.vif0() == 0 && pc_port_data.vif1() == kPcPortVif)),
-             is_jak2 ? "an exact 400-byte Jak 2 PC_PORT background block"
-                     : "a PC port packet of TfragPcPortData size");
-  if (have_data) {
-    memcpy(&m_pc_port_data, pc_port_data.data, sizeof(MetalTfragPcPortData));
-    m_pc_port_data.level_name[11] = '\0';
-    if (bg) {
-      bg->observe_camera(m_pc_port_data.camera, m_name);
+  if (is_jak2) {
+    const auto pc_tag = dma.current_tag();
+    if (!expect(pc_tag.kind == DmaTag::Kind::CNT && pc_tag.qwc == 25 && pc_tag.addr == 0 &&
+                    !pc_tag.spr && dma.current_tag_vif0() == 0 &&
+                    dma.current_tag_vif1() == kPcPortVif,
+                "an exact Jak 2 CNT qwc25 PC_PORT background block")) {
+      metal_finish_bucket(dma, *render_state);
+      return;
     }
+  }
+
+  auto pc_port_data = dma.read_and_advance();
+  const bool have_data = is_jak2 ||
+                         expect(pc_port_data.size_bytes == sizeof(MetalTfragPcPortData),
+                                "a PC port packet of TfragPcPortData size");
+  MetalTfragPcPortData parsed_pc_port_data = {};
+  if (have_data) {
+    memcpy(&parsed_pc_port_data, pc_port_data.data, sizeof(MetalTfragPcPortData));
+    parsed_pc_port_data.level_name[11] = '\0';
   }
 
   std::vector<std::string> hidden_names;
   bool have_proto_mask = true;
   if (is_jak2 && have_data) {
+    if (dma.current_tag_offset() == render_state->next_bucket) {
+      expect(false, "one bounded CNT PC_PORT hidden-prototype-name transfer before the boundary");
+      return;
+    }
+
+    const auto mask_offset = dma.current_tag_offset();
+    const auto mask_tag = dma.current_tag();
+    const u64 mask_end = static_cast<u64>(mask_offset) + 16 +
+                         static_cast<u64>(mask_tag.qwc) * 16;
+    const bool mask_fits_bucket = mask_offset < render_state->next_bucket &&
+                                  mask_end < render_state->next_bucket;
+    if (!expect(mask_tag.kind == DmaTag::Kind::CNT && mask_tag.addr == 0 && !mask_tag.spr &&
+                    dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == kPcPortVif &&
+                    mask_fits_bucket,
+                "one bounded CNT PC_PORT hidden-prototype-name transfer")) {
+      metal_finish_bucket(dma, *render_state);
+      return;
+    }
+
     const auto proto_mask = dma.read_and_advance();
     const auto tail = dma.current_tag();
-    const bool exact_tail = tail.kind == DmaTag::Kind::NEXT && tail.qwc == 0 &&
+    const bool exact_tail = tail.kind == DmaTag::Kind::NEXT && tail.qwc == 0 && !tail.spr &&
                             tail.addr == render_state->next_bucket &&
                             dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == 0;
     have_proto_mask =
-        expect(proto_mask.vif0() == 0 && proto_mask.vif1() == kPcPortVif && exact_tail &&
-                   parse_hidden_proto_names(proto_mask, &hidden_names),
-               "one terminated PC_PORT hidden-prototype-name transfer");
-  } else if (is_jak2) {
-    have_proto_mask = false;
+        expect(exact_tail && parse_hidden_proto_names(proto_mask, &hidden_names),
+               "one terminated PC_PORT hidden-prototype-name transfer and exact NEXT tail");
   }
 
+  if (!is_jak2 && have_data) {
+    m_pc_port_data = parsed_pc_port_data;
+    if (bg) {
+      bg->observe_camera(m_pc_port_data.camera, m_name);
+    }
+  }
   metal_finish_bucket(dma, *render_state);
   if (!have_data || !have_proto_mask) {
     return;
+  }
+  if (is_jak2) {
+    m_pc_port_data = parsed_pc_port_data;
+    if (bg) {
+      bg->observe_camera(m_pc_port_data.camera, m_name);
+    }
   }
 
   m_settings.camera = m_pc_port_data.camera;
