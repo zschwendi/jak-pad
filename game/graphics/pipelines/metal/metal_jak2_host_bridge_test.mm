@@ -225,10 +225,11 @@ void append_gif_tag(std::vector<u8>* data,
                     u32 loops,
                     u64 registers,
                     u32 register_count,
+                    bool eop,
                     bool pre,
                     u64 prim) {
-  const u64 low = loops | (1ull << 15) | (static_cast<u64>(pre) << 46) | (prim << 47) |
-                  (static_cast<u64>(register_count) << 60);
+  const u64 low = loops | (static_cast<u64>(eop) << 15) | (static_cast<u64>(pre) << 46) |
+                  (prim << 47) | (static_cast<u64>(register_count) << 60);
   append_qword(data, low, registers);
 }
 
@@ -258,7 +259,7 @@ void make_textured_sky_draw_chain(u32 texture_vram) {
   std::vector<u8> payload;
 
   constexpr u64 kAd = static_cast<u64>(GifTag::RegisterDescriptor::AD);
-  append_gif_tag(&payload, 3, kAd, 1, false, 0);
+  append_gif_tag(&payload, 3, kAd, 1, false, false, 0);
   const u64 tex0 = texture_vram | (1ull << 14) | (4ull << 26) | (4ull << 30) | (1ull << 34);
   append_qword(&payload, tex0, static_cast<u64>(GsRegisterAddress::TEX0_1));
   append_qword(&payload, (1ull << 5) | (1ull << 6),
@@ -271,7 +272,7 @@ void make_textured_sky_draw_chain(u32 texture_vram) {
   constexpr u64 kRegisters = kSt | (kRgbaq << 4) | (kXyzf2 << 8);
   constexpr u64 kPrim = static_cast<u64>(GsPrim::Kind::TRI) | (1ull << 3) | (1ull << 4) |
                         (1ull << 6);
-  append_gif_tag(&payload, 3, kRegisters, 3, true, kPrim);
+  append_gif_tag(&payload, 3, kRegisters, 3, true, true, kPrim);
   append_st(&payload, 0.f, 0.f);
   append_rgbaq(&payload);
   append_xyzf2(&payload, 0x8000, 0x7800);
