@@ -213,6 +213,11 @@ TEST_F(WithGameTests, TestTests) {
        "\"test\"\nTest \"test-of-test\": 1 Passes\n0\n"});
 }
 
+TEST_F(WithGameTests, DgoLoadResponse) {
+  shared_compiler->runner.run_static_test(
+      testCategory, "test-dgo-load-response.gc", get_test_pass_string("dgo-load-response", 6));
+}
+
 TEST_F(WithGameTests, TypeArrays) {
   shared_compiler->runner.run_static_test(testCategory, "test-type-arrays.gc",
                                           {"Test \"test-type-arrays\": 3 Passes\n0\n"});
