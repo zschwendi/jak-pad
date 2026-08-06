@@ -38,7 +38,7 @@ struct Options {
 int usage(const char* program) {
   std::fprintf(
       stderr,
-      "usage: %s --data-dir <prepared-jak2-dir> [--saves-dir <dir>] [--ticks <1-60>] "
+      "usage: %s --data-dir <prepared-jak2-dir> [--saves-dir <dir>] [--ticks <1-1200>] "
       "[--hidden] [--require-presentation]\n"
       "       --data-dir defaults to $GOALPAD_JAK2_DATA_DIR\n",
       program);
@@ -57,7 +57,7 @@ bool parse_options(int argc, char** argv, Options* out) {
       out->saves_dir = argv[++i];
     } else if (arg == "--ticks" && i + 1 < argc) {
       out->maximum_ticks = std::atoi(argv[++i]);
-      if (out->maximum_ticks < 1 || out->maximum_ticks > 60) {
+      if (out->maximum_ticks < 1 || out->maximum_ticks > 1200) {
         return false;
       }
     } else if (arg == "--hidden") {
