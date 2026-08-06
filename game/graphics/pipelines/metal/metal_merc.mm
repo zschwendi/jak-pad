@@ -1,6 +1,7 @@
 #include "metal_merc.h"
 
 #include <array>
+#include <cstring>
 
 #include "common/goal_constants.h"
 #include "common/log/log.h"
@@ -8,14 +9,14 @@
 #include "common/util/fnv.h"
 
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
+#include "game/graphics/pipelines/metal/metal_jak2_merc_dma.h"
+#include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/mips2c/jak1_bones_provenance_trace.h"
 
 #include "fmt/format.h"
 
 namespace {
-
-constexpr float kGameHeightJak1 = 448.f;
 
 metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observation(
     u32 source_address,
@@ -385,6 +386,7 @@ void MetalMerc2::Stats::add(const Stats& o) {
   mod_vtx_skipped += o.mod_vtx_skipped;
   eye_draws += o.eye_draws;
   missing_textures += o.missing_textures;
+  malformed_dma += o.malformed_dma;
   bad_bone_pointers += o.bad_bone_pointers;
   bad_draw_ranges += o.bad_draw_ranges;
   missing_bone_slots += o.missing_bone_slots;
@@ -466,6 +468,33 @@ void MetalMerc2::render(DmaFollower& dma,
                         MetalFrameContext& ctx,
                         Stats* stats) {
   *stats = {};
+  if (render_state->version == GameVersion::Jak2) {
+    metal_jak2_merc_dma::Bucket packet;
+    std::string error;
+    bool valid = metal_jak2_merc_dma::validate_bucket(
+        dma, render_state->next_bucket, EE_MAIN_MEM_SIZE, &packet, &error);
+    if (valid) {
+      for (const auto& model_packet : packet.models) {
+        const auto model = metal_merc_models().get_merc_model(model_packet.name.c_str());
+        if (model && model_packet.effect_count != model->model->effects.size()) {
+          error = "the packet effect count to match its loaded Merc model";
+          valid = false;
+          break;
+        }
+      }
+    }
+    if (!valid) {
+      stats->malformed_dma++;
+      if (!m_warned_malformed_dma) {
+        lg::warn("Metal Jak 2 merc: expected {}; the bucket is skipped (logged once)", error);
+        m_warned_malformed_dma = true;
+      }
+      if (!metal_jak2_merc_dma::recover_to_boundary(&dma, render_state->next_bucket)) {
+        metal_finish_bucket(dma, *render_state);
+      }
+      return;
+    }
+  }
   handle_all_dma(dma, render_state, ctx, stats);
   flush_draw_buckets(render_state, ctx, stats);
 }
@@ -553,9 +582,9 @@ void MetalMerc2::handle_setup_dma(DmaFollower& dma, MetalSharedRenderState* rend
     ASSERT(mscal.immediate == 0);
   }
 
-  ASSERT(render_state->version == GameVersion::Jak1);
   auto second = dma.read_and_advance();
-  ASSERT(second.size_bytes == 32);  // setting up test register.
+  ASSERT(second.size_bytes ==
+         (render_state->version == GameVersion::Jak1 ? 32 : 48));  // test/zbuf registers
   auto nothing = dma.read_and_advance();
   ASSERT(nothing.size_bytes == 0);
   ASSERT(nothing.vif0() == 0);
@@ -578,7 +607,7 @@ void MetalMerc2::handle_merc_chain(DmaFollower& dma,
   }
 
   auto init = dma.read_and_advance();
-  const int skip_count = 2;  // Jak 1
+  const int skip_count = render_state->version == GameVersion::Jak1 ? 2 : 1;
 
   while (init.vifcode1().kind == VifCode::Kind::PC_PORT) {
     handle_pc_model(init, render_state, ctx, stats);
@@ -864,9 +893,11 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   //  ;; fades    (u32 x N), padding to qw aligned
   //  ;; pointers (u32 x N), padding
   const u8* input_data = setup.data;
-  ASSERT(strlen((const char*)input_data) < 127);
-  char name[128];
-  strcpy(name, (const char*)setup.data);
+  const auto* name_end = static_cast<const u8*>(std::memchr(input_data, 0, 128));
+  ASSERT(name_end);
+  ASSERT(render_state->version != GameVersion::Jak1 || name_end - input_data < 127);
+  char name[128] = {};
+  memcpy(name, input_data, static_cast<size_t>(name_end - input_data));
   input_data += 128;
 
   auto model_ref = metal_merc_models().get_merc_model(name);
@@ -944,9 +975,11 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   input_data += sizeof(VuLights);
 
   u64 uses_water = 0;
-  // jak 1 figures out water at runtime
-  memcpy(&uses_water, input_data, 8);
-  input_data += 16;
+  if (render_state->version == GameVersion::Jak1) {
+    // Jak 1 figures out water at runtime. Jak 2 omits this quadword.
+    memcpy(&uses_water, input_data, 8);
+    input_data += 16;
+  }
 
   // The matrix slot string tells us which bones go where; the matrices
   // themselves live in EE main memory (bones runs after merc's DMA is built).
@@ -1658,8 +1691,8 @@ void MetalMerc2::do_draws(const Draw* draw_array,
     for (int i = 0; i < 4; i++) {
       vs.fade[i] = draw.fade[i] / 255.f;
     }
-    vs.height_scale = 1.f;  // Jak 1
-    vs.scissor_adjust = 512.f / kGameHeightJak1;
+    vs.height_scale = metal_height_scale(render_state->version);
+    vs.scissor_adjust = metal_scissor_adjust(render_state->version);
 
     MercFsParams fs = {};
     const float fog_alpha =
