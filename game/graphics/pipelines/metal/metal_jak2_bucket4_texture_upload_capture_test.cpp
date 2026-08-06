@@ -68,6 +68,42 @@ void test_exact_observed_grammar() {
         "the exact grammar has no malformed or unsupported payload");
 }
 
+void test_exact_ordinary_only_grammar() {
+  const auto fixture =
+      metal_renderer::make_jak2_bucket4_ordinary_only_texture_upload_fixture();
+  const auto result = capture(fixture);
+  check(result.valid && result.present,
+        "the exact ordinary-only title packet is present and valid");
+  check(result.total_payload_bytes == 48 && result.dma_transfers == 4 &&
+            result.payload_transfers == 2 && result.inert_transfers == 2 &&
+            result.inert_cnt_transfers == 0 && result.inert_next_transfers == 2 &&
+            result.inert_state_mask == ((1u << 0) | (1u << 2)),
+        "the ordinary-only variant retains its exact transfer and boundary grammar");
+  check(result.ordinary_descriptors == 1 && result.ordinary_page == 0x6000 &&
+            result.ordinary_mode == -1 && result.animator_arrays == 0 &&
+            result.animator_bytes == 0 && result.finishes == 0,
+        "the ordinary-only variant captures one page descriptor and no animator work");
+  for (const u32 count : result.opcode_counts) {
+    check(count == 0, "the ordinary-only variant captures no animator opcodes");
+  }
+
+  auto near_miss =
+      metal_renderer::make_jak2_bucket4_ordinary_only_texture_upload_fixture();
+  const u32 closing_boundary = near_miss.ordinary_descriptor_data_offset + 16;
+  const u32 extra_boundary = near_miss.chain_offset + 0x1800;
+  const u32 bucket_end = near_miss.chain_offset + 5 * 16;
+  const u64 next_to_extra = (static_cast<u64>(DmaTag::Kind::NEXT) << 28) |
+                            (static_cast<u64>(extra_boundary) << 32);
+  const u64 next_to_end = (static_cast<u64>(DmaTag::Kind::NEXT) << 28) |
+                          (static_cast<u64>(bucket_end) << 32);
+  put_u64(&near_miss.ee_memory, closing_boundary, next_to_extra);
+  put_u64(&near_miss.ee_memory, extra_boundary, next_to_end);
+  const auto near_miss_result = capture(near_miss);
+  check(!near_miss_result.valid && near_miss_result.present &&
+            near_miss_result.dma_transfers == 5 && near_miss_result.inert_transfers == 3,
+        "an extra ordinary-only boundary transfer cannot loosen the exact variant");
+}
+
 void test_missing_finish_fails_closed() {
   auto fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
   put_u32(&fixture.ee_memory, fixture.first_finish_tag_offset + 8, 0);
@@ -269,6 +305,7 @@ void test_empty_bucket_is_valid_and_absent() {
 
 int main() {
   test_exact_observed_grammar();
+  test_exact_ordinary_only_grammar();
   test_missing_finish_fails_closed();
   test_bad_direct_fails_closed();
   test_bad_fixed_packet_state_fails_closed();

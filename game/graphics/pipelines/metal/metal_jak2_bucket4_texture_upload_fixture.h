@@ -217,4 +217,15 @@ inline Jak2Bucket4TextureUploadFixture make_jak2_bucket4_texture_upload_fixture(
   return out;
 }
 
+/*! Public exact fixture for the title chain's ordinary TEXFLUSH/page-descriptor variant. */
+inline Jak2Bucket4TextureUploadFixture
+make_jak2_bucket4_ordinary_only_texture_upload_fixture(u32 ee_base = 0) {
+  using namespace jak2_bucket4_fixture_detail;
+  auto out = make_jak2_bucket4_texture_upload_fixture(ee_base);
+  const u32 closing_boundary = out.ordinary_descriptor_data_offset + 16;
+  const u32 bucket_end = out.chain_offset + 5 * 16;
+  put_tag(out.ee_memory, closing_boundary, DmaTag::Kind::NEXT, 0, bucket_end, 0, 0);
+  return out;
+}
+
 }  // namespace metal_renderer

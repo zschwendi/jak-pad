@@ -535,20 +535,36 @@ Jak2Bucket4TextureUploadCapture capture_jak2_bucket4_texture_upload(
     out.valid = true;
     return out;
   }
-  constexpr u32 kExpectedInertStateMask =
+  constexpr u32 kMixedInertStateMask =
       (1u << static_cast<u32>(ParseState::Texflush)) |
       (1u << static_cast<u32>(ParseState::FirstArrayStart)) |
       (1u << static_cast<u32>(ParseState::SecondArrayStart)) |
       (1u << static_cast<u32>(ParseState::Complete));
-  if (state != ParseState::Complete || out.total_payload_bytes != 416 ||
-      out.dma_transfers != 16 || out.payload_transfers != 7 ||
-      out.inert_transfers != 4 || out.inert_cnt_transfers != 0 ||
-      out.inert_next_transfers != 4 || out.inert_state_mask != kExpectedInertStateMask ||
-      out.ordinary_descriptors != 1 || out.ordinary_mode != -1 || out.animator_arrays != 2 ||
-      out.animator_bytes != 368 || out.finishes != 2 || out.opcode_counts[kStartArray] != 2 ||
-      out.opcode_counts[kFinishArray] != 2 || out.opcode_counts[kEraseDestination] != 1 ||
-      out.opcode_counts[kUploadClut] != 1 || out.opcode_counts[kGenericUpload] != 1 ||
-      out.opcode_counts[kCloudsAndFog] != 1) {
+  const bool exact_mixed_animator =
+      state == ParseState::Complete && out.total_payload_bytes == 416 &&
+      out.dma_transfers == 16 && out.payload_transfers == 7 && out.inert_transfers == 4 &&
+      out.inert_cnt_transfers == 0 && out.inert_next_transfers == 4 &&
+      out.inert_state_mask == kMixedInertStateMask && out.ordinary_descriptors == 1 &&
+      out.ordinary_mode == -1 && out.animator_arrays == 2 && out.animator_bytes == 368 &&
+      out.finishes == 2 && out.opcode_counts[kStartArray] == 2 &&
+      out.opcode_counts[kFinishArray] == 2 && out.opcode_counts[kEraseDestination] == 1 &&
+      out.opcode_counts[kUploadClut] == 1 && out.opcode_counts[kGenericUpload] == 1 &&
+      out.opcode_counts[kCloudsAndFog] == 1;
+  constexpr u32 kOrdinaryOnlyInertStateMask =
+      (1u << static_cast<u32>(ParseState::Texflush)) |
+      (1u << static_cast<u32>(ParseState::FirstArrayStart));
+  const bool no_animator_opcodes =
+      std::all_of(out.opcode_counts.begin(), out.opcode_counts.end(), [](u32 count) {
+        return count == 0;
+      });
+  const bool exact_ordinary_only =
+      state == ParseState::FirstArrayStart && out.total_payload_bytes == 48 &&
+      out.dma_transfers == 4 && out.payload_transfers == 2 && out.inert_transfers == 2 &&
+      out.inert_cnt_transfers == 0 && out.inert_next_transfers == 2 &&
+      out.inert_state_mask == kOrdinaryOnlyInertStateMask && out.ordinary_descriptors == 1 &&
+      out.ordinary_mode == -1 && out.animator_arrays == 0 && out.animator_bytes == 0 &&
+      out.finishes == 0 && no_animator_opcodes;
+  if (!exact_mixed_animator && !exact_ordinary_only) {
     record_malformed(&out, nullptr);
     return out;
   }
