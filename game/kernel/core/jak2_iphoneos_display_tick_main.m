@@ -61,6 +61,8 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
          before->last_screen_filter_triangles == after->last_screen_filter_triangles &&
          before->last_debug_no_zbuf2_draws == after->last_debug_no_zbuf2_draws &&
          before->last_debug_no_zbuf2_triangles == after->last_debug_no_zbuf2_triangles &&
+         before->last_sky_draw_draws == after->last_sky_draw_draws &&
+         before->last_sky_draw_triangles == after->last_sky_draw_triangles &&
          before->unsupported_blends == after->unsupported_blends &&
          before->last_command_buffer_status == after->last_command_buffer_status &&
          before->last_command_buffer_error_code == after->last_command_buffer_error_code;
@@ -764,7 +766,9 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
             _metalMetrics.triangles != 0 || _metalMetrics.last_screen_filter_draws != 0 ||
             _metalMetrics.last_screen_filter_triangles != 0 ||
             _metalMetrics.last_debug_no_zbuf2_draws != 0 ||
-            _metalMetrics.last_debug_no_zbuf2_triangles != 0) {
+            _metalMetrics.last_debug_no_zbuf2_triangles != 0 ||
+            _metalMetrics.last_sky_draw_draws != 0 ||
+            _metalMetrics.last_sky_draw_triangles != 0) {
           _proofFinished = YES;
           _failureMessage = @"The first real-DMA chain was not the required zero-draw baseline.";
         } else {
@@ -774,14 +778,16 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                 (unsigned long long)frame.hash,
                 (unsigned long long)frame.non_black_pixels);
         }
-      } else if (!_proofFinished && _metalMetrics.last_debug_no_zbuf2_draws > 0) {
+      } else if (!_proofFinished && _metalMetrics.last_sky_draw_draws > 0) {
         const uint64_t directDraws = _metalMetrics.last_screen_filter_draws +
-                                     _metalMetrics.last_debug_no_zbuf2_draws;
+                                     _metalMetrics.last_debug_no_zbuf2_draws +
+                                     _metalMetrics.last_sky_draw_draws;
         const uint64_t directTriangles = _metalMetrics.last_screen_filter_triangles +
-                                         _metalMetrics.last_debug_no_zbuf2_triangles;
+                                         _metalMetrics.last_debug_no_zbuf2_triangles +
+                                         _metalMetrics.last_sky_draw_triangles;
         const BOOL exactDirectDraw =
             _metalMetrics.draws == directDraws && _metalMetrics.triangles == directTriangles &&
-            _metalMetrics.last_debug_no_zbuf2_triangles > 0;
+            _metalMetrics.last_sky_draw_triangles > 0;
         const BOOL changedPixels =
             frame.hash != _realDmaDrawBaselineFrame.hash &&
             frame.non_black_pixels > _realDmaDrawBaselineFrame.non_black_pixels;
@@ -791,10 +797,11 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
           _failureMessage =
               !exactDirectDraw
                   ? @"The later real-DMA draw was not exactly attributed to enabled Direct buckets."
-                  : @"DEBUG_NO_ZBUF2 encoded a draw but the bounded frame pixels did not change.";
+                  : @"SKY_DRAW encoded a draw but the bounded frame pixels did not change.";
         } else {
           NSLog(@"GOALPAD_JAK2_REAL_DMA_DRAW_CAMETAL_LAYER_PROOF PASS ticks=%llu chains=%llu "
                  "draws=%llu triangles=%llu "
+                 "sky_draw_draws=%llu sky_draw_triangles=%llu "
                  "debug_no_zbuf2_draws=%llu debug_no_zbuf2_triangles=%llu "
                  "screen_filter_draws=%llu screen_filter_triangles=%llu baseline_hash=%llu "
                  "frame_hash=%llu baseline_non_black=%llu frame_non_black=%llu drawables=%llu "
@@ -803,6 +810,8 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                 (unsigned long long)_metalMetrics.chains,
                 (unsigned long long)_metalMetrics.draws,
                 (unsigned long long)_metalMetrics.triangles,
+                (unsigned long long)_metalMetrics.last_sky_draw_draws,
+                (unsigned long long)_metalMetrics.last_sky_draw_triangles,
                 (unsigned long long)_metalMetrics.last_debug_no_zbuf2_draws,
                 (unsigned long long)_metalMetrics.last_debug_no_zbuf2_triangles,
                 (unsigned long long)_metalMetrics.last_screen_filter_draws,
@@ -819,8 +828,7 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
       } else if (!_proofFinished &&
                  _metalMetrics.chains >= kRealDmaDrawMetalMaximumTicks) {
         _proofFinished = YES;
-        _failureMessage =
-            @"No DEBUG_NO_ZBUF2 draw reached Metal within three real-DMA chains.";
+        _failureMessage = @"No SKY_DRAW draw reached Metal within three real-DMA chains.";
       }
 
       _realDmaMetalCompletionPending = NO;
@@ -1056,7 +1064,7 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
     NSString* contentNote = nil;
     if (_realDmaDrawMetalProofEnabled) {
       contentNote = _realDmaDrawBaselineCaptured
-                        ? @"The first zero-draw frame is retained; waiting for a bounded DEBUG_NO_ZBUF2 draw."
+                        ? @"The first zero-draw frame is retained; waiting for a bounded SKY_DRAW draw."
                         : @"Waiting to retain the first zero-draw frame as the pixel baseline.";
     } else {
       contentNote =
@@ -1083,6 +1091,7 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                           "Draws / triangles: %llu / %llu\n"
                           "Last SCREEN_FILTER draws / triangles: %llu / %llu\n"
                           "Last DEBUG_NO_ZBUF2 draws / triangles: %llu / %llu\n"
+                          "Last SKY_DRAW draws / triangles: %llu / %llu\n"
                           "Frame: %u x %u, %llu bytes, hash %llu, non-black %llu\n"
                           "Baseline hash / non-black: %llu / %llu\n"
                           "Drawable acquired / missed: %llu / %llu\n"
@@ -1105,6 +1114,8 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                          (unsigned long long)_metalMetrics.last_screen_filter_triangles,
                          (unsigned long long)_metalMetrics.last_debug_no_zbuf2_draws,
                          (unsigned long long)_metalMetrics.last_debug_no_zbuf2_triangles,
+                         (unsigned long long)_metalMetrics.last_sky_draw_draws,
+                         (unsigned long long)_metalMetrics.last_sky_draw_triangles,
                          _realDmaDrawFrame.width, _realDmaDrawFrame.height,
                          (unsigned long long)_realDmaDrawFrame.byte_count,
                          (unsigned long long)_realDmaDrawFrame.hash,
