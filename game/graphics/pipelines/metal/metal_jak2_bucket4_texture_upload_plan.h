@@ -9,6 +9,8 @@
 
 namespace metal_renderer {
 
+struct Jak2Bucket4TextureUploadCapture;
+
 constexpr std::size_t kJak2Bucket4OrdinaryPageHeaderBytes = 124;
 constexpr std::size_t kJak2Bucket4SkyInputBytes = 108;
 constexpr std::size_t kJak2Bucket4FogIndexBytes = 256;
@@ -80,6 +82,7 @@ std::optional<Jak2Bucket4TextureUploadPlan> plan_jak2_bucket4_texture_upload(
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
     const u8* live_ee_memory,
-    std::size_t live_ee_memory_size);
+    std::size_t live_ee_memory_size,
+    Jak2Bucket4TextureUploadCapture* out_capture = nullptr);
 
 }  // namespace metal_renderer

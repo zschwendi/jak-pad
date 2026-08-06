@@ -348,9 +348,13 @@ void test_plan_uses_separate_packet_and_live_domains_and_owns_animator_bytes() {
   std::fill(live.begin() + fixture.outer_direct_tag_offset,
             live.begin() + fixture.outer_direct_tag_offset + 0x600, 0xdd);
 
+  metal_renderer::Jak2Bucket4TextureUploadCapture plan_capture;
   auto plan = metal_renderer::plan_jak2_bucket4_texture_upload(
-      packet.data(), packet.size(), fixture.chain_offset, live.data(), live.size());
+      packet.data(), packet.size(), fixture.chain_offset, live.data(), live.size(), &plan_capture);
   check(plan.has_value(), "the exact mixed packet produces an execution plan");
+  check(plan_capture.valid && plan_capture.present && plan_capture.total_payload_bytes == 416 &&
+            plan_capture.ordinary_descriptors == 1 && plan_capture.animator_arrays == 2,
+        "the owning parse returns the same exact scalar diagnostics without a second traversal");
   check(std::holds_alternative<metal_renderer::Jak2Bucket4MixedPlan>(*plan),
         "the mixed packet has the Mixed discriminant");
   const auto& mixed = std::get<metal_renderer::Jak2Bucket4MixedPlan>(*plan);

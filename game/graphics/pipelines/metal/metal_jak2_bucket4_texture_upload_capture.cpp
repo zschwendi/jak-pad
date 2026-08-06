@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 #include "common/dma/dma.h"
 #include "common/dma/gs.h"
@@ -703,10 +704,15 @@ std::optional<Jak2Bucket4TextureUploadPlan> plan_jak2_bucket4_texture_upload(
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
     const u8* live_ee_memory,
-    std::size_t live_ee_memory_size) {
-  return parse_jak2_bucket4_texture_upload(dma_packet_snapshot, dma_packet_snapshot_size,
-                                           chain_offset, live_ee_memory, live_ee_memory_size, true)
-      .plan;
+    std::size_t live_ee_memory_size,
+    Jak2Bucket4TextureUploadCapture* out_capture) {
+  auto result = parse_jak2_bucket4_texture_upload(dma_packet_snapshot, dma_packet_snapshot_size,
+                                                  chain_offset, live_ee_memory,
+                                                  live_ee_memory_size, true);
+  if (out_capture) {
+    *out_capture = result.capture;
+  }
+  return std::move(result.plan);
 }
 
 }  // namespace metal_renderer
