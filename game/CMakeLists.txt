@@ -1125,6 +1125,22 @@ if(APPLE)
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_link_libraries(goalpad-jak2-metal-host PUBLIC
             goalpad-metal-product jak2-kernel-core)
+
+        # The signed-code Jak 2 runtime and the app-owned CAMetalLayer renderer in one bounded
+        # macOS process. This deliberately does not link the desktop runtime or the Jak 1 Metal
+        # window shell: both would select a second game kernel.
+        add_executable(jak2-metal-runtime-proof
+            kernel/core/jak2_macos_metal_runtime_proof.mm
+            kernel/core/jak2_runtime.cpp
+            "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.c"
+            ${JAK2_AOT_BOOT_C_SOURCES})
+        set_source_files_properties(
+            kernel/core/jak2_macos_metal_runtime_proof.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_include_directories(jak2-metal-runtime-proof PRIVATE "${JAK2_AOT_BOOT_DIR}")
+        target_link_libraries(jak2-metal-runtime-proof PRIVATE
+            goalpad-jak2-metal-host jak2-kernel-core SDL3::SDL3)
+
         add_executable(jak2-metal-host-bridge-test
             graphics/pipelines/metal/metal_jak2_host_bridge_test.mm)
         set_source_files_properties(

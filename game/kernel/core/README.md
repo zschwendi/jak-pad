@@ -820,6 +820,26 @@ attributed `SKY_DRAW` bucket, encoded a completed Direct draw, and changed the s
 pixels through the same layer-backed host. It does not establish visual correctness, a title
 screen, gameplay, or physical-device compatibility.
 
+`jak2-metal-runtime-proof` composes that same AOT runtime and external Metal host in a standalone
+ARM64 macOS process. It creates an SDL Metal window on the main thread, runs at most three serial
+runtime ticks, waits for each command buffer before the next tick, and reports the runtime, bucket,
+SKY-batch, and readback counters. It does not link the desktop runtime, the Jak 1 renderer shell,
+or Eco.
+
+```sh
+cmake --build build --target jak2-metal-runtime-proof -j2
+build/game/jak2-metal-runtime-proof \
+  --data-dir /path/to/prepared/jak2 --saves-dir /private/tmp/jak2-saves --ticks 3
+```
+
+The window is visible by default. `--hidden` is useful only for diagnostics because an
+uncomposited macOS drawable can be reported as a presentation drop. GPU completion and game-target
+readback are the default automated gate; `--require-presentation` additionally requires retained
+drawable callbacks while the main thread pumps SDL events. Until common/requested FR3 residency,
+the mixed pre-SKY texture-animation bucket, and the later renderer families are implemented, an
+`INCOMPLETE` result with a changed alpha-only frame is expected and must not be reported as a title
+screen or playable game.
+
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 GEN=build/Release/bin/game/aot-generated
