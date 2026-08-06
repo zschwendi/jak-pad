@@ -396,6 +396,15 @@ int main(int argc, char** argv) {
         }
 
         if (metal.chains > previous_chains &&
+            (metal.failed_chains != 0 || metal.completed_chains != metal.chains)) {
+          std::fprintf(stderr, "Jak II Metal chain failed before frame wait: %s\n",
+                       goal_jak2_metal_host_last_error(resources.metal_host));
+          print_runtime_metrics(runtime);
+          print_metal_metrics(metal);
+          tick_failed = true;
+          break;
+        }
+        if (metal.chains > previous_chains &&
             !wait_for_frame_while_pumping_events(resources.metal_host, require_presentation,
                                                  &quit_requested)) {
           std::fprintf(stderr, "Jak II Metal frame wait failed: %s\n",
