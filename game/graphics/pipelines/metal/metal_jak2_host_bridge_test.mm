@@ -609,8 +609,52 @@ int main() {
             capture_metrics.last_bucket4_texture_upload.present == 1 &&
             capture_metrics.last_bucket4_texture_upload.total_payload_bytes == 416 &&
             capture_metrics.last_bucket4_texture_upload.dma_transfers == 16 &&
-            capture_metrics.skipped_bucket_bytes == 416,
-        "valid bucket 4 captures exact scalars while DeferredSkip retains all 416 payload bytes");
+            capture_metrics.bucket4_ordinary_uploads == 1 &&
+            capture_metrics.bucket4_mixed_executions == 1 &&
+            capture_metrics.bucket4_cloud_publications == 1 &&
+            capture_metrics.bucket4_fog_publications == 1 &&
+            capture_metrics.bucket4_cloud_texture != 0 &&
+            capture_metrics.bucket4_fog_texture != 0 &&
+            capture_metrics.bucket4_cloud_texture != capture_metrics.bucket4_fog_texture &&
+            capture_metrics.skipped_bucket_bytes == 0,
+        "valid bucket 4 executes the ordinary page and both stable animator publications");
+  const uint64_t first_cloud_texture = capture_metrics.bucket4_cloud_texture;
+  const uint64_t first_fog_texture = capture_metrics.bucket4_fog_texture;
+  const uint32_t first_copied_bytes = capture_metrics.last_copied_bytes;
+
+  auto ordinary_fixture =
+      metal_renderer::make_jak2_bucket4_ordinary_only_texture_upload_fixture(kBucket4FixtureBase);
+  std::memcpy(static_cast<u8*>(g_ee_main_mem) + kBucket4FixtureBase,
+              ordinary_fixture.ee_memory.data() + kBucket4FixtureBase,
+              ordinary_fixture.ee_memory.size() - kBucket4FixtureBase);
+  capture_callbacks.send_chain(g_ee_main_mem, ordinary_fixture.chain_offset);
+  check(goal_jak2_metal_host_get_metrics(capture_host, &capture_metrics) &&
+            capture_metrics.chains == 2 && capture_metrics.completed_chains == 2 &&
+            capture_metrics.failed_chains == 0 &&
+            capture_metrics.bucket4_ordinary_uploads == 2 &&
+            capture_metrics.bucket4_mixed_executions == 1 &&
+            capture_metrics.bucket4_cloud_publications == 1 &&
+            capture_metrics.bucket4_fog_publications == 1 &&
+            capture_metrics.bucket4_cloud_texture == first_cloud_texture &&
+            capture_metrics.bucket4_fog_texture == first_fog_texture &&
+            capture_metrics.skipped_bucket_bytes == 0,
+        "ordinary-only bucket 4 executes without republishing animator textures");
+
+  std::memcpy(static_cast<u8*>(g_ee_main_mem) + kBucket4FixtureBase,
+              bucket4_fixture.ee_memory.data() + kBucket4FixtureBase,
+              bucket4_fixture.ee_memory.size() - kBucket4FixtureBase);
+  capture_callbacks.send_chain(g_ee_main_mem, bucket4_fixture.chain_offset);
+  check(goal_jak2_metal_host_get_metrics(capture_host, &capture_metrics) &&
+            capture_metrics.chains == 3 && capture_metrics.completed_chains == 3 &&
+            capture_metrics.failed_chains == 0 &&
+            capture_metrics.bucket4_ordinary_uploads == 3 &&
+            capture_metrics.bucket4_mixed_executions == 2 &&
+            capture_metrics.bucket4_cloud_publications == 2 &&
+            capture_metrics.bucket4_fog_publications == 2 &&
+            capture_metrics.bucket4_cloud_texture == first_cloud_texture &&
+            capture_metrics.bucket4_fog_texture == first_fog_texture &&
+            capture_metrics.skipped_bucket_bytes == 0,
+        "repeated mixed bucket 4 keeps stable registry handles while replacing texture objects");
 
   const u32 missing_finish = 0;
   std::memcpy(static_cast<u8*>(g_ee_main_mem) + bucket4_fixture.first_finish_tag_offset + 8,
@@ -621,14 +665,17 @@ int main() {
   check(capture_host && goal_jak2_metal_host_get_metrics(capture_host, &capture_metrics),
         "copied metrics after malformed bucket-4 capture");
   const char* capture_error = goal_jak2_metal_host_last_error(capture_host);
-  check(capture_metrics.chains == 2 && capture_metrics.completed_chains == 1 &&
+  check(capture_metrics.chains == 4 && capture_metrics.completed_chains == 3 &&
             capture_metrics.failed_chains == 1 &&
             capture_metrics.last_bucket4_texture_upload.valid == 0 &&
             capture_metrics.last_bucket4_texture_upload.present == 1 &&
-            capture_metrics.skipped_bucket_bytes == 416 && capture_error &&
+            capture_metrics.bucket4_ordinary_uploads == 3 &&
+            capture_metrics.bucket4_mixed_executions == 2 &&
+            capture_metrics.last_copied_bytes == first_copied_bytes &&
+            capture_metrics.skipped_bucket_bytes == 0 && capture_error &&
             std::strstr(capture_error,
                         "bucket 4 texture-upload capture rejected malformed DMA"),
-        "malformed bucket 4 fails before copying or dispatch and preserves the prior skip count");
+        "malformed bucket 4 fails before mutation, copying, or dispatch");
   goal_jak2_metal_host_destroy(capture_host);
 
   goal_jak2_metal_host* replacement = goal_jak2_metal_host_create();

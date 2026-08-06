@@ -85,7 +85,9 @@ class MetalRenderer {
   // Builds the selected game's bucket renderer table. Must be called once the
   // texture pool exists (the Jak 1 sky blender registers its output textures
   // with it).
-  void init_bucket_renderers(TexturePool* pool, GameVersion version);
+  void init_bucket_renderers(TexturePool* pool,
+                             GameVersion version,
+                             bool host_texture_uploads = false);
 
   // Renders one frame: game passes into the offscreen target, then the present
   // pass into the layer's next drawable, all in one command buffer.
@@ -175,6 +177,7 @@ class MetalRenderer {
   MetalSharedRenderState m_shared_state;
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
   TexturePool* m_texture_pool = nullptr;
+  bool m_host_texture_uploads = false;
   MetalSkyBlendHandler* m_sky_blend_handlers[2] = {nullptr, nullptr};
   // level-geometry frame state, shared with the tfrag/tie/shrub renderers
   MetalBackgroundState m_background;

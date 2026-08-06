@@ -167,6 +167,19 @@ class MetalSkipRenderer : public MetalBucketRenderer {
 };
 
 /*!
+ * Drains a bucket whose side effects were completed synchronously by its host
+ * before the immutable DMA snapshot reached the renderer.
+ */
+class MetalHostHandledRenderer : public MetalBucketRenderer {
+ public:
+  MetalHostHandledRenderer(const std::string& name, int my_id)
+      : MetalBucketRenderer(name, my_id) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+};
+
+/*!
  * Bucket adapter over the plain-C++ MetalTextureUploadHandler.
  */
 class MetalTextureBucketRenderer : public MetalBucketRenderer {

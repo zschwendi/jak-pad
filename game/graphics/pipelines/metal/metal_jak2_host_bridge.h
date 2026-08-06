@@ -64,6 +64,12 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t vsyncs;
   uint64_t texture_uploads;
   uint64_t texture_relocations;
+  uint64_t bucket4_ordinary_uploads;
+  uint64_t bucket4_mixed_executions;
+  uint64_t bucket4_cloud_publications;
+  uint64_t bucket4_fog_publications;
+  uint64_t bucket4_cloud_texture;
+  uint64_t bucket4_fog_texture;
   uint32_t last_copied_bytes;
   uint64_t last_buckets_dispatched;
   uint64_t command_buffers_committed;

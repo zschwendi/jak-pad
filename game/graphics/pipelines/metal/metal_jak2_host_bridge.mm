@@ -5,6 +5,7 @@
 #include <cstring>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -14,7 +15,10 @@
 #include "common/util/Assert.h"
 
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
+#include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
@@ -25,8 +29,9 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 struct goal_jak2_metal_host {
-  MetalRenderer renderer;
   TexturePool textures{GameVersion::Jak2};
+  MetalRenderer renderer;
+  std::unique_ptr<metal_renderer::Jak2Bucket4MixedExecutor> bucket4_mixed_executor;
   FixedChunkDmaCopier copier{EE_MAIN_MEM_SIZE};
   goal_gfx_host callbacks = {};
   goal_jak2_metal_host_metrics metrics = {};
@@ -65,6 +70,21 @@ void fail_closed(goal_jak2_metal_host* host, const std::string& message) {
     host->fatal_chain_error = message;
   }
   host->error = message;
+}
+
+void fail_current_chain_closed(goal_jak2_metal_host* host, const std::string& message) {
+  fail_closed(host, message);
+  host->metrics.failed_chains++;
+}
+
+void record_send_chain_failure(goal_jak2_metal_host* host,
+                               const std::string& message,
+                               bool bucket4_mutated) {
+  if (bucket4_mutated) {
+    fail_current_chain_closed(host, message);
+  } else {
+    record_failure(host, message.c_str());
+  }
 }
 
 std::string fr3_path(const goal_jak2_metal_host* host, const std::string& name) {
@@ -179,6 +199,66 @@ void copy_bucket4_texture_upload_metrics(
   out.unsupported_bytes = capture.unsupported_bytes;
 }
 
+bool execute_bucket4_ordinary_upload(
+    goal_jak2_metal_host* host,
+    const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
+    const u8* live_ee_memory) {
+  if (ordinary.page_offset > EE_MAIN_MEM_SIZE - ordinary.page_header.size() ||
+      ordinary.mode != -1 ||
+      std::memcmp(live_ee_memory + ordinary.page_offset, ordinary.page_header.data(),
+                  ordinary.page_header.size()) != 0) {
+    fail_current_chain_closed(host, "Jak 2 bucket 4 ordinary texture upload changed after planning");
+    return false;
+  }
+  try {
+    host->textures.handle_upload_now(live_ee_memory + ordinary.page_offset,
+                                     static_cast<int>(ordinary.mode), g_ee_main_mem,
+                                     metal_offset_of_s7(), false);
+    host->metrics.bucket4_ordinary_uploads++;
+    return true;
+  } catch (const std::exception& error) {
+    fail_current_chain_closed(host, error.what());
+  } catch (...) {
+    fail_current_chain_closed(host, "Jak 2 bucket 4 ordinary texture upload threw");
+  }
+  return false;
+}
+
+bool execute_bucket4_plan(goal_jak2_metal_host* host,
+                          const metal_renderer::Jak2Bucket4TextureUploadPlan& plan,
+                          const u8* live_ee_memory) {
+  if (std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(plan)) {
+    return true;
+  }
+  if (const auto* ordinary_only =
+          std::get_if<metal_renderer::Jak2Bucket4OrdinaryOnlyPlan>(&plan)) {
+    return execute_bucket4_ordinary_upload(host, ordinary_only->ordinary, live_ee_memory);
+  }
+
+  const auto& mixed = std::get<metal_renderer::Jak2Bucket4MixedPlan>(plan);
+  if (!execute_bucket4_ordinary_upload(host, mixed.ordinary, live_ee_memory)) {
+    return false;
+  }
+  if (!host->bucket4_mixed_executor || !host->bucket4_mixed_executor->execute(mixed)) {
+    const char* detail = host->bucket4_mixed_executor
+                             ? host->bucket4_mixed_executor->last_error()
+                             : "executor is unavailable";
+    fail_current_chain_closed(host,
+                              std::string("Jak 2 bucket 4 mixed texture execution failed: ") +
+                                  detail);
+    return false;
+  }
+
+  const auto& stats = host->bucket4_mixed_executor->stats();
+  host->metrics.bucket4_mixed_executions = stats.frames;
+  host->metrics.bucket4_cloud_publications = stats.cloud_publications;
+  host->metrics.bucket4_fog_publications = stats.fog_publications;
+  host->metrics.bucket4_cloud_texture =
+      host->textures.lookup(static_cast<u32>(mixed.sky.cloud_destination)).value_or(0);
+  host->metrics.bucket4_fog_texture = host->textures.lookup(mixed.fog.destination).value_or(0);
+  return true;
+}
+
 bool update_draw_region(goal_jak2_metal_host* host) {
   if (!host->layer) {
     return true;
@@ -214,6 +294,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     record_failure(host, host->fatal_chain_error.c_str());
     return;
   }
+  bool bucket4_mutated = false;
   try {
     host->options.host_tick_id = host->metrics.chains;
     host->options.chain_ordinal = host->metrics.chains;
@@ -222,13 +303,20 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 CAMetalLayer has no finite drawable size");
       return;
     }
-    const auto bucket4_capture = metal_renderer::capture_jak2_bucket4_texture_upload(
-        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset);
+    metal_renderer::Jak2Bucket4TextureUploadCapture bucket4_capture;
+    const auto bucket4_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &bucket4_capture);
     copy_bucket4_texture_upload_metrics(host, bucket4_capture);
-    if (!bucket4_capture.valid) {
+    if (!bucket4_plan) {
       record_failure(host, "Jak 2 bucket 4 texture-upload capture rejected malformed DMA");
       return;
     }
+    if (!execute_bucket4_plan(host, *bucket4_plan, static_cast<const u8*>(ee_base))) {
+      return;
+    }
+    bucket4_mutated =
+        !std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(*bucket4_plan);
     const auto& copied = host->copier.run(ee_base, chain_offset, false);
     host->metrics.last_copied_bytes = static_cast<uint32_t>(copied.data.size());
 
@@ -236,7 +324,8 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         host->options, host->layer, copied.data.data(), copied.start_offset);
     copy_renderer_metrics(host);
     if (host->metrics.last_buckets_dispatched != metal_renderer::kJak2MetalBucketCount) {
-      record_failure(host, "Jak 2 Metal renderer violated its audited bucket policy");
+      record_send_chain_failure(host, "Jak 2 Metal renderer violated its audited bucket policy",
+                                bucket4_mutated);
       return;
     }
     const bool exact_presenting_commit_count =
@@ -248,7 +337,9 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           host->metrics.submissions != 0 || host->metrics.presentations != 0 ||
           host->metrics.presentation_drops != 0 ||
           host->metrics.presentation_order_mismatches != 0) {
-        record_failure(host, "Jak 2 nil-layer renderer violated the submission-free dispatch gate");
+        record_send_chain_failure(
+            host, "Jak 2 nil-layer renderer violated the submission-free dispatch gate",
+            bucket4_mutated);
         return;
       }
     } else if (!acquired || host->metrics.unsupported_blends != 0 ||
@@ -258,15 +349,18 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                host->metrics.submissions != host->metrics.chains ||
                host->metrics.late_present_submissions != 0 ||
                host->metrics.command_buffer_errors != 0) {
-      record_failure(host, acquired ? "Jak 2 layer-backed submission counters violated their gate"
-                                    : "Jak 2 CAMetalLayer did not provide a drawable");
+      record_send_chain_failure(
+          host, acquired ? "Jak 2 layer-backed submission counters violated their gate"
+                         : "Jak 2 CAMetalLayer did not provide a drawable",
+          bucket4_mutated);
       return;
     }
     host->metrics.completed_chains++;
   } catch (const std::exception& error) {
-    record_failure(host, error.what());
+    record_send_chain_failure(host, error.what(), bucket4_mutated);
   } catch (...) {
-    record_failure(host, "Jak 2 Metal send-chain threw an unknown exception");
+    record_send_chain_failure(host, "Jak 2 Metal send-chain threw an unknown exception",
+                              bucket4_mutated);
   }
 }
 
@@ -383,7 +477,8 @@ bool policy_table_is_audited() {
   for (const auto& descriptor : table) {
     if (descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::StrictEmpty &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Direct) {
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Direct &&
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload) {
       return false;
     }
   }
@@ -419,7 +514,10 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
     return nullptr;
   }
   host->placeholder_handle = host->textures.get_placeholder_texture();
-  host->renderer.init_bucket_renderers(&host->textures, GameVersion::Jak2);
+  host->renderer.init_bucket_renderers(&host->textures, GameVersion::Jak2,
+                                       /*host_texture_uploads=*/true);
+  host->bucket4_mixed_executor = std::make_unique<metal_renderer::Jak2Bucket4MixedExecutor>(
+      host->renderer.device(), host->renderer.queue(), &host->textures);
   host->callbacks.send_chain = send_chain;
   host->callbacks.vsync = vsync;
   host->callbacks.sync_path = sync_path;
@@ -635,6 +733,9 @@ void goal_jak2_metal_host_destroy(goal_jak2_metal_host* host) {
     metal_level_data::unload(host->textures, *key);
   }
   host->loaded_level_keys.clear();
+  if (host->bucket4_mixed_executor) {
+    host->bucket4_mixed_executor->detach_pool();
+  }
   if (host->placeholder_handle) {
     metal_texture_release(host->placeholder_handle);
     host->textures.set_placeholder(0);

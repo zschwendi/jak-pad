@@ -127,6 +127,16 @@ void MetalSkipRenderer::render(DmaFollower& dma,
   }
 }
 
+void MetalHostHandledRenderer::render(DmaFollower& dma,
+                                      MetalSharedRenderState* render_state,
+                                      MetalFrameContext& /*ctx*/) {
+  ASSERT(metal_renderer::bucket_chain_layout(render_state->version) ==
+         metal_renderer::MetalBucketChainLayout::Jak2Direct);
+  while (dma.current_tag_offset() != render_state->next_bucket) {
+    dma.read_and_advance();
+  }
+}
+
 void MetalTextureBucketRenderer::render(DmaFollower& dma,
                                         MetalSharedRenderState* render_state,
                                         MetalFrameContext& ctx) {

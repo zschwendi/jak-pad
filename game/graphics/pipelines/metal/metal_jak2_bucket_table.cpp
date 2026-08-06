@@ -29,11 +29,14 @@ constexpr Table make_table() {
   const auto direct = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::Direct;
   };
+  const auto host_texture_upload = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::HostTextureUpload;
+  };
 
   // Mirror every renderer explicitly installed by OpenGLRenderer::init_bucket_renderers_jak2.
   defer(BucketId::BUCKET_2);
   defer(BucketId::BUCKET_3);
-  defer(BucketId::TEX_LCOM_SKY_PRE);
+  host_texture_upload(BucketId::TEX_LCOM_SKY_PRE);
   direct(BucketId::SKY_DRAW);
   defer(BucketId::OCEAN_MID_FAR);
 
@@ -133,9 +136,10 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 197);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 196);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 3);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 1);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);
 
 }  // namespace

@@ -12,6 +12,7 @@ enum class Jak2MetalBucketBehavior : std::uint8_t {
   DeferredSkip,
   StrictEmpty,
   Direct,
+  HostTextureUpload,
 };
 
 struct Jak2MetalBucketDescriptor {
@@ -21,7 +22,7 @@ struct Jak2MetalBucketDescriptor {
 
 inline constexpr std::size_t kJak2MetalBucketCount =
     static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS);
-inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0x101075b6646f12a6ull;
+inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0x6f6068bfe7377bcfull;
 
 const std::array<Jak2MetalBucketDescriptor, kJak2MetalBucketCount>& jak2_metal_bucket_table();
 

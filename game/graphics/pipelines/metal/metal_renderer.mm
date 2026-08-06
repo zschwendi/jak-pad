@@ -374,6 +374,16 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
           fmt::format("jak2-deferred-{}", bucket_id), descriptor.id);
+    } else if (descriptor.behavior ==
+               metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload) {
+      ASSERT(batch_size == 0);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalHostHandledRenderer>(
+            "jak2-host-texture-upload", descriptor.id);
+      } else {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+            "jak2-host-texture-upload-unavailable", descriptor.id);
+      }
     } else {
       ASSERT(descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::StrictEmpty);
       ASSERT(batch_size == 0);
@@ -384,8 +394,11 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   }
 }
 
-void MetalRenderer::init_bucket_renderers(TexturePool* pool, GameVersion version) {
+void MetalRenderer::init_bucket_renderers(TexturePool* pool,
+                                          GameVersion version,
+                                          bool host_texture_uploads) {
   m_texture_pool = pool;
+  m_host_texture_uploads = host_texture_uploads;
   m_shared_state.version = version;
   switch (version) {
     case GameVersion::Jak1:

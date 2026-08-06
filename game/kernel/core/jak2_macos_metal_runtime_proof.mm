@@ -155,12 +155,19 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
   std::printf(
       "bucket4-ordinary: descriptors=%u page=%#llx mode=%lld; "
       "animator: arrays=%u bytes=%u opcodes=12:%u 13:%u 14:%u 15:%u 16:%u 41:%u "
-      "finishes=%u cloud-dest=%d\n",
+      "finishes=%u cloud-dest=%d; executed: ordinary=%llu mixed=%llu cloud=%llu fog=%llu "
+      "handles=(%#llx,%#llx)\n",
       bucket4.ordinary_descriptors, static_cast<unsigned long long>(bucket4.ordinary_page),
       static_cast<long long>(bucket4.ordinary_mode), bucket4.animator_arrays,
       bucket4.animator_bytes, bucket4.opcode_counts[12], bucket4.opcode_counts[13],
       bucket4.opcode_counts[14], bucket4.opcode_counts[15], bucket4.opcode_counts[16],
-      bucket4.opcode_counts[41], bucket4.finishes, bucket4.cloud_destination);
+      bucket4.opcode_counts[41], bucket4.finishes, bucket4.cloud_destination,
+      static_cast<unsigned long long>(metal.bucket4_ordinary_uploads),
+      static_cast<unsigned long long>(metal.bucket4_mixed_executions),
+      static_cast<unsigned long long>(metal.bucket4_cloud_publications),
+      static_cast<unsigned long long>(metal.bucket4_fog_publications),
+      static_cast<unsigned long long>(metal.bucket4_cloud_texture),
+      static_cast<unsigned long long>(metal.bucket4_fog_texture));
   std::printf(
       "bucket4-erase: %ux%u dest=%u test=%#llx alpha=%#llx clamp=%#llx "
       "clear=(%u,%u,%u,%u); "
