@@ -10,6 +10,8 @@ set(OPENGOAL_METAL_RENDERER_SOURCES
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_direct_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_eye_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_generic2.mm"
+    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_fog_texture_convert.cpp"
+    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_opcode41_cloud_cpu.cpp"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_shadow_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_level_data.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_merc.mm"

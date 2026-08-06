@@ -1156,6 +1156,18 @@ if(APPLE)
         add_test(NAME jak2-bucket4-texture-upload-capture-test
             COMMAND jak2-bucket4-texture-upload-capture-test)
 
+        add_executable(jak2-metal-fog-texture-convert-test
+            graphics/pipelines/metal/metal_jak2_fog_texture_convert.cpp
+            graphics/pipelines/metal/metal_jak2_fog_texture_convert_test.cpp)
+        add_test(NAME jak2-metal-fog-texture-convert-test
+            COMMAND jak2-metal-fog-texture-convert-test)
+
+        add_executable(jak2-metal-opcode41-cloud-cpu-test
+            graphics/pipelines/metal/metal_jak2_opcode41_cloud_cpu.cpp
+            graphics/pipelines/metal/metal_jak2_opcode41_cloud_cpu_test.cpp)
+        add_test(NAME jak2-metal-opcode41-cloud-cpu-test
+            COMMAND jak2-metal-opcode41-cloud-cpu-test)
+
         add_executable(metal-pool-texture-test
             graphics/pipelines/metal/metal_pool_texture_test.mm)
         set_source_files_properties(
