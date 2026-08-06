@@ -1153,6 +1153,7 @@ if(APPLE)
         add_library(goalpad-jak2-metal-host STATIC
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
             graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
@@ -1188,6 +1189,12 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture_test.cpp)
         add_test(NAME jak2-bucket4-texture-upload-capture-test
             COMMAND jak2-bucket4-texture-upload-capture-test)
+
+        add_executable(jak2-common-tfrag-texture-upload-capture-test
+            graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture_test.cpp)
+        add_test(NAME jak2-common-tfrag-texture-upload-capture-test
+            COMMAND jak2-common-tfrag-texture-upload-capture-test)
 
         add_executable(jak2-sprite-texture-upload-plan-test
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp
