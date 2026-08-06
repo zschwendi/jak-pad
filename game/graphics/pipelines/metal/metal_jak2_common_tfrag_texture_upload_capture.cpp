@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -13,6 +14,8 @@ namespace {
 
 constexpr u16 kStartAnimatorArray = 12;
 constexpr u16 kFinishAnimatorArray = 13;
+constexpr u16 kSkullGemOpcode = 27;
+constexpr u32 kPs2VramTbpUpperBound = 0x40000;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kFlushaVif = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
@@ -281,6 +284,101 @@ bool metadata_is_gs_setup(const Jak2CommonTfragTransferMetadata& transfer) {
          transfer.vif1_immediate == 2;
 }
 
+bool metadata_is_animator_start(const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 0 &&
+         transfer.payload_bytes == 0 &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+         transfer.vif0_immediate == kStartAnimatorArray &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif1_immediate == 0;
+}
+
+bool metadata_is_opcode27_body(const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 31 &&
+         transfer.payload_bytes == sizeof(Jak2Opcode27SkullGemPlan) &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+         transfer.vif0_immediate == kSkullGemOpcode &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif1_immediate == 0;
+}
+
+bool metadata_is_animator_finish(const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 0 &&
+         transfer.payload_bytes == 0 &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+         transfer.vif0_immediate == kFinishAnimatorArray &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif1_immediate == 0;
+}
+
+bool has_exact_opcode27_counts(const Jak2CommonTfragTextureUploadCapture& capture) {
+  for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
+    const u32 expected =
+        i == kStartAnimatorArray || i == kFinishAnimatorArray || i == kSkullGemOpcode;
+    if (capture.opcode_counts[i] != expected) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool transfer_data_offset(u32 chain_offset,
+                          u32 bucket_id,
+                          const Jak2CommonTfragTransferMetadata& transfer,
+                          std::size_t snapshot_size,
+                          u64* out) {
+  const u64 tag_offset = static_cast<u64>(chain_offset) + bucket_id * 16 +
+                         transfer.relative_tag_offset;
+  const u64 data_offset = tag_offset + 16;
+  if (!out || !range_is_valid(data_offset, transfer.payload_bytes, snapshot_size)) {
+    return false;
+  }
+  *out = data_offset;
+  return true;
+}
+
+template <std::size_t Size>
+bool copy_finite_floats(const u8* source, std::array<float, Size>* out) {
+  std::memcpy(out->data(), source, out->size() * sizeof(float));
+  return std::all_of(out->begin(), out->end(), [](float value) {
+    return std::isfinite(value);
+  });
+}
+
+bool parse_layer_values(const u8* source, Jak2Opcode27LayerValues* out) {
+  if (!copy_finite_floats(source, &out->color) ||
+      !copy_finite_floats(source + 16, &out->scale) ||
+      !copy_finite_floats(source + 24, &out->offset) ||
+      !copy_finite_floats(source + 32, &out->st_scale) ||
+      !copy_finite_floats(source + 40, &out->st_offset) ||
+      !copy_finite_floats(source + 48, &out->qs)) {
+    return false;
+  }
+  out->rot = read_unaligned<float>(source + 64);
+  out->st_rot = read_unaligned<float>(source + 68);
+  std::memcpy(out->source_padding.data(), source + 72, out->source_padding.size());
+  return std::isfinite(out->rot) && std::isfinite(out->st_rot);
+}
+
+bool parse_opcode27_skull_gem(const u8* source, Jak2Opcode27SkullGemPlan* out) {
+  out->time = read_unaligned<float>(source);
+  out->destination_tbp = read_unaligned<u32>(source + 4);
+  std::memcpy(out->source_header_tail.data(), source + 8, out->source_header_tail.size());
+  if (!std::isfinite(out->time) || out->destination_tbp >= kPs2VramTbpUpperBound) {
+    return false;
+  }
+
+  const u8* layer_source = source + 16;
+  for (auto& layer : out->layers) {
+    if (!parse_layer_values(layer_source, &layer.start) ||
+        !parse_layer_values(layer_source + sizeof(Jak2Opcode27LayerValues), &layer.end)) {
+      return false;
+    }
+    layer_source += sizeof(Jak2Opcode27LayerTransition);
+  }
+  return true;
+}
+
 bool page_header_is_valid(const u8* live_ee_memory,
                           std::size_t live_ee_memory_size,
                           u64 page_offset) {
@@ -535,6 +633,72 @@ std::optional<Jak2NormalShrubTextureUploadPlan> plan_jak2_normal_shrub_texture_u
   }
 
   plan.present = true;
+  return plan;
+}
+
+std::optional<Jak2CommonTfragTextureUploadPlan> plan_jak2_common_tfrag_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture) {
+  const auto capture = capture_jak2_common_tfrag_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset);
+  if (out_capture) {
+    *out_capture = capture;
+  }
+
+  const bool exact_counts =
+      capture.valid && capture.present &&
+      capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator &&
+      capture.transfer_count == 9 && capture.total_payload_bytes == 672 &&
+      capture.inert_transfers == 4 && capture.ordinary_descriptors == 1 &&
+      capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == 0 &&
+      capture.animator_arrays == 1 && capture.animator_body_transfers == 1 &&
+      capture.animator_payload_bytes == sizeof(Jak2Opcode27SkullGemPlan) &&
+      capture.eye_markers == 0 && capture.other_transfers == 0 &&
+      capture.malformed_transfers == 0 && has_exact_opcode27_counts(capture);
+  if (!exact_counts || !metadata_is_inert_next(capture.transfers[0]) ||
+      !metadata_is_ordinary_descriptor(capture.transfers[1]) ||
+      !metadata_is_inert_next(capture.transfers[2]) ||
+      !metadata_is_animator_start(capture.transfers[3]) ||
+      !metadata_is_opcode27_body(capture.transfers[4]) ||
+      !metadata_is_animator_finish(capture.transfers[5]) ||
+      !metadata_is_inert_next(capture.transfers[6]) ||
+      !metadata_is_direct_setup(capture.transfers[7]) ||
+      !metadata_is_inert_next(capture.transfers[8])) {
+    return std::nullopt;
+  }
+
+  const std::size_t checked_snapshot_size =
+      std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
+  u64 descriptor_data_offset = 0;
+  u64 animator_data_offset = 0;
+  if (!transfer_data_offset(chain_offset, kJak2CommonTfragTextureUploadBucket,
+                            capture.transfers[1], checked_snapshot_size,
+                            &descriptor_data_offset) ||
+      !transfer_data_offset(chain_offset, kJak2CommonTfragTextureUploadBucket,
+                            capture.transfers[4], checked_snapshot_size,
+                            &animator_data_offset)) {
+    return std::nullopt;
+  }
+
+  const u64 page_offset = read_unaligned<u64>(dma_packet_snapshot + descriptor_data_offset);
+  const s64 mode = read_unaligned<s64>(dma_packet_snapshot + descriptor_data_offset + 8);
+  if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
+    return std::nullopt;
+  }
+
+  Jak2CommonTfragTextureUploadPlan plan;
+  plan.ordinary.page_offset = page_offset;
+  plan.ordinary.mode = mode;
+  std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
+              plan.ordinary.page_header.size());
+  if (!parse_opcode27_skull_gem(dma_packet_snapshot + animator_data_offset,
+                                &plan.skull_gem)) {
+    return std::nullopt;
+  }
   return plan;
 }
 

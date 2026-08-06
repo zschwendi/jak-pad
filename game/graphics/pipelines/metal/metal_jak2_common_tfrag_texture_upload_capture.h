@@ -72,6 +72,38 @@ struct Jak2NormalShrubTextureUploadPlan {
   bool present = false;
 };
 
+struct Jak2Opcode27LayerValues {
+  std::array<float, 4> color = {};
+  std::array<float, 2> scale = {};
+  std::array<float, 2> offset = {};
+  std::array<float, 2> st_scale = {};
+  std::array<float, 2> st_offset = {};
+  std::array<float, 4> qs = {};
+  float rot = 0;
+  float st_rot = 0;
+  std::array<u8, 8> source_padding = {};
+};
+static_assert(sizeof(Jak2Opcode27LayerValues) == 80);
+
+struct Jak2Opcode27LayerTransition {
+  Jak2Opcode27LayerValues start;
+  Jak2Opcode27LayerValues end;
+};
+static_assert(sizeof(Jak2Opcode27LayerTransition) == 160);
+
+struct Jak2Opcode27SkullGemPlan {
+  float time = 0;
+  u32 destination_tbp = 0;
+  std::array<u8, 8> source_header_tail = {};
+  std::array<Jak2Opcode27LayerTransition, 3> layers = {};
+};
+static_assert(sizeof(Jak2Opcode27SkullGemPlan) == 496);
+
+struct Jak2CommonTfragTextureUploadPlan {
+  Jak2Bucket4OrdinaryUploadPlan ordinary;
+  Jak2Opcode27SkullGemPlan skull_gem;
+};
+
 /*!
  * Inspect one audited Jak II TFRAG or SHRUB texture-setup bucket using tag and VIF metadata only.
  * The capture never reads transfer payload contents, retains no source pointers, and performs no
@@ -112,6 +144,22 @@ std::optional<Jak2NormalShrubTextureUploadPlan> plan_jak2_normal_shrub_texture_u
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
     u32 bucket_id,
+    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+/*!
+ * Plan the exact live TEX_LCOM_TFRAG envelope: one ordinary page descriptor, one opcode-27
+ * skull-gem update, and the inert terminal GS reset. The plan owns the live page header and all
+ * meaningful animator scalars. pc-update-fixed-anim writes only time and destination in its
+ * 16-byte header, so the remaining source bytes are retained without interpretation. Its GOAL
+ * writer copies five complete vectors per layer endpoint; the final eight source padding bytes are
+ * likewise retained but are not consumed as floats. No texture-pool or renderer mutation occurs.
+ */
+std::optional<Jak2CommonTfragTextureUploadPlan> plan_jak2_common_tfrag_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*! Preserve the original TEX_LCOM_TFRAG (bucket 187) capture seam. */

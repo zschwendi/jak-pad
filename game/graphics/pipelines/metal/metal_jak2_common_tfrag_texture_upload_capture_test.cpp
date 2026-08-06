@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "common/dma/dma.h"
@@ -14,7 +15,12 @@ constexpr u32 kChainOffset = 0x100;
 constexpr u32 kOrdinaryOffset = 0x4000;
 constexpr u32 kAnimatorOffset = 0x5000;
 constexpr u32 kDirectSetupOffset = 0x6000;
+constexpr u32 kExtraTransferOffset = 0x6800;
 constexpr u32 kTexturePageOffset = 0x7000;
+constexpr u32 kAnimatorBodyTagOffset = kAnimatorOffset + 16;
+constexpr u32 kAnimatorBodyOffset = kAnimatorBodyTagOffset + 16;
+constexpr u32 kAnimatorFinishOffset = kAnimatorBodyOffset + 496;
+constexpr u32 kAnimatorNextOffset = kAnimatorFinishOffset + 16;
 constexpr std::size_t kMemorySize = 0x10000;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
@@ -38,6 +44,10 @@ void put_u32(std::vector<u8>* memory, u32 offset, u32 value) {
 }
 
 void put_u64(std::vector<u8>* memory, u32 offset, u64 value) {
+  std::memcpy(memory->data() + offset, &value, sizeof(value));
+}
+
+void put_float(std::vector<u8>* memory, u32 offset, float value) {
   std::memcpy(memory->data() + offset, &value, sizeof(value));
 }
 
@@ -157,6 +167,47 @@ std::vector<u8> make_ordinary_and_animator_fixture() {
   const u32 end_offset = bucket_offset() + 16;
   put_tag(&packet, ordinary_boundary, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
   put_animator_array(&packet, kAnimatorOffset, 27, 31, end_offset);
+  return packet;
+}
+
+void put_layer_values(std::vector<u8>* packet, u32 offset, float base, u8 padding) {
+  for (u32 i = 0; i < 18; ++i) {
+    put_float(packet, offset + i * sizeof(float), base + static_cast<float>(i) * 0.25f);
+  }
+  std::fill_n(packet->begin() + offset + 72, 8, padding);
+}
+
+std::vector<u8> make_common_execution_fixture() {
+  std::vector<u8> packet(kMemorySize);
+  const u32 end_offset = bucket_offset() + 16;
+  const u32 ordinary_next_offset = kOrdinaryOffset + 32;
+
+  put_tag(&packet, bucket_offset(), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
+  put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(-1));
+  put_tag(&packet, ordinary_next_offset, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+
+  put_tag(&packet, kAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 12, 0);
+  put_tag(&packet, kAnimatorBodyTagOffset, DmaTag::Kind::CNT, 31, 0, kPcPortVif | 27, 0);
+  put_float(&packet, kAnimatorBodyOffset, 42.5f);
+  put_u32(&packet, kAnimatorBodyOffset + 4, 0x1234);
+  for (u32 i = 0; i < 8; ++i) {
+    packet[kAnimatorBodyOffset + 8 + i] = static_cast<u8>(0xa0 + i);
+  }
+  for (u32 i = 0; i < 6; ++i) {
+    put_layer_values(&packet, kAnimatorBodyOffset + 16 + i * 80,
+                     10.f + static_cast<float>(i) * 20.f, static_cast<u8>(0xb0 + i));
+  }
+  put_tag(&packet, kAnimatorFinishOffset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 13, 0);
+  put_tag(&packet, kAnimatorNextOffset, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+
+  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+
+  packet[kTexturePageOffset + 8] = 0x44;
   return packet;
 }
 
@@ -320,6 +371,153 @@ void test_normal_shrub_execution_plan() {
              packet.data(), packet.size(), kChainOffset, 73)
              .has_value(),
         "an unobserved ordinary page descriptor is rejected for normal SHRUB setup");
+}
+
+void test_common_opcode27_execution_plan() {
+  auto packet = make_common_execution_fixture();
+  metal_renderer::Jak2CommonTfragTextureUploadCapture result;
+  const auto plan = metal_renderer::plan_jak2_common_tfrag_texture_upload(
+      packet.data(), packet.size(), kChainOffset, packet.data(), packet.size(), &result);
+  check(plan.has_value() && result.valid && result.present &&
+            result.classification == Classification::OrdinaryAndAnimator &&
+            result.transfer_count == 9 && result.total_payload_bytes == 672 &&
+            result.inert_transfers == 4 && result.ordinary_descriptors == 1 &&
+            result.animator_arrays == 1 && result.animator_body_transfers == 1 &&
+            result.animator_payload_bytes == 496 && result.direct_setup_transfers == 1 &&
+            result.eye_markers == 0 && result.other_transfers == 0 &&
+            result.opcode_counts[12] == 1 && result.opcode_counts[13] == 1 &&
+            result.opcode_counts[27] == 1,
+        "the exact nine-transfer live bucket-187 envelope produces an owned plan");
+  check(plan->ordinary.page_offset == kTexturePageOffset && plan->ordinary.mode == -1 &&
+            plan->ordinary.page_header[8] == 0x44,
+        "the common plan owns the validated live ordinary page header");
+
+  const auto& skull_gem = plan->skull_gem;
+  check(skull_gem.time == 42.5f && skull_gem.destination_tbp == 0x1234 &&
+            skull_gem.source_header_tail.front() == 0xa0 &&
+            skull_gem.source_header_tail.back() == 0xa7,
+        "the opcode-27 header owns its finite time, destination, and unwritten source tail");
+  check(skull_gem.layers[0].start.color[0] == 10.f &&
+            skull_gem.layers[0].start.scale[0] == 11.f &&
+            skull_gem.layers[0].start.offset[1] == 11.75f &&
+            skull_gem.layers[0].start.st_scale[0] == 12.f &&
+            skull_gem.layers[0].start.st_offset[1] == 12.75f &&
+            skull_gem.layers[0].start.qs[3] == 13.75f &&
+            skull_gem.layers[0].start.rot == 14.f &&
+            skull_gem.layers[0].start.st_rot == 14.25f &&
+            skull_gem.layers[0].start.source_padding.front() == 0xb0 &&
+            skull_gem.layers[2].end.color[0] == 110.f &&
+            skull_gem.layers[2].end.source_padding.back() == 0xb5,
+        "all three start/end LayerVals pairs own typed floats and source-copied padding");
+}
+
+void test_common_opcode27_shape_variants_fail_closed() {
+  auto packet = make_common_execution_fixture();
+  put_tag(&packet, bucket_offset(), DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+  put_tag(&packet, kAnimatorNextOffset, DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "a reordered animator-before-page envelope is rejected");
+
+  packet = make_common_execution_fixture();
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, kExtraTransferOffset, 0, 0);
+  put_tag(&packet, kExtraTransferOffset, DmaTag::Kind::NEXT, 0, bucket_offset() + 16, 0, 0);
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "an extra inert transfer cannot enter the exact nine-transfer plan");
+
+  packet = make_common_execution_fixture();
+  put_u32(&packet, kAnimatorBodyTagOffset + 8, kPcPortVif | 28);
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "an animator opcode other than skull-gem 27 is rejected");
+
+  packet = make_common_execution_fixture();
+  put_tag(&packet, kAnimatorBodyTagOffset, DmaTag::Kind::CNT, 30, 0, kPcPortVif | 27, 0);
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "an opcode-27 body other than qwc 31 is rejected");
+
+  packet = make_common_execution_fixture();
+  put_u32(&packet, kAnimatorFinishOffset + 12, kPcPortVif);
+  check(capture(packet).valid &&
+            !metal_renderer::plan_jak2_common_tfrag_texture_upload(
+                 packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+                 .has_value(),
+        "the legacy alternate finish metadata stays capturable but not executable by this plan");
+
+  packet = make_common_execution_fixture();
+  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 9, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 9);
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "a terminal Direct reset other than qwc 10 is rejected");
+}
+
+void test_common_opcode27_payload_validation() {
+  auto packet = make_common_execution_fixture();
+  put_float(&packet, kAnimatorBodyOffset, std::numeric_limits<float>::quiet_NaN());
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "a nonfinite skull-gem time is rejected");
+
+  packet = make_common_execution_fixture();
+  put_float(&packet, kAnimatorBodyOffset + 16 + 48,
+            std::numeric_limits<float>::infinity());
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "a nonfinite LayerVals scalar is rejected");
+
+  packet = make_common_execution_fixture();
+  put_u32(&packet, kAnimatorBodyOffset + 4, 0x40000);
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "an opcode-27 destination outside PS2 VRAM is rejected");
+
+  packet = make_common_execution_fixture();
+  put_u64(&packet, kOrdinaryOffset + 16, packet.size());
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "an out-of-range ordinary page is rejected");
+
+  packet = make_common_execution_fixture();
+  put_u32(&packet, kTexturePageOffset + 12, std::numeric_limits<u32>::max());
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "an invalid live page header is rejected");
+
+  packet = make_common_execution_fixture();
+  put_u64(&packet, kOrdinaryOffset + 24, 0);
+  check(!metal_renderer::plan_jak2_common_tfrag_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "an ordinary page mode other than minus one is rejected");
+}
+
+void test_common_opcode27_plan_owns_reused_sources() {
+  auto packet = make_common_execution_fixture();
+  const auto plan = metal_renderer::plan_jak2_common_tfrag_texture_upload(
+      packet.data(), packet.size(), kChainOffset, packet.data(), packet.size());
+  check(plan.has_value(), "the exact common fixture produces a plan before source reuse");
+  std::fill(packet.begin(), packet.end(), 0xa5);
+  check(plan->ordinary.page_header[8] == 0x44 && plan->skull_gem.time == 42.5f &&
+            plan->skull_gem.destination_tbp == 0x1234 &&
+            plan->skull_gem.source_header_tail.front() == 0xa0 &&
+            plan->skull_gem.layers[0].start.color[0] == 10.f &&
+            plan->skull_gem.layers[2].end.st_rot == 114.25f &&
+            plan->skull_gem.layers[2].end.source_padding.back() == 0xb5,
+        "packet and live-page reuse cannot change any owned opcode-27 plan data");
 }
 
 void test_animator_and_combined_metadata() {
@@ -538,6 +736,10 @@ int main() {
   test_texture_bucket_allowlist();
   test_normal_tfrag_execution_plan();
   test_normal_shrub_execution_plan();
+  test_common_opcode27_execution_plan();
+  test_common_opcode27_shape_variants_fail_closed();
+  test_common_opcode27_payload_validation();
+  test_common_opcode27_plan_owns_reused_sources();
   test_animator_and_combined_metadata();
   test_payload_contents_are_never_part_of_classification();
   test_capture_owns_metadata_after_snapshot_reuse();
