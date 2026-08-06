@@ -51,6 +51,28 @@ class MetalDirectRenderer : public MetalBucketRenderer {
   void reset_state();
   void flush_pending(MetalSharedRenderState* render_state, MetalFrameContext& ctx);
 
+  struct LastBatchStats {
+    bool valid = false;
+    bool textured = false;
+    int vertices = 0;
+    int nonzero_rgb_vertices = 0;
+    u32 tex0_tbp = 0;
+    bool tex0_tcc = false;
+    bool tex0_decal = false;
+    bool texture_lookup_hit = false;
+    bool used_placeholder = false;
+    bool write_rgb = false;
+    bool blend_enabled = false;
+    u8 blend_a = 0;
+    u8 blend_b = 0;
+    u8 blend_c = 0;
+    u8 blend_d = 0;
+    bool alpha_test_enabled = false;
+    u8 alpha_test_mode = 0;
+    u8 alpha_aref = 0;
+    u8 alpha_afail = 0;
+  };
+
   struct Stats {
     int triangles = 0;
     int draw_calls = 0;
@@ -62,6 +84,7 @@ class MetalDirectRenderer : public MetalBucketRenderer {
     int flush_from_prim = 0;
     int flush_from_state_exhaust = 0;
     int unsupported_blends = 0;  // draws whose GS blend mode has no mapping yet
+    LastBatchStats last_batch;
   };
   const Stats& stats() const { return m_stats; }
 

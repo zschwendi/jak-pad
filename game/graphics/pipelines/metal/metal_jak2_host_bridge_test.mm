@@ -123,7 +123,30 @@ void make_debug_no_zbuf2_chain() {
 
 bool is_zero(const goal_jak2_metal_frame_summary& summary) {
   return summary.width == 0 && summary.height == 0 && summary.byte_count == 0 &&
-         summary.hash == 0 && summary.non_black_pixels == 0;
+         summary.hash == 0 && summary.non_black_pixels == 0 &&
+         summary.nonzero_alpha_pixels == 0 && summary.max_alpha == 0;
+}
+
+bool sky_batch_is_zero(const goal_jak2_metal_host_metrics& metrics) {
+  return metrics.last_sky_draw_batch_valid == 0 &&
+         metrics.last_sky_draw_batch_textured == 0 &&
+         metrics.last_sky_draw_batch_vertices == 0 &&
+         metrics.last_sky_draw_batch_nonzero_rgb_vertices == 0 &&
+         metrics.last_sky_draw_batch_tex0_tbp == 0 &&
+         metrics.last_sky_draw_batch_tex0_tcc == 0 &&
+         metrics.last_sky_draw_batch_tex0_decal == 0 &&
+         metrics.last_sky_draw_batch_texture_lookup_hit == 0 &&
+         metrics.last_sky_draw_batch_used_placeholder == 0 &&
+         metrics.last_sky_draw_batch_write_rgb == 0 &&
+         metrics.last_sky_draw_batch_blend_enabled == 0 &&
+         metrics.last_sky_draw_batch_blend_a == 0 &&
+         metrics.last_sky_draw_batch_blend_b == 0 &&
+         metrics.last_sky_draw_batch_blend_c == 0 &&
+         metrics.last_sky_draw_batch_blend_d == 0 &&
+         metrics.last_sky_draw_batch_alpha_test_enabled == 0 &&
+         metrics.last_sky_draw_batch_alpha_test_mode == 0 &&
+         metrics.last_sky_draw_batch_alpha_aref == 0 &&
+         metrics.last_sky_draw_batch_alpha_afail == 0;
 }
 
 }  // namespace
@@ -153,7 +176,7 @@ int main() {
   check(callbacks.send_chain && callbacks.sync_path && callbacks.vsync,
         "the copied host contains every required synchronous callback");
 
-  goal_jak2_metal_frame_summary frame_summary = {1, 1, 1, 1, 1};
+  goal_jak2_metal_frame_summary frame_summary = {1, 1, 1, 1, 1, 1, 1};
   check(!goal_jak2_metal_host_read_last_frame(host, &frame_summary) && is_zero(frame_summary),
         "nil-layer mode safely rejects readback before a frame exists");
 
@@ -176,6 +199,7 @@ int main() {
             metrics.presentations == 0 && metrics.presentation_drops == 0 &&
             metrics.presentation_order_mismatches == 0 && metrics.unsupported_blends == 0,
         "nil-layer lifecycle dispatches without committing, drawing, or presenting");
+  check(sky_batch_is_zero(metrics), "an empty chain exposes no SKY_DRAW batch facts");
   check(!goal_jak2_metal_host_wait_for_last_frame(host, 0.01, 0),
         "nil-layer mode rejects a completion wait without changing its dispatch result");
 
@@ -192,13 +216,14 @@ int main() {
             metrics.last_debug_no_zbuf2_draws == 0 &&
             metrics.last_debug_no_zbuf2_triangles == 0,
         "SCREEN_FILTER records its deterministic Direct draw and triangle");
+  check(sky_batch_is_zero(metrics), "SCREEN_FILTER facts do not leak into SKY_DRAW metrics");
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
             metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
             metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&
             metrics.submissions == 0 && metrics.presentations == 0 &&
             metrics.presentation_drops == 0 && metrics.presentation_order_mismatches == 0,
         "nil-layer SCREEN_FILTER drawing remains submission- and presentation-free");
-  frame_summary = {1, 1, 1, 1, 1};
+  frame_summary = {1, 1, 1, 1, 1, 1, 1};
   check(!goal_jak2_metal_host_read_last_frame(host, &frame_summary) && is_zero(frame_summary),
         "nil-layer SCREEN_FILTER encoding still exposes no completed frame readback");
 
@@ -215,6 +240,7 @@ int main() {
             metrics.last_sky_draw_draws == 0 && metrics.last_sky_draw_triangles == 0 &&
             metrics.last_screen_filter_draws == 0 && metrics.last_screen_filter_triangles == 0,
         "DEBUG_NO_ZBUF2 owns the deterministic Direct draw and triangle exactly");
+  check(sky_batch_is_zero(metrics), "DEBUG_NO_ZBUF2 facts do not leak into SKY_DRAW metrics");
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
             metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
             metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&
@@ -236,6 +262,33 @@ int main() {
             metrics.last_debug_no_zbuf2_draws == 0 &&
             metrics.last_debug_no_zbuf2_triangles == 0,
         "SKY_DRAW owns the deterministic Direct draw and triangle exactly");
+  check(metrics.last_sky_draw_batch_valid == 1 &&
+            metrics.last_sky_draw_batch_textured == 0 &&
+            metrics.last_sky_draw_batch_vertices == 3 &&
+            metrics.last_sky_draw_batch_nonzero_rgb_vertices == 3 &&
+            metrics.last_sky_draw_batch_tex0_tbp == 0 &&
+            metrics.last_sky_draw_batch_tex0_tcc == 0 &&
+            metrics.last_sky_draw_batch_tex0_decal == 0 &&
+            metrics.last_sky_draw_batch_texture_lookup_hit == 0 &&
+            metrics.last_sky_draw_batch_used_placeholder == 0 &&
+            metrics.last_sky_draw_batch_write_rgb == 1,
+        "SKY_DRAW exposes its basic vertex, TEX0, texture, and RGB-write facts");
+  check(metrics.last_sky_draw_batch_blend_enabled == 1 &&
+            metrics.last_sky_draw_batch_blend_a ==
+                static_cast<uint32_t>(GsAlpha::BlendMode::SOURCE) &&
+            metrics.last_sky_draw_batch_blend_b ==
+                static_cast<uint32_t>(GsAlpha::BlendMode::DEST) &&
+            metrics.last_sky_draw_batch_blend_c ==
+                static_cast<uint32_t>(GsAlpha::BlendMode::SOURCE) &&
+            metrics.last_sky_draw_batch_blend_d ==
+                static_cast<uint32_t>(GsAlpha::BlendMode::DEST) &&
+            metrics.last_sky_draw_batch_alpha_test_enabled == 0 &&
+            metrics.last_sky_draw_batch_alpha_test_mode ==
+                static_cast<uint32_t>(GsTest::AlphaTest::NOTEQUAL) &&
+            metrics.last_sky_draw_batch_alpha_aref == 0 &&
+            metrics.last_sky_draw_batch_alpha_afail ==
+                static_cast<uint32_t>(GsTest::AlphaFail::KEEP),
+        "SKY_DRAW exposes its GS blend and alpha-test facts");
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
             metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
             metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&

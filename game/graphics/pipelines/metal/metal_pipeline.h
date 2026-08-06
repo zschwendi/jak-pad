@@ -94,6 +94,28 @@ struct MercPaletteHealthEvent {
   bool valid() const { return issue_mask != 0; }
 };
 
+struct DirectBatchStats {
+  bool valid = false;
+  bool textured = false;
+  int vertices = 0;
+  int nonzero_rgb_vertices = 0;
+  u32 tex0_tbp = 0;
+  bool tex0_tcc = false;
+  bool tex0_decal = false;
+  bool texture_lookup_hit = false;
+  bool used_placeholder = false;
+  bool write_rgb = false;
+  bool blend_enabled = false;  // GS PRIM.ABE for the batch
+  u8 blend_a = 0;
+  u8 blend_b = 0;
+  u8 blend_c = 0;
+  u8 blend_d = 0;
+  bool alpha_test_enabled = false;
+  u8 alpha_test_mode = 0;
+  u8 alpha_aref = 0;
+  u8 alpha_afail = 0;
+};
+
 // Counters for the DMA-chain path, used by tests to verify that send_chain
 // frames really dispatched buckets and that deferred content is counted.
 struct ChainStats {
@@ -166,6 +188,7 @@ struct ChainStats {
   int triangles = 0;
   int jak2_sky_draw_draws = 0;
   int jak2_sky_draw_triangles = 0;
+  DirectBatchStats jak2_sky_draw_last_batch;
   int jak2_screen_filter_draws = 0;
   int jak2_screen_filter_triangles = 0;
   int jak2_debug_no_zbuf2_draws = 0;

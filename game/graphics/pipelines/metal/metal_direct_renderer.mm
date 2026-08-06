@@ -285,6 +285,29 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
     ASSERT(false);
   }
 
+  auto& last_batch = m_stats.last_batch;
+  last_batch = {};
+  last_batch.valid = true;
+  last_batch.textured = pso_key.shader == MetalShaderId::DIRECT_TEXTURED;
+  last_batch.vertices = m_prim_buffer.vert_count;
+  for (int i = 0; i < m_prim_buffer.vert_count; i++) {
+    const auto& rgba = m_prim_buffer.vertices[i].rgba;
+    last_batch.nonzero_rgb_vertices += rgba[0] != 0 || rgba[1] != 0 || rgba[2] != 0;
+  }
+  last_batch.tex0_tbp = batch_tex.texture_base_ptr;
+  last_batch.tex0_tcc = batch_tex.tcc;
+  last_batch.tex0_decal = batch_tex.decal;
+  last_batch.write_rgb = m_test_state.write_rgb;
+  last_batch.blend_enabled = m_blend_state.alpha_blend_enable;
+  last_batch.blend_a = static_cast<u8>(m_blend_state.a);
+  last_batch.blend_b = static_cast<u8>(m_blend_state.b);
+  last_batch.blend_c = static_cast<u8>(m_blend_state.c);
+  last_batch.blend_d = static_cast<u8>(m_blend_state.d);
+  last_batch.alpha_test_enabled = m_test_state.alpha_test_enable;
+  last_batch.alpha_test_mode = static_cast<u8>(m_test_state.alpha_test);
+  last_batch.alpha_aref = m_test_state.aref;
+  last_batch.alpha_afail = static_cast<u8>(m_test_state.afail);
+
   // vertices into the frame's stream buffer
   const u32 bytes = m_prim_buffer.vert_count * sizeof(Vertex);
   id<MTLBuffer> vbuf;
@@ -334,14 +357,18 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
         tex = render_state->texture_pool->lookup(batch_tex.texture_base_ptr);
       }
     }
+    last_batch.texture_lookup_hit = tex.has_value();
+    const u64 placeholder = render_state->texture_pool->get_placeholder_texture();
     if (!tex) {
       lg::warn("Metal direct {}: failed to find texture at {}, using placeholder", m_name,
                batch_tex.texture_base_ptr);
-      tex = render_state->texture_pool->get_placeholder_texture();
+      tex = placeholder;
     }
+    last_batch.used_placeholder = *tex == placeholder;
     id<MTLTexture> mtl_tex = metal_texture_lookup(*tex);
     if (!mtl_tex) {
-      mtl_tex = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
+      last_batch.used_placeholder = true;
+      mtl_tex = metal_texture_lookup(placeholder);
     }
     ASSERT(mtl_tex);
 

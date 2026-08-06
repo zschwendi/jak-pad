@@ -1018,6 +1018,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.triangles = ctx.triangles;
     m_chain_stats.jak2_sky_draw_draws = 0;
     m_chain_stats.jak2_sky_draw_triangles = 0;
+    m_chain_stats.jak2_sky_draw_last_batch = {};
     m_chain_stats.jak2_screen_filter_draws = 0;
     m_chain_stats.jak2_screen_filter_triangles = 0;
     m_chain_stats.jak2_debug_no_zbuf2_draws = 0;
@@ -1040,8 +1041,30 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         unsupported_blends += d->stats().unsupported_blends;
         if (m_shared_state.version == GameVersion::Jak2 &&
             bucket_id == static_cast<std::size_t>(jak2::BucketId::SKY_DRAW)) {
-          m_chain_stats.jak2_sky_draw_draws = d->stats().draw_calls;
-          m_chain_stats.jak2_sky_draw_triangles = d->stats().triangles;
+          const auto& stats = d->stats();
+          const auto& batch = stats.last_batch;
+          auto& sky_batch = m_chain_stats.jak2_sky_draw_last_batch;
+          m_chain_stats.jak2_sky_draw_draws = stats.draw_calls;
+          m_chain_stats.jak2_sky_draw_triangles = stats.triangles;
+          sky_batch.valid = batch.valid;
+          sky_batch.textured = batch.textured;
+          sky_batch.vertices = batch.vertices;
+          sky_batch.nonzero_rgb_vertices = batch.nonzero_rgb_vertices;
+          sky_batch.tex0_tbp = batch.tex0_tbp;
+          sky_batch.tex0_tcc = batch.tex0_tcc;
+          sky_batch.tex0_decal = batch.tex0_decal;
+          sky_batch.texture_lookup_hit = batch.texture_lookup_hit;
+          sky_batch.used_placeholder = batch.used_placeholder;
+          sky_batch.write_rgb = batch.write_rgb;
+          sky_batch.blend_enabled = batch.blend_enabled;
+          sky_batch.blend_a = batch.blend_a;
+          sky_batch.blend_b = batch.blend_b;
+          sky_batch.blend_c = batch.blend_c;
+          sky_batch.blend_d = batch.blend_d;
+          sky_batch.alpha_test_enabled = batch.alpha_test_enabled;
+          sky_batch.alpha_test_mode = batch.alpha_test_mode;
+          sky_batch.alpha_aref = batch.alpha_aref;
+          sky_batch.alpha_afail = batch.alpha_afail;
         } else if (m_shared_state.version == GameVersion::Jak2 &&
                    bucket_id == static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)) {
           m_chain_stats.jak2_screen_filter_draws = d->stats().draw_calls;

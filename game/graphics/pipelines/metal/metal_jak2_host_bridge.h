@@ -37,6 +37,25 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t triangles;
   uint64_t last_sky_draw_draws;
   uint64_t last_sky_draw_triangles;
+  uint32_t last_sky_draw_batch_valid;
+  uint32_t last_sky_draw_batch_textured;
+  uint32_t last_sky_draw_batch_vertices;
+  uint32_t last_sky_draw_batch_nonzero_rgb_vertices;
+  uint32_t last_sky_draw_batch_tex0_tbp;
+  uint32_t last_sky_draw_batch_tex0_tcc;
+  uint32_t last_sky_draw_batch_tex0_decal;
+  uint32_t last_sky_draw_batch_texture_lookup_hit;
+  uint32_t last_sky_draw_batch_used_placeholder;
+  uint32_t last_sky_draw_batch_write_rgb;
+  uint32_t last_sky_draw_batch_blend_enabled;
+  uint32_t last_sky_draw_batch_blend_a;
+  uint32_t last_sky_draw_batch_blend_b;
+  uint32_t last_sky_draw_batch_blend_c;
+  uint32_t last_sky_draw_batch_blend_d;
+  uint32_t last_sky_draw_batch_alpha_test_enabled;
+  uint32_t last_sky_draw_batch_alpha_test_mode;
+  uint32_t last_sky_draw_batch_alpha_aref;
+  uint32_t last_sky_draw_batch_alpha_afail;
   uint64_t last_screen_filter_draws;
   uint64_t last_screen_filter_triangles;
   uint64_t last_debug_no_zbuf2_draws;
@@ -57,6 +76,8 @@ typedef struct goal_jak2_metal_frame_summary {
   uint64_t byte_count;
   uint64_t hash;
   uint64_t non_black_pixels;
+  uint64_t nonzero_alpha_pixels;
+  uint32_t max_alpha;
 } goal_jak2_metal_frame_summary;
 
 /*! Create the process-singleton, nil-layer Jak 2 policy-dispatch host. */
@@ -74,8 +95,9 @@ int goal_jak2_metal_host_get_metrics(goal_jak2_metal_host* host,
 
 /*!
  * Summarize the last completed RGBA8 game frame without exposing C++ storage. `hash` is FNV-1a
- * over the RGBA bytes, and `non_black_pixels` ignores alpha. Returns zero and clears `out` when
- * no layer-backed frame is available.
+ * over the RGBA bytes. `non_black_pixels` ignores alpha, while `nonzero_alpha_pixels` and
+ * `max_alpha` summarize the alpha channel. Returns zero and clears `out` when no layer-backed
+ * frame is available.
  */
 int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
                                          goal_jak2_metal_frame_summary* out);

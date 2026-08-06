@@ -1,5 +1,6 @@
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -55,6 +56,26 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.triangles = stats.triangles;
   host->metrics.last_sky_draw_draws = stats.jak2_sky_draw_draws;
   host->metrics.last_sky_draw_triangles = stats.jak2_sky_draw_triangles;
+  const auto& sky_batch = stats.jak2_sky_draw_last_batch;
+  host->metrics.last_sky_draw_batch_valid = sky_batch.valid;
+  host->metrics.last_sky_draw_batch_textured = sky_batch.textured;
+  host->metrics.last_sky_draw_batch_vertices = sky_batch.vertices;
+  host->metrics.last_sky_draw_batch_nonzero_rgb_vertices = sky_batch.nonzero_rgb_vertices;
+  host->metrics.last_sky_draw_batch_tex0_tbp = sky_batch.tex0_tbp;
+  host->metrics.last_sky_draw_batch_tex0_tcc = sky_batch.tex0_tcc;
+  host->metrics.last_sky_draw_batch_tex0_decal = sky_batch.tex0_decal;
+  host->metrics.last_sky_draw_batch_texture_lookup_hit = sky_batch.texture_lookup_hit;
+  host->metrics.last_sky_draw_batch_used_placeholder = sky_batch.used_placeholder;
+  host->metrics.last_sky_draw_batch_write_rgb = sky_batch.write_rgb;
+  host->metrics.last_sky_draw_batch_blend_enabled = sky_batch.blend_enabled;
+  host->metrics.last_sky_draw_batch_blend_a = sky_batch.blend_a;
+  host->metrics.last_sky_draw_batch_blend_b = sky_batch.blend_b;
+  host->metrics.last_sky_draw_batch_blend_c = sky_batch.blend_c;
+  host->metrics.last_sky_draw_batch_blend_d = sky_batch.blend_d;
+  host->metrics.last_sky_draw_batch_alpha_test_enabled = sky_batch.alpha_test_enabled;
+  host->metrics.last_sky_draw_batch_alpha_test_mode = sky_batch.alpha_test_mode;
+  host->metrics.last_sky_draw_batch_alpha_aref = sky_batch.alpha_aref;
+  host->metrics.last_sky_draw_batch_alpha_afail = sky_batch.alpha_afail;
   host->metrics.last_screen_filter_draws = stats.jak2_screen_filter_draws;
   host->metrics.last_screen_filter_triangles = stats.jak2_screen_filter_triangles;
   host->metrics.last_debug_no_zbuf2_draws = stats.jak2_debug_no_zbuf2_draws;
@@ -308,6 +329,8 @@ int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
     constexpr uint64_t kFnvPrime = 1099511628211ull;
     uint64_t hash = kFnvOffsetBasis;
     uint64_t non_black_pixels = 0;
+    uint64_t nonzero_alpha_pixels = 0;
+    uint32_t max_alpha = 0;
     for (std::size_t offset = 0; offset < frame.rgba.size(); offset += 4) {
       hash ^= frame.rgba[offset];
       hash *= kFnvPrime;
@@ -319,6 +342,8 @@ int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
       hash *= kFnvPrime;
       non_black_pixels +=
           frame.rgba[offset] != 0 || frame.rgba[offset + 1] != 0 || frame.rgba[offset + 2] != 0;
+      nonzero_alpha_pixels += frame.rgba[offset + 3] != 0;
+      max_alpha = std::max(max_alpha, static_cast<uint32_t>(frame.rgba[offset + 3]));
     }
 
     out->width = static_cast<uint32_t>(frame.width);
@@ -326,6 +351,8 @@ int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
     out->byte_count = frame.rgba.size();
     out->hash = hash;
     out->non_black_pixels = non_black_pixels;
+    out->nonzero_alpha_pixels = nonzero_alpha_pixels;
+    out->max_alpha = max_alpha;
     return 1;
   } catch (...) {
     *out = {};

@@ -809,6 +809,8 @@ later chain must report positive `SKY_DRAW` draws and triangles, attribute all d
 the enabled `SKY_DRAW`, `SCREEN_FILTER`, and `DEBUG_NO_ZBUF2` Direct buckets, and produce a frame
 with a changed hash and more non-black pixels than that baseline. Every chain must also retain
 exact drawable, commit, completion, submission, bucket-policy, and error counters.
+The reported alpha-channel and last-`SKY_DRAW` batch facts are diagnostic only; they do not replace
+the changed-hash and increased-non-black-pixel PASS gate.
 Physical-device runs additionally require one retained presentation callback per submission;
 simulator runs require zero callbacks.
 

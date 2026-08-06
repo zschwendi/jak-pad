@@ -63,6 +63,31 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
          before->last_debug_no_zbuf2_triangles == after->last_debug_no_zbuf2_triangles &&
          before->last_sky_draw_draws == after->last_sky_draw_draws &&
          before->last_sky_draw_triangles == after->last_sky_draw_triangles &&
+         before->last_sky_draw_batch_valid == after->last_sky_draw_batch_valid &&
+         before->last_sky_draw_batch_textured == after->last_sky_draw_batch_textured &&
+         before->last_sky_draw_batch_vertices == after->last_sky_draw_batch_vertices &&
+         before->last_sky_draw_batch_nonzero_rgb_vertices ==
+             after->last_sky_draw_batch_nonzero_rgb_vertices &&
+         before->last_sky_draw_batch_tex0_tbp == after->last_sky_draw_batch_tex0_tbp &&
+         before->last_sky_draw_batch_tex0_tcc == after->last_sky_draw_batch_tex0_tcc &&
+         before->last_sky_draw_batch_tex0_decal == after->last_sky_draw_batch_tex0_decal &&
+         before->last_sky_draw_batch_texture_lookup_hit ==
+             after->last_sky_draw_batch_texture_lookup_hit &&
+         before->last_sky_draw_batch_used_placeholder ==
+             after->last_sky_draw_batch_used_placeholder &&
+         before->last_sky_draw_batch_write_rgb == after->last_sky_draw_batch_write_rgb &&
+         before->last_sky_draw_batch_blend_enabled ==
+             after->last_sky_draw_batch_blend_enabled &&
+         before->last_sky_draw_batch_blend_a == after->last_sky_draw_batch_blend_a &&
+         before->last_sky_draw_batch_blend_b == after->last_sky_draw_batch_blend_b &&
+         before->last_sky_draw_batch_blend_c == after->last_sky_draw_batch_blend_c &&
+         before->last_sky_draw_batch_blend_d == after->last_sky_draw_batch_blend_d &&
+         before->last_sky_draw_batch_alpha_test_enabled ==
+             after->last_sky_draw_batch_alpha_test_enabled &&
+         before->last_sky_draw_batch_alpha_test_mode ==
+             after->last_sky_draw_batch_alpha_test_mode &&
+         before->last_sky_draw_batch_alpha_aref == after->last_sky_draw_batch_alpha_aref &&
+         before->last_sky_draw_batch_alpha_afail == after->last_sky_draw_batch_alpha_afail &&
          before->unsupported_blends == after->unsupported_blends &&
          before->last_command_buffer_status == after->last_command_buffer_status &&
          before->last_command_buffer_error_code == after->last_command_buffer_error_code;
@@ -774,9 +799,11 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
         } else {
           _realDmaDrawBaselineFrame = frame;
           _realDmaDrawBaselineCaptured = YES;
-          NSLog(@"GOALPAD_JAK2_REAL_DMA_DRAW_BASELINE PASS chain=1 hash=%llu non_black=%llu",
+          NSLog(@"GOALPAD_JAK2_REAL_DMA_DRAW_BASELINE PASS chain=1 hash=%llu non_black=%llu "
+                 "nonzero_alpha=%llu max_alpha=%u",
                 (unsigned long long)frame.hash,
-                (unsigned long long)frame.non_black_pixels);
+                (unsigned long long)frame.non_black_pixels,
+                (unsigned long long)frame.nonzero_alpha_pixels, frame.max_alpha);
         }
       } else if (!_proofFinished && _metalMetrics.last_sky_draw_draws > 0) {
         const uint64_t directDraws = _metalMetrics.last_screen_filter_draws +
@@ -791,6 +818,33 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
         const BOOL changedPixels =
             frame.hash != _realDmaDrawBaselineFrame.hash &&
             frame.non_black_pixels > _realDmaDrawBaselineFrame.non_black_pixels;
+        NSLog(@"GOALPAD_JAK2_SKY_DRAW_BATCH valid=%u textured=%u vertices=%u "
+               "nonzero_rgb_vertices=%u tex0_tbp=%u tex0_tcc=%u tex0_decal=%u "
+               "texture_lookup_hit=%u used_placeholder=%u write_rgb=%u blend_enabled=%u "
+               "blend_a=%u blend_b=%u blend_c=%u blend_d=%u alpha_test_enabled=%u "
+               "alpha_test_mode=%u alpha_aref=%u alpha_afail=%u frame_non_black=%llu "
+               "frame_nonzero_alpha=%llu frame_max_alpha=%u",
+              _metalMetrics.last_sky_draw_batch_valid,
+              _metalMetrics.last_sky_draw_batch_textured,
+              _metalMetrics.last_sky_draw_batch_vertices,
+              _metalMetrics.last_sky_draw_batch_nonzero_rgb_vertices,
+              _metalMetrics.last_sky_draw_batch_tex0_tbp,
+              _metalMetrics.last_sky_draw_batch_tex0_tcc,
+              _metalMetrics.last_sky_draw_batch_tex0_decal,
+              _metalMetrics.last_sky_draw_batch_texture_lookup_hit,
+              _metalMetrics.last_sky_draw_batch_used_placeholder,
+              _metalMetrics.last_sky_draw_batch_write_rgb,
+              _metalMetrics.last_sky_draw_batch_blend_enabled,
+              _metalMetrics.last_sky_draw_batch_blend_a,
+              _metalMetrics.last_sky_draw_batch_blend_b,
+              _metalMetrics.last_sky_draw_batch_blend_c,
+              _metalMetrics.last_sky_draw_batch_blend_d,
+              _metalMetrics.last_sky_draw_batch_alpha_test_enabled,
+              _metalMetrics.last_sky_draw_batch_alpha_test_mode,
+              _metalMetrics.last_sky_draw_batch_alpha_aref,
+              _metalMetrics.last_sky_draw_batch_alpha_afail,
+              (unsigned long long)frame.non_black_pixels,
+              (unsigned long long)frame.nonzero_alpha_pixels, frame.max_alpha);
         _proofFinished = YES;
         _proofPassed = exactDirectDraw && changedPixels;
         if (!_proofPassed) {
@@ -804,7 +858,9 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                  "sky_draw_draws=%llu sky_draw_triangles=%llu "
                  "debug_no_zbuf2_draws=%llu debug_no_zbuf2_triangles=%llu "
                  "screen_filter_draws=%llu screen_filter_triangles=%llu baseline_hash=%llu "
-                 "frame_hash=%llu baseline_non_black=%llu frame_non_black=%llu drawables=%llu "
+                 "frame_hash=%llu baseline_non_black=%llu frame_non_black=%llu "
+                 "baseline_nonzero_alpha=%llu frame_nonzero_alpha=%llu frame_max_alpha=%u "
+                 "drawables=%llu "
                  "committed=%llu completed=%llu submissions=%llu",
                 (unsigned long long)_metrics.ticks,
                 (unsigned long long)_metalMetrics.chains,
@@ -820,6 +876,8 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                 (unsigned long long)frame.hash,
                 (unsigned long long)_realDmaDrawBaselineFrame.non_black_pixels,
                 (unsigned long long)frame.non_black_pixels,
+                (unsigned long long)_realDmaDrawBaselineFrame.nonzero_alpha_pixels,
+                (unsigned long long)frame.nonzero_alpha_pixels, frame.max_alpha,
                 (unsigned long long)_metalMetrics.drawables_acquired,
                 (unsigned long long)_metalMetrics.command_buffers_committed,
                 (unsigned long long)_metalMetrics.command_buffers_completed,
@@ -1092,8 +1150,16 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                           "Last SCREEN_FILTER draws / triangles: %llu / %llu\n"
                           "Last DEBUG_NO_ZBUF2 draws / triangles: %llu / %llu\n"
                           "Last SKY_DRAW draws / triangles: %llu / %llu\n"
-                          "Frame: %u x %u, %llu bytes, hash %llu, non-black %llu\n"
-                          "Baseline hash / non-black: %llu / %llu\n"
+                          "SKY batch valid / textured: %u / %u\n"
+                          "SKY vertices / nonzero RGB vertices: %u / %u\n"
+                          "SKY TEX0 TBP / TCC / decal: %u / %u / %u\n"
+                          "SKY texture hit / placeholder / write RGB: %u / %u / %u\n"
+                          "SKY blend enabled / A B C D: %u / %u %u %u %u\n"
+                          "SKY alpha test enabled / mode / AREF / AFAIL: %u / %u / %u / %u\n"
+                          "Frame: %u x %u, %llu bytes, hash %llu, non-black %llu, "
+                          "nonzero alpha %llu, max alpha %u\n"
+                          "Baseline hash / non-black / nonzero alpha / max alpha: "
+                          "%llu / %llu / %llu / %u\n"
                           "Drawable acquired / missed: %llu / %llu\n"
                           "Command buffers committed / completed / errors: %llu / %llu / %llu\n"
                           "Submissions / late: %llu / %llu\n"
@@ -1116,12 +1182,35 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                          (unsigned long long)_metalMetrics.last_debug_no_zbuf2_triangles,
                          (unsigned long long)_metalMetrics.last_sky_draw_draws,
                          (unsigned long long)_metalMetrics.last_sky_draw_triangles,
+                         _metalMetrics.last_sky_draw_batch_valid,
+                         _metalMetrics.last_sky_draw_batch_textured,
+                         _metalMetrics.last_sky_draw_batch_vertices,
+                         _metalMetrics.last_sky_draw_batch_nonzero_rgb_vertices,
+                         _metalMetrics.last_sky_draw_batch_tex0_tbp,
+                         _metalMetrics.last_sky_draw_batch_tex0_tcc,
+                         _metalMetrics.last_sky_draw_batch_tex0_decal,
+                         _metalMetrics.last_sky_draw_batch_texture_lookup_hit,
+                         _metalMetrics.last_sky_draw_batch_used_placeholder,
+                         _metalMetrics.last_sky_draw_batch_write_rgb,
+                         _metalMetrics.last_sky_draw_batch_blend_enabled,
+                         _metalMetrics.last_sky_draw_batch_blend_a,
+                         _metalMetrics.last_sky_draw_batch_blend_b,
+                         _metalMetrics.last_sky_draw_batch_blend_c,
+                         _metalMetrics.last_sky_draw_batch_blend_d,
+                         _metalMetrics.last_sky_draw_batch_alpha_test_enabled,
+                         _metalMetrics.last_sky_draw_batch_alpha_test_mode,
+                         _metalMetrics.last_sky_draw_batch_alpha_aref,
+                         _metalMetrics.last_sky_draw_batch_alpha_afail,
                          _realDmaDrawFrame.width, _realDmaDrawFrame.height,
                          (unsigned long long)_realDmaDrawFrame.byte_count,
                          (unsigned long long)_realDmaDrawFrame.hash,
                          (unsigned long long)_realDmaDrawFrame.non_black_pixels,
+                         (unsigned long long)_realDmaDrawFrame.nonzero_alpha_pixels,
+                         _realDmaDrawFrame.max_alpha,
                          (unsigned long long)_realDmaDrawBaselineFrame.hash,
                          (unsigned long long)_realDmaDrawBaselineFrame.non_black_pixels,
+                         (unsigned long long)_realDmaDrawBaselineFrame.nonzero_alpha_pixels,
+                         _realDmaDrawBaselineFrame.max_alpha,
                          (unsigned long long)_metalMetrics.drawables_acquired,
                          (unsigned long long)_metalMetrics.drawable_misses,
                          (unsigned long long)_metalMetrics.command_buffers_committed,
