@@ -1,5 +1,6 @@
-#include <cstdio>
+#include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -103,9 +104,98 @@ std::vector<u8> make_sprite_direct_setup() {
   return data;
 }
 
+template <typename T>
+std::vector<u8> bytes_of(const T& value) {
+  std::vector<u8> bytes(sizeof(value));
+  std::memcpy(bytes.data(), &value, sizeof(value));
+  return bytes;
+}
+
+struct GlowFixture {
+  SpriteGlowConsts consts = {};
+  SpriteGlowData data = {};
+  std::vector<u8> adgif = std::vector<u8>(sizeof(AdGifData), 0);
+
+  GlowFixture() {
+    consts.camera[0] = math::Vector4f(1.f, 0.f, 0.f, 0.f);
+    consts.camera[1] = math::Vector4f(0.f, 1.f, 0.f, 0.f);
+    consts.camera[2] = math::Vector4f(0.f, 0.f, 1.f, 0.f);
+    consts.camera[3] = math::Vector4f(0.f, 0.f, 0.f, 1.f);
+
+    consts.perspective[0] = math::Vector4f(1.f, 0.f, 0.f, 0.f);
+    consts.perspective[1] = math::Vector4f(0.f, 1.f, 0.f, 0.f);
+    consts.perspective[2] = math::Vector4f(0.f, 0.f, 0.25f, 0.f);
+    consts.perspective[3] = math::Vector4f(0.f, 0.f, 0.f, 1.f);
+    consts.hvdf = math::Vector4f(128.f, 96.f, 0.f, 0.f);
+    consts.hmge = math::Vector4f(1.f, 1.f, 1.f, 1.f);
+    consts.deg_to_rad = 0.017453292519943295f;
+    consts.basis_x = math::Vector4f(1.f, 0.f, 0.f, 0.f);
+    consts.basis_y = math::Vector4f(0.f, 1.f, 0.f, 0.f);
+    consts.xy_array[0] = math::Vector4f(-1.f, -1.f, 0.f, 0.f);
+    consts.xy_array[1] = math::Vector4f(1.f, -1.f, 0.f, 0.f);
+    consts.xy_array[2] = math::Vector4f(-1.f, 1.f, 0.f, 0.f);
+    consts.xy_array[3] = math::Vector4f(1.f, 1.f, 0.f, 0.f);
+    consts.clamp_min = math::Vector4f(0.f, 0.f, 0.f, 0.f);
+    consts.clamp_max = math::Vector4f(256.f, 192.f, 64.f, 16.f);
+
+    data.pos[0] = 0.25f;
+    data.pos[1] = -0.25f;
+    data.pos[2] = 2.f;
+    data.size_x = 8.f;
+    data.size_probe = 4.f;
+    data.z_offset = 0.25f;
+    data.rot_angle = 15.f;
+    data.size_y = 6.f;
+    data.color[0] = 64.f;
+    data.color[1] = 32.f;
+    data.color[2] = 16.f;
+    data.color[3] = 128.f;
+    data.fade_b = 1.f;
+
+    for (std::size_t i = 0; i < adgif.size(); i++) {
+      adgif[i] = static_cast<u8>((i * 37 + 11) & 0xff);
+    }
+  }
+};
+
+bool output_is_finite(const SpriteGlowOutput& output) {
+  const auto vector_is_finite = [](const auto& vector) {
+    for (float component : vector) {
+      if (!std::isfinite(component)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  for (const auto& position : output.first_clear_pos) {
+    if (!vector_is_finite(position)) {
+      return false;
+    }
+  }
+  for (const auto& position : output.second_clear_pos) {
+    if (!vector_is_finite(position)) {
+      return false;
+    }
+  }
+  for (const auto& uv : output.offscreen_uv) {
+    if (!vector_is_finite(uv)) {
+      return false;
+    }
+  }
+  for (const auto& position : output.flare_xyzw) {
+    if (!vector_is_finite(position)) {
+      return false;
+    }
+  }
+  return vector_is_finite(output.flare_draw_color) && std::isfinite(output.perspective_q);
+}
+
 SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
                                       bool use_chain3_glow_tail = false,
-                                      bool include_glow_marked_group0 = false) {
+                                      bool include_glow_marked_group0 = false,
+                                      const GlowFixture* glow = nullptr,
+                                      bool malformed_glow_template = false) {
   SyntheticChain chain;
   chain.empty_next();
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 7),
@@ -158,23 +248,32 @@ SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
 
   if (use_chain3_glow_tail) {
     for (int i = 0; i < 4; i++) {
-      chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(1, 0, false),
-                     std::vector<u8>(16, 0));
-      chain.transfer(0, 0, std::vector<u8>(4 * 16, 0));
-      chain.transfer(0, 0, std::vector<u8>(5 * 16, 0));
-      chain.transfer(vif_code(VifCode::Kind::MSCALF, 10), 0);
+      chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(1, 0, true), std::vector<u8>(16, 0));
+      chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(4, 1, true), std::vector<u8>(4 * 16, 0));
+      chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(5, 145, true), std::vector<u8>(5 * 16, 0));
+      chain.transfer(vif_code(VifCode::Kind::MSCALF, 10), vif_code(VifCode::Kind::FLUSHE));
     }
     chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
   } else {
-    // Exact asset-free shape of the observed chain-2 glow. Payload contents
-    // are synthetic; sizes and structural VIF codes are the contracts the
-    // renderer consumes.
-    chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(24, 0, false),
-                   std::vector<u8>(sizeof(SpriteGlowConsts), 0));
-    chain.transfer(0, 0, std::vector<u8>(0x54 * 16, 0));
-    chain.transfer(0, 0, std::vector<u8>(0x54 * 16, 0));
+    const auto constants =
+        glow ? bytes_of(glow->consts) : std::vector<u8>(sizeof(SpriteGlowConsts), 0);
+    chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(24, 980, false), constants);
+    chain.transfer(vif_stcycl(4, 4),
+                   vif_unpack_v4_32(0x54, malformed_glow_template ? 801 : 800, false),
+                   std::vector<u8>(0x54 * 16, 0));
+    chain.transfer(vif_code(VifCode::Kind::MSCAL, 0), vif_unpack_v4_32(0x54, 884, false),
+                   std::vector<u8>(0x54 * 16, 0));
     chain.transfer(vif_code(VifCode::Kind::BASE, 0), vif_code(VifCode::Kind::OFFSET, 400));
     chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+    if (glow) {
+      std::vector<u8> control(16, 0);
+      const u32 sprite_count = 1;
+      std::memcpy(control.data(), &sprite_count, sizeof(sprite_count));
+      chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(1, 0, true), control);
+      chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(4, 1, true), bytes_of(glow->data));
+      chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(5, 145, true), glow->adgif);
+      chain.transfer(vif_code(VifCode::Kind::MSCALF, 10), vif_code(VifCode::Kind::FLUSHE));
+    }
     chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
   }
 
@@ -203,7 +302,7 @@ void test_empty_jak2_bucket() {
   ASSERT(renderer.stats().glow_transfers_skipped == 0);
 }
 
-void test_normal_jak2_parser_and_glow_accounting() {
+void test_normal_jak2_parser_and_residual_accounting() {
   auto chain = make_normal_jak2_chain();
   const u32 next_bucket = chain.finish();
 
@@ -219,11 +318,91 @@ void test_normal_jak2_parser_and_glow_accounting() {
   ASSERT(renderer.stats().blocks_2d_grp1 == 0);
   ASSERT(renderer.stats().count_2d_grp1 == 0);
   ASSERT(renderer.stats().draw_calls == 0);
-  ASSERT(renderer.stats().glow_transfers_skipped == 6);
-  ASSERT(renderer.stats().glow_bytes_skipped == 24 * 16 + 2 * 0x54 * 16);
+  ASSERT(renderer.stats().glow_sprites_parsed == 0);
+  ASSERT(renderer.stats().glow_sprites_accepted == 0);
+  ASSERT(renderer.stats().glow_sprites_rejected == 0);
+  ASSERT(renderer.pending_glow_outputs().empty());
+  ASSERT(renderer.stats().glow_transfers_skipped == 0);
+  ASSERT(renderer.stats().glow_bytes_skipped == 0);
   ASSERT(renderer.stats().post_glow_residual_transfers == 3);
   ASSERT(renderer.stats().post_glow_residual_bytes == 10 * 16);
-  ASSERT(renderer.stats().unsupported_bytes == 24 * 16 + 2 * 0x54 * 16 + 10 * 16);
+  ASSERT(renderer.stats().unsupported_bytes == 10 * 16);
+}
+
+void test_constants_led_glow_retains_finite_output_and_exact_adgif() {
+  GlowFixture glow;
+  auto chain = make_normal_jak2_chain(false, false, false, &glow);
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().glow_sprites_parsed == 1);
+  ASSERT(renderer.stats().glow_sprites_accepted == 1);
+  ASSERT(renderer.stats().glow_sprites_rejected == 0);
+  ASSERT(renderer.stats().glow_sprites_skipped == 1);
+  ASSERT(renderer.stats().glow_transfers_skipped == 0);
+  ASSERT(renderer.stats().unsupported_bytes == 10 * 16);
+  ASSERT(renderer.pending_glow_outputs().size() == 1);
+  const auto& output = renderer.pending_glow_outputs().front();
+  ASSERT(output_is_finite(output));
+  ASSERT(output.flare_draw_color.x() > 0.f);
+  ASSERT(output.flare_draw_color.y() > 0.f);
+  ASSERT(output.flare_draw_color.z() > 0.f);
+  ASSERT(std::memcmp(&output.adgif, glow.adgif.data(), glow.adgif.size()) == 0);
+}
+
+void test_constants_led_glow_rejects_clipped_output() {
+  GlowFixture glow;
+  glow.data.pos[0] = 4.f;
+  auto chain = make_normal_jak2_chain(false, false, false, &glow);
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().glow_sprites_parsed == 1);
+  ASSERT(renderer.stats().glow_sprites_accepted == 0);
+  ASSERT(renderer.stats().glow_sprites_rejected == 1);
+  ASSERT(renderer.pending_glow_outputs().empty());
+  ASSERT(renderer.stats().unsupported_bytes == 10 * 16);
+}
+
+void test_malformed_constants_led_glow_fails_closed() {
+  GlowFixture glow;
+  auto chain = make_normal_jak2_chain(false, false, false, &glow, true);
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().glow_sprites_parsed == 0);
+  ASSERT(renderer.stats().glow_sprites_accepted == 0);
+  ASSERT(renderer.stats().glow_sprites_rejected == 0);
+  ASSERT(renderer.pending_glow_outputs().empty());
+  ASSERT(renderer.stats().glow_transfers_skipped == 10);
+  ASSERT(renderer.stats().glow_bytes_skipped == 202 * 16);
+  ASSERT(renderer.stats().post_glow_residual_transfers == 3);
+  ASSERT(renderer.stats().post_glow_residual_bytes == 10 * 16);
+  ASSERT(renderer.stats().unsupported_bytes == 212 * 16);
 }
 
 void test_jak2_hud_program() {
@@ -263,7 +442,7 @@ void test_jak2_glow_marker_is_not_submitted_as_an_ordinary_sprite() {
   ASSERT(renderer.stats().draw_calls == 0);
 }
 
-void test_chain3_glow_falls_back_to_explicit_residual() {
+void test_control_led_glow_without_constants_remains_explicitly_unsupported() {
   auto chain = make_normal_jak2_chain(false, true);
   const u32 next_bucket = chain.finish();
 
@@ -276,10 +455,14 @@ void test_chain3_glow_falls_back_to_explicit_residual() {
   renderer.render(dma, &state, ctx);
 
   ASSERT(dma.current_tag_offset() == next_bucket);
-  ASSERT(renderer.stats().glow_transfers_skipped == 1);
-  ASSERT(renderer.stats().glow_bytes_skipped == 16);
-  ASSERT(renderer.stats().post_glow_residual_transfers == 19);
-  ASSERT(renderer.stats().post_glow_residual_bytes == 49 * 16);
+  ASSERT(renderer.stats().glow_sprites_parsed == 0);
+  ASSERT(renderer.stats().glow_sprites_accepted == 0);
+  ASSERT(renderer.stats().glow_sprites_rejected == 0);
+  ASSERT(renderer.pending_glow_outputs().empty());
+  ASSERT(renderer.stats().glow_transfers_skipped == 17);
+  ASSERT(renderer.stats().glow_bytes_skipped == 40 * 16);
+  ASSERT(renderer.stats().post_glow_residual_transfers == 3);
+  ASSERT(renderer.stats().post_glow_residual_bytes == 10 * 16);
   ASSERT(renderer.stats().unsupported_bytes == 50 * 16);
 }
 
@@ -288,10 +471,13 @@ void test_chain3_glow_falls_back_to_explicit_residual() {
 int main() {
   @autoreleasepool {
     test_empty_jak2_bucket();
-    test_normal_jak2_parser_and_glow_accounting();
+    test_normal_jak2_parser_and_residual_accounting();
+    test_constants_led_glow_retains_finite_output_and_exact_adgif();
+    test_constants_led_glow_rejects_clipped_output();
+    test_malformed_constants_led_glow_fails_closed();
     test_jak2_hud_program();
     test_jak2_glow_marker_is_not_submitted_as_an_ordinary_sprite();
-    test_chain3_glow_falls_back_to_explicit_residual();
+    test_control_led_glow_without_constants_remains_explicitly_unsupported();
   }
   std::puts("jak2-metal-sprite-renderer-test: PASS");
   return 0;

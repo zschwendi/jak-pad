@@ -1,5 +1,7 @@
 #include "metal_sprite_renderer.h"
 
+#include <utility>
+
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
@@ -19,6 +21,64 @@ namespace {
 constexpr int kMaxSpritesPerFlush = 8192;
 
 constexpr PerGameVersion<u32> kNormalZbp(448, 304, 304, 304);
+
+constexpr u16 kGlowConstantsAddress = 980;
+constexpr u16 kGlowTemplate0Address = 800;
+constexpr u16 kGlowTemplate1Address = 884;
+constexpr u16 kGlowBufferOffset = 400;
+constexpr u16 kGlowControlAddress = 0;
+constexpr u16 kGlowVectorAddress = 1;
+constexpr u16 kGlowAdgifAddress = 145;
+constexpr u16 kGlowProgramAddress = 10;
+
+constexpr u32 vif_code(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
+  return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
+}
+
+constexpr u32 vif_stcycl(u16 cl, u16 wl) {
+  return vif_code(VifCode::Kind::STCYCL, cl | (wl << 8));
+}
+
+constexpr u32 vif_unpack_v4_32(u8 qwc, u16 address, bool tops) {
+  return vif_code(VifCode::Kind::UNPACK_V4_32, address | (tops ? (1 << 15) : 0), qwc);
+}
+
+bool is_exact_stcycl_unpack(const DmaTransfer& transfer, u8 qwc, u16 address, bool tops) {
+  return transfer.size_bytes == qwc * 16 && transfer.vif0() == vif_stcycl(4, 4) &&
+         transfer.vif1() == vif_unpack_v4_32(qwc, address, tops);
+}
+
+bool is_exact_glow_template_1(const DmaTransfer& transfer) {
+  constexpr u8 kTemplateQwc = 0x54;
+  return transfer.size_bytes == kTemplateQwc * 16 &&
+         transfer.vif0() == vif_code(VifCode::Kind::MSCAL, 0) &&
+         transfer.vif1() == vif_unpack_v4_32(kTemplateQwc, kGlowTemplate1Address, false);
+}
+
+bool is_exact_base_offset(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 0 && transfer.vif0() == vif_code(VifCode::Kind::BASE, 0) &&
+         transfer.vif1() == vif_code(VifCode::Kind::OFFSET, kGlowBufferOffset);
+}
+
+bool is_exact_nop_nop(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 0 && transfer.vif0() == 0 && transfer.vif1() == 0;
+}
+
+bool is_exact_nop_flushe(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 0 && transfer.vif0() == 0 &&
+         transfer.vif1() == vif_code(VifCode::Kind::FLUSHE);
+}
+
+bool is_exact_glow_call(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 0 &&
+         transfer.vif0() == vif_code(VifCode::Kind::MSCALF, kGlowProgramAddress) &&
+         transfer.vif1() == vif_code(VifCode::Kind::FLUSHE);
+}
+
+bool is_exact_direct10(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 10 * 16 && transfer.vif0() == 0 &&
+         transfer.vif1() == vif_code(VifCode::Kind::DIRECT, 10);
+}
 
 // size of sprite-aux-list in GOAL code * SPRITE_MAX_AMOUNT_MULT (as in GL)
 constexpr int kMaxDistortSprites = 256 * 12;
@@ -258,6 +318,7 @@ void MetalSpriteRenderer::render(DmaFollower& dma,
                                  MetalSharedRenderState* render_state,
                                  MetalFrameContext& ctx) {
   m_stats = {};
+  m_pending_glow_outputs.clear();
 
   switch (render_state->version) {
     case GameVersion::Jak1:
@@ -303,9 +364,8 @@ void MetalSpriteRenderer::render_jak1(DmaFollower& dma,
 }
 
 /*!
- * Mirror of Sprite3::render_jak2 through the normal sprite path. Glow is not
- * implemented; the exact remainder after its structural NOP/FLUSHE boundary is
- * measured and reported instead of being silently discarded.
+ * Mirror of Sprite3::render_jak2 through the normal sprite path. A complete,
+ * constants-led glow packet is parsed into pending backend-neutral records.
  */
 void MetalSpriteRenderer::render_jak2(DmaFollower& dma,
                                       MetalSharedRenderState* render_state,
@@ -326,7 +386,7 @@ void MetalSpriteRenderer::render_jak2(DmaFollower& dma,
   auto nop_flushe = dma.read_and_advance();
   ASSERT(nop_flushe.vifcode0().kind == VifCode::Kind::NOP);
   ASSERT(nop_flushe.vifcode1().kind == VifCode::Kind::FLUSHE);
-  consume_unsupported_jak2_glow_and_residual(dma, render_state);
+  parse_jak2_glow_and_residual(dma, render_state);
 }
 
 bool MetalSpriteRenderer::render_normal_path(DmaFollower& dma,
@@ -355,77 +415,147 @@ bool MetalSpriteRenderer::render_normal_path(DmaFollower& dma,
   return true;
 }
 
-void MetalSpriteRenderer::consume_unsupported_jak2_glow_and_residual(
-    DmaFollower& dma,
-    MetalSharedRenderState* render_state) {
-  auto read_glow_transfer = [&]() {
-    ASSERT_MSG(dma.current_tag_offset() != render_state->next_bucket,
-               "truncated Jak 2 sprite glow DMA");
-    const auto transfer = dma.read_and_advance();
-    m_stats.glow_transfers_skipped++;
-    m_stats.glow_bytes_skipped += transfer.size_bytes;
-    m_stats.unsupported_bytes += transfer.size_bytes;
-    return transfer;
+void MetalSpriteRenderer::parse_jak2_glow_and_residual(DmaFollower& dma,
+                                                       MetalSharedRenderState* render_state) {
+  std::vector<DmaTransfer> packet_transfers;
+  std::vector<SpriteGlowOutput> parsed_outputs;
+  int parsed_count = 0;
+  int accepted_count = 0;
+  int rejected_count = 0;
+
+  auto read_packet_transfer = [&](DmaTransfer* transfer) {
+    if (dma.current_tag_offset() == render_state->next_bucket) {
+      return false;
+    }
+    *transfer = dma.read_and_advance();
+    packet_transfers.push_back(*transfer);
+    return true;
   };
 
-  if (dma.current_tag_offset() != render_state->next_bucket) {
-    // Follow Sprite3::glow_dma_and_draw exactly far enough to distinguish the
-    // glow payload from the Direct10/final-NEXT tail that render_jak2 drains.
-    auto maybe_consts_setup = read_glow_transfer();
-    if (maybe_consts_setup.size_bytes == sizeof(SpriteGlowConsts)) {
-      auto templ_1 = read_glow_transfer();
-      ASSERT(templ_1.size_bytes == 16 * 0x54);
-
-      auto templ_2 = read_glow_transfer();
-      ASSERT(templ_2.size_bytes == 16 * 0x54);
-
-      auto base_offset = read_glow_transfer();
-      ASSERT(base_offset.size_bytes == 0);
-
-      auto flushe = read_glow_transfer();
-      ASSERT(flushe.size_bytes == 0);
-
-      auto control = read_glow_transfer();
-      while (control.size_bytes == 0 && control.vifcode0().kind == VifCode::Kind::NOP &&
-             control.vifcode1().kind == VifCode::Kind::NOP) {
-        control = read_glow_transfer();
-      }
-      while (control.size_bytes == 16) {
-        u32 sprite_count = 0;
-        memcpy(&sprite_count, control.data, sizeof(sprite_count));
-        ASSERT(sprite_count == 1);
-        m_stats.glow_sprites_skipped += sprite_count;
-        auto vec_data = read_glow_transfer();
-        ASSERT(vec_data.size_bytes == 4 * 16);
-        auto shader = read_glow_transfer();
-        ASSERT(shader.size_bytes == 5 * 16);
-        read_glow_transfer();  // MSCALF/call
-        control = read_glow_transfer();
-      }
-      ASSERT(control.size_bytes == 0);
-      ASSERT(control.vifcode0().kind == VifCode::Kind::NOP);
-      ASSERT(control.vifcode1().kind == VifCode::Kind::FLUSHE);
+  auto parse_constants_led_packet = [&]() {
+    DmaTransfer constants_transfer;
+    if (!read_packet_transfer(&constants_transfer) ||
+        !is_exact_stcycl_unpack(constants_transfer, sizeof(SpriteGlowConsts) / 16,
+                                kGlowConstantsAddress, false)) {
+      return false;
     }
-  }
 
-  while (dma.current_tag_offset() != render_state->next_bucket) {
-    const auto transfer = dma.read_and_advance();
-    m_stats.post_glow_residual_transfers++;
-    m_stats.post_glow_residual_bytes += transfer.size_bytes;
-    m_stats.unsupported_bytes += transfer.size_bytes;
+    SpriteGlowConsts constants;
+    memcpy(&constants, constants_transfer.data, sizeof(constants));
+
+    DmaTransfer transfer;
+    if (!read_packet_transfer(&transfer) ||
+        !is_exact_stcycl_unpack(transfer, 0x54, kGlowTemplate0Address, false)) {
+      return false;
+    }
+    if (!read_packet_transfer(&transfer) || !is_exact_glow_template_1(transfer)) {
+      return false;
+    }
+    if (!read_packet_transfer(&transfer) || !is_exact_base_offset(transfer)) {
+      return false;
+    }
+    if (!read_packet_transfer(&transfer) || !is_exact_nop_flushe(transfer)) {
+      return false;
+    }
+    if (!read_packet_transfer(&transfer)) {
+      return false;
+    }
+
+    while (is_exact_nop_nop(transfer)) {
+      if (!read_packet_transfer(&transfer)) {
+        return false;
+      }
+    }
+
+    while (transfer.size_bytes == 16) {
+      if (!is_exact_stcycl_unpack(transfer, 1, kGlowControlAddress, true)) {
+        return false;
+      }
+      u32 sprite_count = 0;
+      memcpy(&sprite_count, transfer.data, sizeof(sprite_count));
+      if (sprite_count != 1) {
+        return false;
+      }
+
+      DmaTransfer vector_transfer;
+      DmaTransfer adgif_transfer;
+      DmaTransfer call_transfer;
+      if (!read_packet_transfer(&vector_transfer) ||
+          !is_exact_stcycl_unpack(vector_transfer, 4, kGlowVectorAddress, true) ||
+          !read_packet_transfer(&adgif_transfer) ||
+          !is_exact_stcycl_unpack(adgif_transfer, 5, kGlowAdgifAddress, true) ||
+          !read_packet_transfer(&call_transfer) || !is_exact_glow_call(call_transfer)) {
+        return false;
+      }
+
+      parsed_count++;
+      SpriteGlowOutput output;
+      if (glow_math(&constants, false, vector_transfer.data, adgif_transfer.data, &output)) {
+        parsed_outputs.push_back(output);
+        accepted_count++;
+      } else {
+        rejected_count++;
+      }
+
+      if (!read_packet_transfer(&transfer)) {
+        return false;
+      }
+      while (is_exact_nop_nop(transfer)) {
+        if (!read_packet_transfer(&transfer)) {
+          return false;
+        }
+      }
+    }
+
+    return is_exact_nop_flushe(transfer);
+  };
+
+  auto drain_remaining = [&]() {
+    while (dma.current_tag_offset() != render_state->next_bucket) {
+      const auto tag_kind = dma.current_tag().kind;
+      const auto transfer = dma.read_and_advance();
+      if (is_exact_direct10(transfer) ||
+          (tag_kind == DmaTag::Kind::NEXT && transfer.size_bytes == 0)) {
+        m_stats.post_glow_residual_transfers++;
+        m_stats.post_glow_residual_bytes += transfer.size_bytes;
+      } else {
+        m_stats.glow_transfers_skipped++;
+        m_stats.glow_bytes_skipped += transfer.size_bytes;
+      }
+      m_stats.unsupported_bytes += transfer.size_bytes;
+    }
+  };
+
+  const bool parsed_packet =
+      dma.current_tag_offset() != render_state->next_bucket && parse_constants_led_packet();
+  if (parsed_packet) {
+    m_stats.glow_sprites_parsed = parsed_count;
+    m_stats.glow_sprites_accepted = accepted_count;
+    m_stats.glow_sprites_rejected = rejected_count;
+    // These are retained but not submitted by this renderer checkpoint.
+    m_stats.glow_sprites_skipped = parsed_count;
+    m_pending_glow_outputs = std::move(parsed_outputs);
+    drain_remaining();
+  } else {
+    for (const auto& transfer : packet_transfers) {
+      m_stats.glow_transfers_skipped++;
+      m_stats.glow_bytes_skipped += transfer.size_bytes;
+      m_stats.unsupported_bytes += transfer.size_bytes;
+    }
+
+    drain_remaining();
   }
 
   m_unsupported_bytes_total += m_stats.unsupported_bytes;
 
-  if ((m_stats.glow_transfers_skipped > 0 || m_stats.post_glow_residual_transfers > 0) &&
-      !m_warned_unsupported_glow) {
-    lg::warn(
-        "Metal sprite {}: Jak 2 glow is not ported; skipped {} glow transfers/{} payload bytes "
-        "and consumed {} post-glow residual transfers/{} payload bytes ({} unsupported payload "
-        "bytes total, logged once)",
-        m_name, m_stats.glow_transfers_skipped, m_stats.glow_bytes_skipped,
-        m_stats.post_glow_residual_transfers, m_stats.post_glow_residual_bytes,
-        m_stats.unsupported_bytes);
+  if (m_stats.unsupported_bytes > 0 && !m_warned_unsupported_glow) {
+    lg::warn("Metal sprite {}: parsed {}/accepted {}/rejected {} Jak 2 glow sprites; left {} "
+             "control-led transfers/{} payload bytes and {} residual transfers/{} payload bytes "
+             "unsupported ({} payload bytes total, logged once)",
+             m_name, m_stats.glow_sprites_parsed, m_stats.glow_sprites_accepted,
+             m_stats.glow_sprites_rejected, m_stats.glow_transfers_skipped,
+             m_stats.glow_bytes_skipped, m_stats.post_glow_residual_transfers,
+             m_stats.post_glow_residual_bytes, m_stats.unsupported_bytes);
     m_warned_unsupported_glow = true;
   }
 }

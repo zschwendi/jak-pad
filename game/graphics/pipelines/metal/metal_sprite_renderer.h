@@ -22,10 +22,10 @@
  * same DMA walk and sine-table vertex build, drawn against a snapshot of the
  * frame so far (the game pass is split where GL calls glBlitFramebuffer).
  *
- * The normal Jak 2 Sprite3 path is also supported. Jak 2 glow remains
- * unimplemented: its post-HUD DMA is drained with explicit transfer/byte stats
- * and a one-time warning, so enabling the bucket cannot silently claim glow.
- * Jak 3 remains unsupported.
+ * The normal Jak 2 Sprite3 path is also supported. Its constants-led glow DMA
+ * is verified and transformed into pending backend-neutral records, but those
+ * records are not drawn here. Control-led tails without constants remain
+ * explicitly unsupported. Jak 3 remains unsupported.
  */
 
 #include <map>
@@ -38,6 +38,7 @@
 #include "game/graphics/opengl_renderer/sprite/sprite_common.h"
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
+#include "game/graphics/sprite_glow_math.h"
 
 class MetalSpriteRenderer : public MetalBucketRenderer {
  public:
@@ -58,6 +59,9 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
     int normal_sprites_submitted = 0;
     int glow_marked_sprites = 0;
     int glow_sprites_skipped = 0;
+    int glow_sprites_parsed = 0;
+    int glow_sprites_accepted = 0;
+    int glow_sprites_rejected = 0;
     int draw_calls = 0;
     int triangles = 0;
     int distort_sprites = 0;
@@ -69,6 +73,9 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
     u64 unsupported_bytes = 0;
   };
   const Stats& stats() const { return m_stats; }
+  const std::vector<SpriteGlowOutput>& pending_glow_outputs() const {
+    return m_pending_glow_outputs;
+  }
   u64 unsupported_bytes_total() const { return m_unsupported_bytes_total; }
 
   // Vertex handed to the sprite shader: one per corner, four per sprite. Same
@@ -120,8 +127,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
   bool render_normal_path(DmaFollower& dma,
                           MetalSharedRenderState* render_state,
                           MetalFrameContext& ctx);
-  void consume_unsupported_jak2_glow_and_residual(DmaFollower& dma,
-                                                  MetalSharedRenderState* render_state);
+  void parse_jak2_glow_and_residual(DmaFollower& dma, MetalSharedRenderState* render_state);
   bool render_direct(DmaFollower& dma,
                      MetalSharedRenderState* render_state,
                      MetalFrameContext& ctx);
@@ -167,6 +173,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
 
   std::vector<SpriteVertex3D> m_vertices_3d;
   std::vector<u32> m_index_buffer_data;
+  std::vector<SpriteGlowOutput> m_pending_glow_outputs;
 
   DrawMode m_current_mode, m_default_mode;
   u32 m_current_tbp = 0;
