@@ -30,6 +30,7 @@ constexpr u16 kGlowControlAddress = 0;
 constexpr u16 kGlowVectorAddress = 1;
 constexpr u16 kGlowAdgifAddress = 145;
 constexpr u16 kGlowProgramAddress = 10;
+constexpr int kMaxGlowRecords = 400;
 
 constexpr u32 vif_code(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
   return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
@@ -419,6 +420,7 @@ void MetalSpriteRenderer::parse_jak2_glow_and_residual(DmaFollower& dma,
                                                        MetalSharedRenderState* render_state) {
   std::vector<DmaTransfer> packet_transfers;
   std::vector<SpriteGlowOutput> parsed_outputs;
+  parsed_outputs.reserve(kMaxGlowRecords);
   int parsed_count = 0;
   int accepted_count = 0;
   int rejected_count = 0;
@@ -474,6 +476,9 @@ void MetalSpriteRenderer::parse_jak2_glow_and_residual(DmaFollower& dma,
       u32 sprite_count = 0;
       memcpy(&sprite_count, transfer.data, sizeof(sprite_count));
       if (sprite_count != 1) {
+        return false;
+      }
+      if (parsed_count == kMaxGlowRecords) {
         return false;
       }
 

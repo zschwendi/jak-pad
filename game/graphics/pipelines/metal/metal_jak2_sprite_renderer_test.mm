@@ -195,7 +195,8 @@ SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
                                       bool use_chain3_glow_tail = false,
                                       bool include_glow_marked_group0 = false,
                                       const GlowFixture* glow = nullptr,
-                                      bool malformed_glow_template = false) {
+                                      bool malformed_glow_template = false,
+                                      int glow_record_count = 1) {
   SyntheticChain chain;
   chain.empty_next();
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 7),
@@ -265,7 +266,7 @@ SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
                    std::vector<u8>(0x54 * 16, 0));
     chain.transfer(vif_code(VifCode::Kind::BASE, 0), vif_code(VifCode::Kind::OFFSET, 400));
     chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
-    if (glow) {
+    for (int record = 0; glow && record < glow_record_count; record++) {
       std::vector<u8> control(16, 0);
       const u32 sprite_count = 1;
       std::memcpy(control.data(), &sprite_count, sizeof(sprite_count));
@@ -405,6 +406,60 @@ void test_malformed_constants_led_glow_fails_closed() {
   ASSERT(renderer.stats().unsupported_bytes == 212 * 16);
 }
 
+void test_constants_led_glow_accepts_source_record_limit() {
+  GlowFixture glow;
+  auto chain = make_normal_jak2_chain(false, false, false, &glow, false, 400);
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().glow_sprites_parsed == 400);
+  ASSERT(renderer.stats().glow_sprites_accepted == 400);
+  ASSERT(renderer.stats().glow_sprites_rejected == 0);
+  ASSERT(renderer.stats().glow_sprites_skipped == 400);
+  ASSERT(renderer.stats().glow_transfers_skipped == 0);
+  ASSERT(renderer.stats().glow_bytes_skipped == 0);
+  ASSERT(renderer.stats().post_glow_residual_transfers == 3);
+  ASSERT(renderer.stats().post_glow_residual_bytes == 10 * 16);
+  ASSERT(renderer.stats().unsupported_bytes == 10 * 16);
+  ASSERT(renderer.pending_glow_outputs().size() == 400);
+  ASSERT(output_is_finite(renderer.pending_glow_outputs().front()));
+  ASSERT(output_is_finite(renderer.pending_glow_outputs().back()));
+}
+
+void test_constants_led_glow_record_overflow_fails_closed() {
+  GlowFixture glow;
+  auto chain = make_normal_jak2_chain(false, false, false, &glow, false, 401);
+  const u32 next_bucket = chain.finish();
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.next_bucket = next_bucket;
+  MetalFrameContext ctx;
+  DmaFollower dma(chain.bytes.data(), 0);
+  MetalSpriteRenderer renderer("synthetic-jak2-sprite", 313);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().glow_sprites_parsed == 0);
+  ASSERT(renderer.stats().glow_sprites_accepted == 0);
+  ASSERT(renderer.stats().glow_sprites_rejected == 0);
+  ASSERT(renderer.stats().glow_sprites_skipped == 0);
+  ASSERT(renderer.pending_glow_outputs().empty());
+  ASSERT(renderer.stats().glow_transfers_skipped == 1610);
+  ASSERT(renderer.stats().glow_bytes_skipped == 4202 * 16);
+  ASSERT(renderer.stats().post_glow_residual_transfers == 3);
+  ASSERT(renderer.stats().post_glow_residual_bytes == 10 * 16);
+  ASSERT(renderer.stats().unsupported_bytes == 4212 * 16);
+}
+
 void test_jak2_hud_program() {
   auto chain = make_normal_jak2_chain(true);
   const u32 next_bucket = chain.finish();
@@ -475,6 +530,8 @@ int main() {
     test_constants_led_glow_retains_finite_output_and_exact_adgif();
     test_constants_led_glow_rejects_clipped_output();
     test_malformed_constants_led_glow_fails_closed();
+    test_constants_led_glow_accepts_source_record_limit();
+    test_constants_led_glow_record_overflow_fails_closed();
     test_jak2_hud_program();
     test_jak2_glow_marker_is_not_submitted_as_an_ordinary_sprite();
     test_control_led_glow_without_constants_remains_explicitly_unsupported();
