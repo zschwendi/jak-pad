@@ -563,7 +563,8 @@ bool policy_table_is_audited() {
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Direct &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Visibility &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Sprite) {
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Sprite &&
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::TFragment) {
       return false;
     }
   }
