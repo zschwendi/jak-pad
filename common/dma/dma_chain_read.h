@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstring>
+#include <stdexcept>
 
 #include "common/dma/dma.h"
 #include "common/util/Assert.h"
@@ -45,8 +47,15 @@ class DmaFollower {
  public:
   DmaFollower() { m_ended = true; }
   DmaFollower(const void* data, u32 start_offset) : m_base(data), m_tag_offset(start_offset) {}
+  DmaFollower(const void* data, u32 start_offset, std::size_t data_size)
+      : m_base(data), m_tag_offset(start_offset), m_data_size(data_size), m_bounded(true) {}
   template <typename T>
   T read_val(u32 offset) const {
+    if (m_bounded &&
+        (static_cast<std::size_t>(offset) > m_data_size ||
+         sizeof(T) > m_data_size - static_cast<std::size_t>(offset))) {
+      throw std::out_of_range("DmaFollower read is outside its bounded chain copy");
+    }
     T result;
     memcpy(&result, (const u8*)m_base + offset, sizeof(T));
     return result;
@@ -56,12 +65,14 @@ class DmaFollower {
    * Read the current tag, return its transfer, then advance to the next.
    */
   DmaTransfer read_and_advance() {
+    if (m_ended) {
+      throw std::logic_error("DmaFollower cannot advance after the chain ended");
+    }
     DmaTag tag(read_val<u64>(m_tag_offset));
     DmaTransfer result;
     result.transferred_tag = read_val<u64>(m_tag_offset + 8);
     result.size_bytes = (u32)tag.qwc * 16;
     ASSERT(!tag.spr);
-    ASSERT(!m_ended);
     switch (tag.kind) {
       case DmaTag::Kind::CNT:
         // data, then next tag. doesn't read address.
@@ -128,6 +139,8 @@ class DmaFollower {
  private:
   const void* m_base = nullptr;
   u32 m_tag_offset = 0;
+  std::size_t m_data_size = 0;
+  bool m_bounded = false;
   s32 m_sp = 0;
   s32 m_stack[2] = {-1, -1};
   bool m_ended = false;

@@ -82,6 +82,8 @@ struct MetalSharedRenderState {
   MetalBackgroundState* background = nullptr;
   // merc resolves its eye draws through this, like the GL renderer does
   MetalEyeRenderer* eye_renderer = nullptr;
+  const u8* dma_copy_base = nullptr;
+  std::size_t dma_copy_size = 0;
   const u8* ee_memory = nullptr;
   u32 offset_of_s7 = 0;
   u64 engine_frame_id = 0;

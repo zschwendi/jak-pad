@@ -175,7 +175,7 @@ int goal_jak2_metal_presenter_render(double target_presentation_time) {
 
     g_presenter.render_attempts++;
     const bool acquired = g_presenter.renderer->render_chain_frame(
-        options, g_presenter.layer, g_presenter.chain.data(), 0);
+        options, g_presenter.layer, g_presenter.chain.data(), 0, g_presenter.chain.size());
     const auto stats = copy_stats();
     if (!acquired) {
       return fail_result("CAMetalLayer did not provide a drawable.");

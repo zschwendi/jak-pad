@@ -1,8 +1,13 @@
 #include "metal_renderer.h"
 
+#include "common/dma/dma_chain_validation.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <stdexcept>
+
+#include "fmt/format.h"
 
 #include "common/goal_constants.h"
 #include "common/log/log.h"
@@ -13,6 +18,7 @@
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_generic2.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
+#include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
@@ -743,7 +749,31 @@ void MetalRenderer::dispatch_buckets_jak2(DmaFollower dma, MetalFrameContext& ct
 bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
                                        CAMetalLayer* layer,
                                        const u8* chain_data,
-                                       u32 chain_offset) {
+                                       u32 chain_offset,
+                                       std::size_t chain_size) {
+  if (m_shared_state.version == GameVersion::Jak2) {
+    const auto validation =
+        metal_renderer::validate_jak2_metal_dma_chain(chain_data, chain_size, chain_offset);
+    if (!validation) {
+      if (validation.error == metal_renderer::Jak2MetalChainValidationError::DmaChain) {
+        throw std::runtime_error(fmt::format(
+            "Jak 2 Metal DMA chain validation failed at {:#x}: {}",
+            validation.dma.error_offset,
+            dma_chain_validation_error_message(validation.dma.error)));
+      }
+      throw std::runtime_error(fmt::format(
+          "Jak 2 Metal DMA chain validation failed before bucket {}: {}",
+          validation.failed_bucket + 1,
+          metal_renderer::jak2_metal_chain_validation_error_message(validation.error)));
+    }
+  } else {
+    const auto validation = validate_dma_chain(chain_data, chain_size, chain_offset);
+    if (!validation) {
+      throw std::runtime_error(fmt::format("Metal DMA chain validation failed at {:#x}: {}",
+                                           validation.error_offset,
+                                           dma_chain_validation_error_message(validation.error)));
+    }
+  }
   bool drawable_acquired = false;
   @autoreleasepool {
     ASSERT_MSG(!m_bucket_renderers.empty(), "init_bucket_renderers was not called");
@@ -771,6 +801,8 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     }
     m_shared_state.background = &m_background;
     m_shared_state.texture_pool = m_texture_pool;
+    m_shared_state.dma_copy_base = chain_data;
+    m_shared_state.dma_copy_size = chain_size;
     m_shared_state.ee_memory = g_ee_main_mem;
     m_shared_state.offset_of_s7 = g_s7_override ? g_s7_override : metal_offset_of_s7();
     m_shared_state.engine_frame_id = opts.engine_frame_id;
@@ -814,10 +846,10 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.last_buckets_dispatched = 0;
     switch (m_shared_state.version) {
       case GameVersion::Jak1:
-        dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset), ctx);
+        dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset, chain_size), ctx);
         break;
       case GameVersion::Jak2:
-        dispatch_buckets_jak2(DmaFollower(chain_data, chain_offset), ctx);
+        dispatch_buckets_jak2(DmaFollower(chain_data, chain_offset, chain_size), ctx);
         break;
       default:
         ASSERT_MSG(false, "Metal DMA dispatch only supports Jak 1 and Jak 2");

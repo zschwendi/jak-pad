@@ -12,12 +12,12 @@
 
 #include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
-#include "common/util/Assert.h"
 
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
@@ -356,8 +356,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
   if (!host) {
     return;
   }
-  ASSERT(ee_base == g_ee_main_mem);
-  ASSERT(chain_offset != 0);
+  if (ee_base != g_ee_main_mem) {
+    record_failure(host, "Jak 2 DMA chain does not use the active EE memory base");
+    return;
+  }
+  if (chain_offset == 0) {
+    record_failure(host, "Jak 2 DMA chain has a null start offset");
+    return;
+  }
 
   host->metrics.chains++;
   if (!host->fatal_chain_error.empty()) {
@@ -371,6 +377,17 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     host->options.engine_frame_id = host->metrics.chains;
     if (!update_draw_region(host)) {
       record_failure(host, "Jak 2 CAMetalLayer has no finite drawable size");
+      return;
+    }
+    const auto live_chain_validation =
+        metal_renderer::validate_jak2_metal_dma_chain(ee_base, EE_MAIN_MEM_SIZE, chain_offset);
+    if (!live_chain_validation) {
+      const std::string error =
+          std::string("Jak 2 live DMA chain validation failed before bucket ") +
+          std::to_string(live_chain_validation.failed_bucket + 1) + ": " +
+          metal_renderer::jak2_metal_chain_validation_error_message(live_chain_validation.error) +
+          " (" + dma_chain_validation_error_message(live_chain_validation.dma.error) + ")";
+      record_failure(host, error.c_str());
       return;
     }
     metal_renderer::Jak2Bucket4TextureUploadCapture bucket4_capture;
@@ -403,8 +420,22 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     const auto& copied = host->copier.run(ee_base, chain_offset, false);
     host->metrics.last_copied_bytes = static_cast<uint32_t>(copied.data.size());
 
+    const auto copied_chain_validation = metal_renderer::validate_jak2_metal_dma_chain(
+        copied.data.data(), copied.data.size(), copied.start_offset);
+    if (!copied_chain_validation) {
+      record_send_chain_failure(
+          host,
+          std::string("Jak 2 copied DMA chain validation failed before bucket ") +
+              std::to_string(copied_chain_validation.failed_bucket + 1) + ": " +
+              metal_renderer::jak2_metal_chain_validation_error_message(
+                  copied_chain_validation.error) +
+              " (" + dma_chain_validation_error_message(copied_chain_validation.dma.error) + ")",
+          host_texture_mutated);
+      return;
+    }
+
     const bool acquired = host->renderer.render_chain_frame(
-        host->options, host->layer, copied.data.data(), copied.start_offset);
+        host->options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
     copy_renderer_metrics(host);
     if (host->metrics.last_buckets_dispatched != metal_renderer::kJak2MetalBucketCount) {
       record_send_chain_failure(host, "Jak 2 Metal renderer violated its audited bucket policy",

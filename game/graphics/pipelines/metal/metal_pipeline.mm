@@ -369,7 +369,8 @@ void MetalDisplay::render() {
     opts.min_present_duration = g_present_min_duration;
 
     const auto& chain = g_chain.copier->get_last_result();
-    g_renderer->render_chain_frame(opts, m_layer, chain.data.data(), chain.start_offset);
+    g_renderer->render_chain_frame(opts, m_layer, chain.data.data(), chain.start_offset,
+                                   chain.data.size());
   } else {
     MetalRenderOptions opts;
     compute_draw_region(fb_w, fb_h, &opts.draw_region_w, &opts.draw_region_h);

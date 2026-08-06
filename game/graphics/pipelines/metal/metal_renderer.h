@@ -17,6 +17,7 @@
  * will replace it in later stages.
  */
 
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -100,7 +101,8 @@ class MetalRenderer {
   bool render_chain_frame(const MetalRenderOptions& opts,
                           CAMetalLayer* layer,
                           const u8* chain_data,
-                          u32 chain_offset);
+                          u32 chain_offset,
+                          std::size_t chain_size);
 
   // Waits for the most recently committed chain frame's completion handler, with a timeout.
   bool wait_for_last_chain_frame(double timeout_seconds);

@@ -415,6 +415,11 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_jak2_bucket_table.cpp
             graphics/pipelines/metal/metal_jak2_bucket_table_test.cpp)
     add_test(NAME jak2-metal-bucket-table-test COMMAND jak2-metal-bucket-table-test)
+
+    add_executable(jak2-metal-chain-validation-test
+            graphics/pipelines/metal/metal_jak2_chain_validation_test.cpp)
+    target_compile_definitions(jak2-metal-chain-validation-test PRIVATE NO_ASSERT=1)
+    add_test(NAME jak2-metal-chain-validation-test COMMAND jak2-metal-chain-validation-test)
 endif()
 
 # The portable kernel core is built the same way here as it is for iOS, so that host runs keep the

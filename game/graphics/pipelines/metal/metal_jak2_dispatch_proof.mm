@@ -1,4 +1,7 @@
+#include <array>
 #include <cstdio>
+#include <stdexcept>
+
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_jak2_synthetic_chain.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
@@ -36,10 +39,20 @@ int main() {
     TexturePool texture_pool(GameVersion::Jak2);
     renderer.init_bucket_renderers(&texture_pool, GameVersion::Jak2);
 
+    MetalRenderOptions options;
+    std::array<u8, 16> early_refe = {};
+    bool rejected_early_refe = false;
+    try {
+      renderer.render_chain_frame(options, nil, early_refe.data(), 0, early_refe.size());
+    } catch (const std::runtime_error&) {
+      rejected_early_refe = true;
+    }
+    check(rejected_early_refe,
+          "a valid REFE before all 327 buckets fails closed before Metal dispatch");
+
     const auto chain = metal_renderer::make_jak2_synthetic_metal_chain();
 
-    MetalRenderOptions options;
-    const bool acquired = renderer.render_chain_frame(options, nil, chain.data(), 0);
+    const bool acquired = renderer.render_chain_frame(options, nil, chain.data(), 0, chain.size());
     const auto stats = renderer.chain_stats();
 
     check(!acquired, "nil CAMetalLayer acquires no drawable");
