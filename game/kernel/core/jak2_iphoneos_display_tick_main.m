@@ -9,6 +9,7 @@
 
 static const uint64_t kMaximumProofTicks = 600;
 static const uint64_t kRealDmaMetalMaximumTicks = 3;
+static const uint64_t kRealDmaDrawMetalMaximumTicks = 3;
 static const double kRealDmaMetalCompletionTimeoutSeconds = 5.0;
 static const uint64_t kLifecycleProofForegroundTicksBeforePause = 3;
 static const uint64_t kLifecycleProofForegroundTicksAfterResume = 3;
@@ -56,6 +57,8 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
          before->presentation_drops == after->presentation_drops &&
          before->presentation_order_mismatches == after->presentation_order_mismatches &&
          before->skipped_bucket_bytes == after->skipped_bucket_bytes &&
+         before->last_screen_filter_draws == after->last_screen_filter_draws &&
+         before->last_screen_filter_triangles == after->last_screen_filter_triangles &&
          before->unsupported_blends == after->unsupported_blends &&
          before->last_command_buffer_status == after->last_command_buffer_status &&
          before->last_command_buffer_error_code == after->last_command_buffer_error_code;
@@ -101,12 +104,17 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   BOOL _metalProofEnabled;
   BOOL _metalProofSubmitted;
   BOOL _realDmaMetalProofEnabled;
+  BOOL _realDmaDrawMetalProofEnabled;
   BOOL _realDmaMetalCompletionPending;
+  BOOL _realDmaDrawBaselineCaptured;
   BOOL _lifecycleProofEnabled;
   BOOL _lifecyclePauseVerified;
   BOOL _lifecycleResumeVerified;
   uint64_t _metalProofDisplayCallbacks;
+  uint64_t _realDmaDrawInspectedChains;
   goal_jak2_metal_stats _metalStats;
+  goal_jak2_metal_frame_summary _realDmaDrawBaselineFrame;
+  goal_jak2_metal_frame_summary _realDmaDrawFrame;
   goal_display_tick_stats _lifecycleStatsBeforePause;
   goal_jak2_runtime_metrics _lifecycleMetricsBeforePause;
   goal_jak2_metal_host_metrics _lifecycleMetalBeforePause;
@@ -130,6 +138,7 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 - (void)stopRuntime;
 - (void)submitMetalProofFrame;
 - (void)waitForRealDmaMetalFrame;
+- (void)waitForRealDmaDrawMetalFrame;
 
 @end
 
@@ -143,12 +152,16 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   _metalProofEnabled =
       [NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_CAMETAL_LAYER_PROOF"]
           isEqualToString:@"1"];
-  _realDmaMetalProofEnabled =
+  _realDmaDrawMetalProofEnabled =
       !_metalProofEnabled &&
+      [NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_REAL_DMA_DRAW_CAMETAL_LAYER_PROOF"]
+          isEqualToString:@"1"];
+  _realDmaMetalProofEnabled =
+      !_metalProofEnabled && !_realDmaDrawMetalProofEnabled &&
       [NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_REAL_DMA_CAMETAL_LAYER_PROOF"]
           isEqualToString:@"1"];
   _lifecycleProofEnabled =
-      !_metalProofEnabled && !_realDmaMetalProofEnabled &&
+      !_metalProofEnabled && !_realDmaDrawMetalProofEnabled && !_realDmaMetalProofEnabled &&
       [NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_LIFECYCLE_PROOF"]
           isEqualToString:@"1"];
   [self createWindow];
@@ -191,7 +204,7 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 - (void)createWindow {
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController* controller = [[UIViewController alloc] init];
-  if (_metalProofEnabled || _realDmaMetalProofEnabled) {
+  if (_metalProofEnabled || _realDmaMetalProofEnabled || _realDmaDrawMetalProofEnabled) {
     GOALJak2MetalProofView* metalView =
         [[GOALJak2MetalProofView alloc] initWithFrame:self.window.bounds];
     metalView.backgroundColor = UIColor.blackColor;
@@ -291,17 +304,16 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 - (void)startRuntime {
   NSString* dataPath = _dataPath;
   NSString* savesPath = _savesPath;
-  CAMetalLayer* metalLayer =
-      _realDmaMetalProofEnabled ? self.metalProofView.metalLayer : nil;
+  const BOOL presentingProof = _realDmaMetalProofEnabled || _realDmaDrawMetalProofEnabled;
+  CAMetalLayer* metalLayer = presentingProof ? self.metalProofView.metalLayer : nil;
   goal_jak2_metal_host* presentingHost =
-      _realDmaMetalProofEnabled ? goal_jak2_metal_host_create_presenting(metalLayer) : NULL;
+      presentingProof ? goal_jak2_metal_host_create_presenting(metalLayer) : NULL;
   dispatch_queue_t queue =
       dispatch_queue_create("org.opengoal.jak2-display-tick.boot", DISPATCH_QUEUE_SERIAL);
   dispatch_async(queue, ^{
     @autoreleasepool {
       goal_jak2_metal_host* metalHost =
-          _realDmaMetalProofEnabled ? presentingHost
-                                    : goal_jak2_metal_host_create();
+          presentingProof ? presentingHost : goal_jak2_metal_host_create();
       goal_gfx_host graphicsHost = {0};
       goal_jak2_runtime_config config = {0};
       config.data_directory = dataPath.fileSystemRepresentation;
@@ -533,6 +545,47 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   const BOOL crossedGraphicsHost =
       _metalMetrics.sync_paths > 0 && _metalMetrics.vsyncs > 0;
 
+  if (_realDmaDrawMetalProofEnabled) {
+    if (_metalMetrics.chains > _realDmaDrawInspectedChains) {
+      const BOOL exactSubmission =
+          _metalMetrics.chains == _realDmaDrawInspectedChains + 1 &&
+          _metalMetrics.chains <= kRealDmaDrawMetalMaximumTicks &&
+          _metalMetrics.completed_chains == _metalMetrics.chains &&
+          _metalMetrics.last_buckets_dispatched == 327 &&
+          _metalMetrics.command_buffers_committed == _metalMetrics.chains &&
+          _metalMetrics.command_buffers_completed <= _metalMetrics.command_buffers_committed &&
+          _metalMetrics.command_buffer_errors == 0 &&
+          _metalMetrics.drawables_acquired == _metalMetrics.chains &&
+          _metalMetrics.drawable_misses == 0 &&
+          _metalMetrics.submissions == _metalMetrics.chains &&
+          _metalMetrics.late_present_submissions == 0 &&
+          _metalMetrics.presentation_drops == 0 &&
+          _metalMetrics.presentation_order_mismatches == 0 &&
+          _metalMetrics.unsupported_blends == 0 && oneFramePerTick;
+      if (!exactSubmission) {
+        _proofFinished = YES;
+        _failureMessage =
+            @"The later-draw real-DMA submission violated its layer or policy counters.";
+        [self updateTickGate];
+        [self updateStatus];
+        return;
+      }
+      _realDmaMetalCompletionPending = YES;
+      [self updateTickGate];
+      [self updateStatus];
+      [self waitForRealDmaDrawMetalFrame];
+      return;
+    }
+    if (_metrics.ticks >= kRealDmaDrawMetalMaximumTicks) {
+      _proofFinished = YES;
+      _failureMessage =
+          @"No new real Jak II DMA chain reached the later-draw proof within three ticks.";
+      [self updateTickGate];
+      [self updateStatus];
+    }
+    return;
+  }
+
   if (_realDmaMetalProofEnabled) {
     if (_metalMetrics.chains > 0) {
       const BOOL exactSubmission =
@@ -631,6 +684,129 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
     [self updateTickGate];
     [self updateStatus];
   }
+}
+
+- (void)waitForRealDmaDrawMetalFrame {
+  goal_jak2_metal_host* metalHost = _metalHost;
+#if TARGET_OS_SIMULATOR
+  const int requirePresentation = 0;
+#else
+  const int requirePresentation = 1;
+#endif
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    const int completed = goal_jak2_metal_host_wait_for_last_frame(
+        metalHost, kRealDmaMetalCompletionTimeoutSeconds, requirePresentation);
+    goal_jak2_metal_host_metrics metrics = {0};
+    goal_jak2_metal_frame_summary frame = {0};
+    const int copiedMetrics = goal_jak2_metal_host_get_metrics(metalHost, &metrics);
+    const int copiedFrame =
+        completed ? goal_jak2_metal_host_read_last_frame(metalHost, &frame) : 0;
+    const char* error = completed ? "" : goal_jak2_metal_host_last_error(metalHost);
+    NSString* failure = error && error[0] ? [NSString stringWithUTF8String:error]
+                                          : @"The later-draw real-DMA frame did not complete.";
+    dispatch_async(dispatch_get_main_queue(), ^{
+      _metalMetrics = metrics;
+      _realDmaDrawFrame = frame;
+
+      goal_display_tick_stats display = {0};
+      goal_display_tick_coordinator_get_stats(&_coordinator, &display);
+      const BOOL exactCompletion =
+          completed != 0 && copiedMetrics != 0 && copiedFrame != 0 &&
+          _metrics.ticks > 0 && _metrics.ticks <= kRealDmaDrawMetalMaximumTicks &&
+          display.accepted_ticks == _metrics.ticks &&
+          _metalMetrics.chains == _realDmaDrawInspectedChains + 1 &&
+          _metalMetrics.chains <= kRealDmaDrawMetalMaximumTicks &&
+          _metalMetrics.completed_chains == _metalMetrics.chains &&
+          _metalMetrics.command_buffers_committed == _metalMetrics.chains &&
+          _metalMetrics.command_buffers_completed == _metalMetrics.chains &&
+          _metalMetrics.command_buffer_errors == 0 &&
+          _metalMetrics.drawables_acquired == _metalMetrics.chains &&
+          _metalMetrics.drawable_misses == 0 &&
+          _metalMetrics.submissions == _metalMetrics.chains &&
+          _metalMetrics.late_present_submissions == 0 &&
+          _metalMetrics.presentation_drops == 0 &&
+          _metalMetrics.presentation_order_mismatches == 0 &&
+          _metalMetrics.unsupported_blends == 0 &&
+          _metalMetrics.last_buckets_dispatched == 327 &&
+          _metalMetrics.failed_chains == 0 && _metalMetrics.sync_paths > 0 &&
+          _metalMetrics.vsyncs > 0 && frame.width == 640 && frame.height == 480 &&
+          frame.byte_count == 640ull * 480ull * 4ull;
+#if TARGET_OS_SIMULATOR
+      const BOOL exactPresentation = _metalMetrics.presentations == 0;
+#else
+      const BOOL exactPresentation = _metalMetrics.presentations == _metalMetrics.submissions;
+#endif
+      if (!exactCompletion || !exactPresentation) {
+        _proofFinished = YES;
+        if (!copiedMetrics) {
+          _failureMessage = @"The later-draw real-DMA host did not return counters.";
+        } else if (!completed) {
+          _failureMessage = failure;
+        } else if (!copiedFrame) {
+          _failureMessage = @"The later-draw real-DMA host did not return bounded pixels.";
+        } else {
+          _failureMessage =
+              @"The later-draw real-DMA frame completed but failed its exact counter gate.";
+        }
+      } else {
+        _realDmaDrawInspectedChains = _metalMetrics.chains;
+      }
+
+      if (!_proofFinished && !_realDmaDrawBaselineCaptured) {
+        if (_metalMetrics.chains != 1 || _metalMetrics.draws != 0 ||
+            _metalMetrics.triangles != 0 || _metalMetrics.last_screen_filter_draws != 0 ||
+            _metalMetrics.last_screen_filter_triangles != 0) {
+          _proofFinished = YES;
+          _failureMessage = @"The first real-DMA chain was not the required zero-draw baseline.";
+        } else {
+          _realDmaDrawBaselineFrame = frame;
+          _realDmaDrawBaselineCaptured = YES;
+          NSLog(@"GOALPAD_JAK2_REAL_DMA_DRAW_BASELINE PASS chain=1 hash=%llu non_black=%llu",
+                (unsigned long long)frame.hash,
+                (unsigned long long)frame.non_black_pixels);
+        }
+      } else if (!_proofFinished && _metalMetrics.last_screen_filter_draws > 0) {
+        const BOOL exactScreenFilterDraw =
+            _metalMetrics.draws == _metalMetrics.last_screen_filter_draws &&
+            _metalMetrics.triangles == _metalMetrics.last_screen_filter_triangles &&
+            _metalMetrics.last_screen_filter_triangles > 0;
+        const BOOL changedPixels = frame.hash != _realDmaDrawBaselineFrame.hash;
+        _proofFinished = YES;
+        _proofPassed = exactScreenFilterDraw && changedPixels;
+        if (!_proofPassed) {
+          _failureMessage =
+              !exactScreenFilterDraw
+                  ? @"The later real-DMA draw did not come solely from SCREEN_FILTER."
+                  : @"SCREEN_FILTER encoded a draw but the bounded frame pixels did not change.";
+        } else {
+          NSLog(@"GOALPAD_JAK2_REAL_DMA_DRAW_CAMETAL_LAYER_PROOF PASS ticks=%llu chains=%llu "
+                 "screen_filter_draws=%llu screen_filter_triangles=%llu baseline_hash=%llu "
+                 "frame_hash=%llu baseline_non_black=%llu frame_non_black=%llu drawables=%llu "
+                 "committed=%llu completed=%llu submissions=%llu",
+                (unsigned long long)_metrics.ticks,
+                (unsigned long long)_metalMetrics.chains,
+                (unsigned long long)_metalMetrics.last_screen_filter_draws,
+                (unsigned long long)_metalMetrics.last_screen_filter_triangles,
+                (unsigned long long)_realDmaDrawBaselineFrame.hash,
+                (unsigned long long)frame.hash,
+                (unsigned long long)_realDmaDrawBaselineFrame.non_black_pixels,
+                (unsigned long long)frame.non_black_pixels,
+                (unsigned long long)_metalMetrics.drawables_acquired,
+                (unsigned long long)_metalMetrics.command_buffers_committed,
+                (unsigned long long)_metalMetrics.command_buffers_completed,
+                (unsigned long long)_metalMetrics.submissions);
+        }
+      } else if (!_proofFinished &&
+                 _metalMetrics.chains >= kRealDmaDrawMetalMaximumTicks) {
+        _proofFinished = YES;
+        _failureMessage = @"No SCREEN_FILTER draw reached Metal within three real-DMA chains.";
+      }
+
+      _realDmaMetalCompletionPending = NO;
+      [self updateTickGate];
+      [self updateStatus];
+    });
+  });
 }
 
 - (void)waitForRealDmaMetalFrame {
@@ -840,7 +1016,7 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
     return;
   }
 
-  if (_realDmaMetalProofEnabled) {
+  if (_realDmaMetalProofEnabled || _realDmaDrawMetalProofEnabled) {
     goal_display_tick_stats display = {0};
     goal_display_tick_coordinator_get_stats(&_coordinator, &display);
     NSString* result = @"BOOTING";
@@ -853,10 +1029,20 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
     } else if (_bootReady) {
       result = @"RUNNING";
     }
-    NSString* contentNote =
-        _metalMetrics.draws > 0
-            ? @"Game DMA encoded draw calls; visual correctness is not established by counters."
-            : @"No draws encoded; output is clear/deferred and is not a title-screen or gameplay claim.";
+    NSString* proofName = _realDmaDrawMetalProofEnabled
+                              ? @"Jak II later-draw real-DMA CAMetalLayer proof"
+                              : @"Jak II first-chain real-DMA CAMetalLayer proof";
+    NSString* contentNote = nil;
+    if (_realDmaDrawMetalProofEnabled) {
+      contentNote = _realDmaDrawBaselineCaptured
+                        ? @"The first zero-draw frame is retained as the pixel baseline."
+                        : @"Waiting to retain the first zero-draw frame as the pixel baseline.";
+    } else {
+      contentNote =
+          _metalMetrics.draws > 0
+              ? @"Game DMA encoded draw calls; visual correctness is not established by counters."
+              : @"No draws encoded; output is clear/deferred and is not a title-screen or gameplay claim.";
+    }
     NSString* failure = _failureMessage.length > 0
                             ? [NSString stringWithFormat:@"\nError: %@", _failureMessage]
                             : @"";
@@ -866,7 +1052,7 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
     NSString* callbackNote = @"Physical presentation callbacks: one per submission required";
 #endif
     self.statusLabel.text = [NSString
-        stringWithFormat:@"Jak II real-DMA CAMetalLayer proof — %@\n\n"
+        stringWithFormat:@"%@ — %@\n\n"
                           "Frame source: game-built DMA through the external Metal host\n"
                           "Runtime ticks: %llu (maximum 3)\n"
                           "Display callbacks / accepted: %llu / %llu\n"
@@ -874,12 +1060,15 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                           "Chains / policy-complete / failures: %llu / %llu / %llu\n"
                           "Last buckets / copied / skipped: %llu / %u / %llu bytes\n"
                           "Draws / triangles: %llu / %llu\n"
+                          "Last SCREEN_FILTER draws / triangles: %llu / %llu\n"
+                          "Frame: %u x %u, %llu bytes, hash %llu, non-black %llu\n"
+                          "Baseline hash / non-black: %llu / %llu\n"
                           "Drawable acquired / missed: %llu / %llu\n"
                           "Command buffers committed / completed / errors: %llu / %llu / %llu\n"
                           "Submissions / late: %llu / %llu\n"
                           "Presentation callbacks / drops / order mismatches: %llu / %llu / %llu\n\n"
                           "%@\n%@%@",
-                         result, (unsigned long long)_metrics.ticks,
+                         proofName, result, (unsigned long long)_metrics.ticks,
                          (unsigned long long)display.display_ticks,
                          (unsigned long long)display.accepted_ticks, _lastTargetTimestamp,
                          (unsigned long long)_metalMetrics.chains,
@@ -890,6 +1079,14 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
                          (unsigned long long)_metalMetrics.skipped_bucket_bytes,
                          (unsigned long long)_metalMetrics.draws,
                          (unsigned long long)_metalMetrics.triangles,
+                         (unsigned long long)_metalMetrics.last_screen_filter_draws,
+                         (unsigned long long)_metalMetrics.last_screen_filter_triangles,
+                         _realDmaDrawFrame.width, _realDmaDrawFrame.height,
+                         (unsigned long long)_realDmaDrawFrame.byte_count,
+                         (unsigned long long)_realDmaDrawFrame.hash,
+                         (unsigned long long)_realDmaDrawFrame.non_black_pixels,
+                         (unsigned long long)_realDmaDrawBaselineFrame.hash,
+                         (unsigned long long)_realDmaDrawBaselineFrame.non_black_pixels,
                          (unsigned long long)_metalMetrics.drawables_acquired,
                          (unsigned long long)_metalMetrics.drawable_misses,
                          (unsigned long long)_metalMetrics.command_buffers_committed,

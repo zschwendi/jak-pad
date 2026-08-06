@@ -800,6 +800,22 @@ gameplay claim, and simulator success is not physical-device compatibility evide
 nil-layer one-tick proof, `GOALPAD_JAK2_LIFECYCLE_PROOF`, and the independent synthetic
 `GOALPAD_JAK2_CAMETAL_LAYER_PROOF` remain unchanged.
 
+**Experimental:** setting `GOALPAD_JAK2_REAL_DMA_DRAW_CAMETAL_LAYER_PROOF=1` extends the same
+real-runtime and app-owned-layer route to the first supported `SCREEN_FILTER` draw, without
+changing the bounded first-chain proof above. It pauses after each submitted DMA chain, waits for
+GPU completion, and reads the renderer's 640-by-480 RGBA game target before allowing another
+display tick. The first chain must remain the zero-draw baseline. Within three chains, a later
+chain must report positive `SCREEN_FILTER` draws and triangles, no draw from another bucket, and a
+frame hash different from that baseline. Every chain must also retain exact drawable, commit,
+completion, submission, bucket-policy, and error counters. Physical-device runs additionally
+require one retained presentation callback per submission; simulator runs require zero callbacks.
+
+The bounded pixel summary is read from the game render target used by the submitted frame, not
+back from the drawable itself. A PASS proves that real game-built DMA reached the sole enabled
+Direct bucket, encoded a completed draw, and changed the sampled game-target pixels through the
+same layer-backed host. It does not establish visual correctness, a title screen, gameplay, or
+physical-device compatibility.
+
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 GEN=build/Release/bin/game/aot-generated
