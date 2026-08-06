@@ -21,6 +21,7 @@ set(RUNTIME_SOURCE
         graphics/jak3_texture_remap.cpp
         graphics/jakx_texture_remap.cpp
         graphics/screenshot.cpp
+        graphics/sprite_glow_math.cpp
         graphics/opengl_renderer/background/background_common.cpp
         graphics/opengl_renderer/background/Hfrag.cpp
         graphics/opengl_renderer/background/Shrub.cpp
@@ -394,6 +395,11 @@ if(WIN32)
 endif()
 
 if(GOAL_HOST_TESTS_ENABLED)
+    add_executable(sprite-glow-math-test
+            graphics/sprite_glow_math.cpp
+            graphics/sprite_glow_math_test.cpp)
+    add_test(NAME sprite-glow-math-test COMMAND sprite-glow-math-test)
+
     add_executable(metal-vis-data-test
             graphics/pipelines/metal/metal_vis_data.cpp
             graphics/pipelines/metal/metal_vis_data_test.cpp)
