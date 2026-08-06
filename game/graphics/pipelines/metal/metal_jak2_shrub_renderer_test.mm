@@ -137,6 +137,42 @@ SyntheticShrubChain make_real_layout_shrub_chain(const std::vector<u8>& mask) {
   return chain;
 }
 
+SyntheticShrubChain make_empty_real_layout_shrub_chain() {
+  SyntheticShrubChain chain;
+  chain.tag(DmaTag::Kind::CNT, 0, 0, 0, 0);
+  chain.next_bucket = 16;
+  chain.tag(DmaTag::Kind::CNT, 0, 0, 0, 0);
+  return chain;
+}
+
+SyntheticShrubChain make_multi_segment_real_layout_shrub_chain(
+    const std::vector<u8>& first_mask,
+    const std::vector<u8>& second_mask) {
+  SyntheticShrubChain chain;
+  check((first_mask.size() & 0xf) == 0 && (second_mask.size() & 0xf) == 0,
+        "both real-layout shrub segment masks are qword aligned");
+
+  constexpr u32 kNextBucketEntry = 16;
+  constexpr u32 kPayloadOffset = 32;
+  chain.tag(DmaTag::Kind::NEXT, 0, kPayloadOffset, 0, 0);
+  chain.next_bucket = kNextBucketEntry;
+  chain.tag(DmaTag::Kind::CNT, 0, 0, 0, 0);
+
+  const auto pc = make_pc_port_data();
+  chain.tag(DmaTag::Kind::CNT, sizeof(pc) / 16, 0, 0, vif_code(VifCode::Kind::PC_PORT), &pc);
+  chain.tag(DmaTag::Kind::CNT, first_mask.size() / 16, 0, 0,
+            vif_code(VifCode::Kind::PC_PORT), first_mask.empty() ? nullptr : first_mask.data());
+  const u32 second_segment_offset = static_cast<u32>(chain.bytes.size() + 16);
+  chain.tag(DmaTag::Kind::NEXT, 0, second_segment_offset, 0, 0);
+
+  chain.tag(DmaTag::Kind::CNT, sizeof(pc) / 16, 0, 0, vif_code(VifCode::Kind::PC_PORT), &pc);
+  chain.tag(DmaTag::Kind::CNT, second_mask.size() / 16, 0, 0,
+            vif_code(VifCode::Kind::PC_PORT), second_mask.empty() ? nullptr : second_mask.data());
+  chain.live_payload_bytes = sizeof(pc) * 2 + first_mask.size() + second_mask.size();
+  chain.tag(DmaTag::Kind::NEXT, 0, chain.next_bucket, 0, 0);
+  return chain;
+}
+
 SyntheticShrubChain make_jak1_shrub_chain() {
   SyntheticShrubChain chain;
   chain.tag(DmaTag::Kind::NEXT, 0, 16, 0, 0);
@@ -492,6 +528,15 @@ int main() {
 
     MetalShrub renderer("shrub-l0-shrub", static_cast<int>(kShrubBucket));
 
+    const auto empty = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                    &renderer, make_empty_real_layout_shrub_chain());
+    check(empty.completed && empty.finished_bucket && empty.final_dma_offset == 16 &&
+              empty.renderer.trees_rendered == 0 && empty.renderer.draws == 0 &&
+              empty.draw_calls == 0 && empty.background.unexpected_dma == 0 &&
+              empty.background.camera_trace.packet_count() == 0 &&
+              empty.background.render_camera_trace.packet_count() == 0,
+          "a source-shaped empty CNT bucket lands at entry 1 without camera state or draws");
+
     const auto hidden_chain = make_real_layout_shrub_chain(hidden_left_mask());
     check(hidden_chain.next_bucket == 16 && hidden_chain.live_payload_bytes == 560,
           "the real-layout packet keeps bucket entry 1 at 16 and carries 400 plus 160 bytes later");
@@ -511,6 +556,23 @@ int main() {
     check(rgba_is(hidden.pixels, 20, 32, 0, 0, 0, 0) &&
               rgba_is(hidden.pixels, 44, 32, 0, 0, 255, 255),
           "the hidden left proto is clear while the unknown name leaves the right proto blue");
+
+    const auto multi_chain =
+        make_multi_segment_real_layout_shrub_chain(hidden_left_mask(), {});
+    check(multi_chain.next_bucket == 16 && multi_chain.live_payload_bytes == 960,
+          "the real-layout multi-segment bucket contains two PC/mask controls after its table");
+    const auto multi = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                    &renderer, multi_chain);
+    check(multi.completed && multi.finished_bucket && multi.final_dma_offset == 16 &&
+              multi.renderer.trees_rendered == 2 && multi.renderer.draws == 1 &&
+              multi.renderer.triangles == 2 && multi.draw_calls == 1 && multi.triangles == 2 &&
+              multi.background.unexpected_dma == 0 &&
+              multi.background.camera_trace.packet_count() == 1 &&
+              multi.background.render_camera_trace.packet_count() == 1,
+          "the first control packet drives one render while later segments drain to entry 1");
+    check(rgba_is(multi.pixels, 20, 32, 0, 0, 0, 0) &&
+              rgba_is(multi.pixels, 44, 32, 0, 0, 255, 255),
+          "the first segment's hidden mask, not the later empty mask, controls the render");
 
     const auto zero_chain = make_real_layout_shrub_chain({});
     check(zero_chain.next_bucket == 16 &&

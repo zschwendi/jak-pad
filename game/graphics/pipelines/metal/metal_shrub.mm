@@ -69,12 +69,19 @@ void MetalShrub::render(DmaFollower& dma,
   };
 
   const bool is_jak2 = render_state->version == GameVersion::Jak2;
+  bool is_empty_jak2_bucket = false;
   if (is_jak2) {
     const auto opening_tag = dma.current_tag();
-    if (!expect(opening_tag.kind == DmaTag::Kind::NEXT && opening_tag.qwc == 0 &&
-                    !opening_tag.spr && is_opening_vif0(dma.current_tag_vif0()) &&
-                    is_nop_vif(dma.current_tag_vif1()),
-                "an empty Jak 2 NEXT opening with NOP or MARK VIF state")) {
+    const u32 opening_vif0 = dma.current_tag_vif0();
+    const u32 opening_vif1 = dma.current_tag_vif1();
+    is_empty_jak2_bucket = opening_tag.kind == DmaTag::Kind::CNT && opening_tag.qwc == 0 &&
+                           opening_tag.addr == 0 && !opening_tag.spr && opening_vif0 == 0 &&
+                           opening_vif1 == 0;
+    const bool is_populated_jak2_bucket =
+        opening_tag.kind == DmaTag::Kind::NEXT && opening_tag.qwc == 0 && !opening_tag.spr &&
+        is_opening_vif0(opening_vif0) && is_nop_vif(opening_vif1);
+    if (!expect(is_empty_jak2_bucket || is_populated_jak2_bucket,
+                "a source-shaped empty CNT or populated NEXT Jak 2 bucket opening")) {
       metal_finish_bucket(dma, *render_state);
       return;
     }
@@ -86,6 +93,13 @@ void MetalShrub::render(DmaFollower& dma,
                   (data0.vif1() == 0 || data0.vifcode1().kind == VifCode::Kind::NOP),
               "the bucket to open with an empty NEXT")) {
     metal_finish_bucket(dma, *render_state);
+    return;
+  }
+  if (is_empty_jak2_bucket) {
+    if (!expect(dma.current_tag_offset() == render_state->next_bucket,
+                "an empty Jak 2 CNT opening to land exactly at the next bucket")) {
+      metal_finish_bucket(dma, *render_state);
+    }
     return;
   }
 
@@ -143,13 +157,15 @@ void MetalShrub::render(DmaFollower& dma,
 
     const auto proto_mask = dma.read_and_advance();
     const auto tail = dma.current_tag();
-    const bool exact_tail = dma.current_tag_offset() == static_cast<u32>(mask_end) &&
-                            tail.kind == DmaTag::Kind::NEXT && tail.qwc == 0 && !tail.spr &&
-                            tail.addr == render_state->next_bucket &&
-                            dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == 0;
-    have_proto_mask =
-        expect(exact_tail && parse_hidden_proto_names(proto_mask, &hidden_names),
-               "one terminated PC_PORT hidden-prototype-name transfer and exact NEXT tail");
+    const bool exact_tail_shape = dma.current_tag_offset() == static_cast<u32>(mask_end) &&
+                                  tail.kind == DmaTag::Kind::NEXT && tail.qwc == 0 && !tail.spr &&
+                                  dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == 0;
+    const bool names_terminated = parse_hidden_proto_names(proto_mask, &hidden_names);
+    const bool have_tail_shape =
+        expect(exact_tail_shape, "the mask to end at an exact zero-qword zero-VIF NEXT tail");
+    const bool have_terminated_names =
+        expect(names_terminated, "the PC_PORT hidden-prototype names to be terminated");
+    have_proto_mask = have_tail_shape && have_terminated_names;
   }
 
   if (!is_jak2 && have_data) {
@@ -158,6 +174,8 @@ void MetalShrub::render(DmaFollower& dma,
       bg->observe_camera(m_pc_port_data.camera, m_name);
     }
   }
+  // GOAL may link additional shrub-tree control segments after the first tail.
+  // As in OpenGL, the first segment controls rendering and the rest are drained.
   metal_finish_bucket(dma, *render_state);
   if (!have_data || !have_proto_mask) {
     return;
