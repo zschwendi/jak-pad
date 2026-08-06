@@ -11,7 +11,7 @@
 
 #include "common/log/log.h"
 
-#include "game/kernel/core/sound_rpc.h"
+#include "game/kernel/core/kernel_game.h"
 
 namespace goalpad_audio {
 namespace {
@@ -34,13 +34,13 @@ OSStatus audio_render(void* /*user*/,
                       UInt32 frames,
                       AudioBufferList* data) {
   // One interleaved stereo 16-bit buffer, which is the format asked for below and the format
-  // goal_sound_pull_audio produces. Before the sound system is up (and after it is torn down)
+  // goal_game_sound_pull_audio produces. Before the sound system is up (and after it is torn down)
   // this leaves silence rather than whatever was in the buffer.
   for (UInt32 i = 0; i < data->mNumberBuffers; i++) {
     auto& buffer = data->mBuffers[i];
     std::memset(buffer.mData, 0, buffer.mDataByteSize);
     if (i == 0) {
-      goal_sound_pull_audio((int16_t*)buffer.mData, (int)frames);
+      goal_game_sound_pull_audio((int16_t*)buffer.mData, (int)frames);
     }
   }
   return noErr;
@@ -66,7 +66,7 @@ bool start() {
   // 989snd's sequencer tick, note pitch and envelope timing are all derived from its output rate,
   // so the rate is not a preference. The unit converts to whatever the device is running at.
   AudioStreamBasicDescription format = {};
-  format.mSampleRate = goal_sound_sample_rate();
+  format.mSampleRate = goal_game_sound_sample_rate();
   format.mFormatID = kAudioFormatLinearPCM;
   format.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
   format.mChannelsPerFrame = 2;
@@ -88,7 +88,7 @@ bool start() {
     lg::error("could not start the audio device");
     return false;
   }
-  lg::info("[sound] CoreAudio output running at {} Hz", goal_sound_sample_rate());
+  lg::info("[sound] CoreAudio output running at {} Hz", goal_game_sound_sample_rate());
   return true;
 }
 
