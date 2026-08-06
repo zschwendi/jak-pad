@@ -1,0 +1,13 @@
+(let ((firecanyon (lookup-level-info 'firecanyon))
+      (village1 (lookup-level-info 'village1)))
+  (format #t
+          "~A~A~A~A~A~%"
+          (level-name-hint-for-other-level? (text-id firecanyon-level-name) firecanyon village1)
+          (level-name-hint-for-other-level? (text-id firecanyon-level-name) firecanyon firecanyon)
+          (level-name-hint-for-other-level? (text-id firecanyon-need-cells) firecanyon village1)
+          (level-name-hint-for-other-level? (text-id firecanyon-level-name) village1 firecanyon)
+          (level-name-hint-for-other-level?
+            (text-id firecanyon-level-name)
+            (the-as level-load-info #f)
+            village1)))
+0

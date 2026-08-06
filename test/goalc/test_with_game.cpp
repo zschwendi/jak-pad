@@ -81,6 +81,11 @@ TEST_F(WithGameTests, ReturnSymbol) {
   shared_compiler->runner.run_static_test(testCategory, "defun-return-symbol.static.gc", {"42\n"});
 }
 
+TEST_F(WithGameTests, LevelNameHintGate) {
+  shared_compiler->runner.run_static_test(testCategory, "level-name-hint-gate.static.gc",
+                                          {"#t#f#f#f#f\n0\n"});
+}
+
 TEST_F(WithGameTests, MinMax) {
   shared_compiler->runner.run_static_test(testCategory, "test-min-max.gc", {"10\n"});
 }
