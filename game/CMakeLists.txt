@@ -420,6 +420,10 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_jak2_chain_validation_test.cpp)
     target_compile_definitions(jak2-metal-chain-validation-test PRIVATE NO_ASSERT=1)
     add_test(NAME jak2-metal-chain-validation-test COMMAND jak2-metal-chain-validation-test)
+
+    add_executable(metal-chain-handoff-state-test
+            graphics/pipelines/metal/metal_chain_handoff_state_test.cpp)
+    add_test(NAME metal-chain-handoff-state-test COMMAND metal-chain-handoff-state-test)
 endif()
 
 # The portable kernel core is built the same way here as it is for iOS, so that host runs keep the

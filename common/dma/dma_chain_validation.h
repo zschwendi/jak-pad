@@ -32,10 +32,9 @@ struct DmaChainValidationResult {
   explicit operator bool() const { return error == DmaChainValidationError::None; }
 };
 
-// A normal graphics frame has hundreds or thousands of tags. This deliberately high limit keeps
-// malformed input from spending unbounded CPU time while allowing legal CALL/RET subroutines to
-// be revisited with different return stacks.
-constexpr std::size_t kDmaChainValidationDefaultTagBudget = 1u << 20;
+// Full follower state participates in cycle detection, so valid CALL/RET revisits do not require a
+// policy limit. Callers that need a workload limit may pass a nonzero tag budget explicitly.
+constexpr std::size_t kNoDmaChainValidationTagBudget = 0;
 
 inline const char* dma_chain_validation_error_message(DmaChainValidationError error) {
   switch (error) {
@@ -236,7 +235,7 @@ inline DmaChainValidationResult validate_dma_chain(
     const void* base,
     std::size_t memory_size,
     u32 start_offset,
-    std::size_t max_tags = kDmaChainValidationDefaultTagBudget) noexcept {
+    std::size_t max_tags = kNoDmaChainValidationTagBudget) noexcept {
   DmaChainValidationResult result;
   result.error_offset = start_offset;
   if (!base) {
@@ -251,7 +250,7 @@ inline DmaChainValidationResult validate_dma_chain(
   std::size_t cycle_power = 1;
   std::size_t distance_from_checkpoint = 0;
 
-  while (result.tags_processed < max_tags) {
+  while (max_tags == kNoDmaChainValidationTagBudget || result.tags_processed < max_tags) {
     result.error_offset = current.tag_offset;
     const auto step = dma_chain_validation_detail::step(
         static_cast<const u8*>(base), memory_size, current);
