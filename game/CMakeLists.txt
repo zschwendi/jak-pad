@@ -1163,6 +1163,12 @@ if(APPLE)
         add_test(NAME jak2-bucket4-texture-upload-capture-test
             COMMAND jak2-bucket4-texture-upload-capture-test)
 
+        add_executable(jak2-sprite-texture-upload-plan-test
+            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan_test.cpp)
+        add_test(NAME jak2-sprite-texture-upload-plan-test
+            COMMAND jak2-sprite-texture-upload-plan-test)
+
         add_executable(jak2-metal-fog-texture-convert-test
             graphics/pipelines/metal/metal_jak2_fog_texture_convert.cpp
             graphics/pipelines/metal/metal_jak2_fog_texture_convert_test.cpp)
