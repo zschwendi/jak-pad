@@ -416,6 +416,12 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_jak2_bucket_table_test.cpp)
     add_test(NAME jak2-metal-bucket-table-test COMMAND jak2-metal-bucket-table-test)
 
+    add_executable(jak2-metal-opcode27-skull-gem-cpu-test
+            graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_cpu.cpp
+            graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_cpu_test.cpp)
+    add_test(NAME jak2-metal-opcode27-skull-gem-cpu-test
+            COMMAND jak2-metal-opcode27-skull-gem-cpu-test)
+
     add_executable(jak2-metal-merc-dma-test
             graphics/pipelines/metal/metal_jak2_merc_dma_test.cpp)
     target_compile_definitions(jak2-metal-merc-dma-test PRIVATE NO_ASSERT=1)
