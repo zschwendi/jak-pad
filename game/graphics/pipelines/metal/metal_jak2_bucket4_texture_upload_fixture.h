@@ -91,9 +91,9 @@ inline Jak2Bucket4TextureUploadFixture make_jak2_bucket4_texture_upload_fixture(
   out.ordinary_page_offset = kOrdinaryPage;
   out.generic_source_offset = kGenericSource;
   out.clut_source_offset = kClutSource;
-  for (u32 i = 0; i < 124; ++i) {
-    out.ee_memory[kOrdinaryPage + i] = static_cast<u8>(1 + i * 3);
-  }
+  // A valid empty GoalTexturePage lets host integration execute the ordinary
+  // descriptor without needing a synthetic texture graph.
+  put_u32(out.ee_memory, kOrdinaryPage + 8, 1);
   for (u32 i = 0; i < 256; ++i) {
     out.ee_memory[kGenericSource + i] = static_cast<u8>(i ^ 0x5a);
   }

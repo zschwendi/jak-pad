@@ -292,6 +292,16 @@ void test_unsupported_opcode_is_counted() {
         "an unsupported animator opcode retains only its scalar byte count");
 }
 
+void test_nonpositive_cloud_max_time_is_malformed() {
+  auto fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
+  constexpr float kNegativeMaxTime = -1.f;
+  std::memcpy(fixture.ee_memory.data() + fixture.sky_input_data_offset + 56,
+              &kNegativeMaxTime, sizeof(kNegativeMaxTime));
+  const auto result = capture(fixture);
+  check(!result.valid && result.malformed_transfers == 1 && result.malformed_bytes == 112,
+        "a nonpositive cloud max time is rejected before the CPU generator");
+}
+
 void test_empty_bucket_is_valid_and_absent() {
   std::vector<u8> memory(0x1000);
   constexpr u32 chain_offset = 0x100;
@@ -391,14 +401,14 @@ void test_plan_accepts_exact_ordinary_only_and_absent_shapes() {
   auto ordinary_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
       ordinary_fixture.ee_memory.data(), ordinary_fixture.ee_memory.size(),
       ordinary_fixture.chain_offset, ordinary_fixture.ee_memory.data(),
-      ordinary_fixture.ee_memory.size());
+            ordinary_fixture.ee_memory.size());
   check(ordinary_plan.has_value() &&
             std::holds_alternative<metal_renderer::Jak2Bucket4OrdinaryOnlyPlan>(*ordinary_plan),
         "the exact ordinary-only packet has the OrdinaryOnly discriminant");
   const auto& ordinary =
       std::get<metal_renderer::Jak2Bucket4OrdinaryOnlyPlan>(*ordinary_plan).ordinary;
   check(ordinary.page_offset == ordinary_fixture.ordinary_page_offset && ordinary.mode == -1 &&
-            ordinary.page_header.front() == 1,
+            ordinary.page_header[8] == 1 && ordinary.page_header[12] == 0,
         "the ordinary-only plan retains its validated live page offset, mode, and header");
 
   std::vector<u8> packet(0x1000);
@@ -442,6 +452,7 @@ int main() {
   test_bad_embedded_pointers_fail_closed();
   test_bad_dma_pointer_fails_closed();
   test_unsupported_opcode_is_counted();
+  test_nonpositive_cloud_max_time_is_malformed();
   test_empty_bucket_is_valid_and_absent();
   test_plan_uses_separate_packet_and_live_domains_and_owns_animator_bytes();
   test_plan_accepts_exact_ordinary_only_and_absent_shapes();

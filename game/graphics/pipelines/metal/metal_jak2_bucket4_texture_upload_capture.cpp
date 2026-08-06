@@ -252,7 +252,7 @@ bool cloud_input_is_valid(const SkyInputLayout& input) {
   }
   for (int i = 0; i < 4; ++i) {
     if (!std::isfinite(input.times[i + 1]) || !std::isfinite(input.max_times[i]) ||
-        input.max_times[i] == 0.f || !std::isfinite(input.scales[i])) {
+        input.max_times[i] <= 0.f || !std::isfinite(input.scales[i])) {
       return false;
     }
   }
