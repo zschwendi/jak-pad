@@ -118,6 +118,25 @@ SyntheticShrubChain make_shrub_chain(const std::vector<u8>& mask) {
   return chain;
 }
 
+SyntheticShrubChain make_real_layout_shrub_chain(const std::vector<u8>& mask) {
+  SyntheticShrubChain chain;
+  check((mask.size() & 0xf) == 0, "the real-layout shrub mask is qword aligned");
+
+  constexpr u32 kNextBucketEntry = 16;
+  constexpr u32 kPayloadOffset = 32;
+  chain.tag(DmaTag::Kind::NEXT, 0, kPayloadOffset, 0, 0);
+  chain.next_bucket = kNextBucketEntry;
+  chain.tag(DmaTag::Kind::CNT, 0, 0, 0, 0);
+
+  const auto pc = make_pc_port_data();
+  chain.tag(DmaTag::Kind::CNT, sizeof(pc) / 16, 0, 0, vif_code(VifCode::Kind::PC_PORT), &pc);
+  chain.tag(DmaTag::Kind::CNT, mask.size() / 16, 0, 0, vif_code(VifCode::Kind::PC_PORT),
+            mask.empty() ? nullptr : mask.data());
+  chain.live_payload_bytes = sizeof(pc) + mask.size();
+  chain.tag(DmaTag::Kind::NEXT, 0, chain.next_bucket, 0, 0);
+  return chain;
+}
+
 SyntheticShrubChain make_jak1_shrub_chain() {
   SyntheticShrubChain chain;
   chain.tag(DmaTag::Kind::NEXT, 0, 16, 0, 0);
@@ -304,6 +323,7 @@ struct RenderResult {
   int draw_calls = 0;
   int triangles = 0;
   bool finished_bucket = false;
+  u32 final_dma_offset = 0;
   bool completed = false;
   std::vector<u8> pixels;
 };
@@ -384,6 +404,7 @@ RenderResult render_chain(id<MTLDevice> device,
 
   DmaFollower dma(chain.bytes.data(), 0);
   renderer->render(dma, &state, context);
+  result.final_dma_offset = dma.current_tag_offset();
   result.finished_bucket = dma.current_tag_offset() == state.next_bucket;
   result.renderer = renderer->stats();
   result.background = background;
@@ -471,12 +492,13 @@ int main() {
 
     MetalShrub renderer("shrub-l0-shrub", static_cast<int>(kShrubBucket));
 
-    const auto hidden_chain = make_shrub_chain(hidden_left_mask());
-    check(hidden_chain.live_payload_bytes == 560,
-          "the source-shaped live packet carries exactly 400 background plus 160 mask bytes");
+    const auto hidden_chain = make_real_layout_shrub_chain(hidden_left_mask());
+    check(hidden_chain.next_bucket == 16 && hidden_chain.live_payload_bytes == 560,
+          "the real-layout packet keeps bucket entry 1 at 16 and carries 400 plus 160 bytes later");
     const auto hidden = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                                      &renderer, hidden_chain);
-    check(hidden.completed && hidden.finished_bucket && hidden.renderer.trees_rendered == 2 &&
+    check(hidden.completed && hidden.finished_bucket && hidden.final_dma_offset == 16 &&
+              hidden.renderer.trees_rendered == 2 &&
               hidden.renderer.draws == 1 && hidden.renderer.triangles == 2 &&
               hidden.draw_calls == 1 && hidden.triangles == 2,
           "the 160-byte mask hides one tree-local proto and draws the other tree exactly once");
@@ -490,12 +512,14 @@ int main() {
               rgba_is(hidden.pixels, 44, 32, 0, 0, 255, 255),
           "the hidden left proto is clear while the unknown name leaves the right proto blue");
 
-    const auto zero_chain = make_shrub_chain({});
-    check(zero_chain.live_payload_bytes == sizeof(MetalTfragPcPortData),
-          "the zero-qword mask is retained as a real empty PC_PORT transfer");
+    const auto zero_chain = make_real_layout_shrub_chain({});
+    check(zero_chain.next_bucket == 16 &&
+              zero_chain.live_payload_bytes == sizeof(MetalTfragPcPortData),
+          "the real-layout zero-qword mask remains a PC_PORT transfer after the bucket table");
     const auto zero = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                                    &renderer, zero_chain);
-    check(zero.completed && zero.finished_bucket && zero.renderer.trees_rendered == 2 &&
+    check(zero.completed && zero.finished_bucket && zero.final_dma_offset == 16 &&
+              zero.renderer.trees_rendered == 2 &&
               zero.renderer.draws == 2 && zero.renderer.triangles == 4 && zero.draw_calls == 2 &&
               zero.triangles == 4 && zero.background.unexpected_dma == 0,
           "a zero-qword mask draws both tree-local named proto regions");

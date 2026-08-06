@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 #include "common/log/log.h"
 
@@ -130,11 +131,11 @@ void MetalShrub::render(DmaFollower& dma,
     const auto mask_tag = dma.current_tag();
     const u64 mask_end = static_cast<u64>(mask_offset) + 16 +
                          static_cast<u64>(mask_tag.qwc) * 16;
-    const bool mask_fits_bucket = mask_offset < render_state->next_bucket &&
-                                  mask_end < render_state->next_bucket;
+    const bool mask_end_is_bounded = mask_end >= mask_offset &&
+                                     mask_end <= std::numeric_limits<u32>::max();
     if (!expect(mask_tag.kind == DmaTag::Kind::CNT && mask_tag.addr == 0 && !mask_tag.spr &&
                     dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == kPcPortVif &&
-                    mask_fits_bucket,
+                    mask_end_is_bounded,
                 "one bounded CNT PC_PORT hidden-prototype-name transfer")) {
       metal_finish_bucket(dma, *render_state);
       return;
@@ -142,7 +143,8 @@ void MetalShrub::render(DmaFollower& dma,
 
     const auto proto_mask = dma.read_and_advance();
     const auto tail = dma.current_tag();
-    const bool exact_tail = tail.kind == DmaTag::Kind::NEXT && tail.qwc == 0 && !tail.spr &&
+    const bool exact_tail = dma.current_tag_offset() == static_cast<u32>(mask_end) &&
+                            tail.kind == DmaTag::Kind::NEXT && tail.qwc == 0 && !tail.spr &&
                             tail.addr == render_state->next_bucket &&
                             dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == 0;
     have_proto_mask =
