@@ -621,7 +621,8 @@
   (none))
 
 (defbehavior fishermans-boat-leave-dock? fishermans-boat ()
-  (let ((gp-0 #f))
+  (let ((gp-0 #f)
+        (goalpad-face-prompt? #f))
     (when (and (< (vector-vector-distance (target-pos 0) (-> self rbody position)) 6144.0)
                (or (task-complete? *game-info* (game-task jungle-fishgame)) (and *cheat-mode* (cpad-hold? 0 l3)))
                (not (level-hint-displayed?))
@@ -636,13 +637,19 @@
           (set-height! s5-1 80)
           (set! (-> s5-1 flags) (font-flags shadow kerning large))
           (print-game-text (lookup-text! *common-text* (text-id press-to-use) #f) s5-1 #f 128 22))
+        (set! goalpad-face-prompt? #t)
         (when (and (cpad-pressed? 0 circle) (process-grab? *target*))
+          (set! goalpad-face-prompt? #f)
+          (goalpad-face-prompt-touch-clear! self)
           (set! (-> self waiting-for-player) #f)
           (set! (-> self player-riding) #t)
           (set! (-> self auto-pilot) #t)
           (set! (-> self ignition) #t)
           (set! (-> self anchored) #f)
           (set! gp-0 #t))))
+    (if goalpad-face-prompt?
+      (goalpad-face-prompt-touch-publish! self (pad-buttons circle))
+      (goalpad-face-prompt-touch-clear! self))
     gp-0))
 
 (defbehavior fishermans-boat-enter-dock? fishermans-boat ()
@@ -659,6 +666,9 @@
   :enter
     (behavior ()
       (set-time! (-> self state-time)))
+  :exit
+    (behavior ()
+      (goalpad-face-prompt-touch-clear! self))
   :trans
     (behavior ()
       (if (fishermans-boat-leave-dock?) (go fishermans-boat-ride-to-misty))
@@ -750,6 +760,9 @@
   :enter
     (behavior ()
       (set-time! (-> self state-time)))
+  :exit
+    (behavior ()
+      (goalpad-face-prompt-touch-clear! self))
   :trans
     (behavior ()
       (if (fishermans-boat-leave-dock?) (go fishermans-boat-ride-to-village1))

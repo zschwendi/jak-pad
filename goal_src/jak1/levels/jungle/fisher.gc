@@ -1094,6 +1094,7 @@
          (send-event *target* 'lose))))
   :exit
     (behavior ()
+      (goalpad-face-prompt-touch-clear! self)
       (when (and *target* (the-as target #f))
         (send-event *target* 'end-mode)
         (process-grab? *target*)))
@@ -1101,8 +1102,10 @@
     (behavior ()
       (set! *camera-look-through-other* 2)
       (cond
-        ((>= (-> self caught) (-> *FISHER-bank* max-caught)))
-        ((< (-> self caught) 0))
+        ((>= (-> self caught) (-> *FISHER-bank* max-caught))
+         (goalpad-face-prompt-touch-clear! self))
+        ((< (-> self caught) 0)
+         (goalpad-face-prompt-touch-clear! self))
         (else
          (when (< (mod (-> *display* base-frame-counter) (seconds 1)) (seconds 0.5))
            ;; og:preserve-this PAL patch here
@@ -1112,7 +1115,7 @@
              (set! (-> gp-0 flags) (font-flags shadow kerning middle large))
              (print-game-text (lookup-text! *common-text* (text-id lose!) #f) gp-0 #f 128 22)))
          (fisher-draw-display self)
-         (let ((gp-1 (get-response (-> self query))))
+         (let ((gp-1 (goalpad-face-prompt-touch-get-response self (-> self query))))
            (cond
              ((and (= gp-1 'yes) (process-release? *target*)) (go-virtual enter-playing))
              ((= gp-1 'no) (go-virtual play-reject))))))
@@ -1337,6 +1340,22 @@
              25
              #f
              (lookup-text! *common-text* (text-id quit) #f)))
+  :trans
+    (behavior ()
+      (case (current-status (-> self tasks))
+        (((task-status need-reminder-a))
+         (case (goalpad-face-prompt-touch-get-response self (-> self query))
+           (('yes) (go-virtual play-accept))
+           (('no) (go-virtual play-reject)))
+         (push-accept-anim self))
+        (else
+         (let ((gp-0 (goalpad-face-prompt-touch-get-response self (-> self query))))
+           (cond
+             ((and (= gp-0 'yes) (process-release? *target*)) (go-virtual enter-playing))
+             ((= gp-0 'no) (go-virtual play-reject))))))
+      (push-reject-anim self)
+      (set! *camera-look-through-other* 2)
+      ((-> self cur-trans-hook)))
   ;; og:preserve-this needed for cutscene skipping
   :exit
   (behavior ()
