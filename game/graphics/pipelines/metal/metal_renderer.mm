@@ -367,9 +367,13 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   constexpr auto first_etie = static_cast<std::size_t>(jak2::BucketId::ETIE_L0_TFRAG);
   constexpr auto etie_stride = static_cast<std::size_t>(jak2::BucketId::ETIE_L1_TFRAG) -
                                first_etie;
+  constexpr auto first_merc = static_cast<std::size_t>(jak2::BucketId::MERC_L0_TFRAG);
+  constexpr auto merc_stride = static_cast<std::size_t>(jak2::BucketId::MERC_L1_TFRAG) -
+                               first_merc;
   const std::vector<tfrag3::TFragmentTreeKind> normal_tfrags = {
       tfrag3::TFragmentTreeKind::NORMAL};
   std::array<MetalTie3*, jak2::LEVEL_MAX> normal_ties = {};
+  auto merc = std::make_shared<MetalMerc2>(m_device, m_queue, m_texture_pool);
 
   for (const auto& descriptor : table) {
     const auto bucket_id = static_cast<std::size_t>(descriptor.id);
@@ -416,6 +420,13 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ASSERT(normal_ties[level_id]);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalTieEnvmap>(
           fmt::format("etie-l{}-tfrag", level_id), descriptor.id, normal_ties[level_id]);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Merc) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_merc && (bucket_id - first_merc) % merc_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_merc) / merc_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalMercBucketRenderer>(
+          fmt::format("merc-l{}-tfrag", level_id), descriptor.id, merc);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
       ASSERT(batch_size != 0);
       const char* name = "direct";
@@ -1254,6 +1265,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.generic_overflow = generic_stats.overflow;
     m_chain_stats.merc_models = merc_stats.models;
     m_chain_stats.merc_missing_models = merc_stats.missing_models;
+    m_chain_stats.merc_malformed_dma = merc_stats.malformed_dma;
     m_chain_stats.merc_draws = merc_stats.draws;
     m_chain_stats.merc_triangles = merc_stats.triangles;
     m_chain_stats.merc_envmap_draws = merc_stats.envmap_draws;

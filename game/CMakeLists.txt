@@ -416,6 +416,11 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_jak2_bucket_table_test.cpp)
     add_test(NAME jak2-metal-bucket-table-test COMMAND jak2-metal-bucket-table-test)
 
+    add_executable(jak2-metal-merc-dma-test
+            graphics/pipelines/metal/metal_jak2_merc_dma_test.cpp)
+    target_compile_definitions(jak2-metal-merc-dma-test PRIVATE NO_ASSERT=1)
+    add_test(NAME jak2-metal-merc-dma-test COMMAND jak2-metal-merc-dma-test)
+
     add_executable(jak2-metal-chain-validation-test
             graphics/pipelines/metal/metal_jak2_chain_validation_test.cpp)
     target_compile_definitions(jak2-metal-chain-validation-test PRIVATE NO_ASSERT=1)
@@ -1167,6 +1172,15 @@ if(APPLE)
         target_link_libraries(jak2-metal-tie-renderer-test
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak2-metal-tie-renderer-test COMMAND jak2-metal-tie-renderer-test)
+
+        add_executable(jak2-metal-merc-renderer-test
+            graphics/pipelines/metal/metal_jak2_merc_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_merc_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-merc-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-merc-renderer-test COMMAND jak2-metal-merc-renderer-test)
 
         add_executable(jak2-metal-glow-final-flare-proof
             graphics/pipelines/metal/metal_jak2_glow_final_flare_proof.mm)

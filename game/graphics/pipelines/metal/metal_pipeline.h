@@ -234,6 +234,7 @@ struct ChainStats {
   // merc buckets, from the last chain frame
   int merc_models = 0;
   int merc_missing_models = 0;  // the model's level is not loaded
+  int merc_malformed_dma = 0;
   int merc_draws = 0;
   int merc_triangles = 0;
   int merc_envmap_draws = 0;

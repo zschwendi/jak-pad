@@ -21,6 +21,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
+#include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -110,8 +111,53 @@ bool already_requested(const goal_jak2_metal_host* host, const std::string& name
          host->requested_level_names.end();
 }
 
+bool load_level_art_pair(goal_jak2_metal_host* host,
+                         const std::string& name,
+                         bool is_common,
+                         std::string* error) {
+  const auto path = fr3_path(host, name);
+  std::string background_error;
+  auto* level = metal_level_data::load_fr3(host->renderer.device(), host->renderer.queue(),
+                                           host->textures, path, is_common, &background_error);
+  if (!level) {
+    *error = "background level load failed: " + background_error;
+    return false;
+  }
+
+  const std::string level_key = level->level->level_name;
+  MetalMercModelPool::LoadResult merc_result;
+  bool merc_loaded = false;
+  try {
+    std::string merc_error;
+    if (!metal_merc_models().load_fr3(path, is_common, &merc_result, &merc_error)) {
+      const bool rolled_back = metal_level_data::unload(host->textures, level_key);
+      *error = "Merc model load failed: " + merc_error;
+      if (!rolled_back) {
+        *error += "; background rollback failed for " + level_key;
+      }
+      return false;
+    }
+    merc_loaded = true;
+    if (merc_result.level_name != level_key) {
+      metal_merc_models().remove_level(merc_result.level_name);
+      metal_level_data::unload(host->textures, level_key);
+      *error = "FR3 loaders disagreed on serialized level key";
+      return false;
+    }
+    host->loaded_level_keys.push_back(level_key);
+    return true;
+  } catch (...) {
+    if (merc_loaded) {
+      metal_merc_models().remove_level(level_key);
+    }
+    metal_level_data::unload(host->textures, level_key);
+    throw;
+  }
+}
+
 void copy_renderer_metrics(goal_jak2_metal_host* host) {
   const auto stats = host->renderer.chain_stats();
+  const auto& background = host->renderer.background_state();
   host->metrics.last_buckets_dispatched = stats.last_buckets_dispatched;
   host->metrics.command_buffers_committed = stats.command_buffers_committed;
   host->metrics.command_buffers_completed = stats.command_buffers_completed;
@@ -121,6 +167,21 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.late_present_submissions = stats.late_present_submissions;
   host->metrics.draws = stats.draw_calls;
   host->metrics.triangles = stats.triangles;
+  host->metrics.last_tie_draws = background.tie_draws;
+  host->metrics.last_tie_triangles = background.tie_tris;
+  host->metrics.last_background_missing_levels = background.missing_levels;
+  host->metrics.last_background_missing_textures = background.missing_textures;
+  host->metrics.last_background_anim_slot_draws = background.anim_slot_draws;
+  host->metrics.last_merc_models = stats.merc_models;
+  host->metrics.last_merc_draws = stats.merc_draws;
+  host->metrics.last_merc_triangles = stats.merc_triangles;
+  host->metrics.last_merc_malformed_dma = stats.merc_malformed_dma;
+  host->metrics.last_merc_missing_models = stats.merc_missing_models;
+  host->metrics.last_merc_bad_bone_pointers = stats.merc_bad_bone_pointers;
+  host->metrics.last_merc_missing_bone_slots = stats.merc_missing_bone_slots;
+  host->metrics.last_merc_nonfinite_bone_matrices = stats.merc_nonfinite_bone_matrices;
+  host->metrics.last_merc_degenerate_bone_matrices = stats.merc_degenerate_bone_matrices;
+  host->metrics.last_merc_incoherent_bone_sources = stats.merc_incoherent_bone_sources;
   host->metrics.last_sky_draw_draws = stats.jak2_sky_draw_draws;
   host->metrics.last_sky_draw_triangles = stats.jak2_sky_draw_triangles;
   const auto& sky_batch = stats.jak2_sky_draw_last_batch;
@@ -553,16 +614,13 @@ void set_levels(const char* const* names, int count) {
     if (already_requested(host, name)) {
       continue;
     }
-    host->requested_level_names.push_back(name);
     try {
       std::string error;
-      auto* level = metal_level_data::load_fr3(host->renderer.device(), host->renderer.queue(),
-                                               host->textures, fr3_path(host, name), false, &error);
-      if (!level) {
+      if (!load_level_art_pair(host, name, false, &error)) {
         fail_closed(host, "Jak 2 level art load failed for " + name + ": " + error);
         return;
       }
-      host->loaded_level_keys.push_back(level->level->level_name);
+      host->requested_level_names.push_back(name);
     } catch (const std::exception& error) {
       fail_closed(host, "Jak 2 level art load failed for " + name + ": " + error.what());
       return;
@@ -598,7 +656,8 @@ bool policy_table_is_audited() {
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::TFragment &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Shrub &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Tie &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::TieEnvmap) {
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::TieEnvmap &&
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Merc) {
       return false;
     }
   }
@@ -694,14 +753,11 @@ int goal_jak2_metal_host_configure_level_art(goal_jak2_metal_host* host,
 
   try {
     std::string error;
-    auto* common = metal_level_data::load_fr3(
-        host->renderer.device(), host->renderer.queue(), host->textures, fr3_path(host, "GAME"),
-        true, &error);
-    if (!common) {
+    if (!load_level_art_pair(host, "GAME", true, &error)) {
       host->error = "Jak 2 common level art load failed: " + error;
       return 0;
     }
-    host->loaded_level_keys.push_back(common->level->level_name);
+    host->requested_level_names.push_back("GAME");
     host->configured = true;
     host->error.clear();
     return 1;
@@ -850,6 +906,7 @@ void goal_jak2_metal_host_destroy(goal_jak2_metal_host* host) {
   host->inactive = true;
   g_active_host = nullptr;
   for (auto key = host->loaded_level_keys.rbegin(); key != host->loaded_level_keys.rend(); ++key) {
+    metal_merc_models().remove_level(*key);
     metal_level_data::unload(host->textures, *key);
   }
   host->loaded_level_keys.clear();

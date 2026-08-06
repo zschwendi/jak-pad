@@ -34,6 +34,7 @@ int main() {
   std::size_t shrub = 0;
   std::size_t tie = 0;
   std::size_t tie_envmap = 0;
+  std::size_t merc = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -47,10 +48,11 @@ int main() {
     shrub += table[i].behavior == Behavior::Shrub;
     tie += table[i].behavior == Behavior::Tie;
     tie_envmap += table[i].behavior == Behavior::TieEnvmap;
+    merc += table[i].behavior == Behavior::Merc;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 169, "169 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 163, "163 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 3, "three reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 2,
@@ -62,6 +64,7 @@ int main() {
   check(tie == 6, "six normal per-level TIE parent buckets are implemented by Metal");
   check(tie_envmap == 6,
         "six normal per-level ETIE child buckets are implemented by Metal");
+  check(merc == 6, "six normal per-level Merc buckets are implemented by Metal");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
             metal_renderer::kJak2MetalBucketExpectedFingerprint,
         "the ordered descriptor policy matches its fixed reference fingerprint");
@@ -113,9 +116,35 @@ int main() {
             has_behavior(jak2::BucketId::TIE_T_L0_ALPHA, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::ETIE_T_L0_ALPHA, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::TIE_W_L0_WATER, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::ETIE_W_L0_WATER, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::MERC_L0_TFRAG, Behavior::DeferredSkip),
-        "TIE scissor/vanish remain unbound while translucent, water, and Merc stay deferred");
+            has_behavior(jak2::BucketId::ETIE_W_L0_WATER, Behavior::DeferredSkip),
+        "TIE scissor/vanish remain unbound while translucent and water stay deferred");
+  check(has_behavior(jak2::BucketId::MERC_L0_TFRAG, Behavior::Merc) &&
+            has_behavior(jak2::BucketId::MERC_L1_TFRAG, Behavior::Merc) &&
+            has_behavior(jak2::BucketId::MERC_L2_TFRAG, Behavior::Merc) &&
+            has_behavior(jak2::BucketId::MERC_L3_TFRAG, Behavior::Merc) &&
+            has_behavior(jak2::BucketId::MERC_L4_TFRAG, Behavior::Merc) &&
+            has_behavior(jak2::BucketId::MERC_L5_TFRAG, Behavior::Merc),
+        "all six normal Merc level buckets use the explicit Metal Merc policy");
+  check(static_cast<std::size_t>(jak2::BucketId::MERC_L0_TFRAG) == 14 &&
+            static_cast<std::size_t>(jak2::BucketId::MERC_L1_TFRAG) == 25 &&
+            static_cast<std::size_t>(jak2::BucketId::MERC_L2_TFRAG) == 36 &&
+            static_cast<std::size_t>(jak2::BucketId::MERC_L3_TFRAG) == 47 &&
+            static_cast<std::size_t>(jak2::BucketId::MERC_L4_TFRAG) == 58 &&
+            static_cast<std::size_t>(jak2::BucketId::MERC_L5_TFRAG) == 69,
+        "normal Merc keeps the audited bucket IDs 14, 25, 36, 47, 58, and 69");
+  check(has_behavior(jak2::BucketId::GMERC_L0_TFRAG, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::GMERC_L1_TFRAG, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::GMERC_L2_TFRAG, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::GMERC_L3_TFRAG, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::GMERC_L4_TFRAG, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::GMERC_L5_TFRAG, Behavior::DeferredSkip) &&
+            static_cast<std::size_t>(jak2::BucketId::GMERC_L0_TFRAG) == 16 &&
+            static_cast<std::size_t>(jak2::BucketId::GMERC_L1_TFRAG) == 27 &&
+            static_cast<std::size_t>(jak2::BucketId::GMERC_L2_TFRAG) == 38 &&
+            static_cast<std::size_t>(jak2::BucketId::GMERC_L3_TFRAG) == 49 &&
+            static_cast<std::size_t>(jak2::BucketId::GMERC_L4_TFRAG) == 60 &&
+            static_cast<std::size_t>(jak2::BucketId::GMERC_L5_TFRAG) == 71,
+        "all six audited GMerc neighbors remain deferred");
   check(has_behavior(jak2::BucketId::SHRUB_L0_SHRUB, Behavior::Shrub) &&
             has_behavior(jak2::BucketId::SHRUB_L1_SHRUB, Behavior::Shrub) &&
             has_behavior(jak2::BucketId::SHRUB_L2_SHRUB, Behavior::Shrub) &&
@@ -186,6 +215,9 @@ int main() {
             metal_renderer::jak2_metal_bucket_allows_content(
                 static_cast<std::size_t>(jak2::BucketId::ETIE_L0_TFRAG)),
         "implemented normal TIE parent and ETIE child policies allow their source shapes");
+  check(metal_renderer::jak2_metal_bucket_allows_content(
+            static_cast<std::size_t>(jak2::BucketId::MERC_L0_TFRAG)),
+        "implemented normal Merc policy allows its source shape");
   check(metal_renderer::jak2_metal_bucket_allows_content(
             static_cast<std::size_t>(jak2::BucketId::SKY_DRAW)),
         "the promoted SKY_DRAW Direct policy allows content");

@@ -159,7 +159,7 @@ inline bool recover_to_boundary(DmaFollower* dma,
       !span_is_bounded(copy_size, next_bucket, 16)) {
     return false;
   }
-  *dma = DmaFollower(copy_base, next_bucket);
+  *dma = DmaFollower(copy_base, next_bucket, copy_size);
   return true;
 }
 

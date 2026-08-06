@@ -50,6 +50,9 @@ constexpr Table make_table() {
   const auto tie_envmap = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::TieEnvmap;
   };
+  const auto merc = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::Merc;
+  };
 
   // Mirror every renderer explicitly installed by OpenGLRenderer::init_bucket_renderers_jak2.
   visibility(BucketId::BUCKET_2);
@@ -63,7 +66,7 @@ constexpr Table make_table() {
     tfragment(level_bucket(BucketId::TFRAG_L0_TFRAG, BucketId::TFRAG_L1_TFRAG, level));
     tie(level_bucket(BucketId::TIE_L0_TFRAG, BucketId::TIE_L1_TFRAG, level));
     tie_envmap(level_bucket(BucketId::ETIE_L0_TFRAG, BucketId::ETIE_L1_TFRAG, level));
-    defer(level_bucket(BucketId::MERC_L0_TFRAG, BucketId::MERC_L1_TFRAG, level));
+    merc(level_bucket(BucketId::MERC_L0_TFRAG, BucketId::MERC_L1_TFRAG, level));
     defer(level_bucket(BucketId::GMERC_L0_TFRAG, BucketId::GMERC_L1_TFRAG, level));
 
     defer(level_bucket(BucketId::TEX_L0_SHRUB, BucketId::TEX_L1_SHRUB, level));
@@ -154,7 +157,7 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 169);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 163);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 3);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 2);
@@ -164,6 +167,7 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TFragment) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Shrub) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Tie) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieEnvmap) == 6);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 6);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);
 
 }  // namespace

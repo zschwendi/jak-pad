@@ -203,7 +203,7 @@ void check_packet_rejected(const std::vector<u8>& packet, const char* message) {
 void check_rejected_and_recovered(const Fixture& fixture, const char* message) {
   std::string error;
   metal_jak2_merc_dma::Bucket bucket;
-  DmaFollower dma(fixture.memory.data(), kOpening);
+  DmaFollower dma(fixture.memory.data(), kOpening, fixture.memory.size());
   const bool rejected = !metal_jak2_merc_dma::validate_bucket(
       fixture.memory.data(), fixture.memory.size(), kOpening, kBoundary, fixture.memory.size(),
       &bucket, &error);
@@ -249,7 +249,7 @@ void test_bounded_chain_rejections() {
     Fixture fixture;
     check_rejected(fixture, "an unaligned next-bucket boundary is rejected before recovery",
                    fixture.memory.size(), kOpening, kBoundary + 1);
-    DmaFollower dma(fixture.memory.data(), kOpening);
+    DmaFollower dma(fixture.memory.data(), kOpening, fixture.memory.size());
     check(!metal_jak2_merc_dma::recover_to_boundary(
               &dma, fixture.memory.data(), fixture.memory.size(), kBoundary + 1) &&
               dma.current_tag_offset() == kOpening,
@@ -279,10 +279,26 @@ void test_bounded_chain_rejections() {
   {
     Fixture fixture;
     check_rejected(fixture, "a truncated boundary tag makes recovery unavailable", kBoundary + 8);
-    DmaFollower dma(fixture.memory.data(), kOpening);
+    DmaFollower dma(fixture.memory.data(), kOpening, fixture.memory.size());
     check(!metal_jak2_merc_dma::recover_to_boundary(&dma, fixture.memory.data(), kBoundary + 8,
                                                     kBoundary),
           "direct recovery refuses a boundary header outside the compacted copy");
+  }
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, kBoundary, DmaTag::Kind::NEXT, 0,
+            static_cast<u32>(fixture.memory.size()), 0, 0);
+    DmaFollower dma(fixture.memory.data(), kOpening, fixture.memory.size());
+    const bool recovered = metal_jak2_merc_dma::recover_to_boundary(
+        &dma, fixture.memory.data(), fixture.memory.size(), kBoundary);
+    bool rejected = false;
+    try {
+      dma.read_and_advance();
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    check(recovered && rejected && dma.current_tag_offset() == kBoundary,
+          "recovery preserves the compacted-copy bound for the next bucket");
   }
   {
     Fixture fixture;
@@ -476,7 +492,7 @@ void test_preflight_transaction() {
     tag = (tag & ~0xffffull) | 0xffffull;
     put_u64(&fixture.memory, kModel1, tag);
 
-    DmaFollower dma(fixture.memory.data(), kOpening);
+    DmaFollower dma(fixture.memory.data(), kOpening, fixture.memory.size());
     int malformed = 0;
     int model_checks = 0;
     auto outcome = metal_jak2_merc_dma::preflight_bucket(
@@ -502,7 +518,7 @@ void test_preflight_transaction() {
   }
   {
     Fixture fixture;
-    DmaFollower dma(fixture.memory.data(), kOpening);
+    DmaFollower dma(fixture.memory.data(), kOpening, fixture.memory.size());
     int malformed = 0;
     int model_checks = 0;
     auto outcome = metal_jak2_merc_dma::preflight_bucket(

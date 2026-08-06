@@ -16,6 +16,7 @@
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_fixture.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
+#include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/kernel/core/kernel_core.h"
@@ -406,6 +407,8 @@ int main() {
   }
 
   const std::size_t initial_level_count = metal_level_data::level_count();
+  const std::size_t initial_merc_level_count = metal_merc_models().level_count();
+  const std::size_t initial_merc_model_count = metal_merc_models().model_count();
   const std::size_t initial_texture_count = metal_texture_live_count();
 
   check(goal_jak2_metal_host_create_presenting(nullptr) == nullptr,
@@ -422,6 +425,8 @@ int main() {
         "a failed common-art load cannot publish runtime callbacks");
   goal_jak2_metal_host_destroy(missing_host);
   check(metal_level_data::level_count() == initial_level_count &&
+            metal_merc_models().level_count() == initial_merc_level_count &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == initial_texture_count,
         "missing-directory rejection released its placeholder without leaking level art");
 
@@ -433,6 +438,8 @@ int main() {
         "rejected an FR3 directory without GAME.fr3");
   goal_jak2_metal_host_destroy(wrong_host);
   check(metal_level_data::level_count() == initial_level_count &&
+            metal_merc_models().level_count() == initial_merc_level_count &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == initial_texture_count,
         "wrong-directory rejection left no global Metal resources");
 
@@ -449,10 +456,14 @@ int main() {
         "synchronously loaded synthetic GAME.fr3 before publishing callbacks");
   const std::size_t configured_texture_count = metal_texture_live_count();
   check(metal_level_data::level_count() == initial_level_count + 1 &&
-            configured_texture_count == initial_texture_count + 2,
-        "common art uses its serialized level key and owns one texture plus the placeholder");
+            metal_merc_models().level_count() == initial_merc_level_count + 1 &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
+            configured_texture_count == initial_texture_count + 3,
+        "common art is paired under one serialized key with two textures plus the placeholder");
   check(goal_jak2_metal_host_configure_level_art(host, fr3_directory.c_str()) &&
             metal_level_data::level_count() == initial_level_count + 1 &&
+            metal_merc_models().level_count() == initial_merc_level_count + 1 &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == configured_texture_count,
         "same-directory configuration is idempotent");
   check(!goal_jak2_metal_host_configure_level_art(
@@ -467,12 +478,23 @@ int main() {
   check(callbacks.texture_upload_now && callbacks.texture_relocate && callbacks.set_levels,
         "the copied host contains real texture-residency callbacks");
 
+  const char* common_again[] = {"GAME"};
+  callbacks.set_levels(common_again, 1);
+  check(metal_level_data::level_count() == initial_level_count + 1 &&
+            metal_merc_models().level_count() == initial_merc_level_count + 1 &&
+            metal_texture_live_count() == configured_texture_count,
+        "set-levels does not duplicate the configured GAME pair");
+
   const char* arena[] = {"arena"};
   callbacks.set_levels(arena, 1);
-  check(metal_level_data::level_count() == initial_level_count + 2,
-        "set-levels loaded one requested FR3 under its serialized key");
+  check(metal_level_data::level_count() == initial_level_count + 2 &&
+            metal_merc_models().level_count() == initial_merc_level_count + 2 &&
+            metal_merc_models().model_count() == initial_merc_model_count,
+        "set-levels paired one requested FR3 under its serialized key");
   callbacks.set_levels(arena, 1);
   check(metal_level_data::level_count() == initial_level_count + 2 &&
+            metal_merc_models().level_count() == initial_merc_level_count + 2 &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == configured_texture_count,
         "set-levels loads each requested basename only once and retains it");
 
@@ -501,6 +523,18 @@ int main() {
             metrics.last_screen_filter_draws == 0 && metrics.last_screen_filter_triangles == 0 &&
             metrics.last_debug_no_zbuf2_draws == 0 &&
             metrics.last_debug_no_zbuf2_triangles == 0 &&
+            metrics.last_tie_draws == 0 && metrics.last_tie_triangles == 0 &&
+            metrics.last_background_missing_levels == 0 &&
+            metrics.last_background_missing_textures == 0 &&
+            metrics.last_background_anim_slot_draws == 0 &&
+            metrics.last_merc_models == 0 && metrics.last_merc_draws == 0 &&
+            metrics.last_merc_triangles == 0 && metrics.last_merc_malformed_dma == 0 &&
+            metrics.last_merc_missing_models == 0 &&
+            metrics.last_merc_bad_bone_pointers == 0 &&
+            metrics.last_merc_missing_bone_slots == 0 &&
+            metrics.last_merc_nonfinite_bone_matrices == 0 &&
+            metrics.last_merc_degenerate_bone_matrices == 0 &&
+            metrics.last_merc_incoherent_bone_sources == 0 &&
             metrics.presentations == 0 && metrics.presentation_drops == 0 &&
             metrics.presentation_order_mismatches == 0 && metrics.unsupported_blends == 0,
         "nil-layer lifecycle dispatches without committing, drawing, or presenting");
@@ -618,6 +652,10 @@ int main() {
 
   const char* missing_level[] = {"missing-level"};
   callbacks.set_levels(missing_level, 1);
+  check(metal_level_data::level_count() == initial_level_count + 2 &&
+            metal_merc_models().level_count() == initial_merc_level_count + 2 &&
+            metal_merc_models().model_count() == initial_merc_model_count,
+        "a missing requested FR3 leaves neither loader partially resident");
   make_empty_chain();
   callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(host, &metrics) && metrics.chains == 6 &&
@@ -629,6 +667,8 @@ int main() {
   check(!goal_jak2_metal_host_get_metrics(host, &metrics),
         "a destroyed host no longer exposes state while stale callbacks remain inert");
   check(metal_level_data::level_count() == initial_level_count &&
+            metal_merc_models().level_count() == initial_merc_level_count &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == initial_texture_count,
         "destroy unloaded recorded serialized keys in reverse and released every texture handle");
 
@@ -839,6 +879,8 @@ int main() {
         "rejected level-art configuration after callbacks were published");
   goal_jak2_metal_host_destroy(late_host);
   check(metal_level_data::level_count() == initial_level_count &&
+            metal_merc_models().level_count() == initial_merc_level_count &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == initial_texture_count,
         "host recreation and late rejection left no global Metal handles");
 
