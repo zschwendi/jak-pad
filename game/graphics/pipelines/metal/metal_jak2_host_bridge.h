@@ -121,6 +121,15 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_sprite_normal_submitted;
   uint64_t last_sprite_glow_marked;
   uint64_t last_sprite_glow_skipped;
+  uint64_t last_sprite_glow_parsed;
+  uint64_t last_sprite_glow_accepted;
+  uint64_t last_sprite_glow_rejected;
+  uint64_t last_sprite_glow_invalid_records;
+  uint64_t last_sprite_glow_force_visible_submitted;
+  uint64_t last_sprite_glow_force_visible_drawn;
+  uint64_t last_sprite_glow_force_visible_draws;
+  uint64_t last_sprite_glow_force_visible_triangles;
+  uint64_t last_sprite_glow_force_visible_missing_textures;
   uint64_t last_sprite_draws;
   uint64_t last_sprite_triangles;
   uint64_t last_sprite_missing_textures;

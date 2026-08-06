@@ -101,13 +101,6 @@ void MetalGlowRenderer::draw_force_visible(const SpriteGlowOutput* sprites,
   }
 
   ASSERT(sprites);
-  ASSERT(render_state);
-  ASSERT(render_state->version == GameVersion::Jak2);
-  ASSERT(render_state->texture_pool);
-  ASSERT(ctx.enc);
-  ASSERT(ctx.pso_cache);
-  ASSERT(ctx.sampler_cache);
-  ASSERT(ctx.stream);
   ASSERT(count <= std::numeric_limits<u32>::max() / 5);
   ASSERT(count * 4 * sizeof(GlowVertex) <= MetalStreamBuffer::kPageSize);
   ASSERT(count * 5 * sizeof(u32) <= MetalStreamBuffer::kPageSize);
@@ -157,6 +150,14 @@ void MetalGlowRenderer::draw_force_visible(const SpriteGlowOutput* sprites,
   if (records.empty()) {
     return;
   }
+
+  ASSERT(render_state);
+  ASSERT(render_state->version == GameVersion::Jak2);
+  ASSERT(render_state->texture_pool);
+  ASSERT(ctx.enc);
+  ASSERT(ctx.pso_cache);
+  ASSERT(ctx.sampler_cache);
+  ASSERT(ctx.stream);
 
   id<MTLBuffer> vertex_buffer;
   u32 vertex_offset = 0;

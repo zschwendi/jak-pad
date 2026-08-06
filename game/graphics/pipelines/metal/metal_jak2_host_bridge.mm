@@ -154,6 +154,18 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_sprite_normal_submitted = stats.sprite_normal_submitted;
   host->metrics.last_sprite_glow_marked = stats.sprite_glow_marked;
   host->metrics.last_sprite_glow_skipped = stats.sprite_glow_skipped;
+  host->metrics.last_sprite_glow_parsed = stats.sprite_glow_parsed;
+  host->metrics.last_sprite_glow_accepted = stats.sprite_glow_accepted;
+  host->metrics.last_sprite_glow_rejected = stats.sprite_glow_rejected;
+  host->metrics.last_sprite_glow_invalid_records = stats.sprite_glow_invalid_records;
+  host->metrics.last_sprite_glow_force_visible_submitted =
+      stats.sprite_glow_force_visible_submitted;
+  host->metrics.last_sprite_glow_force_visible_drawn = stats.sprite_glow_force_visible_drawn;
+  host->metrics.last_sprite_glow_force_visible_draws = stats.sprite_glow_force_visible_draws;
+  host->metrics.last_sprite_glow_force_visible_triangles =
+      stats.sprite_glow_force_visible_triangles;
+  host->metrics.last_sprite_glow_force_visible_missing_textures =
+      stats.sprite_glow_force_visible_missing_textures;
   host->metrics.last_sprite_draws = stats.sprite_draws;
   host->metrics.last_sprite_triangles = stats.sprite_triangles;
   host->metrics.last_sprite_missing_textures = stats.sprite_missing_textures;

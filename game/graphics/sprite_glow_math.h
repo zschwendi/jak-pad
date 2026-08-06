@@ -52,6 +52,27 @@ struct SpriteGlowConsts {
 };
 static_assert(sizeof(SpriteGlowConsts) == 0x180);
 
+enum class SpriteGlowRejectReason {
+  NONE,
+  INVALID_ARGUMENT,
+  NONFINITE_INPUT,
+  NONFINITE_CAMERA,
+  NONFINITE_FADE,
+  ZERO_CAMERA_DEPTH,
+  NONFINITE_SCALE,
+  NONFINITE_PERSPECTIVE,
+  INVALID_PERSPECTIVE_DENOMINATOR,
+  CLIPPED_X,
+  CLIPPED_Y,
+  CLIPPED_Z,
+  NONFINITE_SIZE,
+  NONFINITE_ROTATION,
+  NONFINITE_OUTPUT,
+  COUNT,
+};
+
+const char* sprite_glow_reject_reason_name(SpriteGlowRejectReason reason);
+
 /*!
  * Transformation math from the sprite-glow vu1 program.
  * Populates the SpriteGlowOutput struct with the same data that would get filled into the
@@ -63,4 +84,5 @@ bool glow_math(const SpriteGlowConsts* consts,
                bool skip_uv_clamp,
                const void* vec_data,
                const void* adgif_data,
-               SpriteGlowOutput* out);
+               SpriteGlowOutput* out,
+               SpriteGlowRejectReason* reject_reason = nullptr);

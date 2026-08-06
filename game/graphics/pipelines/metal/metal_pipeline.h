@@ -206,6 +206,15 @@ struct ChainStats {
   int sprite_normal_submitted = 0;
   int sprite_glow_marked = 0;
   int sprite_glow_skipped = 0;
+  int sprite_glow_parsed = 0;
+  int sprite_glow_accepted = 0;
+  int sprite_glow_rejected = 0;
+  int sprite_glow_invalid_records = 0;
+  int sprite_glow_force_visible_submitted = 0;
+  int sprite_glow_force_visible_drawn = 0;
+  int sprite_glow_force_visible_draws = 0;
+  int sprite_glow_force_visible_triangles = 0;
+  int sprite_glow_force_visible_missing_textures = 0;
   int sprite_draws = 0;
   int sprite_triangles = 0;
   int sprite_missing_textures = 0;

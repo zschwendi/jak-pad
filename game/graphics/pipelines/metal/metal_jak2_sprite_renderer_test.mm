@@ -347,6 +347,9 @@ void test_constants_led_glow_retains_finite_output_and_exact_adgif() {
   ASSERT(renderer.stats().glow_sprites_parsed == 1);
   ASSERT(renderer.stats().glow_sprites_accepted == 1);
   ASSERT(renderer.stats().glow_sprites_rejected == 0);
+  ASSERT(renderer.stats().glow_invalid_records == 1);
+  ASSERT(renderer.stats().glow_force_visible_submitted == 1);
+  ASSERT(renderer.stats().glow_force_visible_drawn == 0);
   ASSERT(renderer.stats().glow_sprites_skipped == 1);
   ASSERT(renderer.stats().glow_transfers_skipped == 0);
   ASSERT(renderer.stats().unsupported_bytes == 10 * 16);
@@ -423,6 +426,9 @@ void test_constants_led_glow_accepts_source_record_limit() {
   ASSERT(renderer.stats().glow_sprites_parsed == 400);
   ASSERT(renderer.stats().glow_sprites_accepted == 400);
   ASSERT(renderer.stats().glow_sprites_rejected == 0);
+  ASSERT(renderer.stats().glow_invalid_records == 400);
+  ASSERT(renderer.stats().glow_force_visible_submitted == 400);
+  ASSERT(renderer.stats().glow_force_visible_drawn == 0);
   ASSERT(renderer.stats().glow_sprites_skipped == 400);
   ASSERT(renderer.stats().glow_transfers_skipped == 0);
   ASSERT(renderer.stats().glow_bytes_skipped == 0);

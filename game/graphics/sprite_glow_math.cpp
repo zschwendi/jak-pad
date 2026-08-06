@@ -46,19 +46,13 @@ bool all_finite(const SpriteGlowConsts& consts) {
       return false;
     }
   }
-  for (const auto& row : consts.sincos) {
-    if (!all_finite(row)) {
-      return false;
-    }
-  }
   for (const auto& corner : consts.xy_array) {
     if (!all_finite(corner)) {
       return false;
     }
   }
   return all_finite(consts.hvdf) && all_finite(consts.hmge) &&
-         std::isfinite(consts.pfog0) && std::isfinite(consts.deg_to_rad) &&
-         std::isfinite(consts.min_scale) && std::isfinite(consts.inv_area) &&
+         std::isfinite(consts.deg_to_rad) &&
          all_finite(consts.basis_x) && all_finite(consts.basis_y) &&
          all_finite(consts.clamp_min) && all_finite(consts.clamp_max);
 }
@@ -89,18 +83,67 @@ bool all_finite(const SpriteGlowOutput& output) {
 
 }  // namespace
 
+const char* sprite_glow_reject_reason_name(SpriteGlowRejectReason reason) {
+  switch (reason) {
+    case SpriteGlowRejectReason::NONE:
+      return "none";
+    case SpriteGlowRejectReason::INVALID_ARGUMENT:
+      return "invalid-argument";
+    case SpriteGlowRejectReason::NONFINITE_INPUT:
+      return "nonfinite-input";
+    case SpriteGlowRejectReason::NONFINITE_CAMERA:
+      return "nonfinite-camera";
+    case SpriteGlowRejectReason::NONFINITE_FADE:
+      return "nonfinite-fade";
+    case SpriteGlowRejectReason::ZERO_CAMERA_DEPTH:
+      return "zero-camera-depth";
+    case SpriteGlowRejectReason::NONFINITE_SCALE:
+      return "nonfinite-scale";
+    case SpriteGlowRejectReason::NONFINITE_PERSPECTIVE:
+      return "nonfinite-perspective";
+    case SpriteGlowRejectReason::INVALID_PERSPECTIVE_DENOMINATOR:
+      return "invalid-perspective-denominator";
+    case SpriteGlowRejectReason::CLIPPED_X:
+      return "clipped-x";
+    case SpriteGlowRejectReason::CLIPPED_Y:
+      return "clipped-y";
+    case SpriteGlowRejectReason::CLIPPED_Z:
+      return "clipped-z";
+    case SpriteGlowRejectReason::NONFINITE_SIZE:
+      return "nonfinite-size";
+    case SpriteGlowRejectReason::NONFINITE_ROTATION:
+      return "nonfinite-rotation";
+    case SpriteGlowRejectReason::NONFINITE_OUTPUT:
+      return "nonfinite-output";
+    case SpriteGlowRejectReason::COUNT:
+      break;
+  }
+  return "unknown";
+}
+
 bool glow_math(const SpriteGlowConsts* consts,
                bool skip_uv_clamp,
                const void* vec_data,
                const void* adgif_data,
-               SpriteGlowOutput* out) {
-  if (!consts || !vec_data || !adgif_data || !out) {
+               SpriteGlowOutput* out,
+               SpriteGlowRejectReason* reject_reason) {
+  if (reject_reason) {
+    *reject_reason = SpriteGlowRejectReason::NONE;
+  }
+  const auto reject = [&](SpriteGlowRejectReason reason) {
+    if (reject_reason) {
+      *reject_reason = reason;
+    }
     return false;
+  };
+
+  if (!consts || !vec_data || !adgif_data || !out) {
+    return reject(SpriteGlowRejectReason::INVALID_ARGUMENT);
   }
 
   const auto* in = static_cast<const SpriteGlowData*>(vec_data);
   if (!all_finite(*consts) || !all_finite(*in)) {
-    return false;
+    return reject(SpriteGlowRejectReason::NONFINITE_INPUT);
   }
 
   SpriteGlowOutput result = {};
@@ -117,14 +160,14 @@ bool glow_math(const SpriteGlowConsts* consts,
   Vector4f p0 = consts->camera[3] + consts->camera[0] * in->pos[0] +
                 consts->camera[1] * in->pos[1] + consts->camera[2] * in->pos[2];
   if (!all_finite(p0)) {
-    return false;
+    return reject(SpriteGlowRejectReason::NONFINITE_CAMERA);
   }
 
   // Compute fade. Interestingly, the fade is computed based on depth, not distance from the camera.
   // I think this is kind of wrong, and it leads to some weird fadeout behavior.
   float fade = in->fade_a * p0.z() + in->fade_b;  // fade_a is negative
   if (!std::isfinite(fade)) {
-    return false;
+    return reject(SpriteGlowRejectReason::NONFINITE_FADE);
   }
   if (fade < 0)
     fade = 0;
@@ -144,12 +187,12 @@ bool glow_math(const SpriteGlowConsts* consts,
   float pscale = 1.f;
   if (in->z_offset != 0.f) {
     if (p0.z() == 0.f) {
-      return false;
+      return reject(SpriteGlowRejectReason::ZERO_CAMERA_DEPTH);
     }
     pscale -= in->z_offset / p0.z();
   }
   if (!std::isfinite(pscale)) {
-    return false;
+    return reject(SpriteGlowRejectReason::NONFINITE_SCALE);
   }
   p0.x() *= pscale;
   p0.y() *= pscale;
@@ -159,28 +202,28 @@ bool glow_math(const SpriteGlowConsts* consts,
   p0 = consts->perspective[3] + consts->perspective[0] * p0.x() +
        consts->perspective[1] * p0.y() + consts->perspective[2] * p0.z();
   if (!all_finite(p0)) {
-    return false;
+    return reject(SpriteGlowRejectReason::NONFINITE_PERSPECTIVE);
   }
 
   // HMGE's meaning is unknown, but it's scaling factors for clipping. Apply those, and reject if
   // the origin is off-screen.
   Vector4f pos_hmged = p0.elementwise_multiply(consts->hmge);
   if (!all_finite(pos_hmged) || pos_hmged.w() == 0.f) {
-    return false;
+    return reject(SpriteGlowRejectReason::INVALID_PERSPECTIVE_DENOMINATOR);
   }
   float clip_plus = std::abs(pos_hmged.w());
   float clip_minus = -clip_plus;
   if (pos_hmged.x() > clip_plus || pos_hmged.x() < clip_minus)
-    return false;
+    return reject(SpriteGlowRejectReason::CLIPPED_X);
   if (pos_hmged.y() > clip_plus || pos_hmged.y() < clip_minus)
-    return false;
+    return reject(SpriteGlowRejectReason::CLIPPED_Y);
   if (pos_hmged.z() > clip_plus || pos_hmged.z() < clip_minus)
-    return false;
+    return reject(SpriteGlowRejectReason::CLIPPED_Z);
 
   // apply perspective divide. Interestingly using hmge's w here...
   float perspective_q = 1.f / pos_hmged.w();
   if (!std::isfinite(perspective_q)) {
-    return false;
+    return reject(SpriteGlowRejectReason::INVALID_PERSPECTIVE_DENOMINATOR);
   }
   p0.x() *= perspective_q;
   p0.y() *= perspective_q;
@@ -196,7 +239,7 @@ bool glow_math(const SpriteGlowConsts* consts,
   Vector4f vf02(in->size_probe, in->z_offset, in->size_x, in->size_y);
   vf02 *= perspective_q;
   if (!all_finite(vf02)) {
-    return false;
+    return reject(SpriteGlowRejectReason::NONFINITE_SIZE);
   }
 
   // clamp the probe size to be in (1, clamp_max.w)
@@ -229,7 +272,7 @@ bool glow_math(const SpriteGlowConsts* consts,
   // rotate them
   float rot_rad = in->rot_angle * consts->deg_to_rad;
   if (!std::isfinite(rot_rad)) {
-    return false;
+    return reject(SpriteGlowRejectReason::NONFINITE_ROTATION);
   }
   float rot_sin = std::sin(rot_rad);
   float rot_cos = std::cos(rot_rad);
@@ -277,7 +320,7 @@ bool glow_math(const SpriteGlowConsts* consts,
     result.flare_xyzw[i].y() += off.y();
   }
   if (!all_finite(result)) {
-    return false;
+    return reject(SpriteGlowRejectReason::NONFINITE_OUTPUT);
   }
   *out = result;
   return true;

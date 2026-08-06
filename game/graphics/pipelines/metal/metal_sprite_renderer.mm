@@ -1,5 +1,6 @@
 #include "metal_sprite_renderer.h"
 
+#include <array>
 #include <utility>
 
 #include "common/log/log.h"
@@ -31,6 +32,7 @@ constexpr u16 kGlowVectorAddress = 1;
 constexpr u16 kGlowAdgifAddress = 145;
 constexpr u16 kGlowProgramAddress = 10;
 constexpr int kMaxGlowRecords = 400;
+constexpr bool kGlowNewMode = true;
 
 constexpr u32 vif_code(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
   return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
@@ -388,6 +390,23 @@ void MetalSpriteRenderer::render_jak2(DmaFollower& dma,
   ASSERT(nop_flushe.vifcode0().kind == VifCode::Kind::NOP);
   ASSERT(nop_flushe.vifcode1().kind == VifCode::Kind::FLUSHE);
   parse_jak2_glow_and_residual(dma, render_state);
+
+  const auto& glow_outputs = pending_glow_outputs();
+  m_glow_renderer.draw_force_visible(glow_outputs.empty() ? nullptr : glow_outputs.data(),
+                                     glow_outputs.size(), render_state, ctx);
+  const auto& glow_stats = m_glow_renderer.stats();
+  m_stats.glow_invalid_records = glow_stats.invalid_records;
+  m_stats.glow_force_visible_submitted = glow_stats.sprites_submitted;
+  m_stats.glow_force_visible_drawn = glow_stats.sprites_drawn;
+  m_stats.glow_force_visible_draw_calls = glow_stats.draw_calls;
+  m_stats.glow_force_visible_triangles = glow_stats.triangles;
+  m_stats.glow_force_visible_missing_textures = glow_stats.missing_textures;
+  ASSERT(m_stats.glow_force_visible_drawn <= m_stats.glow_sprites_parsed);
+  m_stats.glow_sprites_skipped =
+      m_stats.glow_sprites_parsed - m_stats.glow_force_visible_drawn;
+  m_stats.draw_calls += glow_stats.draw_calls;
+  m_stats.triangles += glow_stats.triangles;
+  m_stats.missing_textures += glow_stats.missing_textures;
 }
 
 bool MetalSpriteRenderer::render_normal_path(DmaFollower& dma,
@@ -424,6 +443,7 @@ void MetalSpriteRenderer::parse_jak2_glow_and_residual(DmaFollower& dma,
   int parsed_count = 0;
   int accepted_count = 0;
   int rejected_count = 0;
+  std::array<int, static_cast<std::size_t>(SpriteGlowRejectReason::COUNT)> reject_reasons = {};
 
   auto read_packet_transfer = [&](DmaTransfer* transfer) {
     if (dma.current_tag_offset() == render_state->next_bucket) {
@@ -495,11 +515,14 @@ void MetalSpriteRenderer::parse_jak2_glow_and_residual(DmaFollower& dma,
 
       parsed_count++;
       SpriteGlowOutput output;
-      if (glow_math(&constants, false, vector_transfer.data, adgif_transfer.data, &output)) {
+      SpriteGlowRejectReason reject_reason = SpriteGlowRejectReason::NONE;
+      if (glow_math(&constants, kGlowNewMode, vector_transfer.data, adgif_transfer.data, &output,
+                    &reject_reason)) {
         parsed_outputs.push_back(output);
         accepted_count++;
       } else {
         rejected_count++;
+        reject_reasons.at(static_cast<std::size_t>(reject_reason))++;
       }
 
       if (!read_packet_transfer(&transfer)) {
@@ -537,8 +560,6 @@ void MetalSpriteRenderer::parse_jak2_glow_and_residual(DmaFollower& dma,
     m_stats.glow_sprites_parsed = parsed_count;
     m_stats.glow_sprites_accepted = accepted_count;
     m_stats.glow_sprites_rejected = rejected_count;
-    // These are retained but not submitted by this renderer checkpoint.
-    m_stats.glow_sprites_skipped = parsed_count;
     m_pending_glow_outputs = std::move(parsed_outputs);
     drain_remaining();
   } else {
@@ -552,6 +573,17 @@ void MetalSpriteRenderer::parse_jak2_glow_and_residual(DmaFollower& dma,
   }
 
   m_unsupported_bytes_total += m_stats.unsupported_bytes;
+
+  if (m_stats.glow_sprites_rejected > 0 && !m_warned_rejected_glow_math) {
+    for (std::size_t reason = 0; reason < reject_reasons.size(); reason++) {
+      if (reject_reasons[reason] > 0) {
+        lg::warn("Metal sprite {}: rejected {} Jak 2 glow record(s): {}", m_name,
+                 reject_reasons[reason],
+                 sprite_glow_reject_reason_name(static_cast<SpriteGlowRejectReason>(reason)));
+      }
+    }
+    m_warned_rejected_glow_math = true;
+  }
 
   if (m_stats.unsupported_bytes > 0 && !m_warned_unsupported_glow) {
     lg::warn("Metal sprite {}: parsed {}/accepted {}/rejected {} Jak 2 glow sprites; left {} "

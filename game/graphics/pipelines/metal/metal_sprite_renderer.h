@@ -23,9 +23,11 @@
  * frame so far (the game pass is split where GL calls glBlitFramebuffer).
  *
  * The normal Jak 2 Sprite3 path is also supported. Its constants-led glow DMA
- * is verified and transformed into pending backend-neutral records, but those
- * records are not drawn here. Control-led tails without constants remain
- * explicitly unsupported. Jak 3 remains unsupported.
+ * is verified and transformed into backend-neutral records, then submitted to
+ * a diagnostic final-flare pass that deliberately treats every valid flare as
+ * visible. The source-faithful probe and downsample passes remain pending.
+ * Control-led tails without constants remain explicitly unsupported. Jak 3
+ * remains unsupported.
  */
 
 #include <map>
@@ -38,6 +40,7 @@
 #include "game/graphics/opengl_renderer/sprite/sprite_common.h"
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
+#include "game/graphics/pipelines/metal/metal_glow_renderer.h"
 #include "game/graphics/sprite_glow_math.h"
 
 class MetalSpriteRenderer : public MetalBucketRenderer {
@@ -62,6 +65,12 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
     int glow_sprites_parsed = 0;
     int glow_sprites_accepted = 0;
     int glow_sprites_rejected = 0;
+    int glow_invalid_records = 0;
+    int glow_force_visible_submitted = 0;
+    int glow_force_visible_drawn = 0;
+    int glow_force_visible_draw_calls = 0;
+    int glow_force_visible_triangles = 0;
+    int glow_force_visible_missing_textures = 0;
     int draw_calls = 0;
     int triangles = 0;
     int distort_sprites = 0;
@@ -162,6 +171,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
                      bool double_draw);
 
   MetalDirectRenderer m_direct;
+  MetalGlowRenderer m_glow_renderer;
 
   u64 m_sprite_direct_setup[3 * 16 / 8];
   SpriteFrameData m_frame_data;
@@ -202,4 +212,5 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
   u64 m_unsupported_bytes_total = 0;
   bool m_warned_distort_overflow = false;
   bool m_warned_unsupported_glow = false;
+  bool m_warned_rejected_glow_math = false;
 };

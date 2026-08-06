@@ -192,7 +192,9 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
       static_cast<unsigned long long>(metal.sprite_texture_uploads));
   std::printf(
       "sprites: 2d=%llu 3d=%llu hud=%llu distort=%llu normal-submitted=%llu "
-      "glow-marked=%llu glow-skipped=%llu draws=%llu tris=%llu "
+      "glow-marked=%llu glow=(parsed=%llu accepted=%llu rejected=%llu invalid=%llu "
+      "force-visible-drawn/submitted=%llu/%llu draws=%llu tris=%llu missing=%llu skipped=%llu) "
+      "draws=%llu tris=%llu "
       "missing-textures=%llu unsupported-bytes=%llu; direct: sky=%llu/%llu "
       "screen-filter=%llu/%llu debug-no-zbuf2=%llu/%llu\n",
       static_cast<unsigned long long>(metal.last_sprites_2d),
@@ -201,6 +203,15 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
       static_cast<unsigned long long>(metal.last_sprites_distort),
       static_cast<unsigned long long>(metal.last_sprite_normal_submitted),
       static_cast<unsigned long long>(metal.last_sprite_glow_marked),
+      static_cast<unsigned long long>(metal.last_sprite_glow_parsed),
+      static_cast<unsigned long long>(metal.last_sprite_glow_accepted),
+      static_cast<unsigned long long>(metal.last_sprite_glow_rejected),
+      static_cast<unsigned long long>(metal.last_sprite_glow_invalid_records),
+      static_cast<unsigned long long>(metal.last_sprite_glow_force_visible_drawn),
+      static_cast<unsigned long long>(metal.last_sprite_glow_force_visible_submitted),
+      static_cast<unsigned long long>(metal.last_sprite_glow_force_visible_draws),
+      static_cast<unsigned long long>(metal.last_sprite_glow_force_visible_triangles),
+      static_cast<unsigned long long>(metal.last_sprite_glow_force_visible_missing_textures),
       static_cast<unsigned long long>(metal.last_sprite_glow_skipped),
       static_cast<unsigned long long>(metal.last_sprite_draws),
       static_cast<unsigned long long>(metal.last_sprite_triangles),
@@ -425,12 +436,20 @@ int main(int argc, char** argv) {
               metal.last_sprite_texture_upload.modes[0] == -1 &&
               metal.last_sprite_texture_upload.modes[1] == -1 &&
               metal.sprite_texture_uploads >= 2;
-          const bool exact_inert_normal_sprite_frame =
+          const bool exact_force_visible_glow_frame =
               metal.last_sprites_2d == 64 && metal.last_sprites_3d == 0 &&
               metal.last_sprites_hud == 0 && metal.last_sprites_distort == 0 &&
               metal.last_sprite_normal_submitted == 60 && metal.last_sprite_glow_marked == 4 &&
-              metal.last_sprite_glow_skipped == 4 && metal.last_sprite_draws == 2 &&
-              metal.last_sprite_triangles == 120 &&
+              metal.last_sprite_glow_parsed == 4 && metal.last_sprite_glow_accepted == 4 &&
+              metal.last_sprite_glow_rejected == 0 &&
+              metal.last_sprite_glow_invalid_records == 0 &&
+              metal.last_sprite_glow_force_visible_submitted == 4 &&
+              metal.last_sprite_glow_force_visible_drawn == 4 &&
+              metal.last_sprite_glow_force_visible_draws == 4 &&
+              metal.last_sprite_glow_force_visible_triangles == 8 &&
+              metal.last_sprite_glow_force_visible_missing_textures == 0 &&
+              metal.last_sprite_glow_skipped == 0 && metal.last_sprite_draws == 6 &&
+              metal.last_sprite_triangles == 128 &&
               metal.last_sprite_missing_textures == 0;
           const bool exact_draw_attribution =
               metal.draws == metal.last_sky_draw_draws + metal.last_screen_filter_draws +
@@ -439,7 +458,7 @@ int main(int argc, char** argv) {
                   metal.last_sky_draw_triangles + metal.last_screen_filter_triangles +
                       metal.last_debug_no_zbuf2_triangles + metal.last_sprite_triangles;
           saw_attributed_title_sprite_frame |=
-              exact_sky_frame && exact_sprite_upload && exact_inert_normal_sprite_frame &&
+              exact_sky_frame && exact_sprite_upload && exact_force_visible_glow_frame &&
               exact_draw_attribution && frame.hash != baseline_hash &&
               frame.non_black_pixels > baseline_non_black_pixels;
         }

@@ -1127,6 +1127,16 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         m_chain_stats.sprite_normal_submitted = ss.normal_sprites_submitted;
         m_chain_stats.sprite_glow_marked = ss.glow_marked_sprites;
         m_chain_stats.sprite_glow_skipped = ss.glow_sprites_skipped;
+        m_chain_stats.sprite_glow_parsed = ss.glow_sprites_parsed;
+        m_chain_stats.sprite_glow_accepted = ss.glow_sprites_accepted;
+        m_chain_stats.sprite_glow_rejected = ss.glow_sprites_rejected;
+        m_chain_stats.sprite_glow_invalid_records = ss.glow_invalid_records;
+        m_chain_stats.sprite_glow_force_visible_submitted = ss.glow_force_visible_submitted;
+        m_chain_stats.sprite_glow_force_visible_drawn = ss.glow_force_visible_drawn;
+        m_chain_stats.sprite_glow_force_visible_draws = ss.glow_force_visible_draw_calls;
+        m_chain_stats.sprite_glow_force_visible_triangles = ss.glow_force_visible_triangles;
+        m_chain_stats.sprite_glow_force_visible_missing_textures =
+            ss.glow_force_visible_missing_textures;
         m_chain_stats.sprite_draws = ss.draw_calls;
         m_chain_stats.sprite_triangles = ss.triangles;
         m_chain_stats.sprite_missing_textures = ss.missing_textures;

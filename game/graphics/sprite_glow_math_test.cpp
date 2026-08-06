@@ -127,9 +127,12 @@ void test_rejects_clipped_sprite_transactionally() {
   Fixture fixture;
   fixture.data.pos[0] = 4.f;
   SpriteGlowOutput output = sentinel_output();
+  SpriteGlowRejectReason reason = SpriteGlowRejectReason::NONE;
   const auto before = output_bytes(output);
-  check(!glow_math(&fixture.consts, false, &fixture.data, fixture.adgif.data(), &output),
+  check(!glow_math(&fixture.consts, false, &fixture.data, fixture.adgif.data(), &output, &reason),
         "an out-of-frustum sprite is rejected");
+  check(reason == SpriteGlowRejectReason::CLIPPED_X,
+        "an out-of-frustum sprite reports its exact clip axis");
   check(output_bytes(output) == before, "clip rejection leaves the destination unchanged");
 }
 
@@ -228,6 +231,23 @@ void test_rejects_nonfinite_input_and_output_transactionally() {
         "nonfinite-output rejection leaves the destination unchanged");
 }
 
+void test_ignores_unread_nonfinite_constants() {
+  Fixture fixture;
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  fixture.consts.pfog0 = nan;
+  fixture.consts.min_scale = nan;
+  fixture.consts.inv_area = nan;
+  for (auto& row : fixture.consts.sincos) {
+    row = math::Vector4f(nan, nan, nan, nan);
+  }
+
+  SpriteGlowOutput output = {};
+  check(glow_math(&fixture.consts, false, &fixture.data, fixture.adgif.data(), &output),
+        "nonfinite constants unused by the VU transform do not reject a sprite");
+  check(all_math_output_finite(output),
+        "unused nonfinite constants cannot contaminate the transformed output");
+}
+
 }  // namespace
 
 int main() {
@@ -240,6 +260,7 @@ int main() {
   test_allows_zero_camera_depth_without_offset();
   test_rejects_invalid_perspective_denominators_transactionally();
   test_rejects_nonfinite_input_and_output_transactionally();
+  test_ignores_unread_nonfinite_constants();
 
   if (failures) {
     std::printf("FAIL: %d sprite glow math checks failed\n", failures);
