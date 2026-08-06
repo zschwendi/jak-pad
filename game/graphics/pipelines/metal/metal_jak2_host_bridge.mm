@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <exception>
+#include <limits>
 #include <string>
 
 #include "common/dma/dma_copy.h"
@@ -52,6 +53,8 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.late_present_submissions = stats.late_present_submissions;
   host->metrics.draws = stats.draw_calls;
   host->metrics.triangles = stats.triangles;
+  host->metrics.last_screen_filter_draws = stats.jak2_screen_filter_draws;
+  host->metrics.last_screen_filter_triangles = stats.jak2_screen_filter_triangles;
   host->metrics.submissions = stats.submissions;
   host->metrics.presentations = stats.presentations_completed;
   host->metrics.presentation_drops = stats.presentation_drops;
@@ -268,6 +271,62 @@ int goal_jak2_metal_host_get_metrics(goal_jak2_metal_host* host,
   copy_renderer_metrics(host);
   *out = host->metrics;
   return 1;
+}
+
+int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
+                                         goal_jak2_metal_frame_summary* out) {
+  if (!out) {
+    return 0;
+  }
+  *out = {};
+  if (!host || host != g_active_host || !host->layer) {
+    return 0;
+  }
+
+  try {
+    metal_renderer::FramePixels frame;
+    if (!host->renderer.read_game_frame(&frame) || frame.width <= 0 || frame.height <= 0) {
+      return 0;
+    }
+
+    const auto width = static_cast<std::size_t>(frame.width);
+    const auto height = static_cast<std::size_t>(frame.height);
+    if (height > std::numeric_limits<std::size_t>::max() / width ||
+        width * height > std::numeric_limits<std::size_t>::max() / 4) {
+      return 0;
+    }
+    const std::size_t expected_bytes = width * height * 4;
+    if (frame.rgba.size() != expected_bytes) {
+      return 0;
+    }
+
+    constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ull;
+    constexpr uint64_t kFnvPrime = 1099511628211ull;
+    uint64_t hash = kFnvOffsetBasis;
+    uint64_t non_black_pixels = 0;
+    for (std::size_t offset = 0; offset < frame.rgba.size(); offset += 4) {
+      hash ^= frame.rgba[offset];
+      hash *= kFnvPrime;
+      hash ^= frame.rgba[offset + 1];
+      hash *= kFnvPrime;
+      hash ^= frame.rgba[offset + 2];
+      hash *= kFnvPrime;
+      hash ^= frame.rgba[offset + 3];
+      hash *= kFnvPrime;
+      non_black_pixels +=
+          frame.rgba[offset] != 0 || frame.rgba[offset + 1] != 0 || frame.rgba[offset + 2] != 0;
+    }
+
+    out->width = static_cast<uint32_t>(frame.width);
+    out->height = static_cast<uint32_t>(frame.height);
+    out->byte_count = frame.rgba.size();
+    out->hash = hash;
+    out->non_black_pixels = non_black_pixels;
+    return 1;
+  } catch (...) {
+    *out = {};
+    return 0;
+  }
 }
 
 int goal_jak2_metal_host_wait_for_last_frame(goal_jak2_metal_host* host,

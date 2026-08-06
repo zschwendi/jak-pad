@@ -35,6 +35,8 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t late_present_submissions;
   uint64_t draws;
   uint64_t triangles;
+  uint64_t last_screen_filter_draws;
+  uint64_t last_screen_filter_triangles;
   uint64_t submissions;
   uint64_t presentations;
   uint64_t presentation_drops;
@@ -44,6 +46,14 @@ typedef struct goal_jak2_metal_host_metrics {
   int32_t last_command_buffer_status;
   int64_t last_command_buffer_error_code;
 } goal_jak2_metal_host_metrics;
+
+typedef struct goal_jak2_metal_frame_summary {
+  uint32_t width;
+  uint32_t height;
+  uint64_t byte_count;
+  uint64_t hash;
+  uint64_t non_black_pixels;
+} goal_jak2_metal_frame_summary;
 
 /*! Create the process-singleton, nil-layer Jak 2 policy-dispatch host. */
 goal_jak2_metal_host* goal_jak2_metal_host_create(void);
@@ -57,6 +67,14 @@ int goal_jak2_metal_host_copy_gfx_host(goal_jak2_metal_host* host, goal_gfx_host
 
 int goal_jak2_metal_host_get_metrics(goal_jak2_metal_host* host,
                                      goal_jak2_metal_host_metrics* out);
+
+/*!
+ * Summarize the last completed RGBA8 game frame without exposing C++ storage. `hash` is FNV-1a
+ * over the RGBA bytes, and `non_black_pixels` ignores alpha. Returns zero and clears `out` when
+ * no layer-backed frame is available.
+ */
+int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
+                                         goal_jak2_metal_frame_summary* out);
 
 /*!
  * Wait for every layer-backed command buffer submitted so far. When `require_presentation` is
