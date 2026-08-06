@@ -1177,6 +1177,16 @@ if(APPLE)
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME metal-pool-texture-test COMMAND metal-pool-texture-test)
 
+        add_executable(jak2-bucket4-mixed-executor-test
+            graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-bucket4-mixed-executor-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-bucket4-mixed-executor-test
+            COMMAND jak2-bucket4-mixed-executor-test)
+
         add_executable(goalpad-play
             goalpad_play.cpp
             goalpad_audio.cpp
