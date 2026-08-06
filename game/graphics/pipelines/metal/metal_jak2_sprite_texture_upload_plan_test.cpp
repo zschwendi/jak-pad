@@ -13,11 +13,13 @@ namespace {
 
 constexpr u32 kChainOffset = 0x100;
 constexpr u32 kFirstGroupOffset = 0x2000;
-constexpr u32 kSecondGroupOffset = 0x2800;
+constexpr u32 kGroupStride = 0x100;
 constexpr u32 kTailOffset = 0x3000;
 constexpr u32 kFirstPageOffset = 0x6000;
-constexpr u32 kSecondPageOffset = 0x7000;
+constexpr u32 kPageStride = 0x200;
 constexpr std::size_t kMemorySize = 0x10000;
+constexpr std::size_t kFixtureMaximumGroups =
+    metal_renderer::kJak2SpriteTextureUploadMaximumGroups + 1;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kFlushaVif = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
@@ -25,12 +27,21 @@ constexpr u32 kFlushaVif = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
 struct Fixture {
   std::vector<u8> packet = std::vector<u8>(kMemorySize);
   std::vector<u8> live = std::vector<u8>(kMemorySize);
-  std::array<u32, 2> direct_tag_offsets = {};
-  std::array<u32, 2> descriptor_tag_offsets = {};
-  std::array<u32, 3> group_boundary_offsets = {};
+  std::array<u32, kFixtureMaximumGroups> direct_tag_offsets = {};
+  std::array<u32, kFixtureMaximumGroups> descriptor_tag_offsets = {};
+  std::array<u32, kFixtureMaximumGroups + 1> group_boundary_offsets = {};
+  u32 upload_count = 0;
   u32 tail_tag_offset = 0;
   u32 final_boundary_offset = 0;
 };
+
+constexpr u32 group_offset(u32 index) {
+  return kFirstGroupOffset + index * kGroupStride;
+}
+
+constexpr u32 page_offset(u32 index) {
+  return kFirstPageOffset + index * kPageStride;
+}
 
 void check(bool condition, const char* message) {
   if (!condition) {
@@ -89,21 +100,22 @@ u32 put_upload_group(Fixture* fixture, u32 offset, u32 index, u32 page_offset, u
 }
 
 Fixture make_fixture(u32 upload_count) {
-  check(upload_count == 1 || upload_count == 2,
-        "the synthetic fixture supports one or two uploads");
+  check(upload_count <= kFixtureMaximumGroups,
+        "the synthetic fixture stays within its bounded upload storage");
   Fixture fixture;
-  put_page_header(&fixture.live, kFirstPageOffset, 0x101, 2);
-  put_page_header(&fixture.live, kSecondPageOffset, 0x202, 3);
+  fixture.upload_count = upload_count;
+  for (u32 i = 0; i < upload_count; ++i) {
+    put_page_header(&fixture.live, page_offset(i), 0x101 + i, 2 + i);
+  }
 
   const u32 bucket_offset = kChainOffset + metal_renderer::kJak2SpriteTextureUploadBucket * 16;
   fixture.group_boundary_offsets[0] = bucket_offset;
-  put_tag(&fixture.packet, bucket_offset, DmaTag::Kind::NEXT, 0, kFirstGroupOffset, 0, 0);
+  put_tag(&fixture.packet, bucket_offset, DmaTag::Kind::NEXT, 0,
+          upload_count == 0 ? kTailOffset : group_offset(0), 0, 0);
 
-  if (upload_count == 1) {
-    put_upload_group(&fixture, kFirstGroupOffset, 0, kFirstPageOffset, kTailOffset);
-  } else {
-    put_upload_group(&fixture, kFirstGroupOffset, 0, kFirstPageOffset, kSecondGroupOffset);
-    put_upload_group(&fixture, kSecondGroupOffset, 1, kSecondPageOffset, kTailOffset);
+  for (u32 i = 0; i < upload_count; ++i) {
+    const u32 next_offset = i + 1 == upload_count ? kTailOffset : group_offset(i + 1);
+    put_upload_group(&fixture, group_offset(i), i, page_offset(i), next_offset);
   }
 
   fixture.tail_tag_offset = kTailOffset;
@@ -121,31 +133,30 @@ std::optional<metal_renderer::Jak2SpriteTextureUploadPlan> plan(const Fixture& f
                                                          fixture.live.data(), fixture.live.size());
 }
 
-void test_exact_one_and_two_upload_grammars() {
-  for (const u32 upload_count : {1u, 2u}) {
+void test_source_bounded_upload_grammars() {
+  for (const u32 upload_count : {1u, 2u, 3u, 7u}) {
     auto fixture = make_fixture(upload_count);
     const auto result = plan(fixture);
     check(result.has_value() && result->present && result->upload_count == upload_count,
-          "the exact one- and two-upload live forms produce matching plans");
-    check(result->uploads[0].page_offset == kFirstPageOffset && result->uploads[0].mode == -1 &&
-              result->uploads[0].page_header[8] == 0x01 &&
-              result->uploads[0].page_header[9] == 0x01 && result->uploads[0].page_header[12] == 2,
-          "the first ordered ordinary descriptor and page header are owned");
-    if (upload_count == 2) {
-      check(result->uploads[1].page_offset == kSecondPageOffset && result->uploads[1].mode == -1 &&
-                result->uploads[1].page_header[8] == 0x02 &&
-                result->uploads[1].page_header[9] == 0x02 &&
-                result->uploads[1].page_header[12] == 3,
-            "the second ordered ordinary descriptor and page header are owned");
+          "the exact one-through-seven source-bounded forms produce matching plans");
+
+    std::array<std::array<u8, metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes>,
+               metal_renderer::kJak2SpriteTextureUploadMaximumGroups>
+        expected_headers = {};
+    for (u32 i = 0; i < upload_count; ++i) {
+      check(result->uploads[i].page_offset == page_offset(i) && result->uploads[i].mode == -1 &&
+                result->uploads[i].page_header[8] == static_cast<u8>(0x101 + i) &&
+                result->uploads[i].page_header[12] == static_cast<u8>(2 + i),
+            "each ordered ordinary descriptor and page header is owned");
+      expected_headers[i] = result->uploads[i].page_header;
     }
 
-    const auto expected_first_header = result->uploads[0].page_header;
-    const auto expected_second_header = result->uploads[1].page_header;
     std::fill(fixture.packet.begin(), fixture.packet.end(), 0xa5);
     std::fill(fixture.live.begin(), fixture.live.end(), 0x5a);
-    check(result->uploads[0].page_header == expected_first_header &&
-              result->uploads[1].page_header == expected_second_header,
-          "packet and live-memory reuse cannot change the owning plan");
+    for (u32 i = 0; i < upload_count; ++i) {
+      check(result->uploads[i].page_header == expected_headers[i],
+            "packet and live-memory reuse cannot change the owning plan");
+    }
   }
 }
 
@@ -167,8 +178,8 @@ void test_strict_empty_bucket_is_absent() {
 
 void test_direct_payloads_are_inert() {
   auto fixture = make_fixture(2);
-  for (const u32 offset : fixture.direct_tag_offsets) {
-    std::fill_n(fixture.packet.begin() + offset + 16, 32, 0xff);
+  for (u32 i = 0; i < fixture.upload_count; ++i) {
+    std::fill_n(fixture.packet.begin() + fixture.direct_tag_offsets[i] + 16, 32, 0xff);
   }
   std::fill_n(fixture.packet.begin() + fixture.tail_tag_offset + 16, 160, 0x00);
   check(plan(fixture).has_value(),
@@ -177,13 +188,13 @@ void test_direct_payloads_are_inert() {
 
 void test_packet_and_live_domains_are_separate() {
   auto fixture = make_fixture(2);
-  std::fill_n(fixture.packet.begin() + kFirstPageOffset,
+  std::fill_n(fixture.packet.begin() + page_offset(0),
               metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes, 0xee);
-  std::fill_n(fixture.packet.begin() + kSecondPageOffset,
+  std::fill_n(fixture.packet.begin() + page_offset(1),
               metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes, 0xee);
   std::fill_n(fixture.live.begin() + fixture.group_boundary_offsets[0], 16, 0xdd);
-  std::fill_n(fixture.live.begin() + kFirstGroupOffset, 96, 0xdd);
-  std::fill_n(fixture.live.begin() + kSecondGroupOffset, 96, 0xdd);
+  std::fill_n(fixture.live.begin() + group_offset(0), 96, 0xdd);
+  std::fill_n(fixture.live.begin() + group_offset(1), 96, 0xdd);
   std::fill_n(fixture.live.begin() + kTailOffset, 192, 0xdd);
   const auto result = plan(fixture);
   check(result.has_value() && result->uploads[0].page_header[8] == 0x01 &&
@@ -191,22 +202,12 @@ void test_packet_and_live_domains_are_separate() {
         "DMA comes from the snapshot while page headers come from live EE memory");
 }
 
-void test_zero_or_more_than_two_groups_fail_closed() {
-  auto zero = make_fixture(1);
-  put_tag(&zero.packet, zero.direct_tag_offsets[0], DmaTag::Kind::CNT, 10, 0, kFlushaVif,
-          kDirectVif | 10);
+void test_zero_or_more_than_seven_groups_fail_closed() {
+  const auto zero = make_fixture(0);
   check(!plan(zero).has_value(), "a tail without an ordinary upload group is rejected");
 
-  auto three = make_fixture(2);
-  constexpr u32 kThirdGroupOffset = 0x3800;
-  put_tag(&three.packet, three.group_boundary_offsets[2], DmaTag::Kind::NEXT, 0, kThirdGroupOffset,
-          0, 0);
-  put_tag(&three.packet, kThirdGroupOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirectVif | 2);
-  put_tag(&three.packet, kThirdGroupOffset + 48, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
-  put_u64(&three.packet, kThirdGroupOffset + 64, kFirstPageOffset);
-  put_u64(&three.packet, kThirdGroupOffset + 72, static_cast<u64>(-1));
-  put_tag(&three.packet, kThirdGroupOffset + 80, DmaTag::Kind::NEXT, 0, kTailOffset, 0, 0);
-  check(!plan(three).has_value(), "a third ordinary upload group is rejected");
+  const auto eight = make_fixture(8);
+  check(!plan(eight).has_value(), "an eighth ordinary upload group is rejected");
 }
 
 void test_malformed_transfer_shapes_fail_closed() {
@@ -221,6 +222,19 @@ void test_malformed_transfer_shapes_fail_closed() {
   fixture = make_fixture(1);
   put_u32(&fixture.packet, fixture.direct_tag_offsets[0] + 12, kDirectVif | 1);
   check(!plan(fixture).has_value(), "a DIRECT2 immediate mismatch is rejected");
+
+  fixture = make_fixture(1);
+  put_tag(&fixture.packet, fixture.direct_tag_offsets[0], DmaTag::Kind::CNT, 1, 0,
+          kPcPortVif | 12, 0);
+  check(!plan(fixture).has_value(), "texture-animator packets remain unsupported");
+
+  fixture = make_fixture(1);
+  put_tag(&fixture.packet, fixture.direct_tag_offsets[0], DmaTag::Kind::CNT, 8, 0, 0, 0);
+  check(!plan(fixture).has_value(), "eye packets remain unsupported");
+
+  fixture = make_fixture(1);
+  put_tag(&fixture.packet, fixture.direct_tag_offsets[0], DmaTag::Kind::CALL, 0, kTailOffset, 0, 0);
+  check(!plan(fixture).has_value(), "CALL packets remain unsupported");
 
   fixture = make_fixture(1);
   put_u32(&fixture.packet, fixture.descriptor_tag_offsets[0] + 8, kPcPortVif | 1);
@@ -306,11 +320,11 @@ void test_bad_dma_and_page_ranges_fail_closed() {
 }  // namespace
 
 int main() {
-  test_exact_one_and_two_upload_grammars();
+  test_source_bounded_upload_grammars();
   test_strict_empty_bucket_is_absent();
   test_direct_payloads_are_inert();
   test_packet_and_live_domains_are_separate();
-  test_zero_or_more_than_two_groups_fail_closed();
+  test_zero_or_more_than_seven_groups_fail_closed();
   test_malformed_transfer_shapes_fail_closed();
   test_bad_dma_and_page_ranges_fail_closed();
   std::puts("PASS: Jak II TEX_ALL_SPRITE texture-upload plan");

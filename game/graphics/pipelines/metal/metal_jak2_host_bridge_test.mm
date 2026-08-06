@@ -34,11 +34,13 @@ constexpr u32 kDebugNoZbuf2PayloadOffset = kChainOffset + 0x6000;
 constexpr u32 kSpriteTextureUploadBucket =
     static_cast<u32>(jak2::BucketId::TEX_ALL_SPRITE);
 constexpr u32 kSpriteTextureUploadGroupOffset = kChainOffset + 0x10000;
+constexpr u32 kSpriteTextureUploadGroupStride = 0x100;
 constexpr u32 kSpriteTextureUploadTailOffset = kChainOffset + 0x11000;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
 constexpr u32 kTexturePageOffset = 0x200000;
+constexpr u32 kTexturePageStride = 0x100;
 constexpr u32 kTextureObjectOffset = 0x201000;
 constexpr u32 kTextureNameOffset = 0x202000;
 constexpr u32 kTextureVram = 0x700;
@@ -142,10 +144,11 @@ void make_debug_no_zbuf2_chain() {
   make_direct_chain(kDebugNoZbuf2Bucket, kDebugNoZbuf2PayloadOffset);
 }
 
-void make_sprite_texture_upload_chain(s64 mode = -1) {
+void make_sprite_texture_upload_chain(u32 upload_count = 1, s64 mode = -1) {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
-  std::memset(ee + kSpriteTextureUploadGroupOffset, 0, 96);
+  std::memset(ee + kSpriteTextureUploadGroupOffset, 0,
+              kSpriteTextureUploadGroupStride * upload_count);
   std::memset(ee + kSpriteTextureUploadTailOffset, 0, 192);
 
   constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
@@ -154,13 +157,19 @@ void make_sprite_texture_upload_chain(s64 mode = -1) {
   const u32 bucket_offset = kChainOffset + kSpriteTextureUploadBucket * 16;
 
   put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kSpriteTextureUploadGroupOffset);
-  put_tag(kSpriteTextureUploadGroupOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
-  const u32 descriptor_offset = kSpriteTextureUploadGroupOffset + 48;
-  put_tag(descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
-  const u64 page_offset = kTexturePageOffset;
-  std::memcpy(ee + descriptor_offset + 16, &page_offset, sizeof(page_offset));
-  std::memcpy(ee + descriptor_offset + 24, &mode, sizeof(mode));
-  put_tag(descriptor_offset + 32, DmaTag::Kind::NEXT, 0, kSpriteTextureUploadTailOffset);
+  for (u32 i = 0; i < upload_count; ++i) {
+    const u32 group_offset = kSpriteTextureUploadGroupOffset + i * kSpriteTextureUploadGroupStride;
+    const u32 next_offset = i + 1 == upload_count
+                                ? kSpriteTextureUploadTailOffset
+                                : group_offset + kSpriteTextureUploadGroupStride;
+    put_tag(group_offset, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
+    const u32 descriptor_offset = group_offset + 48;
+    put_tag(descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+    const u64 page_offset = kTexturePageOffset + i * kTexturePageStride;
+    std::memcpy(ee + descriptor_offset + 16, &page_offset, sizeof(page_offset));
+    std::memcpy(ee + descriptor_offset + 24, &mode, sizeof(mode));
+    put_tag(descriptor_offset + 32, DmaTag::Kind::NEXT, 0, next_offset);
+  }
 
   put_tag(kSpriteTextureUploadTailOffset, DmaTag::Kind::CNT, 10, 0, kFlusha,
           kDirect | 10);
@@ -243,6 +252,12 @@ void write_texture_page() {
   std::memcpy(ee + kTextureObjectOffset, &texture, sizeof(texture));
   const char name[] = "host-residency-texture";
   std::memcpy(ee + kTextureNameOffset + 4, name, sizeof(name));
+}
+
+void write_empty_texture_page(u32 offset, u32 id) {
+  GoalTexturePage page = {};
+  page.id = id;
+  std::memcpy(static_cast<u8*>(g_ee_main_mem) + offset, &page, sizeof(page));
 }
 
 void append_qword(std::vector<u8>* data, u64 low, u64 high) {
@@ -732,27 +747,50 @@ int main() {
             sprite_upload_metrics.skipped_bucket_bytes == 0,
         "valid bucket 312 executes its exact ordered ordinary upload without skipped bytes");
 
-  make_empty_chain();
+  write_empty_texture_page(kTexturePageOffset + kTexturePageStride, kTexturePageId + 1);
+  write_empty_texture_page(kTexturePageOffset + 2 * kTexturePageStride, kTexturePageId + 2);
+  make_sprite_texture_upload_chain(3);
   sprite_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(sprite_upload_host, &sprite_upload_metrics) &&
             sprite_upload_metrics.chains == 2 &&
             sprite_upload_metrics.completed_chains == 2 &&
             sprite_upload_metrics.failed_chains == 0 &&
-            sprite_upload_metrics.sprite_texture_uploads == 1 &&
+            sprite_upload_metrics.sprite_texture_uploads == 4 &&
+            sprite_upload_metrics.last_sprite_texture_upload.valid == 1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.present == 1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.upload_count == 3 &&
+            sprite_upload_metrics.last_sprite_texture_upload.pages[0] == kTexturePageOffset &&
+            sprite_upload_metrics.last_sprite_texture_upload.pages[1] ==
+                kTexturePageOffset + kTexturePageStride &&
+            sprite_upload_metrics.last_sprite_texture_upload.pages[2] ==
+                kTexturePageOffset + 2 * kTexturePageStride &&
+            sprite_upload_metrics.last_sprite_texture_upload.modes[0] == -1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.modes[1] == -1 &&
+            sprite_upload_metrics.last_sprite_texture_upload.modes[2] == -1 &&
+            sprite_upload_metrics.skipped_bucket_bytes == 0,
+        "three source-ordered bucket-312 uploads execute and remain attributed in order");
+
+  make_empty_chain();
+  sprite_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(sprite_upload_host, &sprite_upload_metrics) &&
+            sprite_upload_metrics.chains == 3 &&
+            sprite_upload_metrics.completed_chains == 3 &&
+            sprite_upload_metrics.failed_chains == 0 &&
+            sprite_upload_metrics.sprite_texture_uploads == 4 &&
             sprite_upload_metrics.last_sprite_texture_upload.valid == 1 &&
             sprite_upload_metrics.last_sprite_texture_upload.present == 0 &&
             sprite_upload_metrics.last_sprite_texture_upload.upload_count == 0,
         "a strict-empty bucket 312 remains valid and does not execute another upload");
   const uint32_t sprite_empty_copied_bytes = sprite_upload_metrics.last_copied_bytes;
 
-  make_sprite_texture_upload_chain(-2);
+  make_sprite_texture_upload_chain(1, -2);
   sprite_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   const char* sprite_upload_error = goal_jak2_metal_host_last_error(sprite_upload_host);
   check(goal_jak2_metal_host_get_metrics(sprite_upload_host, &sprite_upload_metrics) &&
-            sprite_upload_metrics.chains == 3 &&
-            sprite_upload_metrics.completed_chains == 2 &&
+            sprite_upload_metrics.chains == 4 &&
+            sprite_upload_metrics.completed_chains == 3 &&
             sprite_upload_metrics.failed_chains == 1 &&
-            sprite_upload_metrics.sprite_texture_uploads == 1 &&
+            sprite_upload_metrics.sprite_texture_uploads == 4 &&
             sprite_upload_metrics.last_sprite_texture_upload.valid == 0 &&
             sprite_upload_metrics.last_copied_bytes == sprite_empty_copied_bytes &&
             sprite_upload_error &&
@@ -763,10 +801,10 @@ int main() {
   make_sprite_texture_upload_chain();
   sprite_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(sprite_upload_host, &sprite_upload_metrics) &&
-            sprite_upload_metrics.chains == 4 &&
-            sprite_upload_metrics.completed_chains == 3 &&
+            sprite_upload_metrics.chains == 5 &&
+            sprite_upload_metrics.completed_chains == 4 &&
             sprite_upload_metrics.failed_chains == 1 &&
-            sprite_upload_metrics.sprite_texture_uploads == 2,
+            sprite_upload_metrics.sprite_texture_uploads == 5,
         "a pre-mutation bucket-312 rejection leaves the host usable by a repaired chain");
   goal_jak2_metal_host_destroy(sprite_upload_host);
 

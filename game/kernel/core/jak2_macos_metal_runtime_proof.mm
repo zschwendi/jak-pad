@@ -181,15 +181,16 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
       bucket4.generic_height, bucket4.generic_destination, bucket4.generic_format,
       bucket4.generic_force_to_gpu, bucket4.clut_source, bucket4.clut_destination);
   const auto& sprite_upload = metal.last_sprite_texture_upload;
-  std::printf(
-      "sprite-upload: valid=%u present=%u count=%u pages=(%#llx,%#llx) "
-      "modes=(%lld,%lld) executed=%llu\n",
-      sprite_upload.valid, sprite_upload.present, sprite_upload.upload_count,
-      static_cast<unsigned long long>(sprite_upload.pages[0]),
-      static_cast<unsigned long long>(sprite_upload.pages[1]),
-      static_cast<long long>(sprite_upload.modes[0]),
-      static_cast<long long>(sprite_upload.modes[1]),
-      static_cast<unsigned long long>(metal.sprite_texture_uploads));
+  std::printf("sprite-upload: valid=%u present=%u count=%u groups=", sprite_upload.valid,
+              sprite_upload.present, sprite_upload.upload_count);
+  for (uint32_t i = 0;
+       i < sprite_upload.upload_count && i < GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS; ++i) {
+    std::printf("%s(%#llx,%lld)", i == 0 ? "" : ",",
+                static_cast<unsigned long long>(sprite_upload.pages[i]),
+                static_cast<long long>(sprite_upload.modes[i]));
+  }
+  std::printf(" executed=%llu\n",
+              static_cast<unsigned long long>(metal.sprite_texture_uploads));
   std::printf(
       "sprites: 2d=%llu 3d=%llu hud=%llu distort=%llu normal-submitted=%llu "
       "glow-marked=%llu glow=(parsed=%llu accepted=%llu rejected=%llu invalid=%llu "
@@ -438,15 +439,18 @@ int main(int argc, char** argv) {
           const bool exact_sky_frame = metal.last_sky_draw_draws == 1 &&
                                        metal.last_sky_draw_triangles == 2 &&
                                        metal.last_sky_draw_batch_valid != 0;
-          const bool exact_sprite_upload =
+          bool bounded_sprite_upload =
               metal.last_sprite_texture_upload.valid != 0 &&
               metal.last_sprite_texture_upload.present != 0 &&
-              metal.last_sprite_texture_upload.upload_count == 2 &&
-              metal.last_sprite_texture_upload.pages[0] != 0 &&
-              metal.last_sprite_texture_upload.pages[1] != 0 &&
-              metal.last_sprite_texture_upload.modes[0] == -1 &&
-              metal.last_sprite_texture_upload.modes[1] == -1 &&
-              metal.sprite_texture_uploads >= 2;
+              metal.last_sprite_texture_upload.upload_count > 0 &&
+              metal.last_sprite_texture_upload.upload_count <=
+                  GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS &&
+              metal.sprite_texture_uploads >= metal.last_sprite_texture_upload.upload_count;
+          for (uint32_t i = 0;
+               bounded_sprite_upload && i < metal.last_sprite_texture_upload.upload_count; ++i) {
+            bounded_sprite_upload = metal.last_sprite_texture_upload.pages[i] != 0 &&
+                                    metal.last_sprite_texture_upload.modes[i] == -1;
+          }
           const bool exact_force_visible_glow_frame =
               metal.last_sprites_2d == 64 && metal.last_sprites_3d == 0 &&
               metal.last_sprites_hud == 0 && metal.last_sprites_distort == 0 &&
@@ -469,7 +473,7 @@ int main(int argc, char** argv) {
                   metal.last_sky_draw_triangles + metal.last_screen_filter_triangles +
                       metal.last_debug_no_zbuf2_triangles + metal.last_sprite_triangles;
           saw_attributed_title_sprite_frame |=
-              exact_sky_frame && exact_sprite_upload && exact_force_visible_glow_frame &&
+              exact_sky_frame && bounded_sprite_upload && exact_force_visible_glow_frame &&
               exact_draw_attribution && frame.hash != baseline_hash &&
               frame.non_black_pixels > baseline_non_black_pixels;
         }

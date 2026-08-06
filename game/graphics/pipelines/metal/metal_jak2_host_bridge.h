@@ -56,12 +56,14 @@ typedef struct goal_jak2_bucket4_texture_upload_metrics {
   uint32_t unsupported_bytes;
 } goal_jak2_bucket4_texture_upload_metrics;
 
+enum { GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS = 7 };
+
 typedef struct goal_jak2_sprite_texture_upload_metrics {
   uint32_t valid;
   uint32_t present;
   uint32_t upload_count;
-  uint64_t pages[2];
-  int64_t modes[2];
+  uint64_t pages[GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS];
+  int64_t modes[GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS];
 } goal_jak2_sprite_texture_upload_metrics;
 
 typedef struct goal_jak2_metal_host_metrics {

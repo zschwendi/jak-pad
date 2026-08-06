@@ -11,7 +11,7 @@
 namespace metal_renderer {
 namespace {
 
-constexpr u32 kMaximumTransfers = 9;
+constexpr std::size_t kMaximumTransfers = 3 * kJak2SpriteTextureUploadMaximumGroups + 3;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kFlushaVif = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
@@ -191,15 +191,6 @@ bool read_descriptor_and_boundary(CheckedDmaFollower* dma,
   return read_boundary(dma);
 }
 
-bool read_upload_group(CheckedDmaFollower* dma,
-                       const u8* live_ee_memory,
-                       std::size_t live_ee_memory_size,
-                       Jak2Bucket4OrdinaryUploadPlan* out) {
-  CheckedTransfer direct;
-  return read_transfer(dma, &direct) && is_direct(direct, 0, 2) &&
-         read_descriptor_and_boundary(dma, live_ee_memory, live_ee_memory_size, out);
-}
-
 }  // namespace
 
 std::optional<Jak2SpriteTextureUploadPlan> plan_jak2_sprite_texture_upload(
@@ -235,29 +226,27 @@ std::optional<Jak2SpriteTextureUploadPlan> plan_jak2_sprite_texture_upload(
   }
 
   Jak2SpriteTextureUploadPlan plan;
-  if (!read_upload_group(&dma, live_ee_memory, live_ee_memory_size,
-                         &plan.uploads[plan.upload_count])) {
+  CheckedTransfer tail_or_group;
+  if (!read_transfer(&dma, &tail_or_group)) {
     return std::nullopt;
   }
-  plan.upload_count++;
 
-  CheckedTransfer tail_or_second_group;
-  if (!read_transfer(&dma, &tail_or_second_group)) {
-    return std::nullopt;
-  }
-  if (is_direct(tail_or_second_group, 0, 2)) {
+  while (is_direct(tail_or_group, 0, 2)) {
+    if (plan.upload_count == kJak2SpriteTextureUploadMaximumGroups) {
+      return std::nullopt;
+    }
     if (!read_descriptor_and_boundary(&dma, live_ee_memory, live_ee_memory_size,
                                       &plan.uploads[plan.upload_count])) {
       return std::nullopt;
     }
     plan.upload_count++;
-    if (!read_transfer(&dma, &tail_or_second_group)) {
+    if (!read_transfer(&dma, &tail_or_group)) {
       return std::nullopt;
     }
   }
 
-  if (!is_direct(tail_or_second_group, kFlushaVif, 10) || !read_boundary(&dma) ||
-      dma.offset() != static_cast<u32>(end_offset64)) {
+  if (plan.upload_count == 0 || !is_direct(tail_or_group, kFlushaVif, 10) ||
+      !read_boundary(&dma) || dma.offset() != static_cast<u32>(end_offset64)) {
     return std::nullopt;
   }
   plan.present = true;

@@ -226,6 +226,8 @@ void copy_bucket4_texture_upload_metrics(
 void copy_sprite_texture_upload_metrics(
     goal_jak2_metal_host* host,
     const std::optional<metal_renderer::Jak2SpriteTextureUploadPlan>& plan) {
+  static_assert(GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS ==
+                metal_renderer::kJak2SpriteTextureUploadMaximumGroups);
   auto& out = host->metrics.last_sprite_texture_upload;
   out = {};
   out.valid = plan.has_value();
@@ -233,9 +235,10 @@ void copy_sprite_texture_upload_metrics(
     return;
   }
   out.present = plan->present;
-  out.upload_count = static_cast<uint32_t>(plan->upload_count);
-  for (std::size_t i = 0;
-       i < plan->upload_count && i < metal_renderer::kJak2SpriteTextureUploadMaximumGroups; ++i) {
+  const std::size_t upload_count =
+      std::min(plan->upload_count, metal_renderer::kJak2SpriteTextureUploadMaximumGroups);
+  out.upload_count = static_cast<uint32_t>(upload_count);
+  for (std::size_t i = 0; i < upload_count; ++i) {
     out.pages[i] = plan->uploads[i].page_offset;
     out.modes[i] = plan->uploads[i].mode;
   }
