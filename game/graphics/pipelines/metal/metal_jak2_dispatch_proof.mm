@@ -54,10 +54,13 @@ int main() {
     check(stats.submissions == 0 && stats.presentations_completed == 0 &&
               stats.presentation_drops == 0,
           "nil-layer dispatch records zero submissions and presentations");
-    check(stats.draw_calls == 0 && stats.triangles == 0 && stats.skipped_bucket_bytes == 16,
+    check(stats.skipped_bucket_bytes == 16,
           "one DeferredSkip slot consumes exactly its 16-byte synthetic payload");
+    check(stats.draw_calls == 0 && stats.triangles == 0 && stats.jak2_screen_filter_draws == 0 &&
+              stats.jak2_screen_filter_triangles == 0,
+          "the SCREEN_FILTER Direct binding traverses its NOP payload without drawing");
     check(stats.direct_unsupported_blends == 0,
-          "the DEBUG3 Direct binding traverses NOP payload without unsupported blends");
+          "the SCREEN_FILTER Direct binding traverses its NOP payload without unsupported blends");
     check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
               metal_renderer::kJak2MetalBucketExpectedFingerprint,
           "the dispatcher links the reviewed 327-slot policy table");
