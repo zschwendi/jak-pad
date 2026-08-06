@@ -41,6 +41,9 @@ constexpr Table make_table() {
   const auto tfragment = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::TFragment;
   };
+  const auto shrub = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::Shrub;
+  };
 
   // Mirror every renderer explicitly installed by OpenGLRenderer::init_bucket_renderers_jak2.
   visibility(BucketId::BUCKET_2);
@@ -58,7 +61,7 @@ constexpr Table make_table() {
     defer(level_bucket(BucketId::GMERC_L0_TFRAG, BucketId::GMERC_L1_TFRAG, level));
 
     defer(level_bucket(BucketId::TEX_L0_SHRUB, BucketId::TEX_L1_SHRUB, level));
-    defer(level_bucket(BucketId::SHRUB_L0_SHRUB, BucketId::SHRUB_L1_SHRUB, level));
+    shrub(level_bucket(BucketId::SHRUB_L0_SHRUB, BucketId::SHRUB_L1_SHRUB, level));
     defer(level_bucket(BucketId::MERC_L0_SHRUB, BucketId::MERC_L1_SHRUB, level));
     defer(level_bucket(BucketId::GMERC_L0_SHRUB, BucketId::GMERC_L1_SHRUB, level));
 
@@ -145,13 +148,14 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 187);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 181);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 3);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 2);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Visibility) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Sprite) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TFragment) == 6);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Shrub) == 6);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);
 
 }  // namespace

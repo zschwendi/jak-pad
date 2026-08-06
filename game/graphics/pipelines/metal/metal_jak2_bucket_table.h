@@ -16,6 +16,7 @@ enum class Jak2MetalBucketBehavior : std::uint8_t {
   Visibility,
   Sprite,
   TFragment,
+  Shrub,
 };
 
 struct Jak2MetalBucketDescriptor {
@@ -25,7 +26,7 @@ struct Jak2MetalBucketDescriptor {
 
 inline constexpr std::size_t kJak2MetalBucketCount =
     static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS);
-inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0xc2a6d1182e2e446bull;
+inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0x247771dca5bf1769ull;
 
 const std::array<Jak2MetalBucketDescriptor, kJak2MetalBucketCount>& jak2_metal_bucket_table();
 

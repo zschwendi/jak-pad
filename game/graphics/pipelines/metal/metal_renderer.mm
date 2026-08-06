@@ -353,6 +353,9 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   constexpr auto first_tfrag = static_cast<std::size_t>(jak2::BucketId::TFRAG_L0_TFRAG);
   constexpr auto tfrag_stride = static_cast<std::size_t>(jak2::BucketId::TFRAG_L1_TFRAG) -
                                 first_tfrag;
+  constexpr auto first_shrub = static_cast<std::size_t>(jak2::BucketId::SHRUB_L0_SHRUB);
+  constexpr auto shrub_stride = static_cast<std::size_t>(jak2::BucketId::SHRUB_L1_SHRUB) -
+                                first_shrub;
   const std::vector<tfrag3::TFragmentTreeKind> normal_tfrags = {
       tfrag3::TFragmentTreeKind::NORMAL};
 
@@ -377,6 +380,13 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       m_bucket_renderers[bucket_id] = std::make_unique<MetalTFragment>(
           fmt::format("tfrag-l{}-tfrag", level_id), descriptor.id, normal_tfrags, level_id,
           false);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Shrub) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_shrub && (bucket_id - first_shrub) % shrub_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_shrub) / shrub_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalShrub>(
+          fmt::format("shrub-l{}-shrub", level_id), descriptor.id);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
       ASSERT(batch_size != 0);
       const char* name = "direct";

@@ -22,8 +22,8 @@
  * Jak 2 support is deliberately limited to the six normal TFRAG level buckets.
  * Jak 2 visibility arrives through its separate visibility bucket, so those
  * renderers do not copy Jak 1's per-level occlusion strings from TFRAG level 0.
- * Scissor, translucent, water, TIE, shrub, and texture-upload buckets remain
- * separate work.
+ * Scissor, translucent, water, TIE, and texture-upload buckets remain separate
+ * work. Normal shrub is handled by its own MetalShrub renderer.
  *
  * Not ported: the BVH cull-debug overlay (an ImGui-only debug view), and the
  * texture-animator slots a negative texture index selects (Jak 2/3 only) -

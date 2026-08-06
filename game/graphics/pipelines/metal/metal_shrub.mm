@@ -6,10 +6,44 @@
 #include "game/graphics/pipelines/metal/metal_shrub.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "common/log/log.h"
 
 #include "game/graphics/texture/TexturePool.h"
+
+namespace {
+
+constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+
+bool parse_hidden_proto_names(const DmaTransfer& transfer,
+                              std::vector<std::string>* hidden_names) {
+  std::vector<std::string> parsed;
+  std::size_t offset = 0;
+  while (offset < transfer.size_bytes) {
+    while (offset < transfer.size_bytes && transfer.data[offset] == 0) {
+      offset++;
+    }
+    if (offset == transfer.size_bytes) {
+      *hidden_names = std::move(parsed);
+      return true;
+    }
+
+    const u8* begin = transfer.data + offset;
+    const u8* end = transfer.data + transfer.size_bytes;
+    const u8* terminator = std::find(begin, end, 0);
+    if (terminator == end) {
+      return false;
+    }
+    parsed.emplace_back(reinterpret_cast<const char*>(begin),
+                        static_cast<std::size_t>(terminator - begin));
+    offset = static_cast<std::size_t>(terminator - transfer.data) + 1;
+  }
+  *hidden_names = std::move(parsed);
+  return true;
+}
+
+}  // namespace
 
 MetalShrub::MetalShrub(const std::string& name, int my_id) : MetalBucketRenderer(name, my_id) {
   m_color_result.resize(kMetalTimeOfDayColorCount);
@@ -19,6 +53,7 @@ void MetalShrub::render(DmaFollower& dma,
                         MetalSharedRenderState* render_state,
                         MetalFrameContext& ctx) {
   m_stats = {};
+  m_apply_proto_visibility = false;
   auto* bg = render_state->background;
   auto expect = [&](bool ok, const char* what) {
     return metal_background_expect(ok, m_name, what, bg);
@@ -42,8 +77,12 @@ void MetalShrub::render(DmaFollower& dma,
   }
 
   auto pc_port_data = dma.read_and_advance();
-  const bool have_data = expect(pc_port_data.size_bytes == sizeof(MetalTfragPcPortData),
-                                "a PC port packet of TfragPcPortData size");
+  const bool is_jak2 = render_state->version == GameVersion::Jak2;
+  const bool have_data =
+      expect(pc_port_data.size_bytes == sizeof(MetalTfragPcPortData) &&
+                 (!is_jak2 || (pc_port_data.vif0() == 0 && pc_port_data.vif1() == kPcPortVif)),
+             is_jak2 ? "an exact 400-byte Jak 2 PC_PORT background block"
+                     : "a PC port packet of TfragPcPortData size");
   if (have_data) {
     memcpy(&m_pc_port_data, pc_port_data.data, sizeof(MetalTfragPcPortData));
     m_pc_port_data.level_name[11] = '\0';
@@ -52,8 +91,24 @@ void MetalShrub::render(DmaFollower& dma,
     }
   }
 
+  std::vector<std::string> hidden_names;
+  bool have_proto_mask = true;
+  if (is_jak2 && have_data) {
+    const auto proto_mask = dma.read_and_advance();
+    const auto tail = dma.current_tag();
+    const bool exact_tail = tail.kind == DmaTag::Kind::NEXT && tail.qwc == 0 &&
+                            tail.addr == render_state->next_bucket &&
+                            dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == 0;
+    have_proto_mask =
+        expect(proto_mask.vif0() == 0 && proto_mask.vif1() == kPcPortVif && exact_tail &&
+                   parse_hidden_proto_names(proto_mask, &hidden_names),
+               "one terminated PC_PORT hidden-prototype-name transfer");
+  } else if (is_jak2) {
+    have_proto_mask = false;
+  }
+
   metal_finish_bucket(dma, *render_state);
-  if (!have_data) {
+  if (!have_data || !have_proto_mask) {
     return;
   }
 
@@ -71,6 +126,10 @@ void MetalShrub::render(DmaFollower& dma,
       lg::warn("Metal {}: level '{}' is not loaded, its shrub geometry is not drawn", m_name,
                m_pc_port_data.level_name);
     }
+    return;
+  }
+
+  if (is_jak2 && !configure_proto_visibility(hidden_names, bg)) {
     return;
   }
 
@@ -105,6 +164,8 @@ void MetalShrub::update_load(MetalLevelData* level_data) {
     out.buffers = &level_data->shrub[i];
     out.draws = &in.static_draws;
     out.colors = &in.time_of_day_colors;
+    out.proto_names = &in.proto_names;
+    out.proto_visible.resize(in.proto_names.size(), true);
     max_draws = std::max(max_draws, in.static_draws.size());
     // the palette texture is a fixed size so color indices line up
     metal_background_expect(in.time_of_day_colors.color_count <= kMetalTimeOfDayColorCount,
@@ -113,6 +174,29 @@ void MetalShrub::update_load(MetalLevelData* level_data) {
   }
   m_draw_runs.resize(max_draws);
   m_runs.resize(max_draws);
+}
+
+bool MetalShrub::configure_proto_visibility(const std::vector<std::string>& hidden_names,
+                                            MetalBackgroundState* background) {
+  for (const auto& tree : m_trees) {
+    for (const auto& draw : *tree.draws) {
+      if (draw.proto_idx >= tree.proto_names->size()) {
+        return metal_background_expect(false, m_name,
+                                       "every shrub draw proto_idx to name an FR3 prototype",
+                                       background);
+      }
+    }
+  }
+
+  for (auto& tree : m_trees) {
+    for (std::size_t i = 0; i < tree.proto_names->size(); i++) {
+      tree.proto_visible[i] =
+          std::find(hidden_names.begin(), hidden_names.end(), tree.proto_names->at(i)) ==
+          hidden_names.end();
+    }
+  }
+  m_apply_proto_visibility = true;
+  return true;
 }
 
 void MetalShrub::render_tree(int idx,
@@ -126,8 +210,8 @@ void MetalShrub::render_tree(int idx,
   metal_update_time_of_day_texture(tree.buffers->time_of_day, m_color_result.data(),
                                    tree.colors->color_count);
 
-  // shrub has no visibility data: the GL renderer draws every draw of every
-  // tree, every frame.
+  // Shrub has no geometric visibility data, so every draw gets a complete run.
+  // Jak 2's prototype-name visibility is applied while issuing those runs.
   metal_make_all_visible_draw_runs(m_draw_runs.data(), m_runs.data(), *tree.draws);
 
   MetalBackgroundVsParams vs_params;
@@ -144,6 +228,9 @@ void MetalShrub::render_tree(int idx,
 
   for (size_t draw_idx = 0; draw_idx < tree.draws->size(); draw_idx++) {
     const auto& draw = tree.draws->operator[](draw_idx);
+    if (m_apply_proto_visibility && !tree.proto_visible[draw.proto_idx]) {
+      continue;
+    }
     const auto& run = m_runs[m_draw_runs[draw_idx].first];
     if (run.index_count == 0) {
       continue;
