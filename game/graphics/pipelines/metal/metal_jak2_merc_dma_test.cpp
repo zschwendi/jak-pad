@@ -17,6 +17,7 @@ constexpr u32 kModel1 = 0x1200;
 constexpr u32 kTerminal = 0x1800;
 constexpr u32 kBone0 = 0x3000;
 constexpr u32 kBone1 = 0x3080;
+constexpr u32 kEffect0 = 0x3200;
 constexpr std::size_t kEeSize = 0x4000;
 
 int g_failures = 0;
@@ -25,11 +26,11 @@ u32 vif(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
   return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
 }
 
-void put_u32(std::vector<u8>* memory, u32 offset, u32 value) {
+void put_u32(std::vector<u8>* memory, std::size_t offset, u32 value) {
   std::memcpy(memory->data() + offset, &value, sizeof(value));
 }
 
-void put_u64(std::vector<u8>* memory, u32 offset, u64 value) {
+void put_u64(std::vector<u8>* memory, std::size_t offset, u64 value) {
   std::memcpy(memory->data() + offset, &value, sizeof(value));
 }
 
@@ -50,13 +51,13 @@ void put_tag(std::vector<u8>* memory,
 void append_u32(std::vector<u8>* data, u32 value) {
   const std::size_t offset = data->size();
   data->resize(offset + sizeof(value));
-  std::memcpy(data->data() + offset, &value, sizeof(value));
+  put_u32(data, offset, value);
 }
 
 void append_u64(std::vector<u8>* data, u64 value) {
   const std::size_t offset = data->size();
   data->resize(offset + sizeof(value));
-  std::memcpy(data->data() + offset, &value, sizeof(value));
+  put_u64(data, offset, value);
 }
 
 std::vector<u8> make_setup() {
@@ -70,33 +71,67 @@ std::vector<u8> make_setup() {
   return data;
 }
 
-std::vector<u8> make_model_packet(const char* name, bool jak1_water_slot = false) {
+struct ModelOptions {
+  bool jak1_water_slot = false;
+  u16 matrix_count = 2;
+  bool terminate_matrix_slots = true;
+  u8 effect_count = 1;
+  u8 bit_flags = 0;
+  u64 enable_mask = 1;
+  u64 ignore_alpha_mask = 0;
+  u32 effect_pointer = kEffect0;
+};
+
+std::vector<u8> make_model_packet(const char* name, const ModelOptions& options = {}) {
   std::vector<u8> data(128, 0);
   std::memcpy(data.data(), name, std::strlen(name));
   data.resize(data.size() + 7 * 16, 0);  // lights
-  if (jak1_water_slot) {
+  if (options.jak1_water_slot) {
     data.resize(data.size() + 16, 0);
   }
 
   const std::size_t matrix_slots = data.size();
   data.resize(data.size() + 128, 0xff);
-  data[matrix_slots] = 0;
-  data[matrix_slots + 1] = 1;
+  for (u16 i = 0; i < options.matrix_count; i++) {
+    data[matrix_slots + i] = static_cast<u8>(i);
+  }
+  if (!options.terminate_matrix_slots) {
+    for (u16 i = options.matrix_count; i < 128; i++) {
+      data[matrix_slots + i] = static_cast<u8>(i);
+    }
+  }
 
-  append_u32(&data, kBone0);
-  data.resize(data.size() + 12, 0);
-  append_u32(&data, kBone1);
-  data.resize(data.size() + 12, 0);
+  for (u16 i = 0; i < options.matrix_count; i++) {
+    append_u32(&data, i == 1 ? kBone1 : kBone0);
+    data.resize(data.size() + 12, 0);
+  }
 
-  append_u64(&data, 1);  // enabled effect 0
-  append_u64(&data, 0);  // no ignore-alpha effects
-  data.push_back(1);     // effect count
-  data.push_back(0);     // flags
+  append_u64(&data, options.enable_mask);
+  append_u64(&data, options.ignore_alpha_mask);
+  data.push_back(options.effect_count);
+  data.push_back(options.bit_flags);
   data.resize(data.size() + 14, 0);
-  data.resize(data.size() + 16, 0);  // one padded fade
-  append_u32(&data, 0x3200);         // one padded effect pointer
-  data.resize(data.size() + 12, 0);
+  if (options.bit_flags & 4) {
+    data.resize(data.size() + metal_jak2_merc_dma::kBlercBytes, 0);
+  }
+
+  const std::size_t effect_quadwords = (options.effect_count + 3) / 4;
+  data.resize(data.size() + effect_quadwords * 16, 0);  // padded fades
+  const std::size_t pointers_offset = data.size();
+  data.resize(data.size() + effect_quadwords * 16, 0);
+  for (u8 i = 0; i < options.effect_count; i++) {
+    put_u32(&data, pointers_offset + i * 4, options.effect_pointer);
+  }
   return data;
+}
+
+bool parse_packet(const std::vector<u8>& packet,
+                  metal_jak2_merc_dma::ModelPacket* parsed = nullptr,
+                  std::string* error = nullptr) {
+  metal_jak2_merc_dma::ModelPacket local;
+  return metal_jak2_merc_dma::parse_model_packet(
+      packet.data(), packet.size(), 0, metal_jak2_merc_dma::kPcPortVif, kEeSize,
+      parsed ? parsed : &local, error);
 }
 
 struct Fixture {
@@ -133,9 +168,12 @@ struct Fixture {
   }
 
   bool validate(metal_jak2_merc_dma::Bucket* bucket = nullptr,
-                std::string* error = nullptr) const {
+                std::string* error = nullptr,
+                std::size_t copy_size = kEeSize,
+                u32 start = kOpening,
+                u32 boundary = kBoundary) const {
     metal_jak2_merc_dma::Bucket local;
-    return metal_jak2_merc_dma::validate_bucket(DmaFollower(memory.data(), kOpening), kBoundary,
+    return metal_jak2_merc_dma::validate_bucket(memory.data(), copy_size, start, boundary,
                                                 memory.size(), bucket ? bucket : &local, error);
   }
 };
@@ -147,9 +185,18 @@ void check(bool condition, const char* message) {
   }
 }
 
-void check_rejected(const Fixture& fixture, const char* message) {
+void check_rejected(const Fixture& fixture,
+                    const char* message,
+                    std::size_t copy_size = kEeSize,
+                    u32 start = kOpening,
+                    u32 boundary = kBoundary) {
   std::string error;
-  check(!fixture.validate(nullptr, &error) && !error.empty(), message);
+  check(!fixture.validate(nullptr, &error, copy_size, start, boundary) && !error.empty(), message);
+}
+
+void check_packet_rejected(const std::vector<u8>& packet, const char* message) {
+  std::string error;
+  check(!parse_packet(packet, nullptr, &error) && !error.empty(), message);
 }
 
 void check_rejected_and_recovered(const Fixture& fixture, const char* message) {
@@ -157,8 +204,10 @@ void check_rejected_and_recovered(const Fixture& fixture, const char* message) {
   metal_jak2_merc_dma::Bucket bucket;
   DmaFollower dma(fixture.memory.data(), kOpening);
   const bool rejected = !metal_jak2_merc_dma::validate_bucket(
-      dma, kBoundary, fixture.memory.size(), &bucket, &error);
-  const bool recovered = metal_jak2_merc_dma::recover_to_boundary(&dma, kBoundary);
+      fixture.memory.data(), fixture.memory.size(), kOpening, kBoundary, fixture.memory.size(),
+      &bucket, &error);
+  const bool recovered = metal_jak2_merc_dma::recover_to_boundary(
+      &dma, fixture.memory.data(), fixture.memory.size(), kBoundary);
   check(rejected && !error.empty() && recovered && dma.current_tag_offset() == kBoundary,
         message);
 }
@@ -183,10 +232,141 @@ void test_empty_bucket() {
   put_tag(&memory, 0x100, DmaTag::Kind::CNT, 0, 0, 0, 0);
   metal_jak2_merc_dma::Bucket bucket;
   std::string error;
-  check(metal_jak2_merc_dma::validate_bucket(DmaFollower(memory.data(), 0x100), 0x110,
+  check(metal_jak2_merc_dma::validate_bucket(memory.data(), memory.size(), 0x100, 0x110,
                                              memory.size(), &bucket, &error) &&
             bucket.empty && bucket.model_count == 0,
         "a strict empty Jak 2 CNT bucket is accepted");
+}
+
+void test_bounded_chain_rejections() {
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, kOpening, DmaTag::Kind::NEXT, 0,
+            static_cast<u32>(fixture.memory.size()), 0, 0);
+    check_rejected(fixture, "an out-of-copy opening NEXT target is rejected before following");
+  }
+  {
+    Fixture fixture;
+    check_rejected(fixture, "a truncated opening tag is rejected before reading its header",
+                   fixture.memory.size(), static_cast<u32>(fixture.memory.size() - 8));
+  }
+  {
+    Fixture fixture;
+    check_rejected(fixture, "a truncated boundary tag makes recovery unavailable", kBoundary + 8);
+    DmaFollower dma(fixture.memory.data(), kOpening);
+    check(!metal_jak2_merc_dma::recover_to_boundary(&dma, fixture.memory.data(), kBoundary + 8,
+                                                    kBoundary),
+          "direct recovery refuses a boundary header outside the compacted copy");
+  }
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, kOpening, DmaTag::Kind::NEXT, 0,
+            static_cast<u32>(fixture.memory.size() - 8), 0, 0);
+    check_rejected(fixture, "a truncated setup target header is rejected before following");
+  }
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, kSetup, DmaTag::Kind::CNT, 0xffff, 0,
+            vif(VifCode::Kind::STCYCL, 0x404), vif(VifCode::Kind::STMOD));
+    check_rejected(fixture, "an out-of-copy setup payload is rejected before parsing");
+  }
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, kSetupPatch, DmaTag::Kind::NEXT, 0,
+            static_cast<u32>(fixture.memory.size()), 0, 0);
+    check_rejected(fixture, "an out-of-copy setup patch target is rejected before following");
+  }
+  {
+    Fixture fixture;
+    check_rejected(fixture, "a compacted copy truncated inside the model payload is rejected",
+                   kModel0 + 32);
+  }
+  {
+    Fixture fixture;
+    u64 tag = 0;
+    std::memcpy(&tag, fixture.memory.data() + kModel0, sizeof(tag));
+    tag = (tag & ~0xffffull) | 0xffffull;
+    put_u64(&fixture.memory, kModel0, tag);
+    check_rejected_and_recovered(
+        fixture, "an out-of-copy model qwc is rejected and directly recovers to the boundary");
+  }
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, fixture.model0_patch, DmaTag::Kind::NEXT, 0,
+            static_cast<u32>(fixture.memory.size()), 0, 0);
+    check_rejected(fixture, "an out-of-copy model patch target is rejected before following");
+  }
+  {
+    Fixture fixture;
+    put_tag(&fixture.memory, kTerminal, DmaTag::Kind::NEXT, 0,
+            static_cast<u32>(fixture.memory.size()), 0, 0);
+    check_rejected(fixture, "an out-of-copy terminal target is rejected before following");
+  }
+}
+
+void test_model_packet_edges() {
+  {
+    ModelOptions options;
+    options.matrix_count = 128;
+    options.terminate_matrix_slots = false;
+    const auto packet = make_model_packet("all-128-matrices", options);
+    metal_jak2_merc_dma::ModelPacket parsed;
+    check(parse_packet(packet, &parsed) && parsed.matrix_count == 128,
+          "all 128 unique matrix slots are accepted without a sentinel");
+  }
+  {
+    auto packet = make_model_packet("duplicate-slot");
+    constexpr std::size_t kSlots = 128 + 7 * 16;
+    packet[kSlots + 1] = packet[kSlots];
+    check_packet_rejected(packet, "duplicate matrix slots are rejected");
+  }
+  {
+    auto packet = make_model_packet("high-slot");
+    constexpr std::size_t kSlots = 128 + 7 * 16;
+    packet[kSlots] = 128;
+    check_packet_rejected(packet, "matrix slots above 127 are rejected");
+  }
+  {
+    ModelOptions options;
+    options.enable_mask = 2;
+    check_packet_rejected(make_model_packet("wide-enable-mask", options),
+                          "enable-mask bits beyond effect count are rejected");
+  }
+  {
+    ModelOptions options;
+    options.ignore_alpha_mask = 2;
+    check_packet_rejected(make_model_packet("wide-ignore-mask", options),
+                          "ignore-alpha-mask bits beyond effect count are rejected");
+  }
+  {
+    ModelOptions options;
+    options.bit_flags = 0x10;
+    check_packet_rejected(make_model_packet("unknown-flag", options),
+                          "unknown Jak 2 model flag bits are rejected");
+  }
+  {
+    ModelOptions options;
+    options.bit_flags = 4;
+    metal_jak2_merc_dma::ModelPacket parsed;
+    check(parse_packet(make_model_packet("exact-blerc", options), &parsed) &&
+              parsed.fades_offset == parsed.blerc_offset + metal_jak2_merc_dma::kBlercBytes,
+          "the exact 160-byte blerc block is accepted when flag 4 is present");
+
+    auto truncated = make_model_packet("truncated-blerc", options);
+    truncated.resize(truncated.size() - 16);
+    check_packet_rejected(truncated, "a short blerc-bearing packet is rejected by exact size");
+  }
+  {
+    ModelOptions options;
+    options.bit_flags = 1;
+    auto packet = make_model_packet("mod-effect", options);
+    metal_jak2_merc_dma::ModelPacket parsed;
+    check(parse_packet(packet, &parsed), "an in-range modified-effect pointer is accepted");
+    put_u32(&packet, parsed.effect_pointers_offset, 0);
+    check_packet_rejected(packet, "a null modified-effect pointer is rejected");
+    put_u32(&packet, parsed.effect_pointers_offset, static_cast<u32>(kEeSize - 8));
+    check_packet_rejected(packet, "a truncated modified-effect object is rejected");
+  }
 }
 
 void test_malformed_buckets() {
@@ -212,17 +392,9 @@ void test_malformed_buckets() {
   }
   {
     Fixture fixture;
-    std::memset(fixture.memory.data() + fixture.model0_data + 128 + 7 * 16, 1, 128);
-    check_rejected(fixture, "an unterminated matrix-slot string is rejected");
-  }
-  {
-    Fixture fixture;
-    u64 tag = 0;
-    std::memcpy(&tag, fixture.memory.data() + kModel0, sizeof(tag));
-    tag = (tag & ~0xffffull) | ((tag + 1) & 0xffffull);
-    put_u64(&fixture.memory, kModel0, tag);
-    check_rejected_and_recovered(
-        fixture, "a model qwc mismatch is rejected and recovers to the exact boundary");
+    constexpr u32 kSlotsOffset = 128 + 7 * 16;
+    std::memset(fixture.memory.data() + fixture.model0_data + kSlotsOffset, 1, 128);
+    check_rejected(fixture, "128 non-unique unsentinelized matrix slots are rejected");
   }
   {
     Fixture fixture;
@@ -255,14 +427,12 @@ void test_malformed_buckets() {
 }
 
 void test_jak1_packet_is_not_reinterpreted() {
-  const auto packet = make_model_packet("jak1-water-slot", true);
-  DmaTransfer transfer;
-  transfer.data = packet.data();
-  transfer.size_bytes = static_cast<u32>(packet.size());
-  transfer.transferred_tag = static_cast<u64>(metal_jak2_merc_dma::kPcPortVif) << 32;
+  ModelOptions options;
+  options.jak1_water_slot = true;
+  const auto packet = make_model_packet("jak1-water-slot", options);
   metal_jak2_merc_dma::ModelPacket parsed;
   std::string error;
-  check(!metal_jak2_merc_dma::parse_model_packet(transfer, kEeSize, &parsed, &error),
+  check(!parse_packet(packet, &parsed, &error),
         "a Jak 1 water-slot packet is not silently reinterpreted as Jak 2");
 }
 
@@ -271,6 +441,8 @@ void test_jak1_packet_is_not_reinterpreted() {
 int main() {
   test_source_shaped_bucket();
   test_empty_bucket();
+  test_bounded_chain_rejections();
+  test_model_packet_edges();
   test_malformed_buckets();
   test_jak1_packet_is_not_reinterpreted();
   if (g_failures) {

@@ -2,16 +2,17 @@
 
 /*!
  * @file metal_jak2_merc_dma.h
- * Fail-closed validation for Jak 2's normal opaque Merc PC_PORT chain.
+ * Bounded, fail-closed validation for Jak 2's normal opaque Merc PC_PORT chain.
  *
- * This is header-only so the parser can be used by focused, asset-free tests
- * without adding a second product source until the central Metal target wiring
- * is updated. The accepted layout mirrors foreground.gc's pc-merc-draw-request
- * and merc.gc's merc-vu1-init-buffer exactly.
+ * The validator never uses DmaFollower. Every tag header, inline CNT payload,
+ * and NEXT target is checked against the compacted DMA copy before it is read.
+ * This is header-only so focused asset-free tests do not require shared CMake
+ * registration.
  */
 
 #include <array>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,7 +41,7 @@ struct ModelPacket {
   std::string name;
   u64 enable_mask = 0;
   u64 ignore_alpha_mask = 0;
-  u8 matrix_count = 0;
+  u16 matrix_count = 0;
   u8 effect_count = 0;
   u8 bit_flags = 0;
   std::size_t lights_offset = kNameBytes;
@@ -58,6 +59,18 @@ struct Bucket {
   std::vector<ModelPacket> models;
 };
 
+struct TagView {
+  DmaTag::Kind kind = DmaTag::Kind::REFE;
+  u16 qwc = 0;
+  u32 address = 0;
+  bool spr = false;
+  u32 vif0 = 0;
+  u32 vif1 = 0;
+  u32 payload_offset = 0;
+  std::size_t payload_size = 0;
+  u32 inline_end = 0;
+};
+
 inline bool fail(std::string* error, const char* message) {
   if (error) {
     *error = message;
@@ -65,43 +78,83 @@ inline bool fail(std::string* error, const char* message) {
   return false;
 }
 
-inline bool is_zero_next(const DmaFollower& dma) {
-  const auto tag = dma.current_tag();
-  return tag.kind == DmaTag::Kind::NEXT && tag.qwc == 0 && !tag.spr &&
-         dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == 0;
+inline bool span_is_bounded(std::size_t copy_size,
+                            std::size_t offset,
+                            std::size_t size) {
+  return offset <= copy_size && size <= copy_size - offset;
 }
 
-inline bool is_opening_vif0(u32 vif) {
-  return vif == 0 || VifCode(vif).kind == VifCode::Kind::NOP ||
-         VifCode(vif).kind == VifCode::Kind::MARK;
-}
-
-inline bool is_opening_vif1(u32 vif) {
-  return vif == 0 || VifCode(vif).kind == VifCode::Kind::NOP;
-}
-
-// A rejected model qwc cannot be drained with DmaFollower: the corrupt qwc
-// would move the follower to a made-up inline tag. Recover the chain base from
-// the still-unconsumed source-shaped bucket opening and place the caller at the
-// already-known next bucket instead.
-inline bool recover_to_boundary(DmaFollower* dma, u32 next_bucket) {
-  if (!dma) {
-    return false;
+inline bool read_tag(const u8* copy_base,
+                     std::size_t copy_size,
+                     u32 offset,
+                     TagView* out,
+                     std::string* error) {
+  if (!copy_base || !out || !span_is_bounded(copy_size, offset, 16)) {
+    return fail(error, "a DMA tag header inside the compacted copy");
   }
-  const auto opening = dma->current_tag();
-  if (opening.spr ||
-      (opening.kind != DmaTag::Kind::CNT && opening.kind != DmaTag::Kind::NEXT) ||
-      (opening.kind == DmaTag::Kind::CNT && opening.addr != 0)) {
-    return false;
+
+  u64 raw_tag = 0;
+  std::memcpy(&raw_tag, copy_base + offset, sizeof(raw_tag));
+  DmaTag tag(raw_tag);
+  if (tag.spr) {
+    return fail(error, "Merc DMA without scratchpad addresses");
   }
-  DmaFollower origin = *dma;
-  const auto first = origin.read_and_advance();
-  const u8* chain_base = first.data - first.data_offset;
-  *dma = DmaFollower(chain_base, next_bucket);
+
+  const std::size_t payload_offset = static_cast<std::size_t>(offset) + 16;
+  const std::size_t payload_size = static_cast<std::size_t>(tag.qwc) * 16;
+  if (!span_is_bounded(copy_size, payload_offset, payload_size)) {
+    return fail(error, "a complete inline DMA payload inside the compacted copy");
+  }
+  const std::size_t inline_end = payload_offset + payload_size;
+  if (inline_end > std::numeric_limits<u32>::max()) {
+    return fail(error, "a DMA inline end representable by DmaFollower");
+  }
+  if (tag.kind == DmaTag::Kind::NEXT &&
+      !span_is_bounded(copy_size, static_cast<std::size_t>(tag.addr), 16)) {
+    return fail(error, "a NEXT target header inside the compacted copy");
+  }
+
+  out->kind = tag.kind;
+  out->qwc = tag.qwc;
+  out->address = tag.addr;
+  out->spr = tag.spr;
+  std::memcpy(&out->vif0, copy_base + offset + 8, sizeof(out->vif0));
+  std::memcpy(&out->vif1, copy_base + offset + 12, sizeof(out->vif1));
+  out->payload_offset = static_cast<u32>(payload_offset);
+  out->payload_size = payload_size;
+  out->inline_end = static_cast<u32>(inline_end);
   return true;
 }
 
-inline bool parse_model_packet(const DmaTransfer& transfer,
+inline bool is_zero_next(const TagView& tag) {
+  return tag.kind == DmaTag::Kind::NEXT && tag.qwc == 0 && !tag.spr && tag.vif0 == 0 &&
+         tag.vif1 == 0;
+}
+
+inline bool is_opening_vif0(u32 value) {
+  return value == 0 || VifCode(value).kind == VifCode::Kind::NOP ||
+         VifCode(value).kind == VifCode::Kind::MARK;
+}
+
+inline bool is_opening_vif1(u32 value) {
+  return value == 0 || VifCode(value).kind == VifCode::Kind::NOP;
+}
+
+inline bool recover_to_boundary(DmaFollower* dma,
+                                const u8* copy_base,
+                                std::size_t copy_size,
+                                u32 next_bucket) {
+  if (!dma || !copy_base || !span_is_bounded(copy_size, next_bucket, 16)) {
+    return false;
+  }
+  *dma = DmaFollower(copy_base, next_bucket);
+  return true;
+}
+
+inline bool parse_model_packet(const u8* data,
+                               std::size_t size,
+                               u32 transferred_vif0,
+                               u32 transferred_vif1,
                                std::size_t ee_memory_size,
                                ModelPacket* out,
                                std::string* error) {
@@ -109,31 +162,28 @@ inline bool parse_model_packet(const DmaTransfer& transfer,
     return fail(error, "a model packet output");
   }
   *out = {};
-  if (!transfer.data || transfer.vif0() != 0 || transfer.vif1() != kPcPortVif) {
+  if (!data || transferred_vif0 != 0 || transferred_vif1 != kPcPortVif) {
     return fail(error, "an exact zero/PC_PORT model transfer");
   }
 
   constexpr std::size_t kFixedBytes =
       kNameBytes + kLightBytes + kMatrixSlotBytes + kFlagsBytes;
-  if (transfer.size_bytes < kFixedBytes) {
+  if (size < kFixedBytes) {
     return fail(error, "a complete Jak 2 Merc model packet");
   }
 
-  const auto* name_end = static_cast<const u8*>(
-      std::memchr(transfer.data, 0, kNameBytes));
+  const auto* name_end = static_cast<const u8*>(std::memchr(data, 0, kNameBytes));
   if (!name_end) {
     return fail(error, "a NUL-terminated model name within 128 bytes");
   }
-  out->name.assign(reinterpret_cast<const char*>(transfer.data),
-                   static_cast<std::size_t>(name_end - transfer.data));
+  out->name.assign(reinterpret_cast<const char*>(data),
+                   static_cast<std::size_t>(name_end - data));
 
-  const u8* matrix_slots = transfer.data + out->matrix_slots_offset;
+  const u8* matrix_slots = data + out->matrix_slots_offset;
   const auto* matrix_end =
       static_cast<const u8*>(std::memchr(matrix_slots, 0xff, kMatrixSlotBytes));
-  if (!matrix_end) {
-    return fail(error, "a 0xff-terminated matrix-slot string within 128 bytes");
-  }
-  const std::size_t matrix_count = static_cast<std::size_t>(matrix_end - matrix_slots);
+  const std::size_t matrix_count =
+      matrix_end ? static_cast<std::size_t>(matrix_end - matrix_slots) : kMatrixSlotBytes;
   std::array<bool, 128> seen_slots = {};
   for (std::size_t i = 0; i < matrix_count; i++) {
     const u8 slot = matrix_slots[i];
@@ -142,27 +192,26 @@ inline bool parse_model_packet(const DmaTransfer& transfer,
     }
     seen_slots[slot] = true;
   }
-  out->matrix_count = static_cast<u8>(matrix_count);
+  out->matrix_count = static_cast<u16>(matrix_count);
   out->flags_offset = out->matrix_pointers_offset + matrix_count * 16;
-  if (out->flags_offset + kFlagsBytes > transfer.size_bytes) {
+  if (!span_is_bounded(size, out->flags_offset, kFlagsBytes)) {
     return fail(error, "all matrix pointers and the Merc flags block");
   }
 
   for (std::size_t i = 0; i < matrix_count; i++) {
     u32 address = 0;
-    std::memcpy(&address, transfer.data + out->matrix_pointers_offset + i * 16,
-                sizeof(address));
+    std::memcpy(&address, data + out->matrix_pointers_offset + i * 16, sizeof(address));
     if (!address || address > ee_memory_size ||
         kMercMatrixBytes > ee_memory_size - address) {
       return fail(error, "matrix pointers bounded by EE main memory");
     }
   }
 
-  std::memcpy(&out->enable_mask, transfer.data + out->flags_offset, sizeof(out->enable_mask));
-  std::memcpy(&out->ignore_alpha_mask, transfer.data + out->flags_offset + 8,
+  std::memcpy(&out->enable_mask, data + out->flags_offset, sizeof(out->enable_mask));
+  std::memcpy(&out->ignore_alpha_mask, data + out->flags_offset + 8,
               sizeof(out->ignore_alpha_mask));
-  out->effect_count = transfer.data[out->flags_offset + 16];
-  out->bit_flags = transfer.data[out->flags_offset + 17];
+  out->effect_count = data[out->flags_offset + 16];
+  out->bit_flags = data[out->flags_offset + 17];
   if (out->effect_count >= kMaxEffectCount) {
     return fail(error, "an effect count below 64");
   }
@@ -180,16 +229,15 @@ inline bool parse_model_packet(const DmaTransfer& transfer,
   out->fades_offset = out->blerc_offset + ((out->bit_flags & 4) ? kBlercBytes : 0);
   const std::size_t effect_quadwords = (out->effect_count + 3) / 4;
   out->effect_pointers_offset = out->fades_offset + effect_quadwords * 16;
-  const std::size_t expected_bytes = out->effect_pointers_offset + effect_quadwords * 16;
-  if (transfer.size_bytes != expected_bytes) {
+  const std::size_t expected_size = out->effect_pointers_offset + effect_quadwords * 16;
+  if (size != expected_size) {
     return fail(error, "the exact source-computed PC_PORT qwc");
   }
 
   if (out->bit_flags & 1) {
     for (std::size_t i = 0; i < out->effect_count; i++) {
       u32 address = 0;
-      std::memcpy(&address, transfer.data + out->effect_pointers_offset + i * 4,
-                  sizeof(address));
+      std::memcpy(&address, data + out->effect_pointers_offset + i * 4, sizeof(address));
       if (!address || address > ee_memory_size ||
           kMercEffectMinimumBytes > ee_memory_size - address) {
         return fail(error, "modified-effect pointers bounded by EE main memory");
@@ -200,19 +248,23 @@ inline bool parse_model_packet(const DmaTransfer& transfer,
   return true;
 }
 
-inline bool validate_setup_packet(const DmaTransfer& transfer, std::string* error) {
-  if (transfer.size_bytes != 10 * 16) {
+inline bool validate_setup_packet(const u8* data,
+                                  std::size_t size,
+                                  u32 transferred_vif0,
+                                  u32 transferred_vif1,
+                                  std::string* error) {
+  if (!data || size != 10 * 16) {
     return fail(error, "a 160-byte Merc VU setup packet");
   }
-  if (transfer.vif0() != vif(VifCode::Kind::STCYCL, 0x404) ||
-      transfer.vif1() != vif(VifCode::Kind::STMOD)) {
+  if (transferred_vif0 != vif(VifCode::Kind::STCYCL, 0x404) ||
+      transferred_vif1 != vif(VifCode::Kind::STMOD)) {
     return fail(error, "the Merc STCYCL/STMOD setup VIF pair");
   }
 
   std::array<u32, 4> first_vifs = {};
   std::array<u32, 4> last_vifs = {};
-  std::memcpy(first_vifs.data(), transfer.data, sizeof(first_vifs));
-  std::memcpy(last_vifs.data(), transfer.data + 9 * 16, sizeof(last_vifs));
+  std::memcpy(first_vifs.data(), data, sizeof(first_vifs));
+  std::memcpy(last_vifs.data(), data + 9 * 16, sizeof(last_vifs));
   if (first_vifs[0] != vif(VifCode::Kind::BASE, 442) ||
       first_vifs[1] != vif(VifCode::Kind::OFFSET, static_cast<u16>(-442)) ||
       first_vifs[2] != 0 || first_vifs[3] != vif(VifCode::Kind::UNPACK_V4_32, 0, 8)) {
@@ -225,7 +277,9 @@ inline bool validate_setup_packet(const DmaTransfer& transfer, std::string* erro
   return true;
 }
 
-inline bool validate_bucket(DmaFollower dma,
+inline bool validate_bucket(const u8* copy_base,
+                            std::size_t copy_size,
+                            u32 start_offset,
                             u32 next_bucket,
                             std::size_t ee_memory_size,
                             Bucket* out,
@@ -234,68 +288,80 @@ inline bool validate_bucket(DmaFollower dma,
     return fail(error, "a bucket output");
   }
   *out = {};
-  const auto opening = dma.current_tag();
+  if (!copy_base || !span_is_bounded(copy_size, next_bucket, 16)) {
+    return fail(error, "the next bucket header inside the compacted copy");
+  }
+
+  TagView opening;
+  if (!read_tag(copy_base, copy_size, start_offset, &opening, error)) {
+    return false;
+  }
   const bool empty = opening.kind == DmaTag::Kind::CNT && opening.qwc == 0 &&
-                     opening.addr == 0 && !opening.spr && dma.current_tag_vif0() == 0 &&
-                     dma.current_tag_vif1() == 0;
+                     opening.address == 0 && opening.vif0 == 0 && opening.vif1 == 0;
   if (empty) {
-    dma.read_and_advance();
-    if (dma.current_tag_offset() != next_bucket) {
+    if (opening.inline_end != next_bucket) {
       return fail(error, "an empty CNT to land exactly at the bucket boundary");
     }
     out->empty = true;
     return true;
   }
 
-  if (opening.kind != DmaTag::Kind::NEXT || opening.qwc != 0 || opening.spr ||
-      !is_opening_vif0(dma.current_tag_vif0()) ||
-      !is_opening_vif1(dma.current_tag_vif1())) {
+  if (opening.kind != DmaTag::Kind::NEXT || opening.qwc != 0 ||
+      !is_opening_vif0(opening.vif0) || !is_opening_vif1(opening.vif1)) {
     return fail(error, "a source-shaped populated NEXT bucket opening");
   }
-  dma.read_and_advance();
-  if (dma.current_tag_offset() == next_bucket) {
+  if (opening.address == next_bucket) {
     return fail(error, "Merc setup data after the populated opening");
   }
 
-  const auto setup_tag = dma.current_tag();
-  if (setup_tag.kind != DmaTag::Kind::CNT || setup_tag.qwc != 10 || setup_tag.addr != 0 ||
-      setup_tag.spr) {
+  TagView setup;
+  if (!read_tag(copy_base, copy_size, opening.address, &setup, error)) {
+    return false;
+  }
+  if (setup.kind != DmaTag::Kind::CNT || setup.qwc != 10 || setup.address != 0) {
     return fail(error, "an exact CNT qwc10 Merc VU setup tag");
   }
-  if (!validate_setup_packet(dma.read_and_advance(), error)) {
+  if (!validate_setup_packet(copy_base + setup.payload_offset, setup.payload_size, setup.vif0,
+                             setup.vif1, error)) {
     return false;
   }
 
-  const auto gs_tag = dma.current_tag();
-  if (gs_tag.kind != DmaTag::Kind::CNT || gs_tag.qwc != 3 || gs_tag.addr != 0 || gs_tag.spr ||
-      dma.current_tag_vif0() != 0 || dma.current_tag_vif1() != kDirect3Vif) {
+  TagView gs;
+  if (!read_tag(copy_base, copy_size, setup.inline_end, &gs, error)) {
+    return false;
+  }
+  if (gs.kind != DmaTag::Kind::CNT || gs.qwc != 3 || gs.address != 0 || gs.vif0 != 0 ||
+      gs.vif1 != kDirect3Vif) {
     return fail(error, "an exact 48-byte NOP/DIRECT-3 GS test/zbuf packet");
   }
-  dma.read_and_advance();
 
-  if (!is_zero_next(dma)) {
+  TagView setup_patch;
+  if (!read_tag(copy_base, copy_size, gs.inline_end, &setup_patch, error)) {
+    return false;
+  }
+  if (!is_zero_next(setup_patch)) {
     return fail(error, "one exact zero-qwc zero-VIF NEXT after Merc setup");
   }
-  dma.read_and_advance();
-  if (dma.current_tag_offset() == next_bucket) {
+  if (setup_patch.address == next_bucket) {
     return fail(error, "at least one model after a populated Merc setup");
   }
 
+  u32 current = setup_patch.address;
   std::vector<u32> visited_offsets;
   for (u32 guard = 0; guard < 1024; guard++) {
-    const u32 offset = dma.current_tag_offset();
     for (u32 visited : visited_offsets) {
-      if (visited == offset) {
+      if (visited == current) {
         return fail(error, "an acyclic Merc model chain");
       }
     }
-    visited_offsets.push_back(offset);
+    visited_offsets.push_back(current);
 
-    const auto model_tag = dma.current_tag();
-    if (model_tag.kind == DmaTag::Kind::NEXT && model_tag.qwc == 0 && !model_tag.spr &&
-        dma.current_tag_vif0() == 0 && dma.current_tag_vif1() == 0) {
-      dma.read_and_advance();
-      if (dma.current_tag_offset() != next_bucket) {
+    TagView model;
+    if (!read_tag(copy_base, copy_size, current, &model, error)) {
+      return false;
+    }
+    if (is_zero_next(model)) {
+      if (model.address != next_bucket) {
         return fail(error, "the terminal NEXT to land exactly at the bucket boundary");
       }
       if (out->model_count == 0) {
@@ -304,24 +370,29 @@ inline bool validate_bucket(DmaFollower dma,
       return true;
     }
 
-    if (model_tag.kind != DmaTag::Kind::CNT || model_tag.addr != 0 || model_tag.spr ||
-        dma.current_tag_vif0() != 0 || dma.current_tag_vif1() != kPcPortVif) {
+    if (model.kind != DmaTag::Kind::CNT || model.address != 0 || model.vif0 != 0 ||
+        model.vif1 != kPcPortVif) {
       return fail(error, "an exact CNT zero/PC_PORT model tag");
     }
     ModelPacket packet;
-    if (!parse_model_packet(dma.read_and_advance(), ee_memory_size, &packet, error)) {
+    if (!parse_model_packet(copy_base + model.payload_offset, model.payload_size, model.vif0,
+                            model.vif1, ee_memory_size, &packet, error)) {
       return false;
     }
     out->model_count++;
     out->models.push_back(std::move(packet));
 
-    if (dma.current_tag_offset() == next_bucket || !is_zero_next(dma)) {
+    TagView model_patch;
+    if (!read_tag(copy_base, copy_size, model.inline_end, &model_patch, error)) {
+      return false;
+    }
+    if (!is_zero_next(model_patch)) {
       return fail(error, "one exact zero-qwc zero-VIF NEXT patch per model");
     }
-    dma.read_and_advance();
-    if (dma.current_tag_offset() == next_bucket) {
+    if (model_patch.address == next_bucket) {
       return fail(error, "a terminal NEXT after the final model patch");
     }
+    current = model_patch.address;
   }
   return fail(error, "fewer than 1024 Merc model links");
 }

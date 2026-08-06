@@ -472,7 +472,15 @@ void MetalMerc2::render(DmaFollower& dma,
     metal_jak2_merc_dma::Bucket packet;
     std::string error;
     bool valid = metal_jak2_merc_dma::validate_bucket(
-        dma, render_state->next_bucket, EE_MAIN_MEM_SIZE, &packet, &error);
+        render_state->dma_copy_base, render_state->dma_copy_size, dma.current_tag_offset(),
+        render_state->next_bucket, EE_MAIN_MEM_SIZE, &packet, &error);
+    if (valid && packet.empty) {
+      const bool recovered = metal_jak2_merc_dma::recover_to_boundary(
+          &dma, render_state->dma_copy_base, render_state->dma_copy_size,
+          render_state->next_bucket);
+      ASSERT(recovered);
+      return;
+    }
     if (valid) {
       for (const auto& model_packet : packet.models) {
         const auto model = metal_merc_models().get_merc_model(model_packet.name.c_str());
@@ -489,8 +497,10 @@ void MetalMerc2::render(DmaFollower& dma,
         lg::warn("Metal Jak 2 merc: expected {}; the bucket is skipped (logged once)", error);
         m_warned_malformed_dma = true;
       }
-      if (!metal_jak2_merc_dma::recover_to_boundary(&dma, render_state->next_bucket)) {
-        metal_finish_bucket(dma, *render_state);
+      if (!metal_jak2_merc_dma::recover_to_boundary(
+              &dma, render_state->dma_copy_base, render_state->dma_copy_size,
+              render_state->next_bucket)) {
+        lg::error("Metal Jak 2 merc: cannot recover to an out-of-range bucket boundary");
       }
       return;
     }
