@@ -159,16 +159,8 @@ void print_frame(const goal_jak2_metal_frame_summary& frame) {
 bool exact_submission_gate(const goal_jak2_runtime_metrics& runtime,
                            const goal_jak2_metal_host_metrics& metal,
                            bool require_presentation) {
-  return metal.chains > 0 && metal.chains <= 3 && runtime.ticks == metal.chains &&
-         metal.completed_chains == metal.chains && metal.failed_chains == 0 &&
-         metal.last_buckets_dispatched == 327 &&
-         metal.command_buffers_committed == metal.chains &&
-         metal.command_buffers_completed == metal.chains && metal.command_buffer_errors == 0 &&
-         metal.drawables_acquired == metal.chains && metal.drawable_misses == 0 &&
-         metal.submissions == metal.chains &&
-         (!require_presentation || metal.presentations == metal.chains) &&
-         metal.late_present_submissions == 0 && metal.presentation_drops == 0 &&
-         metal.presentation_order_mismatches == 0 && metal.unsupported_blends == 0;
+  return metal.chains <= 3 && runtime.ticks == metal.chains &&
+         goal_jak2_metal_host_metrics_pass_frame_gate(&metal, require_presentation);
 }
 
 bool wait_for_frame_while_pumping_events(goal_jak2_metal_host* host,

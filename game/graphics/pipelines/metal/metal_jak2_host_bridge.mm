@@ -206,8 +206,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                host->metrics.drawable_misses != 0 ||
                host->metrics.submissions != host->metrics.chains ||
                host->metrics.late_present_submissions != 0 ||
-               host->metrics.command_buffer_errors != 0 || host->metrics.presentation_drops != 0 ||
-               host->metrics.presentation_order_mismatches != 0) {
+               host->metrics.command_buffer_errors != 0) {
       record_failure(host, acquired ? "Jak 2 layer-backed submission counters violated their gate"
                                     : "Jak 2 CAMetalLayer did not provide a drawable");
       return;
@@ -467,6 +466,24 @@ int goal_jak2_metal_host_get_metrics(goal_jak2_metal_host* host,
   return 1;
 }
 
+int goal_jak2_metal_host_metrics_pass_frame_gate(const goal_jak2_metal_host_metrics* metrics,
+                                                 int require_presentation) {
+  if (!metrics || metrics->chains == 0) {
+    return 0;
+  }
+  const bool presentation_exact =
+      metrics->presentations == metrics->submissions && metrics->presentation_drops == 0 &&
+      metrics->presentation_order_mismatches == 0;
+  return metrics->completed_chains == metrics->chains && metrics->failed_chains == 0 &&
+         metrics->last_buckets_dispatched == metal_renderer::kJak2MetalBucketCount &&
+         metrics->command_buffers_committed == metrics->chains &&
+         metrics->command_buffers_completed == metrics->chains &&
+         metrics->command_buffer_errors == 0 && metrics->drawables_acquired == metrics->chains &&
+         metrics->drawable_misses == 0 && metrics->submissions == metrics->chains &&
+         metrics->late_present_submissions == 0 && metrics->unsupported_blends == 0 &&
+         (!require_presentation || presentation_exact);
+}
+
 int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
                                          goal_jak2_metal_frame_summary* out) {
   std::lock_guard<std::mutex> lock(g_host_mutex);
@@ -549,17 +566,7 @@ int goal_jak2_metal_host_wait_for_last_frame(goal_jak2_metal_host* host,
     return 0;
   }
   copy_renderer_metrics(host);
-  const bool exact =
-      host->metrics.completed_chains == host->metrics.chains &&
-      host->metrics.command_buffers_committed == host->metrics.chains &&
-      host->metrics.command_buffers_completed == host->metrics.chains &&
-      host->metrics.command_buffer_errors == 0 &&
-      host->metrics.drawables_acquired == host->metrics.chains &&
-      host->metrics.drawable_misses == 0 && host->metrics.submissions == host->metrics.chains &&
-      host->metrics.late_present_submissions == 0 && host->metrics.presentation_drops == 0 &&
-      host->metrics.presentation_order_mismatches == 0 &&
-      (!require_presentation || host->metrics.presentations == host->metrics.submissions);
-  if (!exact) {
+  if (!goal_jak2_metal_host_metrics_pass_frame_gate(&host->metrics, require_presentation)) {
     record_failure(host, "Jak 2 completed Metal frame counters violated their exact gate");
     return 0;
   }

@@ -102,6 +102,13 @@ int goal_jak2_metal_host_get_metrics(goal_jak2_metal_host* host,
                                      goal_jak2_metal_host_metrics* out);
 
 /*!
+ * Pure counter gate shared by the host wait and standalone proof. Drawable callbacks, drops, and
+ * ordering decide the result only when `require_presentation` is nonzero.
+ */
+int goal_jak2_metal_host_metrics_pass_frame_gate(const goal_jak2_metal_host_metrics* metrics,
+                                                 int require_presentation);
+
+/*!
  * Summarize the last completed RGBA8 game frame without exposing C++ storage. `hash` is FNV-1a
  * over the RGBA bytes. `non_black_pixels` ignores alpha, while `nonzero_alpha_pixels` and
  * `max_alpha` summarize the alpha channel. Returns zero and clears `out` when no layer-backed
@@ -112,8 +119,9 @@ int goal_jak2_metal_host_read_last_frame(goal_jak2_metal_host* host,
 
 /*!
  * Wait for every layer-backed command buffer submitted so far. When `require_presentation` is
- * nonzero, also require every physical drawable callback. The iOS Simulator passes zero because
- * its SDK does not expose that callback.
+ * nonzero, also require every physical drawable callback with no drops or ordering mismatches.
+ * Otherwise those asynchronous presentation facts remain diagnostic. The iOS Simulator passes
+ * zero because its SDK does not expose that callback.
  */
 int goal_jak2_metal_host_wait_for_last_frame(goal_jak2_metal_host* host,
                                              double timeout_seconds,

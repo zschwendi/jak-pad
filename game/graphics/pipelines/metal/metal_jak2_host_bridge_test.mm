@@ -299,6 +299,42 @@ void make_textured_sky_draw_chain(u32 texture_vram) {
 }  // namespace
 
 int main() {
+  goal_jak2_metal_host_metrics frame_gate = {};
+  frame_gate.chains = 1;
+  frame_gate.completed_chains = 1;
+  frame_gate.last_buckets_dispatched = kBucketCount;
+  frame_gate.command_buffers_committed = 1;
+  frame_gate.command_buffers_completed = 1;
+  frame_gate.drawables_acquired = 1;
+  frame_gate.submissions = 1;
+  frame_gate.presentation_drops = 1;
+  frame_gate.presentation_order_mismatches = 1;
+  check(goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 0) &&
+            !goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 1),
+        "presentation drops and ordering are diagnostic unless explicitly required");
+  frame_gate.presentation_drops = 0;
+  frame_gate.presentation_order_mismatches = 0;
+  check(goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 0) &&
+            !goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 1),
+        "a missing drawable callback passes only the GPU-completion gate");
+  frame_gate.presentations = 1;
+  check(goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 1),
+        "an exact drawable callback passes the presentation-required gate");
+  frame_gate.command_buffer_errors = 1;
+  check(!goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 0) &&
+            !goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 1),
+        "a GPU failure is rejected by both frame gates");
+  frame_gate.command_buffer_errors = 0;
+  frame_gate.drawable_misses = 1;
+  check(!goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 0) &&
+            !goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 1),
+        "a drawable miss is rejected by both frame gates");
+  frame_gate.drawable_misses = 0;
+  frame_gate.late_present_submissions = 1;
+  check(!goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 0) &&
+            !goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 1),
+        "a late submission is rejected by both frame gates");
+
   check(goal_kernel_core_initialize() == GOAL_KERNEL_CORE_OK,
         "initialized the Jak 2 kernel arena for the copied chain");
   if (failures) {

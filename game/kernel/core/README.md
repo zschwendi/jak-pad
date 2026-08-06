@@ -838,9 +838,11 @@ build/game/jak2-metal-runtime-proof \
 
 The window is visible by default. `--hidden` is useful only for diagnostics because an
 uncomposited macOS drawable can be reported as a presentation drop. GPU completion and game-target
-readback are the default automated gate; `--require-presentation` additionally requires retained
-drawable callbacks while the main thread pumps SDL events. `--saves-dir` also roots the proof's PC
-settings so it never reads or writes the player's normal OpenGOAL settings. A strict later frame
+readback are the default automated gate, so asynchronous presentation callbacks remain reported but
+do not decide that mode. `--require-presentation` additionally requires every retained drawable
+callback with no drops or ordering mismatches while the main thread pumps SDL events.
+`--saves-dir` also roots the proof's PC settings so it never reads or writes the player's normal
+OpenGOAL settings. A strict later frame
 must simultaneously report exactly one `SKY_DRAW` draw and two triangles with a valid batch, a hash
 different from the first frame, and more non-black RGB pixels than that first frame. Until the
 mixed pre-SKY texture-animation bucket and the later renderer families are implemented, an
