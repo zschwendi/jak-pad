@@ -13,11 +13,15 @@ struct Jak2Bucket4TextureUploadFixture {
   u32 chain_offset = 0;
   u32 outer_direct_tag_offset = 0;
   u32 ordinary_descriptor_data_offset = 0;
+  u32 ordinary_page_offset = 0;
+  u32 sky_input_data_offset = 0;
   u32 first_finish_tag_offset = 0;
   u32 erase_setup_tag_offset = 0;
   u32 erase_clear_tag_offset = 0;
   u32 generic_upload_data_offset = 0;
+  u32 generic_source_offset = 0;
   u32 clut_upload_data_offset = 0;
+  u32 clut_source_offset = 0;
   u32 second_finish_tag_offset = 0;
 };
 
@@ -84,6 +88,19 @@ inline Jak2Bucket4TextureUploadFixture make_jak2_bucket4_texture_upload_fixture(
   const u32 kGenericSource = ee_base + 0x8000;
   const u32 kClutSource = ee_base + 0xa000;
 
+  out.ordinary_page_offset = kOrdinaryPage;
+  out.generic_source_offset = kGenericSource;
+  out.clut_source_offset = kClutSource;
+  for (u32 i = 0; i < 124; ++i) {
+    out.ee_memory[kOrdinaryPage + i] = static_cast<u8>(1 + i * 3);
+  }
+  for (u32 i = 0; i < 256; ++i) {
+    out.ee_memory[kGenericSource + i] = static_cast<u8>(i ^ 0x5a);
+  }
+  for (u32 i = 0; i < 16 * 16 * 4; ++i) {
+    out.ee_memory[kClutSource + i] = static_cast<u8>(i * 5 + 7);
+  }
+
   constexpr u32 kBucketCount = 327;
   for (u32 bucket = 0; bucket < kBucketCount; ++bucket) {
     put_tag(out.ee_memory, out.chain_offset + bucket * 16, DmaTag::Kind::CNT, 0, 0, 0, 0);
@@ -114,6 +131,7 @@ inline Jak2Bucket4TextureUploadFixture make_jak2_bucket4_texture_upload_fixture(
   const u32 kCloud = kFirstArray + 16;
   put_tag(out.ee_memory, kCloud, DmaTag::Kind::CNT, 7, 0,
           vif(VifCode::Kind::PC_PORT, 41), 0);
+  out.sky_input_data_offset = kCloud + 16;
   for (u32 offset = 0; offset < 104; offset += 4) {
     const float value = 1.f + static_cast<float>(offset / 4);
     std::memcpy(out.ee_memory.data() + kCloud + 16 + offset, &value, sizeof(value));

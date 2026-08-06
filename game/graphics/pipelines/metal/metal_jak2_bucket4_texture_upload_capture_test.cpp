@@ -1,9 +1,13 @@
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <variant>
 
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_fixture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
 
 namespace {
 
@@ -301,6 +305,130 @@ void test_empty_bucket_is_valid_and_absent() {
         "an empty bucket remains a valid absent diagnostic");
 }
 
+void test_plan_uses_separate_packet_and_live_domains_and_owns_animator_bytes() {
+  const auto fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
+  auto packet = fixture.ee_memory;
+  auto live = fixture.ee_memory;
+  std::array<u8, metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes> expected_page = {};
+  std::array<u8, metal_renderer::kJak2Bucket4SkyInputBytes> expected_sky = {};
+  std::array<u8, metal_renderer::kJak2Bucket4FogIndexBytes> expected_indices = {};
+  std::array<u8, metal_renderer::kJak2Bucket4ClutBytes> expected_clut = {};
+  std::copy_n(live.begin() + fixture.ordinary_page_offset, expected_page.size(),
+              expected_page.begin());
+  std::copy_n(packet.begin() + fixture.sky_input_data_offset, expected_sky.size(),
+              expected_sky.begin());
+  std::copy_n(live.begin() + fixture.generic_source_offset, expected_indices.size(),
+              expected_indices.begin());
+  std::copy_n(live.begin() + fixture.clut_source_offset, expected_clut.size(),
+              expected_clut.begin());
+
+  std::fill(packet.begin() + fixture.ordinary_page_offset,
+            packet.begin() + fixture.ordinary_page_offset +
+                metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes,
+            0xee);
+  std::fill(packet.begin() + fixture.generic_source_offset,
+            packet.begin() + fixture.generic_source_offset +
+                metal_renderer::kJak2Bucket4FogIndexBytes,
+            0xee);
+  std::fill(packet.begin() + fixture.clut_source_offset,
+            packet.begin() + fixture.clut_source_offset + metal_renderer::kJak2Bucket4ClutBytes,
+            0xee);
+  std::fill(live.begin() + fixture.chain_offset,
+            live.begin() + fixture.chain_offset + 328 * 16, 0xdd);
+  std::fill(live.begin() + fixture.outer_direct_tag_offset,
+            live.begin() + fixture.outer_direct_tag_offset + 0x600, 0xdd);
+
+  auto plan = metal_renderer::plan_jak2_bucket4_texture_upload(
+      packet.data(), packet.size(), fixture.chain_offset, live.data(), live.size());
+  check(plan.has_value(), "the exact mixed packet produces an execution plan");
+  check(std::holds_alternative<metal_renderer::Jak2Bucket4MixedPlan>(*plan),
+        "the mixed packet has the Mixed discriminant");
+  const auto& mixed = std::get<metal_renderer::Jak2Bucket4MixedPlan>(*plan);
+  check(mixed.ordinary.page_offset == fixture.ordinary_page_offset &&
+            mixed.ordinary.mode == -1 && mixed.ordinary.page_header == expected_page,
+        "the ordinary descriptor uses the live EE page domain without retaining a host pointer");
+  check(mixed.sky.fog_height == 1.f && mixed.sky.cloud_min == 2.f &&
+            mixed.sky.cloud_max == 3.f && mixed.sky.times.front() == 4.f &&
+            mixed.sky.times.back() == 14.f && mixed.sky.max_times.front() == 15.f &&
+            mixed.sky.max_times.back() == 20.f && mixed.sky.scales.front() == 21.f &&
+            mixed.sky.scales.back() == 26.f && mixed.sky.cloud_destination == 0x1234,
+        "all meaningful SkyInput scalars are owned by the plan");
+  check(mixed.sky.bytes == expected_sky,
+        "the exact SkyInput bytes are owned by the plan");
+  check(mixed.erase.width == 16 && mixed.erase.height == 16 &&
+            mixed.erase.destination == 0x1200 && mixed.erase.test == 0x11 &&
+            mixed.erase.alpha == 0x22 && mixed.erase.clamp == 0x1 &&
+            mixed.erase.setup_values[1] == (0x8000ull | (0x8000ull << 32)) &&
+            mixed.erase.setup_values[8] == 0 && mixed.erase.clear[0] == 17 &&
+            mixed.erase.clear[3] == 68,
+        "the exact erase setup and clear scalars are owned by the plan");
+  check(mixed.fog.width == 256 && mixed.fog.height == 1 &&
+            mixed.fog.destination == 0x1300 && mixed.fog.format == 19 &&
+            mixed.fog.force_to_gpu == 1 && mixed.fog.indices.front() == 0x5a &&
+            mixed.fog.indices.back() == static_cast<u8>(255 ^ 0x5a) &&
+            mixed.fog.clut_destination == 0x1200 && mixed.fog.clut.front() == 7 &&
+            mixed.fog.clut.back() == static_cast<u8>(1023 * 5 + 7) &&
+            mixed.fog.indices == expected_indices && mixed.fog.clut == expected_clut,
+        "the exact fog-index and CLUT bytes come from the live EE domain");
+
+  std::fill(packet.begin(), packet.end(), 0xa5);
+  std::fill(live.begin() + fixture.generic_source_offset,
+            live.begin() + fixture.generic_source_offset +
+                metal_renderer::kJak2Bucket4FogIndexBytes,
+            0xa5);
+  std::fill(live.begin() + fixture.clut_source_offset,
+            live.begin() + fixture.clut_source_offset + metal_renderer::kJak2Bucket4ClutBytes,
+            0xa5);
+  check(mixed.sky.bytes == expected_sky && mixed.sky.fog_height == 1.f &&
+            mixed.sky.cloud_destination == 0x1234 && mixed.fog.indices == expected_indices &&
+            mixed.fog.clut == expected_clut,
+        "packet reuse and live-source poisoning cannot change owned plan bytes");
+}
+
+void test_plan_accepts_exact_ordinary_only_and_absent_shapes() {
+  const auto ordinary_fixture =
+      metal_renderer::make_jak2_bucket4_ordinary_only_texture_upload_fixture();
+  auto ordinary_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
+      ordinary_fixture.ee_memory.data(), ordinary_fixture.ee_memory.size(),
+      ordinary_fixture.chain_offset, ordinary_fixture.ee_memory.data(),
+      ordinary_fixture.ee_memory.size());
+  check(ordinary_plan.has_value() &&
+            std::holds_alternative<metal_renderer::Jak2Bucket4OrdinaryOnlyPlan>(*ordinary_plan),
+        "the exact ordinary-only packet has the OrdinaryOnly discriminant");
+  const auto& ordinary =
+      std::get<metal_renderer::Jak2Bucket4OrdinaryOnlyPlan>(*ordinary_plan).ordinary;
+  check(ordinary.page_offset == ordinary_fixture.ordinary_page_offset && ordinary.mode == -1 &&
+            ordinary.page_header.front() == 1,
+        "the ordinary-only plan retains its validated live page offset, mode, and header");
+
+  std::vector<u8> packet(0x1000);
+  constexpr u32 chain_offset = 0x100;
+  const u32 bucket_offset = chain_offset + 4 * 16;
+  const u64 empty = static_cast<u64>(DmaTag::Kind::CNT) << 28;
+  std::memcpy(packet.data() + bucket_offset, &empty, sizeof(empty));
+  auto absent_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
+      packet.data(), packet.size(), chain_offset, nullptr, 0);
+  check(absent_plan.has_value() &&
+            std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(*absent_plan),
+        "an exact empty bucket has the Absent discriminant without a live EE dependency");
+}
+
+void test_late_malformed_packet_produces_no_plan() {
+  auto fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
+  put_u32(&fixture.ee_memory, fixture.second_finish_tag_offset + 12, 0);
+  const auto plan = metal_renderer::plan_jak2_bucket4_texture_upload(
+      fixture.ee_memory.data(), fixture.ee_memory.size(), fixture.chain_offset,
+      fixture.ee_memory.data(), fixture.ee_memory.size());
+  check(!plan.has_value(), "a malformed final animator finish cannot leak a partial plan");
+
+  fixture = metal_renderer::make_jak2_bucket4_texture_upload_fixture();
+  const auto short_live_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
+      fixture.ee_memory.data(), fixture.ee_memory.size(), fixture.chain_offset,
+      fixture.ee_memory.data(), fixture.generic_source_offset + 128);
+  check(!short_live_plan.has_value(),
+        "embedded sources are validated against the live EE domain rather than packet size");
+}
+
 }  // namespace
 
 int main() {
@@ -315,6 +443,9 @@ int main() {
   test_bad_dma_pointer_fails_closed();
   test_unsupported_opcode_is_counted();
   test_empty_bucket_is_valid_and_absent();
+  test_plan_uses_separate_packet_and_live_domains_and_owns_animator_bytes();
+  test_plan_accepts_exact_ordinary_only_and_absent_shapes();
+  test_late_malformed_packet_produces_no_plan();
   std::puts("PASS: Jak II bucket-4 texture-upload capture");
   return 0;
 }

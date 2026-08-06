@@ -1,4 +1,5 @@
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
 
 #include <algorithm>
 #include <array>
@@ -49,7 +50,7 @@ struct GoalTexturePageHeaderLayout {
   Segment segments[3];
   u32 pad[16];
 };
-static_assert(sizeof(GoalTexturePageHeaderLayout) == 124);
+static_assert(sizeof(GoalTexturePageHeaderLayout) == kJak2Bucket4OrdinaryPageHeaderBytes);
 
 struct SkyInputLayout {
   float fog_height;
@@ -61,7 +62,13 @@ struct SkyInputLayout {
   s32 cloud_destination;
 };
 static_assert(offsetof(SkyInputLayout, cloud_destination) == 104);
-static_assert(sizeof(SkyInputLayout) == 108);
+static_assert(sizeof(SkyInputLayout) == kJak2Bucket4SkyInputBytes);
+
+struct ParsedPlanFields {
+  SkyInputLayout sky_input = {};
+  std::array<u8, sizeof(SkyInputLayout)> sky_input_bytes = {};
+  std::array<u64, 9> erase_setup_values = {};
+};
 
 struct CheckedTransfer {
   DmaTag tag{0};
@@ -205,11 +212,12 @@ void record_unsupported(Jak2Bucket4TextureUploadCapture* out,
   out->unsupported_bytes += transfer.size_bytes;
 }
 
-bool texture_source_range_is_valid(u32 source,
+bool texture_source_range_is_valid(const u8* live_ee_memory,
+                                   u32 source,
                                    u16 width,
                                    u16 height,
                                    u8 format,
-                                   std::size_t memory_size) {
+                                   std::size_t live_ee_memory_size) {
   const u64 pixels = static_cast<u64>(width) * height;
   u64 bytes = 0;
   switch (format) {
@@ -223,13 +231,19 @@ bool texture_source_range_is_valid(u32 source,
     default:
       return false;
   }
-  const std::size_t checked_size = std::min<std::size_t>(memory_size, EE_MAIN_MEM_SIZE);
-  return width != 0 && height != 0 && source != 0 && range_is_valid(source, bytes, checked_size);
+  const std::size_t checked_size =
+      std::min<std::size_t>(live_ee_memory_size, EE_MAIN_MEM_SIZE);
+  return live_ee_memory && width != 0 && height != 0 && source != 0 &&
+         range_is_valid(source, bytes, checked_size);
 }
 
-bool ordinary_page_is_valid(u64 page, std::size_t memory_size) {
-  const std::size_t checked_size = std::min<std::size_t>(memory_size, EE_MAIN_MEM_SIZE);
-  return page != 0 && range_is_valid(page, sizeof(GoalTexturePageHeaderLayout), checked_size);
+bool ordinary_page_is_valid(const u8* live_ee_memory,
+                            u64 page,
+                            std::size_t live_ee_memory_size) {
+  const std::size_t checked_size =
+      std::min<std::size_t>(live_ee_memory_size, EE_MAIN_MEM_SIZE);
+  return live_ee_memory && page != 0 &&
+         range_is_valid(page, sizeof(GoalTexturePageHeaderLayout), checked_size);
 }
 
 bool cloud_input_is_valid(const SkyInputLayout& input) {
@@ -246,9 +260,11 @@ bool cloud_input_is_valid(const SkyInputLayout& input) {
 }
 
 bool consume_semantic_transfer(const CheckedTransfer& transfer,
-                               std::size_t memory_size,
+                               const u8* live_ee_memory,
+                               std::size_t live_ee_memory_size,
                                ParseState* state,
-                               Jak2Bucket4TextureUploadCapture* out) {
+                               Jak2Bucket4TextureUploadCapture* out,
+                               ParsedPlanFields* plan_fields) {
   const VifCode vif0(transfer.vif0);
   const bool inside_animator = *state >= ParseState::Cloud && *state <= ParseState::SecondArrayFinish;
   if (inside_animator) {
@@ -287,7 +303,8 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
       out->ordinary_page = read_unaligned<u64>(transfer.data);
       out->ordinary_mode = read_unaligned<s64>(transfer.data + 8);
       out->ordinary_descriptors++;
-      if (!ordinary_page_is_valid(out->ordinary_page, memory_size)) {
+      if (!ordinary_page_is_valid(live_ee_memory, out->ordinary_page,
+                                  live_ee_memory_size)) {
         record_malformed(out, &transfer);
         return false;
       }
@@ -316,6 +333,9 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
         record_malformed(out, &transfer);
         return false;
       }
+      plan_fields->sky_input = input;
+      std::memcpy(plan_fields->sky_input_bytes.data(), transfer.data,
+                  plan_fields->sky_input_bytes.size());
       *state = ParseState::FirstArrayFinish;
       return true;
     }
@@ -362,6 +382,7 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
       bool registers_match = gif.nloop() == 1 && gif.eop() && !gif.pre() &&
                              gif.flg() == GifTag::Format::PACKED && gif.nreg() == 9;
       for (u32 i = 0; i < kExpectedRegisters.size(); ++i) {
+        plan_fields->erase_setup_values[i] = read_unaligned<u64>(ad + i * 16);
         registers_match = registers_match && gif.reg(i) == GifTag::RegisterDescriptor::AD &&
                           read_unaligned<u64>(ad + i * 16 + 8) ==
                               static_cast<u64>(kExpectedRegisters[i]);
@@ -444,8 +465,8 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
       out->generic_force_to_gpu = upload.force_to_gpu;
       if (upload.width != 256 || upload.height != 1 || upload.format != 19 ||
           upload.force_to_gpu != 1 || upload.destination >= kGsMemoryUpperBound ||
-          !texture_source_range_is_valid(upload.data, upload.width, upload.height, upload.format,
-                                         memory_size)) {
+          !texture_source_range_is_valid(live_ee_memory, upload.data, upload.width, upload.height,
+                                         upload.format, live_ee_memory_size)) {
         record_malformed(out, &transfer);
         return false;
       }
@@ -463,7 +484,8 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
       if (upload.width != 16 || upload.height != 16 || upload.format != 0 ||
           upload.destination != out->erase_destination ||
           upload.destination >= kGsMemoryUpperBound ||
-          !texture_source_range_is_valid(upload.data, 16, 16, 0, memory_size)) {
+          !texture_source_range_is_valid(live_ee_memory, upload.data, 16, 16, 0,
+                                         live_ee_memory_size)) {
         record_malformed(out, &transfer);
         return false;
       }
@@ -477,36 +499,120 @@ bool consume_semantic_transfer(const CheckedTransfer& transfer,
   return false;
 }
 
-}  // namespace
+Jak2Bucket4OrdinaryUploadPlan make_ordinary_plan(
+    const Jak2Bucket4TextureUploadCapture& capture,
+    const u8* live_ee_memory) {
+  Jak2Bucket4OrdinaryUploadPlan ordinary;
+  ordinary.page_offset = capture.ordinary_page;
+  ordinary.mode = capture.ordinary_mode;
+  std::memcpy(ordinary.page_header.data(),
+              live_ee_memory + static_cast<std::size_t>(capture.ordinary_page),
+              ordinary.page_header.size());
+  return ordinary;
+}
 
-Jak2Bucket4TextureUploadCapture capture_jak2_bucket4_texture_upload(
-    const u8* ee_memory,
-    std::size_t ee_memory_size,
-    u32 chain_offset) {
-  Jak2Bucket4TextureUploadCapture out;
+Jak2Bucket4SkyInputPlan make_sky_plan(const ParsedPlanFields& fields) {
+  Jak2Bucket4SkyInputPlan sky;
+  sky.bytes = fields.sky_input_bytes;
+  sky.fog_height = fields.sky_input.fog_height;
+  sky.cloud_min = fields.sky_input.cloud_min;
+  sky.cloud_max = fields.sky_input.cloud_max;
+  for (std::size_t i = 0; i < sky.times.size(); ++i) {
+    sky.times[i] = fields.sky_input.times[i];
+  }
+  for (std::size_t i = 0; i < sky.max_times.size(); ++i) {
+    sky.max_times[i] = fields.sky_input.max_times[i];
+    sky.scales[i] = fields.sky_input.scales[i];
+  }
+  sky.cloud_destination = fields.sky_input.cloud_destination;
+  return sky;
+}
+
+Jak2Bucket4ErasePlan make_erase_plan(const Jak2Bucket4TextureUploadCapture& capture,
+                                     const ParsedPlanFields& fields) {
+  Jak2Bucket4ErasePlan erase;
+  erase.setup_values = fields.erase_setup_values;
+  erase.width = capture.erase_width;
+  erase.height = capture.erase_height;
+  erase.destination = capture.erase_destination;
+  erase.test = capture.erase_test;
+  erase.alpha = capture.erase_alpha;
+  erase.clamp = capture.erase_clamp;
+  erase.clear = capture.erase_clear;
+  return erase;
+}
+
+Jak2Bucket4FogUploadPlan make_fog_plan(const Jak2Bucket4TextureUploadCapture& capture,
+                                       const u8* live_ee_memory) {
+  Jak2Bucket4FogUploadPlan fog;
+  fog.width = capture.generic_width;
+  fog.height = capture.generic_height;
+  fog.destination = capture.generic_destination;
+  fog.format = capture.generic_format;
+  fog.force_to_gpu = capture.generic_force_to_gpu;
+  fog.clut_destination = capture.clut_destination;
+  std::memcpy(fog.indices.data(), live_ee_memory + capture.generic_source, fog.indices.size());
+  std::memcpy(fog.clut.data(), live_ee_memory + capture.clut_source, fog.clut.size());
+  return fog;
+}
+
+enum class ExactShape { Absent, OrdinaryOnly, Mixed };
+
+Jak2Bucket4TextureUploadPlan make_execution_plan(
+    ExactShape shape,
+    const Jak2Bucket4TextureUploadCapture& capture,
+    const ParsedPlanFields& fields,
+    const u8* live_ee_memory) {
+  switch (shape) {
+    case ExactShape::Absent:
+      return Jak2Bucket4AbsentPlan{};
+    case ExactShape::OrdinaryOnly:
+      return Jak2Bucket4OrdinaryOnlyPlan{make_ordinary_plan(capture, live_ee_memory)};
+    case ExactShape::Mixed:
+      return Jak2Bucket4MixedPlan{make_ordinary_plan(capture, live_ee_memory),
+                                  make_sky_plan(fields), make_erase_plan(capture, fields),
+                                  make_fog_plan(capture, live_ee_memory)};
+  }
+}
+
+struct ParseResult {
+  Jak2Bucket4TextureUploadCapture capture;
+  std::optional<Jak2Bucket4TextureUploadPlan> plan;
+};
+
+ParseResult parse_jak2_bucket4_texture_upload(const u8* dma_packet_snapshot,
+                                              std::size_t dma_packet_snapshot_size,
+                                              u32 chain_offset,
+                                              const u8* live_ee_memory,
+                                              std::size_t live_ee_memory_size,
+                                              bool materialize_plan) {
+  ParseResult result;
+  auto& out = result.capture;
+  ParsedPlanFields plan_fields;
   const u64 bucket_offset64 = static_cast<u64>(chain_offset) + kJak2TextureUploadBucket * 16;
   const u64 end_offset64 = bucket_offset64 + 16;
-  if (!ee_memory || bucket_offset64 > std::numeric_limits<u32>::max() ||
+  if (!dma_packet_snapshot || bucket_offset64 > std::numeric_limits<u32>::max() ||
       end_offset64 > std::numeric_limits<u32>::max() ||
-      !range_is_valid(bucket_offset64, 16, std::min<std::size_t>(ee_memory_size, EE_MAIN_MEM_SIZE))) {
+      !range_is_valid(bucket_offset64, 16,
+                      std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE))) {
     record_malformed(&out, nullptr);
-    return out;
+    return result;
   }
 
   const u32 bucket_offset = static_cast<u32>(bucket_offset64);
   const u32 end_offset = static_cast<u32>(end_offset64);
-  CheckedDmaFollower dma(ee_memory, ee_memory_size, bucket_offset);
+  CheckedDmaFollower dma(dma_packet_snapshot, dma_packet_snapshot_size, bucket_offset);
   ParseState state = ParseState::Texflush;
   bool saw_non_inert = false;
   while (dma.offset() != end_offset) {
     if (out.dma_transfers == kMaximumTransfers) {
       record_malformed(&out, nullptr);
-      return out;
+      return result;
     }
     CheckedTransfer transfer;
     if (!dma.read(&transfer)) {
       record_malformed(&out, nullptr);
-      return out;
+      return result;
     }
     out.dma_transfers++;
     out.total_payload_bytes += transfer.size_bytes;
@@ -516,7 +622,7 @@ Jak2Bucket4TextureUploadCapture capture_jak2_bucket4_texture_upload(
     if (is_inert(transfer)) {
       if (transfer.tag.kind != DmaTag::Kind::CNT && transfer.tag.kind != DmaTag::Kind::NEXT) {
         record_malformed(&out, &transfer);
-        return out;
+        return result;
       }
       out.inert_transfers++;
       out.inert_cnt_transfers += transfer.tag.kind == DmaTag::Kind::CNT;
@@ -526,14 +632,18 @@ Jak2Bucket4TextureUploadCapture capture_jak2_bucket4_texture_upload(
     }
     saw_non_inert = true;
     out.present = true;
-    if (!consume_semantic_transfer(transfer, ee_memory_size, &state, &out)) {
-      return out;
+    if (!consume_semantic_transfer(transfer, live_ee_memory, live_ee_memory_size, &state, &out,
+                                   &plan_fields)) {
+      return result;
     }
   }
 
   if (!saw_non_inert) {
     out.valid = true;
-    return out;
+    if (materialize_plan) {
+      result.plan = make_execution_plan(ExactShape::Absent, out, plan_fields, live_ee_memory);
+    }
+    return result;
   }
   constexpr u32 kMixedInertStateMask =
       (1u << static_cast<u32>(ParseState::Texflush)) |
@@ -566,10 +676,37 @@ Jak2Bucket4TextureUploadCapture capture_jak2_bucket4_texture_upload(
       out.finishes == 0 && no_animator_opcodes;
   if (!exact_mixed_animator && !exact_ordinary_only) {
     record_malformed(&out, nullptr);
-    return out;
+    return result;
   }
   out.valid = true;
-  return out;
+  if (materialize_plan) {
+    const ExactShape shape =
+        exact_mixed_animator ? ExactShape::Mixed : ExactShape::OrdinaryOnly;
+    result.plan = make_execution_plan(shape, out, plan_fields, live_ee_memory);
+  }
+  return result;
+}
+
+}  // namespace
+
+Jak2Bucket4TextureUploadCapture capture_jak2_bucket4_texture_upload(
+    const u8* ee_memory,
+    std::size_t ee_memory_size,
+    u32 chain_offset) {
+  return parse_jak2_bucket4_texture_upload(ee_memory, ee_memory_size, chain_offset, ee_memory,
+                                           ee_memory_size, false)
+      .capture;
+}
+
+std::optional<Jak2Bucket4TextureUploadPlan> plan_jak2_bucket4_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size) {
+  return parse_jak2_bucket4_texture_upload(dma_packet_snapshot, dma_packet_snapshot_size,
+                                           chain_offset, live_ee_memory, live_ee_memory_size, true)
+      .plan;
 }
 
 }  // namespace metal_renderer
