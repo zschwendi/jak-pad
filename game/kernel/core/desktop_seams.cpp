@@ -288,6 +288,10 @@ u32 portable_pc_get_display_mode() {
   return goal_game_intern("windowed");
 }
 
+u64 portable_pc_host_manages_display() {
+  return goal_bool(true);
+}
+
 u64 portable_pc_get_display_size(u32 width, u32 height, const char* function_name) {
   if (!g_portable_display_enabled.load(std::memory_order_relaxed)) {
     return goal_kernel_core_machine_stub_report(function_name);
@@ -393,6 +397,8 @@ void goal_kernel_core_install_implemented_machine_functions() {
 }
 
 void goal_kernel_core_install_portable_display_functions() {
+  goal_game_make_function_symbol("pc-host-manages-display?",
+                                 (void*)portable_pc_host_manages_display);
   goal_game_make_function_symbol("pc-get-active-display-size",
                                  (void*)portable_pc_get_active_display_size);
   goal_game_make_function_symbol("pc-get-window-size", (void*)portable_pc_get_window_size);

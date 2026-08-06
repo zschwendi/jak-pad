@@ -100,6 +100,11 @@ int main() {
     return 1;
   }
 
+  const uint32_t host_manages_display = lookup("pc-host-manages-display?");
+  expect(host_manages_display &&
+             goal_aot_call(host_manages_display, 0, 0, 0) == goal_game_true_offset(),
+         "portable kernel host reports that it manages display presentation");
+
   const uint32_t flush_before = lookup("flush-cache");
   goal_gfx_host host = {};
   host.send_chain = send_chain;

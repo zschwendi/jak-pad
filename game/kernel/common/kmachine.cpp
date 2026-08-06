@@ -526,6 +526,10 @@ u64 pc_get_mips2c(u32 name) {
   return Mips2C::gLinkedFunctionTable.get(n);
 }
 
+u64 pc_host_manages_display() {
+  return bool_to_symbol(false);
+}
+
 u64 pc_get_display_id() {
   if (Display::GetMainDisplay()) {
     return Display::GetMainDisplay()->get_display_manager()->get_active_display_index();
@@ -1128,6 +1132,7 @@ void init_common_pc_port_functions(
   make_func_symbol_func("__pc-force-reload-common-level", (void*)pc_force_reload_common);
 
   // -- DISPLAY RELATED --
+  make_func_symbol_func("pc-host-manages-display?", (void*)pc_host_manages_display);
   // Returns the name of the display with the given id or #f if not found / empty
   make_func_symbol_func("pc-get-display-id", (void*)pc_get_display_id);
   make_func_symbol_func("pc-set-display-id!", (void*)pc_set_display_id);

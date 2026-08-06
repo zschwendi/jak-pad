@@ -81,6 +81,7 @@ const char* const kJak1MachineFunctionNames[] = {
     "__pc-force-reload-all-levels",
     "__pc-force-reload-level",
     "__pc-force-reload-common-level",
+    "pc-host-manages-display?",
     "pc-get-display-id",
     "pc-set-display-id!",
     "pc-get-display-name",
