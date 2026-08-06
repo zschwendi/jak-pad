@@ -144,6 +144,35 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
       metal.last_sky_draw_batch_blend_d, metal.last_sky_draw_batch_alpha_test_enabled,
       metal.last_sky_draw_batch_alpha_test_mode, metal.last_sky_draw_batch_alpha_aref,
       metal.last_sky_draw_batch_alpha_afail);
+  const auto& bucket4 = metal.last_bucket4_texture_upload;
+  std::printf(
+      "bucket4-upload: valid=%u present=%u payload=%u transfers=%u/%u "
+      "inert=%u(cnt=%u next=%u states=%#x) malformed=%u/%u unsupported=%u/%u\n",
+      bucket4.valid, bucket4.present, bucket4.total_payload_bytes, bucket4.payload_transfers,
+      bucket4.dma_transfers, bucket4.inert_transfers, bucket4.inert_cnt_transfers,
+      bucket4.inert_next_transfers, bucket4.inert_state_mask, bucket4.malformed_bytes,
+      bucket4.malformed_transfers, bucket4.unsupported_bytes, bucket4.unsupported_transfers);
+  std::printf(
+      "bucket4-ordinary: descriptors=%u page=%#llx mode=%lld; "
+      "animator: arrays=%u bytes=%u opcodes=12:%u 13:%u 14:%u 15:%u 16:%u 41:%u "
+      "finishes=%u cloud-dest=%d\n",
+      bucket4.ordinary_descriptors, static_cast<unsigned long long>(bucket4.ordinary_page),
+      static_cast<long long>(bucket4.ordinary_mode), bucket4.animator_arrays,
+      bucket4.animator_bytes, bucket4.opcode_counts[12], bucket4.opcode_counts[13],
+      bucket4.opcode_counts[14], bucket4.opcode_counts[15], bucket4.opcode_counts[16],
+      bucket4.opcode_counts[41], bucket4.finishes, bucket4.cloud_destination);
+  std::printf(
+      "bucket4-erase: %ux%u dest=%u test=%#llx alpha=%#llx clamp=%#llx "
+      "clear=(%u,%u,%u,%u); "
+      "generic: src=%#x %ux%u dest=%u format=%u force=%u; clut: src=%#x dest=%u\n",
+      bucket4.erase_width, bucket4.erase_height, bucket4.erase_destination,
+      static_cast<unsigned long long>(bucket4.erase_test),
+      static_cast<unsigned long long>(bucket4.erase_alpha),
+      static_cast<unsigned long long>(bucket4.erase_clamp),
+      bucket4.erase_clear[0], bucket4.erase_clear[1], bucket4.erase_clear[2],
+      bucket4.erase_clear[3], bucket4.generic_source, bucket4.generic_width,
+      bucket4.generic_height, bucket4.generic_destination, bucket4.generic_format,
+      bucket4.generic_force_to_gpu, bucket4.clut_source, bucket4.clut_destination);
 }
 
 void print_frame(const goal_jak2_metal_frame_summary& frame) {

@@ -14,6 +14,7 @@
 #include "common/util/Assert.h"
 
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
@@ -135,6 +136,49 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_command_buffer_error_code = stats.last_command_buffer_error_code;
 }
 
+void copy_bucket4_texture_upload_metrics(
+    goal_jak2_metal_host* host,
+    const metal_renderer::Jak2Bucket4TextureUploadCapture& capture) {
+  auto& out = host->metrics.last_bucket4_texture_upload;
+  out = {};
+  out.valid = capture.valid;
+  out.present = capture.present;
+  out.total_payload_bytes = capture.total_payload_bytes;
+  out.dma_transfers = capture.dma_transfers;
+  out.payload_transfers = capture.payload_transfers;
+  out.inert_transfers = capture.inert_transfers;
+  out.inert_cnt_transfers = capture.inert_cnt_transfers;
+  out.inert_next_transfers = capture.inert_next_transfers;
+  out.inert_state_mask = capture.inert_state_mask;
+  out.ordinary_descriptors = capture.ordinary_descriptors;
+  out.ordinary_page = capture.ordinary_page;
+  out.ordinary_mode = capture.ordinary_mode;
+  out.animator_arrays = capture.animator_arrays;
+  out.animator_bytes = capture.animator_bytes;
+  std::copy(capture.opcode_counts.begin(), capture.opcode_counts.end(), out.opcode_counts);
+  out.cloud_destination = capture.cloud_destination;
+  out.erase_width = capture.erase_width;
+  out.erase_height = capture.erase_height;
+  out.erase_destination = capture.erase_destination;
+  out.erase_test = capture.erase_test;
+  out.erase_alpha = capture.erase_alpha;
+  out.erase_clamp = capture.erase_clamp;
+  std::copy(capture.erase_clear.begin(), capture.erase_clear.end(), out.erase_clear);
+  out.generic_source = capture.generic_source;
+  out.generic_width = capture.generic_width;
+  out.generic_height = capture.generic_height;
+  out.generic_destination = capture.generic_destination;
+  out.generic_format = capture.generic_format;
+  out.generic_force_to_gpu = capture.generic_force_to_gpu;
+  out.clut_source = capture.clut_source;
+  out.clut_destination = capture.clut_destination;
+  out.finishes = capture.finishes;
+  out.malformed_transfers = capture.malformed_transfers;
+  out.malformed_bytes = capture.malformed_bytes;
+  out.unsupported_transfers = capture.unsupported_transfers;
+  out.unsupported_bytes = capture.unsupported_bytes;
+}
+
 bool update_draw_region(goal_jak2_metal_host* host) {
   if (!host->layer) {
     return true;
@@ -176,6 +220,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     host->options.engine_frame_id = host->metrics.chains;
     if (!update_draw_region(host)) {
       record_failure(host, "Jak 2 CAMetalLayer has no finite drawable size");
+      return;
+    }
+    const auto bucket4_capture = metal_renderer::capture_jak2_bucket4_texture_upload(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset);
+    copy_bucket4_texture_upload_metrics(host, bucket4_capture);
+    if (!bucket4_capture.valid) {
+      record_failure(host, "Jak 2 bucket 4 texture-upload capture rejected malformed DMA");
       return;
     }
     const auto& copied = host->copier.run(ee_base, chain_offset, false);

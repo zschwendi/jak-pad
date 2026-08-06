@@ -1119,7 +1119,8 @@ if(APPLE)
         add_test(NAME jak2-metal-submit-readback-proof COMMAND jak2-metal-submit-readback-proof)
 
         add_library(goalpad-jak2-metal-host STATIC
-            graphics/pipelines/metal/metal_jak2_host_bridge.mm)
+            graphics/pipelines/metal/metal_jak2_host_bridge.mm
+            graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -1148,6 +1149,12 @@ if(APPLE)
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_link_libraries(jak2-metal-host-bridge-test goalpad-jak2-metal-host)
         add_test(NAME jak2-metal-host-bridge-test COMMAND jak2-metal-host-bridge-test)
+
+        add_executable(jak2-bucket4-texture-upload-capture-test
+            graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture_test.cpp)
+        add_test(NAME jak2-bucket4-texture-upload-capture-test
+            COMMAND jak2-bucket4-texture-upload-capture-test)
 
         add_executable(goalpad-play
             goalpad_play.cpp

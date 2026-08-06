@@ -14,6 +14,7 @@
 #include "common/util/compress.h"
 
 #include "game/graphics/opengl_renderer/buckets.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_fixture.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -585,6 +586,51 @@ int main() {
   check(metal_level_data::level_count() == initial_level_count &&
             metal_texture_live_count() == initial_texture_count,
         "destroy unloaded recorded serialized keys in reverse and released every texture handle");
+
+  constexpr u32 kBucket4FixtureBase = 0x300000;
+  auto bucket4_fixture =
+      metal_renderer::make_jak2_bucket4_texture_upload_fixture(kBucket4FixtureBase);
+  std::memcpy(static_cast<u8*>(g_ee_main_mem) + kBucket4FixtureBase,
+              bucket4_fixture.ee_memory.data() + kBucket4FixtureBase,
+              bucket4_fixture.ee_memory.size() - kBucket4FixtureBase);
+  goal_jak2_metal_host* capture_host = goal_jak2_metal_host_create();
+  goal_gfx_host capture_callbacks = {};
+  check(capture_host && goal_jak2_metal_host_copy_gfx_host(capture_host, &capture_callbacks),
+        "created a host for bucket-4 capture integration");
+  if (capture_callbacks.send_chain) {
+    capture_callbacks.send_chain(g_ee_main_mem, bucket4_fixture.chain_offset);
+  }
+  goal_jak2_metal_host_metrics capture_metrics = {};
+  check(capture_host && goal_jak2_metal_host_get_metrics(capture_host, &capture_metrics),
+        "copied metrics after valid bucket-4 capture");
+  check(capture_metrics.chains == 1 && capture_metrics.completed_chains == 1 &&
+            capture_metrics.failed_chains == 0 &&
+            capture_metrics.last_bucket4_texture_upload.valid == 1 &&
+            capture_metrics.last_bucket4_texture_upload.present == 1 &&
+            capture_metrics.last_bucket4_texture_upload.total_payload_bytes == 416 &&
+            capture_metrics.last_bucket4_texture_upload.dma_transfers == 16 &&
+            capture_metrics.skipped_bucket_bytes == 416,
+        "valid bucket 4 captures exact scalars while DeferredSkip retains all 416 payload bytes");
+
+  const u32 missing_finish = 0;
+  std::memcpy(static_cast<u8*>(g_ee_main_mem) + bucket4_fixture.first_finish_tag_offset + 8,
+              &missing_finish, sizeof(missing_finish));
+  if (capture_callbacks.send_chain) {
+    capture_callbacks.send_chain(g_ee_main_mem, bucket4_fixture.chain_offset);
+  }
+  check(capture_host && goal_jak2_metal_host_get_metrics(capture_host, &capture_metrics),
+        "copied metrics after malformed bucket-4 capture");
+  const char* capture_error = goal_jak2_metal_host_last_error(capture_host);
+  check(capture_metrics.chains == 2 && capture_metrics.completed_chains == 1 &&
+            capture_metrics.failed_chains == 1 &&
+            capture_metrics.last_bucket4_texture_upload.valid == 0 &&
+            capture_metrics.last_bucket4_texture_upload.present == 1 &&
+            capture_metrics.skipped_bucket_bytes == 416 && capture_error &&
+            std::strstr(capture_error,
+                        "bucket 4 texture-upload capture rejected malformed DMA"),
+        "malformed bucket 4 fails before copying or dispatch and preserves the prior skip count");
+  goal_jak2_metal_host_destroy(capture_host);
+
   goal_jak2_metal_host* replacement = goal_jak2_metal_host_create();
   check(replacement != nullptr, "host ownership can be re-established after destruction");
   check(replacement &&

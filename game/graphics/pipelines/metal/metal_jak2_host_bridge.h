@@ -17,6 +17,45 @@ extern "C" {
 
 typedef struct goal_jak2_metal_host goal_jak2_metal_host;
 
+typedef struct goal_jak2_bucket4_texture_upload_metrics {
+  uint32_t valid;
+  uint32_t present;
+  uint32_t total_payload_bytes;
+  uint32_t dma_transfers;
+  uint32_t payload_transfers;
+  uint32_t inert_transfers;
+  uint32_t inert_cnt_transfers;
+  uint32_t inert_next_transfers;
+  uint32_t inert_state_mask;
+  uint32_t ordinary_descriptors;
+  uint64_t ordinary_page;
+  int64_t ordinary_mode;
+  uint32_t animator_arrays;
+  uint32_t animator_bytes;
+  uint32_t opcode_counts[44];
+  int32_t cloud_destination;
+  uint32_t erase_width;
+  uint32_t erase_height;
+  uint32_t erase_destination;
+  uint64_t erase_test;
+  uint64_t erase_alpha;
+  uint64_t erase_clamp;
+  uint32_t erase_clear[4];
+  uint32_t generic_source;
+  uint16_t generic_width;
+  uint16_t generic_height;
+  uint32_t generic_destination;
+  uint8_t generic_format;
+  uint8_t generic_force_to_gpu;
+  uint32_t clut_source;
+  uint32_t clut_destination;
+  uint32_t finishes;
+  uint32_t malformed_transfers;
+  uint32_t malformed_bytes;
+  uint32_t unsupported_transfers;
+  uint32_t unsupported_bytes;
+} goal_jak2_bucket4_texture_upload_metrics;
+
 typedef struct goal_jak2_metal_host_metrics {
   uint64_t chains;
   uint64_t completed_chains;
@@ -68,6 +107,7 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t unsupported_blends;
   int32_t last_command_buffer_status;
   int64_t last_command_buffer_error_code;
+  goal_jak2_bucket4_texture_upload_metrics last_bucket4_texture_upload;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {
