@@ -292,6 +292,7 @@ RenderResult render_chain(id<MTLDevice> device,
   state.texture_pool = texture_pool;
   state.background = &background;
   state.version = GameVersion::Jak2;
+  state.fog_intensity = 0.f;
   state.game_res_w = kTargetSize;
   state.game_res_h = kTargetSize;
 
@@ -404,6 +405,21 @@ int main() {
           unexpected_pixels++;
         }
       }
+    }
+    if (green_pixels != 1024 || clear_pixels != 3072 || unexpected_pixels != 0) {
+      const auto print_pixel = [&](int x, int y) {
+        const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
+        std::printf("pixel[%d,%d]=(%u,%u,%u,%u)\n", x, y, good.pixels[offset],
+                    good.pixels[offset + 1], good.pixels[offset + 2], good.pixels[offset + 3]);
+      };
+      std::printf("readback counts: green=%d clear=%d unexpected=%d\n", green_pixels,
+                  clear_pixels, unexpected_pixels);
+      print_pixel(15, 15);
+      print_pixel(16, 16);
+      print_pixel(31, 31);
+      print_pixel(32, 32);
+      print_pixel(47, 47);
+      print_pixel(48, 48);
     }
     check(rgba_is(good.pixels, 32, 32, 0, 255, 0, 255) &&
               rgba_is(good.pixels, 2, 2, 0, 0, 0, 0) && green_pixels == 1024 &&
