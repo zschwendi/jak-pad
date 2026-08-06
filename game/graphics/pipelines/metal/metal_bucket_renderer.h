@@ -13,6 +13,7 @@
  * silently dropped.
  */
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -177,6 +178,22 @@ class MetalHostHandledRenderer : public MetalBucketRenderer {
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
+};
+
+/*!
+ * Copies a frame's per-level visibility strings and optional background
+ * fallback block into owned shared state. This bucket does not draw.
+ */
+class MetalVisibilityBucketRenderer : public MetalBucketRenderer {
+ public:
+  MetalVisibilityBucketRenderer(const std::string& name, int my_id, std::size_t level_count)
+      : MetalBucketRenderer(name, my_id), m_level_count(level_count) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+
+ private:
+  std::size_t m_level_count = 0;
 };
 
 /*!

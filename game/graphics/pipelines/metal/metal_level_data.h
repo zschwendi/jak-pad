@@ -37,6 +37,7 @@
 #include "common/dma/gs.h"
 #include "common/math/Vector.h"
 #include "game/graphics/pipelines/metal/metal_camera_trace.h"
+#include "game/graphics/pipelines/metal/metal_vis_data.h"
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
@@ -72,7 +73,8 @@ struct MetalTfragPcPortData {
   MetalGoalBackgroundCameraData camera;
   char level_name[32];
 };
-static_assert(sizeof(MetalTfragPcPortData) == 16 * 25, "TfragPcPortData size");
+static_assert(sizeof(MetalTfragPcPortData) == metal_renderer::kMetalBackgroundFallbackBytes,
+              "TfragPcPortData size");
 
 struct MetalTfragRenderSettings {
   MetalGoalBackgroundCameraData camera;
@@ -87,14 +89,8 @@ struct MetalTfragRenderSettings {
 // Shrub read (game/graphics/opengl_renderer/BucketRenderer.h).
 // ---------------------------------------------------------------------------
 
-struct MetalLevelVis {
-  bool valid = false;
-  u8 data[2048];
-};
-
 struct MetalBackgroundState {
-  static constexpr int kMaxLevels = 32;
-  MetalLevelVis occlusion_vis[kMaxLevels];
+  metal_renderer::MetalVisibilityFrame visibility;
 
   // GL debug toggles, same defaults as the GL renderer.
   bool use_occlusion_culling = true;

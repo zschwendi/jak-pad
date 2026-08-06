@@ -123,7 +123,9 @@ bool MetalTie3::set_up_common_data_from_dma(DmaFollower& dma,
   m_settings.camera = m_pc_port_data.camera;
   m_settings.tree_idx = 0;
   m_settings.occlusion_culling =
-      (bg && bg->occlusion_vis[m_level_id].valid) ? bg->occlusion_vis[m_level_id].data : nullptr;
+      (bg && bg->visibility.levels[m_level_id].valid)
+          ? bg->visibility.levels[m_level_id].data.data()
+          : nullptr;
   return true;
 }
 

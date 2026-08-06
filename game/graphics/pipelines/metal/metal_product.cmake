@@ -26,7 +26,8 @@ set(OPENGOAL_METAL_RENDERER_SOURCES
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_sprite_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_texture.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_tfrag.mm"
-    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_tie.mm")
+    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_tie.mm"
+    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_vis_data.cpp")
 
 set(OPENGOAL_METAL_WINDOW_SHELL_SOURCE
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_pipeline.mm")

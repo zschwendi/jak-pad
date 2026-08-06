@@ -100,9 +100,7 @@ void metal_finish_bucket(DmaFollower& dma, const MetalSharedRenderState& state) 
 }
 
 void MetalBackgroundState::reset_frame() {
-  for (auto& vis : occlusion_vis) {
-    vis.valid = false;
-  }
+  visibility.reset();
   tfrag_draws = 0;
   tfrag_tris = 0;
   tie_draws = 0;

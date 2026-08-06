@@ -478,7 +478,8 @@ bool policy_table_is_audited() {
     if (descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::StrictEmpty &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Direct &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload) {
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload &&
+        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Visibility) {
       return false;
     }
   }

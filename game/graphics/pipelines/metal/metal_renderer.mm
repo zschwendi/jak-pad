@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 
+#include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
@@ -352,7 +353,12 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   for (const auto& descriptor : table) {
     const auto bucket_id = static_cast<std::size_t>(descriptor.id);
     const int batch_size = metal_renderer::jak2_metal_direct_batch_size(bucket_id);
-    if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
+    if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Visibility) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::BUCKET_2));
+      ASSERT(batch_size == 0);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalVisibilityBucketRenderer>(
+          "jak2-vis-data", descriptor.id, jak2::LEVEL_MAX);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
       ASSERT(batch_size != 0);
       const char* name = "direct";
       switch (static_cast<jak2::BucketId>(bucket_id)) {

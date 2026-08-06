@@ -28,6 +28,7 @@ int main() {
   std::size_t strict_empty = 0;
   std::size_t direct = 0;
   std::size_t host_texture_upload = 0;
+  std::size_t visibility = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -35,24 +36,27 @@ int main() {
     strict_empty += table[i].behavior == Behavior::StrictEmpty;
     direct += table[i].behavior == Behavior::Direct;
     host_texture_upload += table[i].behavior == Behavior::HostTextureUpload;
+    visibility += table[i].behavior == Behavior::Visibility;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 196, "196 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 195, "195 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 3, "three reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 1,
         "one texture-upload bucket is executed synchronously by the host");
+  check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
             metal_renderer::kJak2MetalBucketExpectedFingerprint,
         "the ordered descriptor policy matches its fixed reference fingerprint");
 
-  check(has_behavior(jak2::BucketId::BUCKET_2, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::DeferredSkip) &&
+  check(has_behavior(jak2::BucketId::BUCKET_2, Behavior::Visibility),
+        "BUCKET_2 is the explicit non-draw visibility-state bucket");
+  check(has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_TFRAG, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_ALPHA, Behavior::DeferredSkip),
-        "frame setup, ocean, and level renderer bindings are deferred");
+        "ocean and every level draw family remain deferred");
   check(has_behavior(jak2::BucketId::TEX_LCOM_SKY_PRE, Behavior::HostTextureUpload),
         "TEX_LCOM_SKY_PRE is the explicit host texture-upload bucket");
   check(has_behavior(jak2::BucketId::SHADOW, Behavior::DeferredSkip) &&
