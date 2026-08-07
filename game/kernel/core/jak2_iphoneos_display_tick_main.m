@@ -852,20 +852,46 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
       return;
     }
     if (!_titleLoopReported && _metrics.title_ready && _metalMetrics.completed_chains > 0 &&
-        _metalMetrics.failed_chains == 0) {
-      NSLog(@"GOALPAD_JAK2_ECO_TITLE PASS ticks=%llu chains=%llu completed=%llu failed=%llu "
-             "draws=%llu triangles=%llu presentations=%llu",
-            (unsigned long long)_metrics.ticks, (unsigned long long)_metalMetrics.chains,
-            (unsigned long long)_metalMetrics.completed_chains,
-            (unsigned long long)_metalMetrics.failed_chains, (unsigned long long)_metalMetrics.draws,
-            (unsigned long long)_metalMetrics.triangles,
-            (unsigned long long)_metalMetrics.presentations);
-      _titleLoopReported = YES;
+        _metalMetrics.failed_chains == 0 && _metalMetrics.draws > 0 &&
+        _metalMetrics.command_buffers_committed > 0 && _metalMetrics.drawables_acquired > 0) {
+      goal_jak2_metal_frame_summary frame = {0};
+      if (goal_jak2_metal_host_read_last_frame(_metalHost, &frame) &&
+          frame.non_black_pixels > 0) {
+        NSLog(@"GOALPAD_JAK2_ECO_TITLE PASS ticks=%llu chains=%llu completed=%llu failed=%llu "
+               "draws=%llu triangles=%llu drawables=%llu commits=%llu frame=%016llx "
+               "non-black=%llu presentations=%llu",
+              (unsigned long long)_metrics.ticks, (unsigned long long)_metalMetrics.chains,
+              (unsigned long long)_metalMetrics.completed_chains,
+              (unsigned long long)_metalMetrics.failed_chains,
+              (unsigned long long)_metalMetrics.draws,
+              (unsigned long long)_metalMetrics.triangles,
+              (unsigned long long)_metalMetrics.drawables_acquired,
+              (unsigned long long)_metalMetrics.command_buffers_committed,
+              (unsigned long long)frame.hash, (unsigned long long)frame.non_black_pixels,
+              (unsigned long long)_metalMetrics.presentations);
+        _titleLoopReported = YES;
+      }
     }
     if (_metrics.ticks == 1 || (_metrics.ticks % 60) == 0) {
       [self updateStatus];
     }
     if ((_metrics.ticks % 300) == 0) {
+      NSLog(@"GOALPAD_JAK2_ECO_METAL ticks=%llu chains=%llu completed=%llu failed=%llu "
+             "drawables=%llu misses=%llu commits=%llu/%llu errors=%llu draws=%llu "
+             "triangles=%llu submissions=%llu presentations=%llu drops=%llu",
+            (unsigned long long)_metrics.ticks, (unsigned long long)_metalMetrics.chains,
+            (unsigned long long)_metalMetrics.completed_chains,
+            (unsigned long long)_metalMetrics.failed_chains,
+            (unsigned long long)_metalMetrics.drawables_acquired,
+            (unsigned long long)_metalMetrics.drawable_misses,
+            (unsigned long long)_metalMetrics.command_buffers_committed,
+            (unsigned long long)_metalMetrics.command_buffers_completed,
+            (unsigned long long)_metalMetrics.command_buffer_errors,
+            (unsigned long long)_metalMetrics.draws,
+            (unsigned long long)_metalMetrics.triangles,
+            (unsigned long long)_metalMetrics.submissions,
+            (unsigned long long)_metalMetrics.presentations,
+            (unsigned long long)_metalMetrics.presentation_drops);
       goal_jak2_apple_input_metrics input = {0};
       if (goal_jak2_apple_input_get_metrics(&input) == GOAL_KERNEL_CORE_OK) {
         NSLog(@"GOALPAD_JAK2_ECO_INPUT samples=%llu reads=%d connected=%d sources=%u "
