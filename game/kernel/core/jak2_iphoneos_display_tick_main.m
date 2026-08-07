@@ -19,6 +19,39 @@ static const uint64_t kLifecycleProofPausedCallbacks = 3;
 
 static void run_runtime_frame(double target_presentation_time, void* context);
 
+static BOOL read_launch_path(NSString* option, NSString** value, NSError** error) {
+  NSString* assignmentPrefix = [option stringByAppendingString:@"="];
+  NSArray<NSString*>* arguments = NSProcessInfo.processInfo.arguments;
+  for (NSUInteger index = 1; index < arguments.count; ++index) {
+    NSString* argument = arguments[index];
+    NSString* candidate = nil;
+    if ([argument isEqualToString:option]) {
+      if (index + 1 < arguments.count && ![arguments[index + 1] hasPrefix:@"--"]) {
+        candidate = arguments[++index];
+      }
+    } else if ([argument hasPrefix:assignmentPrefix]) {
+      candidate = [argument substringFromIndex:assignmentPrefix.length];
+    } else {
+      continue;
+    }
+
+    if (candidate.length == 0) {
+      if (error) {
+        *error = [NSError
+            errorWithDomain:@"org.opengoal.jak2-iphoneos"
+                       code:1
+                   userInfo:@{
+                     NSLocalizedDescriptionKey :
+                         [NSString stringWithFormat:@"%@ requires a local directory.", option]
+                   }];
+      }
+      return NO;
+    }
+    *value = candidate;
+  }
+  return YES;
+}
+
 static BOOL runtime_metrics_match_during_pause(const goal_jak2_runtime_metrics* before,
                                                const goal_jak2_runtime_metrics* after) {
   return before->state == after->state && before->ticks == after->ticks &&
@@ -137,8 +170,10 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   BOOL _realDmaMetalCompletionPending;
   BOOL _realDmaDrawBaselineCaptured;
   BOOL _lifecycleProofEnabled;
+  BOOL _titleLoopEnabled;
   BOOL _lifecyclePauseVerified;
   BOOL _lifecycleResumeVerified;
+  BOOL _shutdownRequested;
   uint64_t _metalProofDisplayCallbacks;
   uint64_t _realDmaDrawInspectedChains;
   goal_jak2_metal_stats _metalStats;
@@ -193,6 +228,8 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
       !_metalProofEnabled && !_realDmaDrawMetalProofEnabled && !_realDmaMetalProofEnabled &&
       [NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_LIFECYCLE_PROOF"]
           isEqualToString:@"1"];
+  _titleLoopEnabled = !_metalProofEnabled && !_realDmaDrawMetalProofEnabled &&
+                      !_realDmaMetalProofEnabled && !_lifecycleProofEnabled;
   [self createWindow];
   goal_display_tick_coordinator_init(&_coordinator, run_runtime_frame, (__bridge void*)self);
   [self observeLifecycle];
@@ -233,7 +270,8 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 - (void)createWindow {
   self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
   UIViewController* controller = [[UIViewController alloc] init];
-  if (_metalProofEnabled || _realDmaMetalProofEnabled || _realDmaDrawMetalProofEnabled) {
+  if (_titleLoopEnabled || _metalProofEnabled || _realDmaMetalProofEnabled ||
+      _realDmaDrawMetalProofEnabled) {
     GOALJak2MetalProofView* metalView =
         [[GOALJak2MetalProofView alloc] initWithFrame:self.window.bounds];
     metalView.backgroundColor = UIColor.blackColor;
@@ -299,7 +337,14 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 
 - (BOOL)preparePaths:(NSError**)error {
   NSFileManager* manager = NSFileManager.defaultManager;
-  NSString* override = NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_DATA_DIR"];
+  NSString* launchOverride = nil;
+  if (!read_launch_path(@"--data-dir", &launchOverride, error)) {
+    return NO;
+  }
+
+  NSString* environmentOverride =
+      NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_DATA_DIR"];
+  NSString* override = launchOverride.length > 0 ? launchOverride : environmentOverride;
   if (override.length > 0) {
     _dataPath = override.stringByStandardizingPath;
   } else {
@@ -315,11 +360,24 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
     _dataPath = dataURL.path;
   }
 
-  NSURL* applicationSupport = [manager URLsForDirectory:NSApplicationSupportDirectory
-                                              inDomains:NSUserDomainMask]
-                                  .firstObject;
-  NSURL* savesURL = [applicationSupport URLByAppendingPathComponent:@"OpenGOAL/jak2/saves"
-                                                        isDirectory:YES];
+  NSString* savesLaunchOverride = nil;
+  if (!read_launch_path(@"--saves-dir", &savesLaunchOverride, error)) {
+    return NO;
+  }
+  NSString* savesEnvironmentOverride =
+      NSProcessInfo.processInfo.environment[@"GOALPAD_JAK2_SAVES_DIR"];
+  NSString* savesOverride =
+      savesLaunchOverride.length > 0 ? savesLaunchOverride : savesEnvironmentOverride;
+  NSURL* savesURL = nil;
+  if (savesOverride.length > 0) {
+    savesURL = [NSURL fileURLWithPath:savesOverride.stringByStandardizingPath isDirectory:YES];
+  } else {
+    NSURL* applicationSupport = [manager URLsForDirectory:NSApplicationSupportDirectory
+                                                inDomains:NSUserDomainMask]
+                                    .firstObject;
+    savesURL = [applicationSupport URLByAppendingPathComponent:@"OpenGOAL/jak2/saves"
+                                                   isDirectory:YES];
+  }
   if (![manager createDirectoryAtURL:savesURL
           withIntermediateDirectories:YES
                            attributes:nil
@@ -333,34 +391,52 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 - (void)startRuntime {
   NSString* dataPath = _dataPath;
   NSString* savesPath = _savesPath;
-  const BOOL presentingProof = _realDmaMetalProofEnabled || _realDmaDrawMetalProofEnabled;
-  CAMetalLayer* metalLayer = presentingProof ? self.metalProofView.metalLayer : nil;
+  const BOOL presenting =
+      _titleLoopEnabled || _realDmaMetalProofEnabled || _realDmaDrawMetalProofEnabled;
+  CAMetalLayer* metalLayer = presenting ? self.metalProofView.metalLayer : nil;
   goal_jak2_metal_host* presentingHost =
-      presentingProof ? goal_jak2_metal_host_create_presenting(metalLayer) : NULL;
+      presenting ? goal_jak2_metal_host_create_presenting(metalLayer) : NULL;
   dispatch_queue_t queue =
       dispatch_queue_create("org.opengoal.jak2-display-tick.boot", DISPATCH_QUEUE_SERIAL);
   dispatch_async(queue, ^{
     @autoreleasepool {
-      goal_jak2_metal_host* metalHost =
-          presentingProof ? presentingHost : goal_jak2_metal_host_create();
+      goal_jak2_metal_host* metalHost = presenting ? presentingHost : goal_jak2_metal_host_create();
       goal_gfx_host graphicsHost = {0};
       goal_jak2_runtime_config config = {0};
       config.data_directory = dataPath.fileSystemRepresentation;
       config.saves_directory = savesPath.fileSystemRepresentation;
       config.graphics = GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST;
       goal_jak2_runtime_status result = GOAL_JAK2_RUNTIME_START_FAILED;
-      if (metalHost && goal_jak2_metal_host_copy_gfx_host(metalHost, &graphicsHost)) {
+      NSString* failure = nil;
+      if (!metalHost) {
+        failure = @"The Jak II Metal host did not start.";
+      } else if (_titleLoopEnabled &&
+                 !goal_jak2_metal_host_set_present_pacing(metalHost, 1.0 / 60.0)) {
+        failure = @"The Jak II Metal host did not accept title-loop presentation pacing.";
+      } else if (_titleLoopEnabled &&
+                 !goal_jak2_metal_host_configure_level_art(
+                     metalHost,
+                     [[dataPath stringByAppendingPathComponent:@"fr3"] fileSystemRepresentation])) {
+        const char* error = goal_jak2_metal_host_last_error(metalHost);
+        failure = error && error[0] ? [NSString stringWithUTF8String:error]
+                                    : @"The Jak II Metal host could not load local level art.";
+      } else if (!goal_jak2_metal_host_copy_gfx_host(metalHost, &graphicsHost)) {
+        const char* error = goal_jak2_metal_host_last_error(metalHost);
+        failure = error && error[0] ? [NSString stringWithUTF8String:error]
+                                    : @"The Jak II Metal host did not provide graphics callbacks.";
+      } else {
         config.external_gfx_host = &graphicsHost;
         result = goal_jak2_runtime_start(&config);
         if (result == GOAL_JAK2_RUNTIME_OK) {
           result = goal_jak2_runtime_probe_thread_suspend(&_threadSuspendProbe);
         }
       }
-      NSString* failure = nil;
       if (result != GOAL_JAK2_RUNTIME_OK) {
-        const char* error = goal_jak2_runtime_last_error();
-        failure = error && error[0] ? [NSString stringWithUTF8String:error]
-                                    : @"The Jak II Metal host or runtime did not start.";
+        if (!failure) {
+          const char* error = goal_jak2_runtime_last_error();
+          failure = error && error[0] ? [NSString stringWithUTF8String:error]
+                                      : @"The Jak II Metal host or runtime did not start.";
+        }
         if (goal_jak2_runtime_is_running()) {
           goal_jak2_runtime_shutdown();
         }
@@ -378,6 +454,13 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
       }
 
       dispatch_async(dispatch_get_main_queue(), ^{
+        if (_shutdownRequested) {
+          if (result == GOAL_JAK2_RUNTIME_OK) {
+            goal_jak2_runtime_shutdown();
+          }
+          goal_jak2_metal_host_destroy(metalHost);
+          return;
+        }
         if (result == GOAL_JAK2_RUNTIME_OK) {
           _metalHost = metalHost;
           _bootReady = YES;
@@ -428,6 +511,9 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 }
 
 - (void)stopRuntime {
+  _shutdownRequested = YES;
+  goal_display_tick_coordinator_set_foreground(&_coordinator, 0);
+  self.displayLink.paused = YES;
   if (_realDmaMetalCompletionPending) {
     return;
   }
@@ -652,6 +738,13 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
       _proofFinished = YES;
       _failureMessage = @"No real Jak II DMA chain reached Metal within three runtime ticks.";
       [self updateTickGate];
+      [self updateStatus];
+    }
+    return;
+  }
+
+  if (_titleLoopEnabled) {
+    if (_metrics.ticks == 1 || (_metrics.ticks % 60) == 0) {
       [self updateStatus];
     }
     return;
@@ -1053,6 +1146,7 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 }
 
 - (void)updateStatus {
+  self.statusLabel.hidden = NO;
   if (_metalProofEnabled) {
     NSString* result = @"WAITING FOR DISPLAY";
     if (_proofPassed) {
@@ -1228,6 +1322,12 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   goal_display_tick_stats display = {0};
   goal_display_tick_coordinator_get_stats(&_coordinator, &display);
 
+  if (_titleLoopEnabled && _bootReady && _metrics.title_ready && _metalMetrics.chains > 0 &&
+      _failureMessage.length == 0) {
+    self.statusLabel.hidden = YES;
+    return;
+  }
+
   NSString* result = @"BOOTING";
   if (_proofPassed) {
     result = @"PASS";
@@ -1243,8 +1343,11 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   NSString* failure = _failureMessage.length > 0
                           ? [NSString stringWithFormat:@"\nError: %@", _failureMessage]
                           : @"";
-  NSString* proofName = _lifecycleProofEnabled ? @"Jak II lifecycle display-tick proof"
-                                                : @"Jak II Metal policy display-tick proof";
+  NSString* proofName =
+      _titleLoopEnabled
+          ? @"Eco Pro Jak II 840-AOT title loop"
+          : (_lifecycleProofEnabled ? @"Jak II lifecycle display-tick proof"
+                                    : @"Jak II Metal policy display-tick proof");
   NSString* lifecycle = _lifecycleProofEnabled
                             ? [NSString stringWithFormat:
                                           @"\nLifecycle pause / resume: %@ / %@\n"
