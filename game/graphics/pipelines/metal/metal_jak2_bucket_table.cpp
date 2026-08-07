@@ -118,7 +118,7 @@ constexpr Table make_table() {
   defer(BucketId::GMERC_WARP);
   defer(BucketId::DEBUG_NO_ZBUF1);
   defer(BucketId::TEX_ALL_MAP);
-  defer(BucketId::PROGRESS);
+  direct(BucketId::PROGRESS);
   direct(BucketId::SCREEN_FILTER);
   defer(BucketId::SUBTITLE);
   defer(BucketId::DEBUG2);
@@ -157,9 +157,9 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 150);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 149);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 3);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 15);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Visibility) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Sprite) == 1);
@@ -194,6 +194,8 @@ int jak2_metal_direct_batch_size(std::size_t bucket_id) {
       return 1024;
     case BucketId::SCREEN_FILTER:
       return 256;
+    case BucketId::PROGRESS:
+      return 0x1000;
     case BucketId::DEBUG_NO_ZBUF2:
       return 0x8000;
     default:

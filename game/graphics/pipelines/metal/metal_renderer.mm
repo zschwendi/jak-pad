@@ -437,6 +437,9 @@ void MetalRenderer::init_bucket_renderers_jak2() {
         case jak2::BucketId::SCREEN_FILTER:
           name = "screen-filter";
           break;
+        case jak2::BucketId::PROGRESS:
+          name = "progress";
+          break;
         case jak2::BucketId::DEBUG_NO_ZBUF2:
           name = "debug-no-zbuf2";
           break;

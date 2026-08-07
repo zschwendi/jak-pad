@@ -789,6 +789,11 @@ bool request_basename(const StrRequest& request, std::string* out) {
   return true;
 }
 
+bool fail_str_read(const char** reason, const char* value) {
+  *reason = value;
+  return false;
+}
+
 /*! "TIDINTRO STR" -> "TIDINTRO.STR". */
 std::string file_name_of_iso_name(const char* iso_name) {
   std::string name(iso_name, 8);
@@ -802,9 +807,12 @@ std::string file_name_of_iso_name(const char* iso_name) {
   return name + "." + extension;
 }
 
-bool read_str_file(const StrRequest& request, const std::string& basename, u32* length) {
+bool read_str_file(const StrRequest& request,
+                   const std::string& basename,
+                   u32* length,
+                   const char** reason) {
   if (!request.maxlen || !readable_ee_span(request.address, request.maxlen)) {
-    return false;
+    return fail_str_read(reason, "invalid ordinary-file destination");
   }
 
   std::string file_name = basename;
@@ -816,19 +824,19 @@ bool read_str_file(const StrRequest& request, const std::string& basename, u32* 
   const std::string relative = "iso/" + file_name;
   const s32 fd = ee::sceOpen(relative.c_str(), SCE_RDONLY);
   if (fd < 0) {
-    return false;
+    return fail_str_read(reason, "ordinary file open failed");
   }
 
   const s32 file_size = ee::sceLseek(fd, 0, SCE_SEEK_END);
   if (file_size <= 0 || ee::sceLseek(fd, 0, SCE_SEEK_SET) != 0) {
     ee::sceClose(fd);
-    return false;
+    return fail_str_read(reason, "ordinary file size/seek failed");
   }
   const u32 read_size = std::min((u32)file_size, request.maxlen);
   const s32 bytes_read = ee::sceRead(fd, Ptr<u8>(request.address).c(), (s32)read_size);
   ee::sceClose(fd);
   if (bytes_read != (s32)read_size) {
-    return false;
+    return fail_str_read(reason, "ordinary file read failed");
   }
   *length = read_size;
   return true;
@@ -872,11 +880,12 @@ bool valid_chunked_str_header(const StrFileHeaderJ2& header, s32 file_size) {
 
 bool read_chunked_str_file(const StrRequest& request,
                            const std::string& animation_name,
-                           u32* length) {
+                           u32* length,
+                           const char** reason) {
   if (request.section < 0 || request.section >= SECTOR_TABLE_SIZE_J2 ||
       animation_name.size() < 2 || !request.maxlen ||
       !readable_ee_span(request.address, request.maxlen)) {
-    return false;
+    return fail_str_read(reason, "invalid chunk request/destination");
   }
 
   char iso_name[16] = {};
@@ -884,7 +893,7 @@ bool read_chunked_str_file(const StrRequest& request,
   const std::string relative = "iso/" + file_name_of_iso_name(iso_name);
   const s32 fd = ee::sceOpen(relative.c_str(), SCE_RDONLY);
   if (fd < 0) {
-    return false;
+    return fail_str_read(reason, "chunk file open failed");
   }
 
   StrFileHeaderJ2 header;
@@ -893,7 +902,7 @@ bool read_chunked_str_file(const StrRequest& request,
                           ee::sceRead(fd, &header, sizeof(header)) == (s32)sizeof(header);
   if (!got_header || !valid_chunked_str_header(header, file_size)) {
     ee::sceClose(fd);
-    return false;
+    return fail_str_read(reason, "chunk header invalid");
   }
 
   const u32 chunk_size = header.sizes[request.section];
@@ -904,7 +913,9 @@ bool read_chunked_str_file(const StrRequest& request,
       chunk_offset > (u64)std::numeric_limits<s32>::max() ||
       chunk_size > (u32)std::numeric_limits<s32>::max()) {
     ee::sceClose(fd);
-    return false;
+    return fail_str_read(reason,
+                         chunk_size > request.maxlen ? "chunk exceeds destination"
+                                                     : "chunk range invalid");
   }
 
   std::vector<u8> chunk;
@@ -912,14 +923,14 @@ bool read_chunked_str_file(const StrRequest& request,
     chunk.resize(chunk_size);
   } catch (const std::exception&) {
     ee::sceClose(fd);
-    return false;
+    return fail_str_read(reason, "chunk allocation failed");
   }
   const s32 offset = (s32)chunk_offset;
   const bool read = ee::sceLseek(fd, offset, SCE_SEEK_SET) == offset &&
                     ee::sceRead(fd, chunk.data(), (s32)chunk_size) == (s32)chunk_size;
   const bool closed = ee::sceClose(fd) == 0;
   if (!read || !closed) {
-    return false;
+    return fail_str_read(reason, "chunk read/close failed");
   }
 
   memcpy(Ptr<u8>(request.address).c(), chunk.data(), chunk.size());
@@ -947,9 +958,11 @@ u64 str_rpc(u32 function,
   std::string basename;
   u32 length = 0;
   const bool valid_name = request_basename(request, &basename);
+  const char* failure_reason = "invalid basename";
   const bool loaded =
-      valid_name && (request.section < 0 ? read_str_file(request, basename, &length)
-                                        : read_chunked_str_file(request, basename, &length));
+      valid_name &&
+      (request.section < 0 ? read_str_file(request, basename, &length, &failure_reason)
+                           : read_chunked_str_file(request, basename, &length, &failure_reason));
   if (loaded) {
     write_str_reply(request, recv_buffer, STR_RPC_RESULT_DONE, length);
     g_stats.str_reads++;
@@ -957,6 +970,12 @@ u64 str_rpc(u32 function,
   } else {
     write_str_reply(request, recv_buffer, STR_RPC_RESULT_ERROR, 0);
     g_stats.str_failures++;
+    if (g_stats.str_failures <= 3) {
+      lg::warn(
+          "[jak2-str] failed {} basename='{}' section={} address=#x{:x} maxlen={} address-mod64={}",
+          failure_reason, valid_name ? basename : "<invalid>", request.section, request.address,
+          request.maxlen, request.address & 63);
+    }
   }
   return 0;
 }

@@ -892,6 +892,29 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
             (unsigned long long)_metalMetrics.submissions,
             (unsigned long long)_metalMetrics.presentations,
             (unsigned long long)_metalMetrics.presentation_drops);
+      NSLog(@"GOALPAD_JAK2_ECO_SCENE sky=%llu/%llu tie=%llu/%llu merc=%llu/%llu "
+             "sprites=%llu/%llu missing-levels=%llu missing-textures=%llu/%llu",
+            (unsigned long long)_metalMetrics.last_sky_draw_draws,
+            (unsigned long long)_metalMetrics.last_sky_draw_triangles,
+            (unsigned long long)_metalMetrics.last_tie_draws,
+            (unsigned long long)_metalMetrics.last_tie_triangles,
+            (unsigned long long)_metalMetrics.last_merc_draws,
+            (unsigned long long)_metalMetrics.last_merc_triangles,
+            (unsigned long long)_metalMetrics.last_sprite_draws,
+            (unsigned long long)_metalMetrics.last_sprite_triangles,
+            (unsigned long long)_metalMetrics.last_background_missing_levels,
+            (unsigned long long)_metalMetrics.last_background_missing_textures,
+            (unsigned long long)_metalMetrics.last_sprite_missing_textures);
+      NSLog(@"GOALPAD_JAK2_ECO_TITLE_STATE mode=%s title=#x%08x/%s time=%llu "
+             "scene=#x%08x/%s progress=#x%08x/%s target=#x%08x/%s "
+             "levels=%d/%d pmode=%.3f str-failures=%u",
+            _metrics.master_mode, _metrics.title_control_process,
+            _metrics.title_control_state, (unsigned long long)_metrics.title_control_time,
+            _metrics.scene_player_process, _metrics.scene_player_state,
+            _metrics.progress_process, _metrics.progress_state, _metrics.target_process,
+            _metrics.target_state, _metrics.host_last_desired_level_count,
+            _metrics.host_last_active_level_count, _metrics.host_last_pmode_alpha,
+            _metrics.sound_str_failures);
       goal_jak2_apple_input_metrics input = {0};
       if (goal_jak2_apple_input_get_metrics(&input) == GOAL_KERNEL_CORE_OK) {
         NSLog(@"GOALPAD_JAK2_ECO_INPUT samples=%llu reads=%d connected=%d sources=%u "

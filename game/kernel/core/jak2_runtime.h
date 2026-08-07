@@ -92,6 +92,17 @@ typedef struct goal_jak2_runtime_metrics {
   char first_dgo_name[17];
   int32_t title_ready;
 
+  char master_mode[24];
+  uint32_t title_control_process;
+  char title_control_state[24];
+  uint64_t title_control_time;
+  uint32_t scene_player_process;
+  char scene_player_state[24];
+  uint32_t progress_process;
+  char progress_state[24];
+  uint32_t target_process;
+  char target_state[24];
+
   int32_t host_chains;
   int32_t host_sync_paths;
   int32_t host_syncvs;

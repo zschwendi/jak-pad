@@ -234,6 +234,66 @@ DmaWindow audit_dma_window(const goal_gfx_dma_stats& before,
   return out;
 }
 
+uint32_t goal_u32(uint32_t object, int offset = 0) {
+  uint32_t value = 0;
+  copy_goal_bytes(object, offset, &value, sizeof(value));
+  return value;
+}
+
+uint32_t symbol_value_if_present(const char* name) {
+  uint32_t value = 0;
+  return goal_game_find_symbol(name, &value) ? value : 0;
+}
+
+uint32_t pointer_symbol_process(const char* name) {
+  const uint32_t pointer = symbol_value_if_present(name);
+  return pointer && pointer != goal_game_false_offset() ? goal_u32(pointer) : 0;
+}
+
+void copy_known_symbol_name(uint32_t symbol, char* out, size_t size) {
+  static const char* names[] = {"game",       "menu",    "progress", "pause",
+                                "freeze",     "startup", "wait",     "idle",
+                                "scrap-book", "release", "play-anim", "come-in",
+                                "go-away",    "gone",    "target-title"};
+  out[0] = '\0';
+  for (const char* name : names) {
+    if (goal_game_find_symbol(name, nullptr) == symbol) {
+      std::snprintf(out, size, "%s", name);
+      return;
+    }
+  }
+}
+
+void copy_process_state(uint32_t process, char* out, size_t size) {
+  // Jak II process::state is at offset 60. A state's first field is its name symbol.
+  const uint32_t state = process ? goal_u32(process, 60) : 0;
+  copy_known_symbol_name(state ? goal_u32(state) : 0, out, size);
+}
+
+void update_title_state_metrics() {
+  copy_known_symbol_name(symbol_value_if_present("*master-mode*"), g_metrics.master_mode,
+                         sizeof(g_metrics.master_mode));
+
+  g_metrics.title_control_process = pointer_symbol_process("*title-control*");
+  copy_process_state(g_metrics.title_control_process, g_metrics.title_control_state,
+                     sizeof(g_metrics.title_control_state));
+  g_metrics.title_control_time = 0;
+  const uint32_t title_clock = goal_u32(g_metrics.title_control_process, 8);
+  // GOAL keeps uint64 fields four-byte aligned; clock::frame-counter is at offset 20.
+  copy_goal_bytes(title_clock, 20, &g_metrics.title_control_time,
+                  sizeof(g_metrics.title_control_time));
+
+  g_metrics.scene_player_process = pointer_symbol_process("*scene-player*");
+  copy_process_state(g_metrics.scene_player_process, g_metrics.scene_player_state,
+                     sizeof(g_metrics.scene_player_state));
+  g_metrics.progress_process = pointer_symbol_process("*progress-process*");
+  copy_process_state(g_metrics.progress_process, g_metrics.progress_state,
+                     sizeof(g_metrics.progress_state));
+  g_metrics.target_process = symbol_value_if_present("*target*");
+  copy_process_state(g_metrics.target_process, g_metrics.target_state,
+                     sizeof(g_metrics.target_state));
+}
+
 void update_metrics() {
   g_metrics.master_exit = static_cast<int32_t>(MasterExit);
   if (!g_owns_kernel || !goal_kernel_core_is_initialized()) {
@@ -257,6 +317,7 @@ void update_metrics() {
   g_metrics.title_ready = std::strcmp(dgo.first_dgo_name, "TITLE.DGO") == 0 &&
                           dgo.dgo_archives >= 1 && dgo.dgo_objects >= 1 &&
                           dgo.linked_code_objects + dgo.linked_data_objects >= 1;
+  update_title_state_metrics();
 
   goal_jak2_sound_rpc_stats sound = {};
   goal_jak2_sound_rpc_stats_get(&sound);
