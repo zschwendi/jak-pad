@@ -962,6 +962,15 @@ goal_jak2_metal_host* goal_jak2_metal_host_create_presenting(
   return create_host(layer, true);
 }
 
+int goal_jak2_metal_host_set_present_pacing(goal_jak2_metal_host* host, double seconds) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (!host || host != g_active_host || host->inactive || !std::isfinite(seconds) || seconds < 0.0) {
+    return 0;
+  }
+  host->options.min_present_duration = seconds;
+  return 1;
+}
+
 int goal_jak2_metal_host_configure_level_art(goal_jak2_metal_host* host,
                                              const char* fr3_directory) {
   std::lock_guard<std::mutex> lock(g_host_mutex);

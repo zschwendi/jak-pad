@@ -221,9 +221,12 @@ typedef struct goal_jak2_metal_frame_summary {
 /*! Create the process-singleton, nil-layer Jak 2 policy-dispatch host. */
 goal_jak2_metal_host* goal_jak2_metal_host_create(void);
 
-/*! Create the same external host with an app-owned layer for bounded real-DMA presentation. */
+/*! Create the same external host with an app-owned layer for real-DMA presentation. */
 goal_jak2_metal_host* goal_jak2_metal_host_create_presenting(
     goal_jak2_metal_host_layer layer);
+
+/*! Set the minimum on-screen duration for future drawables. Zero disables presentation pacing. */
+int goal_jak2_metal_host_set_present_pacing(goal_jak2_metal_host* host, double seconds);
 
 /*!
  * Configure host-owned Jak 2 level art before copying the graphics callbacks. `fr3_directory` is

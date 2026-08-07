@@ -1,10 +1,10 @@
 /*!
  * @file jak2_macos_metal_runtime_proof.mm
- * Bounded macOS host for the Jak 2 AOT runtime and its external Metal renderer.
+ * macOS host for the Jak 2 AOT runtime and its external Metal renderer.
  *
  * This is a development proof, not the desktop OpenGOAL runtime. It uses the portable signed-code
- * path shared with iPadOS, presents a bounded number of real DMA chains, and reports the first renderer
- * boundary that is still incomplete.
+ * path shared with iPadOS. Its bounded mode reports the first incomplete renderer boundary; the
+ * opt-in interactive mode keeps the same runtime alive for title/input/audio playability checks.
  */
 
 #include <algorithm>
@@ -15,10 +15,12 @@
 #include <filesystem>
 #include <future>
 #include <string>
+#include <thread>
 
 #include "common/util/FileUtil.h"
 
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
+#include "game/goalpad_audio.h"
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/jak2_runtime.h"
 #include "game/kernel/core/pad.h"
@@ -37,6 +39,8 @@ struct Options {
   bool require_presentation = false;
   bool interactive = false;
   bool report_pad = false;
+  bool probe_pad = false;
+  bool audio = false;
   bool ticks_explicit = false;
 };
 
@@ -44,7 +48,8 @@ int usage(const char* program) {
   std::fprintf(
       stderr,
       "usage: %s --data-dir <prepared-jak2-dir> [--saves-dir <dir>] [--ticks <1-1200>] "
-      "[--hidden] [--require-presentation] [--interactive] [--report-pad]\n"
+      "[--hidden] [--require-presentation] [--interactive] [--report-pad] [--probe-pad] "
+      "[--audio]\n"
       "       --data-dir defaults to $GOALPAD_JAK2_DATA_DIR\n",
       program);
   return 2;
@@ -74,6 +79,10 @@ bool parse_options(int argc, char** argv, Options* out) {
       out->interactive = true;
     } else if (arg == "--report-pad") {
       out->report_pad = true;
+    } else if (arg == "--probe-pad") {
+      out->probe_pad = true;
+    } else if (arg == "--audio") {
+      out->audio = true;
     } else {
       return false;
     }
@@ -90,6 +99,7 @@ bool parse_options(int argc, char** argv, Options* out) {
 
 struct ProofResources {
   bool sdl_initialized = false;
+  bool audio_started = false;
   SDL_Window* window = nullptr;
   SDL_MetalView metal_view = nullptr;
   goal_jak2_metal_host* metal_host = nullptr;
@@ -97,6 +107,9 @@ struct ProofResources {
 
   ~ProofResources() {
     // The runtime retains copied callbacks into metal_host. It must always release them first.
+    if (audio_started) {
+      goalpad_audio::stop();
+    }
     goal_jak2_runtime_shutdown();
     if (gamepad) {
       SDL_CloseGamepad(gamepad);
@@ -119,6 +132,33 @@ struct ProofResources {
 bool requests_quit(const SDL_Event& event) {
   return event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED ||
          (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_ESCAPE);
+}
+
+void pump_events(bool* quit_requested) {
+  SDL_Event event;
+  while (SDL_PollEvent(&event)) {
+    if (requests_quit(event)) {
+      *quit_requested = true;
+    }
+  }
+}
+
+bool window_presentable(SDL_Window* window) {
+  const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+  return (flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED | SDL_WINDOW_OCCLUDED)) == 0;
+}
+
+goal_jak2_runtime_status start_runtime_while_pumping_events(
+    const goal_jak2_runtime_config* config,
+    bool* quit_requested) {
+  auto starter = std::async(std::launch::async, [config] { return goal_jak2_runtime_start(config); });
+  while (starter.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+    @autoreleasepool {
+      pump_events(quit_requested);
+      SDL_Delay(1);
+    }
+  }
+  return starter.get();
 }
 
 void refresh_gamepad(ProofResources* resources) {
@@ -168,12 +208,15 @@ goal_pad_state read_pad(ProofResources* resources) {
   };
   static constexpr Bind kBinds[] = {
       {GOAL_PAD_START, SDL_SCANCODE_RETURN, SDL_GAMEPAD_BUTTON_START},
+      {GOAL_PAD_SELECT, SDL_SCANCODE_APOSTROPHE, SDL_GAMEPAD_BUTTON_BACK},
       {GOAL_PAD_X, SDL_SCANCODE_SPACE, SDL_GAMEPAD_BUTTON_SOUTH},
       {GOAL_PAD_CIRCLE, SDL_SCANCODE_E, SDL_GAMEPAD_BUTTON_EAST},
       {GOAL_PAD_SQUARE, SDL_SCANCODE_F, SDL_GAMEPAD_BUTTON_WEST},
       {GOAL_PAD_TRIANGLE, SDL_SCANCODE_R, SDL_GAMEPAD_BUTTON_NORTH},
       {GOAL_PAD_L1, SDL_SCANCODE_Q, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
       {GOAL_PAD_R1, SDL_SCANCODE_O, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+      {GOAL_PAD_L3, SDL_SCANCODE_COMMA, SDL_GAMEPAD_BUTTON_LEFT_STICK},
+      {GOAL_PAD_R3, SDL_SCANCODE_PERIOD, SDL_GAMEPAD_BUTTON_RIGHT_STICK},
       {GOAL_PAD_UP, SDL_SCANCODE_UP, SDL_GAMEPAD_BUTTON_DPAD_UP},
       {GOAL_PAD_DOWN, SDL_SCANCODE_DOWN, SDL_GAMEPAD_BUTTON_DPAD_DOWN},
       {GOAL_PAD_LEFT, SDL_SCANCODE_LEFT, SDL_GAMEPAD_BUTTON_DPAD_LEFT},
@@ -511,6 +554,11 @@ int main(int argc, char** argv) {
       return 1;
     }
     if (options.interactive) {
+      if (!SDL_ShowWindow(resources.window) || !SDL_RaiseWindow(resources.window) ||
+          !SDL_SyncWindow(resources.window)) {
+        std::fprintf(stderr, "could not make the Jak II window interactive: %s\n", SDL_GetError());
+        return 1;
+      }
       refresh_gamepad(&resources);
     }
     resources.metal_view = SDL_Metal_CreateView(resources.window);
@@ -528,6 +576,11 @@ int main(int argc, char** argv) {
     goal_gfx_host graphics_host = {};
     if (!resources.metal_host) {
       std::fprintf(stderr, "Jak II Metal host creation failed\n");
+      return 1;
+    }
+    if (options.interactive &&
+        !goal_jak2_metal_host_set_present_pacing(resources.metal_host, 1.0 / 60.0)) {
+      std::fprintf(stderr, "Jak II Metal presentation pacing setup failed\n");
       return 1;
     }
     const std::string fr3_directory =
@@ -548,9 +601,20 @@ int main(int argc, char** argv) {
     config.saves_directory = options.saves_dir.c_str();
     config.graphics = GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST;
     config.external_gfx_host = &graphics_host;
-    if (goal_jak2_runtime_start(&config) != GOAL_JAK2_RUNTIME_OK) {
+    bool quit_requested = false;
+    if (start_runtime_while_pumping_events(&config, &quit_requested) != GOAL_JAK2_RUNTIME_OK) {
       std::fprintf(stderr, "Jak II runtime start failed: %s\n", goal_jak2_runtime_last_error());
       return 1;
+    }
+    if (quit_requested) {
+      return 0;
+    }
+    if (options.audio) {
+      resources.audio_started = goalpad_audio::start();
+      if (!resources.audio_started) {
+        std::fprintf(stderr, "Jak II CoreAudio output was requested but could not start\n");
+        return 1;
+      }
     }
 
     goal_jak2_thread_suspend_probe probe = {};
@@ -570,32 +634,81 @@ int main(int argc, char** argv) {
     uint64_t baseline_hash = 0;
     uint64_t baseline_non_black_pixels = 0;
     bool have_baseline = false;
+    bool saw_visible_title_frame = false;
     bool saw_attributed_title_sprite_frame = false;
-    bool quit_requested = false;
     bool tick_failed = false;
     const bool require_presentation = options.require_presentation;
+    bool suspended = false;
+    bool need_presentation_confirmation = require_presentation;
+    int pad_pushes = 0;
+    const int pad_reads_before = goal_pad_read_count(0);
+    int probe_press_read = -1;
+    int probe_release_read = -1;
+    auto pacing_deadline = std::chrono::steady_clock::now();
+    auto health_started = pacing_deadline;
+    uint64_t health_tick_start = 0;
+    const auto frame_duration =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(1.0 / 60.0));
 
     for (int tick = 0;
          (options.maximum_ticks == 0 || tick < options.maximum_ticks) && !quit_requested; ++tick) {
       @autoreleasepool {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-          if (requests_quit(event)) {
-            quit_requested = true;
+        pump_events(&quit_requested);
+        while (options.interactive && !quit_requested &&
+               !window_presentable(resources.window)) {
+          if (!suspended) {
+            std::printf("lifecycle: suspended while the window is not presentable\n");
+            if (resources.audio_started) {
+              goalpad_audio::stop();
+              resources.audio_started = false;
+            }
+            suspended = true;
           }
+          SDL_Delay(10);
+          pump_events(&quit_requested);
+        }
+        if (suspended && !quit_requested) {
+          if (options.audio && !goalpad_audio::start()) {
+            std::fprintf(stderr, "Jak II CoreAudio output could not resume\n");
+            tick_failed = true;
+            break;
+          }
+          resources.audio_started = options.audio;
+          need_presentation_confirmation = require_presentation;
+          pacing_deadline = std::chrono::steady_clock::now();
+          health_started = pacing_deadline;
+          health_tick_start = runtime.ticks;
+          suspended = false;
+          std::printf("lifecycle: resumed\n");
         }
         if (quit_requested) {
           break;
         }
 
-        goal_pad_state pad = {};
+        const int current_pad_reads = goal_pad_read_count(0);
+        if (options.probe_pad) {
+          if (probe_press_read < 0 && current_pad_reads > pad_reads_before) {
+            probe_press_read = current_pad_reads;
+          } else if (probe_press_read >= 0 && probe_release_read < 0 &&
+                     current_pad_reads > probe_press_read) {
+            probe_release_read = current_pad_reads;
+          }
+        }
+        goal_pad_state pad;
+        goal_pad_state_neutral(&pad);
         if (options.interactive) {
           pad = read_pad(&resources);
+        } else if (options.probe_pad && probe_press_read < 0) {
+          pad.buttons = GOAL_PAD_L3;
+        }
+        if (options.interactive || options.probe_pad) {
           if (goal_pad_set_state(0, &pad) != GOAL_KERNEL_CORE_OK) {
             std::fprintf(stderr, "could not push Jak II pad state\n");
             tick_failed = true;
             break;
           }
+          pad_pushes++;
         }
 
         const uint64_t previous_chains = metal.chains;
@@ -622,8 +735,10 @@ int main(int argc, char** argv) {
           tick_failed = true;
           break;
         }
+        const bool confirm_presentation =
+            require_presentation && (!options.interactive || need_presentation_confirmation);
         if (metal.chains > previous_chains &&
-            !wait_for_frame_while_pumping_events(resources.metal_host, require_presentation,
+            !wait_for_frame_while_pumping_events(resources.metal_host, confirm_presentation,
                                                  &quit_requested)) {
           std::fprintf(stderr, "Jak II Metal frame wait failed: %s\n",
                        goal_jak2_metal_host_last_error(resources.metal_host));
@@ -637,6 +752,9 @@ int main(int argc, char** argv) {
           tick_failed = true;
           break;
         }
+        if (confirm_presentation) {
+          need_presentation_confirmation = false;
+        }
         if (!goal_jak2_metal_host_get_metrics(resources.metal_host, &metal) ||
             !goal_jak2_metal_host_read_last_frame(resources.metal_host, &frame)) {
           std::fprintf(stderr, "could not copy the completed Jak II Metal frame\n");
@@ -649,9 +767,14 @@ int main(int argc, char** argv) {
         }
         if (options.interactive) {
           if (tick == 0 || (tick + 1) % 300 == 0) {
+            const auto now = std::chrono::steady_clock::now();
+            const double health_seconds =
+                std::chrono::duration<double>(now - health_started).count();
+            const uint64_t health_ticks = runtime.ticks - health_tick_start;
+            const double health_fps = health_seconds > 0.0 ? health_ticks / health_seconds : 0.0;
             std::printf(
                 "health: ticks=%llu title=%d chains=%llu/%llu failed=%llu present=%llu "
-                "draws=%llu tris=%llu frame=%016llx non-black=%llu\n",
+                "draws=%llu tris=%llu pad-reads=%d fps=%.2f frame=%016llx non-black=%llu\n",
                 static_cast<unsigned long long>(runtime.ticks), runtime.title_ready,
                 static_cast<unsigned long long>(metal.completed_chains),
                 static_cast<unsigned long long>(metal.chains),
@@ -659,8 +782,11 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(metal.presentations),
                 static_cast<unsigned long long>(metal.draws),
                 static_cast<unsigned long long>(metal.triangles),
+                goal_pad_read_count(0), health_fps,
                 static_cast<unsigned long long>(frame.hash),
                 static_cast<unsigned long long>(frame.non_black_pixels));
+            health_started = now;
+            health_tick_start = runtime.ticks;
           }
         } else {
           std::printf("\n-- tick %d --\n", tick + 1);
@@ -673,6 +799,10 @@ int main(int argc, char** argv) {
           baseline_non_black_pixels = frame.non_black_pixels;
           have_baseline = true;
         } else {
+          saw_visible_title_frame |=
+              runtime.title_ready != 0 && frame.hash != baseline_hash &&
+              frame.non_black_pixels > baseline_non_black_pixels && metal.draws != 0 &&
+              metal.triangles != 0;
           const bool exact_sky_frame = metal.last_sky_draw_draws == 1 &&
                                        metal.last_sky_draw_triangles == 2 &&
                                        metal.last_sky_draw_batch_valid != 0;
@@ -714,32 +844,62 @@ int main(int argc, char** argv) {
               exact_draw_attribution && frame.hash != baseline_hash &&
               frame.non_black_pixels > baseline_non_black_pixels;
         }
+        if (options.interactive) {
+          pacing_deadline += frame_duration;
+          const auto now = std::chrono::steady_clock::now();
+          if (pacing_deadline > now) {
+            std::this_thread::sleep_until(pacing_deadline);
+          } else if (now - pacing_deadline > frame_duration * 4) {
+            pacing_deadline = now;
+          }
+        }
       }
     }
 
+    const int pad_reads_after = goal_pad_read_count(0);
+    if (options.probe_pad && probe_press_read < 0 && pad_reads_after > pad_reads_before) {
+      probe_press_read = pad_reads_after;
+    } else if (options.probe_pad && probe_press_read >= 0 && probe_release_read < 0 &&
+               pad_reads_after > probe_press_read) {
+      probe_release_read = pad_reads_after;
+    }
+    const bool pad_probe_passed = !options.probe_pad ||
+                                  (pad_pushes == options.maximum_ticks &&
+                                   probe_press_read > pad_reads_before &&
+                                   probe_release_read > probe_press_read);
+    if (options.probe_pad) {
+      std::printf(
+          "pad-probe: pushes=%d reads=%d->%d press-read=%d release-read=%d transitioned=%d\n",
+          pad_pushes, pad_reads_before, pad_reads_after, probe_press_read, probe_release_read,
+          pad_probe_passed);
+    }
+
     if (options.interactive) {
-      if (!tick_failed) {
+      const bool healthy = !tick_failed && runtime.title_ready != 0 && metal.failed_chains == 0 &&
+                           metal.presentations != 0 && saw_visible_title_frame &&
+                           pad_reads_after > pad_reads_before;
+      if (healthy) {
         std::printf("STOP: interactive Jak II runtime ended after %llu ticks.\n",
                     static_cast<unsigned long long>(runtime.ticks));
       }
-      return tick_failed ? 1 : 0;
+      return healthy ? 0 : 1;
     }
 
     const bool passed = !quit_requested && !tick_failed && runtime.title_ready != 0 &&
                         exact_submission_gate(runtime, metal, options.maximum_ticks,
                                               require_presentation) &&
-                        saw_attributed_title_sprite_frame;
+                        saw_visible_title_frame && pad_probe_passed;
     if (passed) {
-      std::printf("PASS: bounded Jak II AOT runtime produced an attributed non-black Metal frame.\n");
+      std::printf("PASS: bounded Jak II AOT runtime produced a changing non-black title frame.\n");
       return 0;
     }
 
     std::fprintf(
         stderr,
-        "INCOMPLETE: exact=%d title=%d attributed-title-sprites=%d baseline-non-black=%llu "
-        "last-non-black=%llu quit=%d tick-failed=%d\n",
+        "INCOMPLETE: exact=%d title=%d visible-title=%d attributed-title-sprites=%d "
+        "baseline-non-black=%llu last-non-black=%llu quit=%d tick-failed=%d\n",
         exact_submission_gate(runtime, metal, options.maximum_ticks, require_presentation),
-        runtime.title_ready,
+        runtime.title_ready, saw_visible_title_frame,
         saw_attributed_title_sprite_frame,
         static_cast<unsigned long long>(baseline_non_black_pixels),
         static_cast<unsigned long long>(frame.non_black_pixels), quit_requested, tick_failed);

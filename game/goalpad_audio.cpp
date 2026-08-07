@@ -49,6 +49,7 @@ OSStatus audio_render(void* /*user*/,
 }  // namespace
 
 bool start() {
+  stop();
   AudioComponentDescription desc = {};
   desc.componentType = kAudioUnitType_Output;
   desc.componentSubType = kAudioUnitSubType_DefaultOutput;
@@ -77,6 +78,7 @@ bool start() {
   if (AudioUnitSetProperty(g_output_unit, kAudioUnitProperty_StreamFormat,
                            kAudioUnitScope_Input, 0, &format, sizeof(format)) != noErr) {
     lg::error("the audio device would not take 48 kHz stereo 16-bit");
+    stop();
     return false;
   }
 
@@ -86,6 +88,7 @@ bool start() {
                            kAudioUnitScope_Input, 0, &callback, sizeof(callback)) != noErr ||
       AudioUnitInitialize(g_output_unit) != noErr || AudioOutputUnitStart(g_output_unit) != noErr) {
     lg::error("could not start the audio device");
+    stop();
     return false;
   }
   lg::info("[sound] CoreAudio output running at {} Hz", goal_game_sound_sample_rate());
