@@ -1,6 +1,9 @@
 #include "game/kernel/core/display_tick_coordinator.h"
+#include "game/kernel/core/jak2_apple_audio.h"
+#include "game/kernel/core/jak2_apple_input.h"
 #include "game/kernel/core/jak2_metal_presenter.h"
 #include "game/kernel/core/jak2_runtime.h"
+#include "game/kernel/core/pad.h"
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
 #import <QuartzCore/CADisplayLink.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -171,11 +174,18 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   BOOL _realDmaDrawBaselineCaptured;
   BOOL _lifecycleProofEnabled;
   BOOL _titleLoopEnabled;
+  BOOL _titleLoopReported;
+  BOOL _inputStarted;
+  BOOL _audioOpened;
+  BOOL _inputProbePressRead;
+  BOOL _inputProbeComplete;
   BOOL _lifecyclePauseVerified;
   BOOL _lifecycleResumeVerified;
   BOOL _shutdownRequested;
   uint64_t _metalProofDisplayCallbacks;
   uint64_t _realDmaDrawInspectedChains;
+  int _inputProbeBaselineReads;
+  int _inputProbePressedReadCount;
   goal_jak2_metal_stats _metalStats;
   goal_jak2_metal_frame_summary _realDmaDrawBaselineFrame;
   goal_jak2_metal_frame_summary _realDmaDrawFrame;
@@ -198,6 +208,7 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 @interface GOALJak2DisplayTickAppDelegate ()
 
 - (void)runRuntimeFrameAtTargetTime:(double)targetPresentationTime;
+- (BOOL)startOrResumeAudio;
 - (void)runLifecyclePauseCycleAtTargetTime:(double)targetPresentationTime;
 - (void)stopRuntime;
 - (void)submitMetalProofFrame;
@@ -464,8 +475,16 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
         if (result == GOAL_JAK2_RUNTIME_OK) {
           _metalHost = metalHost;
           _bootReady = YES;
+          _inputProbeBaselineReads = goal_pad_read_count(0);
           goal_jak2_runtime_get_metrics(&_metrics);
           goal_jak2_metal_host_get_metrics(_metalHost, &_metalMetrics);
+          if (_titleLoopEnabled && _applicationActive) {
+            goal_jak2_apple_input_start();
+            _inputStarted = YES;
+            if (![self startOrResumeAudio]) {
+              [self stopRuntime];
+            }
+          }
         } else {
           _proofFinished = YES;
           _failureMessage = failure;
@@ -480,6 +499,13 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 - (void)didBecomeActive:(NSNotification*)notification {
   (void)notification;
   _applicationActive = YES;
+  if (_titleLoopEnabled && _bootReady && !_inputStarted) {
+    goal_jak2_apple_input_start();
+    _inputStarted = YES;
+  }
+  if (_titleLoopEnabled && _bootReady && ![self startOrResumeAudio]) {
+    [self stopRuntime];
+  }
   [self updateTickGate];
   [self updateStatus];
 }
@@ -487,6 +513,15 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 - (void)willResignActive:(NSNotification*)notification {
   (void)notification;
   _applicationActive = NO;
+  if (_inputStarted) {
+    goal_jak2_apple_input_stop();
+    _inputStarted = NO;
+  }
+  if (_audioOpened && !goal_jak2_apple_audio_suspend()) {
+    NSLog(@"GOALPAD_JAK2_ECO_AUDIO SUSPEND_FAILED error=%s",
+          goal_jak2_apple_audio_last_error());
+    _audioOpened = NO;
+  }
   [self updateTickGate];
   [self updateStatus];
 }
@@ -517,6 +552,17 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   if (_realDmaMetalCompletionPending) {
     return;
   }
+  if (_inputStarted) {
+    goal_jak2_apple_input_stop();
+    _inputStarted = NO;
+  }
+  if (_audioOpened) {
+    if (!goal_jak2_apple_audio_close()) {
+      NSLog(@"GOALPAD_JAK2_ECO_AUDIO CLOSE_FAILED error=%s",
+            goal_jak2_apple_audio_last_error());
+    }
+    _audioOpened = NO;
+  }
   if (_bootReady) {
     goal_jak2_runtime_shutdown();
     _bootReady = NO;
@@ -528,6 +574,28 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   if (!_metalProofEnabled || !_metalProofSubmitted || _proofFinished) {
     goal_jak2_metal_presenter_shutdown();
   }
+}
+
+- (BOOL)startOrResumeAudio {
+  if (!_titleLoopEnabled || !_applicationActive || !_bootReady) {
+    return YES;
+  }
+  const int started = _audioOpened ? goal_jak2_apple_audio_resume()
+                                   : goal_jak2_apple_audio_start();
+  if (!started) {
+    const char* error = goal_jak2_apple_audio_last_error();
+    _failureMessage = error && error[0] ? [NSString stringWithUTF8String:error]
+                                        : @"The Apple audio output did not start.";
+    _proofFinished = YES;
+    _audioOpened = NO;
+    return NO;
+  }
+  _audioOpened = YES;
+  goal_jak2_apple_audio_stats audio = {0};
+  goal_jak2_apple_audio_get_stats(&audio);
+  NSLog(@"GOALPAD_JAK2_ECO_AUDIO RUNNING starts=%llu resumes=%llu sample-rate=%d",
+        (unsigned long long)audio.starts, (unsigned long long)audio.resumes, audio.sample_rate);
+  return YES;
 }
 
 - (void)updateTickGate {
@@ -604,6 +672,28 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
 
 - (void)runRuntimeFrameAtTargetTime:(double)targetPresentationTime {
   _lastTargetTimestamp = targetPresentationTime;
+  if (_titleLoopEnabled) {
+    goal_kernel_core_status inputStatus = GOAL_KERNEL_CORE_OK;
+    if (_inputProbeComplete) {
+      inputStatus = goal_jak2_apple_input_sample_and_push();
+    } else {
+      goal_pad_state probe;
+      goal_pad_state_neutral(&probe);
+      probe.connected = 1;
+      if (!_inputProbePressRead) {
+        probe.buttons = GOAL_PAD_L3;
+      }
+      inputStatus = goal_pad_set_state(0, &probe);
+    }
+    if (inputStatus != GOAL_KERNEL_CORE_OK) {
+      _failureMessage = @"The title input seam could not push the current pad state.";
+      _proofFinished = YES;
+      [self stopRuntime];
+      [self updateTickGate];
+      [self updateStatus];
+      return;
+    }
+  }
   goal_jak2_runtime_status result = goal_jak2_runtime_tick();
   if (result == GOAL_JAK2_RUNTIME_OK && !_threadSuspendProbe.hook_available) {
     result = goal_jak2_runtime_probe_thread_suspend(&_threadSuspendProbe);
@@ -744,8 +834,55 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
   }
 
   if (_titleLoopEnabled) {
+    const int inputReads = goal_pad_read_count(0);
+    if (!_inputProbePressRead && inputReads > _inputProbeBaselineReads) {
+      _inputProbePressRead = YES;
+      _inputProbePressedReadCount = inputReads;
+    } else if (_inputProbePressRead && !_inputProbeComplete &&
+               inputReads > _inputProbePressedReadCount) {
+      _inputProbeComplete = YES;
+      NSLog(@"GOALPAD_JAK2_ECO_INPUT_PROBE PASS baseline=%d press-read=%d release-read=%d",
+            _inputProbeBaselineReads, _inputProbePressedReadCount, inputReads);
+    } else if (!_inputProbeComplete && _metrics.ticks >= kMaximumProofTicks) {
+      _failureMessage = @"GOAL did not consume both states from the bounded input probe.";
+      _proofFinished = YES;
+      [self stopRuntime];
+      [self updateTickGate];
+      [self updateStatus];
+      return;
+    }
+    if (!_titleLoopReported && _metrics.title_ready && _metalMetrics.completed_chains > 0 &&
+        _metalMetrics.failed_chains == 0) {
+      NSLog(@"GOALPAD_JAK2_ECO_TITLE PASS ticks=%llu chains=%llu completed=%llu failed=%llu "
+             "draws=%llu triangles=%llu presentations=%llu",
+            (unsigned long long)_metrics.ticks, (unsigned long long)_metalMetrics.chains,
+            (unsigned long long)_metalMetrics.completed_chains,
+            (unsigned long long)_metalMetrics.failed_chains, (unsigned long long)_metalMetrics.draws,
+            (unsigned long long)_metalMetrics.triangles,
+            (unsigned long long)_metalMetrics.presentations);
+      _titleLoopReported = YES;
+    }
     if (_metrics.ticks == 1 || (_metrics.ticks % 60) == 0) {
       [self updateStatus];
+    }
+    if ((_metrics.ticks % 300) == 0) {
+      goal_jak2_apple_input_metrics input = {0};
+      if (goal_jak2_apple_input_get_metrics(&input) == GOAL_KERNEL_CORE_OK) {
+        NSLog(@"GOALPAD_JAK2_ECO_INPUT samples=%llu reads=%d connected=%d sources=%u "
+               "buttons=#x%08x failures=%llu",
+              (unsigned long long)input.samples, goal_pad_read_count(0), input.connected,
+              input.active_sources, input.last_buttons, (unsigned long long)input.push_failures);
+      }
+      goal_jak2_apple_audio_stats audio = {0};
+      if (goal_jak2_apple_audio_get_stats(&audio)) {
+        NSLog(@"GOALPAD_JAK2_ECO_AUDIO callbacks=%llu requested=%llu rendered=%llu "
+               "silent=%llu underruns=%llu invalid=%llu",
+              (unsigned long long)audio.render_callbacks,
+              (unsigned long long)audio.frames_requested,
+              (unsigned long long)audio.frames_rendered,
+              (unsigned long long)audio.silent_frames, (unsigned long long)audio.underruns,
+              (unsigned long long)audio.invalid_buffers);
+      }
     }
     return;
   }

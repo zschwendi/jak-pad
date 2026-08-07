@@ -84,6 +84,8 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
     jak2-kernel-core)
 
   add_executable(jak2-iphoneos-display-tick-proof MACOSX_BUNDLE EXCLUDE_FROM_ALL
+    "${CMAKE_CURRENT_LIST_DIR}/jak2_apple_audio.mm"
+    "${CMAKE_CURRENT_LIST_DIR}/jak2_apple_input.mm"
     "${CMAKE_CURRENT_LIST_DIR}/jak2_iphoneos_display_tick_main.m"
     "${CMAKE_CURRENT_LIST_DIR}/jak2_metal_presenter.mm")
   set_source_files_properties(
@@ -92,6 +94,9 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
   target_link_libraries(jak2-iphoneos-display-tick-proof PRIVATE
     jak2-iphoneos-runtime
     jak2-iphoneos-metal-host
+    "-framework AudioToolbox"
+    "-framework AVFAudio"
+    "-framework GameController"
     "-framework UIKit"
     "-framework QuartzCore"
     "-framework Foundation")
