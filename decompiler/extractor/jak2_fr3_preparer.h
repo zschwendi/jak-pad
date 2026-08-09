@@ -30,6 +30,8 @@ struct Options : jak1_fr3::Options {
   Options() {
     max_archives = 256;
     max_levels = 256;
+    // Jak II's build/output graph has no game-cnt; desktop extraction treats its absence as normal.
+    require_game_count = false;
     max_total_expanded_archive_bytes = kNtscV2TotalExpandedArchiveBytes;
     compressed_trailing_alignment_bytes = kNtscV2CompressedArchiveAlignmentBytes;
   }

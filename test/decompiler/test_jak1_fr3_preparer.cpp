@@ -42,6 +42,7 @@ int main() {
 
   jak1_fr3::Options defaults;
   CHECK(defaults.max_total_expanded_archive_bytes == 512ull * 1024 * 1024);
+  CHECK(defaults.require_game_count);
 
   auto invalid = jak1_fr3::prepare({}, {}, {}, revision);
   CHECK(!invalid);

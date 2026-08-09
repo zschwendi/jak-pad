@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
   jak2_fr3::Options defaults;
   CHECK(defaults.max_archives == 256);
   CHECK(defaults.max_levels == 256);
+  CHECK(!defaults.require_game_count);
   constexpr std::uintmax_t kRecordedTotalExpandedArchiveBytes = 596'611'024;
   CHECK(jak2_fr3::kNtscV2TotalExpandedArchiveBytes ==
         kRecordedTotalExpandedArchiveBytes);

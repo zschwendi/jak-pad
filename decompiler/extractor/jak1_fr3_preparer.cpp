@@ -489,12 +489,14 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
     }
 
     auto game_count = database.process_game_count_file();
-    if (game_count.empty()) {
+    if (game_count.empty() && options.require_game_count) {
       return Result<Summary>::failure(
           make_error(ErrorCode::extraction_failed,
                      std::string(profile.display_name) + " game-count extraction was empty."));
     }
-    file_util::write_text_file((assets / "game_count.txt").string(), game_count);
+    if (!game_count.empty()) {
+      file_util::write_text_file((assets / "game_count.txt").string(), game_count);
+    }
     if (const auto error = report(options, Phase::extracting_intermediates, 3, 4, "game count")) {
       return Result<Summary>::failure(*error);
     }

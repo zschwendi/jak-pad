@@ -38,6 +38,7 @@ struct Options {
   std::uintmax_t max_output_bytes = 768ull * 1024 * 1024;
   std::uint32_t max_archives = 64;
   std::uint32_t max_levels = 32;
+  bool require_game_count = true;
   std::optional<std::size_t> compressed_trailing_alignment_bytes;
   CancelCallback should_cancel;
   ProgressCallback report_progress;
