@@ -25,7 +25,8 @@ constexpr uint32_t kStateType = 0x2c0;
 constexpr uint32_t kProgressPointer = 0x500;
 constexpr uint32_t kProgress = 0x804;
 constexpr uint32_t kProgressState = 0x1004;
-constexpr uint32_t kTitleOptions = 0x1204;
+constexpr uint32_t kTitlePCOptions = 0x1204;
+constexpr uint32_t kConsoleTitleOptions = 0x1304;
 constexpr uint32_t kIdleState = 0x1404;
 
 int g_failures = 0;
@@ -50,7 +51,7 @@ struct Fixture {
     inputs.master_mode = kProgressSymbol;
     inputs.progress_pointer = kProgressPointer;
     inputs.progress_state = kProgressState;
-    inputs.title_options = kTitleOptions;
+    inputs.title_pc_options = kTitlePCOptions;
     inputs.progress_type = {kProgressSymbol, kProgressType,
                             static_cast<uint16_t>(layout::kProgressSize)};
     inputs.progress_global_state_type = {
@@ -73,12 +74,13 @@ struct Fixture {
     write(bytes, kProgressPointer, kProgress);
     write(bytes, kProgress - BASIC_OFFSET, kProgressType);
     write(bytes, kProgressState - BASIC_OFFSET, kProgressGlobalStateType);
-    write(bytes, kTitleOptions - BASIC_OFFSET, kMenuOptionListType);
+    write(bytes, kTitlePCOptions - BASIC_OFFSET, kMenuOptionListType);
+    write(bytes, kConsoleTitleOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kIdleState - BASIC_OFFSET, kStateType);
 
     write(bytes, kProgress + layout::kProcessState, kIdleState);
     write(bytes, kProgress + layout::kProcessNextState, kFalse);
-    write(bytes, kProgress + layout::kProgressCurrentOptions, kTitleOptions);
+    write(bytes, kProgress + layout::kProgressCurrentOptions, kTitlePCOptions);
     write(bytes, kProgress + layout::kProgressMenuTransition, 0.f);
     write<int32_t>(bytes, kProgress + layout::kProgressOptionIndex, 0);
     write(bytes, kProgress + layout::kProgressSelectedOption, kFalse);
@@ -107,14 +109,14 @@ void reads_stable_title_menu() {
              !snapshot.can_exit_with_start && !snapshot.can_go_back,
          "stable Jak II title maps to the shared title screen without exit actions");
 
-  for (int option = 0; option <= 3; option++) {
+  for (int option = kTitlePCRawOptionMin; option <= kTitlePCRawOptionMax; option++) {
     write<int32_t>(fixture.bytes, kProgress + layout::kProgressOptionIndex, option);
     write(fixture.bytes, kProgress + layout::kProgressSelectedOption,
           option == 2 ? kTrue : kFalse);
     snapshot = fixture.read_snapshot();
     expect(snapshot.available && snapshot.option_index == option &&
                snapshot.selected_option == (option == 2),
-           "all four title options and exact GOAL booleans are preserved");
+           "all five raw PC title options and exact GOAL booleans are preserved");
   }
 }
 
@@ -170,9 +172,9 @@ void wrong_types_and_symbols_fail_closed() {
          "a title process without the stable none next symbol is rejected");
 
   Fixture wrong_options;
-  write(wrong_options.bytes, kProgress + layout::kProgressCurrentOptions, uint32_t{0x1804});
+  write(wrong_options.bytes, kProgress + layout::kProgressCurrentOptions, kConsoleTitleOptions);
   expect(!wrong_options.read_snapshot().available,
-         "a title symbol with a different option list is rejected");
+         "the console title option list is rejected in place of the exact PC list");
 
   Fixture wrong_mode;
   wrong_mode.inputs.master_mode = kTitleSymbol;
@@ -201,12 +203,15 @@ void transition_and_option_bounds_are_explicit() {
   expect(!transition.read_snapshot().available, "a transition outside the proven range is rejected");
 
   Fixture negative_option;
-  write<int32_t>(negative_option.bytes, kProgress + layout::kProgressOptionIndex, -1);
+  write<int32_t>(negative_option.bytes, kProgress + layout::kProgressOptionIndex,
+                 kTitlePCRawOptionMin - 1);
   expect(!negative_option.read_snapshot().available, "a negative title option is rejected");
 
   Fixture large_option;
-  write<int32_t>(large_option.bytes, kProgress + layout::kProgressOptionIndex, 4);
-  expect(!large_option.read_snapshot().available, "a fifth title option is rejected");
+  write<int32_t>(large_option.bytes, kProgress + layout::kProgressOptionIndex,
+                 kTitlePCRawOptionMax + 1);
+  expect(!large_option.read_snapshot().available,
+         "a raw title option beyond the five-entry PC list is rejected");
 }
 
 }  // namespace

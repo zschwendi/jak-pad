@@ -46,6 +46,10 @@ static_assert(kStateName == 0);
 
 }  // namespace layout
 
+// The PC title list has five raw slots. Secrets may hide slot 3, but Quit remains slot 4.
+constexpr int32_t kTitlePCRawOptionMin = 0;
+constexpr int32_t kTitlePCRawOptionMax = 4;
+
 struct MemoryView {
   const uint8_t* data = nullptr;
   std::size_t size = 0;
@@ -85,7 +89,7 @@ struct Inputs {
   uint32_t master_mode = 0;
   uint32_t progress_pointer = 0;
   uint32_t progress_state = 0;
-  uint32_t title_options = 0;
+  uint32_t title_pc_options = 0;
 
   TypeIdentity progress_type;
   TypeIdentity progress_global_state_type;
@@ -152,7 +156,7 @@ inline Snapshot read(const MemoryView& memory, const Inputs& inputs) {
   if (!memory.read(inputs.progress_pointer, 0, &progress) ||
       !valid_basic_object(memory, progress, inputs.progress_type) ||
       !valid_basic_object(memory, inputs.progress_state, inputs.progress_global_state_type) ||
-      !valid_basic_object(memory, inputs.title_options, inputs.menu_option_list_type)) {
+      !valid_basic_object(memory, inputs.title_pc_options, inputs.menu_option_list_type)) {
     return out;
   }
 
@@ -181,9 +185,9 @@ inline Snapshot read(const MemoryView& memory, const Inputs& inputs) {
   uint32_t process_state_name = 0;
   if (!memory.read(process_state, layout::kStateName, &process_state_name) ||
       process_state_name != inputs.idle_symbol || process_next_state != memory.false_object ||
-      current_options != inputs.title_options || current != inputs.title_symbol ||
-      next != inputs.none_symbol || starting_state != inputs.title_symbol || option_index < 0 ||
-      option_index > 3 ||
+      current_options != inputs.title_pc_options || current != inputs.title_symbol ||
+      next != inputs.none_symbol || starting_state != inputs.title_symbol ||
+      option_index < kTitlePCRawOptionMin || option_index > kTitlePCRawOptionMax ||
       (selected_option != memory.false_object && selected_option != inputs.true_object) ||
       !std::isfinite(menu_transition) || menu_transition < 0.f || menu_transition > 1.f) {
     return out;

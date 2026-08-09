@@ -750,7 +750,7 @@ goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
   inputs.master_mode = symbol_value_if_present("*master-mode*");
   inputs.progress_pointer = symbol_value_if_present("*progress-process*");
   inputs.progress_state = symbol_value_if_present("*progress-state*");
-  inputs.title_options = symbol_value_if_present("*title*");
+  inputs.title_pc_options = symbol_value_if_present("*title-pc*");
   inputs.progress_type =
       progress_type_identity("progress", static_cast<uint16_t>(layout::kProgressSize));
   inputs.progress_global_state_type = progress_type_identity(
