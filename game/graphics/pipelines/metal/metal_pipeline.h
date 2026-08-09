@@ -191,6 +191,10 @@ struct ChainStats {
   DirectBatchStats jak2_sky_draw_last_batch;
   int jak2_screen_filter_draws = 0;
   int jak2_screen_filter_triangles = 0;
+  int jak2_progress_draws = 0;
+  int jak2_progress_triangles = 0;
+  int jak2_progress_textured_draws = 0;
+  int jak2_progress_missing_texture_draws = 0;
   int jak2_debug_no_zbuf2_draws = 0;
   int jak2_debug_no_zbuf2_triangles = 0;
   int tex_uploads = 0;

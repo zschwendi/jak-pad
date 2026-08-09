@@ -19,7 +19,7 @@ constexpr u32 kFirstPageOffset = 0x6000;
 constexpr u32 kPageStride = 0x200;
 constexpr std::size_t kMemorySize = 0x10000;
 constexpr std::size_t kFixtureMaximumGroups =
-    metal_renderer::kJak2SpriteTextureUploadMaximumGroups + 1;
+    metal_renderer::kJak2MapTextureUploadMaximumGroups + 1;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kFlushaVif = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
@@ -99,7 +99,9 @@ u32 put_upload_group(Fixture* fixture, u32 offset, u32 index, u32 page_offset, u
   return offset;
 }
 
-Fixture make_fixture(u32 upload_count) {
+Fixture make_fixture(
+    u32 upload_count,
+    u32 bucket_id = metal_renderer::kJak2SpriteTextureUploadBucket) {
   check(upload_count <= kFixtureMaximumGroups,
         "the synthetic fixture stays within its bounded upload storage");
   Fixture fixture;
@@ -108,7 +110,7 @@ Fixture make_fixture(u32 upload_count) {
     put_page_header(&fixture.live, page_offset(i), 0x101 + i, 2 + i);
   }
 
-  const u32 bucket_offset = kChainOffset + metal_renderer::kJak2SpriteTextureUploadBucket * 16;
+  const u32 bucket_offset = kChainOffset + bucket_id * 16;
   fixture.group_boundary_offsets[0] = bucket_offset;
   put_tag(&fixture.packet, bucket_offset, DmaTag::Kind::NEXT, 0,
           upload_count == 0 ? kTailOffset : group_offset(0), 0, 0);
@@ -131,6 +133,12 @@ std::optional<metal_renderer::Jak2SpriteTextureUploadPlan> plan(const Fixture& f
   return metal_renderer::plan_jak2_sprite_texture_upload(fixture.packet.data(),
                                                          fixture.packet.size(), kChainOffset,
                                                          fixture.live.data(), fixture.live.size());
+}
+
+std::optional<metal_renderer::Jak2MapTextureUploadPlan> plan_map(const Fixture& fixture) {
+  return metal_renderer::plan_jak2_map_texture_upload(
+      fixture.packet.data(), fixture.packet.size(), kChainOffset, fixture.live.data(),
+      fixture.live.size());
 }
 
 void test_source_bounded_upload_grammars() {
@@ -158,6 +166,22 @@ void test_source_bounded_upload_grammars() {
             "packet and live-memory reuse cannot change the owning plan");
     }
   }
+}
+
+void test_map_source_bounded_upload_grammars() {
+  for (const u32 upload_count : {1u, 2u, 3u, 7u, 8u}) {
+    auto fixture = make_fixture(upload_count, metal_renderer::kJak2MapTextureUploadBucket);
+    const auto result = plan_map(fixture);
+    check(result.has_value() && result->present && result->upload_count == upload_count,
+          "the exact one-through-eight map forms produce matching plans");
+    for (u32 i = 0; i < upload_count; ++i) {
+      check(result->uploads[i].page_offset == page_offset(i) && result->uploads[i].mode == -1,
+            "each ordered map descriptor is retained");
+    }
+  }
+
+  const auto nine = make_fixture(9, metal_renderer::kJak2MapTextureUploadBucket);
+  check(!plan_map(nine).has_value(), "a ninth map upload group is rejected");
 }
 
 void test_strict_empty_bucket_is_absent() {
@@ -321,12 +345,13 @@ void test_bad_dma_and_page_ranges_fail_closed() {
 
 int main() {
   test_source_bounded_upload_grammars();
+  test_map_source_bounded_upload_grammars();
   test_strict_empty_bucket_is_absent();
   test_direct_payloads_are_inert();
   test_packet_and_live_domains_are_separate();
   test_zero_or_more_than_seven_groups_fail_closed();
   test_malformed_transfer_shapes_fail_closed();
   test_bad_dma_and_page_ranges_fail_closed();
-  std::puts("PASS: Jak II TEX_ALL_SPRITE texture-upload plan");
+  std::puts("PASS: Jak II grouped texture-upload plans");
   return 0;
 }

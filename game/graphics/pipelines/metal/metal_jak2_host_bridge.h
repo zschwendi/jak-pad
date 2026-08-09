@@ -57,6 +57,7 @@ typedef struct goal_jak2_bucket4_texture_upload_metrics {
 } goal_jak2_bucket4_texture_upload_metrics;
 
 enum { GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS = 7 };
+enum { GOAL_JAK2_MAP_TEXTURE_UPLOAD_MAX_GROUPS = 8 };
 
 typedef struct goal_jak2_sprite_texture_upload_metrics {
   uint32_t valid;
@@ -65,6 +66,14 @@ typedef struct goal_jak2_sprite_texture_upload_metrics {
   uint64_t pages[GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS];
   int64_t modes[GOAL_JAK2_SPRITE_TEXTURE_UPLOAD_MAX_GROUPS];
 } goal_jak2_sprite_texture_upload_metrics;
+
+typedef struct goal_jak2_map_texture_upload_metrics {
+  uint32_t valid;
+  uint32_t present;
+  uint32_t upload_count;
+  uint64_t pages[GOAL_JAK2_MAP_TEXTURE_UPLOAD_MAX_GROUPS];
+  int64_t modes[GOAL_JAK2_MAP_TEXTURE_UPLOAD_MAX_GROUPS];
+} goal_jak2_map_texture_upload_metrics;
 
 enum {
   GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
@@ -115,6 +124,7 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t bucket4_cloud_texture;
   uint64_t bucket4_fog_texture;
   uint64_t sprite_texture_uploads;
+  uint64_t map_texture_uploads;
   uint64_t common_tfrag_ordinary_uploads;
   uint64_t common_tfrag_skull_gem_preparations;
   uint64_t common_tfrag_skull_gem_publications;
@@ -169,6 +179,10 @@ typedef struct goal_jak2_metal_host_metrics {
   uint32_t last_sky_draw_batch_alpha_afail;
   uint64_t last_screen_filter_draws;
   uint64_t last_screen_filter_triangles;
+  uint64_t last_progress_draws;
+  uint64_t last_progress_triangles;
+  uint64_t last_progress_textured_draws;
+  uint64_t last_progress_missing_texture_draws;
   uint64_t last_debug_no_zbuf2_draws;
   uint64_t last_debug_no_zbuf2_triangles;
   uint64_t last_sprites_2d;
@@ -201,6 +215,7 @@ typedef struct goal_jak2_metal_host_metrics {
   int64_t last_command_buffer_error_code;
   goal_jak2_bucket4_texture_upload_metrics last_bucket4_texture_upload;
   goal_jak2_sprite_texture_upload_metrics last_sprite_texture_upload;
+  goal_jak2_map_texture_upload_metrics last_map_texture_upload;
   goal_jak2_tfrag_texture_upload_metrics
       tfrag_texture_uploads[GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT];
   goal_jak2_tfrag_texture_upload_metrics

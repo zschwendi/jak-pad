@@ -76,6 +76,8 @@ class MetalDirectRenderer : public MetalBucketRenderer {
   struct Stats {
     int triangles = 0;
     int draw_calls = 0;
+    int textured_draw_calls = 0;
+    int missing_texture_draw_calls = 0;
     int flush_from_tex_0 = 0;
     int flush_from_zbuf = 0;
     int flush_from_test = 0;
@@ -263,4 +265,19 @@ class MetalDirectRenderer : public MetalBucketRenderer {
 
   Stats m_stats;
   bool m_warned_unsupported_blend = false;
+};
+
+/*!
+ * Jak II TextureUploadHandler counterpart for the source buckets constructed with add_direct.
+ * The host callback performs the already-validated ordinary uploads at this bucket boundary;
+ * exact PC_PORT descriptors are then omitted while Direct payloads retain their source order.
+ */
+class MetalHostTextureUploadDirectRenderer : public MetalDirectRenderer {
+ public:
+  MetalHostTextureUploadDirectRenderer(const std::string& name, int my_id, int batch_size)
+      : MetalDirectRenderer(name, my_id, batch_size) {}
+
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
 };

@@ -32,6 +32,9 @@ constexpr Table make_table() {
   const auto host_texture_upload = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::HostTextureUpload;
   };
+  const auto host_texture_upload_direct = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::HostTextureUploadDirect;
+  };
   const auto visibility = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::Visibility;
   };
@@ -117,7 +120,7 @@ constexpr Table make_table() {
   defer(BucketId::TEX_ALL_WARP);
   defer(BucketId::GMERC_WARP);
   defer(BucketId::DEBUG_NO_ZBUF1);
-  defer(BucketId::TEX_ALL_MAP);
+  host_texture_upload_direct(BucketId::TEX_ALL_MAP);
   direct(BucketId::PROGRESS);
   direct(BucketId::SCREEN_FILTER);
   defer(BucketId::SUBTITLE);
@@ -157,10 +160,11 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 149);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 148);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 15);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUploadDirect) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Visibility) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Sprite) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TFragment) == 6);
@@ -186,7 +190,9 @@ bool jak2_metal_bucket_allows_content(std::size_t bucket_id) {
 }
 
 int jak2_metal_direct_batch_size(std::size_t bucket_id) {
-  if (bucket_id >= kTable.size() || kTable[bucket_id].behavior != Jak2MetalBucketBehavior::Direct) {
+  if (bucket_id >= kTable.size() ||
+      (kTable[bucket_id].behavior != Jak2MetalBucketBehavior::Direct &&
+       kTable[bucket_id].behavior != Jak2MetalBucketBehavior::HostTextureUploadDirect)) {
     return 0;
   }
   switch (static_cast<BucketId>(bucket_id)) {
@@ -196,6 +202,8 @@ int jak2_metal_direct_batch_size(std::size_t bucket_id) {
       return 256;
     case BucketId::PROGRESS:
       return 0x1000;
+    case BucketId::TEX_ALL_MAP:
+      return 1024 * 6;
     case BucketId::DEBUG_NO_ZBUF2:
       return 0x8000;
     default:

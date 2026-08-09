@@ -62,6 +62,31 @@ u32 get_direct_qwc_or_nop(const VifCode& code) {
 MetalDirectRenderer::MetalDirectRenderer(const std::string& name, int my_id, int batch_size)
     : MetalBucketRenderer(name, my_id), m_prim_buffer(batch_size) {}
 
+void MetalHostTextureUploadDirectRenderer::render(DmaFollower& dma,
+                                                  MetalSharedRenderState* render_state,
+                                                  MetalFrameContext& ctx) {
+  ASSERT(metal_renderer::bucket_chain_layout(render_state->version) ==
+         metal_renderer::MetalBucketChainLayout::Jak2Direct);
+  if (render_state->host_bucket_callback) {
+    render_state->host_bucket_callback(render_state->host_bucket_context,
+                                       static_cast<u32>(m_my_id));
+  }
+
+  reset_state();
+  while (dma.current_tag_offset() != render_state->next_bucket) {
+    const auto data = dma.read_and_advance();
+    if (!data.size_bytes) {
+      continue;
+    }
+    if (data.size_bytes == 16 && data.vifcode0().kind == VifCode::Kind::PC_PORT &&
+        data.vif1() == 3) {
+      continue;
+    }
+    render_vif(data.vif0(), data.vif1(), data.data, data.size_bytes, render_state, ctx);
+  }
+  flush_pending(render_state, ctx);
+}
+
 /*!
  * Render from a DMA bucket (same walk as the GL DirectRenderer::render).
  */
@@ -428,6 +453,12 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
   ctx.triangles += num_tris;
   m_stats.draw_calls += draw_count;
   m_stats.triangles += num_tris;
+  if (last_batch.textured) {
+    m_stats.textured_draw_calls += draw_count;
+    if (last_batch.used_placeholder) {
+      m_stats.missing_texture_draw_calls += draw_count;
+    }
+  }
   m_prim_buffer.vert_count = 0;
 }
 

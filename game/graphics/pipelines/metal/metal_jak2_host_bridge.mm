@@ -215,6 +215,11 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_sky_draw_batch_alpha_afail = sky_batch.alpha_afail;
   host->metrics.last_screen_filter_draws = stats.jak2_screen_filter_draws;
   host->metrics.last_screen_filter_triangles = stats.jak2_screen_filter_triangles;
+  host->metrics.last_progress_draws = stats.jak2_progress_draws;
+  host->metrics.last_progress_triangles = stats.jak2_progress_triangles;
+  host->metrics.last_progress_textured_draws = stats.jak2_progress_textured_draws;
+  host->metrics.last_progress_missing_texture_draws =
+      stats.jak2_progress_missing_texture_draws;
   host->metrics.last_debug_no_zbuf2_draws = stats.jak2_debug_no_zbuf2_draws;
   host->metrics.last_debug_no_zbuf2_triangles = stats.jak2_debug_no_zbuf2_triangles;
   host->metrics.last_sprites_2d = stats.sprites_2d;
@@ -307,6 +312,27 @@ void copy_sprite_texture_upload_metrics(
   out.present = plan->present;
   const std::size_t upload_count =
       std::min(plan->upload_count, metal_renderer::kJak2SpriteTextureUploadMaximumGroups);
+  out.upload_count = static_cast<uint32_t>(upload_count);
+  for (std::size_t i = 0; i < upload_count; ++i) {
+    out.pages[i] = plan->uploads[i].page_offset;
+    out.modes[i] = plan->uploads[i].mode;
+  }
+}
+
+void copy_map_texture_upload_metrics(
+    goal_jak2_metal_host* host,
+    const std::optional<metal_renderer::Jak2MapTextureUploadPlan>& plan) {
+  static_assert(GOAL_JAK2_MAP_TEXTURE_UPLOAD_MAX_GROUPS ==
+                metal_renderer::kJak2MapTextureUploadMaximumGroups);
+  auto& out = host->metrics.last_map_texture_upload;
+  out = {};
+  out.valid = plan.has_value();
+  if (!plan) {
+    return;
+  }
+  out.present = plan->present;
+  const std::size_t upload_count =
+      std::min(plan->upload_count, metal_renderer::kJak2MapTextureUploadMaximumGroups);
   out.upload_count = static_cast<uint32_t>(upload_count);
   for (std::size_t i = 0; i < upload_count; ++i) {
     out.pages[i] = plan->uploads[i].page_offset;
@@ -417,6 +443,7 @@ struct Jak2TextureUploadDispatch {
   const Jak2TfragTextureUploadPlans* tfrag_plans = nullptr;
   const Jak2ShrubTextureUploadPlans* shrub_plans = nullptr;
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
+  const metal_renderer::Jak2MapTextureUploadPlan* map_plan = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
   const u8* live_ee_memory = nullptr;
   bool* host_texture_mutated = nullptr;
@@ -424,6 +451,22 @@ struct Jak2TextureUploadDispatch {
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  if (bucket_id == metal_renderer::kJak2MapTextureUploadBucket) {
+    if (!dispatch->map_plan || !dispatch->map_plan->present) {
+      return;
+    }
+    if (dispatch->map_plan->upload_count >
+        metal_renderer::kJak2MapTextureUploadMaximumGroups) {
+      throw std::runtime_error("Jak 2 bucket 319 texture-upload plan is inconsistent");
+    }
+    for (std::size_t i = 0; i < dispatch->map_plan->upload_count; ++i) {
+      execute_ordinary_texture_upload_or_throw(
+          dispatch->host, dispatch->map_plan->uploads[i], dispatch->live_ee_memory,
+          &dispatch->host->metrics.map_texture_uploads,
+          "Jak 2 bucket 319 ordinary texture upload", dispatch->host_texture_mutated);
+    }
+    return;
+  }
   if (bucket_id == metal_renderer::kJak2CommonTfragTextureUploadBucket) {
     if (!dispatch->common_tfrag_plan || !dispatch->common_tfrag_plan->present) {
       return;
@@ -689,6 +732,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 bucket 312 texture-upload plan rejected malformed DMA");
       return;
     }
+    const auto map_texture_plan = metal_renderer::plan_jak2_map_texture_upload(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+    copy_map_texture_upload_metrics(host, map_texture_plan);
+    if (!map_texture_plan) {
+      record_failure(host, "Jak 2 bucket 319 texture-upload plan rejected malformed DMA");
+      return;
+    }
     if (!execute_bucket4_plan(host, *bucket4_plan, static_cast<const u8*>(ee_base))) {
       return;
     }
@@ -721,6 +772,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &tfrag_texture_plans,
         &shrub_texture_plans,
         &*common_tfrag_texture_plan,
+        &*map_texture_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         static_cast<const u8*>(ee_base),
         &host_texture_mutated};
@@ -886,6 +938,8 @@ bool policy_table_is_audited() {
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::StrictEmpty &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Direct &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload &&
+        descriptor.behavior !=
+            metal_renderer::Jak2MetalBucketBehavior::HostTextureUploadDirect &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Visibility &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Sprite &&
         descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::TFragment &&

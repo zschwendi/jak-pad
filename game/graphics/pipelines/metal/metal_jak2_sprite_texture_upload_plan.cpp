@@ -11,7 +11,7 @@
 namespace metal_renderer {
 namespace {
 
-constexpr std::size_t kMaximumTransfers = 3 * kJak2SpriteTextureUploadMaximumGroups + 3;
+constexpr std::size_t kMaximumTransfers = 3 * kJak2GroupedTextureUploadMaximumGroups + 3;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kFlushaVif = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
@@ -193,13 +193,15 @@ bool read_descriptor_and_boundary(CheckedDmaFollower* dma,
 
 }  // namespace
 
-std::optional<Jak2SpriteTextureUploadPlan> plan_jak2_sprite_texture_upload(
+static std::optional<Jak2GroupedTextureUploadPlan> plan_grouped_texture_upload(
     const u8* dma_packet_snapshot,
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
     const u8* live_ee_memory,
-    std::size_t live_ee_memory_size) {
-  const u64 bucket_offset64 = static_cast<u64>(chain_offset) + kJak2SpriteTextureUploadBucket * 16;
+    std::size_t live_ee_memory_size,
+    u32 bucket_id,
+    std::size_t maximum_groups) {
+  const u64 bucket_offset64 = static_cast<u64>(chain_offset) + bucket_id * 16;
   const u64 end_offset64 = bucket_offset64 + 16;
   const std::size_t checked_packet_size =
       std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
@@ -219,20 +221,20 @@ std::optional<Jak2SpriteTextureUploadPlan> plan_jak2_sprite_texture_upload(
     if (dma.offset() != static_cast<u32>(end_offset64)) {
       return std::nullopt;
     }
-    return Jak2SpriteTextureUploadPlan{};
+    return Jak2GroupedTextureUploadPlan{};
   }
   if (!is_inert_next(first)) {
     return std::nullopt;
   }
 
-  Jak2SpriteTextureUploadPlan plan;
+  Jak2GroupedTextureUploadPlan plan;
   CheckedTransfer tail_or_group;
   if (!read_transfer(&dma, &tail_or_group)) {
     return std::nullopt;
   }
 
   while (is_direct(tail_or_group, 0, 2)) {
-    if (plan.upload_count == kJak2SpriteTextureUploadMaximumGroups) {
+    if (plan.upload_count == maximum_groups) {
       return std::nullopt;
     }
     if (!read_descriptor_and_boundary(&dma, live_ee_memory, live_ee_memory_size,
@@ -251,6 +253,30 @@ std::optional<Jak2SpriteTextureUploadPlan> plan_jak2_sprite_texture_upload(
   }
   plan.present = true;
   return plan;
+}
+
+std::optional<Jak2SpriteTextureUploadPlan> plan_jak2_sprite_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size) {
+  return plan_grouped_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, live_ee_memory,
+      live_ee_memory_size, kJak2SpriteTextureUploadBucket,
+      kJak2SpriteTextureUploadMaximumGroups);
+}
+
+std::optional<Jak2MapTextureUploadPlan> plan_jak2_map_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size) {
+  return plan_grouped_texture_upload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                                     live_ee_memory, live_ee_memory_size,
+                                     kJak2MapTextureUploadBucket,
+                                     kJak2MapTextureUploadMaximumGroups);
 }
 
 }  // namespace metal_renderer

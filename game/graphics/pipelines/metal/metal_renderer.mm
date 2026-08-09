@@ -427,6 +427,17 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalMercBucketRenderer>(
           fmt::format("merc-l{}-tfrag", level_id), descriptor.id, merc);
+    } else if (descriptor.behavior ==
+               metal_renderer::Jak2MetalBucketBehavior::HostTextureUploadDirect) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::TEX_ALL_MAP));
+      ASSERT(batch_size == 1024 * 6);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalHostTextureUploadDirectRenderer>(
+            "tex-all-map", descriptor.id, batch_size);
+      } else {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+            "jak2-host-texture-upload-direct-unavailable", descriptor.id);
+      }
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
       ASSERT(batch_size != 0);
       const char* name = "direct";
@@ -1151,6 +1162,10 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.jak2_sky_draw_last_batch = {};
     m_chain_stats.jak2_screen_filter_draws = 0;
     m_chain_stats.jak2_screen_filter_triangles = 0;
+    m_chain_stats.jak2_progress_draws = 0;
+    m_chain_stats.jak2_progress_triangles = 0;
+    m_chain_stats.jak2_progress_textured_draws = 0;
+    m_chain_stats.jak2_progress_missing_texture_draws = 0;
     m_chain_stats.jak2_debug_no_zbuf2_draws = 0;
     m_chain_stats.jak2_debug_no_zbuf2_triangles = 0;
     int uploads = 0;
@@ -1195,6 +1210,13 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
           sky_batch.alpha_test_mode = batch.alpha_test_mode;
           sky_batch.alpha_aref = batch.alpha_aref;
           sky_batch.alpha_afail = batch.alpha_afail;
+        } else if (m_shared_state.version == GameVersion::Jak2 &&
+                   bucket_id == static_cast<std::size_t>(jak2::BucketId::PROGRESS)) {
+          m_chain_stats.jak2_progress_draws = d->stats().draw_calls;
+          m_chain_stats.jak2_progress_triangles = d->stats().triangles;
+          m_chain_stats.jak2_progress_textured_draws = d->stats().textured_draw_calls;
+          m_chain_stats.jak2_progress_missing_texture_draws =
+              d->stats().missing_texture_draw_calls;
         } else if (m_shared_state.version == GameVersion::Jak2 &&
                    bucket_id == static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)) {
           m_chain_stats.jak2_screen_filter_draws = d->stats().draw_calls;
