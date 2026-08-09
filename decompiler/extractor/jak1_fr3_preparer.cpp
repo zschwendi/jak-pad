@@ -88,8 +88,9 @@ std::optional<Error> report(const Options& options,
 bool valid_options(const Options& options) {
   return options.max_archive_bytes > 0 && options.max_expanded_archive_bytes > 0 &&
          options.max_total_archive_bytes > 0 && options.max_total_expanded_archive_bytes > 0 &&
-         options.max_output_bytes > 0 &&
-         options.max_archives > 0 && options.max_levels > 0;
+         options.max_output_bytes > 0 && options.max_archives > 0 && options.max_levels > 0 &&
+         (!options.expected_distinct_fr3_files ||
+          *options.expected_distinct_fr3_files > 0);
 }
 
 bool supported_revision(const jak1_iso::Revision& revision) {
@@ -179,6 +180,36 @@ class OwnedWorkRoot {
 };
 
 }  // namespace
+
+namespace internal {
+
+LevelOutputUpdate update_expected_fr3_outputs(std::set<std::string>* expected_outputs,
+                                              std::set<std::string>* level_outputs,
+                                              std::string_view output_basename,
+                                              std::size_t remaining_levels,
+                                              std::size_t expected_final_count) {
+  if (!expected_outputs || !level_outputs || expected_final_count == 0 ||
+      !safe_output_basename(output_basename, ".fr3")) {
+    return LevelOutputUpdate::invalid;
+  }
+
+  auto next_expected = *expected_outputs;
+  auto next_levels = *level_outputs;
+  const std::string output(output_basename);
+  const bool added = next_levels.insert(output).second;
+  if ((added && !next_expected.insert(output).second) ||
+      (!added && !next_expected.contains(output)) ||
+      next_expected.size() > expected_final_count ||
+      expected_final_count - next_expected.size() > remaining_levels) {
+    return LevelOutputUpdate::invalid;
+  }
+
+  *expected_outputs = std::move(next_expected);
+  *level_outputs = std::move(next_levels);
+  return added ? LevelOutputUpdate::added : LevelOutputUpdate::replaced;
+}
+
+}  // namespace internal
 
 static Result<Summary> prepare_for_profile(const fs::path& project_root,
                                            const fs::path& extracted_iso_root,
@@ -278,6 +309,15 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
       return Result<Summary>::failure(make_error(
           ErrorCode::archive_limit_exceeded,
           "The " + std::string(profile.display_name) + " level list is empty or exceeds its cap."));
+    }
+    const auto maximum_fr3_files =
+        static_cast<std::uint32_t>(config.levels_to_extract.size() + 1);
+    const auto expected_fr3_files =
+        options.expected_distinct_fr3_files.value_or(maximum_fr3_files);
+    if (expected_fr3_files < 2 || expected_fr3_files > maximum_fr3_files) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::configuration_failed,
+          "The expected distinct FR3 count is incompatible with the tracked level list."));
     }
 
     std::vector<ghc::filesystem::path> text_objects;
@@ -517,6 +557,7 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
       return Result<Summary>::failure(*error);
     }
 
+    std::set<std::string> level_outputs;
     for (std::size_t index = 0; index < config.levels_to_extract.size(); ++index) {
       if (const auto error = cancellation_error(options)) {
         return Result<Summary>::failure(*error);
@@ -528,17 +569,23 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
                                     level)) {
         return Result<Summary>::failure(*error);
       }
-      decompiler::extract_from_level(database, texture_database, level, config, fr3.string(),
-                                     entities.string());
-      const auto current_fr3 = fr3_files(fr3);
-      if (current_fr3.size() != expected_fr3.size() + 1 ||
-          !std::includes(current_fr3.begin(), current_fr3.end(), expected_fr3.begin(),
-                         expected_fr3.end())) {
+      const auto output_basename = decompiler::extract_from_level(
+          database, texture_database, level, config, fr3.string(), entities.string());
+      if (!output_basename ||
+          internal::update_expected_fr3_outputs(
+              &expected_fr3, &level_outputs, *output_basename,
+              config.levels_to_extract.size() - index - 1, expected_fr3_files) ==
+              internal::LevelOutputUpdate::invalid) {
         return Result<Summary>::failure(make_error(
             ErrorCode::output_incomplete,
-            "A level extraction did not create exactly one safe FR3 output."));
+            "A level extraction did not produce an expected safe FR3 destination."));
       }
-      expected_fr3 = current_fr3;
+      const auto current_fr3 = fr3_files(fr3);
+      if (current_fr3 != expected_fr3) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::output_incomplete,
+            "A level extraction did not produce the exact expected FR3 set."));
+      }
       if (const auto error = output_budget_error(work_root, options)) {
         return Result<Summary>::failure(*error);
       }
@@ -555,8 +602,8 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
     summary.output_bytes = directory_size(work_root);
     directory_size(fr3, &summary.levels_written);
     directory_size(raw_objects, &summary.raw_objects_written);
-    const auto expected_levels = static_cast<std::uint32_t>(config.levels_to_extract.size() + 1);
-    if (summary.levels_written != expected_levels || expected_fr3.size() != expected_levels) {
+    if (summary.levels_written != expected_fr3_files ||
+        expected_fr3.size() != expected_fr3_files) {
       return Result<Summary>::failure(make_error(
           ErrorCode::output_incomplete, "FR3 preparation did not produce every expected level."));
     }

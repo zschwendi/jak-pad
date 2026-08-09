@@ -1,6 +1,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -44,6 +45,26 @@ int main() {
   CHECK(defaults.max_total_expanded_archive_bytes == 512ull * 1024 * 1024);
   CHECK(defaults.max_output_bytes == 768ull * 1024 * 1024);
   CHECK(defaults.require_game_count);
+  CHECK(!defaults.expected_distinct_fr3_files);
+
+  std::set<std::string> expected_outputs = {"GAME.fr3"};
+  std::set<std::string> level_outputs;
+  CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
+            &expected_outputs, &level_outputs, "alpha.fr3", 1, 3) ==
+        jak1_fr3::internal::LevelOutputUpdate::added);
+  const auto expected_after_add = expected_outputs;
+  const auto levels_after_add = level_outputs;
+  CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
+            &expected_outputs, &level_outputs, "alpha.fr3", 0, 3) ==
+        jak1_fr3::internal::LevelOutputUpdate::invalid);
+  CHECK(expected_outputs == expected_after_add);
+  CHECK(level_outputs == levels_after_add);
+  CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
+            &expected_outputs, &level_outputs, "GAME.fr3", 0, 2) ==
+        jak1_fr3::internal::LevelOutputUpdate::invalid);
+  CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
+            &expected_outputs, &level_outputs, "../unsafe.fr3", 0, 2) ==
+        jak1_fr3::internal::LevelOutputUpdate::invalid);
 
   auto invalid = jak1_fr3::prepare({}, {}, {}, revision);
   CHECK(!invalid);

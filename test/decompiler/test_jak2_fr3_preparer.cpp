@@ -1,6 +1,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -48,6 +49,7 @@ int main(int argc, char** argv) {
   CHECK(defaults.max_archives == 256);
   CHECK(defaults.max_levels == 256);
   CHECK(!defaults.require_game_count);
+  CHECK(defaults.expected_distinct_fr3_files == jak2_fr3::kNtscV2ExpectedFr3Files);
   constexpr std::uintmax_t kRecordedTotalExpandedArchiveBytes = 596'611'024;
   CHECK(jak2_fr3::kNtscV2TotalExpandedArchiveBytes ==
         kRecordedTotalExpandedArchiveBytes);
@@ -56,19 +58,44 @@ int main(int argc, char** argv) {
   CHECK(kRecordedTotalExpandedArchiveBytes <= defaults.max_total_expanded_archive_bytes);
   CHECK(kRecordedTotalExpandedArchiveBytes + 1 >
         defaults.max_total_expanded_archive_bytes);
-  constexpr std::uintmax_t kMeasuredFr3WorkBytes = 1'186'140'404;
+  constexpr std::uintmax_t kMeasuredFr3WorkBytes = 1'185'280'508;
   constexpr std::uintmax_t kMaxFr3WorkBytes = 1'342'177'280;
   CHECK(jak2_fr3::kNtscV2MeasuredFr3WorkBytes == kMeasuredFr3WorkBytes);
   CHECK(jak2_fr3::kNtscV2MaxFr3WorkBytes == kMaxFr3WorkBytes);
   CHECK(defaults.max_output_bytes == kMaxFr3WorkBytes);
   CHECK(kMeasuredFr3WorkBytes <= defaults.max_output_bytes);
-  CHECK(defaults.max_output_bytes - kMeasuredFr3WorkBytes == 156'036'876);
+  CHECK(defaults.max_output_bytes - kMeasuredFr3WorkBytes == 156'896'772);
   CHECK(kMaxFr3WorkBytes - 1 <= defaults.max_output_bytes);
   CHECK(kMaxFr3WorkBytes <= defaults.max_output_bytes);
   CHECK(kMaxFr3WorkBytes + 1 > defaults.max_output_bytes);
   CHECK(jak2_fr3::kNtscV2TrackedLevelCount == 147);
-  CHECK(jak2_fr3::kNtscV2ExpectedFr3Files == 148);
-  CHECK(jak2_fr3::kNtscV2ExpectedFr3Files == jak2_fr3::kNtscV2TrackedLevelCount + 1);
+  CHECK(jak2_fr3::kNtscV2ExpectedLevelOutputCollisions == 1);
+  CHECK(jak2_fr3::kNtscV2ExpectedFr3Files == 147);
+  CHECK(jak2_fr3::kNtscV2ExpectedFr3Files ==
+        jak2_fr3::kNtscV2TrackedLevelCount + 1 -
+            jak2_fr3::kNtscV2ExpectedLevelOutputCollisions);
+
+  std::set<std::string> expected_outputs = {"GAME.fr3"};
+  std::set<std::string> level_outputs;
+  CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
+            &expected_outputs, &level_outputs, "alpha.fr3", 1, 2) ==
+        jak1_fr3::internal::LevelOutputUpdate::added);
+  CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
+            &expected_outputs, &level_outputs, "alpha.fr3", 0, 2) ==
+        jak1_fr3::internal::LevelOutputUpdate::replaced);
+  CHECK(expected_outputs == std::set<std::string>({"GAME.fr3", "alpha.fr3"}));
+
+  expected_outputs = {"GAME.fr3"};
+  level_outputs.clear();
+  CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
+            &expected_outputs, &level_outputs, "alpha.fr3", 2, 3) ==
+        jak1_fr3::internal::LevelOutputUpdate::added);
+  CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
+            &expected_outputs, &level_outputs, "alpha.fr3", 1, 3) ==
+        jak1_fr3::internal::LevelOutputUpdate::replaced);
+  CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
+            &expected_outputs, &level_outputs, "alpha.fr3", 0, 3) ==
+        jak1_fr3::internal::LevelOutputUpdate::invalid);
   CHECK(defaults.compressed_trailing_alignment_bytes ==
         jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes);
   constexpr std::size_t kLwidebPayloadEnd = 0x14b6d0;

@@ -351,15 +351,15 @@ void extract_common(const ObjectFileDB& db,
   }
 }
 
-void extract_from_level(const ObjectFileDB& db,
-                        const TextureDB& tex_db,
-                        const std::string& dgo_name,
-                        const Config& config,
-                        const fs::path& output_folder,
-                        const fs::path& entities_folder) {
+std::optional<std::string> extract_from_level(const ObjectFileDB& db,
+                                              const TextureDB& tex_db,
+                                              const std::string& dgo_name,
+                                              const Config& config,
+                                              const fs::path& output_folder,
+                                              const fs::path& entities_folder) {
   if (db.obj_files_by_dgo.count(dgo_name) == 0) {
     lg::warn("Skipping extract for {} because the DGO was not part of the input", dgo_name);
-    return;
+    return std::nullopt;
   }
   tfrag3::Level level_data;
   std::map<std::string, level_tools::ArtData> art_group_data;
@@ -382,8 +382,9 @@ void extract_from_level(const ObjectFileDB& db,
   print_memory_usage(level_data, ser.get_save_result().second);
   lg::info("compressed: {} -> {} ({:.2f}%)", ser.get_save_result().second, compressed.size(),
            100.f * compressed.size() / ser.get_save_result().second);
-  file_util::write_binary_file(output_folder / fmt::format("{}.fr3", level_data.level_name),
-                               compressed.data(), compressed.size());
+  const auto output_basename = fmt::format("{}.fr3", level_data.level_name);
+  file_util::write_binary_file(output_folder / output_basename, compressed.data(),
+                               compressed.size());
 
   if (config.rip_levels) {
     auto back_file_path = file_util::get_jak_project_dir() / "decompiler_out" /
@@ -404,6 +405,7 @@ void extract_from_level(const ObjectFileDB& db,
     file_util::write_text_file(
         entities_folder / fmt::format("{}-ambients.json", level_data.level_name),
         extract_ambients_to_json(bsp_header.ambients));
+  return output_basename;
 }
 
 void extract_all_levels(const ObjectFileDB& db,

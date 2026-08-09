@@ -5,7 +5,9 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "common/versions/jak1_iso_revisions.h"
@@ -39,10 +41,27 @@ struct Options {
   std::uint32_t max_archives = 64;
   std::uint32_t max_levels = 32;
   bool require_game_count = true;
+  std::optional<std::uint32_t> expected_distinct_fr3_files;
   std::optional<std::size_t> compressed_trailing_alignment_bytes;
   CancelCallback should_cancel;
   ProgressCallback report_progress;
 };
+
+namespace internal {
+
+enum class LevelOutputUpdate {
+  added,
+  replaced,
+  invalid,
+};
+
+LevelOutputUpdate update_expected_fr3_outputs(std::set<std::string>* expected_outputs,
+                                              std::set<std::string>* level_outputs,
+                                              std::string_view output_basename,
+                                              std::size_t remaining_levels,
+                                              std::size_t expected_final_count);
+
+}  // namespace internal
 
 enum class ErrorCode {
   invalid_argument,

@@ -16,12 +16,14 @@ inline constexpr std::size_t kNtscV2CompressedArchiveAlignmentBytes = 0x40000;
 inline constexpr std::uintmax_t kNtscV2TotalExpandedArchiveBytes = 596'611'024;
 
 // The preparer budgets its complete work tree, including raw objects, intermediate metadata,
-// entities, and FR3 files. The canonical tracked profile measures 1,186,140,404 bytes; this
+// entities, and FR3 files. The canonical base-retail profile measures 1,185,280,508 bytes; this
 // 1,280 MiB ceiling retains bounded headroom while keeping output and storage checks fail-closed.
-inline constexpr std::uintmax_t kNtscV2MeasuredFr3WorkBytes = 1'186'140'404;
+inline constexpr std::uintmax_t kNtscV2MeasuredFr3WorkBytes = 1'185'280'508;
 inline constexpr std::uintmax_t kNtscV2MaxFr3WorkBytes = 1'280ull * 1024 * 1024;
 inline constexpr std::uint32_t kNtscV2TrackedLevelCount = 147;
-inline constexpr std::uint32_t kNtscV2ExpectedFr3Files = kNtscV2TrackedLevelCount + 1;
+inline constexpr std::uint32_t kNtscV2ExpectedLevelOutputCollisions = 1;
+inline constexpr std::uint32_t kNtscV2ExpectedFr3Files =
+    kNtscV2TrackedLevelCount + 1 - kNtscV2ExpectedLevelOutputCollisions;
 
 using Phase = jak1_fr3::Phase;
 using Progress = jak1_fr3::Progress;
@@ -40,6 +42,7 @@ struct Options : jak1_fr3::Options {
     max_levels = 256;
     // Jak II's build/output graph has no game-cnt; desktop extraction treats its absence as normal.
     require_game_count = false;
+    expected_distinct_fr3_files = kNtscV2ExpectedFr3Files;
     max_total_expanded_archive_bytes = kNtscV2TotalExpandedArchiveBytes;
     max_output_bytes = kNtscV2MaxFr3WorkBytes;
     compressed_trailing_alignment_bytes = kNtscV2CompressedArchiveAlignmentBytes;
