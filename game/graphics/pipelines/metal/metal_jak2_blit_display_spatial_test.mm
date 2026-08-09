@@ -13,6 +13,7 @@
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_blit_display_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
+#include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
 #import <Metal/Metal.h>
@@ -184,6 +185,39 @@ std::vector<u8> make_copy_back_decoy() {
   return payload;
 }
 
+std::vector<u8> make_renderer_chain(metal_renderer::Jak2BlitDisplayCommand command,
+                                    const std::vector<u8>& sky_payload) {
+  constexpr std::size_t kBucketCount = static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS);
+  constexpr std::size_t kBucketBytes = (kBucketCount + 1) * 16;
+  const std::size_t blit_offset = kBucketBytes;
+  const std::size_t blit_bytes =
+      command == metal_renderer::Jak2BlitDisplayCommand::Snapshot ? 48 : 0;
+  const std::size_t sky_offset = blit_offset + blit_bytes;
+  std::vector<u8> chain(sky_offset + 16 + sky_payload.size() + 16, 0);
+  for (std::size_t bucket = 0; bucket < kBucketCount; ++bucket) {
+    put_tag(&chain, static_cast<u32>(bucket * 16), DmaTag::Kind::CNT);
+  }
+  put_tag(&chain, static_cast<u32>(kBucketCount * 16), DmaTag::Kind::END);
+
+  if (command == metal_renderer::Jak2BlitDisplayCommand::Snapshot) {
+    put_tag(&chain, kBlitBucket * 16, DmaTag::Kind::NEXT, 0, static_cast<u32>(blit_offset));
+    put_tag(&chain, static_cast<u32>(blit_offset), DmaTag::Kind::CNT, 1, 0,
+            vif(VifCode::Kind::PC_PORT, 0x10),
+            vif(VifCode::Kind::PC_PORT, metal_renderer::kJak2BlitDisplayTbp));
+    put_tag(&chain, static_cast<u32>(blit_offset + 32), DmaTag::Kind::NEXT, 0,
+            (kBlitBucket + 1) * 16);
+  }
+
+  put_tag(&chain, kSkyDrawBucket * 16, DmaTag::Kind::NEXT, 0, static_cast<u32>(sky_offset));
+  put_tag(&chain, static_cast<u32>(sky_offset), DmaTag::Kind::CNT,
+          static_cast<u16>(sky_payload.size() / 16), 0, 0,
+          vif(VifCode::Kind::DIRECT, static_cast<u16>(sky_payload.size() / 16)));
+  std::memcpy(chain.data() + sky_offset + 16, sky_payload.data(), sky_payload.size());
+  put_tag(&chain, static_cast<u32>(sky_offset + 16 + sky_payload.size()), DmaTag::Kind::NEXT, 0,
+          (kSkyDrawBucket + 1) * 16);
+  return chain;
+}
+
 struct Pixel {
   u8 r = 0;
   u8 g = 0;
@@ -320,6 +354,84 @@ void render_direct(MetalDirectRenderer* renderer,
   renderer->flush_pending(state, *ctx);
 }
 
+void test_renderer_fallback_lifecycle(id<MTLDevice> device) {
+  const std::size_t initial_texture_count = metal_texture_live_count();
+  TexturePool texture_pool(GameVersion::Jak2);
+  u64 placeholder = 0;
+  {
+    MetalRenderer renderer;
+    check(renderer.init(device), "initialized the full Jak II Metal renderer lifecycle");
+    check(metal_setup_placeholder(device, renderer.queue(), texture_pool),
+          "published the lifecycle test placeholder");
+    placeholder = texture_pool.get_placeholder_texture();
+    renderer.init_bucket_renderers(&texture_pool, GameVersion::Jak2);
+
+    CAMetalLayer* commit_layer = [CAMetalLayer layer];
+    commit_layer.device = device;
+    commit_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    commit_layer.drawableSize = CGSizeMake(kTargetSize, kTargetSize);
+    commit_layer.allowsNextDrawableTimeout = YES;
+
+    MetalRenderOptions options;
+    options.game_res_w = kTargetSize;
+    options.game_res_h = kTargetSize;
+    options.draw_region_w = kTargetSize;
+    options.draw_region_h = kTargetSize;
+
+    const auto frame_a_chain =
+        make_renderer_chain(metal_renderer::Jak2BlitDisplayCommand::None, make_spatial_frame_a());
+    renderer.render_chain_frame(options, commit_layer, frame_a_chain.data(), 0,
+                                frame_a_chain.size());
+    check(renderer.wait_for_last_chain_frame(5.0), "committed real Jak II frame A");
+    metal_renderer::FramePixels frame_a;
+    check(renderer.read_game_frame(&frame_a), "read back real Jak II frame A");
+
+    MetalRenderOptions fallback_options;
+    check(fallback_options.game_res_w != options.game_res_w &&
+              fallback_options.game_res_h != options.game_res_h,
+          "the fallback regression uses dimensions different from frame A");
+    renderer.render_frame(fallback_options, nil);
+    metal_renderer::FramePixels after_fallback;
+    check(renderer.read_game_frame(&after_fallback),
+          "read back retained game color after a fallback validation frame");
+    bool fallback_preserved = frame_a.rgba == after_fallback.rgba;
+    check(fallback_preserved,
+          "the fallback validation scene never replaces Jak II's retained game target");
+
+    const auto snapshot_chain = make_renderer_chain(
+        metal_renderer::Jak2BlitDisplayCommand::Snapshot, make_snapshot_sky_draw());
+    renderer.render_chain_frame(options, commit_layer, snapshot_chain.data(), 0,
+                                snapshot_chain.size());
+    check(renderer.wait_for_last_chain_frame(5.0),
+          "committed the real Jak II snapshot chain after fallback");
+    metal_renderer::FramePixels frame_b;
+    check(renderer.read_game_frame(&frame_b), "read back the post-fallback snapshot frame");
+
+    const auto frame_pixel = [](const metal_renderer::FramePixels& frame, int x, int y) {
+      const std::size_t offset = static_cast<std::size_t>(y * frame.width + x) * 4;
+      return Pixel{frame.rgba[offset], frame.rgba[offset + 1], frame.rgba[offset + 2],
+                   frame.rgba[offset + 3]};
+    };
+    const std::array<std::array<int, 2>, 4> samples = {
+        std::array<int, 2>{16, 16}, {48, 16}, {16, 48}, {48, 48}};
+    bool snapshot_derived_from_a = true;
+    for (const auto& sample : samples) {
+      snapshot_derived_from_a &= near_pixel(frame_pixel(frame_b, sample[0], sample[1]),
+                                            tinted(frame_pixel(frame_a, sample[0], sample[1])), 4);
+    }
+    const auto stats = renderer.chain_stats();
+    check(fallback_preserved && snapshot_derived_from_a &&
+              stats.jak2_blit_display_texture_lookup_hit &&
+              !stats.jak2_blit_display_used_placeholder,
+          "TBP 0x3300 derives from frame A, never the intervening validation scene");
+  }
+
+  metal_texture_release(placeholder);
+  texture_pool.set_placeholder(0);
+  check(metal_texture_live_count() == initial_texture_count,
+        "the lifecycle test releases its placeholder and snapshot handles");
+}
+
 }  // namespace
 
 int main() {
@@ -438,7 +550,7 @@ int main() {
       render_direct(&sky, make_copy_back_decoy(), &state, &copy_back_ctx);
       std::vector<u8> copy_back_frame;
       check(finish_frame(&copy_back_ctx, &blit, color, &copy_back_frame),
-            "the bounded copy-back command completed after a decoy draw");
+            "the bounded copy-back command completed after a later-bucket decoy draw");
       bool copy_back_matches = true;
       for (const auto& sample : samples) {
         copy_back_matches &= pixel_at(copy_back_frame, sample[0], sample[1]).r ==
@@ -450,13 +562,15 @@ int main() {
       }
       check(
           blit.stats().copy_back_requested && blit.stats().copy_back_performed && copy_back_matches,
-          "opcode 0x11 restores only the dimension-matched retained snapshot");
+          "frame-end opcode 0x11 restores over later buckets only for a matching snapshot");
     }
 
     metal_texture_release(placeholder);
     texture_pool.set_placeholder(0);
     check(metal_texture_live_count() == initial_texture_count,
           "the focused test releases both placeholder and bucket-3 snapshot handles");
+
+    test_renderer_fallback_lifecycle(device);
 
     if (failures) {
       std::printf("FAIL: %d Jak II BlitDisplays spatial checks failed\n", failures);

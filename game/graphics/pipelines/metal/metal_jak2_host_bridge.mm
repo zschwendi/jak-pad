@@ -62,6 +62,36 @@ struct goal_jak2_metal_host {
   bool inactive = false;
 };
 
+namespace metal_renderer {
+
+bool jak2_metal_host_policy_table_is_audited() {
+  const auto& table = jak2_metal_bucket_table();
+  if (table.size() != kJak2MetalBucketCount ||
+      jak2_metal_bucket_table_fingerprint() != kJak2MetalBucketExpectedFingerprint) {
+    return false;
+  }
+  for (const auto& descriptor : table) {
+    if (descriptor.behavior != Jak2MetalBucketBehavior::DeferredSkip &&
+        descriptor.behavior != Jak2MetalBucketBehavior::StrictEmpty &&
+        descriptor.behavior != Jak2MetalBucketBehavior::Direct &&
+        descriptor.behavior != Jak2MetalBucketBehavior::HostTextureUpload &&
+        descriptor.behavior != Jak2MetalBucketBehavior::HostTextureUploadDirect &&
+        descriptor.behavior != Jak2MetalBucketBehavior::Visibility &&
+        descriptor.behavior != Jak2MetalBucketBehavior::Sprite &&
+        descriptor.behavior != Jak2MetalBucketBehavior::TFragment &&
+        descriptor.behavior != Jak2MetalBucketBehavior::Shrub &&
+        descriptor.behavior != Jak2MetalBucketBehavior::Tie &&
+        descriptor.behavior != Jak2MetalBucketBehavior::TieEnvmap &&
+        descriptor.behavior != Jak2MetalBucketBehavior::Merc &&
+        descriptor.behavior != Jak2MetalBucketBehavior::BlitDisplay) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace metal_renderer
+
 namespace {
 
 goal_jak2_metal_host* g_active_host = nullptr;
@@ -1048,35 +1078,9 @@ void set_pmode_alpha(float alpha) {
   }
 }
 
-bool policy_table_is_audited() {
-  const auto& table = metal_renderer::jak2_metal_bucket_table();
-  if (table.size() != metal_renderer::kJak2MetalBucketCount ||
-      metal_renderer::jak2_metal_bucket_table_fingerprint() !=
-          metal_renderer::kJak2MetalBucketExpectedFingerprint) {
-    return false;
-  }
-  for (const auto& descriptor : table) {
-    if (descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::StrictEmpty &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Direct &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload &&
-        descriptor.behavior !=
-            metal_renderer::Jak2MetalBucketBehavior::HostTextureUploadDirect &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Visibility &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Sprite &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::TFragment &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Shrub &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Tie &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::TieEnvmap &&
-        descriptor.behavior != metal_renderer::Jak2MetalBucketBehavior::Merc) {
-      return false;
-    }
-  }
-  return true;
-}
-
 goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
-  if (g_active_host || !policy_table_is_audited() || (presenting && !layer)) {
+  if (g_active_host || !metal_renderer::jak2_metal_host_policy_table_is_audited() ||
+      (presenting && !layer)) {
     return nullptr;
   }
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();

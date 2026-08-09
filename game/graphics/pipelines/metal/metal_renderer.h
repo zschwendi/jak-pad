@@ -152,14 +152,17 @@ class MetalRenderer {
   };
 
   void setup_frame(const MetalRenderOptions& opts);
-  void encode_game_passes(id<MTLCommandBuffer> cmds);
+  void encode_game_passes(id<MTLCommandBuffer> cmds,
+                          id<MTLTexture> color,
+                          id<MTLTexture> depth);
   void init_bucket_renderers_jak1();
   void init_bucket_renderers_jak2();
   void dispatch_buckets_jak1(DmaFollower dma, MetalFrameContext& ctx);
   void dispatch_buckets_jak2(DmaFollower dma, MetalFrameContext& ctx);
   void encode_present_pass(id<MTLCommandBuffer> cmds,
                            id<MTLTexture> target,
-                           const MetalRenderOptions& opts);
+                           const MetalRenderOptions& opts,
+                           id<MTLTexture> source);
   void build_validation_scene();
   bool read_color_target(id<MTLTexture> tex, metal_renderer::FramePixels* out);
 
@@ -171,6 +174,8 @@ class MetalRenderer {
   // offscreen game render target (game internal resolution)
   id<MTLTexture> m_game_color;
   id<MTLTexture> m_game_depth;
+  id<MTLTexture> m_jak2_fallback_color;
+  id<MTLTexture> m_jak2_fallback_depth;
 
   // validation scene resources
   id<MTLBuffer> m_scene_vertices;

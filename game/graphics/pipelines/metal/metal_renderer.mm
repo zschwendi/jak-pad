@@ -626,19 +626,21 @@ void MetalRenderer::setup_frame(const MetalRenderOptions& opts) {
   }
 }
 
-void MetalRenderer::encode_game_passes(id<MTLCommandBuffer> cmds) {
+void MetalRenderer::encode_game_passes(id<MTLCommandBuffer> cmds,
+                                       id<MTLTexture> color,
+                                       id<MTLTexture> depth) {
   auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-  pass.colorAttachments[0].texture = m_game_color;
+  pass.colorAttachments[0].texture = color;
   pass.colorAttachments[0].loadAction = MTLLoadActionClear;
   pass.colorAttachments[0].storeAction = MTLStoreActionStore;
   // Jak 1 clears the game framebuffer to transparent black and depth to 0
   // (OpenGLRenderer::setup_frame)
   pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
-  pass.depthAttachment.texture = m_game_depth;
+  pass.depthAttachment.texture = depth;
   pass.depthAttachment.loadAction = MTLLoadActionClear;
   pass.depthAttachment.storeAction = MTLStoreActionDontCare;
   pass.depthAttachment.clearDepth = 0.0;
-  pass.stencilAttachment.texture = m_game_depth;
+  pass.stencilAttachment.texture = depth;
   pass.stencilAttachment.loadAction = MTLLoadActionClear;
   pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
   pass.stencilAttachment.clearStencil = 0;
@@ -667,7 +669,8 @@ void MetalRenderer::encode_game_passes(id<MTLCommandBuffer> cmds) {
  */
 void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
                                         id<MTLTexture> target,
-                                        const MetalRenderOptions& opts) {
+                                        const MetalRenderOptions& opts,
+                                        id<MTLTexture> source) {
   int target_w = (int)target.width;
   int target_h = (int)target.height;
   int region_w = opts.draw_region_w;
@@ -700,7 +703,7 @@ void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
   PresentParams params =
       make_present_params(opts.brightness_contrast_color, opts.brightness_contrast_alpha);
   [enc setFragmentBytes:&params length:sizeof(params) atIndex:0];
-  [enc setFragmentTexture:m_game_color atIndex:0];
+  [enc setFragmentTexture:source atIndex:0];
   [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
 
   if (opts.pmode_alp < 1.f) {
@@ -729,24 +732,42 @@ void MetalRenderer::render_frame(const MetalRenderOptions& opts, CAMetalLayer* l
   @autoreleasepool {
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
 
-    setup_frame(opts);
-    encode_game_passes(cmds);
+    const bool jak2_fallback = m_shared_state.version == GameVersion::Jak2;
+    id<MTLTexture> color = nil;
+    id<MTLTexture> depth = nil;
+    if (jak2_fallback) {
+      if (!m_jak2_fallback_color || (int)m_jak2_fallback_color.width != opts.game_res_w ||
+          (int)m_jak2_fallback_color.height != opts.game_res_h) {
+        m_jak2_fallback_color =
+            make_color_target(m_device, opts.game_res_w, opts.game_res_h, true);
+        m_jak2_fallback_depth = make_depth_target(m_device, opts.game_res_w, opts.game_res_h);
+      }
+      color = m_jak2_fallback_color;
+      depth = m_jak2_fallback_depth;
+    } else {
+      setup_frame(opts);
+      color = m_game_color;
+      depth = m_game_depth;
+    }
+    encode_game_passes(cmds, color, depth);
 #if TARGET_OS_OSX
     {
       id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
-      [blit synchronizeResource:m_game_color];
+      [blit synchronizeResource:color];
       [blit endEncoding];
     }
 #endif
 
     id<CAMetalDrawable> drawable = [layer nextDrawable];
     if (drawable) {
-      encode_present_pass(cmds, drawable.texture, opts);
+      encode_present_pass(cmds, drawable.texture, opts, color);
       schedule_present(cmds, drawable, opts);
     }
 
     [cmds commit];
-    m_game_target_fresh = false;
+    if (!jak2_fallback) {
+      m_game_target_fresh = false;
+    }
     {
       std::lock_guard<std::mutex> lock(m_frame_mutex);
       m_last_frame_cmds = cmds;
@@ -939,6 +960,9 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     }
     if (m_shared_state.version == GameVersion::Jak2) {
       ASSERT(m_jak2_blit_display);
+      // OpenGLRenderer::render calls BlitDisplays::do_copy_back only after
+      // dispatch_buckets, so opcode 0x11 intentionally restores over every
+      // later bucket before the frame is presented.
       m_jak2_blit_display->finish_frame(ctx);
     }
     [ctx.enc endEncoding];
@@ -1094,7 +1118,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     if (drawable) {
       drawable_acquired = true;
       m_chain_stats.drawables_acquired++;
-      encode_present_pass(cmds, drawable.texture, opts);
+      encode_present_pass(cmds, drawable.texture, opts, m_game_color);
       if (opts.presentation_time > 0.0 && opts.presentation_time <= CACurrentMediaTime()) {
         m_chain_stats.late_present_submissions++;
       }
@@ -1586,7 +1610,7 @@ bool MetalRenderer::read_present_frame(int window_w,
     }
     id<MTLTexture> target = make_color_target(m_device, window_w, window_h, false);
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
-    encode_present_pass(cmds, target, opts);
+    encode_present_pass(cmds, target, opts, m_game_color);
 #if TARGET_OS_OSX
     {
       id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];

@@ -297,4 +297,11 @@ const char* goal_jak2_metal_host_last_error(goal_jak2_metal_host* host);
 
 #ifdef __cplusplus
 }  // extern "C"
+
+namespace metal_renderer {
+
+/*! Verify that the host explicitly recognizes every behavior in the fixed Jak 2 bucket table. */
+bool jak2_metal_host_policy_table_is_audited();
+
+}  // namespace metal_renderer
 #endif

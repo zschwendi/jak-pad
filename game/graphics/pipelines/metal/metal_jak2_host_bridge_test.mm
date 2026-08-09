@@ -501,6 +501,9 @@ void make_map_descriptor_prefix_legacy_upload_and_progress_chain() {
 }  // namespace
 
 int main() {
+  check(metal_renderer::jak2_metal_host_policy_table_is_audited(),
+        "the host allowlist accepts the fixed table's explicit BlitDisplay behavior");
+
   goal_jak2_metal_host_metrics frame_gate = {};
   frame_gate.chains = 1;
   frame_gate.completed_chains = 1;
