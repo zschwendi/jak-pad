@@ -1,7 +1,7 @@
 /*!
  * @file jak2_sound_rpc_test.cpp
- * Behavioral coverage for Jak 2's startup state, checked sound-bank lifecycle and playback, and
- * ordinary/chunked STR seams.
+ * Behavioral coverage for Jak 2's startup state, checked sound-bank lifecycle and playback,
+ * ordinary/chunked STR files, and GUI-facing stream state.
  */
 
 #include <algorithm>
@@ -18,6 +18,7 @@
 #include "common/log/log.h"
 
 #include "game/common/str_rpc_types.h"
+#include "game/common/play_rpc_types.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/kernel_game.h"
@@ -34,7 +35,16 @@ namespace {
 constexpr u32 kCommandSize = 0x50;
 constexpr u32 kStrRequestSize = 0x40;
 constexpr u32 kStrReplySize = 0x20;
+constexpr u32 kPlayRequestSize = sizeof(RPC_Play_Cmd_Jak2);
+constexpr u32 kStreamBuffered = 1u << 1;
+constexpr u32 kStreamPlaying = 1u << 4;
+constexpr u32 kStreamLoadingAudio = 1u << 5;
+constexpr u32 kStreamQueuedWithoutAudio = 1u << 6;
+constexpr u32 kStreamArtLoad = 1u << 10;
+constexpr u32 kStreamCurrentMovie = 1u << 24;
 constexpr u32 kGuardSize = 16;
+static_assert(kPlayRequestSize == 0x100);
+static_assert(sizeof(jak2::SoundIopInfo) == 0x250);
 int g_failures = 0;
 
 void check(bool condition, const char* what) {
@@ -166,6 +176,41 @@ void reset_str_request(GuardedBuffer& buffer,
   }
   memcpy(request->basename, basename.data(),
          std::min(basename.size(), sizeof(request->basename)));
+}
+
+void reset_play_request(GuardedBuffer& buffer, u16 result, u32 flags = 0) {
+  memset(buffer.data.c(), 0, buffer.size);
+  auto* request = buffer.data.cast<RPC_Play_Cmd_Jak2>().c();
+  request->result = result;
+  request->address = flags;
+}
+
+void set_play_stream(GuardedBuffer& buffer, size_t index, const char* name, u32 id) {
+  auto* request = buffer.data.cast<RPC_Play_Cmd_Jak2>().c();
+  check(index < 4 && strlen(name) < sizeof(request->names[index].chars),
+        "stream fixture fits the fixed wire fields");
+  if (index >= 4) {
+    return;
+  }
+  strncpy(request->names[index].chars, name, sizeof(request->names[index].chars) - 1);
+  request->id[index] = id;
+}
+
+int find_stream(const jak2::SoundIopInfo& info, const char* name, s32 id) {
+  for (size_t i = 0; i < 4; i++) {
+    if (info.stream_id[i] == id &&
+        strncmp(info.stream_name[i].dat, name, sizeof(info.stream_name[i].dat)) == 0) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+bool same_stream_state(const jak2::SoundIopInfo& lhs, const jak2::SoundIopInfo& rhs) {
+  return memcmp(lhs.stream_position, rhs.stream_position, sizeof(lhs.stream_position)) == 0 &&
+         memcmp(lhs.stream_status, rhs.stream_status, sizeof(lhs.stream_status)) == 0 &&
+         memcmp(lhs.stream_name, rhs.stream_name, sizeof(lhs.stream_name)) == 0 &&
+         memcmp(lhs.stream_id, rhs.stream_id, sizeof(lhs.stream_id)) == 0;
 }
 
 bool write_fixture(const std::filesystem::path& path, const std::array<u8, 96>& bytes) {
@@ -632,7 +677,9 @@ int main() {
 
   auto send = guarded_command("jak2-sound-rpc-send");
   auto recv = guarded_command("jak2-sound-rpc-recv");
-  if (!send.command.offset || !recv.command.offset || !rpc_call || !rpc_busy) {
+  auto sound_info = guarded_buffer(sizeof(jak2::SoundIopInfo), "jak2-sound-iop-info");
+  if (!send.command.offset || !recv.command.offset || !sound_info.data.offset || !rpc_call ||
+      !rpc_busy) {
     goal_kernel_core_shutdown();
     return 1;
   }
@@ -651,17 +698,34 @@ int main() {
   check_guards(recv, "receive-buffer canaries stay intact");
 
   std::printf("\n== in-place reply, as check-irx-version uses it ==\n");
-  reset_command(send, jak2::Jak2SoundCommand::get_irx_version, 0x23456789);
+  reset_command(send, jak2::Jak2SoundCommand::get_irx_version, sound_info.data.offset);
   check_u32((u32)rpc_call(1, 99, 0, send.command.offset, kCommandSize, send.command.offset,
                          kCommandSize, 0),
             0, "loader fno and async mode do not change the handler");
-  check_version_reply(send, 0x23456789, "in-place reply preserves command 16");
+  check_version_reply(send, sound_info.data.offset, "in-place reply preserves command 16");
   check_u32((u32)rpc_busy(1), 0, "the synchronous loader channel is never busy");
 
   goal_jak2_sound_rpc_stats stats;
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.version_requests, 2, "two version requests were handled");
-  check_u32(stats.info_ee, 0x23456789, "the latest EE info address is retained");
+  check_u32(stats.info_ee, sound_info.data.offset, "the latest EE info address is retained");
+
+  std::printf("\n== exact 0x250-byte sound-info publication ==\n");
+  memset(sound_info.data.c(), 0xcc, sound_info.size);
+  goal_jak2_sound_frame();
+  const auto* initial_info = sound_info.data.cast<jak2::SoundIopInfo>().c();
+  check_u32(initial_info->frame, 1, "the explicit silent frame advances the frame counter");
+  check_u32(initial_info->iop_ticks, 1, "the explicit silent frame advances IOP ticks");
+  check_s32(initial_info->strpos, -1, "the absent global stream position remains unavailable");
+  bool empty_streams = true;
+  for (size_t i = 0; i < 4; i++) {
+    empty_streams &= initial_info->stream_position[i] == 0;
+    empty_streams &= initial_info->stream_status[i] == 0;
+    empty_streams &= initial_info->stream_name[i].dat[0] == '\0';
+    empty_streams &= initial_info->stream_id[i] == 0;
+  }
+  check(empty_streams, "initial sound-info publication contains no fabricated streams");
+  check_guards(sound_info, "the exact sound-info publication preserves canaries");
 
   std::printf("\n== exact-buffer no-reply language selection ==\n");
   constexpr std::array<const char*, 8> kExpectedLanguages = {"ENG", "FRE", "GER", "SPA",
@@ -924,6 +988,17 @@ int main() {
   memcpy(sector_beyond_file_str.data(), &sector_beyond_file_header,
          sizeof(sector_beyond_file_header));
 
+  std::vector<u8> vag_directory(4 + 2 * 16, 0);
+  write_value(&vag_directory, 0, u32(2));
+  memcpy(vag_directory.data() + 4, "AUDIOONE", 8);
+  write_value(&vag_directory, 12, u32(0));
+  memcpy(vag_directory.data() + 20, "BADRANGE", 8);
+  write_value(&vag_directory, 28, u32(0x1000));
+  std::vector<u8> vagwad(0x30 + 0x40, 0x55);
+  write_value(&vagwad, 0, u32(0x56414770));  // little-endian pGAV
+  write_value(&vagwad, 12, u32(0x40));
+  write_value(&vagwad, 16, u32(48000));
+
   constexpr const char* kFullWidthName = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
   check(!fixture_error && write_fixture(fixture_root / "iso" / "MIXED.TXT", fixture_bytes) &&
             write_fixture(fixture_root / "iso" / kFullWidthName, fixture_bytes) &&
@@ -935,6 +1010,8 @@ int main() {
             write_fixture(fixture_root / "iso" / "AE.STR", mismatched_size_str) &&
             write_fixture(fixture_root / "iso" / "AF.STR", size_without_sector_str) &&
             write_fixture(fixture_root / "iso" / "AG.STR", sector_beyond_file_str) &&
+            write_fixture(fixture_root / "iso" / "VAGDIR.AYB", vag_directory) &&
+            write_fixture(fixture_root / "iso" / "VAGWAD.UKE", vagwad) &&
             write_fixture(fixture_root / "iso" / "VALID.SBK", valid_bank) &&
             write_fixture(fixture_root / "iso" / "BUDGET.SBK", shared_reference_budget_bank) &&
             write_fixture(fixture_root / "iso" / "PLAY.SBK", playable_bank) &&
@@ -952,6 +1029,134 @@ int main() {
             write_fixture(fixture_root / "iso" / "SAMPLEOF.SBK", bad_sample_offset_bank),
         "create synthetic STR and sound-bank fixtures");
   goal_kernel_core_set_data_directory(fixture_root.string().c_str());
+
+  std::printf("\n== channel-5 GUI stream state and sound-info publication ==\n");
+  auto play = guarded_buffer(2 * kPlayRequestSize, "jak2-play-stream-state");
+  reset_play_request(play, 2, 1u << 0 | 1u << 5);
+  set_play_stream(play, 0, "art-no-audio", 0x10001);
+  set_play_stream(play, 1, "audioone", 0x10002);
+  set_play_stream(play, 2, "ignored-zero-id", 0);
+  auto* play_commands = play.data.cast<RPC_Play_Cmd_Jak2>().c();
+  play_commands[1] = play_commands[0];
+  const auto queued_batch = snapshot(play);
+  check_u32((u32)rpc_call(5, 0, 1, play.data.offset, 2 * kPlayRequestSize, 0, 0, 0), 0,
+            "two exact 0x100-byte queue commands are accepted atomically");
+  check(snapshot(play) == queued_batch, "queueing leaves the complete EE request untouched");
+  check_u32((u32)rpc_busy(5), 0, "the synchronous PLAY channel is never busy");
+
+  goal_jak2_sound_frame();
+  auto published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  int no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
+  int audio_slot = find_stream(published_info, "audioone", 0x10002);
+  check(no_audio_slot >= 0, "queue publishes the exact no-audio stream name and id");
+  check(audio_slot >= 0, "queue publishes the exact bounded-VAG stream name and id");
+  check(find_stream(published_info, "ignored-zero-id", 0) < 0,
+        "queue ignores a named entry whose source ID is zero");
+  check_u32(no_audio_slot >= 0 ? published_info.stream_status[no_audio_slot] : UINT32_MAX,
+            kStreamQueuedWithoutAudio | kStreamArtLoad,
+            "a source-proven missing VAG reports bits 6 and 10 only");
+  check_u32(audio_slot >= 0 ? published_info.stream_status[audio_slot] : UINT32_MAX,
+            kStreamBuffered | kStreamLoadingAudio | kStreamCurrentMovie,
+            "a bounded VAG reports source-equivalent buffered bits 1 and 5");
+  check_u32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : UINT32_MAX, 0,
+            "the output-free buffered stream keeps an explicit silent position");
+  check_guards(sound_info, "stream-state publication remains inside the 0x250-byte info block");
+
+  reset_play_request(play, 0);
+  set_play_stream(play, 0, "audioone", 0x10002);
+  const auto play_request = snapshot(play);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  check(snapshot(play) == play_request, "play leaves the EE request untouched");
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  audio_slot = find_stream(published_info, "audioone", 0x10002);
+  check_u32(audio_slot >= 0 ? published_info.stream_status[audio_slot] : UINT32_MAX,
+            kStreamBuffered | kStreamPlaying | kStreamLoadingAudio | kStreamCurrentMovie,
+            "play adds bit 4 without discarding buffered or GUI queue state");
+  check_u32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : UINT32_MAX, 0,
+            "play does not fabricate an advancing audio clock");
+
+  reset_play_request(play, 2, 1u << 0 | 1u << 5);
+  set_play_stream(play, 0, "art-no-audio", 0x10001);
+  set_play_stream(play, 1, "audioone", 0x10002);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  audio_slot = find_stream(published_info, "audioone", 0x10002);
+  check_u32(audio_slot >= 0 ? published_info.stream_status[audio_slot] : UINT32_MAX,
+            kStreamBuffered | kStreamPlaying | kStreamLoadingAudio | kStreamCurrentMovie,
+            "a repeated queue preserves the matching stream's play state");
+
+  reset_play_request(play, 1);
+  set_play_stream(play, 0, "audioone", 0x10002);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  check(find_stream(published_info, "audioone", 0x10002) < 0,
+        "stop removes the exact matching stream from published state");
+  no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
+  check_u32(no_audio_slot >= 0 ? published_info.stream_status[no_audio_slot] : UINT32_MAX,
+            kStreamQueuedWithoutAudio | kStreamArtLoad,
+            "stop preserves unrelated queued stream state");
+
+  const auto state_before_rejected_play = published_info;
+  reset_play_request(play, 0);
+  set_play_stream(play, 0, "art-no-audio", 0x10001);
+  play_commands = play.data.cast<RPC_Play_Cmd_Jak2>().c();
+  play_commands[1] = {};
+  play_commands[1].result = 2;
+  strncpy(play_commands[1].names[0].chars, "badrange",
+          sizeof(play_commands[1].names[0].chars) - 1);
+  play_commands[1].id[0] = 0x10003;
+  const auto invalid_range_batch = snapshot(play);
+  rpc_call(5, 0, 1, play.data.offset, 2 * kPlayRequestSize, 0, 0, 0);
+  check(snapshot(play) == invalid_range_batch,
+        "an invalid VAG range leaves the complete EE batch untouched");
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  check(same_stream_state(published_info, state_before_rejected_play),
+        "an invalid VAG range rejects the complete batch before state mutation");
+
+  const auto state_before_framing_rejections = published_info;
+  reset_play_request(play, 3);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  reset_play_request(play, 2);
+  memset(play_commands[0].names[0].chars, 'x', sizeof(play_commands[0].names[0].chars));
+  play_commands[0].id[0] = 0x10004;
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  reset_play_request(play, 2);
+  rpc_call(5, 1, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  rpc_call(5, 0, 0, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, sound_info.data.offset, 0, 0);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 1, 0);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize - 1, 0, 0, 0);
+  rpc_call(5, 0, 1, play.data.offset + 1, kPlayRequestSize, 0, 0, 0);
+  rpc_call(5, 0, 1, play.data.offset, 5 * kPlayRequestSize, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  check(same_stream_state(published_info, state_before_framing_rejections),
+        "malformed PLAY requests never mutate retained stream state");
+  check_guards(play, "accepted and rejected PLAY requests preserve request canaries");
+
+  reset_play_request(play, 2);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  bool cleared_streams = true;
+  for (size_t i = 0; i < 4; i++) {
+    cleared_streams &= published_info.stream_position[i] == 0;
+    cleared_streams &= published_info.stream_status[i] == 0;
+    cleared_streams &= published_info.stream_name[i].dat[0] == '\0';
+    cleared_streams &= published_info.stream_id[i] == 0;
+  }
+  check(cleared_streams, "an empty queue removes every retained stream slot");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.stream_batches, 5, "only valid PLAY batches are counted");
+  check_u32(stats.stream_commands, 6, "exact 0x100-multiple command counts are retained");
+  check_u32(stats.stream_queue_requests, 4, "valid queue commands are counted exactly");
+  check_u32(stats.stream_play_requests, 1, "the valid play transition is counted exactly");
+  check_u32(stats.stream_stop_requests, 1, "the valid stop transition is counted exactly");
+  check_u32(stats.stream_failures, 1, "the malformed VAG range fails closed once");
 
   std::printf("\n== exact-buffer no-reply sound-bank loads ==\n");
   reset_bank_command(send, bank_name("valid"));
@@ -1484,7 +1689,7 @@ int main() {
   goal_kernel_core_set_data_directory(nullptr);
   std::filesystem::remove_all(fixture_root, fixture_error);
   goal_kernel_core_shutdown();
-  std::printf("\n%s: Jak 2 startup state, named SFX, checked bank, lifecycle and STR seams\n",
+  std::printf("\n%s: Jak 2 startup, SFX, bank, stream-state, lifecycle and STR seams\n",
               g_failures ? "FAIL" : "PASS");
   return g_failures ? 1 : 0;
 }

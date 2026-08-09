@@ -12,8 +12,10 @@
  * eight bounded language tags without a reply payload. Channel 0 retains master volumes, MIDI
  * registers 3/4/14/16, reverb, FPS and listener transforms. Player command 7 starts or updates
  * ordinary named sounds from those checked SFX banks. Channel 4 reads ordinary files and bounded
- * animation chunks from the configured `iso/` directory into EE memory. Music, audio streaming,
- * later MIDI registers and the rest of the Jak 2 sound protocol remain unimplemented.
+ * animation chunks from the configured `iso/` directory into EE memory. Channel 5 retains the
+ * four-stream play/stop/queue protocol and publishes the state GOAL's GUI loader consumes. Music,
+ * streamed-audio output, later MIDI registers and the rest of the Jak 2 sound protocol remain
+ * unimplemented.
  */
 
 #include <algorithm>
@@ -31,6 +33,7 @@
 #include "common/util/FileUtil.h"
 
 #include "game/common/str_rpc_types.h"
+#include "game/common/play_rpc_types.h"
 #include "game/kernel/core/sblk_preflight.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/kscheme.h"
@@ -60,6 +63,18 @@ constexpr s32 kStrRequestSize = 0x40;
 constexpr s32 kStrReplySize = 0x20;
 constexpr u32 kIrxMajor = 4;
 constexpr u32 kIrxMinor = 0;
+constexpr s32 kPlayChannel = PLAY_RPC_CHANNEL;
+constexpr u32 kPlayFunction = 0;
+constexpr u32 kPlayAsync = 1;
+constexpr s32 kPlayRequestSize = sizeof(RPC_Play_Cmd_Jak2);
+constexpr s32 kMaxPlayRequests = 4;
+constexpr s32 kMaxPlayBufferSize = kPlayRequestSize * kMaxPlayRequests;
+constexpr u32 kStreamBuffered = 1u << 1;
+constexpr u32 kStreamQueuedWithoutAudio = 1u << 6;
+constexpr u32 kStreamLoadingAudio = 1u << 5;
+constexpr u32 kStreamPlaying = 1u << 4;
+constexpr u32 kStreamArtLoad = 1u << 10;
+constexpr u32 kStreamCurrentMovie = 1u << 24;
 constexpr std::array<const char*, 8> kLanguages = {"ENG", "FRE", "GER", "SPA",
                                                     "ITA", "JAP", "KOR", "UKE"};
 constexpr size_t kBankStemSize = 8;
@@ -122,6 +137,14 @@ static_assert(offsetof(SoundRpcGetIrxVersion, minor) == 4);
 static_assert(offsetof(SoundRpcGetIrxVersion, ee_addr) == 8);
 static_assert(sizeof(RPC_Str_Cmd_Jak2) == 0x50);
 static_assert(offsetof(RPC_Str_Cmd_Jak2, basename) == kStrReplySize);
+static_assert(sizeof(RPC_Play_Cmd_Jak2) == 0x100);
+static_assert(offsetof(RPC_Play_Cmd_Jak2, id) == 0x10);
+static_assert(offsetof(RPC_Play_Cmd_Jak2, names) == 0x20);
+static_assert(sizeof(jak2::SoundIopInfo) == 0x250);
+static_assert(offsetof(jak2::SoundIopInfo, stream_position) == 0x110);
+static_assert(offsetof(jak2::SoundIopInfo, stream_status) == 0x120);
+static_assert(offsetof(jak2::SoundIopInfo, stream_name) == 0x130);
+static_assert(offsetof(jak2::SoundIopInfo, stream_id) == 0x1f0);
 
 struct StrRequest {
   u16 rsvd;
@@ -146,8 +169,30 @@ static_assert(sizeof(StrReply) == kStrReplySize);
 
 goal_jak2_sound_rpc_stats g_stats;
 goal_jak2_sound_player_state g_player_state;
+jak2::SoundIopInfo g_info;
 bool g_installed = false;
 VolumePair g_pan_table[361];
+
+struct StreamState {
+  std::array<char, 48> name = {};
+  s32 id = 0;
+  s32 position = 0;
+  u32 status = 0;
+};
+
+struct Jak2VagDirEntry {
+  char name[8];
+  u32 offset;
+  u32 flag;
+};
+static_assert(sizeof(Jak2VagDirEntry) == 16);
+
+enum class VagDirectoryState { Unread, Missing, Valid, Invalid };
+enum class StreamAudioState { None, Buffered, Unknown };
+
+std::array<StreamState, 4> g_streams;
+std::vector<Jak2VagDirEntry> g_vag_directory;
+VagDirectoryState g_vag_directory_state = VagDirectoryState::Unread;
 
 bool readable_ee_span(u32 address, u32 size) {
   return g_ee_main_mem && address >= (u32)EE_MAIN_MEM_LOW_PROTECT &&
@@ -443,6 +488,276 @@ bool read_bounded_file(const char* path, std::vector<u8>* data, std::string* err
     return false;
   }
   return true;
+}
+
+void load_vag_directory() {
+  if (g_vag_directory_state != VagDirectoryState::Unread) {
+    return;
+  }
+
+  char resolved[1024];
+  if (goal_kernel_core_resolve_data_path("iso/VAGDIR.AYB", resolved, sizeof(resolved)) !=
+      GOAL_KERNEL_CORE_OK) {
+    g_vag_directory_state = VagDirectoryState::Invalid;
+    return;
+  }
+  if (!fs::exists(resolved)) {
+    // Upstream zeroes gVagDir before attempting this load. A missing directory therefore means
+    // every requested animation has no associated VAG and enters status bit 6.
+    g_vag_directory_state = VagDirectoryState::Missing;
+    return;
+  }
+
+  std::vector<u8> data;
+  std::string error;
+  if (!read_bounded_file(resolved, &data, &error) || data.size() < sizeof(u32)) {
+    lg::error("[jak2-stream-state] rejected VAGDIR.AYB: {}", error);
+    g_vag_directory_state = VagDirectoryState::Invalid;
+    return;
+  }
+
+  u32 count = 0;
+  memcpy(&count, data.data(), sizeof(count));
+  constexpr u32 kMaximumEntries = 2728;
+  const u64 required = sizeof(count) + static_cast<u64>(count) * sizeof(Jak2VagDirEntry);
+  if (count > kMaximumEntries || required > data.size()) {
+    lg::error("[jak2-stream-state] rejected VAGDIR.AYB: {} entries need {} bytes, file has {}",
+              count, required, data.size());
+    g_vag_directory_state = VagDirectoryState::Invalid;
+    return;
+  }
+
+  g_vag_directory.resize(count);
+  if (count) {
+    memcpy(g_vag_directory.data(), data.data() + sizeof(count),
+           count * sizeof(Jak2VagDirEntry));
+  }
+  g_vag_directory_state = VagDirectoryState::Valid;
+}
+
+std::array<char, 8> vag_name_for_stream(const std::array<char, 48>& name) {
+  std::array<char, 8> result;
+  result.fill(' ');
+  const size_t length = strnlen(name.data(), name.size());
+  if (length > 8 && name[0] != '$') {
+    char iso_name[16] = {};
+    file_util::ISONameFromAnimationName(iso_name, name.data());
+    memcpy(result.data(), iso_name, result.size());
+  } else {
+    const size_t first = length && name[0] == '$' ? 1 : 0;
+    const size_t copy_length = std::min(result.size(), length - first);
+    memcpy(result.data(), name.data() + first, copy_length);
+  }
+  for (char& value : result) {
+    if (value >= 'a' && value <= 'z') {
+      value -= 'a' - 'A';
+    }
+  }
+  return result;
+}
+
+u32 byte_swap(u32 value) {
+  return value >> 24 | (value >> 8 & 0xff00) | (value & 0xff00) << 8 | value << 24;
+}
+
+bool vag_stream_is_bounded(const Jak2VagDirEntry& entry) {
+  if (!gLanguage) {
+    return false;
+  }
+  char resolved[1024];
+  const std::string relative = std::string("iso/VAGWAD.") + gLanguage;
+  if (goal_kernel_core_resolve_data_path(relative.c_str(), resolved, sizeof(resolved)) !=
+      GOAL_KERNEL_CORE_OK) {
+    return false;
+  }
+  FILE* file = std::fopen(resolved, "rb");
+  if (!file) {
+    return false;
+  }
+
+  std::array<u32, 12> header = {};
+  bool valid = std::fseek(file, 0, SEEK_END) == 0;
+  const long file_size = valid ? std::ftell(file) : -1;
+  valid = valid && file_size >= 0 && entry.offset <= static_cast<u64>(file_size) &&
+          sizeof(header) <= static_cast<u64>(file_size) - entry.offset &&
+          std::fseek(file, static_cast<long>(entry.offset), SEEK_SET) == 0 &&
+          std::fread(header.data(), 1, sizeof(header), file) == sizeof(header);
+  const bool close_ok = std::fclose(file) == 0;
+  if (!valid || !close_ok) {
+    return false;
+  }
+
+  constexpr u32 kVagBigEndianMagic = 0x70474156;
+  constexpr u32 kVagLittleEndianMagic = 0x56414770;
+  if (header[0] != kVagBigEndianMagic && header[0] != kVagLittleEndianMagic) {
+    return false;
+  }
+  const u32 payload_size =
+      header[0] == kVagBigEndianMagic ? byte_swap(header[3]) : header[3];
+  const u32 sample_rate =
+      header[0] == kVagBigEndianMagic ? byte_swap(header[4]) : header[4];
+  return sample_rate != 0 && payload_size <= static_cast<u64>(file_size) - entry.offset - 0x30;
+}
+
+StreamAudioState stream_audio_state(const std::array<char, 48>& name) {
+  load_vag_directory();
+  if (g_vag_directory_state == VagDirectoryState::Invalid) {
+    return StreamAudioState::Unknown;
+  }
+  if (g_vag_directory_state == VagDirectoryState::Missing) {
+    return StreamAudioState::None;
+  }
+
+  const auto vag_name = vag_name_for_stream(name);
+  const auto entry = std::find_if(
+      g_vag_directory.begin(), g_vag_directory.end(), [&](const Jak2VagDirEntry& candidate) {
+        return memcmp(candidate.name, vag_name.data(), vag_name.size()) == 0;
+      });
+  if (entry == g_vag_directory.end()) {
+    return StreamAudioState::None;
+  }
+  return vag_stream_is_bounded(*entry) ? StreamAudioState::Buffered : StreamAudioState::Unknown;
+}
+
+bool copy_stream_name(const SoundStreamName& source, std::array<char, 48>* destination) {
+  const char* terminator =
+      static_cast<const char*>(memchr(source.chars, '\0', sizeof(source.chars)));
+  if (!terminator) {
+    return false;
+  }
+  destination->fill(0);
+  memcpy(destination->data(), source.chars, static_cast<size_t>(terminator - source.chars));
+  return true;
+}
+
+bool same_stream(const StreamState& state, const std::array<char, 48>& name, s32 id) {
+  return state.id == id && memcmp(state.name.data(), name.data(), name.size()) == 0;
+}
+
+StreamState initial_stream_state(const std::array<char, 48>& name,
+                                 s32 id,
+                                 StreamAudioState audio_state) {
+  StreamState result;
+  result.name = name;
+  result.id = id;
+  switch (audio_state) {
+    case StreamAudioState::None:
+      result.status = kStreamQueuedWithoutAudio;
+      break;
+    case StreamAudioState::Buffered:
+      // Upstream sets bit 5 while loading, then its second completed SPU DMA sets sb_playing
+      // (bit 1). This portable seam validates the complete source range synchronously and retains
+      // the equivalent buffered state without claiming audio output or an advancing audio clock.
+      result.status = kStreamLoadingAudio | kStreamBuffered;
+      break;
+    case StreamAudioState::Unknown:
+      // Fail closed: a malformed/unreadable directory cannot prove the no-audio condition that
+      // upstream represents with status bit 6.
+      result.status = kStreamLoadingAudio;
+      g_stats.stream_failures++;
+      break;
+  }
+  return result;
+}
+
+void apply_queue_command(const RPC_Play_Cmd_Jak2& command,
+                         const std::array<StreamAudioState, 4>& audio_states) {
+  struct DesiredStream {
+    std::array<char, 48> name = {};
+    s32 id = 0;
+    u32 status_flags = 0;
+    StreamAudioState audio_state = StreamAudioState::None;
+  };
+  std::array<DesiredStream, 4> desired;
+  size_t desired_count = 0;
+
+  for (size_t i = 0; i < desired.size(); i++) {
+    if (!command.names[i].chars[0] || !command.id[i]) {
+      continue;
+    }
+    std::array<char, 48> name;
+    copy_stream_name(command.names[i], &name);
+    const u32 flags = ((command.address >> i) & 1 ? kStreamArtLoad : 0) |
+                      ((command.address >> (i + 4)) & 1 ? kStreamCurrentMovie : 0);
+    auto duplicate = std::find_if(desired.begin(), desired.begin() + desired_count,
+                                  [&](const DesiredStream& candidate) {
+                                    return candidate.id == static_cast<s32>(command.id[i]) &&
+                                           candidate.name == name;
+                                  });
+    if (duplicate != desired.begin() + desired_count) {
+      duplicate->status_flags |= flags;
+      continue;
+    }
+    desired[desired_count].name = name;
+    desired[desired_count].id = static_cast<s32>(command.id[i]);
+    desired[desired_count].status_flags = flags;
+    desired[desired_count].audio_state = audio_states[i];
+    desired_count++;
+  }
+
+  std::array<StreamState, 4> next;
+  std::array<bool, 4> desired_used = {};
+  for (size_t slot = 0; slot < g_streams.size(); slot++) {
+    if (!g_streams[slot].id) {
+      continue;
+    }
+    for (size_t i = 0; i < desired_count; i++) {
+      if (!desired_used[i] && same_stream(g_streams[slot], desired[i].name, desired[i].id)) {
+        next[slot] = g_streams[slot];
+        next[slot].status &= ~(kStreamArtLoad | kStreamCurrentMovie);
+        next[slot].status |= desired[i].status_flags;
+        desired_used[i] = true;
+        break;
+      }
+    }
+  }
+
+  for (size_t i = 0; i < desired_count; i++) {
+    if (desired_used[i]) {
+      continue;
+    }
+    auto slot = std::find_if(next.begin(), next.end(), [](const StreamState& state) {
+      return state.id == 0;
+    });
+    if (slot == next.end()) {
+      g_stats.stream_failures++;
+      break;
+    }
+    *slot = initial_stream_state(desired[i].name, desired[i].id, desired[i].audio_state);
+    slot->status |= desired[i].status_flags;
+  }
+  g_streams = next;
+}
+
+void apply_play_command(const RPC_Play_Cmd_Jak2& command) {
+  for (size_t i = 0; i < g_streams.size(); i++) {
+    if (!command.names[i].chars[0] || !command.id[i]) {
+      continue;
+    }
+    std::array<char, 48> name;
+    copy_stream_name(command.names[i], &name);
+    const auto stream = std::find_if(g_streams.begin(), g_streams.end(), [&](const auto& state) {
+      return same_stream(state, name, static_cast<s32>(command.id[i]));
+    });
+    if (stream != g_streams.end()) {
+      stream->status |= kStreamPlaying;
+    }
+  }
+}
+
+void apply_stop_command(const RPC_Play_Cmd_Jak2& command) {
+  for (size_t i = 0; i < g_streams.size(); i++) {
+    if (!command.names[i].chars[0]) {
+      continue;
+    }
+    std::array<char, 48> name;
+    copy_stream_name(command.names[i], &name);
+    for (auto& stream : g_streams) {
+      if (same_stream(stream, name, static_cast<s32>(command.id[i]))) {
+        stream = {};
+      }
+    }
+  }
 }
 
 bool load_bank(const char source_name[16]) {
@@ -980,6 +1295,81 @@ u64 str_rpc(u32 function,
   return 0;
 }
 
+u64 play_rpc(u32 function,
+             u32 async,
+             u32 send_buffer,
+             s32 send_size,
+             u32 recv_buffer,
+             s32 recv_size) {
+  if (function != kPlayFunction || async != kPlayAsync || recv_buffer != 0 || recv_size != 0 ||
+      send_size <= 0 || send_size > kMaxPlayBufferSize || send_size % kPlayRequestSize != 0 ||
+      (send_buffer & 0xf) || !readable_ee_span(send_buffer, static_cast<u32>(send_size))) {
+    return reject("rpc-call (Jak 2 PLAY, malformed request)");
+  }
+  if (!g_installed || !gSoundEnable) {
+    return reject("rpc-call (Jak 2 PLAY, sound system is stopped)");
+  }
+
+  std::vector<RPC_Play_Cmd_Jak2> commands;
+  try {
+    commands.resize(static_cast<size_t>(send_size / kPlayRequestSize));
+  } catch (const std::exception&) {
+    return reject("rpc-call (Jak 2 PLAY, could not snapshot request)");
+  }
+  memcpy(commands.data(), Ptr<u8>(send_buffer).c(), static_cast<size_t>(send_size));
+  std::vector<std::array<StreamAudioState, 4>> audio_states(commands.size());
+
+  // Snapshot and validate the complete batch before changing stream state. Upstream treats each
+  // name as a bounded 48-byte C string and only defines command results 0, 1 and 2.
+  for (const auto& command : commands) {
+    if (command.result > 2) {
+      return reject("rpc-call (Jak 2 PLAY, invalid command result)");
+    }
+    for (const auto& name : command.names) {
+      std::array<char, 48> ignored;
+      if (!copy_stream_name(name, &ignored)) {
+        return reject("rpc-call (Jak 2 PLAY, unterminated stream name)");
+      }
+    }
+    if (command.result == 2) {
+      const size_t command_index = static_cast<size_t>(&command - commands.data());
+      for (size_t i = 0; i < g_streams.size(); i++) {
+        if (!command.names[i].chars[0] || !command.id[i]) {
+          continue;
+        }
+        std::array<char, 48> name;
+        copy_stream_name(command.names[i], &name);
+        audio_states[command_index][i] = stream_audio_state(name);
+        if (audio_states[command_index][i] == StreamAudioState::Unknown) {
+          g_stats.stream_failures++;
+          return reject("rpc-call (Jak 2 PLAY, invalid VAG source range)");
+        }
+      }
+    }
+  }
+
+  for (size_t command_index = 0; command_index < commands.size(); command_index++) {
+    const auto& command = commands[command_index];
+    switch (command.result) {
+      case 0:
+        apply_play_command(command);
+        g_stats.stream_play_requests++;
+        break;
+      case 1:
+        apply_stop_command(command);
+        g_stats.stream_stop_requests++;
+        break;
+      case 2:
+        apply_queue_command(command, audio_states[command_index]);
+        g_stats.stream_queue_requests++;
+        break;
+    }
+  }
+  g_stats.stream_batches++;
+  g_stats.stream_commands += static_cast<u32>(commands.size());
+  return 0;
+}
+
 u64 rpc_call(const u64* args) {
   if (!args) {
     return reject("rpc-call (Jak 2 sound, missing arguments)");
@@ -1002,12 +1392,15 @@ u64 rpc_call(const u64* args) {
   if (channel == kStrChannel) {
     return str_rpc(function, send_buffer, send_size, recv_buffer, recv_size);
   }
+  if (channel == kPlayChannel) {
+    return play_rpc(function, async, send_buffer, send_size, recv_buffer, recv_size);
+  }
   return reject("rpc-call (Jak 2 sound, unimplemented channel)");
 }
 
 u64 rpc_busy(u64 channel) {
   if ((s32)channel != kPlayerChannel && (s32)channel != kLoaderChannel &&
-      (s32)channel != kStrChannel) {
+      (s32)channel != kStrChannel && (s32)channel != kPlayChannel) {
     return reject("rpc-busy? (Jak 2 sound, unimplemented channel)");
   }
   return 0;
@@ -1032,6 +1425,11 @@ goal_kernel_core_status goal_jak2_sound_rpc_install(void) {
   }
 
   g_stats = {};
+  g_info = {};
+  g_info.strpos = -1;
+  g_streams = {};
+  g_vag_directory.clear();
+  g_vag_directory_state = VagDirectoryState::Unread;
   srpc_init_globals();
   reset_player_state();
   reset_spatial_sound_state();
@@ -1078,6 +1476,32 @@ void goal_jak2_sound_rpc_shutdown(void) {
 
 int goal_jak2_sound_rpc_is_installed(void) {
   return g_installed ? 1 : 0;
+}
+
+void goal_jak2_sound_frame(void) {
+  if (!g_installed || !gSoundEnable || !g_stats.info_ee ||
+      !readable_ee_span(g_stats.info_ee, sizeof(g_info))) {
+    return;
+  }
+
+  g_info.frame++;
+  g_info.iop_ticks++;
+  g_info.strpos = -1;
+  g_info.std_id = 0;
+  g_info.freemem = 0;
+  g_info.freemem2 = 0;
+  g_info.nocd = 0;
+  g_info.dirtycd = 0;
+  for (size_t i = 0; i < g_streams.size(); i++) {
+    g_info.stream_position[i] = g_streams[i].position;
+    g_info.stream_status[i] = static_cast<s32>(g_streams[i].status);
+    memcpy(g_info.stream_name[i].dat, g_streams[i].name.data(), g_streams[i].name.size());
+    g_info.stream_id[i] = g_streams[i].id;
+  }
+  for (int i = 0; i < 48; i++) {
+    g_info.chinfo[i] = snd_GetVoiceStatus(i) == 1 ? 0xff : 0;
+  }
+  memcpy(Ptr<u8>(g_stats.info_ee).c(), &g_info, sizeof(g_info));
 }
 
 void goal_jak2_sound_rpc_stats_get(goal_jak2_sound_rpc_stats* out) {

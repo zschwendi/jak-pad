@@ -780,6 +780,9 @@ goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
       }
     }
     g_current_tick = g_metrics.ticks + 1;
+    // Jak 2's overlord publishes sound/stream state from its vblank handler. The portable runtime
+    // has no IOP vblank, so publish the previous dispatcher frame before GOAL consumes it.
+    goal_jak2_sound_frame();
     g_metrics.last_dispatch_result =
         call_goal_on_stack(Ptr<Function>(g_dispatcher), goal_kernel_stack_top(), s7.offset,
                            g_ee_main_mem);
