@@ -416,9 +416,10 @@ int main() {
     const auto radial_sampler = MetalOceanEnvmap::radial_sampler_key();
     check(radial_sampler.min_filter == MTLSamplerMinMagFilterLinear &&
               radial_sampler.mag_filter == MTLSamplerMinMagFilterNearest &&
+              radial_sampler.mip_filter == MTLSamplerMipFilterNotMipmapped &&
               radial_sampler.wrap_s == MTLSamplerAddressModeRepeat &&
               radial_sampler.wrap_t == MTLSamplerAddressModeRepeat,
-          "matched the GL radial sampler's linear-min, nearest-mag, repeat state");
+          "matched the GL radial sampler's linear-min, nearest-mag, no-mip, repeat state");
     const auto sampler_oracle = render_sampler_oracle(
         device, queue, pso_cache, sampler_cache, metal_texture_lookup(source_handle));
     check(sampler_oracle.size() == 5 * 4, "read back the source-sampler oracle pixels");
