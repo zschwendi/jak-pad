@@ -55,6 +55,8 @@ enum class LevelOutputUpdate {
   invalid,
 };
 
+bool safe_fr3_output_basename(std::string_view output_basename);
+
 LevelOutputUpdate update_expected_fr3_outputs(std::set<std::string>* expected_outputs,
                                               std::set<std::string>* level_outputs,
                                               std::string_view output_basename,

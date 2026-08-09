@@ -7,6 +7,7 @@
 
 #include "common/versions/jak1_iso_revisions.h"
 #include "decompiler/extractor/jak1_fr3_preparer.h"
+#include "decompiler/level_extractor/level_output_policy.h"
 
 namespace {
 
@@ -65,6 +66,25 @@ int main() {
   CHECK(jak1_fr3::internal::update_expected_fr3_outputs(
             &expected_outputs, &level_outputs, "../unsafe.fr3", 0, 2) ==
         jak1_fr3::internal::LevelOutputUpdate::invalid);
+
+  TemporaryDirectory unsafe_output_temporary;
+  const auto inside_marker = unsafe_output_temporary.root / "inside-writer-mutation";
+  const auto outside_marker = unsafe_output_temporary.root / "outside-writer-mutation";
+  const auto rejected_output = decompiler::internal::validate_and_write_level_output(
+      "../escape", jak1_fr3::internal::safe_fr3_output_basename,
+      [&](std::string_view) {
+        fs::create_directory(inside_marker);
+        fs::create_directory(outside_marker);
+      });
+  CHECK(!rejected_output);
+  CHECK(!fs::exists(inside_marker));
+  CHECK(!fs::exists(outside_marker));
+  const auto accepted_marker = unsafe_output_temporary.root / "accepted-writer-mutation";
+  const auto accepted_output = decompiler::internal::validate_and_write_level_output(
+      "safe-name", jak1_fr3::internal::safe_fr3_output_basename,
+      [&](std::string_view) { fs::create_directory(accepted_marker); });
+  CHECK(accepted_output == "safe-name.fr3");
+  CHECK(fs::is_directory(accepted_marker));
 
   auto invalid = jak1_fr3::prepare({}, {}, {}, revision);
   CHECK(!invalid);

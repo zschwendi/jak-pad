@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "common_formats.h"
+#include "level_output_policy.h"
 
 #include "common/math/Vector.h"
 
@@ -70,7 +71,8 @@ std::optional<std::string> extract_from_level(const ObjectFileDB& db,
                                               const std::string& dgo_name,
                                               const Config& config,
                                               const fs::path& output_folder,
-                                              const fs::path& entities_folder);
+                                              const fs::path& entities_folder,
+                                              const LevelOutputValidator& validator = {});
 void add_all_textures_from_level(tfrag3::Level& lev,
                                  const std::string& level_name,
                                  const TextureDB& tex_db);

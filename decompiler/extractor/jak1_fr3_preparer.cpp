@@ -183,13 +183,17 @@ class OwnedWorkRoot {
 
 namespace internal {
 
+bool safe_fr3_output_basename(std::string_view output_basename) {
+  return safe_output_basename(output_basename, ".fr3");
+}
+
 LevelOutputUpdate update_expected_fr3_outputs(std::set<std::string>* expected_outputs,
                                               std::set<std::string>* level_outputs,
                                               std::string_view output_basename,
                                               std::size_t remaining_levels,
                                               std::size_t expected_final_count) {
   if (!expected_outputs || !level_outputs || expected_final_count == 0 ||
-      !safe_output_basename(output_basename, ".fr3")) {
+      !safe_fr3_output_basename(output_basename)) {
     return LevelOutputUpdate::invalid;
   }
 
@@ -569,8 +573,17 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
                                     level)) {
         return Result<Summary>::failure(*error);
       }
+      bool rejected_unsafe_basename = false;
       const auto output_basename = decompiler::extract_from_level(
-          database, texture_database, level, config, fr3.string(), entities.string());
+          database, texture_database, level, config, fr3.string(), entities.string(),
+          [&](std::string_view candidate) {
+            const bool safe = internal::safe_fr3_output_basename(candidate);
+            rejected_unsafe_basename = !safe;
+            return safe;
+          });
+      if (rejected_unsafe_basename) {
+        throw UnsafeOutputError("A level extraction selected an unsafe output basename.");
+      }
       if (!output_basename ||
           internal::update_expected_fr3_outputs(
               &expected_fr3, &level_outputs, *output_basename,

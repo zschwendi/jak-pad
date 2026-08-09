@@ -25,6 +25,23 @@
 
 namespace decompiler {
 
+namespace internal {
+
+std::optional<std::string> validate_and_write_level_output(
+    std::string_view level_name,
+    const LevelOutputValidator& validator,
+    const LevelOutputWriter& writer) {
+  std::string output_basename(level_name);
+  output_basename += ".fr3";
+  if ((validator && !validator(output_basename)) || !writer) {
+    return std::nullopt;
+  }
+  writer(output_basename);
+  return output_basename;
+}
+
+}  // namespace internal
+
 /*!
  * Look through files in a DGO and find the bsp-header file (the level)
  */
@@ -356,7 +373,8 @@ std::optional<std::string> extract_from_level(const ObjectFileDB& db,
                                               const std::string& dgo_name,
                                               const Config& config,
                                               const fs::path& output_folder,
-                                              const fs::path& entities_folder) {
+                                              const fs::path& entities_folder,
+                                              const LevelOutputValidator& validator) {
   if (db.obj_files_by_dgo.count(dgo_name) == 0) {
     lg::warn("Skipping extract for {} because the DGO was not part of the input", dgo_name);
     return std::nullopt;
@@ -367,45 +385,48 @@ std::optional<std::string> extract_from_level(const ObjectFileDB& db,
 
   // the bsp header file data
   auto bsp_header = extract_bsp_from_level(db, tex_db, dgo_name, config, level_data);
-  extract_art_groups_from_level(db, tex_db, bsp_header.texture_remap_table, dgo_name, level_data,
-                                art_group_data);
+  return internal::validate_and_write_level_output(
+      level_data.level_name, validator, [&](std::string_view output_basename) {
+        extract_art_groups_from_level(db, tex_db, bsp_header.texture_remap_table, dgo_name,
+                                      level_data, art_group_data);
 
-  Serializer ser;
-  level_data.serialize(ser);
-  if (!config.rip_levels) {
-    level_data.textures.clear();
-    level_data.textures.shrink_to_fit();
-  }
-  auto compressed =
-      compression::compress_zstd(ser.get_save_result().first, ser.get_save_result().second);
-  lg::info("stats for {}", level_data.level_name);
-  print_memory_usage(level_data, ser.get_save_result().second);
-  lg::info("compressed: {} -> {} ({:.2f}%)", ser.get_save_result().second, compressed.size(),
-           100.f * compressed.size() / ser.get_save_result().second);
-  const auto output_basename = fmt::format("{}.fr3", level_data.level_name);
-  file_util::write_binary_file(output_folder / output_basename, compressed.data(),
-                               compressed.size());
+        Serializer ser;
+        level_data.serialize(ser);
+        if (!config.rip_levels) {
+          level_data.textures.clear();
+          level_data.textures.shrink_to_fit();
+        }
+        auto compressed = compression::compress_zstd(ser.get_save_result().first,
+                                                     ser.get_save_result().second);
+        lg::info("stats for {}", level_data.level_name);
+        print_memory_usage(level_data, ser.get_save_result().second);
+        lg::info("compressed: {} -> {} ({:.2f}%)", ser.get_save_result().second,
+                 compressed.size(), 100.f * compressed.size() / ser.get_save_result().second);
+        file_util::write_binary_file(output_folder / std::string(output_basename),
+                                     compressed.data(), compressed.size());
 
-  if (config.rip_levels) {
-    auto back_file_path = file_util::get_jak_project_dir() / "decompiler_out" /
-                          game_version_names[config.game_version] / "levels" /
-                          level_data.level_name /
-                          fmt::format("{}-background.glb", level_data.level_name);
-    file_util::create_dir_if_needed_for_file(back_file_path);
-    save_level_background_as_gltf(level_data, back_file_path);
-    auto fore_file_path = file_util::get_jak_project_dir() / "decompiler_out" /
-                          game_version_names[config.game_version] / "levels" /
-                          level_data.level_name;
-    save_level_foreground_as_gltf(level_data, art_group_data, fore_file_path,
-                                  tex_db.animated_tex_output_to_anim_slot);
-  }
-  file_util::write_text_file(entities_folder / fmt::format("{}-actors.json", level_data.level_name),
-                             extract_actors_to_json(bsp_header.actors));
-  if (config.game_version == GameVersion::Jak1)
-    file_util::write_text_file(
-        entities_folder / fmt::format("{}-ambients.json", level_data.level_name),
-        extract_ambients_to_json(bsp_header.ambients));
-  return output_basename;
+        if (config.rip_levels) {
+          auto back_file_path = file_util::get_jak_project_dir() / "decompiler_out" /
+                                game_version_names[config.game_version] / "levels" /
+                                level_data.level_name /
+                                fmt::format("{}-background.glb", level_data.level_name);
+          file_util::create_dir_if_needed_for_file(back_file_path);
+          save_level_background_as_gltf(level_data, back_file_path);
+          auto fore_file_path = file_util::get_jak_project_dir() / "decompiler_out" /
+                                game_version_names[config.game_version] / "levels" /
+                                level_data.level_name;
+          save_level_foreground_as_gltf(level_data, art_group_data, fore_file_path,
+                                        tex_db.animated_tex_output_to_anim_slot);
+        }
+        file_util::write_text_file(
+            entities_folder / fmt::format("{}-actors.json", level_data.level_name),
+            extract_actors_to_json(bsp_header.actors));
+        if (config.game_version == GameVersion::Jak1) {
+          file_util::write_text_file(
+              entities_folder / fmt::format("{}-ambients.json", level_data.level_name),
+              extract_ambients_to_json(bsp_header.ambients));
+        }
+      });
 }
 
 void extract_all_levels(const ObjectFileDB& db,
