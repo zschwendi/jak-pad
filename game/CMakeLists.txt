@@ -1228,6 +1228,16 @@ if(APPLE)
         add_test(NAME jak2-metal-glow-final-flare-proof
             COMMAND jak2-metal-glow-final-flare-proof)
 
+        add_executable(jak2-metal-ocean-envmap-proof
+            graphics/pipelines/metal/metal_jak2_ocean_envmap_proof.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_ocean_envmap_proof.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-ocean-envmap-proof
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-ocean-envmap-proof
+            COMMAND jak2-metal-ocean-envmap-proof)
+
         add_executable(jak2-metal-submit-readback-proof
             graphics/pipelines/metal/metal_jak2_submit_readback_proof.mm)
         set_source_files_properties(

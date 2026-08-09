@@ -2,8 +2,9 @@
 
 /*!
  * @file metal_ocean_renderer.h
- * Metal port of the Jak 1 ocean path (game/graphics/opengl_renderer/ocean/).
- * Objective-C++ only.
+ * Metal port of the Jak 1 ocean path (game/graphics/opengl_renderer/ocean/),
+ * plus a standalone non-promoted Jak II envmap prefix proof. Objective-C++
+ * only.
  *
  * Two buckets carry the ocean: ocean-mid-and-far runs the ocean-texture
  * generator, the plain-GIF ocean-far, and the ocean-mid mesh; ocean-near runs
@@ -33,6 +34,69 @@
 #include "game/graphics/opengl_renderer/ocean/OceanVu.h"
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
+#include "game/graphics/texture/TextureID.h"
+
+/*!
+ * Standalone Jak II ocean-method-89 prefix renderer. It deliberately is not a
+ * bucket renderer and is not installed in the Jak II policy table: the public
+ * synthetic proof can exercise the two 64x64 envmap passes without claiming
+ * support for the following 128x128 ocean-texture DMA layout.
+ */
+class MetalOceanEnvmap {
+ public:
+  static constexpr u32 kWidth = 64;
+  static constexpr u32 kHeight = 64;
+  static constexpr u32 kVramSlot = 0xf80;
+
+  MetalOceanEnvmap(id<MTLDevice> device, id<MTLCommandQueue> queue);
+  ~MetalOceanEnvmap();
+
+  bool init_textures(TexturePool& pool, GameVersion version);
+  void detach_pool();
+  bool handle_ocean_envmap_jak2(DmaFollower& dma,
+                                MetalSharedRenderState* render_state,
+                                MetalFrameContext& ctx);
+
+  struct Stats {
+    bool found_sky_color = false;
+    u8 sky_color[4] = {0, 0, 0, 255};
+    int setup_64_count = 0;
+    int direct_draw_calls = 0;
+    MetalDirectRenderer::LastBatchStats direct_batch;
+    int haze_draw_calls = 0;
+    int radial_draw_calls = 0;
+    int transfers_consumed = 0;
+    bool published = false;
+    u32 published_vram_slot = 0;
+    bool scissor_restored = false;
+    bool stopped_before_ocean_texture = false;
+    u32 stop_offset = 0;
+  };
+
+  const Stats& stats() const { return m_stats; }
+  const MetalDirectRenderer& direct_renderer() const { return m_direct; }
+  id<MTLTexture> first_pass_texture() const { return m_first_pass_texture; }
+  id<MTLTexture> result_texture() const { return m_result_texture; }
+  u64 result_handle() const { return m_result_handle; }
+
+ private:
+  bool render_haze(const u8* gif_data,
+                   u32 size,
+                   MetalFrameContext& ctx,
+                   id<MTLRenderCommandEncoder> encoder);
+  bool render_radial(MetalFrameContext& ctx, id<MTLCommandBuffer> commands);
+
+  id<MTLDevice> m_device = nil;
+  id<MTLCommandQueue> m_queue = nil;
+  id<MTLTexture> m_first_pass_texture = nil;
+  id<MTLTexture> m_result_texture = nil;
+  u64 m_result_handle = 0;
+  TexturePool* m_pool = nullptr;
+  GpuTexture* m_pool_texture = nullptr;
+  PcTextureId m_texture_id;
+  MetalDirectRenderer m_direct;
+  Stats m_stats;
+};
 
 /*!
  * Generates the 128x128 ocean texture that the ocean meshes sample, and

@@ -51,6 +51,28 @@ class MetalDirectRenderer : public MetalBucketRenderer {
   void reset_state();
   void flush_pending(MetalSharedRenderState* render_state, MetalFrameContext& ctx);
 
+  // Composite renderers such as the Jak II ocean envmap reuse Direct against
+  // a small offscreen target. The shader already carries the source-faithful
+  // transform; keep its selection explicit at the call site.
+  void set_offscreen_mode(bool enabled) { m_offscreen_mode = enabled; }
+  bool offscreen_mode() const { return m_offscreen_mode; }
+
+  struct ScissorSnapshot {
+    u16 scax0 = 0;
+    u16 scax1 = 0;
+    u16 scay0 = 0;
+    u16 scay1 = 0;
+    bool enabled = false;
+
+    bool operator==(const ScissorSnapshot& other) const = default;
+  };
+
+  ScissorSnapshot capture_scissor() const;
+  void restore_scissor(const ScissorSnapshot& snapshot);
+  math::Vector<float, 2> coordinate_offset() const {
+    return math::Vector<float, 2>{m_prim_buffer.x_off, m_prim_buffer.y_off};
+  }
+
   struct LastBatchStats {
     bool valid = false;
     bool textured = false;
@@ -257,6 +279,7 @@ class MetalDirectRenderer : public MetalBucketRenderer {
     u16 scax1 = 0, scay1 = 0;
   } m_scissor;
   bool m_scissor_enable = false;
+  bool m_offscreen_mode = false;
 
   float m_color_mult = 1.0f;
   float m_alpha_mult = 1.0f;

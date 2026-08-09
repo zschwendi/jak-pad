@@ -353,7 +353,7 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
   DirectVsParams vs_params;
   vs_params.height_scale = render_state->version == GameVersion::Jak1 ? 1.f : 0.5f;
   vs_params.scissor_adjust = 512.f / game_height[render_state->version];
-  vs_params.offscreen_mode = 0;
+  vs_params.offscreen_mode = m_offscreen_mode ? 1 : 0;
 
   DirectFsParams fs_params = {};
   fs_params.fog_color[0] = render_state->fog_color[0] / 255.f;
@@ -369,7 +369,7 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
   fs_params.color_mult = m_color_mult;
   fs_params.alpha_mult = m_alpha_mult;
   fs_params.ta0 = m_prim_state.ta0 / 255.f;
-  fs_params.scissor_enable = m_scissor_enable ? 1 : 0;
+  fs_params.scissor_enable = m_scissor_enable && !m_offscreen_mode ? 1 : 0;
   fs_params.greater = greater;
 
   id<MTLRenderCommandEncoder> enc = ctx.enc;
@@ -710,6 +710,19 @@ void MetalDirectRenderer::handle_scissor(u64 val) {
   m_scissor.scay0 = (val >> 32) & 0x7ff;
   m_scissor.scay1 = (val >> 48) & 0x7ff;
   m_scissor_enable = true;
+}
+
+MetalDirectRenderer::ScissorSnapshot MetalDirectRenderer::capture_scissor() const {
+  return {m_scissor.scax0, m_scissor.scax1, m_scissor.scay0, m_scissor.scay1,
+          m_scissor_enable};
+}
+
+void MetalDirectRenderer::restore_scissor(const ScissorSnapshot& snapshot) {
+  m_scissor.scax0 = snapshot.scax0;
+  m_scissor.scax1 = snapshot.scax1;
+  m_scissor.scay0 = snapshot.scay0;
+  m_scissor.scay1 = snapshot.scay1;
+  m_scissor_enable = snapshot.enabled;
 }
 
 void MetalDirectRenderer::handle_tex1_1(u64 val) {
