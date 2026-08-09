@@ -219,6 +219,10 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.command_buffers_committed = stats.command_buffers_committed;
   host->metrics.command_buffers_completed = stats.command_buffers_completed;
   host->metrics.command_buffer_errors = stats.command_buffer_errors;
+  host->metrics.ocean_command_buffers_committed = stats.ocean_command_buffers_committed;
+  host->metrics.ocean_command_buffers_completed = stats.ocean_command_buffers_completed;
+  host->metrics.ocean_command_buffer_errors = stats.ocean_command_buffer_errors;
+  host->metrics.ocean_last_command_buffer_status = stats.ocean_last_command_buffer_status;
   host->metrics.drawables_acquired = stats.drawables_acquired;
   host->metrics.drawable_misses = stats.drawable_misses;
   host->metrics.late_present_submissions = stats.late_present_submissions;
@@ -1043,6 +1047,15 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     }
     const bool exact_presenting_commit_count =
         host->metrics.command_buffers_committed == host->metrics.chains;
+    const bool ocean_buffers_completed =
+        host->metrics.ocean_command_buffers_committed ==
+            host->metrics.ocean_command_buffers_completed &&
+        host->metrics.ocean_command_buffer_errors == 0;
+    if (!ocean_buffers_completed) {
+      record_send_chain_failure(host, "Jak 2 ocean command buffer failed its completion gate",
+                                host_texture_mutated);
+      return;
+    }
     if (!host->layer) {
       if (acquired || host->metrics.command_buffers_committed != 0 ||
           host->metrics.command_buffers_completed != 0 || host->metrics.command_buffer_errors != 0 ||
@@ -1333,7 +1346,11 @@ int goal_jak2_metal_host_metrics_pass_frame_gate(const goal_jak2_metal_host_metr
          metrics->last_buckets_dispatched == metal_renderer::kJak2MetalBucketCount &&
          metrics->command_buffers_committed == metrics->chains &&
          metrics->command_buffers_completed == metrics->chains &&
-         metrics->command_buffer_errors == 0 && metrics->drawables_acquired == metrics->chains &&
+         metrics->command_buffer_errors == 0 &&
+         metrics->ocean_command_buffers_committed ==
+             metrics->ocean_command_buffers_completed &&
+         metrics->ocean_command_buffer_errors == 0 &&
+         metrics->drawables_acquired == metrics->chains &&
          metrics->drawable_misses == 0 && metrics->submissions == metrics->chains &&
          metrics->late_present_submissions == 0 && metrics->unsupported_blends == 0 &&
          (!require_presentation || presentation_exact);

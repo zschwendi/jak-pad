@@ -5,6 +5,7 @@
 #include <cstring>
 #include <mutex>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "common/dma/gs.h"
@@ -158,21 +159,24 @@ GifBuilder make_sky_color_packet(const std::array<u8, 4>& color) {
   return gif;
 }
 
-GifBuilder make_direct_state(u32 source_tbp) {
+GifBuilder make_direct_state(u32 source_tbp, bool unsupported_blend = false) {
   GifBuilder gif;
-  gif.tag(6, true, {GifTag::RegisterDescriptor::AD});
+  gif.tag(unsupported_blend ? 7 : 6, true, {GifTag::RegisterDescriptor::AD});
   gif.ad(GsRegisterAddress::XYOFFSET_1, 0x200ull | (0x200ull << 32));
   gif.ad(GsRegisterAddress::TEST_1, test_always());
   gif.ad(GsRegisterAddress::ZBUF_1, zbuf_no_write());
   gif.ad(GsRegisterAddress::TEX0_1, tex0(source_tbp));
   gif.ad(GsRegisterAddress::TEX1_1, (1ull << 5) | (1ull << 6));
   gif.ad(GsRegisterAddress::CLAMP_1, 0b101);
+  if (unsupported_blend) {
+    gif.ad(GsRegisterAddress::ALPHA_1, 0x55);
+  }
   return gif;
 }
 
-GifBuilder make_textured_offscreen_sprite() {
+GifBuilder make_textured_offscreen_sprite(bool alpha_blend = false) {
   GifBuilder gif;
-  const u16 sprite_prim = prim(GsPrim::Kind::SPRITE, true, false, true);
+  const u16 sprite_prim = prim(GsPrim::Kind::SPRITE, true, alpha_blend, true);
   gif.tag(2, true,
           {GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::UV,
            GifTag::RegisterDescriptor::XYZF2},
@@ -223,6 +227,22 @@ GifBuilder make_ocean_far_setup() {
   return gif;
 }
 
+GifBuilder make_debug_triangle() {
+  GifBuilder gif;
+  gif.tag(1, true,
+          {GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2,
+           GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2,
+           GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2},
+          true, prim(GsPrim::Kind::TRI, false, true, false) | (1u << 3));
+  gif.rgbaq(0, 255, 0, 128);
+  gif.xyzf2(0x8000, 0x7800);
+  gif.rgbaq(0, 255, 0, 128);
+  gif.xyzf2(0x7800, 0x8800);
+  gif.rgbaq(0, 255, 0, 128);
+  gif.xyzf2(0x8800, 0x8800);
+  return gif;
+}
+
 std::vector<u8> make_texture_vertices(std::size_t qwords, std::size_t qword_base = 0) {
   std::vector<u8> result(qwords * 16);
   for (std::size_t qword = 0; qword < qwords; qword++) {
@@ -235,11 +255,14 @@ std::vector<u8> make_texture_vertices(std::size_t qwords, std::size_t qword_base
   return result;
 }
 
-void append_ocean_texture(std::vector<u8>* chain, u32 source_tbp) {
+void append_ocean_texture(std::vector<u8>* chain,
+                          u32 source_tbp,
+                          bool valid_vu_buffer_setup = true) {
   append_transfer(chain, make_display_setup(128, 128, 0x40).data);
   append_transfer(chain, make_ocean_adgif(source_tbp).data);
   append_vif_transfer(chain, std::vector<u8>(64), 0, vif_direct(4));
-  append_vif_transfer(chain, {}, 0, 0);
+  append_vif_transfer(chain, {}, vif(VifCode::Kind::BASE, 0),
+                      vif(VifCode::Kind::OFFSET, valid_vu_buffer_setup ? 0xc0 : 0xbf));
   append_vif_transfer(chain, std::vector<u8>(112), vif(VifCode::Kind::STCYCL, 0x404),
                       vif(VifCode::Kind::UNPACK_V4_32, 985, 7));
   append_vif_transfer(chain, make_texture_vertices(192), vif(VifCode::Kind::STCYCL, 0x404),
@@ -269,12 +292,14 @@ struct Fixture {
   u32 end_offset = 0;
 };
 
-void append_envmap_prefix(std::vector<u8>* chain, u32 source_tbp) {
+void append_envmap_prefix(std::vector<u8>* chain,
+                          u32 source_tbp,
+                          bool unsupported_blend = false) {
   constexpr std::array<u8, 4> kSky = {20, 40, 80, 128};
   const auto first_setup = make_display_setup(64, 64, 0x58);
   const auto sky = make_sky_color_packet(kSky);
-  const auto state = make_direct_state(source_tbp);
-  const auto sprite = make_textured_offscreen_sprite();
+  const auto state = make_direct_state(source_tbp, unsupported_blend);
+  const auto sprite = make_textured_offscreen_sprite(unsupported_blend);
   const auto haze = make_additive_haze();
   const auto second_setup = make_display_setup(64, 64, MetalOceanEnvmap::kVramSlot >> 5);
   for (const GifBuilder* gif : {&first_setup, &sky, &state, &sprite, &haze, &second_setup}) {
@@ -313,17 +338,40 @@ struct FullOceanFixture {
   u32 next_bucket = 0;
 };
 
-FullOceanFixture make_mid_far_fixture(bool sky_active, u32 envmap_source_tbp) {
+void set_qword_u32(std::vector<u8>* data,
+                   std::size_t qword,
+                   const std::array<u32, 4>& value) {
+  std::memcpy(data->data() + qword * 16, value.data(), 16);
+}
+
+void append_mid_call(std::vector<u8>* chain,
+                     u16 call,
+                     std::vector<u8> upload) {
+  append_vif_transfer(chain, upload, vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 0x8000,
+                          static_cast<u8>(upload.size() / 16)));
+  append_vif_transfer(chain, {}, vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::MSCALF, call));
+}
+
+FullOceanFixture make_mid_far_fixture(bool sky_active,
+                                      u32 envmap_source_tbp,
+                                      bool unsupported_envmap_blend,
+                                      bool draw_far_triangle,
+                                      bool all_mid_calls) {
   FullOceanFixture fixture;
   append_vif_transfer(&fixture.chain, {}, 0, 0);
   if (sky_active) {
-    append_envmap_prefix(&fixture.chain, envmap_source_tbp);
+    append_envmap_prefix(&fixture.chain, envmap_source_tbp, unsupported_envmap_blend);
   }
   fixture.texture_offset = static_cast<u32>(fixture.chain.size());
   append_ocean_texture(&fixture.chain, MetalOceanEnvmap::kVramSlot);
   fixture.after_texture_offset = static_cast<u32>(fixture.chain.size());
 
   append_transfer(&fixture.chain, make_ocean_far_setup().data);
+  if (draw_far_triangle) {
+    append_transfer(&fixture.chain, make_debug_triangle().data);
+  }
   append_vif_transfer(&fixture.chain, {}, vif(VifCode::Kind::BASE, 0),
                       vif(VifCode::Kind::OFFSET, 0x76));
   append_vif_transfer(&fixture.chain, std::vector<u8>(0x240),
@@ -331,6 +379,17 @@ FullOceanFixture make_mid_far_fixture(bool sky_active, u32 envmap_source_tbp) {
                       vif(VifCode::Kind::UNPACK_V4_32, 0x2dd, 0x24));
   append_vif_transfer(&fixture.chain, {}, vif(VifCode::Kind::STCYCL, 0x404),
                       vif(VifCode::Kind::MSCALF, 0));
+
+  if (all_mid_calls) {
+    std::vector<u8> call73(118 * 16);
+    set_qword_u32(&call73, 116, {0xff, 0xff, 0xff, 0xff});
+    set_qword_u32(&call73, 117, {0xff, 0xff, 0xff, 0xff});
+    append_mid_call(&fixture.chain, 73, std::move(call73));
+
+    std::vector<u8> call107(18 * 16);
+    set_qword_u32(&call107, 8, {0, 0xff, 0xff, 0xff});
+    append_mid_call(&fixture.chain, 107, std::move(call107));
+  }
   append_vif_transfer(&fixture.chain, make_noop_direct(2), 0, vif_direct(2));
 
   const u32 next_offset = static_cast<u32>(fixture.chain.size());
@@ -342,16 +401,23 @@ FullOceanFixture make_mid_far_fixture(bool sky_active, u32 envmap_source_tbp) {
   return fixture;
 }
 
-FullOceanFixture make_near_fixture() {
+FullOceanFixture make_near_fixture(bool valid_vu_buffer_setup = true) {
   FullOceanFixture fixture;
   append_vif_transfer(&fixture.chain, {}, 0, 0);
   fixture.texture_offset = static_cast<u32>(fixture.chain.size());
-  append_ocean_texture(&fixture.chain, MetalOceanEnvmap::kVramSlot);
+  append_ocean_texture(&fixture.chain, MetalOceanEnvmap::kVramSlot, valid_vu_buffer_setup);
   fixture.after_texture_offset = static_cast<u32>(fixture.chain.size());
   append_vif_transfer(&fixture.chain, make_noop_direct(2), 0, vif_direct(2));
   append_vif_transfer(&fixture.chain, {}, vif(VifCode::Kind::BASE, 0),
                       vif(VifCode::Kind::OFFSET, 0x10));
   append_vif_transfer(&fixture.chain, {}, vif(VifCode::Kind::MSCALF, 0),
+                      vif(VifCode::Kind::STMOD, 0));
+  std::vector<u8> call39(16 * 16);
+  set_qword_u32(&call39, 8, {0xff, 0xff, 0xff, 0xff});
+  set_qword_u32(&call39, 9, {0xff, 0xff, 0xff, 0xff});
+  append_vif_transfer(&fixture.chain, call39, vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 0x8000, 16));
+  append_vif_transfer(&fixture.chain, {}, vif(VifCode::Kind::MSCALF, 39),
                       vif(VifCode::Kind::STMOD, 0));
   append_vif_transfer(&fixture.chain, make_noop_direct(2), 0, vif_direct(2));
   fixture.next_bucket = static_cast<u32>(fixture.chain.size());
@@ -701,11 +767,61 @@ int main() {
       ctx.sampler_cache = &sampler_cache;
       ctx.stream = &stream;
 
-      const auto active = make_mid_far_fixture(true, kSourceTbp);
+      constexpr NSUInteger kFarTargetSize = 64;
+      auto* color_descriptor = [MTLTextureDescriptor
+          texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                       width:kFarTargetSize
+                                      height:kFarTargetSize
+                                   mipmapped:NO];
+      color_descriptor.usage = MTLTextureUsageRenderTarget;
+      color_descriptor.storageMode = MTLStorageModePrivate;
+      id<MTLTexture> far_color = [device newTextureWithDescriptor:color_descriptor];
+      auto* depth_descriptor = [MTLTextureDescriptor
+          texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                       width:kFarTargetSize
+                                      height:kFarTargetSize
+                                   mipmapped:NO];
+      depth_descriptor.usage = MTLTextureUsageRenderTarget;
+      depth_descriptor.storageMode = MTLStorageModePrivate;
+      id<MTLTexture> far_depth = [device newTextureWithDescriptor:depth_descriptor];
+      id<MTLCommandBuffer> far_commands = [queue commandBuffer];
+      auto* far_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+      far_pass.colorAttachments[0].texture = far_color;
+      far_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+      far_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+      far_pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+      far_pass.depthAttachment.texture = far_depth;
+      far_pass.depthAttachment.loadAction = MTLLoadActionClear;
+      far_pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+      far_pass.depthAttachment.clearDepth = 0;
+      far_pass.stencilAttachment.texture = far_depth;
+      far_pass.stencilAttachment.loadAction = MTLLoadActionClear;
+      far_pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+      far_pass.stencilAttachment.clearStencil = 0;
+      id<MTLRenderCommandEncoder> far_encoder =
+          [far_commands renderCommandEncoderWithDescriptor:far_pass];
+      check(far_color != nil && far_depth != nil && far_commands != nil && far_encoder != nil,
+            "created bounded color/depth targets for the ocean-far output proof");
+      if (!far_color || !far_depth || !far_commands || !far_encoder) {
+        return 1;
+      }
+      ctx.enc = far_encoder;
+      ctx.cmds = far_commands;
+      ctx.color_format = MTLPixelFormatBGRA8Unorm;
+      ctx.depth_format = MTLPixelFormatDepth32Float_Stencil8;
+      ctx.game_color = far_color;
+      ctx.game_depth = far_depth;
+
+      const auto active = make_mid_far_fixture(true, kSourceTbp, true, true, true);
       state.next_bucket = active.next_bucket;
       DmaFollower active_dma(active.chain.data(), 0, active.chain.size());
       stream.reset();
       mid_far.render(active_dma, &state, ctx);
+      [far_encoder endEncoding];
+      [far_commands commit];
+      [far_commands waitUntilCompleted];
+      check(far_commands.status == MTLCommandBufferStatusCompleted,
+            "completed the ocean-far structural output command buffer");
       check(active_dma.current_tag_offset() == active.next_bucket,
             "sky-active mid/far consumed exactly to the next bucket");
       check(mid_far.envmap_stats().prefix_present &&
@@ -713,17 +829,51 @@ int main() {
                 mid_far.envmap_stats().stop_offset == active.texture_offset,
             "sky-active grammar consumed the exact six-transfer envmap prefix boundary");
       check(mid_far.texture_stats().transfers_consumed == 29 &&
+                mid_far.texture_stats().vu_buffer_setup_valid &&
                 mid_far.texture_stats().vertices == 2112 &&
                 mid_far.texture_stats().draw_calls == 9 &&
+                mid_far.texture_stats().command_buffers_committed == 1 &&
+                mid_far.texture_stats().command_buffers_completed == 1 &&
+                mid_far.texture_stats().command_buffer_errors == 0 &&
+                mid_far.texture_stats().last_command_buffer_status ==
+                    MTLCommandBufferStatusCompleted &&
                 mid_far.texture_stats().published_vram_slot == 672 &&
                 mid_far.texture_stats().source_tbp == MetalOceanEnvmap::kVramSlot &&
                 mid_far.texture_stats().source_handle ==
                     texture_pool.lookup(MetalOceanEnvmap::kVramSlot).value_or(0) &&
                 mid_far.texture_stats().source_handle != placeholder,
-            "Jak II texture consumed 29 transfers, ran 2112 VU vertices on the GPU, and sampled the owned 0xf80 envmap into slot 672");
+            "Jak II texture consumed the exact 29-transfer grammar, completed its private GPU work, and published slot 672");
       check(mid_far.phase_order() == 1234 && mid_far.mid_jak2_calls() == 1 &&
                 mid_far.mid_stats().draw_calls == 0,
             "sky-active render order is envmap, texture, far, then the bounded mid walker");
+      const auto& mid_calls = mid_far.mid_jak2_call_stats();
+      // Call 275 consumes authored geometry before it can produce a bounded GIF packet. Exercise
+      // the production selector here without claiming a fabricated no-geometry packet ran it.
+      check(mid_calls.call0 == 1 && mid_calls.call73 == 1 && mid_calls.call107 == 1 &&
+                mid_calls.call275 == 0 &&
+                MetalOceanMid::classify_jak2_call(0) == MetalOceanMid::Jak2Call::Call0 &&
+                MetalOceanMid::classify_jak2_call(73) == MetalOceanMid::Jak2Call::Call73 &&
+                MetalOceanMid::classify_jak2_call(107) == MetalOceanMid::Jak2Call::Call107 &&
+                MetalOceanMid::classify_jak2_call(275) == MetalOceanMid::Jak2Call::Call275 &&
+                MetalOceanMid::classify_jak2_call(74) == MetalOceanMid::Jak2Call::Unsupported,
+            "executed bounded Jak II ocean-mid calls 0, 73, and 107 and structurally routed call 275");
+      check(mid_far.envmap_stats().direct_unsupported_blends == 1 &&
+                mid_far.direct_stats().unsupported_blends == 1,
+            "preserved the nested envmap Direct unsupported blend in outer completeness stats");
+
+      const auto far_pixels = read_rgba8(queue, far_color, kFarTargetSize, kFarTargetSize);
+      const auto far_center = far_pixels.size() == kFarTargetSize * kFarTargetSize * 4
+                                  ? pixel(far_pixels, kFarTargetSize / 2, kFarTargetSize / 2)
+                                  : std::array<u8, 4>{};
+      const auto far_corner = far_pixels.size() == kFarTargetSize * kFarTargetSize * 4
+                                  ? pixel(far_pixels, 2, 2)
+                                  : std::array<u8, 4>{};
+      check(far_pixels.size() == kFarTargetSize * kFarTargetSize * 4 &&
+                near(far_center, {0, 255, 0, 255}, 0) &&
+                near(far_corner, {0, 0, 0, 255}, 0) &&
+                mid_far.direct_stats().draw_calls == 1 &&
+                mid_far.direct_stats().triangles == 1,
+            "ocean-far encoded and read back one synthetic green triangle over the clear target");
 
       const auto active_pixels = read_rgba8(
           queue, metal_texture_lookup(mid_far.texture_handle()), 128, 128);
@@ -732,7 +882,7 @@ int main() {
       check(active_pixels.size() == 128 * 128 * 4 && active_nonzero,
             "read back non-clear pixels from the generated 128x128 Jak II ocean texture");
 
-      const auto inactive = make_mid_far_fixture(false, kSourceTbp);
+      const auto inactive = make_mid_far_fixture(false, kSourceTbp, false, false, false);
       state.next_bucket = inactive.next_bucket;
       DmaFollower inactive_dma(inactive.chain.data(), 0, inactive.chain.size());
       stream.reset();
@@ -744,6 +894,7 @@ int main() {
                 mid_far.envmap_stats().stop_offset == inactive.texture_offset,
             "sky-inactive grammar leaves the first 128x128 texture transfer unconsumed");
       check(mid_far.texture_stats().transfers_consumed == 29 &&
+                mid_far.texture_stats().vu_buffer_setup_valid &&
                 mid_far.texture_stats().published_vram_slot == 672 &&
                 mid_far.phase_order() == 234 && mid_far.mid_jak2_calls() == 2,
             "sky-inactive order begins at texture and still completes far and mid deterministically");
@@ -759,11 +910,54 @@ int main() {
       check(near_dma.current_tag_offset() == near.next_bucket && near_renderer.phase_order() == 12,
             "near consumed exactly to its next bucket in texture-then-near order");
       check(near_renderer.texture_stats().transfers_consumed == 29 &&
+                near_renderer.texture_stats().vu_buffer_setup_valid &&
                 near_renderer.texture_stats().vertices == 2112 &&
                 near_renderer.texture_stats().draw_calls == 1 &&
                 near_renderer.texture_stats().published_vram_slot == 672 &&
-                near_renderer.jak2_calls() == 1,
-            "near ran the Jak II texture and source-specific call-0 walker without partial promotion");
+                near_renderer.jak2_calls() == 2 &&
+                near_renderer.jak2_call_stats().call0 == 1 &&
+                near_renderer.jak2_call_stats().call39 == 1 &&
+                near_renderer.near_stats().draw_calls == 0 &&
+                MetalOceanNear::classify_jak2_call(0) == MetalOceanNear::Jak2Call::Call0 &&
+                MetalOceanNear::classify_jak2_call(39) == MetalOceanNear::Jak2Call::Call39 &&
+                MetalOceanNear::classify_jak2_call(40) == MetalOceanNear::Jak2Call::Unsupported,
+            "near selected source-specific Jak II calls 0 and 39 with bounded sentinel masks");
+
+      const auto malformed_near = make_near_fixture(false);
+      state.next_bucket = malformed_near.next_bucket;
+      DmaFollower malformed_near_dma(malformed_near.chain.data(), 0,
+                                     malformed_near.chain.size());
+      stream.reset();
+      near_renderer.render(malformed_near_dma, &state, ctx);
+      check(malformed_near_dma.current_tag_offset() == malformed_near.next_bucket &&
+                near_renderer.phase_order() == 0 &&
+                near_renderer.texture_stats().transfers_consumed == 4 &&
+                !near_renderer.texture_stats().vu_buffer_setup_valid &&
+                near_renderer.texture_stats().command_buffers_committed == 0 &&
+                near_renderer.texture_stats().published_vram_slot == 0 &&
+                near_renderer.jak2_calls() == 0,
+            "rejected malformed Jak II ocean BASE/OFFSET grammar before GPU work or publication");
+
+      MetalOceanTexture failed_texture(false, device, queue);
+      failed_texture.init_textures(texture_pool, GameVersion::Jak2);
+      const u64 failure_slot_before = texture_pool.lookup(672).value_or(0);
+      failed_texture.force_command_buffer_failure_for_testing(true);
+      std::vector<u8> failed_texture_chain;
+      append_ocean_texture(&failed_texture_chain, MetalOceanEnvmap::kVramSlot);
+      append_vif_transfer(&failed_texture_chain, {}, 0, 0, DmaTag::Kind::END);
+      DmaFollower failed_texture_dma(failed_texture_chain.data(), 0,
+                                     failed_texture_chain.size());
+      check(!failed_texture.handle_ocean_texture_jak2(failed_texture_dma, &state, ctx) &&
+                failed_texture.stats().transfers_consumed == 29 &&
+                failed_texture.stats().vu_buffer_setup_valid &&
+                failed_texture.stats().command_buffers_committed == 0 &&
+                failed_texture.stats().command_buffers_completed == 0 &&
+                failed_texture.stats().command_buffer_errors == 1 &&
+                failed_texture.stats().last_command_buffer_status ==
+                    MTLCommandBufferStatusError &&
+                failed_texture.stats().published_vram_slot == 0 &&
+                texture_pool.lookup(672).value_or(0) == failure_slot_before,
+            "failed closed on a deterministic private command-buffer error without republishing slot 672");
 
       check(MetalOceanTexture::vram_slot(GameVersion::Jak1) == 8160 &&
                 MetalOceanTexture::vram_slot(GameVersion::Jak2) == 672 &&

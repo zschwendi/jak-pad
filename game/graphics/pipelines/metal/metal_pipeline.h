@@ -262,6 +262,10 @@ struct ChainStats {
   int ocean_mid_verts = 0;
   int ocean_near_verts = 0;
   int ocean_missing_textures = 0;
+  int ocean_command_buffers_committed = 0;
+  int ocean_command_buffers_completed = 0;
+  int ocean_command_buffer_errors = 0;
+  int ocean_last_command_buffer_status = 0;
   // registry handles of the two generated ocean textures (mipmapped one from
   // ocean-mid-and-far, single-level one from ocean-near), so tests can read
   // them back

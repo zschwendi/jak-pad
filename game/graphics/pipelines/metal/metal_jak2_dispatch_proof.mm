@@ -17,11 +17,11 @@ int failures = 0;
 std::vector<u8> make_policy_inventory_chain() {
   using BucketId = jak2::BucketId;
   constexpr std::array<std::pair<BucketId, u16>, 5> kPayloads = {{
-      {BucketId::MERC_L0_ALPHA, 5},
-      {BucketId::GMERC_L0_ALPHA, 4},
-      {BucketId::MERC_L0_WATER, 3},
-      {BucketId::GMERC_L0_WATER, 2},
-      {BucketId::OCEAN_NEAR, 1},
+      {BucketId::GMERC_L0_ALPHA, 5},
+      {BucketId::GMERC_L0_WATER, 4},
+      {BucketId::SHADOW, 3},
+      {BucketId::GMERC_L5_PRIS2, 2},
+      {BucketId::DEBUG3, 1},
   }};
 
   std::vector<u8> chain((metal_renderer::kJak2SyntheticBucketCount + 1) * 16, 0);
@@ -62,13 +62,13 @@ int main() {
       return 1;
     }
 
+    TexturePool texture_pool(GameVersion::Jak2);
     MetalRenderer renderer;
     check(renderer.init(device), "initialized the existing Metal renderer without a display");
     if (failures) {
       return 1;
     }
 
-    TexturePool texture_pool(GameVersion::Jak2);
     renderer.init_bucket_renderers(&texture_pool, GameVersion::Jak2);
 
     MetalRenderOptions options;
@@ -94,6 +94,10 @@ int main() {
     check(stats.command_buffers_committed == 0 && stats.command_buffers_completed == 0 &&
               stats.command_buffer_errors == 0,
           "nil-layer dispatch commits and completes no Metal command buffer");
+    check(stats.ocean_command_buffers_committed == 0 &&
+              stats.ocean_command_buffers_completed == 0 &&
+              stats.ocean_command_buffer_errors == 0,
+          "empty promoted OCEAN buckets report no hidden private command buffers");
     check(stats.drawables_acquired == 0 && stats.drawable_misses == 0,
           "nil-layer dispatch performs no drawable acquisition attempt");
     check(stats.submissions == 0 && stats.presentations_completed == 0 &&
@@ -103,7 +107,7 @@ int main() {
           "one DeferredSkip slot consumes exactly its 16-byte synthetic payload");
     check(stats.last_skipped_bucket_count == 1 &&
               stats.last_skipped_bucket_ids[0] ==
-                  static_cast<u32>(jak2::BucketId::OCEAN_MID_FAR) &&
+                  metal_renderer::kJak2SyntheticDeferredBucket &&
               stats.last_skipped_bucket_bytes[0] == 16,
           "the last-frame deferred inventory identifies the exact bucket and payload bytes");
     check(stats.draw_calls == 0 && stats.triangles == 0 && stats.jak2_screen_filter_draws == 0 &&
@@ -118,13 +122,19 @@ int main() {
     const auto inventory_chain = make_policy_inventory_chain();
     renderer.render_chain_frame(options, nil, inventory_chain.data(), 0, inventory_chain.size());
     const auto inventory = renderer.chain_stats();
-    check(inventory.skipped_bucket_bytes == 16 + 1 * 16,
+    check(inventory.skipped_bucket_bytes == 16 + (3 + 2 + 1) * 16,
           "cumulative deferred bytes exclude implemented Merc and Generic2 buckets");
-    check(inventory.last_skipped_bucket_count == 1 &&
+    check(inventory.last_skipped_bucket_count == 3 &&
               inventory.last_skipped_bucket_ids[0] ==
-                  static_cast<u32>(jak2::BucketId::OCEAN_NEAR) &&
-              inventory.last_skipped_bucket_bytes[0] == 1 * 16,
-          "the last-frame deferred inventory retains only the ocean bucket");
+                  static_cast<u32>(jak2::BucketId::SHADOW) &&
+              inventory.last_skipped_bucket_bytes[0] == 3 * 16 &&
+              inventory.last_skipped_bucket_ids[1] ==
+                  static_cast<u32>(jak2::BucketId::GMERC_L5_PRIS2) &&
+              inventory.last_skipped_bucket_bytes[1] == 2 * 16 &&
+              inventory.last_skipped_bucket_ids[2] ==
+                  static_cast<u32>(jak2::BucketId::DEBUG3) &&
+              inventory.last_skipped_bucket_bytes[2] == 1 * 16,
+          "the last-frame deferred inventory excludes the implemented Generic2 buckets");
     check(inventory.generic_unexpected_dma == 2 && inventory.generic_draws == 0 &&
               inventory.generic_triangles == 0,
           "both malformed synthetic Generic2 payloads fail closed without drawing");

@@ -1566,6 +1566,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.ocean_draws = 0;
     m_chain_stats.ocean_triangles = 0;
     m_chain_stats.ocean_missing_textures = 0;
+    m_chain_stats.ocean_command_buffers_committed = 0;
+    m_chain_stats.ocean_command_buffers_completed = 0;
+    m_chain_stats.ocean_command_buffer_errors = 0;
+    m_chain_stats.ocean_last_command_buffer_status = 0;
     MetalMerc2::Stats merc_stats;
     MetalGeneric2::Stats generic_stats;
     if (m_shared_state.version == GameVersion::Jak2 && m_jak2_blit_display) {
@@ -1642,22 +1646,42 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
         unsupported_blends += sky->direct_stats().unsupported_blends;
       } else if (auto* omf = dynamic_cast<MetalOceanMidAndFar*>(r.get())) {
-        m_chain_stats.ocean_texture_verts = omf->texture_stats().vertices;
+        const auto& texture_stats = omf->texture_stats();
+        m_chain_stats.ocean_texture_verts = texture_stats.vertices;
         m_chain_stats.ocean_mid_verts = omf->mid_stats().vertices;
-        m_chain_stats.ocean_draws += omf->texture_stats().draw_calls + omf->mid_stats().draw_calls;
+        m_chain_stats.ocean_draws += texture_stats.draw_calls + omf->mid_stats().draw_calls;
         m_chain_stats.ocean_triangles +=
-            omf->texture_stats().triangles + omf->mid_stats().triangles;
+            texture_stats.triangles + omf->mid_stats().triangles;
         m_chain_stats.ocean_missing_textures +=
-            omf->texture_stats().missing_textures + omf->mid_stats().missing_textures;
+            texture_stats.missing_textures + omf->mid_stats().missing_textures;
+        m_chain_stats.ocean_command_buffers_committed += texture_stats.command_buffers_committed;
+        m_chain_stats.ocean_command_buffers_completed += texture_stats.command_buffers_completed;
+        m_chain_stats.ocean_command_buffer_errors += texture_stats.command_buffer_errors;
+        if (texture_stats.last_command_buffer_status != 0 &&
+            (texture_stats.command_buffer_errors != 0 ||
+             m_chain_stats.ocean_last_command_buffer_status == 0)) {
+          m_chain_stats.ocean_last_command_buffer_status =
+              texture_stats.last_command_buffer_status;
+        }
         m_chain_stats.ocean_mid_texture = omf->texture_handle();
         unsupported_blends += omf->direct_stats().unsupported_blends;
       } else if (auto* on = dynamic_cast<MetalOceanNear*>(r.get())) {
+        const auto& texture_stats = on->texture_stats();
         m_chain_stats.ocean_near_verts = on->near_stats().vertices;
-        m_chain_stats.ocean_draws += on->texture_stats().draw_calls + on->near_stats().draw_calls;
+        m_chain_stats.ocean_draws += texture_stats.draw_calls + on->near_stats().draw_calls;
         m_chain_stats.ocean_triangles +=
-            on->texture_stats().triangles + on->near_stats().triangles;
+            texture_stats.triangles + on->near_stats().triangles;
         m_chain_stats.ocean_missing_textures +=
-            on->texture_stats().missing_textures + on->near_stats().missing_textures;
+            texture_stats.missing_textures + on->near_stats().missing_textures;
+        m_chain_stats.ocean_command_buffers_committed += texture_stats.command_buffers_committed;
+        m_chain_stats.ocean_command_buffers_completed += texture_stats.command_buffers_completed;
+        m_chain_stats.ocean_command_buffer_errors += texture_stats.command_buffer_errors;
+        if (texture_stats.last_command_buffer_status != 0 &&
+            (texture_stats.command_buffer_errors != 0 ||
+             m_chain_stats.ocean_last_command_buffer_status == 0)) {
+          m_chain_stats.ocean_last_command_buffer_status =
+              texture_stats.last_command_buffer_status;
+        }
         m_chain_stats.ocean_near_texture = on->texture_handle();
       } else if (auto* sp = dynamic_cast<MetalSpriteRenderer*>(r.get())) {
         const auto& ss = sp->stats();

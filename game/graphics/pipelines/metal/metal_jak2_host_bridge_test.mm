@@ -536,6 +536,13 @@ int main() {
             !goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 1),
         "a GPU failure is rejected by both frame gates");
   frame_gate.command_buffer_errors = 0;
+  frame_gate.ocean_command_buffers_committed = 1;
+  frame_gate.ocean_command_buffer_errors = 1;
+  check(!goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 0) &&
+            !goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 1),
+        "a private ocean GPU failure is rejected by both frame gates");
+  frame_gate.ocean_command_buffers_committed = 0;
+  frame_gate.ocean_command_buffer_errors = 0;
   frame_gate.drawable_misses = 1;
   check(!goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 0) &&
             !goal_jak2_metal_host_metrics_pass_frame_gate(&frame_gate, 1),
@@ -704,7 +711,10 @@ int main() {
             metrics.common_tfrag_skull_gem_texture == 0,
         "an empty common TFRAG bucket does not prepare or publish the skull-gem texture");
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
-            metrics.command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
+            metrics.command_buffer_errors == 0 &&
+            metrics.ocean_command_buffers_committed == 0 &&
+            metrics.ocean_command_buffers_completed == 0 &&
+            metrics.ocean_command_buffer_errors == 0 && metrics.drawables_acquired == 0 &&
             metrics.drawable_misses == 0 && metrics.late_present_submissions == 0 &&
             metrics.draws == 0 && metrics.triangles == 0 && metrics.submissions == 0 &&
             metrics.last_sky_draw_draws == 0 && metrics.last_sky_draw_triangles == 0 &&

@@ -32,6 +32,10 @@ typedef struct goal_jak2_metal_stats {
   int32_t triangles;
   int32_t last_command_buffer_status;
   int64_t last_command_buffer_error_code;
+  uint64_t ocean_command_buffers_committed;
+  uint64_t ocean_command_buffers_completed;
+  uint64_t ocean_command_buffer_errors;
+  int32_t ocean_last_command_buffer_status;
 } goal_jak2_metal_stats;
 
 /*! Initialize the development presenter around the app-owned CAMetalLayer. */
