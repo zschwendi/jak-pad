@@ -147,6 +147,15 @@ ValidationError with_cleanup(ValidationError error,
   }
   return error;
 }
+
+std::optional<ValidationError> verify_staged_contents(
+    const iso_file::OwnedStagingDirectory& staging_directory) {
+  if (staging_directory.verify_recorded_contents()) {
+    return std::nullopt;
+  }
+  return make_error(ValidationErrorCode::invalid_extraction_result,
+                    "A reader-created staging file changed after a disc-validation callback.");
+}
 #else
 ValidationError with_cleanup(ValidationError error,
                              const std::filesystem::path& staging_directory) {
@@ -471,6 +480,10 @@ ValidationResult<StagedExtraction> extract_and_validate(
 #endif
   }
 #ifndef _WIN32
+  if (auto integrity_error = verify_staged_contents(owned_staging)) {
+    return ValidationResult<StagedExtraction>::failure(
+        with_cleanup(std::move(*integrity_error), &owned_staging));
+  }
   if (auto checkpoint_error = write_checkpoint_file_at(match, &owned_staging)) {
     return ValidationResult<StagedExtraction>::failure(
         with_cleanup(std::move(*checkpoint_error), &owned_staging));

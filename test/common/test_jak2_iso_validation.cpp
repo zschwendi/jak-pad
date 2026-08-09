@@ -119,6 +119,76 @@ std::vector<uint8_t> make_progress_iso() {
   return image;
 }
 
+std::vector<uint8_t> make_supported_revision_iso() {
+  constexpr uint32_t kSectors = 56;
+  constexpr uint32_t kRootSector = 20;
+  constexpr uint32_t kRootSectors = 32;
+  constexpr uint32_t kDgoSector = 52;
+  constexpr uint32_t kExecutableSector = 53;
+  constexpr uint32_t kCommonFileSector = 54;
+  constexpr uint32_t kTailFileSector = 55;
+  constexpr uint32_t kFileSize = 8;
+  constexpr uint32_t kCommonFileCount = 591;
+  std::vector<uint8_t> image(size_t(kSectors) * kSectorSize);
+
+  auto* primary = image.data() + 16 * kSectorSize;
+  primary[0] = 1;
+  std::memcpy(primary + 1, "CD001", 5);
+  primary[6] = 1;
+  write_both32(primary + 80, kSectors);
+  write_both16(primary + 128, kSectorSize);
+  const std::array<uint8_t, 1> dot = {0};
+  const std::array<uint8_t, 1> dot_dot = {1};
+  write_record(&image, 16 * kSectorSize + 156, kRootSector, kRootSectors * kSectorSize, true, dot);
+
+  auto* terminator = image.data() + 17 * kSectorSize;
+  terminator[0] = 255;
+  std::memcpy(terminator + 1, "CD001", 5);
+  terminator[6] = 1;
+
+  size_t root_position = 0;
+  const auto append_root_record = [&](uint32_t extent, uint32_t size, bool directory,
+                                      std::span<const uint8_t> name) {
+    const auto record_size = 33 + name.size() + (name.size() % 2 == 0 ? 1 : 0);
+    const auto remaining = kSectorSize - root_position % kSectorSize;
+    if (record_size > remaining) {
+      root_position += remaining;
+    }
+    root_position += write_record(&image, kRootSector * kSectorSize + root_position, extent, size,
+                                  directory, name);
+  };
+  append_root_record(kRootSector, kRootSectors * kSectorSize, true, dot);
+  append_root_record(kRootSector, kRootSectors * kSectorSize, true, dot_dot);
+  const auto append_named_root_record = [&](uint32_t extent, uint32_t size, bool directory,
+                                            std::string_view name) {
+    append_root_record(
+        extent, size, directory,
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(name.data()), name.size()));
+  };
+  append_named_root_record(kDgoSector, kSectorSize, true, "DGO");
+  append_named_root_record(kExecutableSector, kFileSize, false, "SCUS_972.65;1");
+  for (uint32_t index = 0; index < kCommonFileCount; ++index) {
+    char name[16];
+    std::snprintf(name, sizeof(name), "F%03u.BIN;1", index);
+    append_named_root_record(kCommonFileSector, kFileSize, false, name);
+  }
+  append_named_root_record(kTailFileSector, kFileSize, false, "TAIL.BIN;1");
+
+  size_t dgo_position = kDgoSector * kSectorSize;
+  dgo_position += write_record(&image, dgo_position, kDgoSector, kSectorSize, true, dot);
+  write_record(&image, dgo_position, kRootSector, kRootSectors * kSectorSize, true, dot_dot);
+
+  // Original eight-byte synthetic preimages make the public fixture match the import revision's
+  // published fingerprints without containing retail data.
+  const std::array<uint8_t, 8> executable = {93, 77, 58, 216, 41, 74, 128, 81};
+  const std::array<uint8_t, 8> common = {0, 1, 2, 3, 4, 5, 6, 7};
+  const std::array<uint8_t, 8> tail = {38, 202, 174, 11, 36, 193, 76, 183};
+  std::copy(executable.begin(), executable.end(), image.begin() + kExecutableSector * kSectorSize);
+  std::copy(common.begin(), common.end(), image.begin() + kCommonFileSector * kSectorSize);
+  std::copy(tail.begin(), tail.end(), image.begin() + kTailFileSector * kSectorSize);
+  return image;
+}
+
 class TemporaryDirectory {
  public:
   TemporaryDirectory() {
@@ -467,6 +537,62 @@ bool reader_failures_and_cancellation_leave_no_staging() {
 }
 
 #ifndef _WIN32
+bool last_cancel_callback_in_place_mutation_fails_closed() {
+  TemporaryDirectory temp;
+  const auto image_path = temp.path / "supported.iso";
+  write_bytes(image_path, make_supported_revision_iso());
+  const auto staging = temp.path / "staging";
+  const auto sibling = temp.path / "sibling.txt";
+  write_bytes(sibling, "outside");
+
+  bool extraction_complete = false;
+  bool mutated = false;
+  bool mutation_failed = false;
+  uint32_t post_extraction_polls = 0;
+  uint32_t mutation_poll = 0;
+  iso_file::Options options;
+  options.on_progress = [&](const iso_file::Progress& progress) {
+    if (progress.files_total == jak2_iso::import_revision().file_count &&
+        progress.files_completed == progress.files_total &&
+        progress.bytes_completed == progress.bytes_total) {
+      extraction_complete = true;
+    }
+  };
+  options.should_cancel = [&] {
+    if (extraction_complete) {
+      ++post_extraction_polls;
+    }
+    if (!mutated && post_extraction_polls == 2) {
+      std::error_code error;
+      const auto tail = staging / "TAIL.BIN";
+      std::fstream current(tail, std::ios::binary | std::ios::in | std::ios::out);
+      current.seekp(0);
+      current.put('!');
+      current.close();
+      mutation_failed = !current || fs::file_size(tail, error) != 8 || bool(error);
+      mutated = !mutation_failed;
+      mutation_poll = post_extraction_polls;
+    }
+    return false;
+  };
+
+  OpenFile input(image_path);
+  CHECK(input.file);
+  const auto result = jak2_iso::extract_and_validate(input.file, staging, options);
+  CHECK(extraction_complete);
+  CHECK(post_extraction_polls == 2);
+  CHECK(mutation_poll == 2);
+  CHECK(mutated);
+  CHECK(!mutation_failed);
+  CHECK(!result);
+  CHECK(result.error().code == jak2_iso::ValidationErrorCode::invalid_extraction_result);
+  CHECK(!result.error().reader_error);
+  CHECK(!result.error().cleanup_error);
+  CHECK(!fs::exists(staging));
+  CHECK(read_text(sibling) == "outside");
+  return true;
+}
+
 bool progress_path_replacement_preserves_external_directory() {
   TemporaryDirectory temp;
   const auto image_path = temp.path / "progress.iso";
@@ -563,6 +689,7 @@ int main() {
       buildinfo_checkpoint_is_atomic_and_desktop_compatible,
       reader_failures_and_cancellation_leave_no_staging,
 #ifndef _WIN32
+      last_cancel_callback_in_place_mutation_fails_closed,
       progress_path_replacement_preserves_external_directory,
 #endif
       optionally_matches_extracted_retail_oracle,

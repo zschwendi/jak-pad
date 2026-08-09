@@ -1075,6 +1075,10 @@ bool OwnedStagingDirectory::is_linked() const {
   return m_impl && m_impl->is_linked();
 }
 
+bool OwnedStagingDirectory::verify_recorded_contents() const {
+  return m_impl && m_impl->verify_recorded_contents();
+}
+
 int OwnedStagingDirectory::directory_descriptor() const {
   return m_impl ? m_impl->root.get() : -1;
 }

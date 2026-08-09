@@ -142,6 +142,10 @@ class OwnedStagingDirectory {
   /// Confirm that the retained directory is still linked and contains exactly the recorded tree.
   bool is_linked() const;
 
+  /// Reopen every reader-created file without following symlinks and verify its creation identity,
+  /// exact size, and XXH64. Call before tracking importer-created metadata.
+  bool verify_recorded_contents() const;
+
   /// Descriptor-relative helpers for importer metadata created after ISO extraction.
   int directory_descriptor() const;
   bool track_created_file(std::string_view name, int descriptor);
