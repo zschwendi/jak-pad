@@ -113,8 +113,8 @@ inline void put_packed_xy(std::vector<u8>& memory,
 
 /*!
  * Public original-data-free fixtures assembled from tracked DEBUG_NO_ZBUF1
- * producers and the draw-raw-image grammar. Image-bearing layouts use a
- * synthetic opaque-red field.
+ * producers and the draw-raw-image grammar. Image-bearing layouts use four
+ * asymmetric coordinate-coded quadrants, with broad alternating row bands.
  */
 inline Jak2RawImageUploadFixture make_jak2_raw_image_fixture(
     Jak2RawImageFixtureLayout layout,
@@ -126,7 +126,8 @@ inline Jak2RawImageUploadFixture make_jak2_raw_image_fixture(
   constexpr u32 kSourceOffset = 0x10000;
   constexpr std::size_t kMemorySize = 0xf0000;
   constexpr u32 kBucketCount = 327;
-  constexpr u32 kOpaqueRed = 0xff0000ffu;
+  constexpr u32 kOpaqueAlpha = 0xff;
+  constexpr u32 kRowBandHeight = 104;
   out.ee_memory.resize(static_cast<std::size_t>(memory_base) + kMemorySize);
   out.chain_offset = memory_base + kChainOffset;
   out.bucket_offset = out.chain_offset + kJak2RawImageUploadBucket * 16;
@@ -249,10 +250,20 @@ inline Jak2RawImageUploadFixture make_jak2_raw_image_fixture(
   put_tag(out.ee_memory, out.final_boundary_offset, DmaTag::Kind::NEXT, 0,
           out.bucket_offset + 16);
 
-  for (std::size_t i = 0;
-       i < static_cast<std::size_t>(kJak2RawImageWidth) * kJak2RawImageHeight; ++i) {
-    put_u32(out.ee_memory, out.source_offset + static_cast<u32>(i * sizeof(u32)),
-            kOpaqueRed);
+  for (u32 y = 0; y < kJak2RawImageHeight; ++y) {
+    const bool top = y < kJak2RawImageHeight / 2;
+    const bool even_row_band = (y / kRowBandHeight) % 2 == 0;
+    for (u32 x = 0; x < kJak2RawImageWidth; ++x) {
+      const bool left = x < kJak2RawImageWidth / 2;
+      const u8 red = top ? (left ? 0x19 : 0xc7) : (left ? 0x5b : 0xe3);
+      const u8 green = top ? (left ? 0x2b : 0x4d) : (left ? 0xd1 : 0x7f);
+      const u8 blue = even_row_band ? 0x31 : 0xcf;
+      const u32 rgba = static_cast<u32>(red) | (static_cast<u32>(green) << 8) |
+                       (static_cast<u32>(blue) << 16) | (kOpaqueAlpha << 24);
+      const std::size_t pixel = static_cast<std::size_t>(y) * kJak2RawImageWidth + x;
+      put_u32(out.ee_memory, out.source_offset + static_cast<u32>(pixel * sizeof(u32)),
+              rgba);
+    }
   }
   return out;
 }

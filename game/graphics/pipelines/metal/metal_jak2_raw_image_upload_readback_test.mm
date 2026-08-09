@@ -222,23 +222,23 @@ int main() {
         bytesPerRow:kTargetSize * 4
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
         mipmapLevel:0];
-    int red_pixels = 0;
-    int unexpected_pixels = 0;
-    for (int y = 0; y < kTargetSize; ++y) {
-      for (int x = 0; x < kTargetSize; ++x) {
-        if (is_bgra(pixels, x, y, 0, 0, 255, 255)) {
-          red_pixels++;
-        } else {
-          unexpected_pixels++;
-        }
-      }
-    }
-    check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, 0, 0, 255, 255),
-          "frame readback contains the exact synthetic opaque red image at center");
-    check(is_bgra(pixels, 2, 2, 0, 0, 255, 255),
-          "frame readback contains the exact synthetic image at the fullscreen corner");
-    check(red_pixels == kTargetSize * kTargetSize && unexpected_pixels == 0,
-          "the source-ordered black background is fully covered by the synthetic image");
+    // The sprite's 0x80 vertex color takes the Direct MODULATE path shared with
+    // OpenGL: (texel * 128 / 255) * 2. BGRA8Unorm rounding therefore advances
+    // source channels above 0x7f by one; the probes remain spatially exact.
+    check(is_bgra(pixels, 2, 2, 0x31, 0x2b, 0x19, 0xff),
+          "top-left readback corner preserves its asymmetric RGBA quadrant and row band");
+    check(is_bgra(pixels, kTargetSize - 3, 2, 0x31, 0x4d, 0xc8, 0xff),
+          "top-right readback corner preserves horizontal UV direction and channel order");
+    check(is_bgra(pixels, 2, kTargetSize - 3, 0xd0, 0xd2, 0x5b, 0xff),
+          "bottom-left readback corner preserves vertical UV direction and row order");
+    check(is_bgra(pixels, kTargetSize - 3, kTargetSize - 3, 0xd0, 0x7f, 0xe4, 0xff),
+          "bottom-right readback corner preserves the fourth asymmetric quadrant");
+    check(is_bgra(pixels, 2, 15, 0x31, 0x2b, 0x19, 0xff) &&
+              is_bgra(pixels, 2, 16, 0xd0, 0x2b, 0x19, 0xff),
+          "neighboring top rows cross one broad alternating source row band exactly once");
+    check(is_bgra(pixels, 2, 47, 0x31, 0xd2, 0x5b, 0xff) &&
+              is_bgra(pixels, 2, 48, 0xd0, 0xd2, 0x5b, 0xff),
+          "neighboring bottom rows retain their quadrant while alternating source rows repeat");
 
     executor.detach_pool();
     metal_texture_release(placeholder_handle);
