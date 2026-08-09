@@ -471,6 +471,61 @@ void test_renderer_fallback_lifecycle(id<MTLDevice> device) {
               first_menu_stats.jak2_blit_display_copy_back_performed &&
               restored_menu_entry.rgba == frame_b.rgba,
           "snapshot then copy-back restores the same-frame capture over later bucket draws");
+
+    const auto run_lifecycle_frame = [&](metal_renderer::Jak2BlitDisplayCommand command,
+                                         metal_renderer::FramePixels* frame) {
+      const auto chain = make_renderer_chain(command, make_copy_back_decoy());
+      renderer.render_chain_frame(options, commit_layer, chain.data(), 0, chain.size());
+      return renderer.wait_for_last_chain_frame(5.0) && renderer.read_game_frame(frame);
+    };
+
+    bool menu_countdown_restored = true;
+    for (int frame_index = 0; frame_index < 2; frame_index++) {
+      metal_renderer::FramePixels frame;
+      menu_countdown_restored &=
+          run_lifecycle_frame(metal_renderer::Jak2BlitDisplayCommand::CopyBack, &frame);
+      const auto menu_frame_stats = renderer.chain_stats();
+      menu_countdown_restored &= menu_frame_stats.jak2_blit_display_copy_back_requested &&
+                                 menu_frame_stats.jak2_blit_display_copy_back_performed &&
+                                 !menu_frame_stats.jak2_blit_display_snapshot_requested &&
+                                 frame.rgba == frame_b.rgba;
+    }
+    check(menu_countdown_restored,
+          "menu entry restores the cached snapshot for exactly two more countdown frames");
+
+    metal_renderer::FramePixels steady_menu;
+    const bool steady_menu_completed =
+        run_lifecycle_frame(metal_renderer::Jak2BlitDisplayCommand::None, &steady_menu);
+    const auto steady_menu_stats = renderer.chain_stats();
+    check(steady_menu_completed && !steady_menu_stats.jak2_blit_display_snapshot_requested &&
+              !steady_menu_stats.jak2_blit_display_copy_back_requested &&
+              !steady_menu_stats.jak2_blit_display_copy_back_performed &&
+              steady_menu.rgba != frame_b.rgba,
+          "the first empty bucket after menu entry does not restore stale frame history");
+
+    bool exit_countdown_restored = true;
+    for (int frame_index = 0; frame_index < 3; frame_index++) {
+      metal_renderer::FramePixels frame;
+      exit_countdown_restored &=
+          run_lifecycle_frame(metal_renderer::Jak2BlitDisplayCommand::CopyBack, &frame);
+      const auto exit_frame_stats = renderer.chain_stats();
+      exit_countdown_restored &= exit_frame_stats.jak2_blit_display_copy_back_requested &&
+                                 exit_frame_stats.jak2_blit_display_copy_back_performed &&
+                                 !exit_frame_stats.jak2_blit_display_snapshot_requested &&
+                                 frame.rgba == frame_b.rgba;
+    }
+    check(exit_countdown_restored,
+          "menu exit reuses the cached snapshot for its three source countdown frames");
+
+    metal_renderer::FramePixels post_exit;
+    const bool post_exit_completed =
+        run_lifecycle_frame(metal_renderer::Jak2BlitDisplayCommand::None, &post_exit);
+    const auto post_exit_stats = renderer.chain_stats();
+    check(post_exit_completed && !post_exit_stats.jak2_blit_display_snapshot_requested &&
+              !post_exit_stats.jak2_blit_display_copy_back_requested &&
+              !post_exit_stats.jak2_blit_display_copy_back_performed &&
+              post_exit.rgba == steady_menu.rgba && post_exit.rgba != frame_b.rgba,
+          "post-exit empty buckets clear and draw normally without cached-snapshot restoration");
   }
 
   metal_texture_release(placeholder);
