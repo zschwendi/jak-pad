@@ -24,6 +24,7 @@ constexpr uint32_t kCreateGameSymbol = 0x44;
 constexpr uint32_t kCreatingSymbol = 0x48;
 constexpr uint32_t kSavingSymbol = 0x4c;
 constexpr uint32_t kAlreadyExistsSymbol = 0x50;
+constexpr uint32_t kIconInfoSymbol = 0x54;
 constexpr uint32_t kProgressType = 0x200;
 constexpr uint32_t kProgressGlobalStateType = 0x240;
 constexpr uint32_t kMenuOptionListType = 0x280;
@@ -39,6 +40,7 @@ constexpr uint32_t kCreateGameOptions = 0x1604;
 constexpr uint32_t kLoadingOptions = 0x1704;
 constexpr uint32_t kIdleState = 0x1804;
 constexpr uint32_t kAlreadyExistsOptions = 0x1a04;
+constexpr uint32_t kIconInfoOptions = 0x1b04;
 
 int g_failures = 0;
 
@@ -67,6 +69,7 @@ struct Fixture {
     inputs.insufficient_space_options = kInsufficientSpaceOptions;
     inputs.create_game_options = kCreateGameOptions;
     inputs.already_exists_options = kAlreadyExistsOptions;
+    inputs.icon_info_options = kIconInfoOptions;
     inputs.loading_options = kLoadingOptions;
     inputs.progress_type = {kProgressSymbol, kProgressType,
                             static_cast<uint16_t>(layout::kProgressSize)};
@@ -85,6 +88,7 @@ struct Fixture {
     inputs.no_memory_card_symbol = kNoMemoryCardSymbol;
     inputs.create_game_symbol = kCreateGameSymbol;
     inputs.already_exists_symbol = kAlreadyExistsSymbol;
+    inputs.icon_info_symbol = kIconInfoSymbol;
     inputs.creating_symbol = kCreatingSymbol;
     inputs.saving_symbol = kSavingSymbol;
     inputs.true_object = kTrue;
@@ -104,6 +108,7 @@ struct Fixture {
     write(bytes, kInsufficientSpaceOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kCreateGameOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kAlreadyExistsOptions - BASIC_OFFSET, kMenuOptionListType);
+    write(bytes, kIconInfoOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kLoadingOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kIdleState - BASIC_OFFSET, kStateType);
 
@@ -293,6 +298,14 @@ void reads_source_proven_save_flow_semantics() {
              snapshot.action_mask == (action_left | action_right | action_confirm),
          "already-exists exposes its source responder's Left, Right, and Confirm");
 
+  fixture.set_semantic_state(kIconInfoSymbol, kIconInfoOptions);
+  write(fixture.bytes, kProgressState + layout::kProgressStartingState, kIconInfoSymbol);
+  snapshot = fixture.read_semantic_snapshot();
+  expect(snapshot.available && snapshot.phase == SemanticPhase::icon_info &&
+             snapshot.option_index == 0 && snapshot.action_mask == action_confirm,
+         "the save-icon information screen exposes only Confirm");
+
+  write(fixture.bytes, kProgressState + layout::kProgressStartingState, kTitleSymbol);
   fixture.set_semantic_state(kCreatingSymbol, kLoadingOptions);
   snapshot = fixture.read_semantic_snapshot();
   expect(snapshot.available && snapshot.phase == SemanticPhase::creating &&
@@ -327,6 +340,25 @@ void semantic_identity_and_stability_fail_closed() {
   wrong_overwrite_index.set_semantic_state(kAlreadyExistsSymbol, kAlreadyExistsOptions, 1);
   expect(!wrong_overwrite_index.read_semantic_snapshot().available,
          "already-exists rejects a second option row");
+
+  Fixture wrong_icon_info_options;
+  wrong_icon_info_options.set_semantic_state(kIconInfoSymbol, kLoadingOptions);
+  write(wrong_icon_info_options.bytes, kProgressState + layout::kProgressStartingState,
+        kIconInfoSymbol);
+  expect(!wrong_icon_info_options.read_semantic_snapshot().available,
+         "icon-info paired with loading options is rejected");
+
+  Fixture wrong_icon_info_index;
+  wrong_icon_info_index.set_semantic_state(kIconInfoSymbol, kIconInfoOptions, 1);
+  write(wrong_icon_info_index.bytes, kProgressState + layout::kProgressStartingState,
+        kIconInfoSymbol);
+  expect(!wrong_icon_info_index.read_semantic_snapshot().available,
+         "icon-info rejects a second option row");
+
+  Fixture wrong_icon_info_origin;
+  wrong_icon_info_origin.set_semantic_state(kIconInfoSymbol, kIconInfoOptions);
+  expect(!wrong_icon_info_origin.read_semantic_snapshot().available,
+         "icon-info is rejected outside its source-proven spawned origin");
 
   Fixture wrong_option_type_size;
   wrong_option_type_size.set_semantic_state(kCreateGameSymbol, kCreateGameOptions);

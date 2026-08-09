@@ -487,6 +487,7 @@ jak2_progress_menu_reader::Inputs progress_menu_inputs() {
   inputs.insufficient_space_options = symbol_value_if_present("*insufficient-space-options*");
   inputs.create_game_options = symbol_value_if_present("*create-game-options*");
   inputs.already_exists_options = symbol_value_if_present("*already-exists-options*");
+  inputs.icon_info_options = symbol_value_if_present("*icon-info-options*");
   inputs.loading_options = symbol_value_if_present("*loading-options*");
   inputs.progress_type =
       progress_type_identity("progress", static_cast<uint16_t>(layout::kProgressSize));
@@ -503,6 +504,7 @@ jak2_progress_menu_reader::Inputs progress_menu_inputs() {
   inputs.no_memory_card_symbol = goal_game_find_symbol("no-memory-card", nullptr);
   inputs.create_game_symbol = goal_game_find_symbol("create-game", nullptr);
   inputs.already_exists_symbol = goal_game_find_symbol("already-exists", nullptr);
+  inputs.icon_info_symbol = goal_game_find_symbol("icon-info", nullptr);
   inputs.creating_symbol = goal_game_find_symbol("creating", nullptr);
   inputs.saving_symbol = goal_game_find_symbol("saving", nullptr);
   inputs.true_object = goal_game_true_offset();
@@ -858,6 +860,8 @@ goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_semantic_snapshot(
                 GOAL_JAK2_PROGRESS_MENU_PHASE_SAVING);
   static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::already_exists) ==
                 GOAL_JAK2_PROGRESS_MENU_PHASE_ALREADY_EXISTS);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::icon_info) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_ICON_INFO);
   static_assert(jak2_progress_menu_reader::action_up == GOAL_JAK2_PROGRESS_MENU_ACTION_UP);
   static_assert(jak2_progress_menu_reader::action_down == GOAL_JAK2_PROGRESS_MENU_ACTION_DOWN);
   static_assert(jak2_progress_menu_reader::action_left == GOAL_JAK2_PROGRESS_MENU_ACTION_LEFT);
