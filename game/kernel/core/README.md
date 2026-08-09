@@ -564,9 +564,11 @@ upstream's ISO thread VAG cases plus `game/overlord/jak1/stream.cpp`, with the t
 the pause/stop/volume commands that address the stream by sound id. What is still absent is the
 'STRV' plugin, the path where a music sequence itself queues a stream.
 
-A run reports what it could not play rather than being quieter than it should be: a spool request
-naming a stream `VAGDIR.AYB` does not have, a play request naming a sound no loaded bank has, and an
-RPC command this implementation does not handle.
+When an animation has no matching stream, or its VAG file cannot be opened, the runtime mirrors
+upstream's silent 1024 Hz fallback clock so the animation and its load-command timeline still run.
+A run also reports what it could not play: a spool request naming a stream `VAGDIR.AYB` does not
+have, a play request naming a sound no loaded bank has, and an RPC command this implementation does
+not handle.
 
 ```sh
 GOALPAD_JAK1_DATA_DIR=/path/to/out/jak1 ./build/Release/bin/game/jak1-data-boot-test \

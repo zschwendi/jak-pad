@@ -351,7 +351,6 @@ void play_spool_request(const jak1::SoundRpcCommand* cmd) {
   const VagStreamEntry* vag = vag_stream::find(stem);
   if (!vag) {
     note_unhandled(fmt::format("streamed audio '{}' (no stream by that name)", stem));
-    return;
   }
   const Vec3w* trans = cmd->play.parms.pitch_mod ? &cmd->play.parms.trans : nullptr;
   vag_stream::play(vag, cmd->play.sound_id, cmd->play.parms.volume, 0, trans);
@@ -718,7 +717,6 @@ void rpc_play(u32 send_buffer, int send_size) {
     const VagStreamEntry* vag = vag_stream::find(name);
     if (!vag) {
       note_unhandled(fmt::format("streamed audio '{}' (no stream by that name)", name));
-      continue;
     }
     if (cmd->result == 0) {
       vag_stream::play(vag, cmd->address, 0x400, 1, nullptr);

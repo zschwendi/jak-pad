@@ -55,6 +55,7 @@ constexpr u32 kStreamSram = 0;       // snd_SRAMMalloc(0xc030) on this platform
 constexpr u32 kTrapSram = kStreamSram + 0xC000;
 constexpr int kVagDirEntries = 868;
 constexpr int kVoice = 0;  // snd_ExternVoiceAlloc's answer, through jak1/ssound.cpp's conversion
+constexpr s32 kFakeClockStep = 1024 / 60;  // upstream's 1024 Hz clock, one 60 Hz game frame
 
 // Voice register selectors, addressed the way sdshim.cpp expects: the register, plus the voice.
 u32 voice_reg(u32 reg) {
@@ -113,6 +114,8 @@ bool g_real_clock_running = false;
 s32 g_fake_clock = 0;
 bool g_fake_clock_running = false;
 bool g_fake_clock_paused = false;
+const VagStreamEntry* g_fake_vag = nullptr;
+u32 g_fake_priority = 0;
 
 std::vector<u8> g_buffer;
 stats g_stats;
@@ -192,6 +195,27 @@ void stop_voice() {
   }
   g_stream = StreamState();
   g_active = false;
+}
+
+void stop_fake_clock() {
+  g_fake_clock_running = false;
+  g_fake_clock_paused = false;
+  g_fake_vag = nullptr;
+  g_fake_priority = 0;
+  g_vag_id = 1;
+}
+
+void start_fake_clock(const VagStreamEntry* vag, u32 sound_id, u32 priority) {
+  if (g_active) {
+    stop_voice();
+  }
+  g_real_clock_running = false;
+  g_fake_clock = 0;
+  g_fake_clock_running = true;
+  g_fake_clock_paused = g_stream_paused;
+  g_fake_vag = vag;
+  g_fake_priority = priority;
+  g_vag_id = (s32)sound_id;
 }
 
 /*! `VAG_MarkLoopEnd`: set the loop flag in the last ADPCM block's header. */
@@ -432,6 +456,14 @@ void shutdown() {
   g_dialog_volume = 0;
   g_vag_id = 0;
   g_playing = false;
+  g_real_clock = 0;
+  g_real_clock_samples = 0;
+  g_real_clock_running = false;
+  g_fake_clock = 0;
+  g_fake_clock_running = false;
+  g_fake_clock_paused = false;
+  g_fake_vag = nullptr;
+  g_fake_priority = 0;
   g_stream_paused = false;
   g_resume_on_continue = false;
 }
@@ -471,6 +503,12 @@ const VagStreamEntry* find(const char* name) {
 void play(const VagStreamEntry* vag, u32 sound_id, s32 volume, u32 priority, const Vec3w* trans) {
   if (!g_installed || !vag) {
     g_stats.streams_missing++;
+    if ((g_active && !g_stream.paused && (s32)priority < (s32)g_stream.priority) ||
+        (g_fake_clock_running && !g_fake_clock_paused &&
+         (s32)priority < (s32)g_fake_priority)) {
+      return;
+    }
+    start_fake_clock(vag, sound_id, priority);
     return;
   }
 
@@ -487,28 +525,41 @@ void play(const VagStreamEntry* vag, u32 sound_id, s32 volume, u32 priority, con
     }
   } else {
     // A louder-priority stream keeps the voice.
-    if (g_active && !g_stream.paused && (s32)priority < (s32)g_stream.priority) {
+    if ((g_active && !g_stream.paused && (s32)priority < (s32)g_stream.priority) ||
+        (g_fake_clock_running && !g_fake_clock_paused &&
+         (s32)priority < (s32)g_fake_priority)) {
       return;
     }
+    stop_fake_clock();
     begin(vag, sound_id, volume, priority, trans);
     if (g_stream_paused) {
       g_resume_on_continue = true;
     }
   }
 
+  if (!g_active) {
+    start_fake_clock(vag, sound_id, priority);
+    return;
+  }
+  g_fake_clock_running = false;
+  g_fake_clock_paused = false;
+  g_fake_vag = nullptr;
+  g_fake_priority = 0;
   g_real_clock = 0;
   g_real_clock_samples = 0;
   g_real_clock_running = true;
-  g_vag_id = g_active ? (s32)g_stream.sound_id : 1;
+  g_vag_id = (s32)g_stream.sound_id;
 }
 
 void queue(const VagStreamEntry* vag, u32 sound_id, u32 priority) {
   if (!g_installed || !vag) {
     return;
   }
-  if (g_active && (g_stream.vag == vag || !g_stream.paused)) {
+  if ((g_active && (g_stream.vag == vag || !g_stream.paused)) ||
+      (g_fake_clock_running && !g_fake_clock_paused)) {
     return;
   }
+  stop_fake_clock();
   begin(vag, sound_id, 0x400, priority, nullptr);
   g_stream.paused = true;
 }
@@ -516,6 +567,10 @@ void queue(const VagStreamEntry* vag, u32 sound_id, u32 priority) {
 void stop(const VagStreamEntry* vag, u32 priority) {
   if (g_active && (!vag || g_stream.vag == vag) && (s32)priority >= (s32)g_stream.priority) {
     stop_voice();
+  }
+  if (g_fake_clock_running && (!vag || g_fake_vag == vag) &&
+      (s32)priority >= (s32)g_fake_priority) {
+    stop_fake_clock();
   }
   g_stream_paused = false;
   g_resume_on_continue = false;
@@ -586,6 +641,9 @@ s32 stream_id() {
 }
 
 void frame() {
+  if (g_fake_clock_running && !g_fake_clock_paused) {
+    g_fake_clock += kFakeClockStep;
+  }
   if (!g_installed || !g_active) {
     return;
   }
