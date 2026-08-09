@@ -3,6 +3,7 @@ include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_output_graph.cmake")
 if(NOT TARGET jak1-public-generated-artifacts)
   add_library(jak1-public-generated-artifacts STATIC
               "${CMAKE_SOURCE_DIR}/common/custom_data/GoalDataObjectBuilder.cpp"
+              "${CMAKE_SOURCE_DIR}/common/custom_data/PublicGeneratedDataObjectCompiler.cpp"
               "${CMAKE_SOURCE_DIR}/common/custom_data/Jak1PublicGeneratedArtifacts.cpp")
   target_include_directories(jak1-public-generated-artifacts PUBLIC "${CMAKE_SOURCE_DIR}")
   target_compile_features(jak1-public-generated-artifacts PUBLIC cxx_std_20)

@@ -424,6 +424,7 @@ Result<Inputs> build(const ValidatedTree& tree,
     }
 
     Inputs output;
+    output.revision = tree.revision;
     output.public_subtitle_v2 = contract.value().public_subtitle;
     output.retail.reserve(kRetailLanguageCount + 1);
     if (!add_retail_bytes(&output.retail_bytes, directory_object->data.size(), options)) {

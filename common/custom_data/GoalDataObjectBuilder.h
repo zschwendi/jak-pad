@@ -11,6 +11,7 @@ namespace goal_data_object_builder {
 class Builder {
  public:
   std::uint32_t add_word(std::uint32_t word);
+  std::uint32_t add_word_float(float value);
   std::uint32_t add_ref_to_string(std::string_view value);
   void add_type_tag(std::string_view value);
   void add_symbol_link(std::string_view value);

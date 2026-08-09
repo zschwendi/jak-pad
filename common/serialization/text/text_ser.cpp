@@ -222,6 +222,13 @@ void parse_text_goal(const goos::Object& data,
 void parse_text_json(const nlohmann::json& json,
                      GameTextDB& db,
                      const GameTextDefinitionFile& file_info) {
+  parse_text_json(json, db, file_info, nullptr);
+}
+
+void parse_text_json(const nlohmann::json& json,
+                     GameTextDB& db,
+                     const GameTextDefinitionFile& file_info,
+                     const KoreanLookupDatabase* korean_db) {
   // Verify we have all data that we need
   if (!file_info.group_name.has_value()) {
     throw std::runtime_error(
@@ -245,18 +252,19 @@ void parse_text_json(const nlohmann::json& json,
     bank = db.bank_by_id(file_info.group_name.value(), file_info.language_id);
   }
   GameTextFontBank* font = get_font_bank(file_info.text_version);
+  const auto convert = [&](const std::string& value) {
+    if (!font->is_language_id_korean(file_info.language_id)) {
+      return font->convert_utf8_to_game(value);
+    }
+    return korean_db ? font->convert_utf8_to_game_korean(value, *korean_db)
+                     : font->convert_utf8_to_game_korean(value);
+  };
   // Parse the file
   for (const auto& [text_id, text_value] : json.items()) {
     auto line_id = std::stoi(text_id, nullptr, 16);
     if (text_value.is_string()) {
       // single line replacement
-      if (font->is_language_id_korean(file_info.language_id)) {
-        auto line = font->convert_utf8_to_game_korean(text_value);
-        bank->set_line(line_id, line);
-      } else {
-        auto line = font->convert_utf8_to_game(text_value);
-        bank->set_line(line_id, line);
-      }
+      bank->set_line(line_id, convert(text_value));
 
     } else if (text_value.is_array()) {
       // multi-line replacement starting from line_id
@@ -267,13 +275,7 @@ void parse_text_json(const nlohmann::json& json,
               "Non string provided for line {} / text id #x{} of _credits", idx, line_id));
         }
 
-        if (font->is_language_id_korean(file_info.language_id)) {
-          auto line = font->convert_utf8_to_game_korean(raw_line);
-          bank->set_line(line_id++, line);  // increment line_id
-        } else {
-          auto line = font->convert_utf8_to_game(raw_line);
-          bank->set_line(line_id++, line);  // increment line_id
-        }
+        bank->set_line(line_id++, convert(raw_line));
       }
     } else {
       // Unexpected value type

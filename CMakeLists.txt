@@ -530,6 +530,7 @@ add_subdirectory(common)
 
 # build decompiler
 add_subdirectory(decompiler)
+include(common/custom_data/jak2_public_generated_artifacts.cmake)
 
 # cubeb - audio
 build_third_party_lib(cubeb cubeb)

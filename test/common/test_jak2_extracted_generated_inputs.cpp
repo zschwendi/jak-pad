@@ -119,6 +119,7 @@ bool loads_nine_retail_inputs_and_public_requirement() {
   const auto second = adapter::build(fixture.tree());
   CHECK(second);
   CHECK(first.value() == second.value());
+  CHECK(first.value().revision.contents_hash == proven_revision().contents_hash);
   CHECK(first.value().retail.size() == 9);
   CHECK(first.value().retail.front().source_kind == adapter::RetailSourceKind::archive_object);
   CHECK(first.value().retail.front().object_kind == recipe::GeneratedDataKind::directory_tpages);

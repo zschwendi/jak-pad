@@ -83,6 +83,16 @@ struct Options {
   ProgressCallback on_progress;
 };
 
+/// Physical V2 object extents differ between the retail games. Jak 1 inputs must already end on a
+/// word boundary and have zero object padding. Jak II retail V2 text banks may omit up to three
+/// physical word-alignment bytes and the unused tail of the final 16-byte semantic object; the V4
+/// directory may contain non-canonical final padding words. Callers must opt in explicitly and the
+/// checked parser supplies only zero-valued bounded semantic padding.
+enum class CheckedObjectProfile {
+  jak1_exact,
+  jak2_retail_extent,
+};
+
 enum class ErrorCode {
   invalid_argument,
   unsupported_revision,
@@ -146,6 +156,20 @@ class Result {
 Result<artifacts::Inputs> build(const ValidatedTree& tree,
                                 const PublicAdditions& public_additions,
                                 const Options& options = {});
+
+Result<artifacts::DirectoryTpages> parse_checked_directory_tpages(
+    std::span<const std::uint8_t> bytes,
+    std::string source_relative_path,
+    const Options& options = {},
+    CheckedObjectProfile profile = CheckedObjectProfile::jak1_exact);
+
+Result<artifacts::GameTextBank> parse_checked_game_text(
+    std::span<const std::uint8_t> bytes,
+    std::uint32_t language_id,
+    std::string destination_basename,
+    std::string source_relative_path,
+    const Options& options = {},
+    CheckedObjectProfile profile = CheckedObjectProfile::jak1_exact);
 
 const char* error_code_name(ErrorCode code);
 

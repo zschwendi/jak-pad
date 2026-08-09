@@ -58,11 +58,23 @@ struct PublicInputRequirement {
 };
 
 struct Inputs {
+  /// Exact validated-disc provenance retained for downstream checked artifact compilation.
+  jak2_iso::Revision revision;
   std::vector<RetailInput> retail;
   PublicInputRequirement public_subtitle_v2;
   std::uint64_t retail_bytes = 0;
 
-  bool operator==(const Inputs&) const = default;
+  bool operator==(const Inputs& other) const {
+    return revision.serial == other.revision.serial &&
+           revision.elf_hash == other.revision.elf_hash &&
+           revision.canonical_name == other.revision.canonical_name &&
+           revision.territory == other.revision.territory &&
+           revision.file_count == other.revision.file_count &&
+           revision.contents_hash == other.revision.contents_hash &&
+           revision.decomp_config_version == other.revision.decomp_config_version &&
+           retail == other.retail && public_subtitle_v2 == other.public_subtitle_v2 &&
+           retail_bytes == other.retail_bytes;
+  }
 };
 
 enum class ProgressStage {

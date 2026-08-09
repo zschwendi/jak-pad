@@ -85,6 +85,10 @@ void parse_text_goal(const goos::Object& data,
 void parse_text_json(const nlohmann::json& json,
                      GameTextDB& db,
                      const GameTextDefinitionFile& file_info);
+void parse_text_json(const nlohmann::json& json,
+                     GameTextDB& db,
+                     const GameTextDefinitionFile& file_info,
+                     const KoreanLookupDatabase* korean_db);
 GameTextVersion parse_text_only_version(const std::string& filename);
 GameTextVersion parse_text_only_version(const goos::Object& data);
 

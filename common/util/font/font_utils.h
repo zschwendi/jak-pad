@@ -35,6 +35,8 @@ struct ReplaceInfo {
   std::string utf8_alternative = "";
 };
 
+using KoreanLookupDatabase = std::unordered_map<std::string, KoreanLookupOrientations>;
+
 // version of the game text file's text encoding. Not real, but we need to differentiate them
 // somehow, since the encoding changes.
 enum class GameTextVersion {
@@ -85,6 +87,8 @@ class GameTextFontBank {
   std::string convert_game_to_utf8(const char* in) const;
 
   std::string convert_utf8_to_game_korean(const std::string& str);
+  std::string convert_utf8_to_game_korean(const std::string& str,
+                                          const KoreanLookupDatabase& korean_db) const;
   std::string convert_korean_game_to_utf8(const char* in) const;
 };
 

@@ -7,6 +7,8 @@
 #include <string_view>
 
 #include "common/custom_data/GoalDataObjectBuilder.h"
+#include "common/custom_data/PublicGeneratedDataObjectCompiler.h"
+#include "common/serialization/text/text_ser.h"
 
 #define XXH_PRIVATE_API
 #include "third-party/zstd/lib/common/xxhash.h"
@@ -104,15 +106,7 @@ std::optional<recipe::GeneratedDataKind> generated_kind(graph::ObjectProducerKin
 }
 
 std::vector<std::uint8_t> build_directory_tpages(const DirectoryTpages& input) {
-  Builder builder;
-  builder.add_type_tag("texture-page-dir");
-  builder.add_word(static_cast<std::uint32_t>(input.lengths.size()));
-  for (const auto length : input.lengths) {
-    builder.add_word(length);
-    builder.add_symbol_link("#f");
-    builder.add_symbol_link("#f");
-  }
-  return builder.generate_v4();
+  return public_generated_data_object_compiler::build_directory_tpages(input.lengths);
 }
 
 std::vector<std::uint8_t> build_game_count(const GameCount& input) {
@@ -129,16 +123,11 @@ std::vector<std::uint8_t> build_game_count(const GameCount& input) {
 }
 
 std::vector<std::uint8_t> build_game_text(const GameTextBank& input) {
-  Builder builder;
-  builder.add_type_tag("game-text-info");
-  builder.add_word(static_cast<std::uint32_t>(input.lines.size()));
-  builder.add_word(input.language_id);
-  builder.add_ref_to_string(input.group_name);
+  ::GameTextBank bank(input.language_id);
   for (const auto& line : input.lines) {
-    builder.add_word(line.id);
-    builder.add_ref_to_string(line.encoded_text);
+    bank.set_line(static_cast<int>(line.id), line.encoded_text);
   }
-  return builder.generate_v2();
+  return public_generated_data_object_compiler::build_game_text(input.group_name, bank);
 }
 
 std::vector<std::uint8_t> build_subtitles(const SubtitleBank& input) {
