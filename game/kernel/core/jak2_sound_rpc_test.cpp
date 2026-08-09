@@ -991,13 +991,15 @@ int main() {
   std::vector<u8> vag_directory(4 + 2 * 16, 0);
   write_value(&vag_directory, 0, u32(2));
   memcpy(vag_directory.data() + 4, "AUDIOONE", 8);
-  write_value(&vag_directory, 12, u32(0));
+  constexpr u32 kValidVagSector = 2;
+  write_value(&vag_directory, 12, kValidVagSector);
   memcpy(vag_directory.data() + 20, "BADRANGE", 8);
-  write_value(&vag_directory, 28, u32(0x1000));
-  std::vector<u8> vagwad(0x30 + 0x40, 0x55);
-  write_value(&vagwad, 0, u32(0x56414770));  // little-endian pGAV
-  write_value(&vagwad, 12, u32(0x40));
-  write_value(&vagwad, 16, u32(48000));
+  write_value(&vag_directory, 28, UINT32_MAX);
+  constexpr size_t kValidVagOffset = kValidVagSector * SECTOR_SIZE;
+  std::vector<u8> vagwad(kValidVagOffset + 0x30 + 0x40, 0x55);
+  write_value(&vagwad, kValidVagOffset, u32(0x56414770));  // little-endian pGAV
+  write_value(&vagwad, kValidVagOffset + 12, u32(0x40));
+  write_value(&vagwad, kValidVagOffset + 16, u32(48000));
 
   constexpr const char* kFullWidthName = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
   check(!fixture_error && write_fixture(fixture_root / "iso" / "MIXED.TXT", fixture_bytes) &&
@@ -1057,7 +1059,7 @@ int main() {
             "a source-proven missing VAG reports bits 6 and 10 only");
   check_u32(audio_slot >= 0 ? published_info.stream_status[audio_slot] : UINT32_MAX,
             kStreamBuffered | kStreamLoadingAudio | kStreamCurrentMovie,
-            "a bounded VAG reports source-equivalent buffered bits 1 and 5");
+            "a nonzero-sector VAG reports source-equivalent buffered bits 1 and 5");
   check_u32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : UINT32_MAX, 0,
             "the output-free buffered stream keeps an explicit silent position");
   check_guards(sound_info, "stream-state publication remains inside the 0x250-byte info block");
@@ -1111,11 +1113,11 @@ int main() {
   const auto invalid_range_batch = snapshot(play);
   rpc_call(5, 0, 1, play.data.offset, 2 * kPlayRequestSize, 0, 0, 0);
   check(snapshot(play) == invalid_range_batch,
-        "an invalid VAG range leaves the complete EE batch untouched");
+        "an out-of-range VAG sector leaves the complete EE batch untouched");
   goal_jak2_sound_frame();
   published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
   check(same_stream_state(published_info, state_before_rejected_play),
-        "an invalid VAG range rejects the complete batch before state mutation");
+        "an out-of-range VAG sector rejects the batch before state mutation");
 
   const auto state_before_framing_rejections = published_info;
   reset_play_request(play, 3);
@@ -1156,7 +1158,7 @@ int main() {
   check_u32(stats.stream_queue_requests, 4, "valid queue commands are counted exactly");
   check_u32(stats.stream_play_requests, 1, "the valid play transition is counted exactly");
   check_u32(stats.stream_stop_requests, 1, "the valid stop transition is counted exactly");
-  check_u32(stats.stream_failures, 1, "the malformed VAG range fails closed once");
+  check_u32(stats.stream_failures, 1, "the out-of-range VAG sector fails closed once");
 
   std::printf("\n== exact-buffer no-reply sound-bank loads ==\n");
   reset_bank_command(send, bank_name("valid"));

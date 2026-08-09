@@ -561,6 +561,11 @@ u32 byte_swap(u32 value) {
 }
 
 bool vag_stream_is_bounded(const Jak2VagDirEntry& entry) {
+  constexpr u64 kIsoSectorSize = 0x800;
+  const u64 byte_offset = static_cast<u64>(entry.offset) * kIsoSectorSize;
+  if (byte_offset > static_cast<u64>(std::numeric_limits<long>::max())) {
+    return false;
+  }
   if (!gLanguage) {
     return false;
   }
@@ -578,9 +583,9 @@ bool vag_stream_is_bounded(const Jak2VagDirEntry& entry) {
   std::array<u32, 12> header = {};
   bool valid = std::fseek(file, 0, SEEK_END) == 0;
   const long file_size = valid ? std::ftell(file) : -1;
-  valid = valid && file_size >= 0 && entry.offset <= static_cast<u64>(file_size) &&
-          sizeof(header) <= static_cast<u64>(file_size) - entry.offset &&
-          std::fseek(file, static_cast<long>(entry.offset), SEEK_SET) == 0 &&
+  valid = valid && file_size >= 0 && byte_offset <= static_cast<u64>(file_size) &&
+          sizeof(header) <= static_cast<u64>(file_size) - byte_offset &&
+          std::fseek(file, static_cast<long>(byte_offset), SEEK_SET) == 0 &&
           std::fread(header.data(), 1, sizeof(header), file) == sizeof(header);
   const bool close_ok = std::fclose(file) == 0;
   if (!valid || !close_ok) {
@@ -596,7 +601,8 @@ bool vag_stream_is_bounded(const Jak2VagDirEntry& entry) {
       header[0] == kVagBigEndianMagic ? byte_swap(header[3]) : header[3];
   const u32 sample_rate =
       header[0] == kVagBigEndianMagic ? byte_swap(header[4]) : header[4];
-  return sample_rate != 0 && payload_size <= static_cast<u64>(file_size) - entry.offset - 0x30;
+  return sample_rate != 0 &&
+         payload_size <= static_cast<u64>(file_size) - byte_offset - sizeof(header);
 }
 
 StreamAudioState stream_audio_state(const std::array<char, 48>& name) {
