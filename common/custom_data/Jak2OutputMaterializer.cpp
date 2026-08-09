@@ -37,6 +37,8 @@ Result<Summary> materialize(const Inputs& inputs,
   core_options.expected_revision = jak2_output_recipe::revision_provenance(revision);
   core_options.expected_source_object_pack = jak2_output_recipe::kRecordedSourceObjectPack;
   core_options.wire_game = jak1_output_recipe::WireGame::jak2;
+  core_options.compressed_trailing_alignment_bytes =
+      kNtscV2CompressedArchiveAlignmentBytes;
   core_options.should_cancel = options.should_cancel;
   core_options.on_progress = options.on_progress;
   return jak1_output_materializer::materialize(inputs, destination_root, core_options);

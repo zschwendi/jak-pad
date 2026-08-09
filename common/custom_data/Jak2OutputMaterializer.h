@@ -5,6 +5,8 @@
 
 namespace jak2_output_materializer {
 
+inline constexpr std::size_t kNtscV2CompressedArchiveAlignmentBytes = 0x40000;
+
 using GeneratedObjectArtifact = jak1_output_materializer::GeneratedObjectArtifact;
 using GeneratedFlatArtifact = jak1_output_materializer::GeneratedFlatArtifact;
 using Inputs = jak1_output_materializer::Inputs;

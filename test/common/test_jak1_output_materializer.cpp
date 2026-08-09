@@ -208,6 +208,7 @@ struct Fixture {
 bool materializes_checked_desktop_layout() {
   Fixture fixture;
   CHECK(fixture.setup());
+  CHECK(!fixture.options.compressed_trailing_alignment_bytes);
   std::vector<Progress> progress;
   fixture.options.on_progress = [&](const Progress& update) { progress.push_back(update); };
   const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);

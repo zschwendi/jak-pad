@@ -72,6 +72,7 @@ struct Options {
   std::size_t max_internal_name_bytes = 59;
   std::size_t hash_chunk_bytes = 256 * 1024;
   std::uint32_t max_archive_expansion_ratio = 256;
+  std::optional<std::size_t> compressed_trailing_alignment_bytes;
   GameVersion game_version = GameVersion::Jak1;
   CancelCallback should_cancel;
   ProgressCallback on_progress;

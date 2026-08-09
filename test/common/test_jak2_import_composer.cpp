@@ -18,7 +18,10 @@
 namespace {
 
 namespace composer = jak2_import_composer;
+namespace core_generator = jak1_output_recipe_generator;
 namespace fs = std::filesystem;
+namespace generator = jak2_output_recipe_generator;
+namespace retail_catalog = jak1_retail_object_catalog;
 
 #define CHECK(condition)                                                           \
   do {                                                                             \
@@ -298,6 +301,28 @@ bool invalid_source_pack_fails_before_candidate_creation() {
 bool checked_graph_contains_the_iso_launch_contract() {
   const auto graph = jak2_public_output_graph::decode_base_retail();
   CHECK(graph);
+  const auto retail = composer::internal::derive_retail_requirements(graph.value());
+  CHECK(retail);
+  CHECK(retail.value().occurrence_count == composer::internal::kNtscV2RetailOccurrenceCount);
+  CHECK(retail.value().objects.size() == composer::internal::kNtscV2RetailObjectCount);
+  CHECK(retail.value().source_archive_relative_paths.size() ==
+        composer::internal::kNtscV2RetailArchiveCount);
+  CHECK(std::set<std::string>(retail.value().source_archive_relative_paths.begin(),
+                              retail.value().source_archive_relative_paths.end())
+            .size() == composer::internal::kNtscV2RetailArchiveCount);
+  std::size_t tpage_1606_occurrences = 0;
+  for (const auto& archive : graph.value().archives) {
+    for (const auto& object : archive.objects) {
+      if (object.prepared_basename != "tpage-1606.go") {
+        continue;
+      }
+      ++tpage_1606_occurrences;
+      CHECK(object.producer == core_generator::ObjectProducerKind::verified_retail);
+      CHECK(object.internal_name == "tpage-1606");
+      CHECK(object.retail_source_archive == "DGO/ATE.DGO");
+    }
+  }
+  CHECK(tpage_1606_occurrences == 1);
   std::set<std::string> destinations;
   for (const auto& archive : graph.value().archives) {
     destinations.emplace(archive.destination_basename);
@@ -312,6 +337,63 @@ bool checked_graph_contains_the_iso_launch_contract() {
   for (const auto& required : contract.iso_basenames) {
     CHECK(destinations.contains(required));
   }
+  return true;
+}
+
+bool retail_catalog_selection_is_exact_and_cancellable() {
+  generator::Graph graph;
+  graph.archives = {{"OUT.DGO",
+                     {{"retail.go", "retail", core_generator::ObjectProducerKind::verified_retail,
+                       "DGO/A.DGO"}}}};
+  auto requirements = composer::internal::derive_retail_requirements(graph);
+  CHECK(requirements);
+  CHECK(requirements.value().occurrence_count == 1);
+  CHECK(requirements.value().objects.size() == 1);
+  CHECK(requirements.value().source_archive_relative_paths ==
+        std::vector<std::string>({"DGO/A.DGO"}));
+
+  const retail_catalog::Entry entry{{"DGO/A.DGO", 7, "retail", "retail", 144,
+                                     0x123456789abcdef0ull,
+                                     retail_catalog::ObjectVersion::v4}};
+  auto selected = composer::internal::select_exact_retail_catalog(
+      requirements.value(), std::span<const retail_catalog::Entry>(&entry, 1), 144);
+  CHECK(selected);
+  CHECK(selected.value().size() == 1);
+  CHECK(selected.value()[0].source_archive_relative_path == "DGO/A.DGO");
+  CHECK(selected.value()[0].archive_object_index == 7);
+  CHECK(selected.value()[0].xxh64 == 0x123456789abcdef0ull);
+
+  selected = composer::internal::select_exact_retail_catalog(requirements.value(), {}, 144);
+  CHECK(!selected);
+  CHECK(selected.error().code == composer::ErrorCode::retail_catalog_failed);
+
+  auto wrong_archive = entry;
+  wrong_archive.provenance.source_archive_relative_path = "DGO/B.DGO";
+  selected = composer::internal::select_exact_retail_catalog(
+      requirements.value(), std::span<const retail_catalog::Entry>(&wrong_archive, 1), 144);
+  CHECK(!selected);
+  CHECK(selected.error().code == composer::ErrorCode::retail_catalog_failed);
+
+  const std::array duplicate = {entry, entry};
+  selected = composer::internal::select_exact_retail_catalog(requirements.value(), duplicate, 288);
+  CHECK(!selected);
+  CHECK(selected.error().code == composer::ErrorCode::retail_catalog_failed);
+
+  selected = composer::internal::select_exact_retail_catalog(
+      requirements.value(), std::span<const retail_catalog::Entry>(&entry, 1), 143);
+  CHECK(!selected);
+  CHECK(selected.error().code == composer::ErrorCode::retail_catalog_failed);
+
+  composer::Options cancelled;
+  cancelled.should_cancel = [] { return true; };
+  selected = composer::internal::select_exact_retail_catalog(
+      requirements.value(), std::span<const retail_catalog::Entry>(&entry, 1), 144, cancelled);
+  CHECK(!selected);
+  CHECK(selected.error().code == composer::ErrorCode::cancelled);
+  CHECK(std::string(composer::phase_name(composer::Phase::cataloging_retail)) ==
+        "cataloging_retail");
+  CHECK(std::string(composer::error_code_name(composer::ErrorCode::retail_catalog_failed)) ==
+        "retail_catalog_failed");
   return true;
 }
 
@@ -388,6 +470,7 @@ int main() {
       existing_candidate_and_input_containment_are_rejected,
       invalid_source_pack_fails_before_candidate_creation,
       checked_graph_contains_the_iso_launch_contract,
+      retail_catalog_selection_is_exact_and_cancellable,
       optional_real_import_oracle,
   };
   for (const auto test : tests) {

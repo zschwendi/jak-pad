@@ -8,12 +8,14 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "common/custom_data/Jak2OutputMaterializer.h"
 
 #include "decompiler/extractor/jak1_checked_dgo.h"
 #include "decompiler/extractor/jak1_checked_dgo_writer.h"
+#include "third-party/lzokay/lzokay.hpp"
 
 #define XXH_PRIVATE_API
 #include "third-party/zstd/lib/common/xxhash.h"
@@ -38,6 +40,44 @@ void write_u32(std::vector<std::uint8_t>* bytes, std::size_t offset, std::uint32
   (*bytes)[offset + 1] = static_cast<std::uint8_t>(value >> 8);
   (*bytes)[offset + 2] = static_cast<std::uint8_t>(value >> 16);
   (*bytes)[offset + 3] = static_cast<std::uint8_t>(value >> 24);
+}
+
+void append_u32(std::vector<std::uint8_t>* bytes, std::uint32_t value) {
+  const auto offset = bytes->size();
+  bytes->resize(offset + 4);
+  write_u32(bytes, offset, value);
+}
+
+std::vector<std::uint8_t> make_aligned_blzo(std::span<const std::uint8_t> expanded) {
+  constexpr std::size_t kBlockSize = 0x8000;
+  std::vector<std::uint8_t> output{'o', 'Z', 'l', 'B'};
+  append_u32(&output, expanded.size());
+  for (std::size_t offset = 0; offset < expanded.size();) {
+    const auto block_size = std::min(kBlockSize, expanded.size() - offset);
+    std::vector<std::uint8_t> compressed(lzokay::compress_worst_size(block_size));
+    auto compressed_size = compressed.size();
+    const auto status = lzokay::compress(expanded.data() + offset, block_size, compressed.data(),
+                                         compressed.size(), compressed_size);
+    if (status != lzokay::EResult::Success || compressed_size >= kBlockSize) {
+      if (block_size != kBlockSize) {
+        return {};
+      }
+      append_u32(&output, kBlockSize);
+      output.insert(output.end(), expanded.begin() + offset,
+                    expanded.begin() + offset + block_size);
+    } else {
+      append_u32(&output, compressed_size);
+      output.insert(output.end(), compressed.begin(), compressed.begin() + compressed_size);
+    }
+    while (output.size() % 4) {
+      output.push_back(0);
+    }
+    offset += block_size;
+  }
+  const auto alignment = materializer::kNtscV2CompressedArchiveAlignmentBytes;
+  const auto trailing = (alignment - output.size() % alignment) % alignment;
+  output.resize(output.size() + trailing, 0);
+  return output;
 }
 
 std::vector<std::uint8_t> make_v4_object() {
@@ -120,6 +160,19 @@ struct Fixture {
   materializer::Inputs inputs;
   materializer::Options options;
 
+  bool write_retail_archive(std::span<const std::uint8_t> object,
+                            const fs::path& relative = "DGO/RETAIL.DGO") {
+    const std::array<jak1_checked_dgo_writer::ObjectRecord, 1> retail_objects = {
+        jak1_checked_dgo_writer::ObjectRecord{"retail", object},
+    };
+    const auto retail_dgo = jak1_checked_dgo_writer::build("RETAIL.DGO", retail_objects);
+    if (!retail_dgo) {
+      return false;
+    }
+    const auto compressed = make_aligned_blzo(retail_dgo.value());
+    return !compressed.empty() && write_bytes(iso_root / relative, compressed);
+  }
+
   bool setup() {
     output_recipe = recipe::make_base_retail_recipe(jak2_iso::import_revision());
     recipe::ArchiveRecord archive;
@@ -154,11 +207,7 @@ struct Fixture {
         !write_bytes(fr3_root / "GAME.fr3", fr3)) {
       return false;
     }
-    const std::array<jak1_checked_dgo_writer::ObjectRecord, 1> retail_objects = {
-        jak1_checked_dgo_writer::ObjectRecord{"retail", retail},
-    };
-    const auto retail_dgo = jak1_checked_dgo_writer::build("RETAIL.DGO", retail_objects);
-    if (!retail_dgo || !write_bytes(iso_root / "DGO/RETAIL.DGO", retail_dgo.value())) {
+    if (!write_retail_archive(retail)) {
       return false;
     }
 
@@ -221,6 +270,39 @@ bool cancellation_is_atomic() {
   CHECK(result.error().code == materializer::ErrorCode::cancelled);
   CHECK(!fs::exists(fixture.destination));
   CHECK(fixture.stage_absent());
+  return true;
+}
+
+bool retail_revalidation_rejects_hash_and_wrong_archive() {
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    auto changed = fixture.retail;
+    changed.back() ^= 1;
+    CHECK(fixture.write_retail_archive(changed));
+    const auto result = materializer::materialize(
+        fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
+    CHECK(!result);
+    CHECK(result.error().code == materializer::ErrorCode::retail_object_mismatch);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    auto& retail_source = std::get<recipe::VerifiedRetailObject>(
+        fixture.output_recipe.archives[0].objects.back().source);
+    retail_source.source_archive_relative_path = "DGO/MISSING.DGO";
+    const auto encoded = recipe::encode(fixture.output_recipe, jak2_iso::import_revision());
+    CHECK(encoded);
+    CHECK(write_bytes(fixture.recipe_file, encoded.value()));
+    const auto result = materializer::materialize(
+        fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
+    CHECK(!result);
+    CHECK(result.error().code == materializer::ErrorCode::input_missing);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
   return true;
 }
 
@@ -288,6 +370,7 @@ int main() {
   const std::array tests = {
       materializes_checked_jak2_layout,
       cancellation_is_atomic,
+      retail_revalidation_rejects_hash_and_wrong_archive,
       rejects_v1_symlink_and_wrong_game_without_staging,
   };
   for (const auto test : tests) {

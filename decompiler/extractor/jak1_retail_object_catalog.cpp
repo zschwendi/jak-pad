@@ -314,6 +314,8 @@ std::optional<Error> validate_options(const Options& options) {
       options.max_object_bytes == 0 || options.max_source_path_bytes == 0 ||
       options.max_internal_name_bytes == 0 || options.max_internal_name_bytes >= 60 ||
       options.hash_chunk_bytes == 0 || options.max_archive_expansion_ratio == 0 ||
+      (options.compressed_trailing_alignment_bytes &&
+       *options.compressed_trailing_alignment_bytes == 0) ||
       (options.game_version != GameVersion::Jak1 && options.game_version != GameVersion::Jak2)) {
     return make_error(ErrorCode::invalid_argument,
                       "The retail object catalog options are invalid.");
@@ -420,6 +422,8 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
       dgo_options.max_total_object_bytes = options.max_total_object_bytes;
       dgo_options.max_name_bytes = options.max_internal_name_bytes;
       dgo_options.max_expansion_ratio = options.max_archive_expansion_ratio;
+      dgo_options.compressed_trailing_alignment_bytes =
+          options.compressed_trailing_alignment_bytes;
       dgo_options.should_cancel = [&]() {
         const auto state = poll_cancel(options);
         cancellation_callback_failed = state == CancelState::callback_failed;

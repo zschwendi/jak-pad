@@ -150,6 +150,8 @@ bool valid_options(const Options& options) {
          limits.max_total_output_bytes > 0 && limits.max_generated_objects > 0 &&
          limits.max_generated_flat_files > 0 && limits.max_path_bytes > 0 &&
          limits.max_name_bytes > 0 && limits.io_chunk_bytes > 0 &&
+         (!options.compressed_trailing_alignment_bytes ||
+          *options.compressed_trailing_alignment_bytes > 0) &&
          options.expected_source_object_pack.object_count > 0 &&
          options.expected_source_object_pack.aggregate_xxh64 != 0 &&
          known_revision(options.expected_revision, options.wire_game);
@@ -427,6 +429,8 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
                                      : GameVersion::Jak2;
   catalog_options.max_archive_input_bytes = options.limits.max_retail_archive_bytes;
   catalog_options.max_archive_compressed_bytes = options.limits.max_retail_archive_bytes;
+  catalog_options.compressed_trailing_alignment_bytes =
+      options.compressed_trailing_alignment_bytes;
   catalog_options.should_cancel = options.should_cancel;
   auto catalog = jak1_retail_object_catalog::build(
       std::span<const jak1_retail_object_catalog::ArchiveSource>(&catalog_source, 1),
@@ -447,6 +451,8 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
                                  : GameVersion::Jak2;
   dgo_options.max_input_bytes = options.limits.max_retail_archive_bytes;
   dgo_options.max_compressed_bytes = options.limits.max_retail_archive_bytes;
+  dgo_options.compressed_trailing_alignment_bytes =
+      options.compressed_trailing_alignment_bytes;
   dgo_options.should_cancel = options.should_cancel;
   const auto archive_name = fs::path(relative).filename().string();
   auto archive = jak1_checked_dgo::read(raw.value(), archive_name, dgo_options);

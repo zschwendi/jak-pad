@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -8,8 +10,39 @@
 #include <vector>
 
 #include "decompiler/extractor/jak2_import_composer.h"
+#include "decompiler/extractor/jak1_retail_object_catalog.h"
+#include "goalc/make/Jak2OutputRecipeGenerator.h"
 
 namespace jak2_import_composer::internal {
+
+inline constexpr std::size_t kNtscV2RetailOccurrenceCount = 1724;
+inline constexpr std::size_t kNtscV2RetailObjectCount = 1278;
+inline constexpr std::size_t kNtscV2RetailArchiveCount = 149;
+
+struct RetailObjectRequirement {
+  std::string source_archive_relative_path;
+  std::string internal_name;
+  std::string unique_name;
+
+  bool operator==(const RetailObjectRequirement&) const = default;
+};
+
+struct RetailRequirements {
+  std::size_t occurrence_count = 0;
+  std::vector<std::string> source_archive_relative_paths;
+  std::vector<RetailObjectRequirement> objects;
+};
+
+Result<RetailRequirements> derive_retail_requirements(
+    const jak2_output_recipe_generator::Graph& graph,
+    const Options& options = {});
+
+Result<std::vector<jak2_output_recipe_generator::RetailCatalogObject>>
+select_exact_retail_catalog(
+    const RetailRequirements& requirements,
+    std::span<const jak1_retail_object_catalog::Entry> entries,
+    std::uint64_t max_total_object_bytes,
+    const Options& options = {});
 
 struct WorkPaths {
   std::filesystem::path candidate_root;

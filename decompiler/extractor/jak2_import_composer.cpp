@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <new>
 #include <set>
@@ -27,6 +29,7 @@
 #include "decompiler/extractor/jak2_fr3_preparer.h"
 #include "decompiler/extractor/jak2_import_composer_internal.h"
 #include "decompiler/extractor/jak2_iso_validation.h"
+#include "decompiler/extractor/jak1_retail_object_catalog.h"
 #include "goalc/make/Jak2OutputRecipeGenerator.h"
 
 #define XXH_PRIVATE_API
@@ -38,12 +41,20 @@ namespace {
 namespace artifacts = jak2_public_generated_artifacts;
 namespace fs = std::filesystem;
 namespace generator = jak2_output_recipe_generator;
+namespace core_generator = jak1_output_recipe_generator;
 namespace materializer = jak2_output_materializer;
 namespace recipe = jak2_output_recipe;
+namespace retail_catalog = jak1_retail_object_catalog;
 namespace source_pack = jak2_source_object_pack;
+
+static_assert(materializer::kNtscV2CompressedArchiveAlignmentBytes ==
+              jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes);
 
 constexpr std::uint64_t kMaxManifestBytes = 4ull * 1024 * 1024;
 constexpr std::size_t kIoChunkBytes = 256 * 1024;
+constexpr std::uint64_t kMaxRetailArchiveBytes = 512ull * 1024 * 1024;
+constexpr std::uint64_t kMaxTotalRetailArchiveBytes = 512ull * 1024 * 1024;
+constexpr std::size_t kMaxIndexedRetailEntries = 4096;
 constexpr std::string_view kGraphIsoRoot = "iso_data/jak2";
 constexpr std::string_view kWorkDirectoryName = ".opengoal-import";
 constexpr std::string_view kPreparedDirectoryName = ".prepared";
@@ -486,6 +497,7 @@ struct PipelineState {
   std::optional<artifacts::Build> generated_artifacts;
   std::vector<materializer::GeneratedObjectArtifact> generated_objects;
   std::vector<materializer::GeneratedFlatArtifact> generated_flat_files;
+  std::vector<generator::RetailCatalogObject> retail_objects;
   std::vector<std::string> verified_flat_paths;
   std::vector<std::string> expected_fr3_basenames;
   std::optional<recipe::Recipe> output_recipe;
@@ -658,6 +670,112 @@ std::optional<Error> adapt_flat_paths(PipelineState* state) {
   }
   state->verified_flat_paths.assign(verified.begin(), verified.end());
   return {};
+}
+
+std::optional<Error> catalog_retail_stage(const Options& options, PipelineState* state) {
+  if (!state->extraction) {
+    return make_error(ErrorCode::retail_catalog_failed,
+                      "The retail-catalog stage has no validated extraction.");
+  }
+  if (!direct_directory(state->extraction->staging_directory)) {
+    return make_error(ErrorCode::retail_catalog_failed,
+                      "The validated extraction root is no longer a direct directory.");
+  }
+  auto requirements = internal::derive_retail_requirements(state->graph, options);
+  if (!requirements) {
+    return requirements.error();
+  }
+  if (requirements.value().occurrence_count != internal::kNtscV2RetailOccurrenceCount ||
+      requirements.value().objects.size() != internal::kNtscV2RetailObjectCount ||
+      requirements.value().source_archive_relative_paths.size() !=
+          internal::kNtscV2RetailArchiveCount) {
+    return make_error(ErrorCode::graph_failed,
+                      "The checked Jak II graph has an unexpected retail-object closure.");
+  }
+
+  CallbackForwarder callbacks(options);
+  std::vector<retail_catalog::Entry> entries;
+  entries.reserve(kMaxIndexedRetailEntries);
+  std::uint64_t total_archive_bytes = 0;
+  std::uint64_t total_object_bytes = 0;
+  const auto& archive_paths = requirements.value().source_archive_relative_paths;
+  for (std::size_t index = 0; index < archive_paths.size(); ++index) {
+    if (callbacks.poll_cancel()) {
+      return callbacks.cancellation_or_callback_error(
+          "Jak II retail cataloging was cancelled.");
+    }
+    const auto& relative_path = archive_paths[index];
+    const auto archive_path = state->extraction->staging_directory / relative_path;
+    if (!direct_directory(archive_path.parent_path()) || !direct_regular_file(archive_path)) {
+      return make_error(ErrorCode::retail_catalog_failed,
+                        "A graph-required retail archive is missing, linked, or unsafe.");
+    }
+    auto bytes = read_direct_file(archive_path, kMaxRetailArchiveBytes, false,
+                                  ErrorCode::retail_catalog_failed,
+                                  "A graph-required retail archive", callbacks);
+    if (!bytes) {
+      return bytes.error();
+    }
+    if (bytes.value().size() > kMaxTotalRetailArchiveBytes - total_archive_bytes) {
+      return make_error(ErrorCode::retail_catalog_failed,
+                        "The graph-required retail archives exceed their aggregate input cap.");
+    }
+    total_archive_bytes += bytes.value().size();
+
+    const retail_catalog::ArchiveSource source{relative_path, bytes.value()};
+    retail_catalog::Options catalog_options;
+    catalog_options.max_archives = 1;
+    catalog_options.max_entries = kMaxIndexedRetailEntries;
+    catalog_options.max_total_object_bytes = jak2_fr3::kNtscV2TotalExpandedArchiveBytes;
+    catalog_options.max_archive_input_bytes = kMaxRetailArchiveBytes;
+    catalog_options.max_archive_compressed_bytes = kMaxRetailArchiveBytes;
+    catalog_options.max_archive_expanded_bytes = jak2_fr3::kNtscV2TotalExpandedArchiveBytes;
+    catalog_options.compressed_trailing_alignment_bytes =
+        jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes;
+    catalog_options.game_version = GameVersion::Jak2;
+    catalog_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+    auto catalog = retail_catalog::build(
+        std::span<const retail_catalog::ArchiveSource>(&source, 1), catalog_options);
+    if (!catalog) {
+      const bool cancelled = catalog.error().code == retail_catalog::ErrorCode::cancelled;
+      return callback_aware_error(
+          callbacks, ErrorCode::retail_catalog_failed,
+          cancelled ? "Jak II retail cataloging was cancelled."
+                    : "The checked Jak II retail catalog failed: " + catalog.error().message,
+          cancelled);
+    }
+    if (catalog.value().entries().size() > kMaxIndexedRetailEntries - entries.size()) {
+      return make_error(ErrorCode::retail_catalog_failed,
+                        "The checked Jak II retail catalog exceeds its entry cap.");
+    }
+    for (const auto& entry : catalog.value().entries()) {
+      if (entry.provenance.byte_size >
+          jak2_fr3::kNtscV2TotalExpandedArchiveBytes - total_object_bytes) {
+        return make_error(ErrorCode::retail_catalog_failed,
+                          "The checked Jak II retail catalog exceeds its object-byte cap.");
+      }
+      total_object_bytes += entry.provenance.byte_size;
+      entries.push_back(entry);
+    }
+    if (!callbacks.report({Phase::cataloging_retail, index + 1, archive_paths.size(),
+                           total_archive_bytes, relative_path})) {
+      return callbacks.cancellation_or_callback_error({});
+    }
+  }
+
+  auto selected = internal::select_exact_retail_catalog(
+      requirements.value(), entries, jak2_fr3::kNtscV2TotalExpandedArchiveBytes, options);
+  if (!selected) {
+    return selected.error();
+  }
+  if (selected.value().size() != internal::kNtscV2RetailObjectCount) {
+    return make_error(ErrorCode::retail_catalog_failed,
+                      "The checked Jak II retail catalog is incomplete.");
+  }
+  state->retail_objects = selected.take_value();
+  return callbacks.callback_failed()
+             ? std::optional<Error>(callbacks.cancellation_or_callback_error({}))
+             : std::nullopt;
 }
 
 class OwnedPartialFile {
@@ -846,7 +964,7 @@ std::optional<Error> generate_recipe_stage(const Request& request,
                                            const internal::WorkPaths& paths,
                                            const Options& options,
                                            PipelineState* state) {
-  if (!state->extraction || !state->generated_artifacts ||
+  if (!state->extraction || !state->generated_artifacts || state->retail_objects.empty() ||
       state->expected_fr3_basenames.empty()) {
     return make_error(ErrorCode::recipe_failed,
                       "The output-recipe stage is missing a checked input.");
@@ -865,6 +983,7 @@ std::optional<Error> generate_recipe_stage(const Request& request,
   generator::VerifiedInputs inputs;
   inputs.extracted_iso_root = kGraphIsoRoot;
   inputs.verified_extracted_iso_relative_paths = state->verified_flat_paths;
+  inputs.retail_catalog = state->retail_objects;
   inputs.expected_fr3_basenames = state->expected_fr3_basenames;
   generator::Options generator_options;
   generator_options.should_cancel = [&] { return callbacks.poll_cancel(); };
@@ -1093,6 +1212,215 @@ Error map_source_pack_failure(const source_pack::Error& error, CallbackForwarder
 
 namespace internal {
 
+namespace {
+
+std::string retail_identity(std::string_view source_archive_relative_path,
+                            std::string_view internal_name,
+                            std::string_view unique_name) {
+  std::string result;
+  result.reserve(source_archive_relative_path.size() + internal_name.size() + unique_name.size() +
+                 2);
+  result.append(source_archive_relative_path);
+  result.push_back('\n');
+  result.append(internal_name);
+  result.push_back('\n');
+  result.append(unique_name);
+  return result;
+}
+
+bool safe_retail_archive_path(std::string_view path) {
+  const auto separator = path.find('/');
+  if (separator == std::string_view::npos ||
+      path.find('/', separator + 1) != std::string_view::npos) {
+    return false;
+  }
+  const auto directory = path.substr(0, separator);
+  const auto basename = path.substr(separator + 1);
+  return safe_basename(basename) &&
+         ((directory == "DGO" && basename.ends_with(".DGO")) ||
+          (directory == "CGO" && basename.ends_with(".CGO")));
+}
+
+bool valid_public_name(std::string_view name, std::size_t cap) {
+  if (name.empty() || name.size() > cap || name == "." || name == ".." || name.back() == '.') {
+    return false;
+  }
+  return std::all_of(name.begin(), name.end(), [](unsigned char byte) {
+    return byte >= 0x21 && byte <= 0x7e && byte != '/' && byte != '\\' && byte != ':';
+  });
+}
+
+}  // namespace
+
+Result<RetailRequirements> derive_retail_requirements(const generator::Graph& graph,
+                                                       const Options& options) {
+  try {
+    CallbackForwarder callbacks(options);
+    std::map<std::string, RetailObjectRequirement> objects;
+    std::map<std::string, std::string> archives;
+    const generator::Options generator_options;
+    std::size_t occurrences = 0;
+    for (const auto& archive : graph.archives) {
+      for (const auto& object : archive.objects) {
+        if (object.producer != core_generator::ObjectProducerKind::verified_retail) {
+          continue;
+        }
+        if (callbacks.poll_cancel()) {
+          return Result<RetailRequirements>::failure(callbacks.cancellation_or_callback_error(
+              "Jak II retail-requirement inspection was cancelled."));
+        }
+        if (occurrences == std::numeric_limits<std::size_t>::max()) {
+          return Result<RetailRequirements>::failure(make_error(
+              ErrorCode::graph_failed,
+              "The checked Jak II graph contains too many retail occurrences."));
+        }
+        if (!safe_retail_archive_path(object.retail_source_archive)) {
+          return Result<RetailRequirements>::failure(make_error(
+              ErrorCode::graph_failed,
+              "The checked Jak II graph contains an unsafe retail archive path."));
+        }
+        if (!valid_public_name(object.prepared_basename,
+                               generator_options.limits.max_name_bytes) ||
+            !object.prepared_basename.ends_with(".go")) {
+          return Result<RetailRequirements>::failure(make_error(
+              ErrorCode::graph_failed,
+              "The checked Jak II graph contains an unsafe prepared retail-object name."));
+        }
+        if (!valid_public_name(object.internal_name, generator_options.limits.max_name_bytes)) {
+          return Result<RetailRequirements>::failure(make_error(
+              ErrorCode::graph_failed,
+              "The checked Jak II graph contains an unsafe internal retail-object name."));
+        }
+        ++occurrences;
+        auto unique_name = object.prepared_basename;
+        unique_name.resize(unique_name.size() - 3);
+        if (unique_name.empty()) {
+          return Result<RetailRequirements>::failure(make_error(
+              ErrorCode::graph_failed,
+              "The checked Jak II graph contains an empty retail-object identity."));
+        }
+        auto collision = object.retail_source_archive;
+        std::transform(collision.begin(), collision.end(), collision.begin(),
+                       [](unsigned char byte) { return static_cast<char>(std::tolower(byte)); });
+        const auto [archive_entry, inserted] =
+            archives.emplace(std::move(collision), object.retail_source_archive);
+        if (!inserted && archive_entry->second != object.retail_source_archive) {
+          return Result<RetailRequirements>::failure(make_error(
+              ErrorCode::graph_failed,
+              "The checked Jak II graph contains case-colliding retail archives."));
+        }
+        RetailObjectRequirement requirement{object.retail_source_archive, object.internal_name,
+                                            std::move(unique_name)};
+        objects.emplace(retail_identity(requirement.source_archive_relative_path,
+                                        requirement.internal_name, requirement.unique_name),
+                        std::move(requirement));
+      }
+    }
+    if (occurrences == 0 || archives.empty() || objects.empty()) {
+      return Result<RetailRequirements>::failure(make_error(
+          ErrorCode::graph_failed, "The checked Jak II graph selects no retail objects."));
+    }
+    RetailRequirements requirements;
+    requirements.occurrence_count = occurrences;
+    requirements.source_archive_relative_paths.reserve(archives.size());
+    for (const auto& archive : archives) {
+      requirements.source_archive_relative_paths.push_back(archive.second);
+    }
+    std::sort(requirements.source_archive_relative_paths.begin(),
+              requirements.source_archive_relative_paths.end());
+    requirements.objects.reserve(objects.size());
+    for (auto& object : objects) {
+      requirements.objects.push_back(std::move(object.second));
+    }
+    return Result<RetailRequirements>::success(std::move(requirements));
+  } catch (const std::bad_alloc&) {
+    return Result<RetailRequirements>::failure(make_error(
+        ErrorCode::allocation_failed, "Jak II retail-requirement inspection ran out of memory."));
+  }
+}
+
+Result<std::vector<generator::RetailCatalogObject>> select_exact_retail_catalog(
+    const RetailRequirements& requirements,
+    std::span<const retail_catalog::Entry> entries,
+    std::uint64_t max_total_object_bytes,
+    const Options& options) {
+  try {
+    if (requirements.occurrence_count == 0 ||
+        requirements.source_archive_relative_paths.empty() || requirements.objects.empty() ||
+        max_total_object_bytes == 0 || entries.size() > kMaxIndexedRetailEntries) {
+      return Result<std::vector<generator::RetailCatalogObject>>::failure(make_error(
+          ErrorCode::retail_catalog_failed,
+          "The Jak II retail-catalog selection inputs are invalid."));
+    }
+    CallbackForwarder callbacks(options);
+    std::map<std::string, const retail_catalog::Provenance*> catalog;
+    for (const auto& entry : entries) {
+      if (callbacks.poll_cancel()) {
+        return Result<std::vector<generator::RetailCatalogObject>>::failure(
+            callbacks.cancellation_or_callback_error(
+                "Jak II retail-catalog selection was cancelled."));
+      }
+      const auto& provenance = entry.provenance;
+      const auto key = retail_identity(provenance.source_archive_relative_path,
+                                       provenance.internal_name, provenance.unique_name);
+      if (!catalog.emplace(key, &provenance).second) {
+        return Result<std::vector<generator::RetailCatalogObject>>::failure(make_error(
+            ErrorCode::retail_catalog_failed,
+            "The checked Jak II retail catalog contains a duplicate object identity."));
+      }
+    }
+
+    std::vector<generator::RetailCatalogObject> selected;
+    selected.reserve(requirements.objects.size());
+    std::uint64_t total_object_bytes = 0;
+    for (const auto& requirement : requirements.objects) {
+      if (callbacks.poll_cancel()) {
+        return Result<std::vector<generator::RetailCatalogObject>>::failure(
+            callbacks.cancellation_or_callback_error(
+                "Jak II retail-catalog selection was cancelled."));
+      }
+      const auto found = catalog.find(retail_identity(requirement.source_archive_relative_path,
+                                                      requirement.internal_name,
+                                                      requirement.unique_name));
+      if (found == catalog.end()) {
+        return Result<std::vector<generator::RetailCatalogObject>>::failure(make_error(
+            ErrorCode::retail_catalog_failed,
+            "The checked Jak II retail catalog is missing a graph-required object."));
+      }
+      const auto& provenance = *found->second;
+      if ((provenance.object_version != retail_catalog::ObjectVersion::v2 &&
+           provenance.object_version != retail_catalog::ObjectVersion::v4)) {
+        return Result<std::vector<generator::RetailCatalogObject>>::failure(make_error(
+            ErrorCode::retail_catalog_failed,
+            "The checked Jak II retail catalog contains an unsupported object version."));
+      }
+      if (provenance.byte_size == 0 ||
+          provenance.byte_size > max_total_object_bytes - total_object_bytes) {
+        return Result<std::vector<generator::RetailCatalogObject>>::failure(make_error(
+            ErrorCode::retail_catalog_failed,
+            "The checked Jak II retail catalog exceeds its object-byte limit."));
+      }
+      total_object_bytes += provenance.byte_size;
+      selected.push_back({provenance.source_archive_relative_path,
+                          provenance.archive_object_index,
+                          provenance.internal_name,
+                          provenance.unique_name,
+                          static_cast<std::uint32_t>(provenance.object_version),
+                          static_cast<std::uint64_t>(provenance.byte_size),
+                          provenance.xxh64});
+    }
+    if (selected.size() != requirements.objects.size()) {
+      return Result<std::vector<generator::RetailCatalogObject>>::failure(make_error(
+          ErrorCode::retail_catalog_failed,
+          "The checked Jak II retail catalog selection is incomplete."));
+    }
+    return Result<std::vector<generator::RetailCatalogObject>>::success(std::move(selected));
+  } catch (const std::bad_alloc&) {
+    return Result<std::vector<generator::RetailCatalogObject>>::failure(make_error(
+        ErrorCode::allocation_failed, "Jak II retail-catalog selection ran out of memory."));
+  }
+}
+
 Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
                                            const Options& options,
                                            std::span<const StageAction> stages,
@@ -1297,10 +1625,14 @@ Result<Summary> compose(const Request& request, const Options& options) {
     state.graph = graph.take_value();
     state.source_pack_summary = verified_pack.take_value();
     state.iso_file = iso.take_value();
-    const std::array<internal::StageAction, 5> stages = {{
+    const std::array<internal::StageAction, 6> stages = {{
         {Phase::extracting_iso,
          [&](const internal::WorkPaths& paths) {
            return extract_iso_stage(paths, options, &state);
+         }},
+        {Phase::cataloging_retail,
+         [&](const internal::WorkPaths&) {
+           return catalog_retail_stage(options, &state);
          }},
         {Phase::generating_data,
          [&](const internal::WorkPaths&) {
@@ -1347,6 +1679,7 @@ const char* error_code_name(ErrorCode code) {
     case ErrorCode::graph_failed: return "graph_failed";
     case ErrorCode::generated_data_failed: return "generated_data_failed";
     case ErrorCode::fr3_failed: return "fr3_failed";
+    case ErrorCode::retail_catalog_failed: return "retail_catalog_failed";
     case ErrorCode::recipe_failed: return "recipe_failed";
     case ErrorCode::candidate_create_failed: return "candidate_create_failed";
     case ErrorCode::work_write_failed: return "work_write_failed";
@@ -1365,6 +1698,7 @@ const char* phase_name(Phase phase) {
     case Phase::validating_source_pack: return "validating_source_pack";
     case Phase::validating_project_resources: return "validating_project_resources";
     case Phase::extracting_iso: return "extracting_iso";
+    case Phase::cataloging_retail: return "cataloging_retail";
     case Phase::generating_data: return "generating_data";
     case Phase::preparing_fr3: return "preparing_fr3";
     case Phase::generating_recipe: return "generating_recipe";

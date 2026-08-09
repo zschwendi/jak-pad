@@ -336,6 +336,8 @@ bool skips_code_and_rejects_invalid_or_unsupported_headers() {
 }
 
 bool enforces_caps_paths_and_callbacks() {
+  jak1_retail_object_catalog::Options defaults;
+  CHECK(!defaults.compressed_trailing_alignment_bytes);
   const auto archive_a = make_dgo("A.DGO", {{"one", make_v2()}});
   const auto archive_b = make_dgo("B.DGO", {{"two", make_v4()}});
   const std::vector<ArchiveSource> sources = {
@@ -383,6 +385,12 @@ bool enforces_caps_paths_and_callbacks() {
   result = jak1_retail_object_catalog::build(traversal);
   CHECK(!result);
   CHECK(result.error().code == ErrorCode::invalid_source_archive_path);
+
+  options = {};
+  options.compressed_trailing_alignment_bytes = 0;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::invalid_argument);
 
   options = {};
   options.should_cancel = []() { return true; };
