@@ -142,9 +142,9 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*!
- * Plan the water page upload written by upload-vram-pages-pris-pc. The writer
- * and mode are identical to normal TFRAG; *texture-page-translate* supplies
- * only the water category and per-level destination bucket.
+ * Plan the water page upload written by upload-vram-pages-pris-pc. The writer emits only the
+ * ordinary descriptor and its insertion links; unlike the normal TFRAG envelope, it does not add
+ * a Direct setup tail. *texture-page-translate* supplies the water category and per-level bucket.
  */
 std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     const u8* dma_packet_snapshot,

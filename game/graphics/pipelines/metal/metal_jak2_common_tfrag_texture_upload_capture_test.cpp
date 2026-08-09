@@ -108,6 +108,14 @@ std::vector<u8> make_normal_ordinary_fixture(u32 bucket_id, s64 mode = -1) {
   return packet;
 }
 
+std::vector<u8> make_water_ordinary_fixture(u32 bucket_id, s64 mode = -1) {
+  auto packet = make_ordinary_fixture(bucket_id);
+  put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
+  put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(mode));
+  packet[kTexturePageOffset + 8] = 0x44;
+  return packet;
+}
+
 std::vector<u8> make_unobserved_direct_first_fixture(u32 bucket_id) {
   std::vector<u8> packet(kMemorySize);
   const u32 end_offset = bucket_offset(bucket_id) + 16;
@@ -410,7 +418,7 @@ void test_alpha_execution_plan() {
 
 void test_water_execution_plan() {
   for (const u32 bucket_id : metal_renderer::kJak2WaterTextureUploadBuckets) {
-    auto packet = make_normal_ordinary_fixture(bucket_id);
+    auto packet = make_water_ordinary_fixture(bucket_id);
     metal_renderer::Jak2CommonTfragTextureUploadCapture result;
     const auto plan = metal_renderer::plan_jak2_water_texture_upload(
         packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size(),
@@ -418,10 +426,10 @@ void test_water_execution_plan() {
     check(plan.has_value() && plan->present && plan->bucket_id == bucket_id &&
               plan->ordinary.page_offset == kTexturePageOffset && plan->ordinary.mode == -1 &&
               result.valid && result.classification == Classification::OrdinaryOnly &&
-              result.transfer_count == 5 && result.inert_transfers == 3 &&
-              result.ordinary_descriptors == 1 && result.direct_setup_transfers == 1 &&
-              result.other_transfers == 0 && result.total_payload_bytes == 176,
-          "each water texture bucket produces one owned ordinary upload plan");
+              result.transfer_count == 3 && result.inert_transfers == 2 &&
+              result.ordinary_descriptors == 1 && result.direct_setup_transfers == 0 &&
+              result.other_transfers == 0 && result.total_payload_bytes == 16,
+          "each water texture bucket accepts the source-exact descriptor-only upload");
   }
 
   auto packet = make_normal_shrub_fixture(metal_renderer::kJak2WaterTextureUploadBuckets[0]);
@@ -430,6 +438,13 @@ void test_water_execution_plan() {
              metal_renderer::kJak2WaterTextureUploadBuckets[0], packet.data(), packet.size())
              .has_value(),
         "the alpha-style Direct-only setup is rejected for water texture upload");
+
+  packet = make_normal_ordinary_fixture(metal_renderer::kJak2WaterTextureUploadBuckets[0]);
+  check(!metal_renderer::plan_jak2_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset,
+             metal_renderer::kJak2WaterTextureUploadBuckets[0], packet.data(), packet.size())
+             .has_value(),
+        "the non-source normal TFRAG Direct tail is rejected for water texture upload");
 }
 
 void test_common_opcode27_execution_plan() {

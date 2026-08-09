@@ -641,16 +641,14 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
 
   const bool exact_counts =
       capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryOnly &&
-      capture.transfer_count == 5 && capture.total_payload_bytes == 176 &&
-      capture.inert_transfers == 3 && capture.ordinary_descriptors == 1 &&
-      capture.direct_setup_transfers == 1 && capture.animator_arrays == 0 &&
+      capture.transfer_count == 3 && capture.total_payload_bytes == 16 &&
+      capture.inert_transfers == 2 && capture.ordinary_descriptors == 1 &&
+      capture.direct_setup_transfers == 0 && capture.animator_arrays == 0 &&
       capture.eye_markers == 0 && capture.other_transfers == 0 &&
       capture.malformed_transfers == 0;
   if (!exact_counts || !metadata_is_inert_next(capture.transfers[0]) ||
       !metadata_is_inert_next(capture.transfers[2]) ||
-      !metadata_is_inert_next(capture.transfers[4]) ||
-      !metadata_is_ordinary_descriptor(capture.transfers[1]) ||
-      !metadata_is_direct_setup(capture.transfers[3])) {
+      !metadata_is_ordinary_descriptor(capture.transfers[1])) {
     return std::nullopt;
   }
 
