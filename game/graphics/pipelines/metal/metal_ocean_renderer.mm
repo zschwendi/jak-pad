@@ -177,6 +177,17 @@ MetalOceanEnvmap::~MetalOceanEnvmap() {
   }
 }
 
+MetalSamplerKey MetalOceanEnvmap::radial_sampler_key() {
+  // FramebufferTexturePair selects nearest magnification; OceanEnvmap then
+  // selects linear minification and leaves OpenGL's repeat defaults intact.
+  MetalSamplerKey key;
+  key.min_filter = MTLSamplerMinMagFilterLinear;
+  key.mag_filter = MTLSamplerMinMagFilterNearest;
+  key.wrap_s = MTLSamplerAddressModeRepeat;
+  key.wrap_t = MTLSamplerAddressModeRepeat;
+  return key;
+}
+
 bool MetalOceanEnvmap::init_textures(TexturePool& pool, GameVersion version) {
   if (version != GameVersion::Jak2 || !m_device || !m_queue || !m_first_pass_texture ||
       !m_result_texture || !m_result_handle || m_pool_texture) {
@@ -316,15 +327,9 @@ bool MetalOceanEnvmap::render_radial(MetalFrameContext& ctx,
     [encoder endEncoding];
     return false;
   }
-  MetalSamplerKey sampler_key;
-  sampler_key.min_filter = MTLSamplerMinMagFilterLinear;
-  sampler_key.mag_filter = MTLSamplerMinMagFilterLinear;
-  sampler_key.wrap_s = MTLSamplerAddressModeClampToEdge;
-  sampler_key.wrap_t = MTLSamplerAddressModeClampToEdge;
-
   [encoder setRenderPipelineState:pipeline];
   [encoder setFragmentTexture:m_first_pass_texture atIndex:0];
-  [encoder setFragmentSamplerState:ctx.sampler_cache->get(sampler_key) atIndex:0];
+  [encoder setFragmentSamplerState:ctx.sampler_cache->get(radial_sampler_key()) atIndex:0];
   [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
   [encoder endEncoding];
   return true;

@@ -51,6 +51,7 @@ class MetalOceanEnvmap {
   MetalOceanEnvmap(id<MTLDevice> device, id<MTLCommandQueue> queue);
   ~MetalOceanEnvmap();
 
+  static MetalSamplerKey radial_sampler_key();
   bool init_textures(TexturePool& pool, GameVersion version);
   void detach_pool();
   bool handle_ocean_envmap_jak2(DmaFollower& dma,

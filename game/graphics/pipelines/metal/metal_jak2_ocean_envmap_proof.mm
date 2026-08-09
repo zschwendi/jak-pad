@@ -214,6 +214,105 @@ Fixture make_fixture(u32 source_tbp) {
   return fixture;
 }
 
+std::vector<u8> render_sampler_oracle(id<MTLDevice> device,
+                                      id<MTLCommandQueue> queue,
+                                      MetalPsoCache& pso_cache,
+                                      MetalSamplerCache& sampler_cache,
+                                      id<MTLTexture> source) {
+  struct SampleVertex {
+    float pos[3];
+    float uv[2];
+    float color[4];
+    float use_texture;
+  };
+  static_assert(sizeof(SampleVertex) == 40);
+
+  constexpr std::array<std::array<float, 2>, 5> kOracleUv = {{
+      {0.5f, 0.5f},
+      {0.f, 0.5f},
+      {1.f, 0.5f},
+      {0.5f, 0.f},
+      {0.5f, 1.f},
+  }};
+  std::array<SampleVertex, 30> vertices = {};
+  const auto make_vertex = [](float x, float y, const std::array<float, 2>& uv) {
+    SampleVertex result = {};
+    result.pos[0] = x;
+    result.pos[1] = y;
+    result.uv[0] = uv[0];
+    result.uv[1] = uv[1];
+    result.use_texture = 1.f;
+    return result;
+  };
+  for (int cell = 0; cell < 5; cell++) {
+    const float x0 = -1.f + 2.f * cell / 5.f;
+    const float x1 = -1.f + 2.f * (cell + 1) / 5.f;
+    const auto& uv = kOracleUv[cell];
+    vertices[cell * 6 + 0] = make_vertex(x0, 1.f, uv);
+    vertices[cell * 6 + 1] = make_vertex(x1, 1.f, uv);
+    vertices[cell * 6 + 2] = make_vertex(x1, -1.f, uv);
+    vertices[cell * 6 + 3] = make_vertex(x0, 1.f, uv);
+    vertices[cell * 6 + 4] = make_vertex(x1, -1.f, uv);
+    vertices[cell * 6 + 5] = make_vertex(x0, -1.f, uv);
+  }
+
+  auto* descriptor = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                   width:5
+                                  height:1
+                               mipmapped:NO];
+  descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  descriptor.storageMode = MTLStorageModePrivate;
+  id<MTLTexture> target = [device newTextureWithDescriptor:descriptor];
+  auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = target;
+  pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+
+  id<MTLCommandBuffer> commands = [queue commandBuffer];
+  id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+  MetalPsoKey key;
+  key.shader = MetalShaderId::SAMPLE;
+  key.color_format = MTLPixelFormatRGBA8Unorm;
+  [encoder setRenderPipelineState:pso_cache.get_pipeline(key)];
+  [encoder setVertexBytes:vertices.data() length:sizeof(vertices) atIndex:0];
+  [encoder setFragmentTexture:source atIndex:0];
+  [encoder setFragmentSamplerState:sampler_cache.get(MetalOceanEnvmap::radial_sampler_key())
+                           atIndex:0];
+  [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:vertices.size()];
+  [encoder endEncoding];
+  [commands commit];
+  [commands waitUntilCompleted];
+  if (commands.status != MTLCommandBufferStatusCompleted) {
+    return {};
+  }
+
+  constexpr NSUInteger kBytesPerRow = 5 * 4;
+  id<MTLBuffer> readback = [device newBufferWithLength:kBytesPerRow
+                                               options:MTLResourceStorageModeShared];
+  commands = [queue commandBuffer];
+  id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+  [blit copyFromTexture:target
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake(5, 1, 1)
+               toBuffer:readback
+      destinationOffset:0
+ destinationBytesPerRow:kBytesPerRow
+destinationBytesPerImage:kBytesPerRow];
+  [blit endEncoding];
+  [commands commit];
+  [commands waitUntilCompleted];
+  if (commands.status != MTLCommandBufferStatusCompleted) {
+    return {};
+  }
+  std::vector<u8> pixels(kBytesPerRow);
+  std::memcpy(pixels.data(), readback.contents, pixels.size());
+  return pixels;
+}
+
 std::vector<u8> read_rgba8(id<MTLCommandQueue> queue, id<MTLTexture> texture) {
   constexpr NSUInteger kBytesPerRow = MetalOceanEnvmap::kWidth * 4;
   constexpr NSUInteger kByteCount = kBytesPerRow * MetalOceanEnvmap::kHeight;
@@ -314,6 +413,29 @@ int main() {
     }
     check(source_handle != 0 && texture_pool.lookup(kSourceTbp).value_or(0) == source_handle,
           "published a public synthetic source texture");
+    const auto radial_sampler = MetalOceanEnvmap::radial_sampler_key();
+    check(radial_sampler.min_filter == MTLSamplerMinMagFilterLinear &&
+              radial_sampler.mag_filter == MTLSamplerMinMagFilterNearest &&
+              radial_sampler.wrap_s == MTLSamplerAddressModeRepeat &&
+              radial_sampler.wrap_t == MTLSamplerAddressModeRepeat,
+          "matched the GL radial sampler's linear-min, nearest-mag, repeat state");
+    const auto sampler_oracle = render_sampler_oracle(
+        device, queue, pso_cache, sampler_cache, metal_texture_lookup(source_handle));
+    check(sampler_oracle.size() == 5 * 4, "read back the source-sampler oracle pixels");
+    if (sampler_oracle.size() == 5 * 4) {
+      const auto oracle_pixel = [&sampler_oracle](int x) {
+        const std::size_t offset = static_cast<std::size_t>(x) * 4;
+        return std::array<u8, 4>{sampler_oracle[offset], sampler_oracle[offset + 1],
+                                 sampler_oracle[offset + 2], sampler_oracle[offset + 3]};
+      };
+      check(near(oracle_pixel(0), {255, 255, 0, 255}, 0),
+            "the center oracle uses nearest magnification, not a linear four-texel blend");
+      check(near(oracle_pixel(1), {0, 0, 255, 255}, 0) &&
+                near(oracle_pixel(2), {0, 0, 255, 255}, 0) &&
+                near(oracle_pixel(3), {0, 255, 0, 255}, 0) &&
+                near(oracle_pixel(4), {0, 255, 0, 255}, 0),
+            "the west/east/north/south oracles wrap at both cardinal seams");
+    }
 
     {
       MetalOceanEnvmap envmap(device, queue);
