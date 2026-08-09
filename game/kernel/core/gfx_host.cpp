@@ -288,6 +288,8 @@ void goal_gfx_host_forward_active_levels(const u32* level_name_offsets, int coun
 }
 
 void goal_gfx_host_forward_pmode_alpha(float alpha) {
+  g_stats.pmode_calls++;
+  g_stats.last_pmode_alpha = alpha;
   if (g_host.set_pmode_alp) {
     call_host([&]() { g_host.set_pmode_alp(alpha); });
   }

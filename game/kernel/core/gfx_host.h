@@ -94,6 +94,8 @@ typedef struct goal_gfx_host_stats {
   /*! The levels named by the last `__pc-set-active-levels`, joined with '+', or "" before the
    *  first one. Owned by this file. */
   const char* last_active_levels;
+  int pmode_calls; /*! display-adapter alpha updates handed to the host */
+  float last_pmode_alpha; /*! normalized alpha from the last update, or 0 before the first one */
 } goal_gfx_host_stats;
 
 void goal_gfx_host_stats_get(goal_gfx_host_stats* out);

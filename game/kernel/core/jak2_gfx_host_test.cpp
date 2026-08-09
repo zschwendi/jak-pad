@@ -259,10 +259,11 @@ int main() {
   goal_gfx_host_stats stats = {};
   goal_gfx_host_stats_get(&stats);
   expect(stats.vsyncs == 3 && stats.sync_paths == 1 && stats.level_sets == 1 &&
-             stats.active_level_sets == 1 &&
+             stats.active_level_sets == 1 && stats.pmode_calls == 1 &&
+             std::fabs(stats.last_pmode_alpha - 128.f / 255.f) < 0.0001f &&
              std::strcmp(stats.last_levels, "title+city+title") == 0 &&
              std::strcmp(stats.last_active_levels, "hideout+nest+hideout") == 0,
-         "host counters and desired/active snapshots reflect the first kernel lifetime");
+         "host counters and desired/active/PMODE snapshots reflect the first kernel lifetime");
 
   goal_kernel_core_shutdown();
   expect(vblank_interrupt_handler == 0,
@@ -283,9 +284,10 @@ int main() {
   stats = {};
   goal_gfx_host_stats_get(&stats);
   expect(stats.vsyncs == 0 && stats.sync_paths == 0 && stats.level_sets == 0 &&
-             stats.active_level_sets == 0 && std::strcmp(stats.last_levels, "") == 0 &&
+             stats.active_level_sets == 0 && stats.pmode_calls == 0 &&
+             stats.last_pmode_alpha == 0.f && std::strcmp(stats.last_levels, "") == 0 &&
              std::strcmp(stats.last_active_levels, "") == 0,
-         "installation resets counters and level snapshots for the new kernel lifetime");
+         "installation resets counters and level/PMODE snapshots for the new kernel lifetime");
 
   const uint32_t second_syncv = lookup("syncv");
   const uint32_t second_desired = lookup("__pc-set-levels");

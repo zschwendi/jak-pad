@@ -29,6 +29,7 @@ extern "C" {
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/gfx_host.h"
+#include "game/kernel/core/jak2_progress_menu_reader.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/kernel_game.h"
 #include "game/kernel/core/jak2_runtime_metrics_reader.h"
@@ -401,6 +402,8 @@ void update_metrics() {
   goal_gfx_host_stats_get(&gfx);
   g_metrics.host_desired_level_sets = gfx.level_sets;
   g_metrics.host_active_level_sets = gfx.active_level_sets;
+  g_metrics.host_pmode_calls = gfx.pmode_calls;
+  g_metrics.host_last_pmode_alpha = gfx.last_pmode_alpha;
   std::snprintf(g_metrics.host_desired_levels, sizeof(g_metrics.host_desired_levels), "%s",
                 gfx.last_levels ? gfx.last_levels : "");
   std::snprintf(g_metrics.host_active_levels, sizeof(g_metrics.host_active_levels), "%s",
@@ -414,10 +417,8 @@ void update_metrics() {
   g_metrics.host_texture_relocations = host.texture_relocations;
   g_metrics.host_desired_level_calls = host.desired_level_calls;
   g_metrics.host_active_level_calls = host.active_level_calls;
-  g_metrics.host_pmode_calls = host.pmode_calls;
   g_metrics.host_last_desired_level_count = host.last_desired_level_count;
   g_metrics.host_last_active_level_count = host.last_active_level_count;
-  g_metrics.host_last_pmode_alpha = host.last_pmode_alpha;
 
   if (g_metrics.graphics != GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
     return;
@@ -436,6 +437,22 @@ void update_metrics() {
   g_metrics.dma_valid_tags = window.valid.tags;
   g_metrics.dma_valid_payload_bytes = window.valid.payload_bytes;
   g_metrics.dma_valid_copied_bytes = window.valid.copied_bytes;
+}
+
+jak2_progress_menu_reader::TypeIdentity progress_type_identity(const char* name,
+                                                               uint16_t exact_size) {
+  jak2_progress_menu_reader::TypeIdentity identity;
+  identity.symbol = goal_game_find_symbol(name, &identity.type);
+  identity.exact_size = exact_size;
+  return identity;
+}
+
+goal_jak2_progress_menu_snapshot unavailable_progress_menu_snapshot() {
+  goal_jak2_progress_menu_snapshot out = {};
+  out.screen = GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE;
+  out.option_index = -1;
+  out.starting_screen = GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE;
+  return out;
 }
 
 goal_jak2_runtime_status fail_start(std::string message) {
@@ -713,6 +730,55 @@ goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics
   }
   update_metrics();
   *out = g_metrics;
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
+    goal_jak2_progress_menu_snapshot* out) {
+  if (!out) {
+    g_error = "goal_jak2_runtime_get_progress_menu_snapshot: out is null";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  *out = unavailable_progress_menu_snapshot();
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_ee_main_mem) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  using namespace jak2_progress_menu_reader;
+  Inputs inputs;
+  inputs.master_mode = symbol_value_if_present("*master-mode*");
+  inputs.progress_pointer = symbol_value_if_present("*progress-process*");
+  inputs.progress_state = symbol_value_if_present("*progress-state*");
+  inputs.title_options = symbol_value_if_present("*title*");
+  inputs.progress_type =
+      progress_type_identity("progress", static_cast<uint16_t>(layout::kProgressSize));
+  inputs.progress_global_state_type = progress_type_identity(
+      "progress-global-state", static_cast<uint16_t>(layout::kProgressGlobalStateSize));
+  inputs.menu_option_list_type = progress_type_identity("menu-option-list", 0);
+  inputs.state_type = progress_type_identity("state", static_cast<uint16_t>(layout::kStateSize));
+  inputs.progress_symbol = inputs.progress_type.symbol;
+  inputs.title_symbol = goal_game_find_symbol("title", nullptr);
+  inputs.none_symbol = goal_game_find_symbol("none", nullptr);
+  inputs.idle_symbol = goal_game_find_symbol("idle", nullptr);
+  inputs.true_object = goal_game_true_offset();
+
+  const Snapshot snapshot = read(
+      {reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE, goal_game_false_offset()},
+      inputs);
+  if (!snapshot.available) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  out->available = 1;
+  out->screen = snapshot.screen;
+  out->option_index = snapshot.option_index;
+  out->selected_option = snapshot.selected_option;
+  out->in_transition = snapshot.in_transition;
+  out->navigation_available = snapshot.navigation_available;
+  out->starting_screen = snapshot.starting_screen;
+  out->can_exit_with_start = snapshot.can_exit_with_start;
+  out->can_go_back = snapshot.can_go_back;
   return GOAL_JAK2_RUNTIME_OK;
 }
 

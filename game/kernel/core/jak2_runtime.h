@@ -45,6 +45,24 @@ typedef enum goal_jak2_runtime_graphics {
   GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST = 3,
 } goal_jak2_runtime_graphics;
 
+typedef enum goal_jak2_progress_screen {
+  GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE = -1,
+  GOAL_JAK2_PROGRESS_SCREEN_TITLE = 27,
+} goal_jak2_progress_screen;
+
+/*! Fail-closed, copied fields for the one source-proven Jak II progress screen. */
+typedef struct goal_jak2_progress_menu_snapshot {
+  int32_t available;
+  int32_t screen;
+  int32_t option_index;
+  int32_t selected_option;
+  int32_t in_transition;
+  int32_t navigation_available;
+  int32_t starting_screen;
+  int32_t can_exit_with_start;
+  int32_t can_go_back;
+} goal_jak2_progress_menu_snapshot;
+
 typedef struct goal_jak2_runtime_config {
   /*! The player's prepared Jak 2 directory, containing `iso/`. Required and copied at start. */
   const char* data_directory;
@@ -205,6 +223,13 @@ goal_jak2_runtime_status goal_jak2_runtime_tick(void);
 
 /*! Copy the latest runtime snapshot into `out`. */
 goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics* out);
+
+/*!
+ * Copy the live Jak II title progress-menu state. Every other progress screen, malformed pointer,
+ * type mismatch, unsupported symbol, and out-of-range field returns an unavailable snapshot.
+ */
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
+    goal_jak2_progress_menu_snapshot* out);
 
 int goal_jak2_runtime_is_running(void);
 
