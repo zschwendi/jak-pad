@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 
 #include "decompiler/extractor/jak1_fr3_preparer.h"
@@ -9,6 +10,10 @@ namespace jak2_fr3 {
 // Canonical NTSC-U v2 compressed archive entries are zero-padded to this boundary. The checked
 // reader accepts less than one alignment unit after the BLZO payload and still requires it all zero.
 inline constexpr std::size_t kNtscV2CompressedArchiveAlignmentBytes = 0x40000;
+
+// Sum of the BLZO expanded-size headers for the 149 archives selected by the tracked NTSC-U v2
+// import profile. Using the exact profile total keeps aggregate expansion fail-closed on drift.
+inline constexpr std::uintmax_t kNtscV2TotalExpandedArchiveBytes = 596'611'024;
 
 using Phase = jak1_fr3::Phase;
 using Progress = jak1_fr3::Progress;
@@ -25,6 +30,7 @@ struct Options : jak1_fr3::Options {
   Options() {
     max_archives = 256;
     max_levels = 256;
+    max_total_expanded_archive_bytes = kNtscV2TotalExpandedArchiveBytes;
     compressed_trailing_alignment_bytes = kNtscV2CompressedArchiveAlignmentBytes;
   }
 };

@@ -40,6 +40,9 @@ class TemporaryDirectory {
 int main() {
   const auto& revision = jak1_iso::default_revision();
 
+  jak1_fr3::Options defaults;
+  CHECK(defaults.max_total_expanded_archive_bytes == 512ull * 1024 * 1024);
+
   auto invalid = jak1_fr3::prepare({}, {}, {}, revision);
   CHECK(!invalid);
   CHECK(invalid.error().code == jak1_fr3::ErrorCode::invalid_argument);

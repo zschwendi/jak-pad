@@ -47,6 +47,14 @@ int main(int argc, char** argv) {
   jak2_fr3::Options defaults;
   CHECK(defaults.max_archives == 256);
   CHECK(defaults.max_levels == 256);
+  constexpr std::uintmax_t kRecordedTotalExpandedArchiveBytes = 596'611'024;
+  CHECK(jak2_fr3::kNtscV2TotalExpandedArchiveBytes ==
+        kRecordedTotalExpandedArchiveBytes);
+  CHECK(defaults.max_total_expanded_archive_bytes ==
+        kRecordedTotalExpandedArchiveBytes);
+  CHECK(kRecordedTotalExpandedArchiveBytes <= defaults.max_total_expanded_archive_bytes);
+  CHECK(kRecordedTotalExpandedArchiveBytes + 1 >
+        defaults.max_total_expanded_archive_bytes);
   CHECK(defaults.compressed_trailing_alignment_bytes ==
         jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes);
   constexpr std::size_t kLwidebPayloadEnd = 0x14b6d0;
