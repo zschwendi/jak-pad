@@ -1,4 +1,5 @@
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 
 #include <array>
 #include <cstdio>
@@ -501,8 +502,13 @@ void make_map_descriptor_prefix_legacy_upload_and_progress_chain() {
 }  // namespace
 
 int main() {
-  check(metal_renderer::jak2_metal_host_policy_table_is_audited(),
-        "the host allowlist accepts the fixed table's explicit BlitDisplay behavior");
+  const auto& host_policy_table = metal_renderer::jak2_metal_bucket_table();
+  check(host_policy_table[static_cast<std::size_t>(jak2::BucketId::GMERC_L0_ALPHA)].behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::Generic2 &&
+            host_policy_table[static_cast<std::size_t>(jak2::BucketId::GMERC_L5_WATER)].behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::Generic2 &&
+            metal_renderer::jak2_metal_host_policy_table_is_audited(),
+        "the host allowlist accepts the fixed table's explicit Generic2 behavior");
 
   goal_jak2_metal_host_metrics frame_gate = {};
   frame_gate.chains = 1;
@@ -573,7 +579,8 @@ int main() {
         "rejected presenting mode without an app-owned CAMetalLayer");
 
   goal_jak2_metal_host* missing_host = goal_jak2_metal_host_create();
-  check(missing_host != nullptr, "created a host for missing-directory rejection");
+  check(missing_host != nullptr,
+        "created a host after auditing the table's explicit Generic2 behavior");
   check(missing_host &&
             !goal_jak2_metal_host_configure_level_art(
                 missing_host, (fixture_root / "missing").string().c_str()),

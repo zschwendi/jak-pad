@@ -93,7 +93,8 @@ bool jak2_metal_host_policy_table_is_audited() {
         descriptor.behavior != Jak2MetalBucketBehavior::Merc &&
         descriptor.behavior != Jak2MetalBucketBehavior::BlitDisplay &&
         descriptor.behavior != Jak2MetalBucketBehavior::MercAlpha &&
-        descriptor.behavior != Jak2MetalBucketBehavior::MercWater) {
+        descriptor.behavior != Jak2MetalBucketBehavior::MercWater &&
+        descriptor.behavior != Jak2MetalBucketBehavior::Generic2) {
       return false;
     }
   }
