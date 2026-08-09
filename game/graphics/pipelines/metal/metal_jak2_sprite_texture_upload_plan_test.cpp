@@ -129,6 +129,35 @@ Fixture make_fixture(
   return fixture;
 }
 
+Fixture make_descriptor_first_fixture(
+    u32 upload_count,
+    u32 bucket_id = metal_renderer::kJak2MapTextureUploadBucket) {
+  check(upload_count > 0 && upload_count <= kFixtureMaximumGroups,
+        "the descriptor-first fixture stays within its bounded upload storage");
+  Fixture fixture;
+  fixture.upload_count = upload_count;
+  for (u32 i = 0; i < upload_count; ++i) {
+    put_page_header(&fixture.live, page_offset(i), 0x201 + i, 3 + i);
+  }
+
+  const u32 bucket_offset = kChainOffset + bucket_id * 16;
+  fixture.group_boundary_offsets[0] = bucket_offset;
+  put_tag(&fixture.packet, bucket_offset, DmaTag::Kind::NEXT, 0, group_offset(0), 0, 0);
+  for (u32 i = 0; i < upload_count; ++i) {
+    const u32 descriptor_offset = group_offset(i);
+    fixture.descriptor_tag_offsets[i] = descriptor_offset;
+    put_tag(&fixture.packet, descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+    put_u64(&fixture.packet, descriptor_offset + 16, page_offset(i));
+    put_u64(&fixture.packet, descriptor_offset + 24, static_cast<u64>(-1));
+
+    const u32 boundary_offset = descriptor_offset + 32;
+    const u32 next_offset = i + 1 == upload_count ? bucket_offset + 16 : group_offset(i + 1);
+    fixture.group_boundary_offsets[i + 1] = boundary_offset;
+    put_tag(&fixture.packet, boundary_offset, DmaTag::Kind::NEXT, 0, next_offset, 0, 0);
+  }
+  return fixture;
+}
+
 std::optional<metal_renderer::Jak2SpriteTextureUploadPlan> plan(const Fixture& fixture) {
   return metal_renderer::plan_jak2_sprite_texture_upload(fixture.packet.data(),
                                                          fixture.packet.size(), kChainOffset,
@@ -184,6 +213,74 @@ void test_map_source_bounded_upload_grammars() {
 
   const auto nine = make_fixture(9, metal_renderer::kJak2MapTextureUploadBucket);
   check(!plan_map(nine).has_value(), "a ninth map upload group is rejected");
+}
+
+void test_map_descriptor_first_no_tail_grammar() {
+  for (const u32 upload_count : {1u, 3u, 8u}) {
+    auto fixture = make_descriptor_first_fixture(upload_count);
+    metal_renderer::Jak2MapTextureUploadDiagnostic diagnostic;
+    const auto result = plan_map(fixture, &diagnostic);
+    check(result.has_value() && result->present && result->upload_count == upload_count &&
+              diagnostic.rejection_stage ==
+                  metal_renderer::Jak2MapTextureUploadRejectionStage::None &&
+              diagnostic.transfer_count == 1 + 2 * upload_count,
+          "source-produced descriptor-first map groups need no Direct prefix or tail");
+    for (u32 i = 0; i < upload_count; ++i) {
+      check(result->uploads[i].page_offset == page_offset(i) && result->uploads[i].mode == -1 &&
+                result->uploads[i].page_header[8] == static_cast<u8>(0x201 + i),
+            "descriptor-first map uploads retain source order and owned page headers");
+    }
+  }
+
+  auto fixture = make_descriptor_first_fixture(1);
+  put_u64(&fixture.packet, fixture.descriptor_tag_offsets[0] + 24, static_cast<u64>(-2));
+  metal_renderer::Jak2MapTextureUploadDiagnostic diagnostic;
+  check(!plan_map(fixture, &diagnostic).has_value() &&
+            diagnostic.rejection_stage ==
+                metal_renderer::Jak2MapTextureUploadRejectionStage::OrdinaryContents &&
+            diagnostic.failure_offset == fixture.descriptor_tag_offsets[0],
+        "descriptor-first groups retain exact upload-content validation");
+
+  fixture = make_descriptor_first_fixture(1);
+  put_u32(&fixture.packet, fixture.group_boundary_offsets[1] + 12, 1);
+  check(!plan_map(fixture).has_value(),
+        "descriptor-first groups still require an exact inert NEXT boundary");
+
+  const auto sprite_fixture =
+      make_descriptor_first_fixture(1, metal_renderer::kJak2SpriteTextureUploadBucket);
+  check(!plan(sprite_fixture).has_value(),
+        "the descriptor-first producer exception remains isolated to TEX_ALL_MAP");
+
+  auto grouped_without_tail = make_fixture(1, metal_renderer::kJak2MapTextureUploadBucket);
+  const u32 map_bucket_end =
+      kChainOffset + (metal_renderer::kJak2MapTextureUploadBucket + 1) * 16;
+  put_tag(&grouped_without_tail.packet, grouped_without_tail.group_boundary_offsets[1],
+          DmaTag::Kind::NEXT, 0, map_bucket_end, 0, 0);
+  check(!plan_map(grouped_without_tail).has_value(),
+        "the no-tail exception requires a source-produced descriptor-first map group");
+
+  auto descriptor_then_direct = make_descriptor_first_fixture(2);
+  std::fill_n(descriptor_then_direct.packet.begin() + group_offset(1), kGroupStride, 0);
+  put_upload_group(&descriptor_then_direct, group_offset(1), 1, page_offset(1), map_bucket_end);
+  diagnostic = {};
+  check(!plan_map(descriptor_then_direct, &diagnostic).has_value() &&
+            diagnostic.rejection_stage ==
+                metal_renderer::Jak2MapTextureUploadRejectionStage::GroupOrTail,
+        "descriptor-first mode rejects a later Direct-prefixed group");
+
+  auto direct_then_descriptor = make_fixture(2, metal_renderer::kJak2MapTextureUploadBucket);
+  std::fill_n(direct_then_descriptor.packet.begin() + group_offset(1), kGroupStride, 0);
+  put_tag(&direct_then_descriptor.packet, group_offset(1), DmaTag::Kind::CNT, 1, 0, kPcPortVif,
+          3);
+  put_u64(&direct_then_descriptor.packet, group_offset(1) + 16, page_offset(1));
+  put_u64(&direct_then_descriptor.packet, group_offset(1) + 24, static_cast<u64>(-1));
+  put_tag(&direct_then_descriptor.packet, group_offset(1) + 32, DmaTag::Kind::NEXT, 0,
+          kTailOffset, 0, 0);
+  diagnostic = {};
+  check(!plan_map(direct_then_descriptor, &diagnostic).has_value() &&
+            diagnostic.rejection_stage ==
+                metal_renderer::Jak2MapTextureUploadRejectionStage::Tail,
+        "legacy Direct-prefixed mode rejects a later descriptor-first group");
 }
 
 void test_map_rejection_diagnostic() {
@@ -388,6 +485,7 @@ void test_bad_dma_and_page_ranges_fail_closed() {
 int main() {
   test_source_bounded_upload_grammars();
   test_map_source_bounded_upload_grammars();
+  test_map_descriptor_first_no_tail_grammar();
   test_map_rejection_diagnostic();
   test_strict_empty_bucket_is_absent();
   test_direct_payloads_are_inert();

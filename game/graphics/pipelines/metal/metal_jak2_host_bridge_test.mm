@@ -227,6 +227,25 @@ void put_map_texture_upload(u32 upload_count = 1, s64 mode = -1) {
           bucket_offset + 16);
 }
 
+void put_map_descriptor_first_upload(u32 upload_count = 1, s64 mode = -1) {
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  std::memset(ee + kMapTextureUploadGroupOffset, 0, 0x100 * upload_count);
+
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  const u32 bucket_offset = kChainOffset + kMapTextureUploadBucket * 16;
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kMapTextureUploadGroupOffset);
+  for (u32 i = 0; i < upload_count; ++i) {
+    const u32 descriptor_offset = kMapTextureUploadGroupOffset + i * 0x100;
+    const u32 next_offset =
+        i + 1 == upload_count ? bucket_offset + 16 : descriptor_offset + 0x100;
+    put_tag(descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+    const u64 page_offset = kTexturePageOffset + i * kTexturePageStride;
+    std::memcpy(ee + descriptor_offset + 16, &page_offset, sizeof(page_offset));
+    std::memcpy(ee + descriptor_offset + 24, &mode, sizeof(mode));
+    put_tag(descriptor_offset + 32, DmaTag::Kind::NEXT, 0, next_offset);
+  }
+}
+
 bool is_zero(const goal_jak2_metal_frame_summary& summary) {
   return summary.width == 0 && summary.height == 0 && summary.byte_count == 0 &&
          summary.hash == 0 && summary.non_black_pixels == 0 &&
@@ -426,6 +445,12 @@ void make_textured_sky_draw_chain(u32 texture_vram) {
 void make_map_texture_upload_and_progress_chain(s64 mode = -1) {
   make_empty_chain();
   put_map_texture_upload(1, mode);
+  put_textured_direct_draw(kProgressBucket, kProgressPayloadOffset, kTextureVram);
+}
+
+void make_map_descriptor_first_upload_and_progress_chain(s64 mode = -1) {
+  make_empty_chain();
+  put_map_descriptor_first_upload(1, mode);
   put_textured_direct_draw(kProgressBucket, kProgressPayloadOffset, kTextureVram);
 }
 
@@ -976,15 +1001,33 @@ int main() {
             map_upload_metrics.last_progress_missing_texture_draws == 0 &&
             map_upload_metrics.skipped_bucket_bytes == 0,
         "bucket 319 uploads the map page before the dependent textured PROGRESS draw");
+
+  make_map_descriptor_first_upload_and_progress_chain();
+  map_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(map_upload_host, &map_upload_metrics) &&
+            map_upload_metrics.chains == 2 && map_upload_metrics.completed_chains == 2 &&
+            map_upload_metrics.failed_chains == 0 &&
+            map_upload_metrics.map_texture_uploads == 2 &&
+            map_upload_metrics.last_map_texture_upload.valid == 1 &&
+            map_upload_metrics.last_map_texture_upload.present == 1 &&
+            map_upload_metrics.last_map_texture_upload.upload_count == 1 &&
+            map_upload_metrics.last_map_texture_upload.pages[0] == kTexturePageOffset &&
+            map_upload_metrics.last_map_texture_upload.modes[0] == -1 &&
+            map_upload_metrics.last_progress_draws == 1 &&
+            map_upload_metrics.last_progress_triangles == 1 &&
+            map_upload_metrics.last_progress_textured_draws == 1 &&
+            map_upload_metrics.last_progress_missing_texture_draws == 0 &&
+            map_upload_metrics.skipped_bucket_bytes == 0,
+        "descriptor-first bucket 319 uploads before PROGRESS without a Direct prefix or tail");
   const uint32_t map_copied_bytes = map_upload_metrics.last_copied_bytes;
 
   make_map_texture_upload_and_progress_chain(-2);
   map_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   const char* map_upload_error = goal_jak2_metal_host_last_error(map_upload_host);
   check(goal_jak2_metal_host_get_metrics(map_upload_host, &map_upload_metrics) &&
-            map_upload_metrics.chains == 2 && map_upload_metrics.completed_chains == 1 &&
+            map_upload_metrics.chains == 3 && map_upload_metrics.completed_chains == 2 &&
             map_upload_metrics.failed_chains == 1 &&
-            map_upload_metrics.map_texture_uploads == 1 &&
+            map_upload_metrics.map_texture_uploads == 2 &&
             map_upload_metrics.last_map_texture_upload.valid == 0 &&
             map_upload_metrics.last_copied_bytes == map_copied_bytes && map_upload_error &&
             std::strstr(map_upload_error,
@@ -999,9 +1042,9 @@ int main() {
   make_map_texture_upload_and_progress_chain();
   map_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(map_upload_host, &map_upload_metrics) &&
-            map_upload_metrics.chains == 3 && map_upload_metrics.completed_chains == 2 &&
+            map_upload_metrics.chains == 4 && map_upload_metrics.completed_chains == 3 &&
             map_upload_metrics.failed_chains == 1 &&
-            map_upload_metrics.map_texture_uploads == 2 &&
+            map_upload_metrics.map_texture_uploads == 3 &&
             map_upload_metrics.last_progress_draws == 1 &&
             map_upload_metrics.last_progress_missing_texture_draws == 0,
         "a pre-mutation bucket-319 rejection leaves map upload and PROGRESS usable");

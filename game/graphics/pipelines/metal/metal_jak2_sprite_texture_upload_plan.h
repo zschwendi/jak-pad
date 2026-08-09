@@ -86,8 +86,11 @@ std::optional<Jak2SpriteTextureUploadPlan> plan_jak2_sprite_texture_upload(
 
 /*!
  * Parse the matching TEX_ALL_MAP grammar. Unlike TEX_ALL_SPRITE, the reference handler also
- * renders the Direct payloads; this planner validates and owns only the ordered host uploads.
- * The eight-group bound matches the default map plus six draw levels and the level-six alpha map.
+ * renders the Direct payloads. Jak II's PC-only PRIS uploader may emit an ordinary descriptor
+ * directly, without a preceding Direct transfer or a trailing draw. That source-produced mode is
+ * accepted separately from the legacy Direct-prefixed-and-tailed mode; mixed forms remain rejected.
+ * This planner validates and owns only the ordered host uploads. The eight-group bound matches the
+ * default map plus six draw levels and the level-six alpha map.
  */
 std::optional<Jak2MapTextureUploadPlan> plan_jak2_map_texture_upload(
     const u8* dma_packet_snapshot,

@@ -234,14 +234,15 @@ bool read_boundary(CheckedDmaFollower* dma, Jak2MapTextureUploadDiagnostic* diag
   return true;
 }
 
-bool read_descriptor_and_boundary(CheckedDmaFollower* dma,
-                                  const u8* live_ee_memory,
-                                  std::size_t live_ee_memory_size,
-                                  Jak2Bucket4OrdinaryUploadPlan* out,
-                                  Jak2MapTextureUploadDiagnostic* diagnostic) {
-  CheckedTransfer descriptor;
-  if (!out || !read_transfer(dma, &descriptor, diagnostic,
-                             Jak2MapTextureUploadRejectionStage::OrdinaryDescriptor)) {
+bool accept_descriptor_and_boundary(CheckedDmaFollower* dma,
+                                    const CheckedTransfer& descriptor,
+                                    const u8* live_ee_memory,
+                                    std::size_t live_ee_memory_size,
+                                    Jak2Bucket4OrdinaryUploadPlan* out,
+                                    Jak2MapTextureUploadDiagnostic* diagnostic) {
+  if (!out) {
+    reject_transfer(diagnostic, Jak2MapTextureUploadRejectionStage::OrdinaryDescriptor,
+                    descriptor);
     return false;
   }
   if (!is_ordinary_descriptor(descriptor)) {
@@ -265,6 +266,20 @@ bool read_descriptor_and_boundary(CheckedDmaFollower* dma,
   return read_boundary(dma, diagnostic);
 }
 
+bool read_descriptor_and_boundary(CheckedDmaFollower* dma,
+                                  const u8* live_ee_memory,
+                                  std::size_t live_ee_memory_size,
+                                  Jak2Bucket4OrdinaryUploadPlan* out,
+                                  Jak2MapTextureUploadDiagnostic* diagnostic) {
+  CheckedTransfer descriptor;
+  if (!read_transfer(dma, &descriptor, diagnostic,
+                     Jak2MapTextureUploadRejectionStage::OrdinaryDescriptor)) {
+    return false;
+  }
+  return accept_descriptor_and_boundary(dma, descriptor, live_ee_memory, live_ee_memory_size, out,
+                                        diagnostic);
+}
+
 }  // namespace
 
 static std::optional<Jak2GroupedTextureUploadPlan> plan_grouped_texture_upload(
@@ -275,6 +290,7 @@ static std::optional<Jak2GroupedTextureUploadPlan> plan_grouped_texture_upload(
     std::size_t live_ee_memory_size,
     u32 bucket_id,
     std::size_t maximum_groups,
+    bool allow_map_descriptor_first_groups,
     Jak2MapTextureUploadDiagnostic* diagnostic) {
   if (diagnostic) {
     *diagnostic = {};
@@ -317,6 +333,35 @@ static std::optional<Jak2GroupedTextureUploadPlan> plan_grouped_texture_upload(
   if (!read_transfer(&dma, &tail_or_group, diagnostic,
                      Jak2MapTextureUploadRejectionStage::GroupOrTail)) {
     return std::nullopt;
+  }
+
+  if (allow_map_descriptor_first_groups && is_ordinary_descriptor(tail_or_group)) {
+    while (true) {
+      if (plan.upload_count == maximum_groups) {
+        reject_transfer(diagnostic, Jak2MapTextureUploadRejectionStage::GroupLimit,
+                        tail_or_group);
+        return std::nullopt;
+      }
+      if (!accept_descriptor_and_boundary(&dma, tail_or_group, live_ee_memory,
+                                          live_ee_memory_size,
+                                          &plan.uploads[plan.upload_count], diagnostic)) {
+        return std::nullopt;
+      }
+      plan.upload_count++;
+      if (dma.offset() == static_cast<u32>(end_offset64)) {
+        plan.present = true;
+        return plan;
+      }
+      if (!read_transfer(&dma, &tail_or_group, diagnostic,
+                         Jak2MapTextureUploadRejectionStage::GroupOrTail)) {
+        return std::nullopt;
+      }
+      if (!is_ordinary_descriptor(tail_or_group)) {
+        reject_transfer(diagnostic, Jak2MapTextureUploadRejectionStage::GroupOrTail,
+                        tail_or_group);
+        return std::nullopt;
+      }
+    }
   }
 
   while (is_direct(tail_or_group, 0, 2)) {
@@ -371,7 +416,7 @@ std::optional<Jak2SpriteTextureUploadPlan> plan_jak2_sprite_texture_upload(
   return plan_grouped_texture_upload(
       dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, live_ee_memory,
       live_ee_memory_size, kJak2SpriteTextureUploadBucket,
-      kJak2SpriteTextureUploadMaximumGroups, nullptr);
+      kJak2SpriteTextureUploadMaximumGroups, false, nullptr);
 }
 
 std::optional<Jak2MapTextureUploadPlan> plan_jak2_map_texture_upload(
@@ -394,7 +439,7 @@ std::optional<Jak2MapTextureUploadPlan> plan_jak2_map_texture_upload(
   return plan_grouped_texture_upload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
                                      live_ee_memory, live_ee_memory_size,
                                      kJak2MapTextureUploadBucket,
-                                     kJak2MapTextureUploadMaximumGroups, diagnostic);
+                                     kJak2MapTextureUploadMaximumGroups, true, diagnostic);
 }
 
 const char* jak2_map_texture_upload_rejection_stage_name(
