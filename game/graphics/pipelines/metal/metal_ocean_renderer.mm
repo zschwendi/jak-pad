@@ -7,6 +7,7 @@
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
+#include "game/graphics/pipelines/metal/metal_jak2_ocean_grammar.h"
 #include "game/graphics/texture/TexturePool.h"
 
 namespace {
@@ -353,6 +354,8 @@ bool MetalOceanEnvmap::handle_ocean_envmap_jak2(DmaFollower& dma,
   const bool offscreen_backup = m_direct.offscreen_mode();
   id<MTLCommandBuffer> commands = [m_queue commandBuffer];
   if (!commands) {
+    m_stats.command_buffer_errors = 1;
+    m_stats.last_command_buffer_status = MTLCommandBufferStatusNotEnqueued;
     return false;
   }
 
@@ -455,16 +458,30 @@ bool MetalOceanEnvmap::handle_ocean_envmap_jak2(DmaFollower& dma,
   const bool prefix_complete = m_stats.setup_64_count == 2 && second_setup_targets_envmap &&
                                m_stats.stopped_before_ocean_texture &&
                                m_stats.haze_draw_calls > 0 && m_stats.direct_draw_calls > 0;
-  if (!prefix_complete || !render_radial(ctx, commands)) {
+  if (!prefix_complete) {
+    return false;
+  }
+  if (m_force_command_buffer_failure_for_testing) {
+    m_stats.command_buffer_errors = 1;
+    m_stats.last_command_buffer_status = MTLCommandBufferStatusError;
+    return false;
+  }
+  if (!render_radial(ctx, commands)) {
+    m_stats.command_buffer_errors = 1;
+    m_stats.last_command_buffer_status = commands.status;
     return false;
   }
   m_stats.radial_draw_calls = 1;
 
   [commands commit];
+  m_stats.command_buffers_committed = 1;
   [commands waitUntilCompleted];
+  m_stats.last_command_buffer_status = commands.status;
   if (commands.status != MTLCommandBufferStatusCompleted) {
+    m_stats.command_buffer_errors = 1;
     return false;
   }
+  m_stats.command_buffers_completed = 1;
 
   {
     std::lock_guard<std::mutex> pool_lock(m_pool->mutex());
@@ -694,57 +711,67 @@ void MetalOceanTexture::handle_ocean_texture_jak1(DmaFollower& dma,
 bool MetalOceanTexture::handle_ocean_texture_jak2(DmaFollower& dma,
                                                   MetalSharedRenderState* render_state,
                                                   MetalFrameContext& ctx) {
-  ASSERT(render_state->version == GameVersion::Jak2);
-  ASSERT(m_tbp == OCEAN_TEX_TBP_JAK2);
   m_stats = {};
+  const auto fail_grammar = [this]() {
+    m_stats.grammar_errors = 1;
+    return false;
+  };
+  if (!render_state || render_state->version != GameVersion::Jak2 ||
+      render_state->texture_pool != m_pool || !m_tex0_gpu || m_tbp != OCEAN_TEX_TBP_JAK2) {
+    return fail_grammar();
+  }
   const auto read = [&]() {
     m_stats.transfers_consumed++;
     return dma.read_and_advance();
   };
 
   // (set-display-gs-state arg0 21 128 128 0 0)
-  read();
+  {
+    const auto data = read();
+    u64 scissor = 0;
+    if (!metal_renderer::jak2_ocean_grammar::direct(data, 48, 3) ||
+        !scan_gs_set(data.data, data.size_bytes, GsRegisterAddress::SCISSOR_1, &scissor) ||
+        GsScissor(scissor).x1() != 127 || GsScissor(scissor).y1() != 127) {
+      return fail_grammar();
+    }
+  }
 
   // (ocean-texture-add-envmap arg0)
   {
-    auto data = read();
-    ASSERT(data.size_bytes == sizeof(AdGifData) + 16);
-    ASSERT(data.vifcode0().kind == VifCode::Kind::NOP);
-    ASSERT(data.vifcode1().kind == VifCode::Kind::DIRECT);
+    const auto data = read();
+    constexpr u32 kAdgifTransferBytes = sizeof(AdGifData) + 16;
+    if (!metal_renderer::jak2_ocean_grammar::direct(data, kAdgifTransferBytes,
+                                                     kAdgifTransferBytes / 16)) {
+      return fail_grammar();
+    }
     memcpy(&m_envmap_adgif, data.data + 16, sizeof(AdGifData));
     setup_renderer();
   }
 
   // Jak II emits a four-qword Direct setup before loading the VU program.
   {
-    auto data = read();
-    ASSERT(data.size_bytes == 64);
-    ASSERT(data.vifcode0().kind == VifCode::Kind::NOP);
-    ASSERT(data.vifcode1().kind == VifCode::Kind::DIRECT);
-    ASSERT(data.vifcode0().immediate == 0);
-    ASSERT(data.vifcode1().immediate == 4);
+    const auto data = read();
+    if (!metal_renderer::jak2_ocean_grammar::direct(data, 64, 4)) {
+      return fail_grammar();
+    }
   }
 
   // (dma-buffer-add-vu-function arg0 ocean-texture-vu1-block 1)
   {
-    auto data = read();
+    const auto data = read();
     m_stats.vu_buffer_setup_valid =
-        data.size_bytes == 0 && data.vifcode0().kind == VifCode::Kind::BASE &&
-        data.vifcode0().immediate == 0 && data.vifcode1().kind == VifCode::Kind::OFFSET &&
-        data.vifcode1().immediate == 0xc0;
+        metal_renderer::jak2_ocean_grammar::base_offset(data, 0, 0xc0);
     if (!m_stats.vu_buffer_setup_valid) {
-      return false;
+      return fail_grammar();
     }
   }
 
   {
-    auto data = read();
-    ASSERT(data.size_bytes == sizeof(OceanTextureConstants));
-    ASSERT(data.vifcode0().kind == VifCode::Kind::STCYCL);
-    ASSERT(data.vifcode0().immediate == 0x404);
-    ASSERT(data.vifcode1().kind == VifCode::Kind::UNPACK_V4_32);
-    ASSERT(data.vifcode1().num == data.size_bytes / 16);
-    ASSERT(data.vifcode1().immediate == TexVu1Data::CONSTANTS);
+    const auto data = read();
+    if (!metal_renderer::jak2_ocean_grammar::unpack_v4_32(
+            data, sizeof(OceanTextureConstants), 0x404, TexVu1Data::CONSTANTS, false)) {
+      return fail_grammar();
+    }
     memcpy(&m_texture_constants, data.data, sizeof(OceanTextureConstants));
   }
 
@@ -752,84 +779,66 @@ bool MetalOceanTexture::handle_ocean_texture_jak2(DmaFollower& dma,
   m_texture_vertices_drawing = m_texture_vertices_b;
 
   {
-    auto data = read();
-    ASSERT(data.size_bytes == sizeof(m_texture_vertices_a));
-    ASSERT(data.vifcode0().kind == VifCode::Kind::STCYCL);
-    ASSERT(data.vifcode0().immediate == 0x404);
-    ASSERT(data.vifcode1().kind == VifCode::Kind::UNPACK_V4_32);
-    ASSERT(data.vifcode1().num == data.size_bytes / 16);
-    VifCodeUnpack up(data.vifcode1());
-    ASSERT(up.addr_qw == 0);
-    ASSERT(up.use_tops_flag);
+    const auto data = read();
+    if (!metal_renderer::jak2_ocean_grammar::unpack_v4_32(
+            data, sizeof(m_texture_vertices_a), 0x404, 0, true)) {
+      return fail_grammar();
+    }
     memcpy(m_texture_vertices_loading, data.data, sizeof(m_texture_vertices_a));
   }
 
   {
-    auto data = read();
-    ASSERT(data.size_bytes == 0);
-    ASSERT(data.vifcode0().kind == VifCode::Kind::MSCALF);
-    ASSERT(data.vifcode0().immediate == TexVu1Prog::START);
-    ASSERT(data.vifcode1().kind == VifCode::Kind::STMOD);
+    const auto data = read();
+    if (!metal_renderer::jak2_ocean_grammar::mscalf_stmod(data, TexVu1Prog::START)) {
+      return fail_grammar();
+    }
     run_L1_PC_jak2();
   }
 
   for (int i = 0; i < NUM_FRAG_LOOPS; i++) {
-    auto verts = read();
-    ASSERT(verts.size_bytes == sizeof(m_texture_vertices_a));
-    ASSERT(verts.vifcode0().kind == VifCode::Kind::STCYCL);
-    ASSERT(verts.vifcode0().immediate == 0x404);
-    ASSERT(verts.vifcode1().kind == VifCode::Kind::UNPACK_V4_32);
-    ASSERT(verts.vifcode1().num == verts.size_bytes / 16);
-    VifCodeUnpack up(verts.vifcode1());
-    ASSERT(up.addr_qw == 0);
-    ASSERT(up.use_tops_flag);
+    const auto verts = read();
+    if (!metal_renderer::jak2_ocean_grammar::unpack_v4_32(
+            verts, sizeof(m_texture_vertices_a), 0x404, 0, true)) {
+      return fail_grammar();
+    }
     memcpy(m_texture_vertices_loading, verts.data, sizeof(m_texture_vertices_a));
 
-    auto call = read();
-    ASSERT(call.size_bytes == 0);
-    ASSERT(call.vifcode0().kind == VifCode::Kind::MSCALF);
-    ASSERT(call.vifcode0().immediate == TexVu1Prog::REST);
-    ASSERT(call.vifcode1().kind == VifCode::Kind::STMOD);
+    const auto call = read();
+    if (!metal_renderer::jak2_ocean_grammar::mscalf_stmod(call, TexVu1Prog::REST)) {
+      return fail_grammar();
+    }
     run_L2_PC_jak2();
   }
 
   {
-    auto data0 = read();
-    ASSERT(data0.size_bytes == 128 * 16);
-    ASSERT(data0.vifcode0().kind == VifCode::Kind::STCYCL);
-    ASSERT(data0.vifcode0().immediate == 0x404);
-    ASSERT(data0.vifcode1().kind == VifCode::Kind::UNPACK_V4_32);
-    ASSERT(data0.vifcode1().num == data0.size_bytes / 16);
-    VifCodeUnpack up0(data0.vifcode1());
-    ASSERT(up0.addr_qw == 0 && up0.use_tops_flag);
+    const auto data0 = read();
+    if (!metal_renderer::jak2_ocean_grammar::unpack_v4_32(data0, 128 * 16, 0x404, 0,
+                                                          true)) {
+      return fail_grammar();
+    }
     memcpy(m_texture_vertices_loading, data0.data, 128 * 16);
 
-    auto data1 = read();
-    ASSERT(data1.size_bytes == 64 * 16);
-    ASSERT(data1.vifcode0().kind == VifCode::Kind::STCYCL);
-    ASSERT(data1.vifcode0().immediate == 0x404);
-    ASSERT(data1.vifcode1().kind == VifCode::Kind::UNPACK_V4_32);
-    ASSERT(data1.vifcode1().num == data1.size_bytes / 16);
-    VifCodeUnpack up1(data1.vifcode1());
-    ASSERT(up1.addr_qw == 128 && up1.use_tops_flag);
+    const auto data1 = read();
+    if (!metal_renderer::jak2_ocean_grammar::unpack_v4_32(data1, 64 * 16, 0x404, 128,
+                                                          true)) {
+      return fail_grammar();
+    }
     memcpy(m_texture_vertices_loading + 128, data1.data, 64 * 16);
   }
 
   {
-    auto data = read();
-    ASSERT(data.size_bytes == 0);
-    ASSERT(data.vifcode0().kind == VifCode::Kind::MSCALF);
-    ASSERT(data.vifcode0().immediate == TexVu1Prog::REST);
-    ASSERT(data.vifcode1().kind == VifCode::Kind::STMOD);
+    const auto data = read();
+    if (!metal_renderer::jak2_ocean_grammar::mscalf_stmod(data, TexVu1Prog::REST)) {
+      return fail_grammar();
+    }
     run_L2_PC_jak2();
   }
 
   {
-    auto data = read();
-    ASSERT(data.size_bytes == 0);
-    ASSERT(data.vifcode0().kind == VifCode::Kind::MSCALF);
-    ASSERT(data.vifcode0().immediate == TexVu1Prog::DONE);
-    ASSERT(data.vifcode1().kind == VifCode::Kind::STMOD);
+    const auto data = read();
+    if (!metal_renderer::jak2_ocean_grammar::mscalf_stmod(data, TexVu1Prog::DONE)) {
+      return fail_grammar();
+    }
   }
 
   if (!run_gpu_passes(render_state, ctx)) {

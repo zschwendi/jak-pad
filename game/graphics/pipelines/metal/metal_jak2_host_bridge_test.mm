@@ -630,8 +630,8 @@ int main() {
   check(metal_level_data::level_count() == initial_level_count + 1 &&
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
             metal_merc_models().model_count() == initial_merc_model_count &&
-            configured_texture_count == initial_texture_count + 6,
-        "common art, placeholder, and three owned ocean targets are all resident");
+            configured_texture_count == initial_texture_count + 3,
+        "common art and placeholder are resident without host-owned targets for deferred OCEAN buckets");
   check(goal_jak2_metal_host_configure_level_art(host, fr3_directory.c_str()) &&
             metal_level_data::level_count() == initial_level_count + 1 &&
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&

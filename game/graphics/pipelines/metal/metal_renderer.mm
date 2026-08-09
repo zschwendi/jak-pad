@@ -1646,6 +1646,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
         unsupported_blends += sky->direct_stats().unsupported_blends;
       } else if (auto* omf = dynamic_cast<MetalOceanMidAndFar*>(r.get())) {
+        const auto& envmap_stats = omf->envmap_stats();
         const auto& texture_stats = omf->texture_stats();
         m_chain_stats.ocean_texture_verts = texture_stats.vertices;
         m_chain_stats.ocean_mid_verts = omf->mid_stats().vertices;
@@ -1654,9 +1655,18 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
             texture_stats.triangles + omf->mid_stats().triangles;
         m_chain_stats.ocean_missing_textures +=
             texture_stats.missing_textures + omf->mid_stats().missing_textures;
-        m_chain_stats.ocean_command_buffers_committed += texture_stats.command_buffers_committed;
-        m_chain_stats.ocean_command_buffers_completed += texture_stats.command_buffers_completed;
-        m_chain_stats.ocean_command_buffer_errors += texture_stats.command_buffer_errors;
+        m_chain_stats.ocean_command_buffers_committed +=
+            envmap_stats.command_buffers_committed + texture_stats.command_buffers_committed;
+        m_chain_stats.ocean_command_buffers_completed +=
+            envmap_stats.command_buffers_completed + texture_stats.command_buffers_completed;
+        m_chain_stats.ocean_command_buffer_errors +=
+            envmap_stats.command_buffer_errors + texture_stats.command_buffer_errors;
+        if (envmap_stats.last_command_buffer_status != 0 &&
+            (envmap_stats.command_buffer_errors != 0 ||
+             m_chain_stats.ocean_last_command_buffer_status == 0)) {
+          m_chain_stats.ocean_last_command_buffer_status =
+              envmap_stats.last_command_buffer_status;
+        }
         if (texture_stats.last_command_buffer_status != 0 &&
             (texture_stats.command_buffer_errors != 0 ||
              m_chain_stats.ocean_last_command_buffer_status == 0)) {

@@ -78,7 +78,7 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 71, "71 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 73, "73 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 27,
@@ -108,8 +108,8 @@ int main() {
         "six per-level and one common water Merc buckets are implemented by Metal");
   check(generic2 == 12,
         "six alpha and six per-level water Generic2 buckets are implemented by Metal");
-  check(ocean_mid_far == 1 && ocean_near == 1,
-        "both source-coupled OCEAN buckets are implemented together");
+  check(ocean_mid_far == 0 && ocean_near == 0,
+        "both experimental OCEAN renderer policies remain deferred");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
             metal_renderer::kJak2MetalBucketExpectedFingerprint,
         "the ordered descriptor policy matches its fixed reference fingerprint");
@@ -254,18 +254,12 @@ int main() {
             has_behavior(jak2::BucketId::MERC_L0_SHRUB, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::DeferredSkip),
         "SHRUB Direct-only setup is host-owned while neighboring families remain deferred");
-  const bool ocean_pair_promoted =
-      has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::OceanMidFar) &&
-      has_behavior(jak2::BucketId::OCEAN_NEAR, Behavior::OceanNear);
-  check(ocean_pair_promoted,
-        "OCEAN_MID_FAR and OCEAN_NEAR have their distinct paired Metal policies");
-  check((has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::OceanMidFar) ? 1 : 0) ==
-            (has_behavior(jak2::BucketId::OCEAN_NEAR, Behavior::OceanNear) ? 1 : 0),
-        "the table cannot represent a partial OCEAN promotion");
-  check(has_behavior(jak2::BucketId::GMERC_L5_TFRAG, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::DeferredSkip) &&
+  check(has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::DeferredSkip) &&
+             has_behavior(jak2::BucketId::OCEAN_NEAR, Behavior::DeferredSkip) &&
+             has_behavior(jak2::BucketId::GMERC_L5_TFRAG, Behavior::DeferredSkip) &&
+             has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_PRIS2, Behavior::DeferredSkip),
-        "representative unported Generic2-backed families remain deferred");
+        "the paired OCEAN and representative unported Generic2-backed families remain deferred");
   check(has_behavior(jak2::BucketId::TEX_LCOM_SKY_PRE, Behavior::HostTextureUpload),
         "TEX_LCOM_SKY_PRE is the explicit host texture-upload bucket");
   check(has_behavior(jak2::BucketId::TEX_LCOM_TFRAG, Behavior::HostTextureUpload),
@@ -300,11 +294,11 @@ int main() {
         "representative unbound buckets are strict-empty");
 
   const auto strict_id = static_cast<std::size_t>(jak2::BucketId::TFRAG_S_L0_TFRAG);
-  const auto ocean_id = static_cast<std::size_t>(jak2::BucketId::OCEAN_MID_FAR);
+  const auto deferred_id = static_cast<std::size_t>(jak2::BucketId::OCEAN_MID_FAR);
   check(!metal_renderer::jak2_metal_bucket_allows_content(strict_id),
         "strict-empty policy does not allow content");
-  check(metal_renderer::jak2_metal_bucket_allows_content(ocean_id),
-        "implemented ocean policy allows its source grammar");
+  check(metal_renderer::jak2_metal_bucket_allows_content(deferred_id),
+        "deferred policy allows content for later source-shaped proof");
   check(metal_renderer::jak2_metal_bucket_allows_content(
             static_cast<std::size_t>(jak2::BucketId::TFRAG_L0_TFRAG)),
         "implemented normal TFRAG policy allows content");

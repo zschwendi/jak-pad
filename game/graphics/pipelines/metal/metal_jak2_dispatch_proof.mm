@@ -97,7 +97,7 @@ int main() {
     check(stats.ocean_command_buffers_committed == 0 &&
               stats.ocean_command_buffers_completed == 0 &&
               stats.ocean_command_buffer_errors == 0,
-          "empty promoted OCEAN buckets report no hidden private command buffers");
+          "deferred OCEAN buckets report no hidden private command buffers");
     check(stats.drawables_acquired == 0 && stats.drawable_misses == 0,
           "nil-layer dispatch performs no drawable acquisition attempt");
     check(stats.submissions == 0 && stats.presentations_completed == 0 &&

@@ -257,7 +257,8 @@ std::vector<u8> make_texture_vertices(std::size_t qwords, std::size_t qword_base
 
 void append_ocean_texture(std::vector<u8>* chain,
                           u32 source_tbp,
-                          bool valid_vu_buffer_setup = true) {
+                          bool valid_vu_buffer_setup = true,
+                          bool short_initial_upload = false) {
   append_transfer(chain, make_display_setup(128, 128, 0x40).data);
   append_transfer(chain, make_ocean_adgif(source_tbp).data);
   append_vif_transfer(chain, std::vector<u8>(64), 0, vif_direct(4));
@@ -265,7 +266,8 @@ void append_ocean_texture(std::vector<u8>* chain,
                       vif(VifCode::Kind::OFFSET, valid_vu_buffer_setup ? 0xc0 : 0xbf));
   append_vif_transfer(chain, std::vector<u8>(112), vif(VifCode::Kind::STCYCL, 0x404),
                       vif(VifCode::Kind::UNPACK_V4_32, 985, 7));
-  append_vif_transfer(chain, make_texture_vertices(192), vif(VifCode::Kind::STCYCL, 0x404),
+  append_vif_transfer(chain, make_texture_vertices(short_initial_upload ? 1 : 192),
+                      vif(VifCode::Kind::STCYCL, 0x404),
                       vif(VifCode::Kind::UNPACK_V4_32, 0x8000, 192));
   append_vif_transfer(chain, {}, vif(VifCode::Kind::MSCALF, 0),
                       vif(VifCode::Kind::STMOD, 0));
@@ -685,7 +687,9 @@ int main() {
                 stats.setup_64_count == 2,
             "found the sky clear and exactly two 64x64 setups");
       check(stats.direct_draw_calls == 1 && stats.haze_draw_calls == 1 &&
-                stats.radial_draw_calls == 1,
+                stats.radial_draw_calls == 1 && stats.command_buffers_committed == 1 &&
+                stats.command_buffers_completed == 1 && stats.command_buffer_errors == 0 &&
+                stats.last_command_buffer_status == MTLCommandBufferStatusCompleted,
             "encoded selectable Direct, additive haze, and radial remap once each");
       check(stats.direct_batch.valid && stats.direct_batch.textured &&
                 stats.direct_batch.tex0_tbp == kSourceTbp &&
@@ -733,10 +737,28 @@ int main() {
 
       const auto& bucket_table = metal_renderer::jak2_metal_bucket_table();
       check(bucket_table[static_cast<std::size_t>(jak2::BucketId::OCEAN_MID_FAR)].behavior ==
-                    metal_renderer::Jak2MetalBucketBehavior::OceanMidFar &&
+                    metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
                 bucket_table[static_cast<std::size_t>(jak2::BucketId::OCEAN_NEAR)].behavior ==
-                    metal_renderer::Jak2MetalBucketBehavior::OceanNear,
-            "promoted both source-coupled Jak II OCEAN buckets together");
+                    metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
+            "kept both source-coupled Jak II OCEAN buckets deferred together pending source-shaped mesh draws");
+
+      const u64 envmap_slot_before_failure =
+          texture_pool.lookup(MetalOceanEnvmap::kVramSlot).value_or(0);
+      envmap.force_command_buffer_failure_for_testing(true);
+      DmaFollower failed_envmap_dma(fixture.chain.data(), 0, fixture.chain.size());
+      state.next_bucket = fixture.end_offset;
+      stream.reset();
+      check(!envmap.handle_ocean_envmap_jak2(failed_envmap_dma, &state, ctx) &&
+                envmap.stats().transfers_consumed == 6 &&
+                envmap.stats().command_buffers_committed == 0 &&
+                envmap.stats().command_buffers_completed == 0 &&
+                envmap.stats().command_buffer_errors == 1 &&
+                envmap.stats().last_command_buffer_status == MTLCommandBufferStatusError &&
+                !envmap.stats().published &&
+                texture_pool.lookup(MetalOceanEnvmap::kVramSlot).value_or(0) ==
+                    envmap_slot_before_failure,
+            "tracked a deterministic envmap private-command failure without republishing VRAM 0xf80");
+      envmap.force_command_buffer_failure_for_testing(false);
 
       std::vector<u8> malformed_prefix;
       append_transfer(&malformed_prefix, make_display_setup(64, 64, 0x58).data);
@@ -933,10 +955,24 @@ int main() {
                 near_renderer.phase_order() == 0 &&
                 near_renderer.texture_stats().transfers_consumed == 4 &&
                 !near_renderer.texture_stats().vu_buffer_setup_valid &&
+                near_renderer.texture_stats().grammar_errors == 1 &&
                 near_renderer.texture_stats().command_buffers_committed == 0 &&
                 near_renderer.texture_stats().published_vram_slot == 0 &&
                 near_renderer.jak2_calls() == 0,
             "rejected malformed Jak II ocean BASE/OFFSET grammar before GPU work or publication");
+
+      MetalOceanTexture malformed_texture(false, device, queue);
+      malformed_texture.init_textures(texture_pool, GameVersion::Jak2);
+      std::vector<u8> short_upload_chain;
+      append_ocean_texture(&short_upload_chain, MetalOceanEnvmap::kVramSlot, true, true);
+      append_vif_transfer(&short_upload_chain, {}, 0, 0, DmaTag::Kind::END);
+      DmaFollower short_upload_dma(short_upload_chain.data(), 0, short_upload_chain.size());
+      check(!malformed_texture.handle_ocean_texture_jak2(short_upload_dma, &state, ctx) &&
+                malformed_texture.stats().transfers_consumed == 6 &&
+                malformed_texture.stats().grammar_errors == 1 &&
+                malformed_texture.stats().command_buffers_committed == 0 &&
+                malformed_texture.stats().published_vram_slot == 0,
+            "rejected a one-qword payload before the fixed 192-qword ocean upload copy");
 
       MetalOceanTexture failed_texture(false, device, queue);
       failed_texture.init_textures(texture_pool, GameVersion::Jak2);
@@ -982,7 +1018,7 @@ int main() {
       std::printf("FAIL: %d Jak II ocean envmap proof check(s) failed\n", failures);
       return 1;
     }
-    std::puts("PASS: complete public Jak II Metal ocean grammar and paired buckets");
+    std::puts("PASS: experimental Jak II Metal ocean envmap, texture, and bounded mesh parser proof");
     return 0;
   }
 }

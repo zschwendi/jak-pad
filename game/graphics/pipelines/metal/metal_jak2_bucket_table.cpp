@@ -86,19 +86,12 @@ constexpr Table make_table() {
   const auto blit_display = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::BlitDisplay;
   };
-  const auto ocean_mid_far = [&table](BucketId id) {
-    table[index(id)].behavior = Jak2MetalBucketBehavior::OceanMidFar;
-  };
-  const auto ocean_near = [&table](BucketId id) {
-    table[index(id)].behavior = Jak2MetalBucketBehavior::OceanNear;
-  };
-
   // Mirror every renderer explicitly installed by OpenGLRenderer::init_bucket_renderers_jak2.
   visibility(BucketId::BUCKET_2);
   blit_display(BucketId::BUCKET_3);
   host_texture_upload(BucketId::TEX_LCOM_SKY_PRE);
   direct(BucketId::SKY_DRAW);
-  ocean_mid_far(BucketId::OCEAN_MID_FAR);
+  defer(BucketId::OCEAN_MID_FAR);
 
   for (int level = 0; level < jak2::LEVEL_MAX; level++) {
     host_texture_upload(level_bucket(BucketId::TEX_L0_TFRAG, BucketId::TEX_L1_TFRAG, level));
@@ -149,7 +142,7 @@ constexpr Table make_table() {
   defer(BucketId::TEX_LCOM_WATER);
   merc_water(BucketId::MERC_LCOM_WATER);
   defer(BucketId::TEX_LCOM_SKY_POST);
-  ocean_near(BucketId::OCEAN_NEAR);
+  defer(BucketId::OCEAN_NEAR);
   host_texture_upload(BucketId::TEX_ALL_SPRITE);
   sprite(BucketId::PARTICLES);
   defer(BucketId::SHADOW2);
@@ -197,7 +190,7 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 71);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 73);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 27);
@@ -219,8 +212,8 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::BlitDisplay) == 1)
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercAlpha) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercWater) == 7);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Generic2) == 12);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanMidFar) == 1);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanNear) == 1);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanMidFar) == 0);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanNear) == 0);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);
 
 }  // namespace

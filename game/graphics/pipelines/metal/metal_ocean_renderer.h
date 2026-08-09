@@ -22,6 +22,9 @@
  * still recording. The frame's command buffer is committed later, so the
  * generated texture is always complete before anything samples it - the same
  * ordering the immediate-mode GL renderer gets for free.
+ *
+ * Jak II status: experimental. The paired OCEAN buckets remain DeferredSkip in
+ * the public host policy until source-shaped mid and near mesh draws are proven.
  */
 
 #include <string>
@@ -53,6 +56,9 @@ class MetalOceanEnvmap {
   bool init_textures(TexturePool& pool, GameVersion version);
   void detach_pool();
   void reset_stats() { m_stats = {}; }
+  void force_command_buffer_failure_for_testing(bool enabled) {
+    m_force_command_buffer_failure_for_testing = enabled;
+  }
   bool handle_ocean_envmap_jak2(DmaFollower& dma,
                                 MetalSharedRenderState* render_state,
                                 MetalFrameContext& ctx);
@@ -73,6 +79,10 @@ class MetalOceanEnvmap {
     bool scissor_restored = false;
     bool stopped_before_ocean_texture = false;
     u32 stop_offset = 0;
+    int command_buffers_committed = 0;
+    int command_buffers_completed = 0;
+    int command_buffer_errors = 0;
+    int last_command_buffer_status = 0;
   };
 
   const Stats& stats() const { return m_stats; }
@@ -97,6 +107,7 @@ class MetalOceanEnvmap {
   GpuTexture* m_pool_texture = nullptr;
   PcTextureId m_texture_id;
   MetalDirectRenderer m_direct;
+  bool m_force_command_buffer_failure_for_testing = false;
   Stats m_stats;
 };
 
@@ -136,6 +147,7 @@ class MetalOceanTexture : public OceanTextureVu {
     u64 source_handle = 0;
     u32 published_vram_slot = 0;
     bool vu_buffer_setup_valid = false;
+    int grammar_errors = 0;
     int command_buffers_committed = 0;
     int command_buffers_completed = 0;
     int command_buffer_errors = 0;
