@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +18,7 @@ constexpr std::size_t live_basic_offset(std::size_t asserted_offset) {
 
 constexpr std::size_t kProgressSize = 0x164;
 constexpr std::size_t kProgressGlobalStateSize = 0xe8;
+constexpr std::size_t kMenuOptionListSize = 0x14;
 constexpr std::size_t kStateSize = 0x24;
 
 constexpr std::size_t kProcessState = live_basic_offset(64);
@@ -90,6 +92,10 @@ struct Inputs {
   uint32_t progress_pointer = 0;
   uint32_t progress_state = 0;
   uint32_t title_pc_options = 0;
+  uint32_t save_options_title = 0;
+  uint32_t insufficient_space_options = 0;
+  uint32_t create_game_options = 0;
+  uint32_t loading_options = 0;
 
   TypeIdentity progress_type;
   TypeIdentity progress_global_state_type;
@@ -100,6 +106,11 @@ struct Inputs {
   uint32_t title_symbol = 0;
   uint32_t none_symbol = 0;
   uint32_t idle_symbol = 0;
+  uint32_t select_save_title_symbol = 0;
+  uint32_t no_memory_card_symbol = 0;
+  uint32_t create_game_symbol = 0;
+  uint32_t creating_symbol = 0;
+  uint32_t saving_symbol = 0;
   uint32_t true_object = 0;
 };
 
@@ -113,6 +124,31 @@ struct Snapshot {
   int32_t starting_screen = -1;
   bool can_exit_with_start = false;
   bool can_go_back = false;
+};
+
+enum class SemanticPhase : int32_t {
+  unavailable = 0,
+  select_save_title = 1,
+  no_memory_card = 2,
+  create_game = 3,
+  creating = 4,
+  saving = 5,
+};
+
+enum SemanticAction : uint32_t {
+  action_none = 0,
+  action_up = 1u << 0,
+  action_down = 1u << 1,
+  action_left = 1u << 2,
+  action_right = 1u << 3,
+  action_confirm = 1u << 4,
+};
+
+struct SemanticSnapshot {
+  bool available = false;
+  SemanticPhase phase = SemanticPhase::unavailable;
+  int32_t option_index = -1;
+  uint32_t action_mask = action_none;
 };
 
 enum class Rejection : int32_t {
@@ -173,10 +209,27 @@ inline bool valid_basic_object(const MemoryView& memory,
          memory.span_fits(object - BASIC_OFFSET, allocated_size);
 }
 
-inline Snapshot read(const MemoryView& memory,
-                     const Inputs& inputs,
-                     Diagnostics* diagnostics = nullptr) {
-  Snapshot out;
+struct StableFields {
+  uint32_t progress = 0;
+  uint32_t process_state = 0;
+  uint32_t process_state_name = 0;
+  uint32_t process_next_state = 0;
+  uint32_t current_options = 0;
+  uint32_t current = 0;
+  uint32_t next = 0;
+  uint32_t starting_state = 0;
+  int32_t option_index = -1;
+  uint32_t selected_option = 0;
+  float menu_transition = 0.f;
+};
+
+inline bool read_stable_fields(const MemoryView& memory,
+                               const Inputs& inputs,
+                               StableFields* fields,
+                               Diagnostics* diagnostics) {
+  if (!fields) {
+    return false;
+  }
   Diagnostics local_diagnostics;
   Diagnostics& detail = diagnostics ? *diagnostics : local_diagnostics;
   detail = {};
@@ -186,81 +239,184 @@ inline Snapshot read(const MemoryView& memory,
       inputs.progress_symbol == inputs.title_symbol || inputs.title_symbol == inputs.none_symbol ||
       inputs.none_symbol == inputs.idle_symbol || inputs.master_mode != inputs.progress_symbol) {
     detail.rejection = Rejection::invalid_inputs;
-    return out;
+    return false;
   }
 
-  if (!memory.read(inputs.progress_pointer, 0, &detail.progress) ||
-      !valid_basic_object(memory, detail.progress, inputs.progress_type) ||
-      !valid_basic_object(memory, inputs.progress_state, inputs.progress_global_state_type) ||
-      !valid_basic_object(memory, inputs.title_pc_options, inputs.menu_option_list_type)) {
+  if (!memory.read(inputs.progress_pointer, 0, &fields->progress) ||
+      !valid_basic_object(memory, fields->progress, inputs.progress_type) ||
+      !valid_basic_object(memory, inputs.progress_state, inputs.progress_global_state_type)) {
     detail.rejection = Rejection::invalid_objects;
-    return out;
+    return false;
   }
 
-  if (!memory.read(detail.progress, layout::kProcessState, &detail.process_state) ||
-      !memory.read(detail.progress, layout::kProcessNextState, &detail.process_next_state) ||
-      !memory.read(detail.progress, layout::kProgressCurrentOptions, &detail.current_options) ||
-      !memory.read(detail.progress, layout::kProgressMenuTransition, &detail.menu_transition) ||
-      !memory.read(detail.progress, layout::kProgressOptionIndex, &detail.option_index) ||
-      !memory.read(detail.progress, layout::kProgressSelectedOption, &detail.selected_option) ||
-      !memory.read(detail.progress, layout::kProgressCurrent, &detail.current) ||
-      !memory.read(detail.progress, layout::kProgressNext, &detail.next) ||
-      !memory.read(inputs.progress_state, layout::kProgressStartingState, &detail.starting_state) ||
-      !valid_basic_object(memory, detail.process_state, inputs.state_type)) {
+  if (!memory.read(fields->progress, layout::kProcessState, &fields->process_state) ||
+      !memory.read(fields->progress, layout::kProcessNextState, &fields->process_next_state) ||
+      !memory.read(fields->progress, layout::kProgressCurrentOptions,
+                   &fields->current_options) ||
+      !memory.read(fields->progress, layout::kProgressMenuTransition,
+                   &fields->menu_transition) ||
+      !memory.read(fields->progress, layout::kProgressOptionIndex, &fields->option_index) ||
+      !memory.read(fields->progress, layout::kProgressSelectedOption,
+                   &fields->selected_option) ||
+      !memory.read(fields->progress, layout::kProgressCurrent, &fields->current) ||
+      !memory.read(fields->progress, layout::kProgressNext, &fields->next) ||
+      !memory.read(inputs.progress_state, layout::kProgressStartingState,
+                   &fields->starting_state) ||
+      !valid_basic_object(memory, fields->process_state, inputs.state_type)) {
     detail.rejection = Rejection::unreadable_fields;
-    return out;
+    return false;
   }
 
-  if (!memory.read(detail.process_state, layout::kStateName, &detail.process_state_name) ||
-      detail.process_state_name != inputs.idle_symbol) {
-    detail.rejection = Rejection::wrong_process_state;
-    return out;
+  detail.progress = fields->progress;
+  detail.process_state = fields->process_state;
+  detail.process_next_state = fields->process_next_state;
+  detail.current_options = fields->current_options;
+  detail.current = fields->current;
+  detail.next = fields->next;
+  detail.starting_state = fields->starting_state;
+  detail.option_index = fields->option_index;
+  detail.selected_option = fields->selected_option;
+  detail.menu_transition = fields->menu_transition;
+
+  if (!valid_basic_object(memory, fields->current_options, inputs.menu_option_list_type)) {
+    detail.rejection = Rejection::invalid_objects;
+    return false;
   }
+  if (!memory.read(fields->process_state, layout::kStateName, &fields->process_state_name) ||
+      fields->process_state_name != inputs.idle_symbol) {
+    detail.process_state_name = fields->process_state_name;
+    detail.rejection = Rejection::wrong_process_state;
+    return false;
+  }
+  detail.process_state_name = fields->process_state_name;
   // enter-state leaves next-state pointing at the state it just installed. A different
   // pointer means another transition has been scheduled but has not entered yet.
-  if (detail.process_next_state != detail.process_state) {
+  if (fields->process_next_state != fields->process_state) {
     detail.rejection = Rejection::scheduled_state;
+    return false;
+  }
+  if (fields->selected_option != memory.false_object &&
+      fields->selected_option != inputs.true_object) {
+    detail.rejection = Rejection::invalid_selected_option;
+    return false;
+  }
+  if (!std::isfinite(fields->menu_transition)) {
+    detail.rejection = Rejection::invalid_transition;
+    return false;
+  }
+  return true;
+}
+
+inline Snapshot read(const MemoryView& memory,
+                     const Inputs& inputs,
+                     Diagnostics* diagnostics = nullptr) {
+  Snapshot out;
+  Diagnostics local_diagnostics;
+  Diagnostics& detail = diagnostics ? *diagnostics : local_diagnostics;
+  StableFields fields;
+  if (!read_stable_fields(memory, inputs, &fields, &detail)) {
     return out;
   }
-  if (detail.current_options != inputs.title_pc_options) {
+  if (fields.current_options != inputs.title_pc_options) {
     detail.rejection = Rejection::wrong_options;
     return out;
   }
-  if (detail.current != inputs.title_symbol) {
+  if (fields.current != inputs.title_symbol) {
     detail.rejection = Rejection::wrong_current;
     return out;
   }
-  if (detail.next != inputs.none_symbol) {
+  if (fields.next != inputs.none_symbol) {
     detail.rejection = Rejection::wrong_next;
     return out;
   }
-  if (detail.starting_state != inputs.title_symbol) {
+  if (fields.starting_state != inputs.title_symbol) {
     detail.rejection = Rejection::wrong_starting_state;
     return out;
   }
-  if (detail.option_index < kTitlePCRawOptionMin ||
-      detail.option_index > kTitlePCRawOptionMax) {
+  if (fields.option_index < kTitlePCRawOptionMin ||
+      fields.option_index > kTitlePCRawOptionMax) {
     detail.rejection = Rejection::invalid_option;
     return out;
   }
-  if (detail.selected_option != memory.false_object &&
-      detail.selected_option != inputs.true_object) {
-    detail.rejection = Rejection::invalid_selected_option;
-    return out;
-  }
-  if (!std::isfinite(detail.menu_transition) || detail.menu_transition < 0.f ||
-      detail.menu_transition > 1.f) {
+  if (fields.menu_transition < 0.f || fields.menu_transition > 1.f) {
     detail.rejection = Rejection::invalid_transition;
     return out;
   }
 
   out.available = true;
   out.screen = 27;
-  out.option_index = detail.option_index;
-  out.selected_option = detail.selected_option == inputs.true_object;
-  out.in_transition = detail.menu_transition != 0.f;
+  out.option_index = fields.option_index;
+  out.selected_option = fields.selected_option == inputs.true_object;
+  out.in_transition = fields.menu_transition != 0.f;
   out.navigation_available = !out.in_transition;
   out.starting_screen = 27;
+  return out;
+}
+
+template <std::size_t Size>
+inline bool all_nonzero_unique(const std::array<uint32_t, Size>& values) {
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (!values[i]) {
+      return false;
+    }
+    for (std::size_t j = i + 1; j < values.size(); ++j) {
+      if (values[i] == values[j]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& inputs) {
+  SemanticSnapshot out;
+  const std::array state_symbols = {
+      inputs.progress_symbol, inputs.title_symbol, inputs.none_symbol, inputs.idle_symbol,
+      inputs.select_save_title_symbol, inputs.no_memory_card_symbol,
+      inputs.create_game_symbol, inputs.creating_symbol, inputs.saving_symbol,
+  };
+  const std::array option_lists = {
+      inputs.title_pc_options, inputs.save_options_title, inputs.insufficient_space_options,
+      inputs.create_game_options, inputs.loading_options,
+  };
+  if (!all_nonzero_unique(state_symbols) || !all_nonzero_unique(option_lists)) {
+    return out;
+  }
+
+  StableFields fields;
+  if (!read_stable_fields(memory, inputs, &fields, nullptr) ||
+      fields.next != inputs.none_symbol || fields.starting_state != inputs.title_symbol ||
+      fields.selected_option != memory.false_object || fields.menu_transition != 0.f) {
+    return out;
+  }
+
+  if (fields.current == inputs.select_save_title_symbol &&
+      fields.current_options == inputs.save_options_title &&
+      fields.option_index >= 0 && fields.option_index <= 4) {
+    out.phase = SemanticPhase::select_save_title;
+    out.action_mask = action_up | action_down | action_confirm;
+  } else if (fields.current == inputs.no_memory_card_symbol &&
+             fields.current_options == inputs.insufficient_space_options &&
+             fields.option_index == 0) {
+    out.phase = SemanticPhase::no_memory_card;
+    out.action_mask = action_confirm;
+  } else if (fields.current == inputs.create_game_symbol &&
+             fields.current_options == inputs.create_game_options &&
+             fields.option_index == 0) {
+    out.phase = SemanticPhase::create_game;
+    out.action_mask = action_left | action_right | action_confirm;
+  } else if (fields.current == inputs.creating_symbol &&
+             fields.current_options == inputs.loading_options && fields.option_index == 0) {
+    out.phase = SemanticPhase::creating;
+  } else if (fields.current == inputs.saving_symbol &&
+             fields.current_options == inputs.loading_options && fields.option_index == 0) {
+    out.phase = SemanticPhase::saving;
+  } else {
+    return out;
+  }
+
+  out.available = true;
+  out.option_index = fields.option_index;
   return out;
 }
 

@@ -63,6 +63,32 @@ typedef struct goal_jak2_progress_menu_snapshot {
   int32_t can_go_back;
 } goal_jak2_progress_menu_snapshot;
 
+typedef enum goal_jak2_progress_menu_semantic_phase {
+  GOAL_JAK2_PROGRESS_MENU_PHASE_UNAVAILABLE = 0,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_SELECT_SAVE_TITLE = 1,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_NO_MEMORY_CARD = 2,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_CREATE_GAME = 3,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_CREATING = 4,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_SAVING = 5,
+} goal_jak2_progress_menu_semantic_phase;
+
+typedef enum goal_jak2_progress_menu_semantic_action {
+  GOAL_JAK2_PROGRESS_MENU_ACTION_NONE = 0,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_UP = 1u << 0,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_DOWN = 1u << 1,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_LEFT = 1u << 2,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_RIGHT = 1u << 3,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_CONFIRM = 1u << 4,
+} goal_jak2_progress_menu_semantic_action;
+
+/*! Fixed-width additive ABI for source-proven Jak II menu meanings, independent of Jak 1 IDs. */
+typedef struct goal_jak2_progress_menu_semantic_snapshot {
+  int32_t available;
+  int32_t phase;
+  int32_t option_index;
+  uint32_t action_mask;
+} goal_jak2_progress_menu_semantic_snapshot;
+
 /*! Raw, copied values explaining why a live progress snapshot failed closed. */
 typedef struct goal_jak2_progress_menu_diagnostics {
   int32_t rejection;
@@ -249,6 +275,10 @@ goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics
  */
 goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
     goal_jak2_progress_menu_snapshot* out);
+
+/* Copy only stable title-origin save-flow phases and their exact supported input actions. */
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_semantic_snapshot(
+    goal_jak2_progress_menu_semantic_snapshot* out);
 
 /*! Copy bounded raw fields used by the fail-closed progress snapshot reader. */
 goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_diagnostics(

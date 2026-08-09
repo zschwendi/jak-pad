@@ -18,6 +18,11 @@ constexpr uint32_t kStateSymbol = 0x2c;
 constexpr uint32_t kTitleSymbol = 0x30;
 constexpr uint32_t kNoneSymbol = 0x34;
 constexpr uint32_t kIdleSymbol = 0x38;
+constexpr uint32_t kSelectSaveTitleSymbol = 0x3c;
+constexpr uint32_t kNoMemoryCardSymbol = 0x40;
+constexpr uint32_t kCreateGameSymbol = 0x44;
+constexpr uint32_t kCreatingSymbol = 0x48;
+constexpr uint32_t kSavingSymbol = 0x4c;
 constexpr uint32_t kProgressType = 0x200;
 constexpr uint32_t kProgressGlobalStateType = 0x240;
 constexpr uint32_t kMenuOptionListType = 0x280;
@@ -27,7 +32,11 @@ constexpr uint32_t kProgress = 0x804;
 constexpr uint32_t kProgressState = 0x1004;
 constexpr uint32_t kTitlePCOptions = 0x1204;
 constexpr uint32_t kConsoleTitleOptions = 0x1304;
-constexpr uint32_t kIdleState = 0x1404;
+constexpr uint32_t kSaveOptionsTitle = 0x1404;
+constexpr uint32_t kInsufficientSpaceOptions = 0x1504;
+constexpr uint32_t kCreateGameOptions = 0x1604;
+constexpr uint32_t kLoadingOptions = 0x1704;
+constexpr uint32_t kIdleState = 0x1804;
 
 int g_failures = 0;
 
@@ -44,7 +53,7 @@ void write(std::array<uint8_t, Size>& memory, uint32_t address, T value) {
 }
 
 struct Fixture {
-  std::array<uint8_t, 0x2000> bytes = {};
+  std::array<uint8_t, 0x3000> bytes = {};
   Inputs inputs = {};
 
   Fixture() {
@@ -52,23 +61,34 @@ struct Fixture {
     inputs.progress_pointer = kProgressPointer;
     inputs.progress_state = kProgressState;
     inputs.title_pc_options = kTitlePCOptions;
+    inputs.save_options_title = kSaveOptionsTitle;
+    inputs.insufficient_space_options = kInsufficientSpaceOptions;
+    inputs.create_game_options = kCreateGameOptions;
+    inputs.loading_options = kLoadingOptions;
     inputs.progress_type = {kProgressSymbol, kProgressType,
                             static_cast<uint16_t>(layout::kProgressSize)};
     inputs.progress_global_state_type = {
         kProgressGlobalStateSymbol, kProgressGlobalStateType,
         static_cast<uint16_t>(layout::kProgressGlobalStateSize)};
-    inputs.menu_option_list_type = {kMenuOptionListSymbol, kMenuOptionListType, 0};
+    inputs.menu_option_list_type = {
+        kMenuOptionListSymbol, kMenuOptionListType,
+        static_cast<uint16_t>(layout::kMenuOptionListSize)};
     inputs.state_type = {kStateSymbol, kStateType, static_cast<uint16_t>(layout::kStateSize)};
     inputs.progress_symbol = kProgressSymbol;
     inputs.title_symbol = kTitleSymbol;
     inputs.none_symbol = kNoneSymbol;
     inputs.idle_symbol = kIdleSymbol;
+    inputs.select_save_title_symbol = kSelectSaveTitleSymbol;
+    inputs.no_memory_card_symbol = kNoMemoryCardSymbol;
+    inputs.create_game_symbol = kCreateGameSymbol;
+    inputs.creating_symbol = kCreatingSymbol;
+    inputs.saving_symbol = kSavingSymbol;
     inputs.true_object = kTrue;
 
     write_type(kProgressType, kProgressSymbol, layout::kProgressSize);
     write_type(kProgressGlobalStateType, kProgressGlobalStateSymbol,
                layout::kProgressGlobalStateSize);
-    write_type(kMenuOptionListType, kMenuOptionListSymbol, 0x14);
+    write_type(kMenuOptionListType, kMenuOptionListSymbol, layout::kMenuOptionListSize);
     write_type(kStateType, kStateSymbol, layout::kStateSize);
 
     write(bytes, kProgressPointer, kProgress);
@@ -76,6 +96,10 @@ struct Fixture {
     write(bytes, kProgressState - BASIC_OFFSET, kProgressGlobalStateType);
     write(bytes, kTitlePCOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kConsoleTitleOptions - BASIC_OFFSET, kMenuOptionListType);
+    write(bytes, kSaveOptionsTitle - BASIC_OFFSET, kMenuOptionListType);
+    write(bytes, kInsufficientSpaceOptions - BASIC_OFFSET, kMenuOptionListType);
+    write(bytes, kCreateGameOptions - BASIC_OFFSET, kMenuOptionListType);
+    write(bytes, kLoadingOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kIdleState - BASIC_OFFSET, kStateType);
 
     write(bytes, kProgress + layout::kProcessState, kIdleState);
@@ -97,6 +121,16 @@ struct Fixture {
 
   Snapshot read_snapshot(Diagnostics* diagnostics = nullptr) const {
     return read({bytes.data(), bytes.size(), kFalse}, inputs, diagnostics);
+  }
+
+  SemanticSnapshot read_semantic_snapshot() const {
+    return read_semantic({bytes.data(), bytes.size(), kFalse}, inputs);
+  }
+
+  void set_semantic_state(uint32_t state, uint32_t options, int32_t option = 0) {
+    write(bytes, kProgress + layout::kProgressCurrent, state);
+    write(bytes, kProgress + layout::kProgressCurrentOptions, options);
+    write(bytes, kProgress + layout::kProgressOptionIndex, option);
   }
 };
 
@@ -220,6 +254,131 @@ void transition_and_option_bounds_are_explicit() {
          "a raw title option beyond the five-entry PC list is rejected");
 }
 
+void reads_source_proven_save_flow_semantics() {
+  Fixture fixture;
+  expect(!fixture.read_semantic_snapshot().available,
+         "the existing raw title snapshot remains outside the additive save-flow ABI");
+
+  for (int option = 0; option <= 4; ++option) {
+    fixture.set_semantic_state(kSelectSaveTitleSymbol, kSaveOptionsTitle, option);
+    const auto snapshot = fixture.read_semantic_snapshot();
+    expect(snapshot.available && snapshot.phase == SemanticPhase::select_save_title &&
+               snapshot.option_index == option &&
+               snapshot.action_mask == (action_up | action_down | action_confirm),
+           "all five title save rows expose only Up, Down, and Confirm");
+  }
+
+  fixture.set_semantic_state(kNoMemoryCardSymbol, kInsufficientSpaceOptions);
+  auto snapshot = fixture.read_semantic_snapshot();
+  expect(snapshot.available && snapshot.phase == SemanticPhase::no_memory_card &&
+             snapshot.option_index == 0 && snapshot.action_mask == action_confirm,
+         "title-origin no-memory-card exposes only Confirm");
+
+  fixture.set_semantic_state(kCreateGameSymbol, kCreateGameOptions);
+  snapshot = fixture.read_semantic_snapshot();
+  expect(snapshot.available && snapshot.phase == SemanticPhase::create_game &&
+             snapshot.option_index == 0 &&
+             snapshot.action_mask == (action_left | action_right | action_confirm),
+         "create-game exposes its source responder's Left, Right, and Confirm");
+
+  fixture.set_semantic_state(kCreatingSymbol, kLoadingOptions);
+  snapshot = fixture.read_semantic_snapshot();
+  expect(snapshot.available && snapshot.phase == SemanticPhase::creating &&
+             snapshot.option_index == 0 && snapshot.action_mask == action_none,
+         "creating is observable but exposes no touch action");
+
+  fixture.set_semantic_state(kSavingSymbol, kLoadingOptions);
+  snapshot = fixture.read_semantic_snapshot();
+  expect(snapshot.available && snapshot.phase == SemanticPhase::saving &&
+             snapshot.option_index == 0 && snapshot.action_mask == action_none,
+         "saving is observable but exposes no touch action");
+}
+
+void semantic_identity_and_stability_fail_closed() {
+  Fixture wrong_options;
+  wrong_options.set_semantic_state(kSelectSaveTitleSymbol, kCreateGameOptions);
+  expect(!wrong_options.read_semantic_snapshot().available,
+         "a proven state paired with another exact option list is rejected");
+
+  Fixture wrong_option_type;
+  wrong_option_type.set_semantic_state(kCreateGameSymbol, kCreateGameOptions);
+  write(wrong_option_type.bytes, kCreateGameOptions - BASIC_OFFSET, kStateType);
+  expect(!wrong_option_type.read_semantic_snapshot().available,
+         "a current option list with the wrong BASIC type tag is rejected");
+
+  Fixture wrong_option_type_size;
+  wrong_option_type_size.set_semantic_state(kCreateGameSymbol, kCreateGameOptions);
+  write<uint16_t>(wrong_option_type_size.bytes,
+                  kMenuOptionListType + layout::kTypeAllocatedSize,
+                  static_cast<uint16_t>(layout::kMenuOptionListSize - BASIC_OFFSET));
+  expect(!wrong_option_type_size.read_semantic_snapshot().available,
+         "a menu-option-list type with a different exact size is rejected");
+
+  Fixture wrong_origin;
+  wrong_origin.set_semantic_state(kNoMemoryCardSymbol, kInsufficientSpaceOptions);
+  write(wrong_origin.bytes, kProgressState + layout::kProgressStartingState,
+        kNoMemoryCardSymbol);
+  expect(!wrong_origin.read_semantic_snapshot().available,
+         "no-memory-card outside the exact title origin is rejected");
+
+  Fixture pending_menu_state;
+  pending_menu_state.set_semantic_state(kCreateGameSymbol, kCreateGameOptions);
+  write(pending_menu_state.bytes, kProgress + layout::kProgressNext, kCreatingSymbol);
+  expect(!pending_menu_state.read_semantic_snapshot().available,
+         "a non-none next menu state is rejected");
+
+  Fixture scheduled_process_state;
+  scheduled_process_state.set_semantic_state(kCreateGameSymbol, kCreateGameOptions);
+  write(scheduled_process_state.bytes, kProgress + layout::kProcessNextState, kProgressState);
+  expect(!scheduled_process_state.read_semantic_snapshot().available,
+         "a process next-state pointer different from its entered state is rejected");
+
+  Fixture wrong_process_state;
+  wrong_process_state.set_semantic_state(kCreateGameSymbol, kCreateGameOptions);
+  write(wrong_process_state.bytes, kIdleState + layout::kStateName, kCreatingSymbol);
+  expect(!wrong_process_state.read_semantic_snapshot().available,
+         "a progress process outside the entered idle state is rejected");
+
+  Fixture selected;
+  selected.set_semantic_state(kSelectSaveTitleSymbol, kSaveOptionsTitle);
+  write(selected.bytes, kProgress + layout::kProgressSelectedOption, kTrue);
+  expect(!selected.read_semantic_snapshot().available,
+         "a transient selected-option publication is not a stable semantic phase");
+
+  Fixture transitioning;
+  transitioning.set_semantic_state(kSelectSaveTitleSymbol, kSaveOptionsTitle);
+  write(transitioning.bytes, kProgress + layout::kProgressMenuTransition, 0.01f);
+  expect(!transitioning.read_semantic_snapshot().available,
+         "a finite nonzero menu transition is rejected");
+  write(transitioning.bytes, kProgress + layout::kProgressMenuTransition,
+        std::numeric_limits<float>::infinity());
+  expect(!transitioning.read_semantic_snapshot().available,
+         "a non-finite menu transition is rejected");
+
+  Fixture duplicate_symbol;
+  duplicate_symbol.set_semantic_state(kCreateGameSymbol, kCreateGameOptions);
+  duplicate_symbol.inputs.creating_symbol = kCreateGameSymbol;
+  expect(!duplicate_symbol.read_semantic_snapshot().available,
+         "colliding state symbols are rejected instead of guessed");
+}
+
+void semantic_option_bounds_are_exact() {
+  Fixture save_low;
+  save_low.set_semantic_state(kSelectSaveTitleSymbol, kSaveOptionsTitle, -1);
+  expect(!save_low.read_semantic_snapshot().available,
+         "a negative title-save option is rejected");
+
+  Fixture save_high;
+  save_high.set_semantic_state(kSelectSaveTitleSymbol, kSaveOptionsTitle, 5);
+  expect(!save_high.read_semantic_snapshot().available,
+         "a sixth title-save option is rejected");
+
+  Fixture singleton;
+  singleton.set_semantic_state(kNoMemoryCardSymbol, kInsufficientSpaceOptions, 1);
+  expect(!singleton.read_semantic_snapshot().available,
+         "a singleton semantic phase rejects option one");
+}
+
 }  // namespace
 
 int main() {
@@ -227,6 +386,9 @@ int main() {
   malformed_and_oob_memory_fail_closed();
   wrong_types_and_symbols_fail_closed();
   transition_and_option_bounds_are_explicit();
+  reads_source_proven_save_flow_semantics();
+  semantic_identity_and_stability_fail_closed();
+  semantic_option_bounds_are_exact();
   std::printf("\n%s (%d failures)\n",
               g_failures ? "JAK 2 PROGRESS MENU READER TEST FAILED"
                          : "JAK 2 PROGRESS MENU READER TEST PASSED",
