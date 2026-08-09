@@ -47,6 +47,7 @@ int main() {
   CHECK(defaults.max_output_bytes == 768ull * 1024 * 1024);
   CHECK(defaults.require_game_count);
   CHECK(!defaults.expected_distinct_fr3_files);
+  CHECK(!defaults.require_validated_file_identities);
 
   std::set<std::string> expected_outputs = {"GAME.fr3"};
   std::set<std::string> level_outputs;

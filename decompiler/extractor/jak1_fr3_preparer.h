@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "common/versions/jak1_iso_revisions.h"
 #include "common/custom_data/CheckedFileIdentity.h"
@@ -125,6 +126,16 @@ class Result {
   std::optional<T> m_value;
   std::optional<Error> m_error;
 };
+
+namespace internal {
+
+Result<std::vector<std::uint8_t>> read_validated_input_file(
+    const std::filesystem::path& extracted_iso_root,
+    const checked_file_identity::Identity& expected,
+    std::uintmax_t max_bytes,
+    const Options& options = {});
+
+}  // namespace internal
 
 Result<Summary> prepare(const std::filesystem::path& project_root,
                         const std::filesystem::path& extracted_iso_root,

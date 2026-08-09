@@ -5,6 +5,7 @@
  * Utility class to read a .STR file and extract the full file name.
  */
 
+#include <span>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@ namespace decompiler {
 class StrFileReader {
  public:
   explicit StrFileReader(const fs::path& file_path, GameVersion version);
+  explicit StrFileReader(std::span<const u8> data, GameVersion version);
   int chunk_count() const;
   const std::vector<u8>& get_chunk(int idx) const;
   std::string get_chunk_art_name(int idx) const;
@@ -25,8 +27,9 @@ class StrFileReader {
   std::string get_chunk_texture_name(int idx) const;
 
  private:
-  void init_jak1(const fs::path& file_path);
-  void init_jak2(const fs::path& file_path);
+  void init(std::span<const u8> data);
+  void init_jak1(std::span<const u8> data);
+  void init_jak2(std::span<const u8> data);
 
   GameVersion m_version;
   std::string get_art_group_file_info_string() const {

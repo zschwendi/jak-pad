@@ -178,14 +178,7 @@ ObjectFileDB::ObjectFileDB(const std::vector<fs::path>& _dgos,
   if (!str_tex_files.empty()) {
     lg::info("-Loading {} streaming texture files...", str_tex_files.size());
     for (auto& obj : str_tex_files) {
-      StrFileReader reader(obj, version());
-      // name from the file name
-      std::string base_name = obj_filename_to_name(obj.string());
-      for (int i = 0; i < reader.chunk_count(); i++) {
-        auto name = reader.get_chunk_texture_name(i);
-        add_obj_from_dgo(name, name, reader.get_chunk(i).data(), reader.get_chunk(i).size(),
-                         "TEXSPOOL", config, name);
-      }
+      add_streamed_texture_file(obj, config);
     }
   }
 
@@ -215,6 +208,12 @@ ObjectFileDB::ObjectFileDB(const std::vector<fs::path>& _dgos,
 
 void ObjectFileDB::add_plain_object_file(const fs::path& object_file, const Config& config) {
   auto data = file_util::read_binary_file(object_file);
+  add_plain_object_data(object_file, std::move(data), config);
+}
+
+void ObjectFileDB::add_plain_object_data(const fs::path& object_file,
+                                         std::vector<u8> data,
+                                         const Config& config) {
   auto name = obj_filename_to_name(object_file.string());
   if (auto it = config.object_patches.find(name); it != config.object_patches.end()) {
     lg::print("CRC for {} is: 0x{:X}\n", name, crc32(data.data(), data.size()));
@@ -259,6 +258,22 @@ void ObjectFileDB::add_plain_object_file(const fs::path& object_file, const Conf
     }
   }
   add_obj_from_dgo(name, name, data.data(), data.size(), "NO-XGO", config);
+}
+
+void ObjectFileDB::add_streamed_texture_data(std::span<const u8> data,
+                                             const Config& config) {
+  StrFileReader reader(data, version());
+  for (int i = 0; i < reader.chunk_count(); i++) {
+    const auto name = reader.get_chunk_texture_name(i);
+    add_obj_from_dgo(name, name, reader.get_chunk(i).data(), reader.get_chunk(i).size(),
+                     "TEXSPOOL", config, name);
+  }
+}
+
+void ObjectFileDB::add_streamed_texture_file(const fs::path& object_file,
+                                             const Config& config) {
+  const auto data = file_util::read_binary_file(object_file);
+  add_streamed_texture_data(data, config);
 }
 
 void ObjectFileDB::load_map_file(const std::string& map_data) {

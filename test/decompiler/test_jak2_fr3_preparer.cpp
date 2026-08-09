@@ -1,5 +1,6 @@
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <set>
 #include <stdexcept>
@@ -7,6 +8,9 @@
 #include <vector>
 
 #include "decompiler/extractor/jak2_fr3_preparer.h"
+
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
 
 namespace {
 
@@ -52,6 +56,7 @@ int main(int argc, char** argv) {
   CHECK(defaults.expected_distinct_fr3_files == jak2_fr3::kNtscV2ExpectedFr3Files);
   CHECK(defaults.max_validated_file_identities ==
         jak2_fr3::kNtscV2ExpectedExtractedFiles);
+  CHECK(!defaults.require_validated_file_identities);
   constexpr std::uintmax_t kRecordedTotalExpandedArchiveBytes = 596'611'024;
   CHECK(jak2_fr3::kNtscV2TotalExpandedArchiveBytes ==
         kRecordedTotalExpandedArchiveBytes);
@@ -121,6 +126,47 @@ int main(int argc, char** argv) {
   TemporaryDirectory temporary;
   const auto iso = temporary.root / "iso";
   fs::create_directory(iso);
+  fs::create_directories(iso / "TEXT");
+  fs::create_directories(iso / "STR");
+
+  const auto write_bytes = [](const fs::path& path, const std::vector<std::uint8_t>& bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    return output.good();
+  };
+  const std::vector<std::uint8_t> text_bytes{1, 2, 3, 4, 5, 6, 7, 8};
+  const auto text_path = iso / "TEXT/0COMMON.TXT";
+  CHECK(write_bytes(text_path, text_bytes));
+  checked_file_identity::Identity text_identity{
+      "TEXT/0COMMON.TXT", text_bytes.size(), XXH64(text_bytes.data(), text_bytes.size(), 0)};
+  auto checked_input = jak1_fr3::internal::read_validated_input_file(
+      iso, text_identity, text_bytes.size());
+  CHECK(checked_input);
+  auto mutated_text = text_bytes;
+  mutated_text.front() ^= 1;
+  CHECK(write_bytes(text_path, mutated_text));
+  checked_input = jak1_fr3::internal::read_validated_input_file(
+      iso, text_identity, text_bytes.size());
+  CHECK(!checked_input);
+  CHECK(checked_input.error().code == jak1_fr3::ErrorCode::archive_failed);
+
+  const std::vector<std::uint8_t> streamed_bytes{9, 10, 11, 12, 13, 14, 15, 16};
+  const auto streamed_path = iso / "STR/PRMINIMA.STR";
+  CHECK(write_bytes(streamed_path, streamed_bytes));
+  checked_file_identity::Identity streamed_identity{
+      "STR/PRMINIMA.STR", streamed_bytes.size(),
+      XXH64(streamed_bytes.data(), streamed_bytes.size(), 0)};
+  checked_input = jak1_fr3::internal::read_validated_input_file(
+      iso, streamed_identity, streamed_bytes.size());
+  CHECK(checked_input);
+  auto mutated_streamed = streamed_bytes;
+  mutated_streamed.back() ^= 1;
+  CHECK(write_bytes(streamed_path, mutated_streamed));
+  checked_input = jak1_fr3::internal::read_validated_input_file(
+      iso, streamed_identity, streamed_bytes.size());
+  CHECK(!checked_input);
+  CHECK(checked_input.error().code == jak1_fr3::ErrorCode::archive_failed);
 
   jak2_fr3::Options broken_progress_options;
   broken_progress_options.report_progress = [](const jak2_fr3::Progress&) {

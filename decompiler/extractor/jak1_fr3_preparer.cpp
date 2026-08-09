@@ -3,16 +3,21 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <fcntl.h>
 #include <fstream>
 #include <limits>
 #include <map>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+#include <unistd.h>
 
 #include "common/log/log.h"
 #include "common/util/FileUtil.h"
+#include "common/util/PosixFile.h"
 
 #include "decompiler/Disasm/OpcodeInfo.h"
 #include "decompiler/ObjectFile/ObjectFileDB.h"
@@ -195,6 +200,24 @@ std::string identity_collision_key(std::string_view path) {
   return key;
 }
 
+bool safe_input_relative_path(std::string_view value) {
+  if (value.empty() || value.size() > 1024) {
+    return false;
+  }
+  const auto path = fs::path(value);
+  if (!path.is_relative() || path != path.lexically_normal()) {
+    return false;
+  }
+  return std::all_of(path.begin(), path.end(), [](const auto& component) {
+    const auto name = component.string();
+    return !name.empty() && name.size() <= 128 && name != "." && name != ".." &&
+           name.back() != '.' && name.back() != ' ' &&
+           std::all_of(name.begin(), name.end(), [](unsigned char byte) {
+             return byte >= 0x20 && byte <= 0x7e && byte != '/' && byte != '\\' && byte != ':';
+           });
+  });
+}
+
 std::set<std::string> fr3_files(const fs::path& root) {
   std::set<std::string> result;
   for (const auto& entry : fs::directory_iterator(root)) {
@@ -265,6 +288,85 @@ LevelOutputUpdate update_expected_fr3_outputs(std::set<std::string>* expected_ou
   *expected_outputs = std::move(next_expected);
   *level_outputs = std::move(next_levels);
   return added ? LevelOutputUpdate::added : LevelOutputUpdate::replaced;
+}
+
+Result<std::vector<std::uint8_t>> read_validated_input_file(
+    const fs::path& extracted_iso_root,
+    const checked_file_identity::Identity& expected,
+    std::uintmax_t max_bytes,
+    const Options& options) {
+  try {
+    if (max_bytes == 0 || !safe_input_relative_path(expected.relative_path) ||
+        expected.size == 0 || expected.size > max_bytes ||
+        expected.size > std::numeric_limits<std::size_t>::max()) {
+      return Result<std::vector<std::uint8_t>>::failure(make_error(
+          ErrorCode::invalid_argument, "A validated FR3 input identity is invalid or too large."));
+    }
+    auto directory = posix_file::open_directory(extracted_iso_root.c_str());
+    if (!directory) {
+      return Result<std::vector<std::uint8_t>>::failure(make_error(
+          ErrorCode::input_missing, "The extracted ISO root could not be opened directly."));
+    }
+    std::vector<std::string> components;
+    for (const auto& component : fs::path(expected.relative_path)) {
+      components.push_back(component.string());
+    }
+    for (std::size_t index = 0; index + 1 < components.size(); ++index) {
+      auto child = posix_file::open_directory_at(directory.get(), components[index]);
+      if (!child) {
+        return Result<std::vector<std::uint8_t>>::failure(make_error(
+            ErrorCode::archive_failed,
+            "A validated FR3 input path contains a missing or linked directory."));
+      }
+      directory = std::move(child);
+    }
+    auto input = posix_file::open_file_at(directory.get(), components.back(), O_RDONLY);
+    posix_file::Identity input_identity;
+    struct stat before {};
+    if (!input || !posix_file::descriptor_identity(input.get(), &input_identity, &before) ||
+        !S_ISREG(before.st_mode) || before.st_nlink != 1 || before.st_size < 0 ||
+        static_cast<std::uint64_t>(before.st_size) != expected.size) {
+      return Result<std::vector<std::uint8_t>>::failure(make_error(
+          ErrorCode::archive_failed,
+          "A required FR3 input does not match its validated direct-file identity."));
+    }
+
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(expected.size));
+    XXH64_state_t hash;
+    XXH64_reset(&hash, 0);
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+      if (const auto error = cancellation_error(options)) {
+        return Result<std::vector<std::uint8_t>>::failure(*error);
+      }
+      const auto chunk = std::min<std::size_t>(64 * 1024, bytes.size() - offset);
+      const auto count =
+          ::pread(input.get(), bytes.data() + offset, chunk, static_cast<off_t>(offset));
+      if (count < 0 && errno == EINTR) {
+        continue;
+      }
+      if (count != static_cast<ssize_t>(chunk)) {
+        return Result<std::vector<std::uint8_t>>::failure(make_error(
+            ErrorCode::archive_failed, "A validated FR3 input could not be read completely."));
+      }
+      XXH64_update(&hash, bytes.data() + offset, chunk);
+      offset += chunk;
+    }
+    struct stat after {};
+    if (XXH64_digest(&hash) != expected.xxh64 ||
+        !posix_file::descriptor_identity(input.get(), nullptr, &after) ||
+        !posix_file::same_identity(after, input_identity) || before.st_size != after.st_size ||
+        after.st_nlink != 1 ||
+        !posix_file::entry_identity(directory.get(), components.back(), input_identity)) {
+      return Result<std::vector<std::uint8_t>>::failure(make_error(
+          ErrorCode::archive_failed,
+          "A required FR3 input changed after its validated extraction."));
+    }
+    return Result<std::vector<std::uint8_t>>::success(std::move(bytes));
+  } catch (const std::bad_alloc&) {
+    return Result<std::vector<std::uint8_t>>::failure(make_error(
+        ErrorCode::extraction_failed, "Validated FR3 input loading ran out of memory."));
+  }
 }
 
 }  // namespace internal
@@ -356,10 +458,7 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
     std::map<std::string, const checked_file_identity::Identity*> extracted_identities;
     std::set<std::string> extracted_identity_keys;
     for (const auto& identity : options.validated_extracted_files) {
-      const auto relative = fs::path(identity.relative_path);
-      if (identity.relative_path.empty() || !relative.is_relative() ||
-          relative != relative.lexically_normal() || identity.relative_path.starts_with("../") ||
-          identity.relative_path.find('\\') != std::string::npos ||
+      if (!safe_input_relative_path(identity.relative_path) ||
           !extracted_identity_keys.insert(identity_collision_key(identity.relative_path)).second ||
           !extracted_identities.emplace(identity.relative_path, &identity).second) {
         return Result<Summary>::failure(make_error(
@@ -403,29 +502,53 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
           "The expected distinct FR3 count is incompatible with the tracked level list."));
     }
 
-    std::vector<ghc::filesystem::path> text_objects;
+    struct InputSpec {
+      fs::path path;
+      const checked_file_identity::Identity* identity = nullptr;
+    };
+
+    std::vector<InputSpec> text_objects;
     for (const auto& name : config.object_file_names) {
       const auto path = extracted_iso_root / name;
-      if (!fs::is_regular_file(path)) {
+      const auto relative_path = fs::path(name).lexically_normal().generic_string();
+      const auto identity = extracted_identities.find(relative_path);
+      if (identity == extracted_identities.end() &&
+          (options.require_validated_file_identities || !extracted_identities.empty())) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::archive_failed,
+            "A required text object has no validated extracted-file identity."));
+      }
+      if (identity == extracted_identities.end() && !fs::is_regular_file(path)) {
         return Result<Summary>::failure(make_error(
             ErrorCode::input_missing,
             "A required " + std::string(profile.display_name) + " text object is missing: " +
                 name));
       }
-      text_objects.emplace_back(path.string());
+      text_objects.push_back(
+          {path, identity == extracted_identities.end() ? nullptr : identity->second});
     }
 
     std::uintmax_t total_archive_bytes = 0;
-    std::vector<ghc::filesystem::path> streamed_texture_objects;
+    std::vector<InputSpec> streamed_texture_objects;
     for (const auto& name : config.str_texture_file_names) {
       const auto path = extracted_iso_root / name;
-      if (!fs::is_regular_file(path)) {
+      const auto relative_path = fs::path(name).lexically_normal().generic_string();
+      const auto identity = extracted_identities.find(relative_path);
+      if (identity == extracted_identities.end() &&
+          (options.require_validated_file_identities || !extracted_identities.empty())) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::archive_failed,
+            "A streamed texture has no validated extracted-file identity."));
+      }
+      if (identity == extracted_identities.end() && !fs::is_regular_file(path)) {
         return Result<Summary>::failure(make_error(
             ErrorCode::input_missing,
             "A required " + std::string(profile.display_name) +
                 " streamed texture archive is missing: " + name));
       }
-      const auto input_size = fs::file_size(path);
+      const auto input_size = identity == extracted_identities.end()
+                                  ? fs::file_size(path)
+                                  : identity->second->size;
       if (input_size > options.max_archive_bytes ||
           input_size > options.max_total_archive_bytes - total_archive_bytes) {
         return Result<Summary>::failure(make_error(
@@ -434,10 +557,13 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
                 " archives exceed their configured cap."));
       }
       total_archive_bytes += input_size;
-      streamed_texture_objects.emplace_back(path.string());
+      streamed_texture_objects.push_back(
+          {path, identity == extracted_identities.end() ? nullptr : identity->second});
     }
 
     const auto total_input_files = archive_paths.size() + streamed_texture_objects.size();
+    decompiler::ObjectFileDB database({}, ghc::filesystem::path(config.obj_file_name_map_file), {},
+                                      {}, {}, {}, config, true);
     for (std::size_t index = 0; index < streamed_texture_objects.size(); ++index) {
       if (const auto error = cancellation_error(options)) {
         return Result<Summary>::failure(*error);
@@ -445,14 +571,21 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
       if (const auto error = report(options, Phase::reading_archives,
                                     static_cast<std::uint32_t>(index),
                                     static_cast<std::uint32_t>(total_input_files),
-                                    fs::path(streamed_texture_objects[index].string())
-                                        .filename()
-                                        .string())) {
+                                    streamed_texture_objects[index].path.filename().string())) {
         return Result<Summary>::failure(*error);
       }
+      const auto& input = streamed_texture_objects[index];
+      if (input.identity) {
+        auto bytes = internal::read_validated_input_file(
+            extracted_iso_root, *input.identity, options.max_archive_bytes, options);
+        if (!bytes) {
+          return Result<Summary>::failure(bytes.error());
+        }
+        database.add_streamed_texture_data(bytes.value(), config);
+      } else {
+        database.add_streamed_texture_file(ghc::filesystem::path(input.path.string()), config);
+      }
     }
-    decompiler::ObjectFileDB database({}, ghc::filesystem::path(config.obj_file_name_map_file), {},
-                                      {}, streamed_texture_objects, {}, config, true);
     std::uintmax_t total_expanded_archive_bytes = 0;
     for (std::size_t index = 0; index < archive_paths.size(); ++index) {
       if (const auto error = cancellation_error(options)) {
@@ -532,8 +665,18 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
       total_expanded_archive_bytes += archive.value().expanded_size;
       database.add_checked_dgo(archive.value(), config);
     }
-    for (const auto& object_file : text_objects) {
-      database.add_plain_object_file(object_file, config);
+    for (const auto& input : text_objects) {
+      const auto object_file = ghc::filesystem::path(input.path.string());
+      if (input.identity) {
+        auto bytes = internal::read_validated_input_file(
+            extracted_iso_root, *input.identity, options.max_archive_bytes, options);
+        if (!bytes) {
+          return Result<Summary>::failure(bytes.error());
+        }
+        database.add_plain_object_data(object_file, bytes.take_value(), config);
+      } else {
+        database.add_plain_object_file(object_file, config);
+      }
     }
     if (const auto error = report(options, Phase::reading_archives,
                                   static_cast<std::uint32_t>(total_input_files),
