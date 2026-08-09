@@ -63,6 +63,25 @@ typedef struct goal_jak2_progress_menu_snapshot {
   int32_t can_go_back;
 } goal_jak2_progress_menu_snapshot;
 
+/*! Raw, copied values explaining why a live progress snapshot failed closed. */
+typedef struct goal_jak2_progress_menu_diagnostics {
+  int32_t rejection;
+  uint32_t progress;
+  uint32_t process_state;
+  uint32_t process_state_name;
+  uint32_t process_next_state;
+  uint32_t current_options;
+  uint32_t expected_options;
+  uint32_t current;
+  uint32_t expected_current;
+  uint32_t next;
+  uint32_t expected_next;
+  uint32_t starting_state;
+  int32_t option_index;
+  uint32_t selected_option;
+  float menu_transition;
+} goal_jak2_progress_menu_diagnostics;
+
 typedef struct goal_jak2_runtime_config {
   /*! The player's prepared Jak 2 directory, containing `iso/`. Required and copied at start. */
   const char* data_directory;
@@ -230,6 +249,10 @@ goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics
  */
 goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
     goal_jak2_progress_menu_snapshot* out);
+
+/*! Copy bounded raw fields used by the fail-closed progress snapshot reader. */
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_diagnostics(
+    goal_jak2_progress_menu_diagnostics* out);
 
 int goal_jak2_runtime_is_running(void);
 

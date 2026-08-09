@@ -95,8 +95,8 @@ struct Fixture {
     write<uint16_t>(bytes, type + layout::kTypeAllocatedSize, static_cast<uint16_t>(size));
   }
 
-  Snapshot read_snapshot() const {
-    return read({bytes.data(), bytes.size(), kFalse}, inputs);
+  Snapshot read_snapshot(Diagnostics* diagnostics = nullptr) const {
+    return read({bytes.data(), bytes.size(), kFalse}, inputs, diagnostics);
   }
 };
 
@@ -173,7 +173,10 @@ void wrong_types_and_symbols_fail_closed() {
 
   Fixture wrong_options;
   write(wrong_options.bytes, kProgress + layout::kProgressCurrentOptions, kConsoleTitleOptions);
-  expect(!wrong_options.read_snapshot().available,
+  Diagnostics wrong_options_diagnostics;
+  expect(!wrong_options.read_snapshot(&wrong_options_diagnostics).available &&
+             wrong_options_diagnostics.rejection == Rejection::wrong_options &&
+             wrong_options_diagnostics.current_options == kConsoleTitleOptions,
          "the console title option list is rejected in place of the exact PC list");
 
   Fixture wrong_mode;
@@ -188,7 +191,10 @@ void wrong_types_and_symbols_fail_closed() {
 
   Fixture wrong_state_name;
   write(wrong_state_name.bytes, kIdleState + layout::kStateName, kTitleSymbol);
-  expect(!wrong_state_name.read_snapshot().available,
+  Diagnostics wrong_state_diagnostics;
+  expect(!wrong_state_name.read_snapshot(&wrong_state_diagnostics).available &&
+             wrong_state_diagnostics.rejection == Rejection::wrong_process_state &&
+             wrong_state_diagnostics.process_state_name == kTitleSymbol,
          "a progress process outside the exact idle state is rejected");
 }
 

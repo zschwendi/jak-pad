@@ -115,6 +115,37 @@ struct Snapshot {
   bool can_go_back = false;
 };
 
+enum class Rejection : int32_t {
+  none = 0,
+  invalid_inputs,
+  invalid_objects,
+  unreadable_fields,
+  wrong_process_state,
+  scheduled_state,
+  wrong_options,
+  wrong_current,
+  wrong_next,
+  wrong_starting_state,
+  invalid_option,
+  invalid_selected_option,
+  invalid_transition,
+};
+
+struct Diagnostics {
+  Rejection rejection = Rejection::none;
+  uint32_t progress = 0;
+  uint32_t process_state = 0;
+  uint32_t process_state_name = 0;
+  uint32_t process_next_state = 0;
+  uint32_t current_options = 0;
+  uint32_t current = 0;
+  uint32_t next = 0;
+  uint32_t starting_state = 0;
+  int32_t option_index = -1;
+  uint32_t selected_option = 0;
+  float menu_transition = 0.f;
+};
+
 inline bool valid_type_identity(const MemoryView& memory,
                                 const TypeIdentity& identity,
                                 uint16_t* allocated_size) {
@@ -142,62 +173,90 @@ inline bool valid_basic_object(const MemoryView& memory,
          memory.span_fits(object - BASIC_OFFSET, allocated_size);
 }
 
-inline Snapshot read(const MemoryView& memory, const Inputs& inputs) {
+inline Snapshot read(const MemoryView& memory,
+                     const Inputs& inputs,
+                     Diagnostics* diagnostics = nullptr) {
   Snapshot out;
+  Diagnostics local_diagnostics;
+  Diagnostics& detail = diagnostics ? *diagnostics : local_diagnostics;
+  detail = {};
   if (!memory.false_object || !inputs.true_object ||
       inputs.true_object == memory.false_object || !inputs.progress_symbol ||
       !inputs.title_symbol || !inputs.none_symbol || !inputs.idle_symbol ||
       inputs.progress_symbol == inputs.title_symbol || inputs.title_symbol == inputs.none_symbol ||
       inputs.none_symbol == inputs.idle_symbol || inputs.master_mode != inputs.progress_symbol) {
+    detail.rejection = Rejection::invalid_inputs;
     return out;
   }
 
-  uint32_t progress = 0;
-  if (!memory.read(inputs.progress_pointer, 0, &progress) ||
-      !valid_basic_object(memory, progress, inputs.progress_type) ||
+  if (!memory.read(inputs.progress_pointer, 0, &detail.progress) ||
+      !valid_basic_object(memory, detail.progress, inputs.progress_type) ||
       !valid_basic_object(memory, inputs.progress_state, inputs.progress_global_state_type) ||
       !valid_basic_object(memory, inputs.title_pc_options, inputs.menu_option_list_type)) {
+    detail.rejection = Rejection::invalid_objects;
     return out;
   }
 
-  uint32_t process_state = 0;
-  uint32_t process_next_state = 0;
-  uint32_t current_options = 0;
-  float menu_transition = 0.f;
-  int32_t option_index = -1;
-  uint32_t selected_option = 0;
-  uint32_t current = 0;
-  uint32_t next = 0;
-  uint32_t starting_state = 0;
-  if (!memory.read(progress, layout::kProcessState, &process_state) ||
-      !memory.read(progress, layout::kProcessNextState, &process_next_state) ||
-      !memory.read(progress, layout::kProgressCurrentOptions, &current_options) ||
-      !memory.read(progress, layout::kProgressMenuTransition, &menu_transition) ||
-      !memory.read(progress, layout::kProgressOptionIndex, &option_index) ||
-      !memory.read(progress, layout::kProgressSelectedOption, &selected_option) ||
-      !memory.read(progress, layout::kProgressCurrent, &current) ||
-      !memory.read(progress, layout::kProgressNext, &next) ||
-      !memory.read(inputs.progress_state, layout::kProgressStartingState, &starting_state) ||
-      !valid_basic_object(memory, process_state, inputs.state_type)) {
+  if (!memory.read(detail.progress, layout::kProcessState, &detail.process_state) ||
+      !memory.read(detail.progress, layout::kProcessNextState, &detail.process_next_state) ||
+      !memory.read(detail.progress, layout::kProgressCurrentOptions, &detail.current_options) ||
+      !memory.read(detail.progress, layout::kProgressMenuTransition, &detail.menu_transition) ||
+      !memory.read(detail.progress, layout::kProgressOptionIndex, &detail.option_index) ||
+      !memory.read(detail.progress, layout::kProgressSelectedOption, &detail.selected_option) ||
+      !memory.read(detail.progress, layout::kProgressCurrent, &detail.current) ||
+      !memory.read(detail.progress, layout::kProgressNext, &detail.next) ||
+      !memory.read(inputs.progress_state, layout::kProgressStartingState, &detail.starting_state) ||
+      !valid_basic_object(memory, detail.process_state, inputs.state_type)) {
+    detail.rejection = Rejection::unreadable_fields;
     return out;
   }
 
-  uint32_t process_state_name = 0;
-  if (!memory.read(process_state, layout::kStateName, &process_state_name) ||
-      process_state_name != inputs.idle_symbol || process_next_state != memory.false_object ||
-      current_options != inputs.title_pc_options || current != inputs.title_symbol ||
-      next != inputs.none_symbol || starting_state != inputs.title_symbol ||
-      option_index < kTitlePCRawOptionMin || option_index > kTitlePCRawOptionMax ||
-      (selected_option != memory.false_object && selected_option != inputs.true_object) ||
-      !std::isfinite(menu_transition) || menu_transition < 0.f || menu_transition > 1.f) {
+  if (!memory.read(detail.process_state, layout::kStateName, &detail.process_state_name) ||
+      detail.process_state_name != inputs.idle_symbol) {
+    detail.rejection = Rejection::wrong_process_state;
+    return out;
+  }
+  if (detail.process_next_state != memory.false_object) {
+    detail.rejection = Rejection::scheduled_state;
+    return out;
+  }
+  if (detail.current_options != inputs.title_pc_options) {
+    detail.rejection = Rejection::wrong_options;
+    return out;
+  }
+  if (detail.current != inputs.title_symbol) {
+    detail.rejection = Rejection::wrong_current;
+    return out;
+  }
+  if (detail.next != inputs.none_symbol) {
+    detail.rejection = Rejection::wrong_next;
+    return out;
+  }
+  if (detail.starting_state != inputs.title_symbol) {
+    detail.rejection = Rejection::wrong_starting_state;
+    return out;
+  }
+  if (detail.option_index < kTitlePCRawOptionMin ||
+      detail.option_index > kTitlePCRawOptionMax) {
+    detail.rejection = Rejection::invalid_option;
+    return out;
+  }
+  if (detail.selected_option != memory.false_object &&
+      detail.selected_option != inputs.true_object) {
+    detail.rejection = Rejection::invalid_selected_option;
+    return out;
+  }
+  if (!std::isfinite(detail.menu_transition) || detail.menu_transition < 0.f ||
+      detail.menu_transition > 1.f) {
+    detail.rejection = Rejection::invalid_transition;
     return out;
   }
 
   out.available = true;
   out.screen = 27;
-  out.option_index = option_index;
-  out.selected_option = selected_option == inputs.true_object;
-  out.in_transition = menu_transition != 0.f;
+  out.option_index = detail.option_index;
+  out.selected_option = detail.selected_option == inputs.true_object;
+  out.in_transition = detail.menu_transition != 0.f;
   out.navigation_available = !out.in_transition;
   out.starting_screen = 27;
   return out;

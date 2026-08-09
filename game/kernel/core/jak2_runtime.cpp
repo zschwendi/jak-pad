@@ -447,6 +447,35 @@ jak2_progress_menu_reader::TypeIdentity progress_type_identity(const char* name,
   return identity;
 }
 
+jak2_progress_menu_reader::Inputs progress_menu_inputs() {
+  using namespace jak2_progress_menu_reader;
+  Inputs inputs;
+  inputs.master_mode = symbol_value_if_present("*master-mode*");
+  inputs.progress_pointer = symbol_value_if_present("*progress-process*");
+  inputs.progress_state = symbol_value_if_present("*progress-state*");
+  inputs.title_pc_options = symbol_value_if_present("*title-pc*");
+  inputs.progress_type =
+      progress_type_identity("progress", static_cast<uint16_t>(layout::kProgressSize));
+  inputs.progress_global_state_type = progress_type_identity(
+      "progress-global-state", static_cast<uint16_t>(layout::kProgressGlobalStateSize));
+  inputs.menu_option_list_type = progress_type_identity("menu-option-list", 0);
+  inputs.state_type = progress_type_identity("state", static_cast<uint16_t>(layout::kStateSize));
+  inputs.progress_symbol = inputs.progress_type.symbol;
+  inputs.title_symbol = goal_game_find_symbol("title", nullptr);
+  inputs.none_symbol = goal_game_find_symbol("none", nullptr);
+  inputs.idle_symbol = goal_game_find_symbol("idle", nullptr);
+  inputs.true_object = goal_game_true_offset();
+  return inputs;
+}
+
+jak2_progress_menu_reader::Snapshot read_progress_menu(
+    jak2_progress_menu_reader::Diagnostics* diagnostics) {
+  using namespace jak2_progress_menu_reader;
+  return read({reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE,
+               goal_game_false_offset()},
+              progress_menu_inputs(), diagnostics);
+}
+
 goal_jak2_progress_menu_snapshot unavailable_progress_menu_snapshot() {
   goal_jak2_progress_menu_snapshot out = {};
   out.screen = GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE;
@@ -746,26 +775,7 @@ goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
   }
 
   using namespace jak2_progress_menu_reader;
-  Inputs inputs;
-  inputs.master_mode = symbol_value_if_present("*master-mode*");
-  inputs.progress_pointer = symbol_value_if_present("*progress-process*");
-  inputs.progress_state = symbol_value_if_present("*progress-state*");
-  inputs.title_pc_options = symbol_value_if_present("*title-pc*");
-  inputs.progress_type =
-      progress_type_identity("progress", static_cast<uint16_t>(layout::kProgressSize));
-  inputs.progress_global_state_type = progress_type_identity(
-      "progress-global-state", static_cast<uint16_t>(layout::kProgressGlobalStateSize));
-  inputs.menu_option_list_type = progress_type_identity("menu-option-list", 0);
-  inputs.state_type = progress_type_identity("state", static_cast<uint16_t>(layout::kStateSize));
-  inputs.progress_symbol = inputs.progress_type.symbol;
-  inputs.title_symbol = goal_game_find_symbol("title", nullptr);
-  inputs.none_symbol = goal_game_find_symbol("none", nullptr);
-  inputs.idle_symbol = goal_game_find_symbol("idle", nullptr);
-  inputs.true_object = goal_game_true_offset();
-
-  const Snapshot snapshot = read(
-      {reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE, goal_game_false_offset()},
-      inputs);
+  const Snapshot snapshot = read_progress_menu(nullptr);
   if (!snapshot.available) {
     return GOAL_JAK2_RUNTIME_OK;
   }
@@ -779,6 +789,40 @@ goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
   out->starting_screen = snapshot.starting_screen;
   out->can_exit_with_start = snapshot.can_exit_with_start;
   out->can_go_back = snapshot.can_go_back;
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_diagnostics(
+    goal_jak2_progress_menu_diagnostics* out) {
+  if (!out) {
+    g_error = "goal_jak2_runtime_get_progress_menu_diagnostics: out is null";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  *out = {};
+  out->option_index = -1;
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_ee_main_mem) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  const auto inputs = progress_menu_inputs();
+  jak2_progress_menu_reader::Diagnostics detail;
+  read_progress_menu(&detail);
+  out->rejection = static_cast<int32_t>(detail.rejection);
+  out->progress = detail.progress;
+  out->process_state = detail.process_state;
+  out->process_state_name = detail.process_state_name;
+  out->process_next_state = detail.process_next_state;
+  out->current_options = detail.current_options;
+  out->expected_options = inputs.title_pc_options;
+  out->current = detail.current;
+  out->expected_current = inputs.title_symbol;
+  out->next = detail.next;
+  out->expected_next = inputs.none_symbol;
+  out->starting_state = detail.starting_state;
+  out->option_index = detail.option_index;
+  out->selected_option = detail.selected_option;
+  out->menu_transition = detail.menu_transition;
   return GOAL_JAK2_RUNTIME_OK;
 }
 
