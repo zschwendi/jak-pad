@@ -31,6 +31,8 @@ enum class Jak2MetalBucketBehavior : std::uint8_t {
   MercAlpha,
   MercWater,
   Generic2,
+  OceanMidFar,
+  OceanNear,
 };
 
 struct Jak2MetalBucketDescriptor {

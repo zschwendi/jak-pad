@@ -2,9 +2,8 @@
 
 /*!
  * @file metal_ocean_renderer.h
- * Metal port of the Jak 1 ocean path (game/graphics/opengl_renderer/ocean/),
- * plus a standalone non-promoted Jak II envmap prefix proof. Objective-C++
- * only.
+ * Metal port of the Jak 1 and Jak II ocean paths
+ * (game/graphics/opengl_renderer/ocean/). Objective-C++ only.
  *
  * Two buckets carry the ocean: ocean-mid-and-far runs the ocean-texture
  * generator, the plain-GIF ocean-far, and the ocean-mid mesh; ocean-near runs
@@ -37,10 +36,9 @@
 #include "game/graphics/texture/TextureID.h"
 
 /*!
- * Standalone Jak II ocean-method-89 prefix renderer. It deliberately is not a
- * bucket renderer and is not installed in the Jak II policy table: the public
- * synthetic proof can exercise the two 64x64 envmap passes without claiming
- * support for the following 128x128 ocean-texture DMA layout.
+ * Jak II ocean-method-89 prefix renderer. A normal ocean-mid-far chain either
+ * starts with this prefix when the sky is active, or starts directly with the
+ * 128x128 ocean-texture setup when it is not.
  */
 class MetalOceanEnvmap {
  public:
@@ -59,6 +57,7 @@ class MetalOceanEnvmap {
                                 MetalFrameContext& ctx);
 
   struct Stats {
+    bool prefix_present = false;
     bool found_sky_color = false;
     u8 sky_color[4] = {0, 0, 0, 255};
     int setup_64_count = 0;
@@ -110,16 +109,26 @@ class MetalOceanEnvmap {
 class MetalOceanTexture : public OceanTextureVu {
  public:
   MetalOceanTexture(bool generate_mipmaps, id<MTLDevice> device, id<MTLCommandQueue> queue);
+  ~MetalOceanTexture() override;
   void init_textures(TexturePool& pool, GameVersion version);
+  void detach_pool();
   void handle_ocean_texture_jak1(DmaFollower& dma,
                                  MetalSharedRenderState* render_state,
                                  MetalFrameContext& ctx);
+  void handle_ocean_texture_jak2(DmaFollower& dma,
+                                 MetalSharedRenderState* render_state,
+                                 MetalFrameContext& ctx);
+  static u32 vram_slot(GameVersion version);
 
   struct Stats {
     int vertices = 0;  // VU-produced vertices (2112 when the generator ran)
     int draw_calls = 0;
     int triangles = 0;
     int missing_textures = 0;
+    int transfers_consumed = 0;
+    u32 source_tbp = 0;
+    u64 source_handle = 0;
+    u32 published_vram_slot = 0;
   };
   const Stats& stats() const { return m_stats; }
   u64 result_handle() const { return m_result_handle; }
@@ -136,6 +145,8 @@ class MetalOceanTexture : public OceanTextureVu {
   id<MTLBuffer> m_dynamic_buffer;   // VU output, rewritten each frame
   id<MTLBuffer> m_index_buffer;     // static
   u64 m_result_handle = 0;
+  TexturePool* m_pool = nullptr;
+  PcTextureId m_texture_id;
   GpuTexture* m_tex0_gpu = nullptr;
   u32 m_tbp = 0;
   Stats m_stats;
@@ -157,12 +168,15 @@ class MetalCommonOceanRenderer {
   void init_for_mid();
   void kick_from_mid(const u8* data);
   void flush_mid(MetalSharedRenderState* render_state, MetalFrameContext& ctx);
+  static float effective_scissor_adjust(GameVersion version);
 
   struct Stats {
     int vertices = 0;
     int draw_calls = 0;
     int triangles = 0;
     int missing_textures = 0;
+    u32 ocean_texture_tbp = 0;
+    float scissor_adjust = 0.f;
   };
   const Stats& stats() const { return m_stats; }
 
@@ -216,12 +230,15 @@ class MetalCommonOceanRenderer {
 class MetalOceanMid : public OceanMidVu {
  public:
   void run(DmaFollower& dma, MetalSharedRenderState* render_state, MetalFrameContext& ctx);
+  void run_jak2(DmaFollower& dma, MetalSharedRenderState* render_state, MetalFrameContext& ctx);
   const MetalCommonOceanRenderer::Stats& stats() const { return m_common_ocean_renderer.stats(); }
+  int jak2_calls() const { return m_jak2_calls; }
 
  private:
   void xgkick(u16 addr) override;
 
   MetalCommonOceanRenderer m_common_ocean_renderer;
+  int m_jak2_calls = 0;
 };
 
 /*!
@@ -234,6 +251,7 @@ class MetalOceanMidAndFar : public MetalBucketRenderer {
                       int my_id,
                       id<MTLDevice> device,
                       id<MTLCommandQueue> queue);
+  ~MetalOceanMidAndFar() override;
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
@@ -243,8 +261,17 @@ class MetalOceanMidAndFar : public MetalBucketRenderer {
   const MetalCommonOceanRenderer::Stats& mid_stats() const { return m_mid_renderer.stats(); }
   u64 texture_handle() const { return m_texture_renderer.result_handle(); }
   const MetalDirectRenderer::Stats& direct_stats() const { return m_direct.stats(); }
+  const MetalOceanEnvmap::Stats& envmap_stats() const { return m_envmap_renderer.stats(); }
+  int mid_jak2_calls() const { return m_mid_renderer.jak2_calls(); }
+  int phase_order() const { return m_phase_order; }
 
  private:
+  void render_jak1(DmaFollower& dma,
+                   MetalSharedRenderState* render_state,
+                   MetalFrameContext& ctx);
+  void render_jak2(DmaFollower& dma,
+                   MetalSharedRenderState* render_state,
+                   MetalFrameContext& ctx);
   void handle_ocean_far(DmaFollower& dma,
                         MetalSharedRenderState* render_state,
                         MetalFrameContext& ctx);
@@ -253,8 +280,10 @@ class MetalOceanMidAndFar : public MetalBucketRenderer {
                         MetalFrameContext& ctx);
 
   MetalDirectRenderer m_direct;
+  MetalOceanEnvmap m_envmap_renderer;
   MetalOceanTexture m_texture_renderer;
   MetalOceanMid m_mid_renderer;
+  int m_phase_order = 0;
 };
 
 /*!
@@ -277,10 +306,20 @@ class MetalOceanNear : public MetalBucketRenderer, public OceanNearVu {
     return m_common_ocean_renderer.stats();
   }
   u64 texture_handle() const { return m_texture_renderer.result_handle(); }
+  int jak2_calls() const { return m_jak2_calls; }
+  int phase_order() const { return m_phase_order; }
 
  private:
+  void render_jak1(DmaFollower& dma,
+                   MetalSharedRenderState* render_state,
+                   MetalFrameContext& ctx);
+  void render_jak2(DmaFollower& dma,
+                   MetalSharedRenderState* render_state,
+                   MetalFrameContext& ctx);
   void xgkick(u16 addr) override;
 
   MetalOceanTexture m_texture_renderer;
   MetalCommonOceanRenderer m_common_ocean_renderer;
+  int m_jak2_calls = 0;
+  int m_phase_order = 0;
 };

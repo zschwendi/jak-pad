@@ -106,17 +106,36 @@ u32 vif_direct(u32 qwc) {
   return (static_cast<u32>(VifCode::Kind::DIRECT) << 24) | qwc;
 }
 
-void append_transfer(std::vector<u8>* chain, const std::vector<u8>& payload) {
-  check((payload.size() & 15) == 0 && payload.size() / 16 <= UINT16_MAX,
-        "synthetic transfer is qword-aligned and bounded");
+u32 vif(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
+  return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
+}
+
+u32 append_vif_transfer(std::vector<u8>* chain,
+                        const std::vector<u8>& payload,
+                        u32 vif0,
+                        u32 vif1,
+                        DmaTag::Kind kind = DmaTag::Kind::CNT,
+                        u32 address = 0) {
+  if ((payload.size() & 15) != 0 || payload.size() / 16 > UINT16_MAX) {
+    check(false, "synthetic transfer is qword-aligned and bounded");
+    return static_cast<u32>(chain->size());
+  }
   const u16 qwc = static_cast<u16>(payload.size() / 16);
-  const u64 tag = static_cast<u64>(qwc) | (static_cast<u64>(DmaTag::Kind::CNT) << 28);
-  const u64 vif = static_cast<u64>(vif_direct(qwc)) << 32;
+  const u64 tag = static_cast<u64>(qwc) | (static_cast<u64>(kind) << 28) |
+                  (static_cast<u64>(address) << 32);
+  const u64 transferred_tag = static_cast<u64>(vif0) | (static_cast<u64>(vif1) << 32);
   const std::size_t offset = chain->size();
   chain->resize(offset + 16 + payload.size());
   std::memcpy(chain->data() + offset, &tag, sizeof(tag));
-  std::memcpy(chain->data() + offset + 8, &vif, sizeof(vif));
-  std::memcpy(chain->data() + offset + 16, payload.data(), payload.size());
+  std::memcpy(chain->data() + offset + 8, &transferred_tag, sizeof(transferred_tag));
+  if (!payload.empty()) {
+    std::memcpy(chain->data() + offset + 16, payload.data(), payload.size());
+  }
+  return static_cast<u32>(offset);
+}
+
+void append_transfer(std::vector<u8>* chain, const std::vector<u8>& payload) {
+  append_vif_transfer(chain, payload, 0, vif_direct(static_cast<u32>(payload.size() / 16)));
 }
 
 GifBuilder make_display_setup(u32 width, u32 height, u32 fbp) {
@@ -184,14 +203,73 @@ GifBuilder make_additive_haze() {
   return gif;
 }
 
+GifBuilder make_ocean_adgif(u32 source_tbp) {
+  GifBuilder gif;
+  gif.tag(5, true, {GifTag::RegisterDescriptor::AD});
+  gif.ad(GsRegisterAddress::TEX0_1, tex0(source_tbp));
+  gif.ad(GsRegisterAddress::TEX1_1, 0);
+  gif.ad(GsRegisterAddress::MIPTBP1_1, 0);
+  gif.ad(GsRegisterAddress::CLAMP_1, 0b101);
+  gif.ad(GsRegisterAddress::ALPHA_1, 0);
+  return gif;
+}
+
+GifBuilder make_ocean_far_setup() {
+  GifBuilder gif;
+  gif.tag(9, true, {GifTag::RegisterDescriptor::AD});
+  for (int i = 0; i < 9; i++) {
+    gif.ad(GsRegisterAddress::PRIM, 0);
+  }
+  return gif;
+}
+
+std::vector<u8> make_texture_vertices(std::size_t qwords, std::size_t qword_base = 0) {
+  std::vector<u8> result(qwords * 16);
+  for (std::size_t qword = 0; qword < qwords; qword++) {
+    const std::size_t source_qword = qword_base + qword;
+    const std::array<float, 4> value = source_qword % 2 == 0
+                                           ? std::array<float, 4>{96.f, 128.f, 160.f, 128.f}
+                                           : std::array<float, 4>{0.25f, 0.5f, 0.75f, 1.f};
+    std::memcpy(result.data() + qword * 16, value.data(), 16);
+  }
+  return result;
+}
+
+void append_ocean_texture(std::vector<u8>* chain, u32 source_tbp) {
+  append_transfer(chain, make_display_setup(128, 128, 0x40).data);
+  append_transfer(chain, make_ocean_adgif(source_tbp).data);
+  append_vif_transfer(chain, std::vector<u8>(64), 0, vif_direct(4));
+  append_vif_transfer(chain, {}, 0, 0);
+  append_vif_transfer(chain, std::vector<u8>(112), vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 985, 7));
+  append_vif_transfer(chain, make_texture_vertices(192), vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 0x8000, 192));
+  append_vif_transfer(chain, {}, vif(VifCode::Kind::MSCALF, 0),
+                      vif(VifCode::Kind::STMOD, 0));
+  for (int loop = 0; loop < 9; loop++) {
+    append_vif_transfer(chain, make_texture_vertices(192), vif(VifCode::Kind::STCYCL, 0x404),
+                        vif(VifCode::Kind::UNPACK_V4_32, 0x8000, 192));
+    append_vif_transfer(chain, {}, vif(VifCode::Kind::MSCALF, 2),
+                        vif(VifCode::Kind::STMOD, 0));
+  }
+  append_vif_transfer(chain, make_texture_vertices(128), vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 0x8000, 128));
+  append_vif_transfer(chain, make_texture_vertices(64, 128),
+                      vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 0x8080, 64));
+  append_vif_transfer(chain, {}, vif(VifCode::Kind::MSCALF, 2),
+                      vif(VifCode::Kind::STMOD, 0));
+  append_vif_transfer(chain, {}, vif(VifCode::Kind::MSCALF, 4),
+                      vif(VifCode::Kind::STMOD, 0));
+}
+
 struct Fixture {
   std::vector<u8> chain;
   u32 ocean_texture_offset = 0;
   u32 end_offset = 0;
 };
 
-Fixture make_fixture(u32 source_tbp) {
-  Fixture fixture;
+void append_envmap_prefix(std::vector<u8>* chain, u32 source_tbp) {
   constexpr std::array<u8, 4> kSky = {20, 40, 80, 128};
   const auto first_setup = make_display_setup(64, 64, 0x58);
   const auto sky = make_sky_color_packet(kSky);
@@ -200,8 +278,13 @@ Fixture make_fixture(u32 source_tbp) {
   const auto haze = make_additive_haze();
   const auto second_setup = make_display_setup(64, 64, MetalOceanEnvmap::kVramSlot >> 5);
   for (const GifBuilder* gif : {&first_setup, &sky, &state, &sprite, &haze, &second_setup}) {
-    append_transfer(&fixture.chain, gif->data);
+    append_transfer(chain, gif->data);
   }
+}
+
+Fixture make_fixture(u32 source_tbp) {
+  Fixture fixture;
+  append_envmap_prefix(&fixture.chain, source_tbp);
 
   fixture.ocean_texture_offset = static_cast<u32>(fixture.chain.size());
   const auto ocean_texture_setup = make_display_setup(128, 128, 0x40);
@@ -211,6 +294,68 @@ Fixture make_fixture(u32 source_tbp) {
   const u64 sentinel = static_cast<u64>(DmaTag::Kind::END) << 28;
   fixture.chain.resize(fixture.chain.size() + 16);
   std::memcpy(fixture.chain.data() + fixture.end_offset, &sentinel, sizeof(sentinel));
+  return fixture;
+}
+
+std::vector<u8> make_noop_direct(std::size_t qwords) {
+  GifBuilder gif;
+  gif.tag(static_cast<u32>(qwords - 1), true, {GifTag::RegisterDescriptor::AD});
+  for (std::size_t i = 1; i < qwords; i++) {
+    gif.ad(GsRegisterAddress::PRIM, 0);
+  }
+  return gif.data;
+}
+
+struct FullOceanFixture {
+  std::vector<u8> chain;
+  u32 texture_offset = 0;
+  u32 after_texture_offset = 0;
+  u32 next_bucket = 0;
+};
+
+FullOceanFixture make_mid_far_fixture(bool sky_active, u32 envmap_source_tbp) {
+  FullOceanFixture fixture;
+  append_vif_transfer(&fixture.chain, {}, 0, 0);
+  if (sky_active) {
+    append_envmap_prefix(&fixture.chain, envmap_source_tbp);
+  }
+  fixture.texture_offset = static_cast<u32>(fixture.chain.size());
+  append_ocean_texture(&fixture.chain, MetalOceanEnvmap::kVramSlot);
+  fixture.after_texture_offset = static_cast<u32>(fixture.chain.size());
+
+  append_transfer(&fixture.chain, make_ocean_far_setup().data);
+  append_vif_transfer(&fixture.chain, {}, vif(VifCode::Kind::BASE, 0),
+                      vif(VifCode::Kind::OFFSET, 0x76));
+  append_vif_transfer(&fixture.chain, std::vector<u8>(0x240),
+                      vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 0x2dd, 0x24));
+  append_vif_transfer(&fixture.chain, {}, vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::MSCALF, 0));
+  append_vif_transfer(&fixture.chain, make_noop_direct(2), 0, vif_direct(2));
+
+  const u32 next_offset = static_cast<u32>(fixture.chain.size());
+  append_vif_transfer(&fixture.chain, {}, 0, 0, DmaTag::Kind::NEXT, next_offset + 16);
+  append_vif_transfer(&fixture.chain, {}, 0, 0);
+  append_vif_transfer(&fixture.chain, {}, 0, 0);
+  fixture.next_bucket = static_cast<u32>(fixture.chain.size());
+  append_vif_transfer(&fixture.chain, {}, 0, 0, DmaTag::Kind::END);
+  return fixture;
+}
+
+FullOceanFixture make_near_fixture() {
+  FullOceanFixture fixture;
+  append_vif_transfer(&fixture.chain, {}, 0, 0);
+  fixture.texture_offset = static_cast<u32>(fixture.chain.size());
+  append_ocean_texture(&fixture.chain, MetalOceanEnvmap::kVramSlot);
+  fixture.after_texture_offset = static_cast<u32>(fixture.chain.size());
+  append_vif_transfer(&fixture.chain, make_noop_direct(2), 0, vif_direct(2));
+  append_vif_transfer(&fixture.chain, {}, vif(VifCode::Kind::BASE, 0),
+                      vif(VifCode::Kind::OFFSET, 0x10));
+  append_vif_transfer(&fixture.chain, {}, vif(VifCode::Kind::MSCALF, 0),
+                      vif(VifCode::Kind::STMOD, 0));
+  append_vif_transfer(&fixture.chain, make_noop_direct(2), 0, vif_direct(2));
+  fixture.next_bucket = static_cast<u32>(fixture.chain.size());
+  append_vif_transfer(&fixture.chain, {}, 0, 0, DmaTag::Kind::END);
   return fixture;
 }
 
@@ -313,10 +458,13 @@ destinationBytesPerImage:kBytesPerRow];
   return pixels;
 }
 
-std::vector<u8> read_rgba8(id<MTLCommandQueue> queue, id<MTLTexture> texture) {
-  constexpr NSUInteger kBytesPerRow = MetalOceanEnvmap::kWidth * 4;
-  constexpr NSUInteger kByteCount = kBytesPerRow * MetalOceanEnvmap::kHeight;
-  id<MTLBuffer> readback = [queue.device newBufferWithLength:kByteCount
+std::vector<u8> read_rgba8(id<MTLCommandQueue> queue,
+                           id<MTLTexture> texture,
+                           NSUInteger width = MetalOceanEnvmap::kWidth,
+                           NSUInteger height = MetalOceanEnvmap::kHeight) {
+  const NSUInteger bytes_per_row = width * 4;
+  const NSUInteger byte_count = bytes_per_row * height;
+  id<MTLBuffer> readback = [queue.device newBufferWithLength:byte_count
                                                     options:MTLResourceStorageModeShared];
   id<MTLCommandBuffer> commands = [queue commandBuffer];
   id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
@@ -324,18 +472,18 @@ std::vector<u8> read_rgba8(id<MTLCommandQueue> queue, id<MTLTexture> texture) {
             sourceSlice:0
             sourceLevel:0
            sourceOrigin:MTLOriginMake(0, 0, 0)
-             sourceSize:MTLSizeMake(MetalOceanEnvmap::kWidth, MetalOceanEnvmap::kHeight, 1)
+             sourceSize:MTLSizeMake(width, height, 1)
                toBuffer:readback
       destinationOffset:0
- destinationBytesPerRow:kBytesPerRow
-destinationBytesPerImage:kByteCount];
+ destinationBytesPerRow:bytes_per_row
+destinationBytesPerImage:byte_count];
   [blit endEncoding];
   [commands commit];
   [commands waitUntilCompleted];
   if (commands.status != MTLCommandBufferStatusCompleted) {
     return {};
   }
-  std::vector<u8> pixels(kByteCount);
+  std::vector<u8> pixels(byte_count);
   std::memcpy(pixels.data(), readback.contents, pixels.size());
   return pixels;
 }
@@ -465,7 +613,7 @@ int main() {
             "executed the bounded ocean-method-89 prefix on the GPU");
       const auto& stats = envmap.stats();
       const auto scissor_after = envmap.direct_renderer().capture_scissor();
-      check(stats.found_sky_color &&
+      check(stats.prefix_present && stats.found_sky_color &&
                 std::equal(std::begin(stats.sky_color), std::end(stats.sky_color),
                            std::array<u8, 4>{20, 40, 80, 128}.begin()) &&
                 stats.setup_64_count == 2,
@@ -519,11 +667,111 @@ int main() {
 
       const auto& bucket_table = metal_renderer::jak2_metal_bucket_table();
       check(bucket_table[static_cast<std::size_t>(jak2::BucketId::OCEAN_MID_FAR)].behavior ==
-                    metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
+                    metal_renderer::Jak2MetalBucketBehavior::OceanMidFar &&
                 bucket_table[static_cast<std::size_t>(jak2::BucketId::OCEAN_NEAR)].behavior ==
-                    metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
-            "left both Jak II OCEAN buckets explicitly deferred");
+                    metal_renderer::Jak2MetalBucketBehavior::OceanNear,
+            "promoted both source-coupled Jak II OCEAN buckets together");
+
+      std::vector<u8> malformed_prefix;
+      append_transfer(&malformed_prefix, make_display_setup(64, 64, 0x58).data);
+      append_transfer(&malformed_prefix, make_display_setup(128, 128, 0x40).data);
+      const u32 malformed_end = static_cast<u32>(malformed_prefix.size());
+      append_vif_transfer(&malformed_prefix, {}, 0, 0, DmaTag::Kind::END);
+      DmaFollower malformed_dma(malformed_prefix.data(), 0, malformed_prefix.size());
+      state.next_bucket = malformed_end;
+      check(!envmap.handle_ocean_envmap_jak2(malformed_dma, &state, ctx) &&
+                malformed_dma.current_tag_offset() == 0 && envmap.stats().prefix_present &&
+                envmap.stats().transfers_consumed == 0,
+            "rejected a partial sky prefix without consuming any transfer or publishing partial state");
       envmap.detach_pool();
+    }
+
+    {
+      MetalOceanMidAndFar mid_far("synthetic-ocean-mid-far",
+                                  static_cast<int>(jak2::BucketId::OCEAN_MID_FAR), device, queue);
+      mid_far.init_textures(texture_pool, GameVersion::Jak2);
+
+      MetalSharedRenderState state;
+      state.version = GameVersion::Jak2;
+      state.texture_pool = &texture_pool;
+      state.game_res_w = 640;
+      state.game_res_h = 416;
+      MetalFrameContext ctx;
+      ctx.pso_cache = &pso_cache;
+      ctx.sampler_cache = &sampler_cache;
+      ctx.stream = &stream;
+
+      const auto active = make_mid_far_fixture(true, kSourceTbp);
+      state.next_bucket = active.next_bucket;
+      DmaFollower active_dma(active.chain.data(), 0, active.chain.size());
+      stream.reset();
+      mid_far.render(active_dma, &state, ctx);
+      check(active_dma.current_tag_offset() == active.next_bucket,
+            "sky-active mid/far consumed exactly to the next bucket");
+      check(mid_far.envmap_stats().prefix_present &&
+                mid_far.envmap_stats().transfers_consumed == 6 &&
+                mid_far.envmap_stats().stop_offset == active.texture_offset,
+            "sky-active grammar consumed the exact six-transfer envmap prefix boundary");
+      check(mid_far.texture_stats().transfers_consumed == 29 &&
+                mid_far.texture_stats().vertices == 2112 &&
+                mid_far.texture_stats().draw_calls == 9 &&
+                mid_far.texture_stats().published_vram_slot == 672 &&
+                mid_far.texture_stats().source_tbp == MetalOceanEnvmap::kVramSlot &&
+                mid_far.texture_stats().source_handle ==
+                    texture_pool.lookup(MetalOceanEnvmap::kVramSlot).value_or(0) &&
+                mid_far.texture_stats().source_handle != placeholder,
+            "Jak II texture consumed 29 transfers, ran 2112 VU vertices on the GPU, and sampled the owned 0xf80 envmap into slot 672");
+      check(mid_far.phase_order() == 1234 && mid_far.mid_jak2_calls() == 1 &&
+                mid_far.mid_stats().draw_calls == 0,
+            "sky-active render order is envmap, texture, far, then the bounded mid walker");
+
+      const auto active_pixels = read_rgba8(
+          queue, metal_texture_lookup(mid_far.texture_handle()), 128, 128);
+      const bool active_nonzero = std::any_of(active_pixels.begin(), active_pixels.end(),
+                                              [](u8 value) { return value != 0; });
+      check(active_pixels.size() == 128 * 128 * 4 && active_nonzero,
+            "read back non-clear pixels from the generated 128x128 Jak II ocean texture");
+
+      const auto inactive = make_mid_far_fixture(false, kSourceTbp);
+      state.next_bucket = inactive.next_bucket;
+      DmaFollower inactive_dma(inactive.chain.data(), 0, inactive.chain.size());
+      stream.reset();
+      mid_far.render(inactive_dma, &state, ctx);
+      check(inactive_dma.current_tag_offset() == inactive.next_bucket,
+            "sky-inactive mid/far consumed exactly to the next bucket");
+      check(!mid_far.envmap_stats().prefix_present &&
+                mid_far.envmap_stats().transfers_consumed == 0 &&
+                mid_far.envmap_stats().stop_offset == inactive.texture_offset,
+            "sky-inactive grammar leaves the first 128x128 texture transfer unconsumed");
+      check(mid_far.texture_stats().transfers_consumed == 29 &&
+                mid_far.texture_stats().published_vram_slot == 672 &&
+                mid_far.phase_order() == 234 && mid_far.mid_jak2_calls() == 2,
+            "sky-inactive order begins at texture and still completes far and mid deterministically");
+
+      MetalOceanNear near_renderer("synthetic-ocean-near",
+                                   static_cast<int>(jak2::BucketId::OCEAN_NEAR), device, queue);
+      near_renderer.init_textures(texture_pool, GameVersion::Jak2);
+      const auto near = make_near_fixture();
+      state.next_bucket = near.next_bucket;
+      DmaFollower near_dma(near.chain.data(), 0, near.chain.size());
+      stream.reset();
+      near_renderer.render(near_dma, &state, ctx);
+      check(near_dma.current_tag_offset() == near.next_bucket && near_renderer.phase_order() == 12,
+            "near consumed exactly to its next bucket in texture-then-near order");
+      check(near_renderer.texture_stats().transfers_consumed == 29 &&
+                near_renderer.texture_stats().vertices == 2112 &&
+                near_renderer.texture_stats().draw_calls == 1 &&
+                near_renderer.texture_stats().published_vram_slot == 672 &&
+                near_renderer.jak2_calls() == 1,
+            "near ran the Jak II texture and source-specific call-0 walker without partial promotion");
+
+      check(MetalOceanTexture::vram_slot(GameVersion::Jak1) == 8160 &&
+                MetalOceanTexture::vram_slot(GameVersion::Jak2) == 672 &&
+                std::abs(MetalCommonOceanRenderer::effective_scissor_adjust(GameVersion::Jak1) -
+                         512.f / 448.f) < 0.00001f &&
+                std::abs(MetalCommonOceanRenderer::effective_scissor_adjust(GameVersion::Jak2) -
+                         (0.5f * 512.f / 416.f)) < 0.00001f,
+            "preserved Jak 1 slot/scissor semantics while selecting Jak II slot 672 and half-height projection");
     }
 
     {
@@ -540,7 +788,7 @@ int main() {
       std::printf("FAIL: %d Jak II ocean envmap proof check(s) failed\n", failures);
       return 1;
     }
-    std::puts("PASS: standalone non-promoted Jak II Metal ocean envmap prefix");
+    std::puts("PASS: complete public Jak II Metal ocean grammar and paired buckets");
     return 0;
   }
 }

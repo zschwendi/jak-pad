@@ -652,6 +652,20 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       }
       m_bucket_renderers[bucket_id] =
           std::make_unique<MetalDirectRenderer>(name, descriptor.id, batch_size);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::OceanMidFar) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::OCEAN_MID_FAR));
+      ASSERT(batch_size == 0);
+      auto ocean =
+          std::make_unique<MetalOceanMidAndFar>("ocean-mid-far", descriptor.id, m_device, m_queue);
+      ocean->init_textures(*m_texture_pool, GameVersion::Jak2);
+      m_bucket_renderers[bucket_id] = std::move(ocean);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::OceanNear) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::OCEAN_NEAR));
+      ASSERT(batch_size == 0);
+      auto ocean =
+          std::make_unique<MetalOceanNear>("ocean-near", descriptor.id, m_device, m_queue);
+      ocean->init_textures(*m_texture_pool, GameVersion::Jak2);
+      m_bucket_renderers[bucket_id] = std::move(ocean);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip) {
       ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
