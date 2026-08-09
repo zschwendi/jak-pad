@@ -75,6 +75,16 @@ bool has_partial(const fs::path& root) {
   return false;
 }
 
+std::optional<fs::path> composer_partial(const fs::path& root) {
+  for (const auto& entry : fs::directory_iterator(root)) {
+    const auto name = entry.path().filename().string();
+    if (name.starts_with(".opengoal-work-") && name.ends_with(".partial")) {
+      return entry.path();
+    }
+  }
+  return std::nullopt;
+}
+
 composer::internal::FinalContract launch_contract() {
   return {{"KERNEL.CGO", "GAME.CGO", "TITLE.DGO", "CWI.DGO", "CTA.DGO", "PRI.DGO",
            "FEA.DGO", "INTROCST.DGO", "LDJAKBRN.DGO", "DEMO1.SBK", "CTYWIDE1.SBK",
@@ -132,6 +142,57 @@ bool exact_prepared_tree_is_promoted() {
   CHECK(last_progress->phase == composer::Phase::finalizing_candidate);
   CHECK(last_progress->completed == 2);
   CHECK(last_progress->total == 2);
+  return true;
+}
+
+bool atomic_work_files_preserve_callback_injections() {
+  TemporaryRoot temporary;
+  const std::vector<std::uint8_t> bytes(300000, 0x41);
+  const auto destination = temporary.root / "generated.bin";
+  bool injected = false;
+  composer::Options options;
+  options.should_cancel = [&] {
+    if (!injected) {
+      write_text(destination, "destination stays");
+      injected = true;
+    }
+    return false;
+  };
+  auto error = composer::internal::write_file_atomically(destination, bytes, options);
+  CHECK(injected);
+  CHECK(error.has_value());
+  CHECK(error->code == composer::ErrorCode::work_write_failed);
+  CHECK(read_text(destination) == "destination stays");
+  CHECK(!composer_partial(temporary.root));
+
+  const auto second_destination = temporary.root / "second.bin";
+  const auto held = temporary.root / "owned-held";
+  std::optional<fs::path> replacement;
+  options = {};
+  options.should_cancel = [&] {
+    if (replacement) {
+      return false;
+    }
+    const auto partial = composer_partial(temporary.root);
+    if (!partial) {
+      return false;
+    }
+    std::error_code rename_error;
+    fs::rename(*partial, held, rename_error);
+    if (rename_error) {
+      return false;
+    }
+    write_text(*partial, "replacement stays");
+    replacement = *partial;
+    return false;
+  };
+  error = composer::internal::write_file_atomically(second_destination, bytes, options);
+  CHECK(replacement.has_value());
+  CHECK(error.has_value());
+  CHECK(error->code == composer::ErrorCode::work_write_failed);
+  CHECK(read_text(*replacement) == "replacement stays");
+  CHECK(fs::is_regular_file(held));
+  CHECK(!fs::exists(second_destination));
   return true;
 }
 
@@ -201,6 +262,47 @@ bool descriptor_promotion_rejects_callback_races() {
   const auto contract = launch_contract();
   {
     TemporaryRoot temporary;
+    const auto candidate = temporary.root / "early-injection.candidate";
+    const auto external = temporary.root / "external-directory";
+    fs::create_directory(external);
+    write_text(external / "sentinel", "external directory stays");
+    std::optional<composer::Summary> summary;
+    std::optional<composer::internal::FinalContract> produced_contract;
+    bool injected = false;
+    composer::Options options;
+    options.on_progress = [&](const composer::Progress& progress) {
+      if (!injected && progress.phase == composer::Phase::extracting_iso &&
+          progress.current_item == "inside-stage") {
+        std::error_code error;
+        fs::rename(external, candidate / ".opengoal-import/injected", error);
+        injected = !error;
+      }
+    };
+    const std::array<composer::internal::StageAction, 1> stages = {{
+        {composer::Phase::extracting_iso,
+         [](const composer::internal::WorkPaths&,
+            const composer::Options& stage_options) -> std::optional<composer::Error> {
+           try {
+             stage_options.on_progress(
+                 {composer::Phase::extracting_iso, 1, 2, 0, "inside-stage"});
+           } catch (...) {
+             return composer::Error{composer::ErrorCode::callback_failed,
+                                    "synthetic guarded callback failure", std::nullopt,
+                                    std::nullopt};
+           }
+           return {};
+         }},
+    }};
+    const auto result = composer::internal::compose_in_fresh_candidate(
+        candidate, options, stages, &summary, &produced_contract);
+    CHECK(injected);
+    CHECK(!result);
+    CHECK(result.error().code == composer::ErrorCode::callback_failed);
+    CHECK(read_text(candidate / ".opengoal-import/injected/sentinel") ==
+          "external directory stays");
+  }
+  {
+    TemporaryRoot temporary;
     const auto candidate = temporary.root / "symlink-swap.candidate";
     const auto outside = temporary.root / "outside";
     fs::create_directory(outside);
@@ -232,7 +334,7 @@ bool descriptor_promotion_rejects_callback_races() {
         candidate, options, stages, &summary, &produced_contract);
     CHECK(swapped);
     CHECK(!result);
-    CHECK(result.error().code == composer::ErrorCode::candidate_finalize_failed);
+    CHECK(result.error().code == composer::ErrorCode::callback_failed);
     CHECK(read_text(outside / "sentinel") == "outside stays");
     CHECK(!fs::exists(candidate / "iso"));
   }
@@ -332,8 +434,8 @@ bool descriptor_promotion_rejects_callback_races() {
         candidate, options, stages, &summary, &produced_contract);
     CHECK(expanded);
     CHECK(!result);
-    CHECK(result.error().code == composer::ErrorCode::candidate_cleanup_failed);
-    CHECK(result.error().cleanup_error.has_value());
+    CHECK(result.error().code == composer::ErrorCode::callback_failed);
+    CHECK(!result.error().cleanup_error.has_value());
   }
   {
     TemporaryRoot temporary;
@@ -388,7 +490,7 @@ bool descriptor_promotion_rejects_callback_races() {
   return true;
 }
 
-bool failure_preserves_work_and_removes_partial_files() {
+bool failure_preserves_all_unregistered_work_files() {
   TemporaryRoot temporary;
   const auto candidate = temporary.root / "failed.candidate";
   const auto active = temporary.root / "active";
@@ -400,7 +502,7 @@ bool failure_preserves_work_and_removes_partial_files() {
       {composer::Phase::extracting_iso,
        [&](const composer::internal::WorkPaths& paths) -> std::optional<composer::Error> {
          write_text(paths.work_root / "recoverable.marker", "keep me");
-         write_text(paths.work_root / "artifact.partial", "remove me");
+         write_text(paths.work_root / "artifact.partial", "preserve me");
          return composer::Error{composer::ErrorCode::iso_validation_failed, "synthetic failure",
                                 std::nullopt, std::nullopt};
        }},
@@ -411,7 +513,8 @@ bool failure_preserves_work_and_removes_partial_files() {
   CHECK(result.error().code == composer::ErrorCode::iso_validation_failed);
   CHECK(result.error().preserved_candidate_root == candidate);
   CHECK(fs::is_regular_file(candidate / ".opengoal-import/recoverable.marker"));
-  CHECK(!has_partial(candidate));
+  CHECK(has_partial(candidate));
+  CHECK(read_text(candidate / ".opengoal-import/artifact.partial") == "preserve me");
   CHECK(read_text(active / "sentinel") == "active stays untouched");
   return true;
 }
@@ -660,10 +763,11 @@ bool optional_real_import_oracle() {
 int main() {
   const std::array tests = {
       exact_prepared_tree_is_promoted,
+      atomic_work_files_preserve_callback_injections,
       incomplete_or_extra_output_never_succeeds,
       linked_output_is_rejected,
       descriptor_promotion_rejects_callback_races,
-      failure_preserves_work_and_removes_partial_files,
+      failure_preserves_all_unregistered_work_files,
       cancellation_and_callback_failures_are_typed,
       existing_candidate_and_input_containment_are_rejected,
       invalid_source_pack_fails_before_candidate_creation,

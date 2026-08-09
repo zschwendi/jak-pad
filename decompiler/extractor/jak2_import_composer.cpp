@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include <new>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -512,11 +514,10 @@ struct PipelineState {
   std::optional<internal::FinalContract> final_contract;
 };
 
-std::optional<Error> remove_partial_residue_at(int work_directory);
 Error preserve_error_at(Error error, const internal::WorkPaths& paths, int work_directory);
-std::optional<Error> write_file_atomically(const fs::path& destination,
-                                           std::span<const std::uint8_t> bytes,
-                                           CallbackForwarder& callbacks);
+std::optional<Error> write_file_atomically_impl(const fs::path& destination,
+                                                std::span<const std::uint8_t> bytes,
+                                                CallbackForwarder& callbacks);
 
 std::optional<Error> extract_iso_stage(const internal::WorkPaths& paths,
                                        const Options& options,
@@ -825,83 +826,178 @@ std::optional<Error> catalog_retail_stage(const Options& options, PipelineState*
 
 class OwnedPartialFile {
  public:
-  explicit OwnedPartialFile(fs::path path) : m_path(std::move(path)) {}
+  OwnedPartialFile(int parent,
+                   posix_file::OwnedFd descriptor,
+                   std::string name,
+                   posix_file::Identity identity)
+      : m_parent(parent),
+        m_descriptor(std::move(descriptor)),
+        m_name(std::move(name)),
+        m_identity(identity) {}
   ~OwnedPartialFile() {
-    if (m_descriptor >= 0) {
-      ::close(m_descriptor);
-    }
-    if (m_exists) {
-      std::error_code ignored;
-      fs::remove(m_path, ignored);
-    }
+    (void)cleanup();
   }
-  void set_descriptor(int descriptor) { m_descriptor = descriptor; }
-  void mark_exists() { m_exists = true; }
-  void release() { m_exists = false; }
+  int descriptor() const { return m_descriptor.get(); }
+  const std::string& name() const { return m_name; }
+  const posix_file::Identity& identity() const { return m_identity; }
+  void release() { m_linked = false; }
   std::optional<std::string> close_checked() {
-    const auto descriptor = m_descriptor;
-    m_descriptor = -1;
+    const auto descriptor = m_descriptor.release();
     if (descriptor >= 0 && ::close(descriptor) != 0) {
       return "Could not close an import partial file: " +
              std::error_code(errno, std::generic_category()).message();
     }
     return {};
   }
+  std::optional<Error> cleanup() {
+    if (!m_linked) {
+      return {};
+    }
+    if (!posix_file::entry_identity(m_parent, m_name, m_identity)) {
+      return make_error(ErrorCode::work_write_failed,
+                        "An import partial file changed before cleanup and was preserved.");
+    }
+    if (::unlinkat(m_parent, m_name.c_str(), 0) != 0) {
+      return make_filesystem_error(ErrorCode::work_write_failed,
+                                   "Could not remove an exact import partial file",
+                                   std::error_code(errno, std::generic_category()));
+    }
+    m_linked = false;
+    return {};
+  }
 
  private:
-  fs::path m_path;
-  int m_descriptor = -1;
-  bool m_exists = false;
+  int m_parent = -1;
+  posix_file::OwnedFd m_descriptor;
+  std::string m_name;
+  posix_file::Identity m_identity;
+  bool m_linked = true;
 };
 
-std::optional<Error> write_file_atomically(const fs::path& destination,
-                                           std::span<const std::uint8_t> bytes,
-                                           CallbackForwarder& callbacks) {
-  if (bytes.empty() || !direct_directory(destination.parent_path()) ||
-      !missing_path(destination)) {
+std::optional<Error> write_file_atomically_impl(const fs::path& destination,
+                                                std::span<const std::uint8_t> bytes,
+                                                CallbackForwarder& callbacks) {
+  if (bytes.empty() || !destination.is_absolute() ||
+      !safe_basename(destination.filename().string())) {
     return make_error(ErrorCode::work_write_failed,
-                      "An import work-file destination is invalid or already exists.");
+                      "An import work-file destination is invalid.");
   }
-  const auto partial = fs::path(destination.string() + ".partial");
-  OwnedPartialFile file(partial);
-  const auto descriptor = ::open(partial.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
-  if (descriptor < 0) {
+  auto parent = posix_file::open_directory(destination.parent_path().c_str());
+  posix_file::Identity parent_identity;
+  if (!parent || !posix_file::descriptor_identity(parent.get(), &parent_identity)) {
+    return make_filesystem_error(ErrorCode::work_write_failed,
+                                 "Could not retain an import work-file parent",
+                                 std::error_code(errno, std::generic_category()));
+  }
+  struct stat destination_status {};
+  const auto destination_name = destination.filename().string();
+  if (::fstatat(parent.get(), destination_name.c_str(), &destination_status,
+                AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT) {
+    return make_error(ErrorCode::work_write_failed,
+                      "An import work-file destination already exists or is unreadable.");
+  }
+  static std::atomic<std::uint64_t> next_id{0};
+  posix_file::OwnedFd descriptor;
+  std::string partial_name;
+  for (std::size_t attempt = 0; attempt < 64; ++attempt) {
+    partial_name = ".opengoal-work-" +
+                   std::to_string(static_cast<unsigned long long>(::getpid())) + "-" +
+                   std::to_string(static_cast<unsigned long long>(
+                       next_id.fetch_add(1, std::memory_order_relaxed))) +
+                   ".partial";
+    descriptor = posix_file::open_file_at(
+        parent.get(), partial_name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (descriptor || errno != EEXIST) {
+      break;
+    }
+  }
+  if (!descriptor) {
     return make_filesystem_error(ErrorCode::work_write_failed,
                                  "Could not create an exclusive import partial file",
                                  std::error_code(errno, std::generic_category()));
   }
-  file.set_descriptor(descriptor);
-  file.mark_exists();
+  posix_file::Identity partial_identity;
+  struct stat partial_status {};
+  if (!posix_file::descriptor_identity(descriptor.get(), &partial_identity, &partial_status) ||
+      !S_ISREG(partial_status.st_mode) || partial_status.st_nlink != 1) {
+    return make_error(ErrorCode::work_write_failed,
+                      "The exclusive import partial is not a private regular file.");
+  }
+  OwnedPartialFile file(parent.get(), std::move(descriptor), partial_name, partial_identity);
+  const auto fail_owned = [&](Error error) {
+    if (const auto cleanup = file.cleanup()) {
+      return *cleanup;
+    }
+    return error;
+  };
   std::size_t offset = 0;
   while (offset < bytes.size()) {
     if (callbacks.poll_cancel()) {
-      return callbacks.cancellation_or_callback_error(
-          "Jak II import was cancelled while writing generated data.");
+      return fail_owned(callbacks.cancellation_or_callback_error(
+          "Jak II import was cancelled while writing generated data."));
     }
     const auto count = std::min(kIoChunkBytes, bytes.size() - offset);
-    const auto written = ::write(descriptor, bytes.data() + offset, count);
+    const auto written = ::write(file.descriptor(), bytes.data() + offset, count);
+    if (written < 0 && errno == EINTR) {
+      continue;
+    }
     if (written <= 0) {
-      return make_filesystem_error(ErrorCode::work_write_failed,
-                                   "Could not write a complete import work file",
-                                   std::error_code(errno, std::generic_category()));
+      return fail_owned(make_filesystem_error(
+          ErrorCode::work_write_failed, "Could not write a complete import work file",
+          std::error_code(errno, std::generic_category())));
     }
     offset += static_cast<std::size_t>(written);
   }
-  if (::fsync(descriptor) != 0) {
-    return make_filesystem_error(ErrorCode::work_write_failed,
-                                 "Could not synchronize an import work file",
-                                 std::error_code(errno, std::generic_category()));
+  if (::fsync(file.descriptor()) != 0) {
+    return fail_owned(make_filesystem_error(
+        ErrorCode::work_write_failed, "Could not synchronize an import work file",
+        std::error_code(errno, std::generic_category())));
+  }
+  struct stat final_status {};
+  std::vector<std::uint8_t> buffer(std::min(kIoChunkBytes, bytes.size()));
+  XXH64_state_t hash_state;
+  XXH64_reset(&hash_state, 0);
+  std::size_t verified = 0;
+  while (verified < bytes.size()) {
+    const auto count = std::min(buffer.size(), bytes.size() - verified);
+    const auto read = ::pread(file.descriptor(), buffer.data(), count,
+                              static_cast<off_t>(verified));
+    if (read < 0 && errno == EINTR) {
+      continue;
+    }
+    if (read != static_cast<ssize_t>(count)) {
+      return fail_owned(make_error(ErrorCode::work_write_failed,
+                                   "Could not re-read an exact import work file."));
+    }
+    XXH64_update(&hash_state, buffer.data(), count);
+    verified += count;
+  }
+  if (!posix_file::descriptor_identity(file.descriptor(), nullptr, &final_status) ||
+      !S_ISREG(final_status.st_mode) || final_status.st_nlink != 1 ||
+      final_status.st_size != static_cast<off_t>(bytes.size()) ||
+      !posix_file::entry_identity(parent.get(), file.name(), file.identity()) ||
+      XXH64_digest(&hash_state) != XXH64(bytes.data(), bytes.size(), 0)) {
+    return fail_owned(make_error(
+        ErrorCode::work_write_failed,
+        "The exact import work file changed before descriptor-relative installation."));
   }
   if (const auto close_error = file.close_checked()) {
-    return make_error(ErrorCode::work_write_failed, *close_error);
+    return fail_owned(make_error(ErrorCode::work_write_failed, *close_error));
   }
-  std::error_code error;
-  fs::rename(partial, destination, error);
-  if (error) {
-    return make_filesystem_error(ErrorCode::work_write_failed,
-                                 "Could not install an import work file", error);
+  struct stat parent_status {};
+  if (::lstat(destination.parent_path().c_str(), &parent_status) != 0 ||
+      !posix_file::same_identity(parent_status, parent_identity) ||
+      posix_file::exclusive_rename_at(parent.get(), file.name(), parent.get(),
+                                      destination_name) != 0) {
+    return fail_owned(make_filesystem_error(
+        ErrorCode::work_write_failed, "Could not exclusively install an import work file",
+        std::error_code(errno, std::generic_category())));
   }
   file.release();
+  if (!posix_file::entry_identity(parent.get(), destination_name, partial_identity)) {
+    return make_error(ErrorCode::work_write_failed,
+                      "The installed import work-file identity changed.");
+  }
   return {};
 }
 
@@ -930,7 +1026,8 @@ std::optional<Error> persist_generated_artifacts(const artifacts::Build& build,
       return make_error(ErrorCode::work_write_failed,
                         "A generated-artifact directory is unsafe.");
     }
-    if (const auto write_error = write_file_atomically(root / relative, artifact.bytes, callbacks)) {
+    if (const auto write_error =
+            write_file_atomically_impl(root / relative, artifact.bytes, callbacks)) {
       return write_error;
     }
     if (artifact.kind == artifacts::ArtifactKind::directory_tpages) {
@@ -1061,7 +1158,7 @@ std::optional<Error> generate_recipe_stage(const Request& request,
         cancelled);
   }
   if (const auto write_error =
-          write_file_atomically(paths.work_root / kRecipeFileName, wire.value(), callbacks)) {
+          write_file_atomically_impl(paths.work_root / kRecipeFileName, wire.value(), callbacks)) {
     return write_error;
   }
   if (const auto artifact_error = persist_generated_artifacts(
@@ -1320,22 +1417,50 @@ struct WorkCleanupBudget {
   std::size_t entries = 0;
 };
 
-std::optional<Error> remove_tree_contents_at(int directory,
-                                             std::size_t depth,
-                                             WorkCleanupBudget* budget) {
+struct WorkEntry {
+  posix_file::Identity identity;
+  bool directory = false;
+};
+
+using WorkManifest = std::map<std::string, WorkEntry>;
+
+bool same_work_manifest(const WorkManifest& left, const WorkManifest& right) {
+  if (left.size() != right.size()) {
+    return false;
+  }
+  auto left_entry = left.begin();
+  auto right_entry = right.begin();
+  while (left_entry != left.end()) {
+    if (left_entry->first != right_entry->first ||
+        left_entry->second.directory != right_entry->second.directory ||
+        left_entry->second.identity.device != right_entry->second.identity.device ||
+        left_entry->second.identity.inode != right_entry->second.identity.inode) {
+      return false;
+    }
+    ++left_entry;
+    ++right_entry;
+  }
+  return true;
+}
+
+std::optional<Error> capture_work_manifest_at(int directory,
+                                              std::string_view prefix,
+                                              std::size_t depth,
+                                              WorkCleanupBudget* budget,
+                                              WorkManifest* manifest) {
   if (!budget || depth > kMaxWorkCleanupDepth) {
     return make_error(ErrorCode::candidate_cleanup_failed,
-                      "The import work tree exceeds its cleanup depth limit.");
+                      "The import work tree exceeds its ownership depth limit.");
   }
   auto enumeration = posix_file::open_directory_at(directory, ".");
   if (!enumeration) {
     return make_error(ErrorCode::candidate_cleanup_failed,
-                      "Could not reopen an owned work directory for cleanup.");
+                      "Could not reopen an import work directory for ownership capture.");
   }
   DIR* stream = ::fdopendir(enumeration.release());
   if (!stream) {
     return make_error(ErrorCode::candidate_cleanup_failed,
-                      "Could not enumerate an owned work directory for cleanup.");
+                      "Could not enumerate an import work directory for ownership capture.");
   }
   int read_error = 0;
   while (true) {
@@ -1352,52 +1477,190 @@ std::optional<Error> remove_tree_contents_at(int directory,
     if (budget->entries == kMaxWorkCleanupEntries) {
       ::closedir(stream);
       return make_error(ErrorCode::candidate_cleanup_failed,
-                        "The import work tree exceeds its cleanup entry limit.");
+                        "The import work tree exceeds its ownership entry limit.");
     }
     ++budget->entries;
     struct stat status {};
     if (::fstatat(directory, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
       ::closedir(stream);
       return make_error(ErrorCode::candidate_cleanup_failed,
-                        "An owned work entry changed during cleanup.");
+                        "An import work entry changed during ownership capture.");
     }
     const posix_file::Identity identity{status.st_dev, status.st_ino};
+    const auto relative =
+        prefix.empty() ? name : std::string(prefix) + "/" + name;
+    const bool is_directory = S_ISDIR(status.st_mode);
+    if ((!is_directory && (!S_ISREG(status.st_mode) || status.st_nlink != 1)) ||
+        !manifest || !manifest->emplace(relative, WorkEntry{identity, is_directory}).second) {
+      ::closedir(stream);
+      return make_error(ErrorCode::candidate_cleanup_failed,
+                        "The import work tree contains an unsafe or ambiguous entry.");
+    }
     if (S_ISDIR(status.st_mode)) {
       auto child = posix_file::open_directory_at(directory, name);
       if (!child || !posix_file::entry_identity(directory, name, identity)) {
         ::closedir(stream);
         return make_error(ErrorCode::candidate_cleanup_failed,
-                          "An owned work directory changed during cleanup.");
+                          "An import work directory changed during ownership capture.");
       }
-      if (const auto error = remove_tree_contents_at(child.get(), depth + 1, budget)) {
+      if (const auto error = capture_work_manifest_at(
+              child.get(), relative, depth + 1, budget, manifest)) {
         ::closedir(stream);
         return error;
       }
-      if (!posix_file::entry_identity(directory, name, identity) ||
-          ::unlinkat(directory, name.c_str(), AT_REMOVEDIR) != 0) {
+      if (!posix_file::entry_identity(directory, name, identity)) {
         ::closedir(stream);
         return make_error(ErrorCode::candidate_cleanup_failed,
-                          "Could not remove an exact owned work directory.");
+                          "An import work directory changed during ownership capture.");
       }
-    } else if (!posix_file::entry_identity(directory, name, identity) ||
-               ::unlinkat(directory, name.c_str(), 0) != 0) {
+    } else if (!posix_file::entry_identity(directory, name, identity)) {
       ::closedir(stream);
       return make_error(ErrorCode::candidate_cleanup_failed,
-                        "Could not remove an exact owned work entry.");
+                        "An import work file changed during ownership capture.");
     }
   }
   ::closedir(stream);
   if (read_error != 0) {
     return make_error(ErrorCode::candidate_cleanup_failed,
-                      "Could not completely enumerate an owned work directory.");
+                      "Could not completely capture the import work tree.");
   }
   return {};
 }
 
-std::optional<Error> remove_tree_contents_at(int directory) {
+Result<WorkManifest> capture_work_manifest_at(int directory) {
   WorkCleanupBudget budget;
-  return remove_tree_contents_at(directory, 0, &budget);
+  WorkManifest manifest;
+  if (const auto error =
+          capture_work_manifest_at(directory, {}, 0, &budget, &manifest)) {
+    return Result<WorkManifest>::failure(*error);
+  }
+  return Result<WorkManifest>::success(std::move(manifest));
 }
+
+Result<posix_file::OwnedFd> open_work_parent_at(int root,
+                                               std::string_view relative,
+                                               const WorkManifest& manifest) {
+  auto current = posix_file::open_directory_at(root, ".");
+  if (!current) {
+    return Result<posix_file::OwnedFd>::failure(make_error(
+        ErrorCode::candidate_cleanup_failed,
+        "Could not retain the import work root during exact cleanup."));
+  }
+  std::string prefix;
+  std::size_t offset = 0;
+  while (true) {
+    const auto separator = relative.find('/', offset);
+    if (separator == std::string_view::npos) {
+      break;
+    }
+    const auto component = relative.substr(offset, separator - offset);
+    prefix = prefix.empty() ? std::string(component) : prefix + "/" + std::string(component);
+    const auto expected = manifest.find(prefix);
+    auto child = posix_file::open_directory_at(current.get(), component);
+    posix_file::Identity descriptor_identity;
+    if (expected == manifest.end() || !expected->second.directory || !child ||
+        !posix_file::descriptor_identity(child.get(), &descriptor_identity) ||
+        descriptor_identity.device != expected->second.identity.device ||
+        descriptor_identity.inode != expected->second.identity.inode ||
+        !posix_file::entry_identity(current.get(), component, expected->second.identity)) {
+      return Result<posix_file::OwnedFd>::failure(make_error(
+          ErrorCode::candidate_cleanup_failed,
+          "An owned import work directory changed during exact cleanup."));
+    }
+    current = std::move(child);
+    offset = separator + 1;
+  }
+  return Result<posix_file::OwnedFd>::success(std::move(current));
+}
+
+std::optional<Error> remove_owned_work_manifest_at(int directory,
+                                                   const WorkManifest& expected) {
+  auto actual = capture_work_manifest_at(directory);
+  if (!actual || !same_work_manifest(actual.value(), expected)) {
+    return make_error(ErrorCode::candidate_cleanup_failed,
+                      "The import work tree contains an unowned or changed entry.");
+  }
+  std::vector<std::string> paths;
+  paths.reserve(expected.size());
+  for (const auto& [path, entry] : expected) {
+    (void)entry;
+    paths.push_back(path);
+  }
+  std::sort(paths.begin(), paths.end(), [](const auto& left, const auto& right) {
+    const auto left_depth = std::count(left.begin(), left.end(), '/');
+    const auto right_depth = std::count(right.begin(), right.end(), '/');
+    return left_depth != right_depth ? left_depth > right_depth : left > right;
+  });
+  for (const auto& path : paths) {
+    auto parent = open_work_parent_at(directory, path, expected);
+    if (!parent) {
+      return parent.error();
+    }
+    const auto name_offset = path.rfind('/');
+    const auto name = name_offset == std::string::npos
+                          ? std::string_view(path)
+                          : std::string_view(path).substr(name_offset + 1);
+    const auto& entry = expected.at(path);
+    if (!posix_file::entry_identity(parent.value().get(), name, entry.identity) ||
+        ::unlinkat(parent.value().get(), std::string(name).c_str(),
+                   entry.directory ? AT_REMOVEDIR : 0) != 0) {
+      return make_error(ErrorCode::candidate_cleanup_failed,
+                        "Could not remove an exact owned import work entry.");
+    }
+  }
+  return {};
+}
+
+class WorkOwnershipGuard {
+ public:
+  WorkOwnershipGuard(int work_directory, const Options& external_options)
+      : m_work_directory(work_directory), m_external_options(external_options) {}
+
+  Options guarded_options() {
+    Options guarded;
+    guarded.should_cancel = m_external_options.should_cancel;
+    if (m_external_options.on_progress) {
+      guarded.on_progress = [this](const Progress& progress) {
+        auto before = capture_work_manifest_at(m_work_directory);
+        if (!before) {
+          m_callback_failed = true;
+          throw std::runtime_error("Could not capture work ownership before a callback.");
+        }
+        m_owned = before.take_value();
+        try {
+          m_external_options.on_progress(progress);
+        } catch (...) {
+          m_callback_failed = true;
+          throw;
+        }
+        auto after = capture_work_manifest_at(m_work_directory);
+        if (!after || !same_work_manifest(after.value(), m_owned)) {
+          m_callback_failed = true;
+          throw std::runtime_error("A callback changed the import work ownership set.");
+        }
+      };
+    }
+    return guarded;
+  }
+
+  std::optional<Error> accept_importer_changes() {
+    auto current = capture_work_manifest_at(m_work_directory);
+    if (!current) {
+      return current.error();
+    }
+    m_owned = current.take_value();
+    return {};
+  }
+
+  const WorkManifest& owned() const { return m_owned; }
+  bool callback_failed() const { return m_callback_failed; }
+
+ private:
+  int m_work_directory = -1;
+  const Options& m_external_options;
+  WorkManifest m_owned;
+  bool m_callback_failed = false;
+};
 
 std::optional<Error> validate_captured_directory(
     int directory,
@@ -1452,96 +1715,9 @@ std::optional<Error> promote_captured_directory(int prepared_root,
   return {};
 }
 
-std::optional<Error> remove_partial_residue_at(int work_directory,
-                                               std::size_t depth,
-                                               WorkCleanupBudget* budget) {
-  if (work_directory < 0) {
-    return {};
-  }
-  if (!budget || depth > kMaxWorkCleanupDepth) {
-    return make_error(ErrorCode::candidate_cleanup_failed,
-                      "The preserved import tree exceeds its cleanup depth limit.");
-  }
-  auto enumeration = posix_file::open_directory_at(work_directory, ".");
-  if (!enumeration) {
-    return make_error(ErrorCode::candidate_cleanup_failed,
-                      "Could not reopen the preserved import work directory.");
-  }
-  DIR* stream = ::fdopendir(enumeration.release());
-  if (!stream) {
-    return make_error(ErrorCode::candidate_cleanup_failed,
-                      "Could not enumerate the preserved import work directory.");
-  }
-  while (true) {
-    errno = 0;
-    const auto* entry = ::readdir(stream);
-    if (!entry) {
-      const int read_error = errno;
-      ::closedir(stream);
-      if (read_error != 0) {
-        return make_error(ErrorCode::candidate_cleanup_failed,
-                          "The preserved candidate changed during partial cleanup.");
-      }
-      return {};
-    }
-    const std::string name(entry->d_name);
-    if (name == "." || name == "..") {
-      continue;
-    }
-    if (budget->entries == kMaxWorkCleanupEntries) {
-      ::closedir(stream);
-      return make_error(ErrorCode::candidate_cleanup_failed,
-                        "The preserved import tree exceeds its cleanup entry limit.");
-    }
-    ++budget->entries;
-    struct stat status {};
-    if (::fstatat(work_directory, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
-      ::closedir(stream);
-      return make_error(ErrorCode::candidate_cleanup_failed,
-                        "The preserved candidate changed during partial cleanup.");
-    }
-    const posix_file::Identity identity{status.st_dev, status.st_ino};
-    if (S_ISDIR(status.st_mode)) {
-      auto child = posix_file::open_directory_at(work_directory, name);
-      if (!child || !posix_file::entry_identity(work_directory, name, identity)) {
-        ::closedir(stream);
-        return make_error(ErrorCode::candidate_cleanup_failed,
-                          "A preserved import directory changed during partial cleanup.");
-      }
-      if (const auto error = remove_partial_residue_at(child.get(), depth + 1, budget)) {
-        ::closedir(stream);
-        return error;
-      }
-      if (!posix_file::entry_identity(work_directory, name, identity)) {
-        ::closedir(stream);
-        return make_error(ErrorCode::candidate_cleanup_failed,
-                          "A preserved import directory changed during partial cleanup.");
-      }
-      continue;
-    }
-    if (!name.ends_with(".partial")) {
-      continue;
-    }
-    if (!S_ISREG(status.st_mode) ||
-        !posix_file::entry_identity(work_directory, name, identity) ||
-        ::unlinkat(work_directory, name.c_str(), 0) != 0) {
-      ::closedir(stream);
-      return make_error(ErrorCode::candidate_cleanup_failed,
-                        "Could not remove an exact import partial file.");
-    }
-  }
-}
-
-std::optional<Error> remove_partial_residue_at(int work_directory) {
-  WorkCleanupBudget budget;
-  return remove_partial_residue_at(work_directory, 0, &budget);
-}
-
 Error preserve_error_at(Error error, const internal::WorkPaths& paths, int work_directory) {
+  (void)work_directory;
   error.preserved_candidate_root = paths.candidate_root;
-  if (const auto cleanup = remove_partial_residue_at(work_directory)) {
-    error.cleanup_error = cleanup->message;
-  }
   return error;
 }
 
@@ -1559,6 +1735,13 @@ Error map_source_pack_failure(const source_pack::Error& error, CallbackForwarder
 }  // namespace
 
 namespace internal {
+
+std::optional<Error> write_file_atomically(const fs::path& destination,
+                                           std::span<const std::uint8_t> bytes,
+                                           const Options& options) {
+  CallbackForwarder callbacks(options);
+  return write_file_atomically_impl(destination, bytes, callbacks);
+}
 
 namespace {
 
@@ -1796,7 +1979,7 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
           "The composer requires a fresh absolute candidate under a direct directory."));
     }
     for (const auto& stage : stages) {
-      if (!stage.run) {
+      if (!stage.run && !stage.run_with_options) {
         return Result<Summary>::failure(
             make_error(ErrorCode::invalid_argument, "The composer stage list is incomplete."));
       }
@@ -1829,7 +2012,9 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
           paths));
     }
 
-    CallbackForwarder callbacks(options);
+    WorkOwnershipGuard ownership(work_directory.get(), options);
+    const auto guarded_options = ownership.guarded_options();
+    CallbackForwarder callbacks(guarded_options);
     for (const auto& stage : stages) {
       if (callbacks.poll_cancel()) {
         return Result<Summary>::failure(preserve_error(
@@ -1841,8 +2026,16 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
         return Result<Summary>::failure(
             preserve_error(callbacks.cancellation_or_callback_error({}), paths));
       }
-      if (const auto stage_error = stage.run(paths)) {
-        return Result<Summary>::failure(preserve_error(*stage_error, paths));
+      const auto stage_error = stage.run_with_options
+                                   ? stage.run_with_options(paths, guarded_options)
+                                   : stage.run(paths);
+      if (stage_error) {
+        return Result<Summary>::failure(preserve_error(
+            ownership.callback_failed()
+                ? make_error(ErrorCode::callback_failed,
+                             "A Jak II import progress callback changed the owned work tree.")
+                : *stage_error,
+            paths));
       }
       if (stage.phase == Phase::materializing_output) {
         if (captured_output || !produced_contract->has_value()) {
@@ -1856,6 +2049,9 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
           return Result<Summary>::failure(preserve_error(captured.error(), paths));
         }
         captured_output.emplace(captured.take_value());
+      }
+      if (const auto ownership_error = ownership.accept_importer_changes()) {
+        return Result<Summary>::failure(preserve_error(*ownership_error, paths));
       }
       if (!callbacks.report({stage.phase, 1, 1, 0, {}})) {
         return Result<Summary>::failure(
@@ -1948,7 +2144,11 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
                      "The import work directory changed before cleanup."),
           paths));
     }
-    if (const auto cleanup = remove_tree_contents_at(work_directory.get())) {
+    if (const auto ownership_error = ownership.accept_importer_changes()) {
+      return Result<Summary>::failure(preserve_error(*ownership_error, paths));
+    }
+    if (const auto cleanup =
+            remove_owned_work_manifest_at(work_directory.get(), ownership.owned())) {
       return Result<Summary>::failure(preserve_error(*cleanup, paths));
     }
     if (!posix_file::entry_identity(candidate_directory.get(), kWorkDirectoryName,
@@ -2061,28 +2261,28 @@ Result<Summary> compose(const Request& request, const Options& options) {
     state.iso_file = iso.take_value();
     const std::array<internal::StageAction, 6> stages = {{
         {Phase::extracting_iso,
-         [&](const internal::WorkPaths& paths) {
-           return extract_iso_stage(paths, options, &state);
+         [&](const internal::WorkPaths& paths, const Options& stage_options) {
+           return extract_iso_stage(paths, stage_options, &state);
          }},
         {Phase::cataloging_retail,
-         [&](const internal::WorkPaths&) {
-           return catalog_retail_stage(options, &state);
+         [&](const internal::WorkPaths&, const Options& stage_options) {
+           return catalog_retail_stage(stage_options, &state);
          }},
         {Phase::generating_data,
-         [&](const internal::WorkPaths&) {
-           return generate_data_stage(resolved, options, &state);
+         [&](const internal::WorkPaths&, const Options& stage_options) {
+           return generate_data_stage(resolved, stage_options, &state);
          }},
         {Phase::preparing_fr3,
-         [&](const internal::WorkPaths& paths) {
-           return prepare_fr3_stage(resolved, paths, options, &state);
+         [&](const internal::WorkPaths& paths, const Options& stage_options) {
+           return prepare_fr3_stage(resolved, paths, stage_options, &state);
          }},
         {Phase::generating_recipe,
-         [&](const internal::WorkPaths& paths) {
-           return generate_recipe_stage(resolved, paths, options, &state);
+         [&](const internal::WorkPaths& paths, const Options& stage_options) {
+           return generate_recipe_stage(resolved, paths, stage_options, &state);
          }},
         {Phase::materializing_output,
-         [&](const internal::WorkPaths& paths) {
-           return materialize_stage(resolved, paths, options, &state);
+         [&](const internal::WorkPaths& paths, const Options& stage_options) {
+           return materialize_stage(resolved, paths, stage_options, &state);
          }},
     }};
     return internal::compose_in_fresh_candidate(resolved.candidate_root, options, stages,

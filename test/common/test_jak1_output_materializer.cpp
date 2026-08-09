@@ -363,6 +363,30 @@ bool descriptor_owned_outputs_reject_terminal_races() {
   {
     Fixture fixture;
     CHECK(fixture.setup());
+    const auto external = fixture.temp.path / "external-file";
+    const std::vector<std::uint8_t> sentinel{0x5a, 0x31, 0x44};
+    CHECK(write_bytes(external, sentinel));
+    bool injected = false;
+    fixture.options.on_progress = [&](const Progress& progress) {
+      if (!injected && progress.phase == Phase::installing) {
+        std::error_code error;
+        fs::rename(external,
+                   fs::path(fixture.destination.string() + ".stage") / "iso/injected.bin",
+                   error);
+        injected = !error;
+      }
+    };
+    const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+    CHECK(injected);
+    CHECK(!result);
+    CHECK(result.error().code == ErrorCode::stage_cleanup_failed);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(read_bytes(fs::path(fixture.destination.string() + ".stage") /
+                     "iso/injected.bin") == sentinel);
+  }
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
     bool raced = false;
     fixture.options.on_progress = [&](const Progress& progress) {
       if (!raced && progress.phase == Phase::installing) {

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -314,6 +315,43 @@ std::optional<Error> remove_owned_output(int directory,
   return {};
 }
 
+struct OwnedTemporary {
+  posix_file::OwnedFd descriptor;
+  std::string name;
+  posix_file::Identity identity;
+};
+
+Result<OwnedTemporary> create_temporary(int directory) {
+  static std::atomic<std::uint64_t> next_id{0};
+  for (std::size_t attempt = 0; attempt < 64; ++attempt) {
+    const auto id = next_id.fetch_add(1, std::memory_order_relaxed);
+    auto name = ".opengoal-dgo-" + std::to_string(static_cast<unsigned long long>(::getpid())) +
+                "-" + std::to_string(static_cast<unsigned long long>(id)) + ".tmp";
+    auto descriptor =
+        posix_file::open_file_at(directory, name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (!descriptor) {
+      if (errno == EEXIST) {
+        continue;
+      }
+      return Result<OwnedTemporary>::failure(make_error(
+          ErrorCode::stage_create_failed,
+          system_error_message("Could not exclusively create a DGO temporary file", errno)));
+    }
+    posix_file::Identity identity;
+    struct stat status {};
+    if (!posix_file::descriptor_identity(descriptor.get(), &identity, &status) ||
+        !S_ISREG(status.st_mode) || status.st_nlink != 1) {
+      return Result<OwnedTemporary>::failure(make_error(
+          ErrorCode::stage_create_failed,
+          "The exclusively created DGO temporary is not a private regular file."));
+    }
+    return Result<OwnedTemporary>::success(
+        {std::move(descriptor), std::move(name), identity});
+  }
+  return Result<OwnedTemporary>::failure(make_error(
+      ErrorCode::stage_create_failed, "Could not allocate a unique DGO temporary basename."));
+}
+
 std::optional<Error> verify_descriptor_hash(int descriptor,
                                             std::size_t size,
                                             std::uint64_t expected_hash) {
@@ -412,21 +450,15 @@ Result<WriteSummary> write_file_at(int directory_fd,
     return Result<WriteSummary>::failure(prepared.error());
   }
 
-  auto output = posix_file::open_file_at(
-      directory_fd, destination_basename, O_RDWR | O_CREAT | O_EXCL, 0600);
-  if (!output) {
-    return Result<WriteSummary>::failure(make_error(
-        errno == EEXIST ? ErrorCode::destination_exists : ErrorCode::stage_create_failed,
-        system_error_message("Could not exclusively create the DGO output", errno)));
+  auto temporary = create_temporary(directory_fd);
+  if (!temporary) {
+    return Result<WriteSummary>::failure(temporary.error());
   }
-  posix_file::Identity output_identity;
-  struct stat output_status {};
-  if (!posix_file::descriptor_identity(output.get(), &output_identity, &output_status) ||
-      !S_ISREG(output_status.st_mode) || output_status.st_nlink != 1) {
-    return Result<WriteSummary>::failure(
-        make_error(ErrorCode::stage_create_failed,
-                   "The exclusively created DGO output is not a private regular file."));
-  }
+  auto owned = temporary.take_value();
+  const auto fail_owned = [&](Error error) {
+    const auto cleanup = remove_owned_output(directory_fd, owned.name, owned.identity);
+    return Result<WriteSummary>::failure(cleanup ? *cleanup : std::move(error));
+  };
 
   XXH64_state_t hash_state;
   XXH64_reset(&hash_state, 0);
@@ -434,7 +466,8 @@ Result<WriteSummary> write_file_at(int directory_fd,
   const auto sink = [&](std::span<const std::uint8_t> bytes) -> std::optional<Error> {
     std::size_t offset = 0;
     while (offset < bytes.size()) {
-      const auto written = ::write(output.get(), bytes.data() + offset, bytes.size() - offset);
+      const auto written =
+          ::write(owned.descriptor.get(), bytes.data() + offset, bytes.size() - offset);
       if (written < 0) {
         if (errno == EINTR) {
           continue;
@@ -452,31 +485,28 @@ Result<WriteSummary> write_file_at(int directory_fd,
     return {};
   };
   if (const auto error = emit(archive_name, objects, prepared.value(), options, sink)) {
-    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
-    return Result<WriteSummary>::failure(cleanup ? *cleanup : *error);
+    return fail_owned(*error);
   }
-  if (::fsync(output.get()) != 0) {
+  if (::fsync(owned.descriptor.get()) != 0) {
     const auto error =
         make_error(ErrorCode::stage_sync_failed,
                    system_error_message("Could not synchronize the owned DGO output", errno));
-    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
-    return Result<WriteSummary>::failure(cleanup ? *cleanup : error);
+    return fail_owned(error);
   }
   if (const auto error = check_cancelled(options)) {
-    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
-    return Result<WriteSummary>::failure(cleanup ? *cleanup : *error);
+    return fail_owned(*error);
   }
   if (const auto error = report_progress(
           options, ProgressPhase::installing, prepared.value().summary.object_count,
           prepared.value().summary.object_count, prepared.value().summary.output_bytes,
           prepared.value().summary.output_bytes)) {
-    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
-    return Result<WriteSummary>::failure(cleanup ? *cleanup : *error);
+    return fail_owned(*error);
   }
   struct stat final_descriptor_status {};
   struct stat final_entry_status {};
-  if (!posix_file::descriptor_identity(output.get(), nullptr, &final_descriptor_status) ||
-      !posix_file::entry_identity(directory_fd, destination_basename, output_identity,
+  if (!posix_file::descriptor_identity(owned.descriptor.get(), nullptr,
+                                       &final_descriptor_status) ||
+      !posix_file::entry_identity(directory_fd, owned.name, owned.identity,
                                   &final_entry_status) ||
       !S_ISREG(final_entry_status.st_mode) || final_entry_status.st_nlink != 1 ||
       final_descriptor_status.st_size !=
@@ -485,15 +515,26 @@ Result<WriteSummary> write_file_at(int directory_fd,
     const auto error = make_error(
         ErrorCode::atomic_install_failed,
         "The owned DGO output changed before descriptor-relative installation completed.");
-    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
-    return Result<WriteSummary>::failure(cleanup ? *cleanup : error);
+    return fail_owned(error);
   }
   auto summary = prepared.value().summary;
   summary.output_xxh64 = XXH64_digest(&hash_state);
   if (const auto error =
-          verify_descriptor_hash(output.get(), summary.output_bytes, summary.output_xxh64)) {
-    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
-    return Result<WriteSummary>::failure(cleanup ? *cleanup : *error);
+          verify_descriptor_hash(owned.descriptor.get(), summary.output_bytes,
+                                 summary.output_xxh64)) {
+    return fail_owned(*error);
+  }
+  if (posix_file::exclusive_rename_at(directory_fd, owned.name, directory_fd,
+                                      destination_basename) != 0) {
+    const auto error = make_error(
+        errno == EEXIST ? ErrorCode::destination_exists : ErrorCode::atomic_install_failed,
+        system_error_message("Could not exclusively install the checked DGO", errno));
+    return fail_owned(error);
+  }
+  if (!posix_file::entry_identity(directory_fd, destination_basename, owned.identity)) {
+    return Result<WriteSummary>::failure(make_error(
+        ErrorCode::atomic_install_failed,
+        "The installed DGO identity changed before installation completed."));
   }
   return Result<WriteSummary>::success(std::move(summary));
 }

@@ -31,6 +31,13 @@ constexpr std::uint64_t kDgoHeaderBytes = 64;
 
 using OutputMap = std::unordered_map<std::string, checked_file_identity::Identity>;
 
+struct OwnedOutput {
+  std::string name;
+  posix_file::Identity identity;
+};
+
+using OwnedOutputMap = std::unordered_map<std::string, OwnedOutput>;
+
 Error make_error(ErrorCode code,
                  std::string message,
                  std::optional<std::uint32_t> archive_index = {},
@@ -177,7 +184,7 @@ std::optional<Error> inspect_parent_identity(const fs::path& path,
   return {};
 }
 
-std::optional<Error> remove_direct_entries(int directory) {
+std::optional<Error> remove_owned_entries(int directory, const OwnedOutputMap& owned) {
   auto enumeration = posix_file::open_directory_at(directory, ".");
   if (!enumeration) {
     return make_error(ErrorCode::stage_cleanup_failed,
@@ -189,6 +196,7 @@ std::optional<Error> remove_direct_entries(int directory) {
                       "Could not enumerate an owned output directory for cleanup.");
   }
   int read_error = 0;
+  std::size_t found_count = 0;
   while (true) {
     errno = 0;
     const auto* entry = ::readdir(stream);
@@ -200,25 +208,27 @@ std::optional<Error> remove_direct_entries(int directory) {
     if (name == "." || name == "..") {
       continue;
     }
-    struct stat status {};
-    if (::fstatat(directory, entry->d_name, &status, AT_SYMLINK_NOFOLLOW) != 0 ||
-        S_ISDIR(status.st_mode)) {
+    const auto found = owned.find(collision_key(name));
+    if (found == owned.end() || found->second.name != name ||
+        !posix_file::entry_identity(directory, name, found->second.identity)) {
       ::closedir(stream);
       return make_error(ErrorCode::stage_cleanup_failed,
-                        "An owned output directory changed or gained a nested directory.");
+                        "An owned output directory contains an unowned or changed entry.");
     }
-    const posix_file::Identity identity{status.st_dev, status.st_ino};
-    if (!posix_file::entry_identity(directory, entry->d_name, identity) ||
-        ::unlinkat(directory, entry->d_name, 0) != 0) {
-      ::closedir(stream);
-      return make_error(ErrorCode::stage_cleanup_failed,
-                        "An owned staged output changed during cleanup.");
-    }
+    ++found_count;
   }
   ::closedir(stream);
-  if (read_error != 0) {
+  if (read_error != 0 || found_count != owned.size()) {
     return make_error(ErrorCode::stage_cleanup_failed,
-                      "Could not completely enumerate an owned output directory.");
+                      "An owned output directory could not be exactly matched for cleanup.");
+  }
+  for (const auto& [key, output] : owned) {
+    (void)key;
+    if (!posix_file::entry_identity(directory, output.name, output.identity) ||
+        ::unlinkat(directory, output.name.c_str(), 0) != 0) {
+      return make_error(ErrorCode::stage_cleanup_failed,
+                        "An exact owned staged output changed during cleanup.");
+    }
   }
   return {};
 }
@@ -235,6 +245,8 @@ struct OutputStage {
   posix_file::Identity root_identity;
   posix_file::Identity iso_identity;
   posix_file::Identity fr3_identity;
+  OwnedOutputMap iso_outputs;
+  OwnedOutputMap fr3_outputs;
   bool linked = false;
   bool iso_linked = false;
   bool fr3_linked = false;
@@ -272,7 +284,7 @@ struct OutputStage {
       }
     }
     if (iso_linked) {
-      if (const auto error = remove_direct_entries(iso.get())) {
+      if (const auto error = remove_owned_entries(iso.get(), iso_outputs)) {
         return error;
       }
       if (!posix_file::entry_identity(root.get(), "iso", iso_identity) ||
@@ -283,7 +295,7 @@ struct OutputStage {
       iso_linked = false;
     }
     if (fr3_linked) {
-      if (const auto error = remove_direct_entries(fr3.get())) {
+      if (const auto error = remove_owned_entries(fr3.get(), fr3_outputs)) {
         return error;
       }
       if (!posix_file::entry_identity(root.get(), "fr3", fr3_identity) ||
@@ -651,6 +663,23 @@ std::optional<Error> remove_owned_file(int directory,
   return {};
 }
 
+std::optional<Error> record_owned_output(int directory,
+                                         std::string_view name,
+                                         OwnedOutputMap* outputs) {
+  auto file = posix_file::open_file_at(directory, name, O_RDONLY);
+  posix_file::Identity identity;
+  struct stat status {};
+  if (!outputs || !file ||
+      !posix_file::descriptor_identity(file.get(), &identity, &status) ||
+      !S_ISREG(status.st_mode) || status.st_nlink != 1 ||
+      !posix_file::entry_identity(directory, name, identity) ||
+      !outputs->emplace(collision_key(name), OwnedOutput{std::string(name), identity}).second) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not record an exact owned staged output.");
+  }
+  return {};
+}
+
 std::optional<Error> copy_file_at(
     const fs::path& source,
     int destination_directory,
@@ -660,7 +689,8 @@ std::optional<Error> copy_file_at(
     ErrorCode mismatch_code,
     std::uint64_t* total_output,
     const Options& options,
-    checked_file_identity::Identity* produced) {
+    checked_file_identity::Identity* produced,
+    posix_file::Identity* produced_inode) {
   std::error_code error;
   const auto size = fs::file_size(source, error);
   if (error || size == 0 || size > cap) {
@@ -676,11 +706,15 @@ std::optional<Error> copy_file_at(
   }
   const int input_descriptor = ::open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   posix_file::OwnedFd input(input_descriptor);
+  if (!input) {
+    return make_error(ErrorCode::input_read_failed,
+                      "Could not open a materializer copy input.");
+  }
   auto output = posix_file::open_file_at(
       destination_directory, destination_name, O_RDWR | O_CREAT | O_EXCL, 0600);
-  if (!input || !output) {
+  if (!output) {
     return make_error(ErrorCode::output_write_failed,
-                      "Could not open a materializer copy input or output.");
+                      "Could not exclusively create a materializer copy output.");
   }
   posix_file::Identity output_identity;
   struct stat output_status {};
@@ -689,13 +723,17 @@ std::optional<Error> copy_file_at(
     return make_error(ErrorCode::output_write_failed,
                       "The copied output is not a private regular file.");
   }
+  const auto fail_owned = [&](Error error) {
+    const auto cleanup = remove_owned_file(destination_directory, destination_name, output_identity);
+    return cleanup ? *cleanup : std::move(error);
+  };
   XXH64_state_t hash_state;
   XXH64_reset(&hash_state, 0);
   std::vector<char> buffer(options.limits.io_chunk_bytes);
   std::uint64_t copied = 0;
   while (copied < size) {
     if (const auto error_result = cancelled(options)) {
-      return error_result;
+      return fail_owned(*error_result);
     }
     const auto chunk =
         static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - copied));
@@ -704,8 +742,9 @@ std::optional<Error> copy_file_at(
       continue;
     }
     if (read_count != static_cast<ssize_t>(chunk)) {
-      return make_error(ErrorCode::input_read_failed,
-                        "Could not completely read a copied input: " + source.string());
+      return fail_owned(make_error(ErrorCode::input_read_failed,
+                                   "Could not completely read a copied input: " +
+                                       source.string()));
     }
     std::size_t written = 0;
     while (written < chunk) {
@@ -715,8 +754,8 @@ std::optional<Error> copy_file_at(
         continue;
       }
       if (write_count <= 0) {
-        return make_error(ErrorCode::output_write_failed,
-                          "Could not write a staged output.");
+        return fail_owned(make_error(ErrorCode::output_write_failed,
+                                     "Could not write a staged output."));
       }
       written += static_cast<std::size_t>(write_count);
     }
@@ -724,12 +763,13 @@ std::optional<Error> copy_file_at(
     copied += chunk;
   }
   if (::fsync(output.get()) != 0) {
-    return make_error(ErrorCode::output_write_failed,
-                      "Could not synchronize a staged output.");
+    return fail_owned(make_error(ErrorCode::output_write_failed,
+                                 "Could not synchronize a staged output."));
   }
   const auto copied_hash = XXH64_digest(&hash_state);
   if (expected && copied_hash != expected->second) {
-    return make_error(mismatch_code, "A copied artifact has the wrong hash: " + source.string());
+    return fail_owned(
+        make_error(mismatch_code, "A copied artifact has the wrong hash: " + source.string()));
   }
   struct stat final_status {};
   std::uint64_t installed_hash = 0;
@@ -747,6 +787,9 @@ std::optional<Error> copy_file_at(
   *total_output = next_total;
   if (produced) {
     *produced = {std::string(destination_name), size, copied_hash};
+  }
+  if (produced_inode) {
+    *produced_inode = output_identity;
   }
   return {};
 }
@@ -1227,6 +1270,10 @@ Result<Summary> materialize(const Inputs& inputs,
                 archive_index, written.error().object_index),
             stage));
       }
+      if (const auto owned = record_owned_output(
+              stage.iso.get(), archive_record.destination_basename, &stage.iso_outputs)) {
+        return Result<Summary>::failure(*cleanup_failure(*owned, stage));
+      }
       if (const auto budget =
               reserve_output(written.value().output_bytes, &summary.output_bytes, options)) {
         return Result<Summary>::failure(*cleanup_failure(*budget, stage));
@@ -1275,11 +1322,21 @@ Result<Summary> materialize(const Inputs& inputs,
                                       std::pair{identity.value()->size, identity.value()->xxh64})
                                 : std::nullopt;
       checked_file_identity::Identity produced;
+      posix_file::Identity produced_inode;
       if (const auto error = copy_file_at(
               source.value(), stage.iso.get(), copy.destination_basename,
               options.limits.max_flat_file_bytes, expected, ErrorCode::input_identity_mismatch,
-              &summary.output_bytes, options, &produced)) {
+              &summary.output_bytes, options, &produced, &produced_inode)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
+      }
+      if (!stage.iso_outputs
+               .emplace(collision_key(copy.destination_basename),
+                        OwnedOutput{copy.destination_basename, produced_inode})
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged flat ownership record collides with another output."),
+            stage));
       }
       if (!iso_outputs.emplace(collision_key(copy.destination_basename), std::move(produced)).second) {
         return Result<Summary>::failure(*cleanup_failure(
@@ -1310,13 +1367,23 @@ Result<Summary> materialize(const Inputs& inputs,
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
       checked_file_identity::Identity produced;
+      posix_file::Identity produced_inode;
       if (const auto error = copy_file_at(
               source.value(), stage.iso.get(), generated.destination_basename,
               options.limits.max_flat_file_bytes,
               std::pair<std::uint64_t, std::uint64_t>{artifact.size, artifact.xxh64},
               ErrorCode::generated_artifact_mismatch, &summary.output_bytes, options,
-              &produced)) {
+              &produced, &produced_inode)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
+      }
+      if (!stage.iso_outputs
+               .emplace(collision_key(generated.destination_basename),
+                        OwnedOutput{generated.destination_basename, produced_inode})
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A generated flat ownership record collides with another output."),
+            stage));
       }
       if (!iso_outputs
                .emplace(collision_key(generated.destination_basename), std::move(produced))
@@ -1391,14 +1458,24 @@ Result<Summary> materialize(const Inputs& inputs,
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
       checked_file_identity::Identity produced;
+      posix_file::Identity produced_inode;
       if (const auto error = copy_file_at(
               source.value(), stage.fr3.get(), name, options.limits.max_fr3_file_bytes,
               identity.value()
                   ? std::optional<std::pair<std::uint64_t, std::uint64_t>>(
                         std::pair{identity.value()->size, identity.value()->xxh64})
                   : std::nullopt,
-              ErrorCode::input_identity_mismatch, &summary.output_bytes, options, &produced)) {
+              ErrorCode::input_identity_mismatch, &summary.output_bytes, options, &produced,
+              &produced_inode)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
+      }
+      if (!stage.fr3_outputs
+               .emplace(collision_key(name), OwnedOutput{name, produced_inode})
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged FR3 ownership record collides with another output."),
+            stage));
       }
       if (!fr3_outputs.emplace(collision_key(name), std::move(produced)).second) {
         return Result<Summary>::failure(*cleanup_failure(

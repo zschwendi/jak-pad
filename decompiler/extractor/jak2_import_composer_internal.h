@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "decompiler/extractor/jak2_import_composer.h"
@@ -44,6 +45,10 @@ select_exact_retail_catalog(
     std::uint64_t max_total_object_bytes,
     const Options& options = {});
 
+std::optional<Error> write_file_atomically(const std::filesystem::path& destination,
+                                           std::span<const std::uint8_t> bytes,
+                                           const Options& options = {});
+
 struct WorkPaths {
   std::filesystem::path candidate_root;
   std::filesystem::path work_root;
@@ -56,8 +61,17 @@ struct FinalContract {
 };
 
 struct StageAction {
+  StageAction(Phase stage_phase,
+              std::function<std::optional<Error>(const WorkPaths&)> stage_run)
+      : phase(stage_phase), run(std::move(stage_run)) {}
+  StageAction(
+      Phase stage_phase,
+      std::function<std::optional<Error>(const WorkPaths&, const Options&)> stage_run)
+      : phase(stage_phase), run_with_options(std::move(stage_run)) {}
+
   Phase phase = Phase::extracting_iso;
   std::function<std::optional<Error>(const WorkPaths&)> run;
+  std::function<std::optional<Error>(const WorkPaths&, const Options&)> run_with_options;
 };
 
 Result<Summary> compose_in_fresh_candidate(const std::filesystem::path& candidate_root,

@@ -59,13 +59,11 @@ std::vector<std::uint8_t> read_bytes(const std::filesystem::path& path) {
   return input ? bytes : std::vector<std::uint8_t>{};
 }
 
-std::size_t owned_stage_count(const std::filesystem::path& directory,
-                              std::string_view destination_name) {
-  const auto prefix = "." + std::string(destination_name) + ".opengoal-stage-";
+std::size_t owned_stage_count(const std::filesystem::path& directory) {
   std::size_t count = 0;
   for (const auto& entry : std::filesystem::directory_iterator(directory)) {
     const auto name = entry.path().filename().string();
-    if (name.starts_with(prefix)) {
+    if (name.starts_with(".opengoal-dgo-") && name.ends_with(".tmp")) {
       ++count;
     }
   }
@@ -282,7 +280,7 @@ bool writes_atomically_and_refuses_existing_destination() {
   CHECK(result.value().object_count == 2);
   CHECK(result.value().object_bytes == 5);
   CHECK(result.value().output_bytes == read_bytes(destination).size());
-  CHECK(owned_stage_count(temp.path, destination.filename().string()) == 0);
+  CHECK(owned_stage_count(temp.path) == 0);
   CHECK(std::find(phases.begin(), phases.end(), writer::ProgressPhase::installing) != phases.end());
 
   const auto parsed = jak1_checked_dgo::read_file(destination, "OUTPUT.DGO");
@@ -295,33 +293,60 @@ bool writes_atomically_and_refuses_existing_destination() {
   CHECK(!second);
   CHECK(second.error().code == writer::ErrorCode::destination_exists);
   CHECK(read_bytes(destination) == before);
-  CHECK(owned_stage_count(temp.path, destination.filename().string()) == 0);
+  CHECK(owned_stage_count(temp.path) == 0);
 
   const auto raced_destination = temp.path / "RACE.DGO";
   options = {};
   options.on_progress = [&](const writer::Progress& update) {
     if (update.phase == writer::ProgressPhase::installing) {
-      std::fstream raced(raced_destination, std::ios::binary | std::ios::in | std::ios::out);
-      char byte = 0;
-      raced.read(&byte, 1);
-      byte ^= 1;
-      raced.seekp(0);
-      raced.write(&byte, 1);
-      raced.flush();
+      std::ofstream attacker(raced_destination, std::ios::binary);
+      attacker << "preserve";
     }
   };
   const auto raced = writer::write_file(raced_destination, "RACE.DGO", objects, options);
   CHECK(!raced);
-  CHECK(raced.error().code == writer::ErrorCode::atomic_install_failed);
-  CHECK(!std::filesystem::exists(raced_destination));
-  CHECK(owned_stage_count(temp.path, raced_destination.filename().string()) == 0);
+  CHECK(raced.error().code == writer::ErrorCode::destination_exists);
+  CHECK(read_bytes(raced_destination) ==
+        std::vector<std::uint8_t>({'p', 'r', 'e', 's', 'e', 'r', 'v', 'e'}));
+  CHECK(owned_stage_count(temp.path) == 0);
+
+  const auto mutated_destination = temp.path / "MUTATED.DGO";
+  bool mutated = false;
+  options = {};
+  options.on_progress = [&](const writer::Progress& update) {
+    if (update.phase != writer::ProgressPhase::installing || mutated) {
+      return;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(temp.path)) {
+      const auto name = entry.path().filename().string();
+      if (!name.starts_with(".opengoal-dgo-") || !name.ends_with(".tmp")) {
+        continue;
+      }
+      std::fstream attacker(entry.path(), std::ios::binary | std::ios::in | std::ios::out);
+      char byte = 0;
+      attacker.read(&byte, 1);
+      byte ^= 1;
+      attacker.seekp(0);
+      attacker.write(&byte, 1);
+      attacker.flush();
+      mutated = true;
+      break;
+    }
+  };
+  const auto mutated_result =
+      writer::write_file(mutated_destination, "MUTATED.DGO", objects, options);
+  CHECK(mutated);
+  CHECK(!mutated_result);
+  CHECK(mutated_result.error().code == writer::ErrorCode::atomic_install_failed);
+  CHECK(!std::filesystem::exists(mutated_destination));
+  CHECK(owned_stage_count(temp.path) == 0);
   return true;
 }
 
 bool failure_cleans_only_its_owned_stage() {
   TemporaryDirectory temp;
   const auto destination = temp.path / "CANCEL.DGO";
-  const auto unrelated = temp.path / ".CANCEL.DGO.opengoal-stage-preserve";
+  const auto unrelated = temp.path / ".opengoal-dgo-preserve.tmp";
   {
     std::ofstream output(unrelated, std::ios::binary);
     output << "preserve";
@@ -343,7 +368,7 @@ bool failure_cleans_only_its_owned_stage() {
   CHECK(result.error().code == writer::ErrorCode::cancelled);
   CHECK(!std::filesystem::exists(destination));
   CHECK(std::filesystem::exists(unrelated));
-  CHECK(owned_stage_count(temp.path, destination.filename().string()) == 1);
+  CHECK(owned_stage_count(temp.path) == 1);
 
   const auto missing_parent = temp.path / "missing" / "OUTPUT.DGO";
   const auto missing_result = writer::write_file(missing_parent, "OUTPUT.DGO", objects);
