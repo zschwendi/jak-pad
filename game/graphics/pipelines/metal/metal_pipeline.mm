@@ -14,6 +14,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <type_traits>
@@ -441,7 +442,7 @@ bool render_last_chain_to_external_target(int width,
                                                           height:height
                                                        mipmapped:NO];
     color_desc.textureType = MTLTextureType2DArray;
-    color_desc.arrayLength = 2;
+    color_desc.arrayLength = 3;
     color_desc.usage = MTLTextureUsageRenderTarget;
 #if TARGET_OS_OSX
     color_desc.storageMode = MTLStorageModeManaged;
@@ -456,7 +457,7 @@ bool render_last_chain_to_external_target(int width,
                                                           height:height
                                                        mipmapped:NO];
     depth_desc.textureType = MTLTextureType2DArray;
-    depth_desc.arrayLength = 2;
+    depth_desc.arrayLength = 3;
     depth_desc.usage = MTLTextureUsageRenderTarget;
     depth_desc.storageMode = MTLStorageModePrivate;
     id<MTLTexture> depth = [g_renderer->device() newTextureWithDescriptor:depth_desc];
@@ -625,6 +626,41 @@ bool render_last_chain_to_external_target(int width,
     out->stream_reuse_synchronized =
         after_second_external.stream_reuse_waits == after_first_external.stream_reuse_waits + 1;
 
+    auto stereo_left = target;
+    stereo_left.view_id = 0x4255494c4431344cull;  // "BUILD14L"
+    auto stereo_right = target;
+    stereo_right.view_id = 0x4255494c44313452ull;  // "BUILD14R"
+    stereo_right.color_slice = 2;
+    stereo_right.depth_slice = 2;
+
+    auto aliased_right = stereo_right;
+    aliased_right.color_slice = stereo_left.color_slice;
+    aliased_right.depth_slice = stereo_left.depth_slice;
+    const ChainStats before_invalid_batch = g_renderer->chain_stats();
+    const bool aliased_batch_rejected = !g_renderer->render_chain_frame_to_external_stereo_targets(
+        opts, stereo_left, aliased_right, chain.data.data(), chain.start_offset);
+    auto nonfinite_right = stereo_right;
+    nonfinite_right.view_transform.clip_from_game_clip[0] = std::numeric_limits<float>::quiet_NaN();
+    const bool nonfinite_batch_rejected =
+        !g_renderer->render_chain_frame_to_external_stereo_targets(
+            opts, stereo_left, nonfinite_right, chain.data.data(), chain.start_offset);
+    const ChainStats after_invalid_batch = g_renderer->chain_stats();
+    out->stereo_invalid_batch_rejected =
+        aliased_batch_rejected && nonfinite_batch_rejected &&
+        std::memcmp(&before_invalid_batch, &after_invalid_batch, sizeof(ChainStats)) == 0;
+
+    std::vector<u8> stereo_chain = chain.data;
+    const ChainStats before_stereo = g_renderer->chain_stats();
+    const bool stereo_rendered = g_renderer->render_chain_frame_to_external_stereo_targets(
+        opts, stereo_left, stereo_right, stereo_chain.data(), chain.start_offset);
+    const ChainStats after_stereo = g_renderer->chain_stats();
+    std::fill(stereo_chain.begin(), stereo_chain.end(), 0xa5);
+    const bool stereo_completed = stereo_rendered && g_renderer->wait_for_last_chain_frame(5.0);
+    out->stereo_side_effects_single_shot =
+        stereo_rendered && after_stereo.chains_rendered == before_stereo.chains_rendered + 1 &&
+        after_stereo.last_views_rendered == 2 &&
+        after_stereo.last_frame_global_callbacks == after_stereo.last_buckets_dispatched;
+
     std::vector<u8> slice_zero(sentinel.size());
     [color getBytes:slice_zero.data()
          bytesPerRow:width * 4
@@ -650,6 +686,29 @@ bool render_last_chain_to_external_target(int width,
       out->rendered_slice.rgba[i + 2] = bgra[i + 0];
       out->rendered_slice.rgba[i + 3] = bgra[i + 3];
     }
+
+    std::vector<u8> stereo_right_bgra(sentinel.size());
+    [color getBytes:stereo_right_bgra.data()
+          bytesPerRow:width * 4
+        bytesPerImage:stereo_right_bgra.size()
+           fromRegion:MTLRegionMake2D(0, 0, width, height)
+          mipmapLevel:0
+                slice:2];
+    out->stereo_right_slice.width = width;
+    out->stereo_right_slice.height = height;
+    out->stereo_right_slice.rgba.resize(stereo_right_bgra.size());
+    for (size_t i = 0; i < stereo_right_bgra.size(); i += 4) {
+      out->stereo_right_slice.rgba[i + 0] = stereo_right_bgra[i + 2];
+      out->stereo_right_slice.rgba[i + 1] = stereo_right_bgra[i + 1];
+      out->stereo_right_slice.rgba[i + 2] = stereo_right_bgra[i + 0];
+      out->stereo_right_slice.rgba[i + 3] = stereo_right_bgra[i + 3];
+    }
+    out->stereo_identity_preserved = stereo_completed &&
+                                     out->rendered_slice.rgba == internal_before.rgba &&
+                                     out->stereo_right_slice.rgba == internal_before.rgba;
+    out->stereo_poison_after_encode_preserved =
+        stereo_completed && out->rendered_slice.rgba == internal_before.rgba &&
+        out->stereo_right_slice.rgba == internal_before.rgba;
     return true;
   }
 }

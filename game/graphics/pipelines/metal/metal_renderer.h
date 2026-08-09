@@ -88,6 +88,8 @@ struct MetalExternalRenderTargetDescriptor {
   // and a 0...1 depth range.
   MTLViewport viewport = {0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
   double clear_depth = 0.0;
+  // Host-owned transform from the game's final Metal clip coordinates into this view.
+  metal_renderer::ViewTransform view_transform;
 };
 
 class MetalRenderer {
@@ -119,6 +121,19 @@ class MetalRenderer {
   bool render_chain_frame_to_external_target(
       const MetalRenderOptions& opts,
       const MetalExternalRenderTargetDescriptor& target,
+      const u8* chain_data,
+      u32 chain_offset);
+
+  // Validates both views before mutation, then renders the same copied chain into both targets.
+  // The primary owns frame-global uploads, callbacks, diagnostics, and aggregate frame stats; the
+  // secondary replay only supplies the second view and cannot advance game simulation.
+  // Background geometry (TFRAG, TIE, ETIE, and shrub) plus Merc base/envmap consume each view's
+  // transform. Direct, sprite/HUD, sky, ocean, generic, and shadow remain game-projection
+  // monoscopic; texture uploads and eye composition are prepared once and reused by both views.
+  bool render_chain_frame_to_external_stereo_targets(
+      const MetalRenderOptions& opts,
+      const MetalExternalRenderTargetDescriptor& left,
+      const MetalExternalRenderTargetDescriptor& right,
       const u8* chain_data,
       u32 chain_offset);
 
@@ -182,6 +197,8 @@ class MetalRenderer {
                                const MTLViewport* viewport,
                                double clear_depth,
                                u64 view_id,
+                               const metal_renderer::ViewTransform& view_transform,
+                               bool frame_global_side_effects,
                                const u8* chain_data,
                                u32 chain_offset);
 

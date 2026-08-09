@@ -48,6 +48,7 @@ struct BackgroundVsParams {
   float fog_max;
   float height_scale;
   float scissor_adjust;
+  float4x4 view_clip_from_game_clip;
 };
 
 // Must match MetalEtieVsParams in metal_level_data.h.
@@ -62,6 +63,7 @@ struct EtieVsParams {
   float height_scale;
   float scissor_adjust;
   float4 envmap_tod_tint;  // only the envmap second draw uses this
+  float4x4 view_clip_from_game_clip;
 };
 
 // Must match MetalBackgroundDrawParams in metal_level_data.h.
@@ -116,7 +118,7 @@ vertex BackgroundVSOut tfrag3_vs(uint vid [[vertex_id]],
 
   // scissoring area adjust
   transformed.y *= p.scissor_adjust * p.height_scale;
-  out.pos = to_metal_clip_depth(transformed);
+  out.pos = p.view_clip_from_game_clip * to_metal_clip_depth(transformed);
 
   // time of day lookup
   float4 color = tod.read(uint(v.color_index));
@@ -213,7 +215,7 @@ vertex BackgroundVSOut etie_shared_vs(uint vid [[vertex_id]],
   transformed.y /= -128.0;
   transformed.xyz *= transformed.w;
   transformed.y *= p.scissor_adjust * p.height_scale;
-  out.pos = transformed;
+  out.pos = p.view_clip_from_game_clip * transformed;
 
   if (d.etie_shine != 0) {
     // GL_INT_2_10_10_10_REV, normalized: three sign-extended 10-bit fields over 511
@@ -288,7 +290,7 @@ vertex BackgroundVSOut shrub_vs(uint vid [[vertex_id]],
   out.fogginess = 255.0 - clamp(-transformed.w + p.hvdf_offset.w, p.fog_min, p.fog_max);
 
   transformed.y *= p.scissor_adjust * p.height_scale;
-  out.pos = to_metal_clip_depth(transformed);
+  out.pos = p.view_clip_from_game_clip * to_metal_clip_depth(transformed);
 
   // start with the vertex color (only rgb, VIF filled in the 255)
   float4 color = float4(float3(v.rgba_base.xyz) / 255.0, 1.0);

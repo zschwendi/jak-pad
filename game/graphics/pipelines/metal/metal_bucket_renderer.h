@@ -23,7 +23,7 @@
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/pipelines/metal/metal_texture_upload_handler.h"
-
+#include "game/graphics/pipelines/metal/metal_view_transform.h"
 #import <Metal/Metal.h>
 
 class TexturePool;
@@ -87,6 +87,10 @@ struct MetalSharedRenderState {
   GameVersion version = GameVersion::Jak1;
   int game_res_w = 640;
   int game_res_h = 480;
+  metal_renderer::ViewTransform view_transform;
+  // The secondary view replays the already-copied chain only to encode another target. Persistent
+  // uploads, diagnostics, callbacks, and aggregate frame statistics stay owned by the primary.
+  bool secondary_view = false;
 };
 
 /*!
@@ -138,6 +142,11 @@ class MetalBucketRenderer {
   std::string m_name;
   int m_my_id;
 };
+
+// Walks one bucket without invoking its renderer. Secondary-view replay uses this for buckets
+// whose output was already prepared by the primary (texture uploads and eye composition).
+void metal_consume_bucket_without_side_effects(DmaFollower& dma,
+                                               const MetalSharedRenderState& state);
 
 /*!
  * Mirror of the GL EmptyBucketRenderer: accepts Jak 1's default-register

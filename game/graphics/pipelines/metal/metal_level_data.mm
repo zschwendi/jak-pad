@@ -510,6 +510,13 @@ float metal_scissor_adjust(GameVersion version) {
 void metal_fill_background_vs_params(const MetalGoalBackgroundCameraData& camera,
                                      GameVersion version,
                                      MetalBackgroundVsParams* out) {
+  metal_fill_background_vs_params(camera, version, {}, out);
+}
+
+void metal_fill_background_vs_params(const MetalGoalBackgroundCameraData& camera,
+                                     GameVersion version,
+                                     const metal_renderer::ViewTransform& view_transform,
+                                     MetalBackgroundVsParams* out) {
   auto newcam =
       make_new_cam_mat(camera.rot, camera.perspective, camera.fog.x(), camera.hvdf_off.z());
   memcpy(out->pc_camera, newcam[0].data(), sizeof(out->pc_camera));
@@ -519,10 +526,19 @@ void metal_fill_background_vs_params(const MetalGoalBackgroundCameraData& camera
   out->fog_max = camera.fog.z();
   out->height_scale = metal_height_scale(version);
   out->scissor_adjust = metal_scissor_adjust(version);
+  memcpy(out->view_clip_from_game_clip, view_transform.clip_from_game_clip.data(),
+         sizeof(out->view_clip_from_game_clip));
 }
 
 void metal_fill_etie_vs_params(const MetalGoalBackgroundCameraData& camera,
                                GameVersion version,
+                               MetalEtieVsParams* out) {
+  metal_fill_etie_vs_params(camera, version, {}, out);
+}
+
+void metal_fill_etie_vs_params(const MetalGoalBackgroundCameraData& camera,
+                               GameVersion version,
+                               const metal_renderer::ViewTransform& view_transform,
                                MetalEtieVsParams* out) {
   memcpy(out->cam_no_persp, camera.rot[0].data(), sizeof(out->cam_no_persp));
   memcpy(out->camera, camera.camera[0].data(), sizeof(out->camera));
@@ -550,6 +566,8 @@ void metal_fill_etie_vs_params(const MetalGoalBackgroundCameraData& camera,
   out->fog_max = camera.fog.z();
   out->height_scale = metal_height_scale(version);
   out->scissor_adjust = metal_scissor_adjust(version);
+  memcpy(out->view_clip_from_game_clip, view_transform.clip_from_game_clip.data(),
+         sizeof(out->view_clip_from_game_clip));
 }
 
 void metal_fill_background_fs_params(const MetalSharedRenderState& state,

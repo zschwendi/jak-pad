@@ -287,10 +287,12 @@ void MetalOceanTexture::handle_ocean_texture_jak1(DmaFollower& dma,
     ASSERT(data.vifcode1().kind == VifCode::Kind::STMOD);
   }
 
-  run_gpu_passes(render_state, ctx);
+  if (!render_state->secondary_view) {
+    run_gpu_passes(render_state, ctx);
 
-  // give to gpu!
-  render_state->texture_pool->move_existing_to_vram(m_tex0_gpu, m_tbp);
+    // Publish once per engine frame. The secondary view samples the result prepared by primary.
+    render_state->texture_pool->move_existing_to_vram(m_tex0_gpu, m_tbp);
+  }
 }
 
 /*!

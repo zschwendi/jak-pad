@@ -121,12 +121,26 @@ void MetalSkipRenderer::render(DmaFollower& dma,
       dma.read_and_advance();  // ret
     }
   }
-  if (bytes > 0) {
+  if (bytes > 0 && !render_state->secondary_view) {
     m_skipped_bytes += bytes;
     if (!m_warned) {
       lg::warn("Metal: bucket [{}] {} is not ported yet; skipped {} bytes of DMA (logged once)",
                m_my_id, m_name, bytes);
       m_warned = true;
+    }
+  }
+}
+
+void metal_consume_bucket_without_side_effects(DmaFollower& dma,
+                                               const MetalSharedRenderState& state) {
+  const auto layout = metal_renderer::bucket_chain_layout(state.version);
+  ASSERT(layout != metal_renderer::MetalBucketChainLayout::Unsupported);
+  while (dma.current_tag_offset() != state.next_bucket) {
+    dma.read_and_advance();
+    if (layout == metal_renderer::MetalBucketChainLayout::Jak1DefaultRegs &&
+        dma.current_tag_offset() == state.default_regs_buffer) {
+      dma.read_and_advance();  // cnt
+      dma.read_and_advance();  // ret
     }
   }
 }

@@ -294,8 +294,10 @@ void MetalTFragment::render_tree(int geom,
   // time of day: interpolate the packed palettes for this frame's itimes, then
   // refresh the tree's 1D palette texture the vertex shader reads.
   metal_interp_time_of_day(settings.camera.itimes, *tree.colors, m_color_result.data());
-  metal_update_time_of_day_texture(tree.buffers->time_of_day, m_color_result.data(),
-                                   tree.colors->color_count);
+  if (!render_state->secondary_view) {
+    metal_update_time_of_day_texture(tree.buffers->time_of_day, m_color_result.data(),
+                                     tree.colors->color_count);
+  }
 
   // visibility
   u32 total_tris;
@@ -310,7 +312,8 @@ void MetalTFragment::render_tree(int geom,
   }
 
   MetalBackgroundVsParams vs_params;
-  metal_fill_background_vs_params(settings.camera, render_state->version, &vs_params);
+  metal_fill_background_vs_params(settings.camera, render_state->version,
+                                  render_state->view_transform, &vs_params);
   MetalBackgroundFsParams fs_params;
   metal_fill_background_fs_params(*render_state, &fs_params);
 

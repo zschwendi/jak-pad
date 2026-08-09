@@ -258,7 +258,16 @@ void MetalSkyBlendHandler::render(DmaFollower& dma,
   auto set_display = dma.read_and_advance();
   ASSERT(set_display.size_bytes == 8 * 16);
 
-  m_stats = m_shared_blender->do_sky_blends(dma, render_state);
+  if (render_state->secondary_view) {
+    // The primary already published this frame's blended sky/cloud textures. Consume the same
+    // packet envelope without rewriting the shared texture-pool state for the second view.
+    while (dma.current_tag().qwc == 6) {
+      dma.read_and_advance();  // adgif setup
+      dma.read_and_advance();  // draw or blend
+    }
+  } else {
+    m_stats = m_shared_blender->do_sky_blends(dma, render_state);
+  }
 
   auto reset_alpha = dma.read_and_advance();
   ASSERT(reset_alpha.size_bytes == 16 * 2);

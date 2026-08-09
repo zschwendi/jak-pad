@@ -1390,6 +1390,14 @@ void test_dma_chain(const GfxRendererModule* mod,
         "external target: rejected descriptors did not mutate chain or submission stats");
   check(external.color_slice_zero_preserved,
         "external target: rendering slice 1 preserved the slice 0 sentinel");
+  check(external.stereo_identity_preserved,
+        "external target: identity two-view batch matched one-view pixels in both slices");
+  check(external.stereo_side_effects_single_shot,
+        "external target: secondary replay preserved single-shot chain callbacks and stats");
+  check(external.stereo_invalid_batch_rejected,
+        "external target: invalid two-view batch was rejected before renderer mutation");
+  check(external.stereo_poison_after_encode_preserved,
+        "external target: submitted views survived poisoning the copied DMA input");
   if (external_rendered) {
     check(external.rendered_slice.width == frame.width &&
               external.rendered_slice.height == frame.height &&

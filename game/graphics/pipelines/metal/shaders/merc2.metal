@@ -51,6 +51,7 @@ struct MercVsParams {
   float height_scale;    // 1.0 for Jak 1
   float scissor_adjust;  // 512/448 for Jak 1
   float pad[2];
+  float4x4 view_clip_from_game_clip;
 };
 
 struct MercFsParams {
@@ -136,7 +137,7 @@ vertex MercVSOut merc2_vs(uint vid [[vertex_id]],
   transformed.y /= -128.0;
   transformed.xyz *= transformed.w;
   transformed.y *= p.scissor_adjust * p.height_scale;
-  out.pos = transformed;
+  out.pos = p.view_clip_from_game_clip * transformed;
 
   out.vtx_color = (float4(v.rgba) / 255.0) * light_color;
   out.vtx_st = float2(v.st);
@@ -247,7 +248,7 @@ vertex MercVSOut emerc_vs(uint vid [[vertex_id]],
   transformed.y /= -128.0;
   transformed.xyz *= transformed.w;
   transformed.y *= p.scissor_adjust * p.height_scale;
-  out.pos = transformed;
+  out.pos = p.view_clip_from_game_clip * transformed;
 
   out.vtx_color = float4(p.fade.xyz, 1.0);
   out.vtx_st = st_mod;

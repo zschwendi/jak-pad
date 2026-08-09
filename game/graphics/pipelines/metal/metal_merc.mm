@@ -1,6 +1,7 @@
 #include "metal_merc.h"
 
 #include <array>
+#include <cstddef>
 
 #include "common/goal_constants.h"
 #include "common/log/log.h"
@@ -181,8 +182,10 @@ struct MercVsParams {
   float height_scale;
   float scissor_adjust;
   float pad[2];
+  float view_clip_from_game_clip[16];
 };
-static_assert(sizeof(MercVsParams) == 240);
+static_assert(sizeof(MercVsParams) == 304);
+static_assert(offsetof(MercVsParams, view_clip_from_game_clip) == 240);
 
 // Must match MercFsParams in shaders/merc2.metal.
 struct MercFsParams {
@@ -1128,7 +1131,7 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
         }
       }
 
-      if (matrix_is_finite && model->name == "eichar-lod0") {
+      if (!render_state->secondary_view && matrix_is_finite && model->name == "eichar-lod0") {
         auto provenance = make_bones_provenance_observation(
             source_address, source_base, slot, reinterpret_cast<const float*>(&matrix), ee0,
             EE_MAIN_MEM_SIZE);
@@ -1261,10 +1264,10 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
     stats->models_with_palette_health_issues++;
   }
 
-  const bool trace_eichar = model->name == "eichar-lod0" &&
-                            model_ref->eichar_skin_profiles_by_effect &&
-                            model_ref->eichar_skin_profiles_by_effect->size() ==
-                                model->effects.size();
+  const bool trace_eichar =
+      !render_state->secondary_view && model->name == "eichar-lod0" &&
+      model_ref->eichar_skin_profiles_by_effect &&
+      model_ref->eichar_skin_profiles_by_effect->size() == model->effects.size();
   u64 eichar_packet_palette_hash = 0;
   metal_merc_skin_trace::PacketResult eichar_packet;
 
@@ -1675,6 +1678,8 @@ void MetalMerc2::do_draws(const Draw* draw_array,
     }
     vs.height_scale = 1.f;  // Jak 1
     vs.scissor_adjust = 512.f / kGameHeightJak1;
+    memcpy(vs.view_clip_from_game_clip, render_state->view_transform.clip_from_game_clip.data(),
+           sizeof(vs.view_clip_from_game_clip));
 
     MercFsParams fs = {};
     const float fog_alpha =

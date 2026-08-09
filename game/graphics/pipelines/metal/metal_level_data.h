@@ -28,6 +28,7 @@
  */
 
 #include <array>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <utility>
@@ -218,8 +219,11 @@ struct MetalBackgroundVsParams {
   float fog_max = 0.f;
   float height_scale = 1.f;
   float scissor_adjust = 1.f;
+  float view_clip_from_game_clip[16];
 };
-static_assert(sizeof(MetalBackgroundVsParams) == 112, "MetalBackgroundVsParams size");
+static_assert(sizeof(MetalBackgroundVsParams) == 176, "MetalBackgroundVsParams size");
+static_assert(offsetof(MetalBackgroundVsParams, view_clip_from_game_clip) == 112,
+              "MetalBackgroundVsParams view-transform offset");
 
 // etie_base.vert constants (per tree).
 struct MetalEtieVsParams {
@@ -234,8 +238,11 @@ struct MetalEtieVsParams {
   float scissor_adjust = 1.f;
   // only the envmap second draw uses this (Tie3's envmap_tod_tint)
   float envmap_tod_tint[4] = {1.f, 1.f, 1.f, 1.f};
+  float view_clip_from_game_clip[16];
 };
-static_assert(sizeof(MetalEtieVsParams) == 208, "MetalEtieVsParams size");
+static_assert(sizeof(MetalEtieVsParams) == 272, "MetalEtieVsParams size");
+static_assert(offsetof(MetalEtieVsParams, view_clip_from_game_clip) == 208,
+              "MetalEtieVsParams view-transform offset");
 
 // The GL `decal` uniform plus the Metal ETIE pass selector, set per draw.
 struct MetalBackgroundDrawParams {
@@ -282,10 +289,18 @@ MetalBackgroundDrawSettings metal_background_settings_from_draw_mode(DrawMode mo
 void metal_fill_background_vs_params(const MetalGoalBackgroundCameraData& camera,
                                      GameVersion version,
                                      MetalBackgroundVsParams* out);
+void metal_fill_background_vs_params(const MetalGoalBackgroundCameraData& camera,
+                                     GameVersion version,
+                                     const metal_renderer::ViewTransform& view_transform,
+                                     MetalBackgroundVsParams* out);
 
 // Same, for the etie_base shader (init_etie_cam_uniforms in Tie3.cpp).
 void metal_fill_etie_vs_params(const MetalGoalBackgroundCameraData& camera,
                                GameVersion version,
+                               MetalEtieVsParams* out);
+void metal_fill_etie_vs_params(const MetalGoalBackgroundCameraData& camera,
+                               GameVersion version,
+                               const metal_renderer::ViewTransform& view_transform,
                                MetalEtieVsParams* out);
 
 // Mirror of the fog uniforms first_tfrag_draw_setup fills from render state.

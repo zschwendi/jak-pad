@@ -133,15 +133,22 @@ bool valid_external_target(id<MTLDevice> device,
   }
 
   const auto& viewport = target.viewport;
-  return opts.game_res_w > 0 && opts.game_res_h > 0 &&
-         std::isfinite(viewport.originX) && std::isfinite(viewport.originY) &&
-         std::isfinite(viewport.width) && std::isfinite(viewport.height) &&
-         std::isfinite(viewport.znear) && std::isfinite(viewport.zfar) &&
-         std::isfinite(target.clear_depth) && viewport.originX == 0.0 &&
-         viewport.originY == 0.0 && viewport.width == color.width &&
+  return metal_renderer::is_finite(target.view_transform) && opts.game_res_w > 0 &&
+         opts.game_res_h > 0 && std::isfinite(viewport.originX) &&
+         std::isfinite(viewport.originY) && std::isfinite(viewport.width) &&
+         std::isfinite(viewport.height) && std::isfinite(viewport.znear) &&
+         std::isfinite(viewport.zfar) && std::isfinite(target.clear_depth) &&
+         viewport.originX == 0.0 && viewport.originY == 0.0 && viewport.width == color.width &&
          viewport.height == color.height && viewport.width == opts.game_res_w &&
          viewport.height == opts.game_res_h && viewport.znear == 0.0 && viewport.zfar == 1.0 &&
          target.clear_depth == 0.0;
+}
+
+bool external_targets_are_distinct(const MetalExternalRenderTargetDescriptor& a,
+                                   const MetalExternalRenderTargetDescriptor& b) {
+  const bool color_alias = a.color_texture == b.color_texture && a.color_slice == b.color_slice;
+  const bool depth_alias = a.depth_texture == b.depth_texture && a.depth_slice == b.depth_slice;
+  return a.view_id != b.view_id && !color_alias && !depth_alias;
 }
 
 id<MTLTexture> make_checker_texture(id<MTLDevice> device) {
@@ -712,12 +719,21 @@ void MetalRenderer::dispatch_buckets_jak1(DmaFollower dma, MetalFrameContext& ct
 
   for (size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
     auto& renderer = m_bucket_renderers[bucket_id];
-    renderer->render(dma, &m_shared_state, ctx);
+    if (m_shared_state.secondary_view &&
+        (dynamic_cast<MetalTextureBucketRenderer*>(renderer.get()) ||
+         dynamic_cast<MetalEyeRenderer*>(renderer.get()))) {
+      metal_consume_bucket_without_side_effects(dma, m_shared_state);
+    } else {
+      renderer->render(dma, &m_shared_state, ctx);
+    }
     // should have ended at the start of the next bucket
     ASSERT(dma.current_tag_offset() == m_shared_state.next_bucket);
     m_shared_state.next_bucket += 16;
-    m_chain_stats.last_buckets_dispatched++;
-    metal_vif_interrupt_callback((int)bucket_id);
+    if (!m_shared_state.secondary_view) {
+      m_chain_stats.last_buckets_dispatched++;
+      m_chain_stats.last_frame_global_callbacks++;
+      metal_vif_interrupt_callback((int)bucket_id);
+    }
   }
 }
 
@@ -728,20 +744,32 @@ void MetalRenderer::dispatch_buckets_jak2(DmaFollower dma, MetalFrameContext& ct
 
   for (size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
     auto& renderer = m_bucket_renderers[bucket_id];
-    renderer->render(dma, &m_shared_state, ctx);
+    if (m_shared_state.secondary_view &&
+        (dynamic_cast<MetalTextureBucketRenderer*>(renderer.get()) ||
+         dynamic_cast<MetalEyeRenderer*>(renderer.get()))) {
+      metal_consume_bucket_without_side_effects(dma, m_shared_state);
+    } else {
+      renderer->render(dma, &m_shared_state, ctx);
+    }
     ASSERT(dma.current_tag_offset() == m_shared_state.next_bucket);
     m_shared_state.next_bucket += 16;
-    m_chain_stats.last_buckets_dispatched++;
-    metal_vif_interrupt_callback((int)bucket_id + 1);
+    if (!m_shared_state.secondary_view) {
+      m_chain_stats.last_buckets_dispatched++;
+      m_chain_stats.last_frame_global_callbacks++;
+      metal_vif_interrupt_callback((int)bucket_id + 1);
+    }
   }
-  metal_vif_interrupt_callback((int)m_bucket_renderers.size());
+  if (!m_shared_state.secondary_view) {
+    m_chain_stats.last_frame_global_callbacks++;
+    metal_vif_interrupt_callback((int)m_bucket_renderers.size());
+  }
 }
 
 bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
                                        CAMetalLayer* layer,
                                        const u8* chain_data,
                                        u32 chain_offset) {
-  return render_chain_frame_impl(opts, layer, nil, 0, nil, 0, nullptr, 0.0, 0, chain_data,
+  return render_chain_frame_impl(opts, layer, nil, 0, nil, 0, nullptr, 0.0, 0, {}, true, chain_data,
                                  chain_offset);
 }
 
@@ -755,7 +783,42 @@ bool MetalRenderer::render_chain_frame_to_external_target(
   }
   return render_chain_frame_impl(opts, nil, target.color_texture, target.color_slice,
                                  target.depth_texture, target.depth_slice, &target.viewport,
-                                 target.clear_depth, target.view_id, chain_data, chain_offset);
+                                 target.clear_depth, target.view_id, target.view_transform, true,
+                                 chain_data, chain_offset);
+}
+
+bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
+    const MetalRenderOptions& opts,
+    const MetalExternalRenderTargetDescriptor& left,
+    const MetalExternalRenderTargetDescriptor& right,
+    const u8* chain_data,
+    u32 chain_offset) {
+  if (!chain_data || !valid_external_target(m_device, opts, left) ||
+      !valid_external_target(m_device, opts, right) ||
+      !external_targets_are_distinct(left, right)) {
+    return false;
+  }
+
+  const bool left_rendered =
+      render_chain_frame_impl(opts, nil, left.color_texture, left.color_slice, left.depth_texture,
+                              left.depth_slice, &left.viewport, left.clear_depth, left.view_id,
+                              left.view_transform, true, chain_data, chain_offset);
+  const metal_renderer::ChainStats primary_stats = m_chain_stats;
+  const bool right_rendered =
+      left_rendered && render_chain_frame_impl(
+                           opts, nil, right.color_texture, right.color_slice, right.depth_texture,
+                           right.depth_slice, &right.viewport, right.clear_depth, right.view_id,
+                           right.view_transform, false, chain_data, chain_offset);
+  if (left_rendered) {
+    // Keep the primary's frame diagnostics while retaining the actual number of GPU submissions.
+    const u64 command_buffers_committed = m_chain_stats.command_buffers_committed;
+    m_chain_stats = primary_stats;
+    m_chain_stats.command_buffers_committed = command_buffers_committed;
+  }
+  if (right_rendered) {
+    m_chain_stats.last_views_rendered = 2;
+  }
+  return right_rendered;
 }
 
 bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
@@ -767,6 +830,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
                                             const MTLViewport* viewport,
                                             double clear_depth,
                                             u64 view_id,
+                                            const metal_renderer::ViewTransform& view_transform,
+                                            bool frame_global_side_effects,
                                             const u8* chain_data,
                                             u32 chain_offset) {
   bool drawable_acquired = false;
@@ -798,21 +863,30 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       game_color = m_game_color;
       game_depth = m_game_depth;
     }
-    // mirror of SharedRenderState::reset for the background state
-    m_background.reset_frame();
-    m_background.camera_trace.reset(opts.expected_camera_valid ? &opts.expected_camera : nullptr);
-    m_background.render_camera_trace.reset(
-        opts.expected_render_camera_valid ? &opts.expected_render_camera : nullptr);
-    if (m_shared_state.eye_renderer) {
+    // Secondary replay gets scratch bookkeeping, so the primary frame remains the one reported to
+    // the host even though both views decode the same chain.
+    MetalBackgroundState secondary_background;
+    MetalBackgroundState* background =
+        frame_global_side_effects ? &m_background : &secondary_background;
+    background->reset_frame();
+    background->camera_trace.reset(
+        frame_global_side_effects && opts.expected_camera_valid ? &opts.expected_camera : nullptr);
+    background->render_camera_trace.reset(frame_global_side_effects &&
+                                                  opts.expected_render_camera_valid
+                                              ? &opts.expected_render_camera
+                                              : nullptr);
+    if (frame_global_side_effects && m_shared_state.eye_renderer) {
       m_shared_state.eye_renderer->start_frame();
     }
-    m_shared_state.background = &m_background;
+    m_shared_state.background = background;
     m_shared_state.texture_pool = m_texture_pool;
     m_shared_state.ee_memory = g_ee_main_mem;
     m_shared_state.offset_of_s7 = g_s7_override ? g_s7_override : metal_offset_of_s7();
     m_shared_state.engine_frame_id = opts.engine_frame_id;
     m_shared_state.game_res_w = opts.game_res_w;
     m_shared_state.game_res_h = opts.game_res_h;
+    m_shared_state.view_transform = view_transform;
+    m_shared_state.secondary_view = !frame_global_side_effects;
 
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
     if (external_target) {
@@ -864,6 +938,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     ctx.game_viewport = frame_viewport;
 
     m_chain_stats.last_buckets_dispatched = 0;
+    m_chain_stats.last_frame_global_callbacks = 0;
     switch (m_shared_state.version) {
       case GameVersion::Jak1:
         dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset), ctx);
@@ -876,143 +951,138 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     }
     [ctx.enc endEncoding];
 
-    m_chain_stats.last_host_tick_id = opts.host_tick_id;
-    m_chain_stats.last_chain_ordinal = opts.chain_ordinal;
-    m_chain_stats.last_engine_frame_id = opts.engine_frame_id;
-    m_chain_stats.last_camera_fingerprint =
-        m_background.camera_trace.first_packet_fingerprint();
-    m_chain_stats.last_camera_packets = m_background.camera_trace.packet_count();
-    m_chain_stats.last_live_camera_mismatches =
-        m_background.camera_trace.expected_mismatches();
-    m_chain_stats.last_packet_camera_mismatches =
-        m_background.camera_trace.packet_mismatches();
-    m_chain_stats.last_live_camera_mismatch_qwords =
-        m_background.camera_trace.expected_mismatch_qwords();
-    m_chain_stats.last_packet_camera_mismatch_qwords =
-        m_background.camera_trace.packet_mismatch_qwords();
-    m_chain_stats.live_camera_mismatches += m_chain_stats.last_live_camera_mismatches;
-    m_chain_stats.packet_camera_mismatches += m_chain_stats.last_packet_camera_mismatches;
-    m_chain_stats.last_render_camera_fingerprint =
-        m_background.render_camera_trace.first_packet_fingerprint();
-    m_chain_stats.last_render_camera_live_mismatches =
-        m_background.render_camera_trace.expected_mismatches();
-    m_chain_stats.last_render_camera_packet_mismatches =
-        m_background.render_camera_trace.packet_mismatches();
-    m_chain_stats.last_render_camera_live_mismatch_qwords =
-        m_background.render_camera_trace.expected_mismatch_qwords();
-    m_chain_stats.last_render_camera_packet_mismatch_qwords =
-        m_background.render_camera_trace.packet_mismatch_qwords();
-    m_chain_stats.render_camera_live_mismatches +=
-        m_chain_stats.last_render_camera_live_mismatches;
-    m_chain_stats.render_camera_packet_mismatches +=
-        m_chain_stats.last_render_camera_packet_mismatches;
+    if (frame_global_side_effects) {
+      m_chain_stats.last_host_tick_id = opts.host_tick_id;
+      m_chain_stats.last_chain_ordinal = opts.chain_ordinal;
+      m_chain_stats.last_engine_frame_id = opts.engine_frame_id;
+      m_chain_stats.last_camera_fingerprint = m_background.camera_trace.first_packet_fingerprint();
+      m_chain_stats.last_camera_packets = m_background.camera_trace.packet_count();
+      m_chain_stats.last_live_camera_mismatches = m_background.camera_trace.expected_mismatches();
+      m_chain_stats.last_packet_camera_mismatches = m_background.camera_trace.packet_mismatches();
+      m_chain_stats.last_live_camera_mismatch_qwords =
+          m_background.camera_trace.expected_mismatch_qwords();
+      m_chain_stats.last_packet_camera_mismatch_qwords =
+          m_background.camera_trace.packet_mismatch_qwords();
+      m_chain_stats.live_camera_mismatches += m_chain_stats.last_live_camera_mismatches;
+      m_chain_stats.packet_camera_mismatches += m_chain_stats.last_packet_camera_mismatches;
+      m_chain_stats.last_render_camera_fingerprint =
+          m_background.render_camera_trace.first_packet_fingerprint();
+      m_chain_stats.last_render_camera_live_mismatches =
+          m_background.render_camera_trace.expected_mismatches();
+      m_chain_stats.last_render_camera_packet_mismatches =
+          m_background.render_camera_trace.packet_mismatches();
+      m_chain_stats.last_render_camera_live_mismatch_qwords =
+          m_background.render_camera_trace.expected_mismatch_qwords();
+      m_chain_stats.last_render_camera_packet_mismatch_qwords =
+          m_background.render_camera_trace.packet_mismatch_qwords();
+      m_chain_stats.render_camera_live_mismatches +=
+          m_chain_stats.last_render_camera_live_mismatches;
+      m_chain_stats.render_camera_packet_mismatches +=
+          m_chain_stats.last_render_camera_packet_mismatches;
 
-    metal_camera_trace::RenderAlternationObservation render_camera;
-    bool report_render_camera_alternation = false;
-    metal_camera_trace::ProducerAlternationObservation producer_camera;
-    bool report_producer_alternation = false;
-    if (opts.expected_camera_valid && m_presentation_state) {
-      std::lock_guard<std::mutex> lock(m_presentation_state->mutex);
-      if (m_background.render_camera_trace.has_packet()) {
-        render_camera = m_presentation_state->render_camera.observe(
-            opts.engine_frame_id, m_background.render_camera_trace.first_packet());
-        m_chain_stats.render_camera_alternations =
-            m_presentation_state->render_camera.alternations();
-        metal_camera_trace::retain_alternation_observation(
-            render_camera, opts.host_tick_id, opts.chain_ordinal,
-            m_chain_stats.last_render_camera_fingerprint,
-            m_chain_stats.last_render_camera_live_mismatch_qwords,
+      metal_camera_trace::RenderAlternationObservation render_camera;
+      bool report_render_camera_alternation = false;
+      metal_camera_trace::ProducerAlternationObservation producer_camera;
+      bool report_producer_alternation = false;
+      if (opts.expected_camera_valid && m_presentation_state) {
+        std::lock_guard<std::mutex> lock(m_presentation_state->mutex);
+        if (m_background.render_camera_trace.has_packet()) {
+          render_camera = m_presentation_state->render_camera.observe(
+              opts.engine_frame_id, m_background.render_camera_trace.first_packet());
+          m_chain_stats.render_camera_alternations =
+              m_presentation_state->render_camera.alternations();
+          metal_camera_trace::retain_alternation_observation(
+              render_camera, opts.host_tick_id, opts.chain_ordinal,
+              m_chain_stats.last_render_camera_fingerprint,
+              m_chain_stats.last_render_camera_live_mismatch_qwords,
+              m_chain_stats.last_render_camera_packet_mismatch_qwords,
+              m_chain_stats.last_render_camera_alternation);
+          if (render_camera.alternation && !m_presentation_state->render_alternation_reported) {
+            m_presentation_state->render_alternation_reported = true;
+            report_render_camera_alternation = true;
+          }
+        }
+        producer_camera = m_presentation_state->producer_camera.observe(opts.engine_frame_id,
+                                                                        opts.expected_camera);
+        m_chain_stats.producer_camera_alternations =
+            m_presentation_state->producer_camera.alternations();
+        metal_camera_trace::latch_render_mismatch_qwords_on_alternation(
+            producer_camera.alternation, m_chain_stats.last_render_camera_live_mismatch_qwords,
             m_chain_stats.last_render_camera_packet_mismatch_qwords,
-            m_chain_stats.last_render_camera_alternation);
-        if (render_camera.alternation &&
-            !m_presentation_state->render_alternation_reported) {
-          m_presentation_state->render_alternation_reported = true;
-          report_render_camera_alternation = true;
+            m_chain_stats.last_camera_alternation_render_live_mismatch_qwords,
+            m_chain_stats.last_camera_alternation_render_packet_mismatch_qwords);
+        if (producer_camera.alternation) {
+          m_chain_stats.last_camera_alternation_older_frame_id = producer_camera.older_frame_id;
+          m_chain_stats.last_camera_alternation_previous_frame_id =
+              producer_camera.previous_frame_id;
+          m_chain_stats.last_camera_alternation_current_frame_id = producer_camera.current_frame_id;
+          m_chain_stats.last_camera_alternation_older_fingerprint =
+              producer_camera.older_fingerprint;
+          m_chain_stats.last_camera_alternation_previous_fingerprint =
+              producer_camera.previous_fingerprint;
+          m_chain_stats.last_camera_alternation_current_fingerprint =
+              producer_camera.current_fingerprint;
+          m_chain_stats.last_camera_alternation_host_tick_id = opts.host_tick_id;
+          m_chain_stats.last_camera_alternation_chain_ordinal = opts.chain_ordinal;
+          m_chain_stats.last_camera_alternation_packet_fingerprint =
+              m_chain_stats.last_camera_fingerprint;
+          m_chain_stats.last_camera_alternation_live_mismatch_qwords =
+              m_chain_stats.last_live_camera_mismatch_qwords;
+          m_chain_stats.last_camera_alternation_packet_mismatch_qwords =
+              m_chain_stats.last_packet_camera_mismatch_qwords;
+          m_chain_stats.last_camera_older_to_previous_distance =
+              producer_camera.older_to_previous_distance;
+          m_chain_stats.last_camera_previous_to_current_distance =
+              producer_camera.previous_to_current_distance;
+          m_chain_stats.last_camera_older_to_current_distance =
+              producer_camera.older_to_current_distance;
+        }
+        if (producer_camera.alternation && !m_presentation_state->producer_alternation_reported) {
+          m_presentation_state->producer_alternation_reported = true;
+          report_producer_alternation = true;
         }
       }
-      producer_camera =
-          m_presentation_state->producer_camera.observe(opts.engine_frame_id, opts.expected_camera);
-      m_chain_stats.producer_camera_alternations =
-          m_presentation_state->producer_camera.alternations();
-      metal_camera_trace::latch_render_mismatch_qwords_on_alternation(
-          producer_camera.alternation, m_chain_stats.last_render_camera_live_mismatch_qwords,
-          m_chain_stats.last_render_camera_packet_mismatch_qwords,
-          m_chain_stats.last_camera_alternation_render_live_mismatch_qwords,
-          m_chain_stats.last_camera_alternation_render_packet_mismatch_qwords);
-      if (producer_camera.alternation) {
-        m_chain_stats.last_camera_alternation_older_frame_id = producer_camera.older_frame_id;
-        m_chain_stats.last_camera_alternation_previous_frame_id =
-            producer_camera.previous_frame_id;
-        m_chain_stats.last_camera_alternation_current_frame_id = producer_camera.current_frame_id;
-        m_chain_stats.last_camera_alternation_older_fingerprint =
-            producer_camera.older_fingerprint;
-        m_chain_stats.last_camera_alternation_previous_fingerprint =
-            producer_camera.previous_fingerprint;
-        m_chain_stats.last_camera_alternation_current_fingerprint =
-            producer_camera.current_fingerprint;
-        m_chain_stats.last_camera_alternation_host_tick_id = opts.host_tick_id;
-        m_chain_stats.last_camera_alternation_chain_ordinal = opts.chain_ordinal;
-        m_chain_stats.last_camera_alternation_packet_fingerprint =
-            m_chain_stats.last_camera_fingerprint;
-        m_chain_stats.last_camera_alternation_live_mismatch_qwords =
-            m_chain_stats.last_live_camera_mismatch_qwords;
-        m_chain_stats.last_camera_alternation_packet_mismatch_qwords =
-            m_chain_stats.last_packet_camera_mismatch_qwords;
-        m_chain_stats.last_camera_older_to_previous_distance =
-            producer_camera.older_to_previous_distance;
-        m_chain_stats.last_camera_previous_to_current_distance =
-            producer_camera.previous_to_current_distance;
-        m_chain_stats.last_camera_older_to_current_distance =
-            producer_camera.older_to_current_distance;
+      if (report_render_camera_alternation) {
+        lg::error(
+            "Metal render-camera return pattern at engine frames {}/{}/{}: normalized distances "
+            "{:.9g}/{:.9g}/{:.9g}, full view/projection fingerprints {:#x}/{:#x}/{:#x}",
+            render_camera.older_frame_id, render_camera.previous_frame_id,
+            render_camera.current_frame_id, render_camera.older_to_previous_distance,
+            render_camera.previous_to_current_distance, render_camera.older_to_current_distance,
+            render_camera.older_fingerprint, render_camera.previous_fingerprint,
+            render_camera.current_fingerprint);
       }
-      if (producer_camera.alternation &&
-          !m_presentation_state->producer_alternation_reported) {
-        m_presentation_state->producer_alternation_reported = true;
-        report_producer_alternation = true;
+      if (report_producer_alternation) {
+        lg::error("Metal camera producer return pattern at engine frames {}/{}/{}, host tick {}, "
+                  "chain {}: "
+                  "normalized distances {:.9g}/{:.9g}/{:.9g}, fingerprints {:#x}/{:#x}/{:#x}",
+                  producer_camera.older_frame_id, producer_camera.previous_frame_id,
+                  producer_camera.current_frame_id, opts.host_tick_id, opts.chain_ordinal,
+                  producer_camera.older_to_previous_distance,
+                  producer_camera.previous_to_current_distance,
+                  producer_camera.older_to_current_distance, producer_camera.older_fingerprint,
+                  producer_camera.previous_fingerprint, producer_camera.current_fingerprint);
       }
-    }
-    if (report_render_camera_alternation) {
-      lg::error(
-          "Metal render-camera return pattern at engine frames {}/{}/{}: normalized distances "
-          "{:.9g}/{:.9g}/{:.9g}, full view/projection fingerprints {:#x}/{:#x}/{:#x}",
-          render_camera.older_frame_id, render_camera.previous_frame_id,
-          render_camera.current_frame_id, render_camera.older_to_previous_distance,
-          render_camera.previous_to_current_distance, render_camera.older_to_current_distance,
-          render_camera.older_fingerprint, render_camera.previous_fingerprint,
-          render_camera.current_fingerprint);
-    }
-    if (report_producer_alternation) {
-      lg::error(
-          "Metal camera producer return pattern at engine frames {}/{}/{}, host tick {}, chain {}: "
-          "normalized distances {:.9g}/{:.9g}/{:.9g}, fingerprints {:#x}/{:#x}/{:#x}",
-          producer_camera.older_frame_id, producer_camera.previous_frame_id,
-          producer_camera.current_frame_id, opts.host_tick_id, opts.chain_ordinal,
-          producer_camera.older_to_previous_distance,
-          producer_camera.previous_to_current_distance,
-          producer_camera.older_to_current_distance, producer_camera.older_fingerprint,
-          producer_camera.previous_fingerprint, producer_camera.current_fingerprint);
-    }
-    if (!m_reported_camera_mismatch &&
-        (m_chain_stats.last_live_camera_mismatches ||
-         m_chain_stats.last_packet_camera_mismatches ||
-         m_chain_stats.last_render_camera_live_mismatches ||
-         m_chain_stats.last_render_camera_packet_mismatches)) {
-      m_reported_camera_mismatch = true;
-      lg::error(
-          "Metal camera provenance mismatch at engine frame {}, host tick {}, chain {} in '{}': "
-          "{} live mismatches (qwords {:#x}), {} producer-subset packet mismatches (qwords "
-          "{:#x}), {} full live view/projection mismatches (qwords {:#x}), {} full "
-          "view/projection packet mismatches (qwords {:#x})",
-          opts.engine_frame_id, opts.host_tick_id, opts.chain_ordinal,
-          m_background.first_camera_mismatch_bucket,
-          m_chain_stats.last_live_camera_mismatches,
-          m_chain_stats.last_live_camera_mismatch_qwords,
-          m_chain_stats.last_packet_camera_mismatches,
-          m_chain_stats.last_packet_camera_mismatch_qwords,
-          m_chain_stats.last_render_camera_live_mismatches,
-          m_chain_stats.last_render_camera_live_mismatch_qwords,
-          m_chain_stats.last_render_camera_packet_mismatches,
-          m_chain_stats.last_render_camera_packet_mismatch_qwords);
+      if (!m_reported_camera_mismatch && (m_chain_stats.last_live_camera_mismatches ||
+                                          m_chain_stats.last_packet_camera_mismatches ||
+                                          m_chain_stats.last_render_camera_live_mismatches ||
+                                          m_chain_stats.last_render_camera_packet_mismatches)) {
+        m_reported_camera_mismatch = true;
+        lg::error(
+            "Metal camera provenance mismatch at engine frame {}, host tick {}, chain {} in '{}': "
+            "{} live mismatches (qwords {:#x}), {} producer-subset packet mismatches (qwords "
+            "{:#x}), {} full live view/projection mismatches (qwords {:#x}), {} full "
+            "view/projection packet mismatches (qwords {:#x})",
+            opts.engine_frame_id, opts.host_tick_id, opts.chain_ordinal,
+            m_background.first_camera_mismatch_bucket, m_chain_stats.last_live_camera_mismatches,
+            m_chain_stats.last_live_camera_mismatch_qwords,
+            m_chain_stats.last_packet_camera_mismatches,
+            m_chain_stats.last_packet_camera_mismatch_qwords,
+            m_chain_stats.last_render_camera_live_mismatches,
+            m_chain_stats.last_render_camera_live_mismatch_qwords,
+            m_chain_stats.last_render_camera_packet_mismatches,
+            m_chain_stats.last_render_camera_packet_mismatch_qwords);
+      }
     }
 
 #if TARGET_OS_OSX
@@ -1126,6 +1196,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
 
     // frame stats for tests / debugging
     m_chain_stats.chains_rendered++;
+    m_chain_stats.last_views_rendered = 1;
     m_chain_stats.draw_calls = ctx.draw_calls;
     m_chain_stats.triangles = ctx.triangles;
     int uploads = 0;
@@ -1158,8 +1229,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       } else if (auto* on = dynamic_cast<MetalOceanNear*>(r.get())) {
         m_chain_stats.ocean_near_verts = on->near_stats().vertices;
         m_chain_stats.ocean_draws += on->texture_stats().draw_calls + on->near_stats().draw_calls;
-        m_chain_stats.ocean_triangles +=
-            on->texture_stats().triangles + on->near_stats().triangles;
+        m_chain_stats.ocean_triangles += on->texture_stats().triangles + on->near_stats().triangles;
         m_chain_stats.ocean_missing_textures +=
             on->texture_stats().missing_textures + on->near_stats().missing_textures;
         m_chain_stats.ocean_near_texture = on->texture_handle();
@@ -1215,8 +1285,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.merc_bad_bone_pointers = merc_stats.bad_bone_pointers;
     m_chain_stats.merc_bad_draw_ranges = merc_stats.bad_draw_ranges;
     m_chain_stats.merc_missing_bone_slots = merc_stats.missing_bone_slots;
-    m_chain_stats.merc_models_with_missing_bone_slots =
-        merc_stats.models_with_missing_bone_slots;
+    m_chain_stats.merc_models_with_missing_bone_slots = merc_stats.models_with_missing_bone_slots;
     m_chain_stats.merc_nonfinite_bone_matrices = merc_stats.nonfinite_bone_matrices;
     m_chain_stats.merc_degenerate_bone_matrices = merc_stats.degenerate_bone_matrices;
     m_chain_stats.merc_incoherent_bone_sources = merc_stats.incoherent_bone_sources;
@@ -1276,8 +1345,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     }
     if (!m_chain_stats.first_merc_eichar_provenance_event.valid() &&
         merc_stats.first_eichar_provenance_event.valid()) {
-      m_chain_stats.first_merc_eichar_provenance_event =
-          merc_stats.first_eichar_provenance_event;
+      m_chain_stats.first_merc_eichar_provenance_event = merc_stats.first_eichar_provenance_event;
     }
     if (merc_stats.last_eichar_provenance_event.valid()) {
       m_chain_stats.last_merc_eichar_provenance_event = merc_stats.last_eichar_provenance_event;
@@ -1317,6 +1385,9 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.cloud_draws = blend_stats.cloud_draws;
     m_chain_stats.cloud_blends = blend_stats.cloud_blends;
     m_chain_stats.skipped_tfrag_bytes = 0;
+    m_shared_state.background = &m_background;
+    m_shared_state.secondary_view = false;
+    m_shared_state.view_transform = {};
   }
   return external_target || drawable_acquired;
 }

@@ -73,6 +73,7 @@ struct PresentTestOptions {
 
 struct ExternalRenderTargetProofResult {
   FramePixels rendered_slice;
+  FramePixels stereo_right_slice;
   u64 view_id = 0;
   bool internal_readback_identity_preserved = false;
   bool internal_readback_pixels_preserved = false;
@@ -82,6 +83,10 @@ struct ExternalRenderTargetProofResult {
   bool invalid_descriptors_preserved_stats = false;
   bool color_slice_zero_preserved = false;
   bool framebuffer_copy_used_selected_slice = false;
+  bool stereo_identity_preserved = false;
+  bool stereo_side_effects_single_shot = false;
+  bool stereo_invalid_batch_rejected = false;
+  bool stereo_poison_after_encode_preserved = false;
 };
 
 enum MercPaletteHealthIssue : u8 {
@@ -113,6 +118,8 @@ struct MercPaletteHealthEvent {
 // frames really dispatched buckets and that deferred content is counted.
 struct ChainStats {
   u64 chains_rendered = 0;
+  int last_views_rendered = 0;
+  int last_frame_global_callbacks = 0;
   u64 command_buffers_committed = 0;
   u64 command_buffers_completed = 0;
   u64 command_buffer_errors = 0;

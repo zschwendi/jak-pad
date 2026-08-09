@@ -123,15 +123,18 @@ void MetalShrub::render_tree(int idx,
   id<MTLRenderCommandEncoder> enc = ctx.enc;
 
   metal_interp_time_of_day(m_settings.camera.itimes, *tree.colors, m_color_result.data());
-  metal_update_time_of_day_texture(tree.buffers->time_of_day, m_color_result.data(),
-                                   tree.colors->color_count);
+  if (!render_state->secondary_view) {
+    metal_update_time_of_day_texture(tree.buffers->time_of_day, m_color_result.data(),
+                                     tree.colors->color_count);
+  }
 
   // shrub has no visibility data: the GL renderer draws every draw of every
   // tree, every frame.
   metal_make_all_visible_draw_runs(m_draw_runs.data(), m_runs.data(), *tree.draws);
 
   MetalBackgroundVsParams vs_params;
-  metal_fill_background_vs_params(m_settings.camera, render_state->version, &vs_params);
+  metal_fill_background_vs_params(m_settings.camera, render_state->version,
+                                  render_state->view_transform, &vs_params);
   MetalBackgroundFsParams fs_params;
   metal_fill_background_fs_params(*render_state, &fs_params);
 

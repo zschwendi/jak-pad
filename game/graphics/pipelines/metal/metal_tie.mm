@@ -159,8 +159,10 @@ void MetalTie3::render(DmaFollower& dma,
   for (size_t i = 0; i < m_trees[geom].size(); i++) {
     auto& tree = m_trees[geom][i];
     metal_interp_time_of_day(m_settings.camera.itimes, *tree.colors, m_color_result.data());
-    metal_update_time_of_day_texture(tree.buffers->time_of_day, m_color_result.data(),
-                                     tree.colors->color_count);
+    if (!render_state->secondary_view) {
+      metal_update_time_of_day_texture(tree.buffers->time_of_day, m_color_result.data(),
+                                       tree.colors->color_count);
+    }
     if (bg && bg->debug_all_visible) {
       metal_make_all_visible_draw_runs(tree.draw_runs.data(), tree.runs.data(), *tree.draws,
                                        tree.draw_tris.data());
@@ -281,14 +283,16 @@ void MetalTie3::render_tree(int geom,
   [enc setVertexTexture:tree.buffers->time_of_day atIndex:1];
   if (use_envmap) {
     MetalEtieVsParams vs_params;
-    metal_fill_etie_vs_params(m_settings.camera, render_state->version, &vs_params);
+    metal_fill_etie_vs_params(m_settings.camera, render_state->version,
+                              render_state->view_transform, &vs_params);
     if (second_draw) {
       memcpy(vs_params.envmap_tod_tint, m_envmap_color.data(), sizeof(vs_params.envmap_tod_tint));
     }
     [enc setVertexBytes:&vs_params length:sizeof(vs_params) atIndex:1];
   } else {
     MetalBackgroundVsParams vs_params;
-    metal_fill_background_vs_params(m_settings.camera, render_state->version, &vs_params);
+    metal_fill_background_vs_params(m_settings.camera, render_state->version,
+                                    render_state->view_transform, &vs_params);
     [enc setVertexBytes:&vs_params length:sizeof(vs_params) atIndex:1];
   }
 
