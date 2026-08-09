@@ -35,6 +35,9 @@ add_library(common
         cross_sockets/XSocketClient.cpp
         cross_sockets/XSocketServer.cpp
         custom_data/pack_helpers.cpp
+        custom_data/GoalDataObjectBuilder.cpp
+        custom_data/PublicGeneratedDataObjectCompiler.cpp
+        custom_data/PublicGeneratedSubtitleV2Compiler.cpp
         custom_data/TFrag3Data.cpp
         dma/dma_copy.cpp
         dma/dma.cpp

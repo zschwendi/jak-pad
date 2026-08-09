@@ -23,18 +23,30 @@ option(OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY
        "Build only the checked Jak 1 prepared-retail catalog static library" OFF)
 option(OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY
        "Build only the portable Jak 1 FR3 preparation static library" OFF)
+option(OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY
+       "Build only the portable Jak II FR3 preparation static library" OFF)
 option(OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY
        "Build only the portable Jak 1 output materializer static library" OFF)
+option(OPENGOAL_BUILD_JAK2_OUTPUT_MATERIALIZER_ONLY
+       "Build only the portable Jak II output materializer static library" OFF)
 option(OPENGOAL_BUILD_JAK1_OUTPUT_RECIPE_CORE_ONLY
        "Build only the portable Jak 1 output graph and recipe-generation libraries" OFF)
+option(OPENGOAL_BUILD_JAK2_OUTPUT_RECIPE_CORE_ONLY
+       "Build only the portable Jak II output graph and recipe-generation libraries" OFF)
 option(OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY
        "Build only the portable checked Jak 1 public generated-artifact library" OFF)
 option(OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY
        "Build only the portable checked Jak 1 source-object-pack library" OFF)
+option(OPENGOAL_BUILD_JAK2_SOURCE_OBJECT_PACK_ONLY
+       "Build only the portable checked Jak II source-object-pack library and verifier" OFF)
 option(OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY
        "Build only the portable Jak 1 extracted-tree generated-input adapter" OFF)
+option(OPENGOAL_BUILD_JAK2_EXTRACTED_GENERATED_INPUTS_ONLY
+       "Build only the portable Jak II extracted-tree generated-input adapter" OFF)
 option(OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY
        "Build only the portable Jak 1 raw-ISO import composer" OFF)
+option(OPENGOAL_BUILD_JAK2_IMPORT_COMPOSER_ONLY
+       "Build only the portable Jak II raw-ISO import composer" OFF)
 set(OPENGOAL_JAK2_AOT_DIR "" CACHE PATH
     "Host-generated Jak 2 AOT C directory used by the iPhoneOS link proof")
 set(OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT "" CACHE PATH
@@ -47,12 +59,18 @@ foreach(OPENGOAL_ISOLATED_IMPORT_MODE
         OPENGOAL_BUILD_JAK1_CHECKED_DGO_ONLY
         OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY
         OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY
+        OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY
         OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY
+        OPENGOAL_BUILD_JAK2_OUTPUT_MATERIALIZER_ONLY
         OPENGOAL_BUILD_JAK1_OUTPUT_RECIPE_CORE_ONLY
+        OPENGOAL_BUILD_JAK2_OUTPUT_RECIPE_CORE_ONLY
         OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY
         OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY
+        OPENGOAL_BUILD_JAK2_SOURCE_OBJECT_PACK_ONLY
         OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY
-        OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY)
+        OPENGOAL_BUILD_JAK2_EXTRACTED_GENERATED_INPUTS_ONLY
+        OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY
+        OPENGOAL_BUILD_JAK2_IMPORT_COMPOSER_ONLY)
   if(${OPENGOAL_ISOLATED_IMPORT_MODE})
     math(EXPR OPENGOAL_ISOLATED_IMPORT_MODE_COUNT
          "${OPENGOAL_ISOLATED_IMPORT_MODE_COUNT} + 1")
@@ -71,7 +89,7 @@ endif()
 
 if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 1)
   message(FATAL_ERROR
-          "Select only one isolated Jak 1 import-library mode.")
+          "Select only one isolated import-library mode.")
 endif()
 
 if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
@@ -80,12 +98,12 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
     if(NOT APPLE OR
        NOT OPENGOAL_IMPORT_APPLE_SYSROOT MATCHES "iphone(os|simulator)")
       message(FATAL_ERROR
-              "iOS Jak 1 import-library builds require CMAKE_OSX_SYSROOT=iphoneos or "
+              "iOS import-library builds require CMAKE_OSX_SYSROOT=iphoneos or "
               "iphonesimulator.")
     endif()
     if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
       message(FATAL_ERROR
-              "iOS Jak 1 import-library builds require CMAKE_OSX_ARCHITECTURES=arm64.")
+              "iOS import-library builds require CMAKE_OSX_ARCHITECTURES=arm64.")
     endif()
   endif()
   include(CTest)
@@ -101,14 +119,25 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   if(OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY)
     include(common/custom_data/jak1_prepared_retail.cmake)
   endif()
-  if(OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY)
+  if(OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY OR OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY)
+    if(OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY)
+      set(OPENGOAL_FR3_PREPARER_GAME jak2)
+    else()
+      set(OPENGOAL_FR3_PREPARER_GAME jak1)
+    endif()
     include(decompiler/extractor/jak1_fr3_preparer.cmake)
   endif()
   if(OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY)
     include(common/custom_data/jak1_output_materializer.cmake)
   endif()
+  if(OPENGOAL_BUILD_JAK2_OUTPUT_MATERIALIZER_ONLY)
+    include(common/custom_data/jak2_output_materializer.cmake)
+  endif()
   if(OPENGOAL_BUILD_JAK1_OUTPUT_RECIPE_CORE_ONLY)
     include(common/custom_data/jak1_output_recipe_core.cmake)
+  endif()
+  if(OPENGOAL_BUILD_JAK2_OUTPUT_RECIPE_CORE_ONLY)
+    include(common/custom_data/jak2_output_recipe_core.cmake)
   endif()
   if(OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY)
     include(common/custom_data/jak1_public_generated_artifacts.cmake)
@@ -116,11 +145,21 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   if(OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY)
     include(common/custom_data/jak1_source_object_pack.cmake)
   endif()
+  if(OPENGOAL_BUILD_JAK2_SOURCE_OBJECT_PACK_ONLY)
+    include(common/custom_data/jak1_source_object_pack.cmake)
+    include(common/custom_data/jak2_source_object_pack.cmake)
+  endif()
   if(OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY)
     include(decompiler/extractor/jak1_extracted_generated_inputs.cmake)
   endif()
+  if(OPENGOAL_BUILD_JAK2_EXTRACTED_GENERATED_INPUTS_ONLY)
+    include(decompiler/extractor/jak2_extracted_generated_inputs.cmake)
+  endif()
   if(OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY)
     include(decompiler/extractor/jak1_import_composer.cmake)
+  endif()
+  if(OPENGOAL_BUILD_JAK2_IMPORT_COMPOSER_ONLY)
+    include(decompiler/extractor/jak2_import_composer.cmake)
   endif()
   return()
 endif()
@@ -498,6 +537,7 @@ add_subdirectory(common)
 
 # build decompiler
 add_subdirectory(decompiler)
+include(common/custom_data/jak2_public_generated_artifacts.cmake)
 
 # cubeb - audio
 build_third_party_lib(cubeb cubeb)

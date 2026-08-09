@@ -1,4 +1,12 @@
-set(JAK1_FR3_PREPARER_SOURCES
+if(NOT DEFINED OPENGOAL_FR3_PREPARER_GAME)
+  set(OPENGOAL_FR3_PREPARER_GAME jak1)
+endif()
+if(NOT OPENGOAL_FR3_PREPARER_GAME MATCHES "^jak[12]$")
+  message(FATAL_ERROR "The FR3 preparer supports only jak1 or jak2.")
+endif()
+set(OPENGOAL_FR3_PREPARER_TARGET "${OPENGOAL_FR3_PREPARER_GAME}-fr3-preparer")
+
+set(FR3_PREPARER_SOURCES
     decompiler/analysis/analyze_inspect_method.cpp
     decompiler/analysis/atomic_op_builder.cpp
     decompiler/analysis/cfg_builder.cpp
@@ -130,14 +138,14 @@ set(JAK1_FR3_PREPARER_SOURCES
     third-party/tiny_gltf/tiny_gltf.cpp
     third-party/xdelta3/xdelta3.c)
 
-file(GLOB JAK1_FR3_ZSTD_SOURCES CONFIGURE_DEPENDS
+file(GLOB FR3_ZSTD_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_SOURCE_DIR}/third-party/zstd/lib/common/*.c"
      "${CMAKE_SOURCE_DIR}/third-party/zstd/lib/compress/*.c"
      "${CMAKE_SOURCE_DIR}/third-party/zstd/lib/decompress/*.c")
-list(APPEND JAK1_FR3_PREPARER_SOURCES ${JAK1_FR3_ZSTD_SOURCES})
+list(APPEND FR3_PREPARER_SOURCES ${FR3_ZSTD_SOURCES})
 
-add_library(jak1-fr3-preparer STATIC ${JAK1_FR3_PREPARER_SOURCES})
-target_include_directories(jak1-fr3-preparer
+add_library(${OPENGOAL_FR3_PREPARER_TARGET} STATIC ${FR3_PREPARER_SOURCES})
+target_include_directories(${OPENGOAL_FR3_PREPARER_TARGET}
                            PUBLIC "${CMAKE_SOURCE_DIR}"
                            PRIVATE "${CMAKE_SOURCE_DIR}/third-party"
                                    "${CMAKE_SOURCE_DIR}/third-party/fmt/include"
@@ -146,17 +154,47 @@ target_include_directories(jak1-fr3-preparer
                                    "${CMAKE_SOURCE_DIR}/third-party/tree-sitter/tree-sitter/lib/include"
                                    "${CMAKE_SOURCE_DIR}/third-party/zstd/lib"
                                    "${CMAKE_SOURCE_DIR}/third-party/zstd/lib/common")
-target_compile_features(jak1-fr3-preparer PUBLIC cxx_std_20)
-target_compile_definitions(jak1-fr3-preparer
+target_compile_features(${OPENGOAL_FR3_PREPARER_TARGET} PUBLIC cxx_std_20)
+target_compile_definitions(${OPENGOAL_FR3_PREPARER_TARGET}
                            PRIVATE FMT_HEADER_ONLY=1 OPENGOAL_FR3_PREPARER_ONLY=1)
 
 if(MSVC)
-  target_compile_options(jak1-fr3-preparer PRIVATE /W4)
+  target_compile_options(${OPENGOAL_FR3_PREPARER_TARGET} PRIVATE /W4)
 else()
-  target_compile_options(jak1-fr3-preparer PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(${OPENGOAL_FR3_PREPARER_TARGET} PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_executable(jak1-fr3-preparer-link-proof
-               "${CMAKE_SOURCE_DIR}/test/decompiler/jak1_fr3_preparer_link_proof.cpp")
-target_link_libraries(jak1-fr3-preparer-link-proof PRIVATE jak1-fr3-preparer)
-target_compile_features(jak1-fr3-preparer-link-proof PRIVATE cxx_std_20)
+add_executable(${OPENGOAL_FR3_PREPARER_TARGET}-link-proof
+               "${CMAKE_SOURCE_DIR}/test/decompiler/${OPENGOAL_FR3_PREPARER_GAME}_fr3_preparer_link_proof.cpp")
+target_link_libraries(${OPENGOAL_FR3_PREPARER_TARGET}-link-proof
+                      PRIVATE ${OPENGOAL_FR3_PREPARER_TARGET})
+target_compile_features(${OPENGOAL_FR3_PREPARER_TARGET}-link-proof PRIVATE cxx_std_20)
+
+add_executable(${OPENGOAL_FR3_PREPARER_GAME}-fr3-prepare
+               "${CMAKE_SOURCE_DIR}/decompiler/extractor/${OPENGOAL_FR3_PREPARER_GAME}_fr3_prepare_main.cpp")
+target_link_libraries(${OPENGOAL_FR3_PREPARER_GAME}-fr3-prepare
+                      PRIVATE ${OPENGOAL_FR3_PREPARER_TARGET})
+target_include_directories(${OPENGOAL_FR3_PREPARER_GAME}-fr3-prepare
+                           PRIVATE "${CMAKE_SOURCE_DIR}/third-party/fmt/include")
+target_compile_features(${OPENGOAL_FR3_PREPARER_GAME}-fr3-prepare PRIVATE cxx_std_20)
+
+if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
+  add_executable(${OPENGOAL_FR3_PREPARER_TARGET}-test
+                 "${CMAKE_SOURCE_DIR}/test/decompiler/test_${OPENGOAL_FR3_PREPARER_GAME}_fr3_preparer.cpp")
+  target_link_libraries(${OPENGOAL_FR3_PREPARER_TARGET}-test
+                        PRIVATE ${OPENGOAL_FR3_PREPARER_TARGET})
+  target_compile_features(${OPENGOAL_FR3_PREPARER_TARGET}-test PRIVATE cxx_std_20)
+  if(MSVC)
+    target_compile_options(${OPENGOAL_FR3_PREPARER_TARGET}-test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(${OPENGOAL_FR3_PREPARER_TARGET}-test
+                           PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  if(OPENGOAL_FR3_PREPARER_GAME STREQUAL "jak2")
+    add_test(NAME ${OPENGOAL_FR3_PREPARER_TARGET}-test
+             COMMAND ${OPENGOAL_FR3_PREPARER_TARGET}-test ${CMAKE_SOURCE_DIR})
+  else()
+    add_test(NAME ${OPENGOAL_FR3_PREPARER_TARGET}-test
+             COMMAND ${OPENGOAL_FR3_PREPARER_TARGET}-test)
+  endif()
+endif()

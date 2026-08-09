@@ -1,6 +1,8 @@
 #include "metal_ocean_renderer.h"
 
 #include <algorithm>
+#include <cstring>
+#include <mutex>
 
 #include "common/log/log.h"
 #include "common/util/Assert.h"
@@ -60,6 +62,60 @@ id<MTLTexture> make_ocean_target(id<MTLDevice> device, int size, int mip_levels)
   return [device newTextureWithDescriptor:desc];
 }
 
+bool scan_gs_set(const u8* data, u32 size, GsRegisterAddress reg, u64* out) {
+  if (size < 16) {
+    return false;
+  }
+  GifTag tag(data);
+  if (tag.flg() != GifTag::Format::PACKED) {
+    return false;
+  }
+  const u32 nreg = tag.nreg();
+  u32 offset = 16;
+  for (u32 loop = 0; loop < tag.nloop(); loop++) {
+    for (u32 r = 0; r < nreg; r++) {
+      if (offset + 16 > size) {
+        return false;
+      }
+      if (tag.reg(r) == GifTag::RegisterDescriptor::AD) {
+        u64 value = 0;
+        u8 addr = 0;
+        std::memcpy(&value, data + offset, sizeof(value));
+        std::memcpy(&addr, data + offset + 8, sizeof(addr));
+        if (addr == static_cast<u8>(reg)) {
+          *out = value;
+          return true;
+        }
+      }
+      offset += 16;
+    }
+  }
+  return false;
+}
+
+bool is_untextured_draw(const u8* data, u32 size) {
+  if (size < 16) {
+    return false;
+  }
+  GifTag tag(data);
+  return tag.pre() && !GsPrim(tag.prim()).tme();
+}
+
+bool find_sky_color(DmaFollower dma, u32 end_offset, u8 out[4]) {
+  for (int guard = 0; guard < 256 && dma.current_tag_offset() != end_offset; guard++) {
+    const auto transfer = dma.read_and_advance();
+    if (transfer.size_bytes >= 32 &&
+        is_untextured_draw(transfer.data, transfer.size_bytes)) {
+      out[0] = transfer.data[16];
+      out[1] = transfer.data[20];
+      out[2] = transfer.data[24];
+      out[3] = transfer.data[28];
+      return true;
+    }
+  }
+  return false;
+}
+
 // Resolves a VRAM slot to a Metal texture, falling back to the pool's
 // placeholder exactly like the GL renderers do.
 id<MTLTexture> lookup_or_placeholder(TexturePool* pool, u32 tbp, int* missing_counter) {
@@ -101,6 +157,323 @@ bool skip_if_not_jak1(DmaFollower& dma,
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// MetalOceanEnvmap (standalone Jak II prefix proof; no bucket-table binding)
+// ---------------------------------------------------------------------------
+
+MetalOceanEnvmap::MetalOceanEnvmap(id<MTLDevice> device, id<MTLCommandQueue> queue)
+    : m_device(device),
+      m_queue(queue),
+      m_first_pass_texture(make_ocean_target(device, kWidth, 1)),
+      m_result_texture(make_ocean_target(device, kWidth, 1)),
+      m_result_handle(metal_texture_register(m_result_texture)),
+      m_direct("jak2-ocean-envmap-proof", -1, 2048) {}
+
+MetalOceanEnvmap::~MetalOceanEnvmap() {
+  ASSERT_MSG(!m_pool_texture, "MetalOceanEnvmap must detach from its live TexturePool");
+  if (m_result_handle) {
+    metal_texture_release(m_result_handle);
+  }
+}
+
+MetalSamplerKey MetalOceanEnvmap::radial_sampler_key() {
+  // FramebufferTexturePair selects nearest magnification; OceanEnvmap then
+  // selects linear minification and leaves OpenGL's repeat defaults intact.
+  MetalSamplerKey key;
+  key.min_filter = MTLSamplerMinMagFilterLinear;
+  key.mag_filter = MTLSamplerMinMagFilterNearest;
+  key.wrap_s = MTLSamplerAddressModeRepeat;
+  key.wrap_t = MTLSamplerAddressModeRepeat;
+  return key;
+}
+
+bool MetalOceanEnvmap::init_textures(TexturePool& pool, GameVersion version) {
+  if (version != GameVersion::Jak2 || !m_device || !m_queue || !m_first_pass_texture ||
+      !m_result_texture || !m_result_handle || m_pool_texture) {
+    return false;
+  }
+
+  TextureInput input;
+  input.gpu_texture = m_result_handle;
+  input.w = kWidth;
+  input.h = kHeight;
+  input.debug_page_name = "PC-OCEAN-ENVMAP";
+  input.debug_name = "jak2-ocean-envmap-proof";
+  std::lock_guard<std::mutex> pool_lock(pool.mutex());
+  input.id = pool.allocate_pc_port_texture(version);
+  m_texture_id = input.id;
+  m_pool_texture = pool.give_texture_and_load_to_vram(input, kVramSlot);
+  m_pool = &pool;
+  return m_pool_texture != nullptr;
+}
+
+void MetalOceanEnvmap::detach_pool() {
+  if (m_pool && m_pool_texture && m_result_handle) {
+    std::lock_guard<std::mutex> pool_lock(m_pool->mutex());
+    m_pool->unload_texture(m_texture_id, m_result_handle);
+  }
+  m_pool_texture = nullptr;
+  m_pool = nullptr;
+}
+
+bool MetalOceanEnvmap::render_haze(const u8* gif_data,
+                                   u32 size,
+                                   MetalFrameContext& ctx,
+                                   id<MTLRenderCommandEncoder> encoder) {
+  if (!gif_data || size < 16 || !encoder) {
+    return false;
+  }
+  GifTag tag(gif_data);
+  if (tag.flg() != GifTag::Format::PACKED) {
+    return false;
+  }
+
+  struct HazeVertex {
+    float x;
+    float y;
+    float color[4];
+  };
+  static_assert(sizeof(HazeVertex) == 24);
+
+  const auto offset_xy = m_direct.coordinate_offset();
+  std::vector<HazeVertex> vertices;
+  vertices.reserve(tag.nloop() * 2);
+  float color[4] = {1.f, 1.f, 1.f, 1.f};
+  const u32 nreg = tag.nreg();
+  u32 offset = 16;
+  for (u32 loop = 0; loop < tag.nloop(); loop++) {
+    for (u32 r = 0; r < nreg; r++) {
+      if (offset + 16 > size) {
+        return false;
+      }
+      const u8* data = gif_data + offset;
+      switch (tag.reg(r)) {
+        case GifTag::RegisterDescriptor::RGBAQ:
+          color[0] = data[0] / 255.f;
+          color[1] = data[4] / 255.f;
+          color[2] = data[8] / 255.f;
+          color[3] = data[12] / 255.f;
+          break;
+        case GifTag::RegisterDescriptor::XYZF2: {
+          u16 raw_x = 0;
+          u16 raw_y = 0;
+          std::memcpy(&raw_x, data, sizeof(raw_x));
+          std::memcpy(&raw_y, data + 4, sizeof(raw_y));
+          const float px = raw_x / 65536.f + offset_xy.x();
+          const float py = raw_y / 65536.f + offset_xy.y();
+          HazeVertex vertex;
+          vertex.x = (px - 0.453125f) * 64.f;
+          vertex.y = (py - 0.5f + (2.25f / 64.f)) * 64.f;
+          vertex.color[0] = color[0];
+          vertex.color[1] = color[1];
+          vertex.color[2] = color[2];
+          vertex.color[3] = color[3] * 2.f;
+          vertices.push_back(vertex);
+        } break;
+        default:
+          break;
+      }
+      offset += 16;
+    }
+  }
+  if (vertices.size() < 3) {
+    return false;
+  }
+
+  id<MTLBuffer> vertex_buffer = nil;
+  u32 vertex_offset = 0;
+  void* destination = ctx.stream->alloc(vertices.size() * sizeof(HazeVertex), &vertex_buffer,
+                                        &vertex_offset);
+  std::memcpy(destination, vertices.data(), vertices.size() * sizeof(HazeVertex));
+
+  MetalPsoKey key;
+  key.shader = MetalShaderId::OCEAN_ENVMAP_HAZE;
+  key.color_format = MTLPixelFormatRGBA8Unorm;
+  key.blend_enable = true;
+  key.blend_src_rgb = MTLBlendFactorSourceAlpha;
+  key.blend_dst_rgb = MTLBlendFactorOne;
+  key.blend_src_alpha = MTLBlendFactorSourceAlpha;
+  key.blend_dst_alpha = MTLBlendFactorOne;
+  id<MTLRenderPipelineState> pipeline = ctx.pso_cache->get_pipeline(key);
+  if (!pipeline) {
+    return false;
+  }
+  [encoder setRenderPipelineState:pipeline];
+  [encoder setDepthStencilState:ctx.pso_cache->get_depth_stencil({})];
+  [encoder setVertexBuffer:vertex_buffer offset:vertex_offset atIndex:0];
+  [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
+              vertexStart:0
+              vertexCount:vertices.size()];
+  return true;
+}
+
+bool MetalOceanEnvmap::render_radial(MetalFrameContext& ctx,
+                                     id<MTLCommandBuffer> commands) {
+  auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = m_result_texture;
+  pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+  if (!encoder) {
+    return false;
+  }
+
+  MetalPsoKey key;
+  key.shader = MetalShaderId::OCEAN_ENVMAP_RADIAL;
+  key.color_format = MTLPixelFormatRGBA8Unorm;
+  id<MTLRenderPipelineState> pipeline = ctx.pso_cache->get_pipeline(key);
+  if (!pipeline) {
+    [encoder endEncoding];
+    return false;
+  }
+  [encoder setRenderPipelineState:pipeline];
+  [encoder setFragmentTexture:m_first_pass_texture atIndex:0];
+  [encoder setFragmentSamplerState:ctx.sampler_cache->get(radial_sampler_key()) atIndex:0];
+  [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+  [encoder endEncoding];
+  return true;
+}
+
+bool MetalOceanEnvmap::handle_ocean_envmap_jak2(DmaFollower& dma,
+                                                 MetalSharedRenderState* render_state,
+                                                 MetalFrameContext& ctx) {
+  m_stats = {};
+  if (!render_state || render_state->version != GameVersion::Jak2 ||
+      render_state->texture_pool != m_pool || !m_pool_texture || !ctx.pso_cache ||
+      !ctx.sampler_cache || !ctx.stream || !m_queue) {
+    return false;
+  }
+
+  m_stats.found_sky_color =
+      find_sky_color(dma, render_state->next_bucket, m_stats.sky_color);
+  if (!m_stats.found_sky_color) {
+    return false;
+  }
+
+  const auto scissor_backup = m_direct.capture_scissor();
+  const bool offscreen_backup = m_direct.offscreen_mode();
+  id<MTLCommandBuffer> commands = [m_queue commandBuffer];
+  if (!commands) {
+    return false;
+  }
+
+  MetalFrameContext offscreen = ctx;
+  offscreen.cmds = commands;
+  offscreen.game_color = m_first_pass_texture;
+  offscreen.game_depth = nil;
+  offscreen.color_format = MTLPixelFormatRGBA8Unorm;
+  offscreen.depth_format = MTLPixelFormatInvalid;
+  offscreen.draw_calls = 0;
+  offscreen.triangles = 0;
+  id<MTLRenderCommandEncoder> first_pass_encoder = nil;
+  bool second_setup_targets_envmap = false;
+
+  for (int guard = 0; guard < 4096; guard++) {
+    if (dma.current_tag_offset() == render_state->next_bucket) {
+      break;
+    }
+
+    DmaFollower peek = dma;
+    const auto next = peek.read_and_advance();
+    u64 scissor = 0;
+    u64 frame = 0;
+    const bool has_scissor =
+        scan_gs_set(next.data, next.size_bytes, GsRegisterAddress::SCISSOR_1, &scissor);
+    const bool has_frame =
+        scan_gs_set(next.data, next.size_bytes, GsRegisterAddress::FRAME_1, &frame);
+    if (has_scissor && GsScissor(scissor).x1() == 127) {
+      m_stats.stopped_before_ocean_texture = true;
+      m_stats.stop_offset = dma.current_tag_offset();
+      break;
+    }
+    const bool is_reset = has_scissor && GsScissor(scissor).x1() != kWidth - 1;
+
+    const auto data = dma.read_and_advance();
+    m_stats.transfers_consumed++;
+    if (has_scissor && GsScissor(scissor).x1() == kWidth - 1) {
+      m_stats.setup_64_count++;
+      const u32 target_tbp = has_frame ? GsFrame(frame).fbp() << 5 : 0;
+      if (m_stats.setup_64_count == 1) {
+        m_direct.reset_state();
+        m_direct.set_offscreen_mode(true);
+        auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = m_first_pass_texture;
+        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        pass.colorAttachments[0].clearColor =
+            MTLClearColorMake(m_stats.sky_color[0] / 255.f, m_stats.sky_color[1] / 255.f,
+                              m_stats.sky_color[2] / 255.f, m_stats.sky_color[3] / 255.f);
+        first_pass_encoder = [commands renderCommandEncoderWithDescriptor:pass];
+        if (!first_pass_encoder) {
+          break;
+        }
+        [first_pass_encoder setViewport:MTLViewport{0.0, 0.0, kWidth * 2.0, kHeight * 2.0,
+                                                   0.0, 1.0}];
+        [first_pass_encoder setCullMode:MTLCullModeNone];
+        offscreen.enc = first_pass_encoder;
+      } else if (m_stats.setup_64_count == 2) {
+        m_direct.flush_pending(render_state, offscreen);
+        m_stats.direct_draw_calls = m_direct.stats().draw_calls;
+        m_stats.direct_batch = m_direct.stats().last_batch;
+        if (first_pass_encoder) {
+          [first_pass_encoder endEncoding];
+          first_pass_encoder = nil;
+        }
+        m_direct.reset_state();
+        m_direct.set_offscreen_mode(false);
+        second_setup_targets_envmap = target_tbp == kVramSlot;
+      }
+    }
+
+    if (first_pass_encoder && m_stats.setup_64_count == 1 && !is_reset &&
+        data.size_bytes >= 16 && data.vifcode1().kind == VifCode::Kind::DIRECT &&
+        !is_untextured_draw(data.data, data.size_bytes)) {
+      m_direct.render_gif(data.data, data.size_bytes, render_state, offscreen);
+    }
+
+    if (first_pass_encoder && m_stats.setup_64_count == 1 && !is_reset &&
+        data.size_bytes >= 16 && is_untextured_draw(data.data, data.size_bytes) &&
+        GsPrim(GifTag(data.data).prim()).kind() == GsPrim::Kind::TRI_STRIP) {
+      m_direct.flush_pending(render_state, offscreen);
+      if (render_haze(data.data, data.size_bytes, offscreen, first_pass_encoder)) {
+        m_stats.haze_draw_calls++;
+      }
+    }
+  }
+
+  if (first_pass_encoder) {
+    m_direct.flush_pending(render_state, offscreen);
+    m_stats.direct_draw_calls = m_direct.stats().draw_calls;
+    m_stats.direct_batch = m_direct.stats().last_batch;
+    [first_pass_encoder endEncoding];
+  }
+  m_direct.restore_scissor(scissor_backup);
+  m_direct.set_offscreen_mode(offscreen_backup);
+  m_stats.scissor_restored = m_direct.capture_scissor() == scissor_backup;
+
+  const bool prefix_complete = m_stats.setup_64_count == 2 && second_setup_targets_envmap &&
+                               m_stats.stopped_before_ocean_texture &&
+                               m_stats.haze_draw_calls > 0 && m_stats.direct_draw_calls > 0;
+  if (!prefix_complete || !render_radial(ctx, commands)) {
+    return false;
+  }
+  m_stats.radial_draw_calls = 1;
+
+  [commands commit];
+  [commands waitUntilCompleted];
+  if (commands.status != MTLCommandBufferStatusCompleted) {
+    return false;
+  }
+
+  {
+    std::lock_guard<std::mutex> pool_lock(m_pool->mutex());
+    m_pool->move_existing_to_vram(m_pool_texture, kVramSlot);
+  }
+  m_stats.published = true;
+  m_stats.published_vram_slot = kVramSlot;
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // MetalOceanTexture

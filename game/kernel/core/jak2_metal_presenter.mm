@@ -86,8 +86,11 @@ bool counters_are_valid(const goal_jak2_metal_stats& stats) {
       stats.presentation_order_mismatches != 0) {
     return fail("Metal reported a drawable, scheduling, command-buffer, or presentation error.");
   }
-  if (stats.skipped_bucket_bytes != 16 || stats.draw_calls != 0 || stats.triangles != 0) {
-    return fail("The public Jak II proof chain changed its audited no-draw behavior.");
+  const auto chain_stats = g_presenter.renderer->chain_stats();
+  if (stats.skipped_bucket_bytes != 16 || stats.draw_calls != 0 || stats.triangles != 0 ||
+      chain_stats.jak2_screen_filter_draws != 0 || chain_stats.jak2_screen_filter_triangles != 0) {
+    return fail(
+        "The public Jak II proof chain changed its audited SCREEN_FILTER NOP or skip behavior.");
   }
   return true;
 }
@@ -172,7 +175,7 @@ int goal_jak2_metal_presenter_render(double target_presentation_time) {
 
     g_presenter.render_attempts++;
     const bool acquired = g_presenter.renderer->render_chain_frame(
-        options, g_presenter.layer, g_presenter.chain.data(), 0);
+        options, g_presenter.layer, g_presenter.chain.data(), 0, g_presenter.chain.size());
     const auto stats = copy_stats();
     if (!acquired) {
       return fail_result("CAMetalLayer did not provide a drawable.");

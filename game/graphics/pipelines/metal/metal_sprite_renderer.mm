@@ -1,9 +1,13 @@
 #include "metal_sprite_renderer.h"
 
+#include <array>
+#include <utility>
+
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
 #include "game/graphics/opengl_renderer/dma_helpers.h"
+#include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/texture/TexturePool.h"
 
 #include "fmt/format.h"
@@ -17,7 +21,67 @@ namespace {
 // own limit (Sprite3::do_block_common).
 constexpr int kMaxSpritesPerFlush = 8192;
 
-constexpr float kGameHeightJak1 = 448.f;
+constexpr PerGameVersion<u32> kNormalZbp(448, 304, 304, 304);
+
+constexpr u16 kGlowConstantsAddress = 980;
+constexpr u16 kGlowTemplate0Address = 800;
+constexpr u16 kGlowTemplate1Address = 884;
+constexpr u16 kGlowBufferOffset = 400;
+constexpr u16 kGlowControlAddress = 0;
+constexpr u16 kGlowVectorAddress = 1;
+constexpr u16 kGlowAdgifAddress = 145;
+constexpr u16 kGlowProgramAddress = 10;
+constexpr int kMaxGlowRecords = 400;
+constexpr bool kGlowNewMode = true;
+
+constexpr u32 vif_code(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
+  return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
+}
+
+constexpr u32 vif_stcycl(u16 cl, u16 wl) {
+  return vif_code(VifCode::Kind::STCYCL, cl | (wl << 8));
+}
+
+constexpr u32 vif_unpack_v4_32(u8 qwc, u16 address, bool tops) {
+  return vif_code(VifCode::Kind::UNPACK_V4_32, address | (tops ? (1 << 15) : 0), qwc);
+}
+
+bool is_exact_stcycl_unpack(const DmaTransfer& transfer, u8 qwc, u16 address, bool tops) {
+  return transfer.size_bytes == qwc * 16 && transfer.vif0() == vif_stcycl(4, 4) &&
+         transfer.vif1() == vif_unpack_v4_32(qwc, address, tops);
+}
+
+bool is_exact_glow_template_1(const DmaTransfer& transfer) {
+  constexpr u8 kTemplateQwc = 0x54;
+  return transfer.size_bytes == kTemplateQwc * 16 &&
+         transfer.vif0() == vif_code(VifCode::Kind::MSCAL, 0) &&
+         transfer.vif1() == vif_unpack_v4_32(kTemplateQwc, kGlowTemplate1Address, false);
+}
+
+bool is_exact_base_offset(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 0 && transfer.vif0() == vif_code(VifCode::Kind::BASE, 0) &&
+         transfer.vif1() == vif_code(VifCode::Kind::OFFSET, kGlowBufferOffset);
+}
+
+bool is_exact_nop_nop(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 0 && transfer.vif0() == 0 && transfer.vif1() == 0;
+}
+
+bool is_exact_nop_flushe(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 0 && transfer.vif0() == 0 &&
+         transfer.vif1() == vif_code(VifCode::Kind::FLUSHE);
+}
+
+bool is_exact_glow_call(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 0 &&
+         transfer.vif0() == vif_code(VifCode::Kind::MSCALF, kGlowProgramAddress) &&
+         transfer.vif1() == vif_code(VifCode::Kind::FLUSHE);
+}
+
+bool is_exact_direct10(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 10 * 16 && transfer.vif0() == 0 &&
+         transfer.vif1() == vif_code(VifCode::Kind::DIRECT, 10);
+}
 
 // size of sprite-aux-list in GOAL code * SPRITE_MAX_AMOUNT_MULT (as in GL)
 constexpr int kMaxDistortSprites = 256 * 12;
@@ -253,16 +317,30 @@ MetalSpriteRenderer::MetalSpriteRenderer(const std::string& name, int my_id)
   m_current_mode = m_default_mode;
 }
 
-/*!
- * Mirror of Sprite3::render_jak1.
- */
 void MetalSpriteRenderer::render(DmaFollower& dma,
                                  MetalSharedRenderState* render_state,
                                  MetalFrameContext& ctx) {
-  ASSERT_MSG(render_state->version == GameVersion::Jak1,
-             "Metal sprite renderer only supports Jak 1");
   m_stats = {};
+  m_pending_glow_outputs.clear();
 
+  switch (render_state->version) {
+    case GameVersion::Jak1:
+      render_jak1(dma, render_state, ctx);
+      break;
+    case GameVersion::Jak2:
+      render_jak2(dma, render_state, ctx);
+      break;
+    default:
+      ASSERT_MSG(false, "Metal sprite renderer only supports Jak 1 and Jak 2");
+  }
+}
+
+/*!
+ * Mirror of Sprite3::render_jak1.
+ */
+void MetalSpriteRenderer::render_jak1(DmaFollower& dma,
+                                      MetalSharedRenderState* render_state,
+                                      MetalFrameContext& ctx) {
   // NEXT with two nops: the jump from the bucket array into the sprite data
   auto data0 = dma.read_and_advance();
   ASSERT(data0.vif1() == 0);
@@ -278,17 +356,73 @@ void MetalSpriteRenderer::render(DmaFollower& dma,
     return;
   }
 
-  // some DirectRenderer DMA may come first
-  if (render_direct(dma, render_state, ctx)) {
+  if (!render_normal_path(dma, render_state, ctx)) {
     return;
   }
 
+  // the GL renderer consumes the remainder of the bucket the same way
+  while (dma.current_tag_offset() != render_state->next_bucket) {
+    dma.read_and_advance();
+  }
+}
+
+/*!
+ * Mirror of Sprite3::render_jak2 through the normal sprite path. A complete,
+ * constants-led glow packet is parsed into pending backend-neutral records.
+ */
+void MetalSpriteRenderer::render_jak2(DmaFollower& dma,
+                                      MetalSharedRenderState* render_state,
+                                      MetalFrameContext& ctx) {
+  auto data0 = dma.read_and_advance();
+  ASSERT(data0.vif0() == 0 || data0.vifcode0().kind == VifCode::Kind::MARK);
+  ASSERT(data0.vif1() == 0 || data0.vifcode1().kind == VifCode::Kind::NOP);
+  ASSERT(data0.size_bytes == 0);
+
+  if (dma.current_tag_offset() == render_state->next_bucket) {
+    return;
+  }
+
+  if (!render_normal_path(dma, render_state, ctx)) {
+    return;
+  }
+
+  auto nop_flushe = dma.read_and_advance();
+  ASSERT(nop_flushe.vifcode0().kind == VifCode::Kind::NOP);
+  ASSERT(nop_flushe.vifcode1().kind == VifCode::Kind::FLUSHE);
+  parse_jak2_glow_and_residual(dma, render_state);
+
+  const auto& glow_outputs = pending_glow_outputs();
+  m_glow_renderer.draw(glow_outputs.empty() ? nullptr : glow_outputs.data(), glow_outputs.size(),
+                       render_state, ctx);
+  const auto& glow_stats = m_glow_renderer.stats();
+  m_stats.glow_invalid_records = glow_stats.invalid_records;
+  m_stats.glow_force_visible_submitted = glow_stats.sprites_submitted;
+  m_stats.glow_force_visible_drawn = glow_stats.sprites_drawn;
+  m_stats.glow_force_visible_draw_calls = glow_stats.draw_calls;
+  m_stats.glow_force_visible_triangles = glow_stats.triangles;
+  m_stats.glow_force_visible_missing_textures = glow_stats.missing_textures;
+  ASSERT(m_stats.glow_force_visible_drawn <= m_stats.glow_sprites_parsed);
+  m_stats.glow_sprites_skipped =
+      m_stats.glow_sprites_parsed - m_stats.glow_force_visible_drawn;
+  m_stats.draw_calls += glow_stats.draw_calls + glow_stats.visibility_draw_calls;
+  m_stats.triangles += glow_stats.triangles + glow_stats.visibility_triangles;
+  m_stats.missing_textures += glow_stats.missing_textures;
+}
+
+bool MetalSpriteRenderer::render_normal_path(DmaFollower& dma,
+                                             MetalSharedRenderState* render_state,
+                                             MetalFrameContext& ctx) {
+  // some DirectRenderer DMA may come first
+  if (render_direct(dma, render_state, ctx)) {
+    return false;
+  }
+
   // the distorter: DMA, vertex build and draw, like Sprite3::render_distorter
-  distort_dma(dma);
+  distort_dma(render_state->version, dma);
   distort_setup();
   distort_draw(render_state, ctx);
 
-  handle_sprite_frame_setup(dma);
+  handle_sprite_frame_setup(render_state->version, dma);
   render_3d(dma);
 
   render_2d_group0(dma, render_state, ctx);
@@ -298,10 +432,168 @@ void MetalSpriteRenderer::render(DmaFollower& dma,
 
   render_2d_group1(dma, render_state, ctx);
   flush_sprites(render_state, ctx, true);
+  return true;
+}
 
-  // the GL renderer consumes the remainder of the bucket the same way
-  while (dma.current_tag_offset() != render_state->next_bucket) {
-    dma.read_and_advance();
+void MetalSpriteRenderer::parse_jak2_glow_and_residual(DmaFollower& dma,
+                                                       MetalSharedRenderState* render_state) {
+  std::vector<DmaTransfer> packet_transfers;
+  std::vector<SpriteGlowOutput> parsed_outputs;
+  parsed_outputs.reserve(kMaxGlowRecords);
+  int parsed_count = 0;
+  int accepted_count = 0;
+  int rejected_count = 0;
+  std::array<int, static_cast<std::size_t>(SpriteGlowRejectReason::COUNT)> reject_reasons = {};
+
+  auto read_packet_transfer = [&](DmaTransfer* transfer) {
+    if (dma.current_tag_offset() == render_state->next_bucket) {
+      return false;
+    }
+    *transfer = dma.read_and_advance();
+    packet_transfers.push_back(*transfer);
+    return true;
+  };
+
+  auto parse_constants_led_packet = [&]() {
+    DmaTransfer constants_transfer;
+    if (!read_packet_transfer(&constants_transfer) ||
+        !is_exact_stcycl_unpack(constants_transfer, sizeof(SpriteGlowConsts) / 16,
+                                kGlowConstantsAddress, false)) {
+      return false;
+    }
+
+    SpriteGlowConsts constants;
+    memcpy(&constants, constants_transfer.data, sizeof(constants));
+
+    DmaTransfer transfer;
+    if (!read_packet_transfer(&transfer) ||
+        !is_exact_stcycl_unpack(transfer, 0x54, kGlowTemplate0Address, false)) {
+      return false;
+    }
+    if (!read_packet_transfer(&transfer) || !is_exact_glow_template_1(transfer)) {
+      return false;
+    }
+    if (!read_packet_transfer(&transfer) || !is_exact_base_offset(transfer)) {
+      return false;
+    }
+    if (!read_packet_transfer(&transfer) || !is_exact_nop_flushe(transfer)) {
+      return false;
+    }
+    if (!read_packet_transfer(&transfer)) {
+      return false;
+    }
+
+    while (is_exact_nop_nop(transfer)) {
+      if (!read_packet_transfer(&transfer)) {
+        return false;
+      }
+    }
+
+    while (transfer.size_bytes == 16) {
+      if (!is_exact_stcycl_unpack(transfer, 1, kGlowControlAddress, true)) {
+        return false;
+      }
+      u32 sprite_count = 0;
+      memcpy(&sprite_count, transfer.data, sizeof(sprite_count));
+      if (sprite_count != 1) {
+        return false;
+      }
+      if (parsed_count == kMaxGlowRecords) {
+        return false;
+      }
+
+      DmaTransfer vector_transfer;
+      DmaTransfer adgif_transfer;
+      DmaTransfer call_transfer;
+      if (!read_packet_transfer(&vector_transfer) ||
+          !is_exact_stcycl_unpack(vector_transfer, 4, kGlowVectorAddress, true) ||
+          !read_packet_transfer(&adgif_transfer) ||
+          !is_exact_stcycl_unpack(adgif_transfer, 5, kGlowAdgifAddress, true) ||
+          !read_packet_transfer(&call_transfer) || !is_exact_glow_call(call_transfer)) {
+        return false;
+      }
+
+      parsed_count++;
+      SpriteGlowOutput output;
+      SpriteGlowRejectReason reject_reason = SpriteGlowRejectReason::NONE;
+      if (glow_math(&constants, kGlowNewMode, vector_transfer.data, adgif_transfer.data, &output,
+                    &reject_reason)) {
+        parsed_outputs.push_back(output);
+        accepted_count++;
+      } else {
+        rejected_count++;
+        reject_reasons.at(static_cast<std::size_t>(reject_reason))++;
+      }
+
+      if (!read_packet_transfer(&transfer)) {
+        return false;
+      }
+      while (is_exact_nop_nop(transfer)) {
+        if (!read_packet_transfer(&transfer)) {
+          return false;
+        }
+      }
+    }
+
+    return is_exact_nop_flushe(transfer);
+  };
+
+  auto drain_remaining = [&]() {
+    while (dma.current_tag_offset() != render_state->next_bucket) {
+      const auto tag_kind = dma.current_tag().kind;
+      const auto transfer = dma.read_and_advance();
+      if (is_exact_direct10(transfer) ||
+          (tag_kind == DmaTag::Kind::NEXT && transfer.size_bytes == 0)) {
+        m_stats.post_glow_residual_transfers++;
+        m_stats.post_glow_residual_bytes += transfer.size_bytes;
+      } else {
+        m_stats.glow_transfers_skipped++;
+        m_stats.glow_bytes_skipped += transfer.size_bytes;
+      }
+      m_stats.unsupported_bytes += transfer.size_bytes;
+    }
+  };
+
+  const bool parsed_packet =
+      dma.current_tag_offset() != render_state->next_bucket && parse_constants_led_packet();
+  if (parsed_packet) {
+    m_stats.glow_sprites_parsed = parsed_count;
+    m_stats.glow_sprites_accepted = accepted_count;
+    m_stats.glow_sprites_rejected = rejected_count;
+    m_pending_glow_outputs = std::move(parsed_outputs);
+    drain_remaining();
+  } else {
+    for (const auto& transfer : packet_transfers) {
+      m_stats.glow_transfers_skipped++;
+      m_stats.glow_bytes_skipped += transfer.size_bytes;
+      m_stats.unsupported_bytes += transfer.size_bytes;
+    }
+
+    drain_remaining();
+  }
+
+  m_unsupported_bytes_total += m_stats.unsupported_bytes;
+
+  if (m_stats.glow_sprites_rejected > 0 && !m_warned_rejected_glow_math) {
+    for (std::size_t reason = 0; reason < reject_reasons.size(); reason++) {
+      if (reject_reasons[reason] > 0) {
+        lg::warn("Metal sprite {}: rejected {} Jak 2 glow record(s): {}", m_name,
+                 reject_reasons[reason],
+                 sprite_glow_reject_reason_name(static_cast<SpriteGlowRejectReason>(reason)));
+      }
+    }
+    m_warned_rejected_glow_math = true;
+  }
+
+  if (m_stats.unsupported_bytes > 0 && !m_warned_unsupported_glow) {
+    lg::warn("Metal sprite {}: parsed {}/accepted {}/rejected {} Jak 2 glow sprites; left {} "
+             "control-led transfers/{} payload bytes and {} residual transfers/{} payload bytes "
+             "unsupported ({} payload bytes total, logged once)",
+             m_name, m_stats.glow_sprites_parsed, m_stats.glow_sprites_accepted,
+             m_stats.glow_sprites_rejected, m_stats.glow_transfers_skipped,
+             m_stats.glow_bytes_skipped, m_stats.post_glow_residual_transfers,
+             m_stats.post_glow_residual_bytes, m_stats.unsupported_bytes);
+    m_warned_unsupported_glow = true;
   }
 }
 
@@ -321,10 +613,25 @@ bool MetalSpriteRenderer::render_direct(DmaFollower& dma,
 }
 
 /*!
- * Mirror of Sprite3::distort_dma (Jak 1 values): walks the distorter's DMA,
+ * Mirror of Sprite3::distort_dma: walks the distorter's DMA,
  * keeping the sine tables and the per-sprite frame data for distort_setup.
  */
-void MetalSpriteRenderer::distort_dma(DmaFollower& dma) {
+void MetalSpriteRenderer::distort_dma(GameVersion version, DmaFollower& dma) {
+  u32 expected_zbp = 0;
+  u32 expected_th = 0;
+  switch (version) {
+    case GameVersion::Jak1:
+      expected_zbp = 0x1c0;
+      expected_th = 8;
+      break;
+    case GameVersion::Jak2:
+      expected_zbp = 0x130;
+      expected_th = 9;
+      break;
+    default:
+      ASSERT_NOT_REACHED();
+  }
+
   // GS setup
   auto setup = dma.read_and_advance();
   ASSERT(setup.vifcode0().kind == VifCode::Kind::NOP);
@@ -352,12 +659,12 @@ void MetalSpriteRenderer::distort_dma(DmaFollower& dma) {
   ASSERT(distorter_setup.gif_tag.eop() == true);
   ASSERT(distorter_setup.gif_tag.nreg() == 6);
   ASSERT(distorter_setup.gif_tag.reg(0) == GifTag::RegisterDescriptor::AD);
-  ASSERT(distorter_setup.zbuf.zbp() == 0x1c0);
+  ASSERT(distorter_setup.zbuf.zbp() == expected_zbp);
   ASSERT(distorter_setup.zbuf.zmsk() == true);
   ASSERT(distorter_setup.zbuf.psm() == TextureFormat::PSMZ24);
   ASSERT(distorter_setup.tex0.tbw() == 8);
   ASSERT(distorter_setup.tex0.tw() == 9);
-  ASSERT(distorter_setup.tex0.th() == 8);
+  ASSERT(distorter_setup.tex0.th() == expected_th);
   ASSERT(distorter_setup.tex1.mmag() == 1);
   ASSERT(distorter_setup.tex1.mmin() == 1);
   ASSERT(distorter_setup.alpha.a_mode() == GsAlpha::BlendMode::SOURCE);
@@ -495,7 +802,6 @@ void MetalSpriteRenderer::distort_setup() {
  */
 void MetalSpriteRenderer::distort_draw(MetalSharedRenderState* render_state,
                                        MetalFrameContext& ctx) {
-  (void)render_state;
   if (m_distort_tri_count == 0) {
     return;
   }
@@ -565,8 +871,8 @@ void MetalSpriteRenderer::distort_draw(MetalSharedRenderState* render_state,
   for (int i = 0; i < 4; i++) {
     params.color[i] = (float)m_distort_sine_tables.color[i] / 255.0f;
   }
-  params.height_scale = 1.f;  // Jak 1
-  params.fb_v_offset = (1.f - kGameHeightJak1 / 512.f) / 2.f;
+  params.height_scale = metal_height_scale(render_state->version);
+  params.fb_v_offset = (1.f - 1.f / metal_scissor_adjust(render_state->version)) / 2.f;
 
   id<MTLRenderCommandEncoder> enc = ctx.enc;
   id<MTLRenderPipelineState> pso = ctx.pso_cache->get_pipeline(pso_key);
@@ -591,9 +897,9 @@ void MetalSpriteRenderer::distort_draw(MetalSharedRenderState* render_state,
 }
 
 /*!
- * Mirror of Sprite3::handle_sprite_frame_setup, Jak 1 branch.
+ * Mirror of Sprite3::handle_sprite_frame_setup.
  */
-void MetalSpriteRenderer::handle_sprite_frame_setup(DmaFollower& dma) {
+void MetalSpriteRenderer::handle_sprite_frame_setup(GameVersion version, DmaFollower& dma) {
   auto direct_data = dma.read_and_advance();
   ASSERT(direct_data.size_bytes == 3 * 16);
   memcpy(m_sprite_direct_setup, direct_data.data, 3 * 16);
@@ -605,7 +911,6 @@ void MetalSpriteRenderer::handle_sprite_frame_setup(DmaFollower& dma) {
   ASSERT(m_sprite_direct_setup[5] == 0x0000000000000008);
 
   auto frame_data = dma.read_and_advance();
-  ASSERT(frame_data.size_bytes == (int)sizeof(SpriteFrameDataJak1));
   ASSERT(frame_data.vifcode0().kind == VifCode::Kind::STCYCL);
   VifCodeStcycl frame_data_stcycl(frame_data.vifcode0());
   ASSERT(frame_data_stcycl.cl == 4);
@@ -614,9 +919,20 @@ void MetalSpriteRenderer::handle_sprite_frame_setup(DmaFollower& dma) {
   VifCodeUnpack frame_data_unpack(frame_data.vifcode1());
   ASSERT(frame_data_unpack.addr_qw == SpriteDataMem::FrameData);
   ASSERT(frame_data_unpack.use_tops_flag == false);
-  SpriteFrameDataJak1 jak1_data;
-  memcpy(&jak1_data, frame_data.data, sizeof(SpriteFrameDataJak1));
-  m_frame_data.from_jak1(jak1_data);
+  switch (version) {
+    case GameVersion::Jak1: {
+      ASSERT(frame_data.size_bytes == (int)sizeof(SpriteFrameDataJak1));
+      SpriteFrameDataJak1 jak1_data;
+      memcpy(&jak1_data, frame_data.data, sizeof(SpriteFrameDataJak1));
+      m_frame_data.from_jak1(jak1_data);
+    } break;
+    case GameVersion::Jak2:
+      ASSERT(frame_data.size_bytes == (int)sizeof(SpriteFrameData));
+      memcpy(&m_frame_data, frame_data.data, sizeof(SpriteFrameData));
+      break;
+    default:
+      ASSERT_NOT_REACHED();
+  }
 
   auto mscalf = dma.read_and_advance();
   ASSERT(mscalf.size_bytes == 0);
@@ -718,7 +1034,16 @@ void MetalSpriteRenderer::render_2d_group1(DmaFollower& dma,
     auto run = dma.read_and_advance();
     ASSERT(run.vifcode0().kind == VifCode::Kind::NOP);
     ASSERT(run.vifcode1().kind == VifCode::Kind::MSCAL);
-    ASSERT(run.vifcode1().immediate == SpriteProgMem::Sprites2dHud_Jak1);
+    switch (render_state->version) {
+      case GameVersion::Jak1:
+        ASSERT(run.vifcode1().immediate == SpriteProgMem::Sprites2dHud_Jak1);
+        break;
+      case GameVersion::Jak2:
+        ASSERT(run.vifcode1().immediate == SpriteProgMem::Sprites2dHud_Jak2);
+        break;
+      default:
+        ASSERT_NOT_REACHED();
+    }
 
     do_block_common(SpriteMode::ModeHUD, sprite_count, render_state, ctx);
   }
@@ -737,10 +1062,10 @@ void MetalSpriteRenderer::handle_tex1(u64 val) {
   m_current_mode.set_filt_enable(reg.mmag());
 }
 
-void MetalSpriteRenderer::handle_zbuf(u64 val) {
+void MetalSpriteRenderer::handle_zbuf(GameVersion version, u64 val) {
   GsZbuf x(val);
   ASSERT(x.psm() == TextureFormat::PSMZ24);
-  ASSERT(x.zbp() == 448);
+  ASSERT(x.zbp() == kNormalZbp[version]);
   m_current_mode.set_depth_write_enable(!x.zmsk());
 }
 
@@ -802,11 +1127,17 @@ void MetalSpriteRenderer::do_block_common(SpriteMode mode,
       flush_sprites(render_state, ctx, mode == ModeHUD);
     }
 
+    if (render_state->version > GameVersion::Jak1 &&
+        m_vec_data_2d[sprite_idx].matrix() == -1) {
+      m_stats.glow_marked_sprites++;
+      continue;
+    }
+
     auto& adgif = m_adgif[sprite_idx];
     handle_tex0(adgif.tex0_data);
     handle_tex1(adgif.tex1_data);
     if (GsRegisterAddress(adgif.clamp_addr) == GsRegisterAddress::ZBUF_1) {
-      handle_zbuf(adgif.clamp_data);
+      handle_zbuf(render_state->version, adgif.clamp_data);
     } else {
       handle_clamp(adgif.clamp_data);
     }
@@ -864,6 +1195,7 @@ void MetalSpriteRenderer::do_block_common(SpriteMode mode,
     m_vertices_3d.at(start_vtx_id + 3).info[2] = 2;
 
     ++m_sprite_idx;
+    m_stats.normal_sprites_submitted++;
   }
 }
 
@@ -920,8 +1252,8 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
   vs_params.max_scale = m_frame_data.max_scale;
   vs_params.deg_to_rad = m_frame_data.deg_to_rad;
   vs_params.inv_area = m_frame_data.inv_area;
-  vs_params.height_scale = 1.f;  // Jak 1
-  vs_params.scissor_adjust = 512.f / kGameHeightJak1;
+  vs_params.height_scale = metal_height_scale(render_state->version);
+  vs_params.scissor_adjust = metal_scissor_adjust(render_state->version);
 
   id<MTLRenderCommandEncoder> enc = ctx.enc;
   [enc setVertexBuffer:vbuf offset:voffset atIndex:0];

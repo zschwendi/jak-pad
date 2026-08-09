@@ -11,6 +11,26 @@ namespace metal_renderer {
 enum class Jak2MetalBucketBehavior : std::uint8_t {
   DeferredSkip,
   StrictEmpty,
+  Direct,
+  HostTextureUpload,
+  Visibility,
+  Sprite,
+  TFragment,
+  TFragmentTrans,
+  TFragmentWater,
+  Shrub,
+  Tie,
+  TieEnvmap,
+  TieTrans,
+  TieTransEnvmap,
+  TieWater,
+  TieWaterEnvmap,
+  Merc,
+  HostTextureUploadDirect,
+  BlitDisplay,
+  MercAlpha,
+  MercWater,
+  Generic2,
 };
 
 struct Jak2MetalBucketDescriptor {
@@ -20,7 +40,7 @@ struct Jak2MetalBucketDescriptor {
 
 inline constexpr std::size_t kJak2MetalBucketCount =
     static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS);
-inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0x6a36218fa2275590ull;
+inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0xdf00f6881671c008ull;
 
 const std::array<Jak2MetalBucketDescriptor, kJak2MetalBucketCount>& jak2_metal_bucket_table();
 

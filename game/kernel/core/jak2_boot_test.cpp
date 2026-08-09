@@ -46,6 +46,7 @@ extern "C" {
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
+#include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/jak2_runtime.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
@@ -212,7 +213,7 @@ int run_boot(const std::string& data_dir,
 
   // InitHeapAndSymbol's kernel load
   say("\n=== KERNEL.CGO\n");
-  if (goal_dgo_load("KERNEL", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
+  if (goal_jak2_dgo_load_boot("KERNEL", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
     say("FAILED: %s\n", goal_dgo_last_error());
     drain_goal_print_buffer();
     say("  got through %d of KERNEL.CGO's objects (%d code, %d data)\n", stats.objects,
@@ -252,7 +253,7 @@ int run_boot(const std::string& data_dir,
 
   if (with_game) {
     say("\n=== GAME.CGO (exploratory; expected to stop at the first missing subsystem)\n");
-    if (goal_dgo_load("GAME", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
+    if (goal_jak2_dgo_load_boot("GAME", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
       say("STOPPED: %s\n", goal_dgo_last_error());
       drain_goal_print_buffer();
       say("  got through %d of GAME.CGO's objects (%d code, %d data)\n", stats.objects,
@@ -426,9 +427,12 @@ int run_play_runtime(const std::string& data_dir,
   say("  play-boot returned #x%llx; dispatched %llu frame(s)\n",
       (unsigned long long)metrics.play_boot_result, (unsigned long long)metrics.ticks);
   say("  channel 3 first request: %s; %d archive(s), %d object(s) "
-      "(%d code from AOT, %d data linked)\n",
+      "(%d code from AOT, %d data linked); current=%s last=%s result=%d failures=%d error=%s\n",
       metrics.first_dgo_name[0] ? metrics.first_dgo_name : "<none>", metrics.dgo_archives,
-      metrics.dgo_objects, metrics.dgo_code_objects, metrics.dgo_data_objects);
+      metrics.dgo_objects, metrics.dgo_code_objects, metrics.dgo_data_objects,
+      metrics.current_dgo_name[0] ? metrics.current_dgo_name : "<none>",
+      metrics.last_dgo_name[0] ? metrics.last_dgo_name : "<none>", metrics.dgo_last_result,
+      metrics.dgo_failures, metrics.last_dgo_error[0] ? metrics.last_dgo_error : "<none>");
   report_heap("after play-boot frontier");
 
   if (validate_dma) {
@@ -448,12 +452,24 @@ int run_play_runtime(const std::string& data_dir,
   if (validate_host) {
     say("  headless graphics host after play-boot: chains=%d syncv=%d sync-path=%d "
         "texture-upload=%d texture-relocate=%d desired-levels=%d (last %d) "
-        "active-levels=%d (last %d) pmode=%d (last %.6f)\n",
+        "active-levels=%d (last %d) pmode=%d (last %.6f); "
+        "desired-sets=%d [%s] active-sets=%d [%s]\n",
         metrics.host_chains, metrics.host_syncvs, metrics.host_sync_paths,
         metrics.host_texture_uploads, metrics.host_texture_relocations,
         metrics.host_desired_level_calls, metrics.host_last_desired_level_count,
         metrics.host_active_level_calls, metrics.host_last_active_level_count,
-        metrics.host_pmode_calls, metrics.host_last_pmode_alpha);
+        metrics.host_pmode_calls, metrics.host_last_pmode_alpha, metrics.host_desired_level_sets,
+        metrics.host_desired_levels, metrics.host_active_level_sets, metrics.host_active_levels);
+    goal_gfx_host_stats gfx = {};
+    goal_gfx_host_stats_get(&gfx);
+    if (metrics.host_desired_level_sets != gfx.level_sets ||
+        metrics.host_active_level_sets != gfx.active_level_sets ||
+        std::strcmp(metrics.host_desired_levels, gfx.last_levels ? gfx.last_levels : "") != 0 ||
+        std::strcmp(metrics.host_active_levels,
+                    gfx.last_active_levels ? gfx.last_active_levels : "") != 0) {
+      say("FAILED: runtime desired/active level snapshots do not match the graphics-host seam\n");
+      return 1;
+    }
     if (metrics.host_chains <= 0 || metrics.host_sync_paths <= 0 || metrics.host_syncvs <= 0) {
       say("FAILED: the headless graphics host requires at least one send-chain, syncv and "
           "sync-path callback after its baseline\n");

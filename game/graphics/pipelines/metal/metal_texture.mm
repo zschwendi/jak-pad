@@ -24,6 +24,69 @@ TextureRegistry& registry() {
   return r;
 }
 
+bool replace_registered_texture(u64 handle, id<MTLTexture> replacement) {
+  auto& r = registry();
+  std::lock_guard<std::mutex> lock(r.mutex);
+  auto it = r.textures.find(handle);
+  if (it == r.textures.end() || !replacement) {
+    return false;
+  }
+  it->second = replacement;
+  return true;
+}
+
+id<MTLTexture> make_ready_rgba8_texture(id<MTLDevice> device,
+                                        id<MTLCommandQueue> queue,
+                                        const u8* data,
+                                        u32 w,
+                                        u32 h,
+                                        bool mipmapped) {
+  if (!device || !queue || !data || w == 0 || h == 0) {
+    return nil;
+  }
+  auto* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                  width:w
+                                                                 height:h
+                                                              mipmapped:mipmapped];
+  desc.usage = MTLTextureUsageShaderRead;
+  desc.storageMode = MTLStorageModeShared;
+  id<MTLTexture> texture = [device newTextureWithDescriptor:desc];
+  if (!texture) {
+    lg::error("Metal: texture allocation failed ({}x{})", w, h);
+    return nil;
+  }
+
+  id<MTLCommandBuffer> commands = nil;
+  id<MTLBlitCommandEncoder> blit = nil;
+  if (texture.mipmapLevelCount > 1) {
+    commands = [queue commandBuffer];
+    if (!commands) {
+      return nil;
+    }
+    blit = [commands blitCommandEncoder];
+    if (!blit) {
+      return nil;
+    }
+  }
+
+  const NSUInteger bytes_per_row = static_cast<NSUInteger>(w) * 4;
+  [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+             mipmapLevel:0
+               withBytes:data
+             bytesPerRow:bytes_per_row];
+  if (blit) {
+    [blit generateMipmapsForTexture:texture];
+    [blit endEncoding];
+    [commands commit];
+    [commands waitUntilCompleted];
+    if (commands.status != MTLCommandBufferStatusCompleted) {
+      lg::error("Metal: texture mip generation failed ({}x{})", w, h);
+      return nil;
+    }
+  }
+  return texture;
+}
+
 }  // namespace
 
 u64 metal_texture_register(id<MTLTexture> tex) {
@@ -62,53 +125,26 @@ u64 metal_upload_texture_rgba8(id<MTLDevice> device,
                                u32 w,
                                u32 h) {
   @autoreleasepool {
-    if (!device || !queue || !data || !w || !h) {
-      lg::error("Metal: invalid texture upload (device {}, queue {}, data {}, {}x{})",
-                device ? "set" : "nil", queue ? "set" : "nil", data ? "set" : "nil", w, h);
-      return 0;
-    }
-    auto* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-                                                                    width:w
-                                                                   height:h
-                                                                mipmapped:YES];
-    desc.usage = MTLTextureUsageShaderRead;
-    // one copy in unified memory; no staging duplicate (Apple GPUs only)
-    desc.storageMode = MTLStorageModeShared;
-    id<MTLTexture> tex = [device newTextureWithDescriptor:desc];
-    if (!tex) {
-      lg::error("Metal: texture allocation failed ({}x{})", w, h);
-      return 0;
-    }
-    [tex replaceRegion:MTLRegionMake2D(0, 0, w, h)
-           mipmapLevel:0
-             withBytes:data
-           bytesPerRow:w * 4];
+    id<MTLTexture> texture = make_ready_rgba8_texture(device, queue, data, w, h, true);
+    return texture ? metal_texture_register(texture) : 0;
+  }
+}
 
-    if (tex.mipmapLevelCount > 1) {
-      // GPU mip generation, like glGenerateMipmap on the GL path. The GL upload
-      // is synchronous, so wait here too - callers may read/sample immediately.
-      id<MTLCommandBuffer> cmds = [queue commandBuffer];
-      if (!cmds) {
-        lg::error("Metal: mipmap command-buffer allocation failed ({}x{})", w, h);
-        return 0;
-      }
-      id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
-      if (!blit) {
-        lg::error("Metal: mipmap blit-encoder allocation failed ({}x{})", w, h);
-        return 0;
-      }
-      [blit generateMipmapsForTexture:tex];
-      [blit endEncoding];
-      [cmds commit];
-      [cmds waitUntilCompleted];
-      if (cmds.status == MTLCommandBufferStatusError) {
-        const char* message = cmds.error ? [[cmds.error localizedDescription] UTF8String]
-                                         : "unknown Metal error";
-        lg::error("Metal: mipmap generation failed ({}x{}): {}", w, h, message);
-        return 0;
-      }
+bool metal_update_texture_rgba8(u64 handle,
+                                id<MTLCommandQueue> queue,
+                                const u8* data,
+                                u32 w,
+                                u32 h) {
+  @autoreleasepool {
+    id<MTLTexture> current = metal_texture_lookup(handle);
+    if (!current || !queue || !data || w == 0 || h == 0 ||
+        current.pixelFormat != MTLPixelFormatRGBA8Unorm || current.width != w ||
+        current.height != h) {
+      return false;
     }
-    return metal_texture_register(tex);
+    id<MTLTexture> replacement =
+        make_ready_rgba8_texture(queue.device, queue, data, w, h, current.mipmapLevelCount > 1);
+    return replacement && replace_registered_texture(handle, replacement);
   }
 }
 

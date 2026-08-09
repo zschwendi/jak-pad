@@ -11,7 +11,10 @@
  *
  * Nothing here knows about Metal, SDL, a window or a display link. The host is a table of plain C
  * function pointers, so the same seam serves a desktop SDL/Metal shell and an iPadOS
- * `CAMetalLayer` bridge.
+ * `CAMetalLayer` bridge. On ARM64, callbacks return synchronously to the suspended native caller
+ * stack before entering the host. This preserves the borrowed-pointer and ordering contracts while
+ * keeping native platform frameworks from consuming a GOAL process stack. Host callbacks must not
+ * throw; the ARM64 bridge terminates instead of unwinding an exception across assembly or GOAL.
  */
 
 #include <stdint.h>
@@ -91,6 +94,8 @@ typedef struct goal_gfx_host_stats {
   /*! The levels named by the last `__pc-set-active-levels`, joined with '+', or "" before the
    *  first one. Owned by this file. */
   const char* last_active_levels;
+  int pmode_calls; /*! display-adapter alpha updates handed to the host */
+  float last_pmode_alpha; /*! normalized alpha from the last update, or 0 before the first one */
 } goal_gfx_host_stats;
 
 void goal_gfx_host_stats_get(goal_gfx_host_stats* out);

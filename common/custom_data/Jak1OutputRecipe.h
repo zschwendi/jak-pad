@@ -16,19 +16,30 @@
 namespace jak1_output_recipe {
 
 inline constexpr std::array<uint8_t, 8> kMagic = {'J', '1', 'O', 'U', 'T', 'P', 'U', 'T'};
+inline constexpr std::array<uint8_t, 8> kJak2Magic = {'J', '2', 'O', 'U', 'T', 'P', 'U', 'T'};
 inline constexpr uint32_t kSchemaVersion = 3;
 inline constexpr const char* kProvenanceId = "opengoal-jak1-output-recipe";
+inline constexpr const char* kJak2ProvenanceId = "opengoal-jak2-output-recipe";
 inline constexpr const char* kGameId = "jak1";
+inline constexpr const char* kJak2GameId = "jak2";
 inline constexpr const char* kBaseRetailProjectedSourceFile =
     "goal_src/jak1/levels/test-zone/test-zone-obs.gc";
+inline constexpr const char* kJak2BaseRetailProjectedSourceFile =
+    "goal_src/jak2/levels/test-zone/test-zone-obs.gc";
 inline constexpr const char* kBaseRetailProjectedSourceTag = "test-zone-obs";
 inline constexpr const char* kBaseRetailProjectedBundlePath = "test-zone-obs.o";
 
 using Territory = jak1_iso::Territory;
 
+enum class WireGame : uint8_t {
+  jak1 = 1,
+  jak2 = 2,
+};
+
 enum class OutputProfile : uint8_t {
   full_public = 1,
   jak1_base_retail = 2,
+  jak2_base_retail = 3,
 };
 
 struct RevisionProvenance {
@@ -154,6 +165,7 @@ struct Options {
   Limits limits;
   RevisionProvenance expected_revision;
   SourceObjectPackIdentity expected_source_object_pack;
+  WireGame wire_game = WireGame::jak1;
   CancelCallback should_cancel;
 };
 

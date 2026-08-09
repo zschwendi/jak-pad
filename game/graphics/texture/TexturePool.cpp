@@ -300,7 +300,8 @@ const std::vector<u32>& get_tpage_dir(GameVersion version) {
 TexturePool::TexturePool(GameVersion version)
     : m_loaded_textures(get_tpage_dir(version)),
       m_id_to_name(get_tpage_dir(version)),
-      m_tpage_dir_size(get_tpage_dir(version).size()) {
+      m_tpage_dir_size(get_tpage_dir(version).size()),
+      m_version(version) {
   m_placeholder_data.resize(16 * 16);
   u32 c0 = 0xa0303030;
   u32 c1 = 0xa0e0e0e0;
@@ -310,6 +311,10 @@ TexturePool::TexturePool(GameVersion version)
     }
   }
   // the graphics backend uploads placeholder_data() and calls set_placeholder().
+}
+
+PcTextureId TexturePool::allocate_pc_port_texture() {
+  return allocate_pc_port_texture(m_version);
 }
 
 PcTextureId TexturePool::allocate_pc_port_texture(GameVersion version) {

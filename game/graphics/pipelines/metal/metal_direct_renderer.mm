@@ -62,6 +62,41 @@ u32 get_direct_qwc_or_nop(const VifCode& code) {
 MetalDirectRenderer::MetalDirectRenderer(const std::string& name, int my_id, int batch_size)
     : MetalBucketRenderer(name, my_id), m_prim_buffer(batch_size) {}
 
+void MetalHostTextureUploadDirectRenderer::render(DmaFollower& dma,
+                                                  MetalSharedRenderState* render_state,
+                                                  MetalFrameContext& ctx) {
+  ASSERT(metal_renderer::bucket_chain_layout(render_state->version) ==
+         metal_renderer::MetalBucketChainLayout::Jak2Direct);
+  if (m_callback_point == CallbackPoint::BucketEntry &&
+      render_state->host_bucket_callback) {
+    render_state->host_bucket_callback(render_state->host_bucket_context,
+                                       static_cast<u32>(m_my_id));
+  }
+
+  reset_state();
+  while (dma.current_tag_offset() != render_state->next_bucket) {
+    const auto vif0 = dma.current_tag_vifcode0();
+    if (m_callback_point == CallbackPoint::PcPort12 &&
+        vif0.kind == VifCode::Kind::PC_PORT && vif0.immediate == 12) {
+      flush_pending(render_state, ctx);
+      if (render_state->host_bucket_callback) {
+        render_state->host_bucket_callback(render_state->host_bucket_context,
+                                           static_cast<u32>(m_my_id));
+      }
+    }
+    const auto data = dma.read_and_advance();
+    if (!data.size_bytes) {
+      continue;
+    }
+    if (data.vifcode0().kind == VifCode::Kind::PC_PORT) {
+      ASSERT(data.vifcode1().kind == VifCode::Kind::NOP);
+      continue;
+    }
+    render_vif(data.vif0(), data.vif1(), data.data, data.size_bytes, render_state, ctx);
+  }
+  flush_pending(render_state, ctx);
+}
+
 /*!
  * Render from a DMA bucket (same walk as the GL DirectRenderer::render).
  */
@@ -285,6 +320,29 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
     ASSERT(false);
   }
 
+  auto& last_batch = m_stats.last_batch;
+  last_batch = {};
+  last_batch.valid = true;
+  last_batch.textured = pso_key.shader == MetalShaderId::DIRECT_TEXTURED;
+  last_batch.vertices = m_prim_buffer.vert_count;
+  for (int i = 0; i < m_prim_buffer.vert_count; i++) {
+    const auto& rgba = m_prim_buffer.vertices[i].rgba;
+    last_batch.nonzero_rgb_vertices += rgba[0] != 0 || rgba[1] != 0 || rgba[2] != 0;
+  }
+  last_batch.tex0_tbp = batch_tex.texture_base_ptr;
+  last_batch.tex0_tcc = batch_tex.tcc;
+  last_batch.tex0_decal = batch_tex.decal;
+  last_batch.write_rgb = m_test_state.write_rgb;
+  last_batch.blend_enabled = m_blend_state.alpha_blend_enable;
+  last_batch.blend_a = static_cast<u8>(m_blend_state.a);
+  last_batch.blend_b = static_cast<u8>(m_blend_state.b);
+  last_batch.blend_c = static_cast<u8>(m_blend_state.c);
+  last_batch.blend_d = static_cast<u8>(m_blend_state.d);
+  last_batch.alpha_test_enabled = m_test_state.alpha_test_enable;
+  last_batch.alpha_test_mode = static_cast<u8>(m_test_state.alpha_test);
+  last_batch.alpha_aref = m_test_state.aref;
+  last_batch.alpha_afail = static_cast<u8>(m_test_state.afail);
+
   // vertices into the frame's stream buffer
   const u32 bytes = m_prim_buffer.vert_count * sizeof(Vertex);
   id<MTLBuffer> vbuf;
@@ -295,7 +353,7 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
   DirectVsParams vs_params;
   vs_params.height_scale = render_state->version == GameVersion::Jak1 ? 1.f : 0.5f;
   vs_params.scissor_adjust = 512.f / game_height[render_state->version];
-  vs_params.offscreen_mode = 0;
+  vs_params.offscreen_mode = m_offscreen_mode ? 1 : 0;
 
   DirectFsParams fs_params = {};
   fs_params.fog_color[0] = render_state->fog_color[0] / 255.f;
@@ -311,7 +369,7 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
   fs_params.color_mult = m_color_mult;
   fs_params.alpha_mult = m_alpha_mult;
   fs_params.ta0 = m_prim_state.ta0 / 255.f;
-  fs_params.scissor_enable = m_scissor_enable ? 1 : 0;
+  fs_params.scissor_enable = m_scissor_enable && !m_offscreen_mode ? 1 : 0;
   fs_params.greater = greater;
 
   id<MTLRenderCommandEncoder> enc = ctx.enc;
@@ -334,14 +392,18 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
         tex = render_state->texture_pool->lookup(batch_tex.texture_base_ptr);
       }
     }
+    last_batch.texture_lookup_hit = tex.has_value();
+    const u64 placeholder = render_state->texture_pool->get_placeholder_texture();
     if (!tex) {
       lg::warn("Metal direct {}: failed to find texture at {}, using placeholder", m_name,
                batch_tex.texture_base_ptr);
-      tex = render_state->texture_pool->get_placeholder_texture();
+      tex = placeholder;
     }
+    last_batch.used_placeholder = *tex == placeholder;
     id<MTLTexture> mtl_tex = metal_texture_lookup(*tex);
     if (!mtl_tex) {
-      mtl_tex = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
+      last_batch.used_placeholder = true;
+      mtl_tex = metal_texture_lookup(placeholder);
     }
     ASSERT(mtl_tex);
 
@@ -401,6 +463,12 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
   ctx.triangles += num_tris;
   m_stats.draw_calls += draw_count;
   m_stats.triangles += num_tris;
+  if (last_batch.textured) {
+    m_stats.textured_draw_calls += draw_count;
+    if (last_batch.used_placeholder) {
+      m_stats.missing_texture_draw_calls += draw_count;
+    }
+  }
   m_prim_buffer.vert_count = 0;
 }
 
@@ -642,6 +710,19 @@ void MetalDirectRenderer::handle_scissor(u64 val) {
   m_scissor.scay0 = (val >> 32) & 0x7ff;
   m_scissor.scay1 = (val >> 48) & 0x7ff;
   m_scissor_enable = true;
+}
+
+MetalDirectRenderer::ScissorSnapshot MetalDirectRenderer::capture_scissor() const {
+  return {m_scissor.scax0, m_scissor.scax1, m_scissor.scay0, m_scissor.scay1,
+          m_scissor_enable};
+}
+
+void MetalDirectRenderer::restore_scissor(const ScissorSnapshot& snapshot) {
+  m_scissor.scax0 = snapshot.scax0;
+  m_scissor.scax1 = snapshot.scax1;
+  m_scissor.scay0 = snapshot.scay0;
+  m_scissor.scay1 = snapshot.scay1;
+  m_scissor_enable = snapshot.enabled;
 }
 
 void MetalDirectRenderer::handle_tex1_1(u64 val) {

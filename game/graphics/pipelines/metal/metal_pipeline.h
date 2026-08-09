@@ -14,6 +14,7 @@
  * implementation lives in metal_renderer.h/.mm and metal_pipeline.mm.
  */
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,8 @@ struct Level;
 }
 
 namespace metal_renderer {
+
+inline constexpr std::size_t kTrackedDeferredBuckets = 4;
 
 // RGBA8 copy of a rendered frame, used by tests to verify that rendering
 // actually happened. Origin is the top-left corner.
@@ -107,6 +110,28 @@ struct MercPaletteHealthEvent {
   u64 expected_source_base = 0;
 
   bool valid() const { return issue_mask != 0; }
+};
+
+struct DirectBatchStats {
+  bool valid = false;
+  bool textured = false;
+  int vertices = 0;
+  int nonzero_rgb_vertices = 0;
+  u32 tex0_tbp = 0;
+  bool tex0_tcc = false;
+  bool tex0_decal = false;
+  bool texture_lookup_hit = false;
+  bool used_placeholder = false;
+  bool write_rgb = false;
+  bool blend_enabled = false;  // GS PRIM.ABE for the batch
+  u8 blend_a = 0;
+  u8 blend_b = 0;
+  u8 blend_c = 0;
+  u8 blend_d = 0;
+  bool alpha_test_enabled = false;
+  u8 alpha_test_mode = 0;
+  u8 alpha_aref = 0;
+  u8 alpha_afail = 0;
 };
 
 // Counters for the DMA-chain path, used by tests to verify that send_chain
@@ -179,6 +204,30 @@ struct ChainStats {
   // from the last chain frame
   int draw_calls = 0;
   int triangles = 0;
+  int jak2_sky_draw_draws = 0;
+  int jak2_sky_draw_triangles = 0;
+  DirectBatchStats jak2_sky_draw_last_batch;
+  bool jak2_blit_display_plan_valid = false;
+  bool jak2_blit_display_snapshot_requested = false;
+  bool jak2_blit_display_copy_back_requested = false;
+  bool jak2_blit_display_copy_back_performed = false;
+  bool jak2_blit_display_texture_lookup_hit = false;
+  bool jak2_blit_display_used_placeholder = false;
+  u64 jak2_blit_display_texture_handle = 0;
+  u32 jak2_blit_display_texture_tbp = 0;
+  u64 jak2_blit_display_unsupported_pc_ports = 0;
+  int jak2_screen_filter_draws = 0;
+  int jak2_screen_filter_triangles = 0;
+  int jak2_progress_draws = 0;
+  int jak2_progress_triangles = 0;
+  int jak2_progress_textured_draws = 0;
+  int jak2_progress_missing_texture_draws = 0;
+  int jak2_debug_no_zbuf1_draws = 0;
+  int jak2_debug_no_zbuf1_triangles = 0;
+  int jak2_debug_no_zbuf1_textured_draws = 0;
+  int jak2_debug_no_zbuf1_missing_texture_draws = 0;
+  int jak2_debug_no_zbuf2_draws = 0;
+  int jak2_debug_no_zbuf2_triangles = 0;
   int tex_uploads = 0;
   int sky_draws = 0;
   int sky_blends = 0;
@@ -189,8 +238,23 @@ struct ChainStats {
   int sprites_3d = 0;
   int sprites_hud = 0;
   int sprites_distort = 0;  // DMA consumed; distort drawing is not ported
+  int sprite_normal_submitted = 0;
+  int sprite_glow_marked = 0;
+  int sprite_glow_skipped = 0;
+  int sprite_glow_parsed = 0;
+  int sprite_glow_accepted = 0;
+  int sprite_glow_rejected = 0;
+  int sprite_glow_invalid_records = 0;
+  // Legacy host-facing names: these are visibility-tested final flare counts.
+  int sprite_glow_force_visible_submitted = 0;
+  int sprite_glow_force_visible_drawn = 0;
+  int sprite_glow_force_visible_draws = 0;
+  int sprite_glow_force_visible_triangles = 0;
+  int sprite_glow_force_visible_missing_textures = 0;
   int sprite_draws = 0;
+  int sprite_triangles = 0;
   int sprite_missing_textures = 0;
+  u64 sprite_unsupported_bytes = 0;
   // ocean buckets, from the last chain frame
   int ocean_draws = 0;
   int ocean_triangles = 0;
@@ -206,6 +270,7 @@ struct ChainStats {
   // merc buckets, from the last chain frame
   int merc_models = 0;
   int merc_missing_models = 0;  // the model's level is not loaded
+  int merc_malformed_dma = 0;
   int merc_draws = 0;
   int merc_triangles = 0;
   int merc_envmap_draws = 0;
@@ -280,6 +345,10 @@ struct ChainStats {
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets
+  // largest deferred buckets in the last frame, descending by payload bytes
+  int last_skipped_bucket_count = 0;
+  std::array<u32, kTrackedDeferredBuckets> last_skipped_bucket_ids = {};
+  std::array<u64, kTrackedDeferredBuckets> last_skipped_bucket_bytes = {};
   int direct_unsupported_blends = 0;
 };
 

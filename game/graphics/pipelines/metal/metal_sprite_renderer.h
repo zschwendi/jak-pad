@@ -22,8 +22,12 @@
  * same DMA walk and sine-table vertex build, drawn against a snapshot of the
  * frame so far (the game pass is split where GL calls glBlitFramebuffer).
  *
- * Not ported: the Jak 2/3 paths (render_jak2, glow). This renderer is Jak 1
- * only, matching the rest of the Metal bucket table.
+ * The normal Jak 2 Sprite3 path is also supported. Its constants-led glow DMA
+ * is verified and transformed into backend-neutral records, then submitted to
+ * a diagnostic final-flare pass that deliberately treats every valid flare as
+ * visible. The source-faithful probe and downsample passes remain pending.
+ * Control-led tails without constants remain explicitly unsupported. Jak 3
+ * remains unsupported.
  */
 
 #include <map>
@@ -36,6 +40,8 @@
 #include "game/graphics/opengl_renderer/sprite/sprite_common.h"
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
+#include "game/graphics/pipelines/metal/metal_glow_renderer.h"
+#include "game/graphics/sprite_glow_math.h"
 
 class MetalSpriteRenderer : public MetalBucketRenderer {
  public:
@@ -53,12 +59,35 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
     int blocks_2d_grp1 = 0;
     int count_2d_grp1 = 0;
     int sprites_3d = 0;
+    int normal_sprites_submitted = 0;
+    int glow_marked_sprites = 0;
+    int glow_sprites_skipped = 0;
+    int glow_sprites_parsed = 0;
+    int glow_sprites_accepted = 0;
+    int glow_sprites_rejected = 0;
+    int glow_invalid_records = 0;
+    // Legacy telemetry names retained for the host ABI. These counters now
+    // describe the visibility-tested final flare pass, not force-visible output.
+    int glow_force_visible_submitted = 0;
+    int glow_force_visible_drawn = 0;
+    int glow_force_visible_draw_calls = 0;
+    int glow_force_visible_triangles = 0;
+    int glow_force_visible_missing_textures = 0;
     int draw_calls = 0;
     int triangles = 0;
     int distort_sprites = 0;
     int missing_textures = 0;
+    int glow_transfers_skipped = 0;
+    u64 glow_bytes_skipped = 0;
+    int post_glow_residual_transfers = 0;
+    u64 post_glow_residual_bytes = 0;
+    u64 unsupported_bytes = 0;
   };
   const Stats& stats() const { return m_stats; }
+  const std::vector<SpriteGlowOutput>& pending_glow_outputs() const {
+    return m_pending_glow_outputs;
+  }
+  u64 unsupported_bytes_total() const { return m_unsupported_bytes_total; }
 
   // Vertex handed to the sprite shader: one per corner, four per sprite. Same
   // 64-byte layout as the GL Sprite3::SpriteVertex3D and shaders/sprite.metal.
@@ -100,13 +129,23 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
 
  private:
   // DMA walk (mirrors Sprite3's methods of the same names)
+  void render_jak1(DmaFollower& dma,
+                   MetalSharedRenderState* render_state,
+                   MetalFrameContext& ctx);
+  void render_jak2(DmaFollower& dma,
+                   MetalSharedRenderState* render_state,
+                   MetalFrameContext& ctx);
+  bool render_normal_path(DmaFollower& dma,
+                          MetalSharedRenderState* render_state,
+                          MetalFrameContext& ctx);
+  void parse_jak2_glow_and_residual(DmaFollower& dma, MetalSharedRenderState* render_state);
   bool render_direct(DmaFollower& dma,
                      MetalSharedRenderState* render_state,
                      MetalFrameContext& ctx);
-  void distort_dma(DmaFollower& dma);
+  void distort_dma(GameVersion version, DmaFollower& dma);
   void distort_setup();
   void distort_draw(MetalSharedRenderState* render_state, MetalFrameContext& ctx);
-  void handle_sprite_frame_setup(DmaFollower& dma);
+  void handle_sprite_frame_setup(GameVersion version, DmaFollower& dma);
   void render_3d(DmaFollower& dma);
   void render_2d_group0(DmaFollower& dma,
                         MetalSharedRenderState* render_state,
@@ -125,7 +164,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
   // GS register handling (identical to Sprite3)
   void handle_tex0(u64 val);
   void handle_tex1(u64 val);
-  void handle_zbuf(u64 val);
+  void handle_zbuf(GameVersion version, u64 val);
   void handle_clamp(u64 val);
   void handle_alpha(u64 val);
 
@@ -134,6 +173,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
                      bool double_draw);
 
   MetalDirectRenderer m_direct;
+  MetalGlowRenderer m_glow_renderer;
 
   u64 m_sprite_direct_setup[3 * 16 / 8];
   SpriteFrameData m_frame_data;
@@ -145,6 +185,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
 
   std::vector<SpriteVertex3D> m_vertices_3d;
   std::vector<u32> m_index_buffer_data;
+  std::vector<SpriteGlowOutput> m_pending_glow_outputs;
 
   DrawMode m_current_mode, m_default_mode;
   u32 m_current_tbp = 0;
@@ -170,5 +211,8 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
   id<MTLTexture> m_distort_snapshot = nil;
 
   Stats m_stats;
+  u64 m_unsupported_bytes_total = 0;
   bool m_warned_distort_overflow = false;
+  bool m_warned_unsupported_glow = false;
+  bool m_warned_rejected_glow_math = false;
 };

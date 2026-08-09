@@ -72,6 +72,18 @@ struct DgoRead {
 
 DgoRead g_dgo;
 
+void record_dgo_result(int result) {
+  g_rpc_stats.last_dgo_result = result;
+  if (g_dgo.fd < 0) {
+    g_rpc_stats.current_dgo_name[0] = '\0';
+  }
+  if (result == DGO_RPC_RESULT_ERROR) {
+    g_rpc_stats.dgo_failures++;
+    const char* error = g_error.empty() ? "DGO RPC returned an error" : g_error.c_str();
+    std::snprintf(g_rpc_stats.last_dgo_error, sizeof(g_rpc_stats.last_dgo_error), "%s", error);
+  }
+}
+
 void close_dgo() {
   if (g_dgo.fd >= 0) {
     ee::sceClose(g_dgo.fd);
@@ -143,7 +155,8 @@ bool is_data_object(Ptr<u8> object) {
 bool load_code_object(const char* object_name,
                       u32 link_flags,
                       bool on_goal_stack,
-                      u32 heap) {
+                      u32 heap,
+                      bool boot_method_propagation) {
   const goal_aot_object_file* aot = goal_aot_registered_object(object_name);
   if (!aot) {
     set_error(fmt::format("the code object '{}' has no native translation", object_name));
@@ -167,8 +180,12 @@ bool load_code_object(const char* object_name,
     g_rpc_stats.level_code_bytes += Ptr<kheapinfo>(heap)->current.offset - before;
   }
   if (link_flags & LINK_FLAG_EXECUTE) {
-    const auto status = on_goal_stack ? goal_aot_run_top_level_here(aot->tag, nullptr)
-                                      : goal_aot_run_top_level(aot->tag, nullptr);
+    const auto status =
+        boot_method_propagation
+            ? (on_goal_stack ? goal_aot_run_top_level_here(aot->tag, nullptr)
+                             : goal_aot_run_top_level(aot->tag, nullptr))
+            : (on_goal_stack ? goal_aot_run_top_level_here_for_link(aot->tag, link_flags, nullptr)
+                             : goal_aot_run_top_level_for_link(aot->tag, link_flags, nullptr));
     if (status != GOAL_KERNEL_CORE_OK) {
       set_error(fmt::format("the top-level of '{}' failed: {}", object_name,
                             goal_kernel_core_last_error()));
@@ -236,11 +253,12 @@ void kdgo_init_globals() {
  * (game/kernel/jak2/kdgo.cpp) with one branch added: an object whose code this platform cannot
  * execute is taken from the AOT path instead of from the archive.
  */
-void load_and_link_dgo_from_c(const char* name,
-                              Ptr<kheapinfo> heap,
-                              u32 linkFlag,
-                              s32 bufferSize,
-                              bool jump_from_c_to_goal) {
+static void load_and_link_dgo_from_c_impl(const char* name,
+                                          Ptr<kheapinfo> heap,
+                                          u32 linkFlag,
+                                          s32 bufferSize,
+                                          bool jump_from_c_to_goal,
+                                          bool boot_method_propagation) {
   g_error.clear();
   memset(&g_stats, 0, sizeof(g_stats));
   g_stats.heap_used_before = kheapused(heap);
@@ -301,7 +319,7 @@ void load_and_link_dgo_from_c(const char* name,
       link_and_exec(obj, objName, objSize, heap, linkFlag, jump_from_c_to_goal);
     } else {
       g_stats.code_objects++;
-      if (!load_code_object(objName, linkFlag, false, heap.offset)) {
+      if (!load_code_object(objName, linkFlag, false, heap.offset, boot_method_propagation)) {
         g_dgo.failed = true;
         break;
       }
@@ -316,6 +334,14 @@ void load_and_link_dgo_from_c(const char* name,
   heap->top = oldHeapTop;
   g_stats.heap_used_after = kheapused(heap);
   close_dgo();
+}
+
+void load_and_link_dgo_from_c(const char* name,
+                              Ptr<kheapinfo> heap,
+                              u32 linkFlag,
+                              s32 bufferSize,
+                              bool jump_from_c_to_goal) {
+  load_and_link_dgo_from_c_impl(name, heap, linkFlag, bufferSize, jump_from_c_to_goal, false);
 }
 
 void load_and_link_dgo_from_c_fast(const char* name,
@@ -416,9 +442,11 @@ u64 dgo_rpc(u32 function,
   memcpy(&cmd, Ptr<u8>(send_buffer).c(), sizeof(cmd));
   switch (function) {
     case DGO_RPC_LOAD_FNO: {
+      g_error.clear();
       std::string name;
       if (!dgo_name(cmd.name, &name)) {
         g_rpc_stats.dgo_archives++;
+        set_error("the Jak 2 DGO RPC was given an invalid archive name");
         cmd.result = DGO_RPC_RESULT_ERROR;
         close_dgo();
         break;
@@ -428,6 +456,10 @@ u64 dgo_rpc(u32 function,
                       name.c_str());
       }
       g_rpc_stats.dgo_archives++;
+      std::snprintf(g_rpc_stats.current_dgo_name, sizeof(g_rpc_stats.current_dgo_name), "%s",
+                    name.c_str());
+      std::snprintf(g_rpc_stats.last_dgo_name, sizeof(g_rpc_stats.last_dgo_name), "%s",
+                    name.c_str());
       begin_loading_dgo(name.c_str(), Ptr<u8>(cmd.buffer1), Ptr<u8>(cmd.buffer2),
                         Ptr<u8>(cmd.buffer_heap_top));
       answer_with_next_object(&cmd);
@@ -435,6 +467,9 @@ u64 dgo_rpc(u32 function,
     }
     case DGO_RPC_LOAD_NEXT_FNO:
       if (g_dgo.fd < 0 || g_dgo.failed) {
+        if (g_error.empty()) {
+          set_error("the Jak 2 DGO RPC was asked for another object without an active archive");
+        }
         cmd.result = DGO_RPC_RESULT_ERROR;
         close_dgo();
         break;
@@ -444,6 +479,9 @@ u64 dgo_rpc(u32 function,
       g_dgo.buffer2 = Ptr<u8>(cmd.buffer2);
       g_dgo.heap_top = Ptr<u8>(cmd.buffer_heap_top);
       if (!read_next_object()) {
+        if (g_error.empty()) {
+          set_error("the Jak 2 DGO RPC could not read the next archive object");
+        }
         cmd.result = DGO_RPC_RESULT_ERROR;
         close_dgo();
         break;
@@ -460,6 +498,7 @@ u64 dgo_rpc(u32 function,
       break;
   }
 
+  record_dgo_result(cmd.result);
   memcpy(Ptr<u8>(recv_buffer).c(), &cmd, sizeof(cmd));
   return 0;
 }
@@ -492,7 +531,7 @@ u64 goal_link_begin(const u64* args) {
   }
 
   g_rpc_stats.linked_code_objects++;
-  if (!load_code_object(name, flags, true, (u32)args[3])) {
+  if (!load_code_object(name, flags, true, (u32)args[3], false)) {
     lg::error("[dgo-loader] link-begin: {}", g_error);
     ASSERT_NOT_REACHED_MSG("link-begin was given a code object this build cannot supply");
   }
@@ -519,16 +558,18 @@ void goal_dgo_goal_loader_stats(goal_dgo_rpc_stats* out) {
 
 void goal_dgo_install_goal_loader(void) {
   g_rpc_stats = {};
+  g_rpc_stats.last_dgo_result = DGO_RPC_RESULT_INIT;
   jak2::make_stack_arg_function_symbol_from_c("rpc-call", (void*)stack_arg_shim<goal_rpc_call>);
   jak2::make_function_symbol_from_c("rpc-busy?", (void*)goal_rpc_busy);
   jak2::make_stack_arg_function_symbol_from_c("link-begin", (void*)stack_arg_shim<goal_link_begin>);
   jak2::make_function_symbol_from_c("link-resume", (void*)goal_link_resume);
 }
 
-goal_kernel_core_status goal_dgo_load(const char* name,
-                                      uint32_t link_flags,
-                                      int32_t buffer_size,
-                                      goal_dgo_load_stats* out) {
+static goal_kernel_core_status goal_dgo_load_impl(const char* name,
+                                                  uint32_t link_flags,
+                                                  int32_t buffer_size,
+                                                  goal_dgo_load_stats* out,
+                                                  bool boot_method_propagation) {
   if (!name || buffer_size <= 0) {
     set_error("goal_dgo_load: bad argument");
     return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
@@ -538,11 +579,26 @@ goal_kernel_core_status goal_dgo_load(const char* name,
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
   g_error.clear();
-  jak2::load_and_link_dgo_from_c(name, kglobalheap, link_flags, buffer_size, true);
+  jak2::load_and_link_dgo_from_c_impl(name, kglobalheap, link_flags, buffer_size, true,
+                                      boot_method_propagation);
   if (out) {
     *out = g_stats;
   }
   return g_error.empty() ? GOAL_KERNEL_CORE_OK : GOAL_KERNEL_CORE_NOT_FOUND;
+}
+
+goal_kernel_core_status goal_dgo_load(const char* name,
+                                      uint32_t link_flags,
+                                      int32_t buffer_size,
+                                      goal_dgo_load_stats* out) {
+  return goal_dgo_load_impl(name, link_flags, buffer_size, out, false);
+}
+
+goal_kernel_core_status goal_jak2_dgo_load_boot(const char* name,
+                                                uint32_t link_flags,
+                                                int32_t buffer_size,
+                                                goal_dgo_load_stats* out) {
+  return goal_dgo_load_impl(name, link_flags, buffer_size, out, true);
 }
 
 void goal_dgo_set_verbose(int on) {

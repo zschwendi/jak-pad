@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/util/PosixFile.h"
 #include "decompiler/extractor/jak1_checked_dgo.h"
 #include "decompiler/extractor/jak1_checked_dgo_writer.h"
 
@@ -58,13 +59,11 @@ std::vector<std::uint8_t> read_bytes(const std::filesystem::path& path) {
   return input ? bytes : std::vector<std::uint8_t>{};
 }
 
-std::size_t owned_stage_count(const std::filesystem::path& directory,
-                              std::string_view destination_name) {
-  const auto prefix = "." + std::string(destination_name) + ".opengoal-stage-";
+std::size_t owned_stage_count(const std::filesystem::path& directory) {
   std::size_t count = 0;
   for (const auto& entry : std::filesystem::directory_iterator(directory)) {
     const auto name = entry.path().filename().string();
-    if (name.starts_with(prefix)) {
+    if (name.starts_with(".opengoal-dgo-") && name.ends_with(".tmp")) {
       ++count;
     }
   }
@@ -74,6 +73,23 @@ std::size_t owned_stage_count(const std::filesystem::path& directory,
 std::uint32_t read_u32_le(std::span<const std::uint8_t> bytes, std::size_t offset) {
   return std::uint32_t(bytes[offset]) | (std::uint32_t(bytes[offset + 1]) << 8) |
          (std::uint32_t(bytes[offset + 2]) << 16) | (std::uint32_t(bytes[offset + 3]) << 24);
+}
+
+bool owned_fd_move_and_reset_are_single_owner() {
+  TemporaryDirectory temp;
+  auto descriptor = posix_file::open_directory(temp.path.c_str());
+  CHECK(descriptor);
+  const int original = descriptor.get();
+  posix_file::OwnedFd moved(std::move(descriptor));
+  CHECK(!descriptor);
+  CHECK(moved.get() == original);
+  posix_file::OwnedFd assigned;
+  assigned = std::move(moved);
+  CHECK(!moved);
+  CHECK(assigned.get() == original);
+  assigned.reset();
+  CHECK(!assigned);
+  return true;
 }
 
 bool builds_exact_raw_archive_and_round_trips() {
@@ -243,6 +259,15 @@ bool writes_atomically_and_refuses_existing_destination() {
   const std::vector<std::uint8_t> two{4, 5};
   const std::array<writer::ObjectRecord, 2> objects{{{"one", one}, {"two", two}}};
 
+  auto unsafe = writer::write_file(temp.path / "BAD:NAME.DGO", "OK.DGO", objects);
+  CHECK(!unsafe);
+  CHECK(unsafe.error().code == writer::ErrorCode::invalid_argument);
+  writer::Options name_limits;
+  name_limits.max_name_bytes = 8;
+  unsafe = writer::write_file(temp.path / "TOO-LONG.DGO", "OK.DGO", objects, name_limits);
+  CHECK(!unsafe);
+  CHECK(unsafe.error().code == writer::ErrorCode::invalid_argument);
+
   std::vector<writer::ProgressPhase> phases;
   writer::Options options;
   options.on_progress = [&](const writer::Progress& update) { phases.push_back(update.phase); };
@@ -255,7 +280,7 @@ bool writes_atomically_and_refuses_existing_destination() {
   CHECK(result.value().object_count == 2);
   CHECK(result.value().object_bytes == 5);
   CHECK(result.value().output_bytes == read_bytes(destination).size());
-  CHECK(owned_stage_count(temp.path, destination.filename().string()) == 0);
+  CHECK(owned_stage_count(temp.path) == 0);
   CHECK(std::find(phases.begin(), phases.end(), writer::ProgressPhase::installing) != phases.end());
 
   const auto parsed = jak1_checked_dgo::read_file(destination, "OUTPUT.DGO");
@@ -268,30 +293,60 @@ bool writes_atomically_and_refuses_existing_destination() {
   CHECK(!second);
   CHECK(second.error().code == writer::ErrorCode::destination_exists);
   CHECK(read_bytes(destination) == before);
-  CHECK(owned_stage_count(temp.path, destination.filename().string()) == 0);
+  CHECK(owned_stage_count(temp.path) == 0);
 
   const auto raced_destination = temp.path / "RACE.DGO";
-  const std::vector<std::uint8_t> raced_contents{'r', 'a', 'c', 'e'};
   options = {};
   options.on_progress = [&](const writer::Progress& update) {
     if (update.phase == writer::ProgressPhase::installing) {
-      std::ofstream raced(raced_destination, std::ios::binary);
-      raced.write(reinterpret_cast<const char*>(raced_contents.data()),
-                  static_cast<std::streamsize>(raced_contents.size()));
+      std::ofstream attacker(raced_destination, std::ios::binary);
+      attacker << "preserve";
     }
   };
   const auto raced = writer::write_file(raced_destination, "RACE.DGO", objects, options);
   CHECK(!raced);
   CHECK(raced.error().code == writer::ErrorCode::destination_exists);
-  CHECK(read_bytes(raced_destination) == raced_contents);
-  CHECK(owned_stage_count(temp.path, raced_destination.filename().string()) == 0);
+  CHECK(read_bytes(raced_destination) ==
+        std::vector<std::uint8_t>({'p', 'r', 'e', 's', 'e', 'r', 'v', 'e'}));
+  CHECK(owned_stage_count(temp.path) == 0);
+
+  const auto mutated_destination = temp.path / "MUTATED.DGO";
+  bool mutated = false;
+  options = {};
+  options.on_progress = [&](const writer::Progress& update) {
+    if (update.phase != writer::ProgressPhase::installing || mutated) {
+      return;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(temp.path)) {
+      const auto name = entry.path().filename().string();
+      if (!name.starts_with(".opengoal-dgo-") || !name.ends_with(".tmp")) {
+        continue;
+      }
+      std::fstream attacker(entry.path(), std::ios::binary | std::ios::in | std::ios::out);
+      char byte = 0;
+      attacker.read(&byte, 1);
+      byte ^= 1;
+      attacker.seekp(0);
+      attacker.write(&byte, 1);
+      attacker.flush();
+      mutated = true;
+      break;
+    }
+  };
+  const auto mutated_result =
+      writer::write_file(mutated_destination, "MUTATED.DGO", objects, options);
+  CHECK(mutated);
+  CHECK(!mutated_result);
+  CHECK(mutated_result.error().code == writer::ErrorCode::atomic_install_failed);
+  CHECK(!std::filesystem::exists(mutated_destination));
+  CHECK(owned_stage_count(temp.path) == 0);
   return true;
 }
 
 bool failure_cleans_only_its_owned_stage() {
   TemporaryDirectory temp;
   const auto destination = temp.path / "CANCEL.DGO";
-  const auto unrelated = temp.path / ".CANCEL.DGO.opengoal-stage-preserve";
+  const auto unrelated = temp.path / ".opengoal-dgo-preserve.tmp";
   {
     std::ofstream output(unrelated, std::ios::binary);
     output << "preserve";
@@ -313,7 +368,7 @@ bool failure_cleans_only_its_owned_stage() {
   CHECK(result.error().code == writer::ErrorCode::cancelled);
   CHECK(!std::filesystem::exists(destination));
   CHECK(std::filesystem::exists(unrelated));
-  CHECK(owned_stage_count(temp.path, destination.filename().string()) == 1);
+  CHECK(owned_stage_count(temp.path) == 1);
 
   const auto missing_parent = temp.path / "missing" / "OUTPUT.DGO";
   const auto missing_result = writer::write_file(missing_parent, "OUTPUT.DGO", objects);
@@ -327,6 +382,7 @@ bool failure_cleans_only_its_owned_stage() {
 
 int main() {
   const std::vector<std::pair<const char*, bool (*)()>> tests = {
+      {"owned_fd_move_and_reset_are_single_owner", owned_fd_move_and_reset_are_single_owner},
       {"builds_exact_raw_archive_and_round_trips", builds_exact_raw_archive_and_round_trips},
       {"rejects_invalid_names", rejects_invalid_names},
       {"enforces_object_total_output_and_option_caps",

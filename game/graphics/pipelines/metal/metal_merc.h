@@ -20,7 +20,10 @@
  *  - Geometry comes from the merc-scoped model pool (metal_merc_model_pool.h)
  *    instead of the GL-only streaming Loader.
  *
- * Eight Jak 1 buckets route to one shared MetalMerc2, as in the GL renderer.
+ * Jak 1's eight Merc buckets and Jak 2's source-bound normal, alpha and water
+ * Merc buckets each route to one shared MetalMerc2, as in the GL renderer.
+ * Jak 2's producer DMA is validated transactionally before any model or GPU
+ * state is published.
  */
 
 #include <memory>
@@ -50,6 +53,7 @@ class MetalMerc2 {
     int mod_vtx_skipped = 0;  // effects that asked for one but could not be updated (reported)
     int eye_draws = 0;        // draws whose texture the eye renderer composed
     int missing_textures = 0;
+    int malformed_dma = 0;      // rejected Jak 2 source-grammar buckets
     int bad_bone_pointers = 0;  // bone address outside EE memory: identity used
     int bad_draw_ranges = 0;    // draw range outside the level's index buffer: skipped
     int missing_bone_slots = 0;  // unique weighted slots absent from model packets
@@ -295,6 +299,7 @@ class MetalMerc2 {
   bool m_warned_eyes = false;
   bool m_warned_no_ee = false;
   bool m_warned_bad_bone = false;
+  bool m_warned_malformed_dma = false;
   bool m_reported_missing_bone_slots = false;
   bool m_reported_palette_health_issue = false;
   bool m_reported_eichar_transform_discontinuity = false;

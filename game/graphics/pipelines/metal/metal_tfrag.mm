@@ -137,8 +137,8 @@ void MetalTFragment::render(DmaFollower& dma,
     for (int i = 0; i < jak1::LEVEL_MAX; i++) {
       if (transfers[i].size_bytes == 128 * 16) {
         if (bg && bg->use_occlusion_culling) {
-          bg->occlusion_vis[i].valid = true;
-          memcpy(bg->occlusion_vis[i].data, transfers[i].data, 128 * 16);
+          bg->visibility.levels[i].valid = true;
+          memcpy(bg->visibility.levels[i].data.data(), transfers[i].data, 128 * 16);
         }
       } else {
         // 16 bytes means "this level has no visibility this frame"
@@ -194,8 +194,8 @@ void MetalTFragment::render(DmaFollower& dma,
   MetalTfragRenderSettings settings;
   settings.camera = m_pc_port_data.camera;
   settings.tree_idx = 0;
-  if (bg && bg->occlusion_vis[m_level_id].valid) {
-    settings.occlusion_culling = bg->occlusion_vis[m_level_id].data;
+  if (bg && bg->visibility.levels[m_level_id].valid) {
+    settings.occlusion_culling = bg->visibility.levels[m_level_id].data.data();
   }
 
   // lod: the GL renderer exposes lod_tfrag as a debug setting, default 0.
@@ -377,7 +377,7 @@ void MetalTFragment::render_tree(int geom,
                  indexBufferOffset:run.first_index * sizeof(u32)];
         m_stats.runs++;
       }
-      m_stats.draws++;
+      draws_this_tree++;
     }
   }
 

@@ -59,6 +59,15 @@ u64 metal_upload_texture_rgba8(id<MTLDevice> device,
                                u32 w,
                                u32 h);
 
+// Builds a complete replacement for an existing registry texture, then swaps it
+// atomically behind the same handle. The dimensions and RGBA8 format must match
+// exactly; failure leaves the prior registered texture unchanged.
+bool metal_update_texture_rgba8(u64 handle,
+                                id<MTLCommandQueue> queue,
+                                const u8* data,
+                                u32 w,
+                                u32 h);
+
 // Mirror of the GL loader's add_texture: upload, then give to the pool if the
 // texture is flagged for it. Returns the registry handle.
 // Uploads a whole level's textures and hands them to the pool as one indivisible step.

@@ -5,10 +5,15 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <set>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "common/versions/jak1_iso_revisions.h"
+#include "common/custom_data/CheckedFileIdentity.h"
 
 namespace jak1_fr3 {
 
@@ -38,9 +43,33 @@ struct Options {
   std::uintmax_t max_output_bytes = 768ull * 1024 * 1024;
   std::uint32_t max_archives = 64;
   std::uint32_t max_levels = 32;
+  bool require_game_count = true;
+  std::optional<std::uint32_t> expected_distinct_fr3_files;
+  std::optional<std::size_t> compressed_trailing_alignment_bytes;
+  std::span<const checked_file_identity::Identity> validated_extracted_files;
+  std::uint32_t max_validated_file_identities = 10000;
+  bool require_validated_file_identities = false;
   CancelCallback should_cancel;
   ProgressCallback report_progress;
 };
+
+namespace internal {
+
+enum class LevelOutputUpdate {
+  added,
+  replaced,
+  invalid,
+};
+
+bool safe_fr3_output_basename(std::string_view output_basename);
+
+LevelOutputUpdate update_expected_fr3_outputs(std::set<std::string>* expected_outputs,
+                                              std::set<std::string>* level_outputs,
+                                              std::string_view output_basename,
+                                              std::size_t remaining_levels,
+                                              std::size_t expected_final_count);
+
+}  // namespace internal
 
 enum class ErrorCode {
   invalid_argument,
@@ -70,6 +99,7 @@ struct Summary {
   std::uint32_t levels_written = 0;
   std::uint32_t raw_objects_written = 0;
   std::uintmax_t output_bytes = 0;
+  std::vector<checked_file_identity::Identity> fr3_files;
 };
 
 template <typename T>
@@ -96,6 +126,16 @@ class Result {
   std::optional<T> m_value;
   std::optional<Error> m_error;
 };
+
+namespace internal {
+
+Result<std::vector<std::uint8_t>> read_validated_input_file(
+    const std::filesystem::path& extracted_iso_root,
+    const checked_file_identity::Identity& expected,
+    std::uintmax_t max_bytes,
+    const Options& options = {});
+
+}  // namespace internal
 
 Result<Summary> prepare(const std::filesystem::path& project_root,
                         const std::filesystem::path& extracted_iso_root,

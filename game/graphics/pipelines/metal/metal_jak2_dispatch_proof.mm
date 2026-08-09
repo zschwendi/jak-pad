@@ -1,4 +1,8 @@
+#include <array>
 #include <cstdio>
+#include <stdexcept>
+#include <utility>
+
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_jak2_synthetic_chain.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
@@ -9,6 +13,37 @@
 namespace {
 
 int failures = 0;
+
+std::vector<u8> make_policy_inventory_chain() {
+  using BucketId = jak2::BucketId;
+  constexpr std::array<std::pair<BucketId, u16>, 5> kPayloads = {{
+      {BucketId::MERC_L0_ALPHA, 5},
+      {BucketId::GMERC_L0_ALPHA, 4},
+      {BucketId::MERC_L0_WATER, 3},
+      {BucketId::GMERC_L0_WATER, 2},
+      {BucketId::OCEAN_NEAR, 1},
+  }};
+
+  std::vector<u8> chain((metal_renderer::kJak2SyntheticBucketCount + 1) * 16, 0);
+  for (std::size_t bucket = 0; bucket < metal_renderer::kJak2SyntheticBucketCount; bucket++) {
+    metal_renderer::put_jak2_synthetic_tag(chain, bucket * 16, DmaTag::Kind::CNT);
+  }
+  metal_renderer::put_jak2_synthetic_tag(
+      chain, metal_renderer::kJak2SyntheticBucketCount * 16, DmaTag::Kind::END);
+
+  for (const auto& [bucket, qwc] : kPayloads) {
+    const auto bucket_id = static_cast<std::size_t>(bucket);
+    const auto payload_offset = chain.size();
+    chain.resize(payload_offset + 16 + qwc * 16 + 16, 0);
+    metal_renderer::put_jak2_synthetic_tag(chain, bucket_id * 16, DmaTag::Kind::NEXT, 0,
+                                           static_cast<u32>(payload_offset));
+    metal_renderer::put_jak2_synthetic_tag(chain, payload_offset, DmaTag::Kind::CNT, qwc);
+    metal_renderer::put_jak2_synthetic_tag(chain, payload_offset + 16 + qwc * 16,
+                                           DmaTag::Kind::NEXT, 0,
+                                           static_cast<u32>((bucket_id + 1) * 16));
+  }
+  return chain;
+}
 
 void check(bool condition, const char* what) {
   std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
@@ -36,10 +71,20 @@ int main() {
     TexturePool texture_pool(GameVersion::Jak2);
     renderer.init_bucket_renderers(&texture_pool, GameVersion::Jak2);
 
+    MetalRenderOptions options;
+    std::array<u8, 16> early_refe = {};
+    bool rejected_early_refe = false;
+    try {
+      renderer.render_chain_frame(options, nil, early_refe.data(), 0, early_refe.size());
+    } catch (const std::runtime_error&) {
+      rejected_early_refe = true;
+    }
+    check(rejected_early_refe,
+          "a valid REFE before all 327 buckets fails closed before Metal dispatch");
+
     const auto chain = metal_renderer::make_jak2_synthetic_metal_chain();
 
-    MetalRenderOptions options;
-    const bool acquired = renderer.render_chain_frame(options, nil, chain.data(), 0);
+    const bool acquired = renderer.render_chain_frame(options, nil, chain.data(), 0, chain.size());
     const auto stats = renderer.chain_stats();
 
     check(!acquired, "nil CAMetalLayer acquires no drawable");
@@ -54,13 +99,35 @@ int main() {
     check(stats.submissions == 0 && stats.presentations_completed == 0 &&
               stats.presentation_drops == 0,
           "nil-layer dispatch records zero submissions and presentations");
-    check(stats.draw_calls == 0 && stats.triangles == 0 && stats.skipped_bucket_bytes == 16,
+    check(stats.skipped_bucket_bytes == 16,
           "one DeferredSkip slot consumes exactly its 16-byte synthetic payload");
+    check(stats.last_skipped_bucket_count == 1 &&
+              stats.last_skipped_bucket_ids[0] ==
+                  static_cast<u32>(jak2::BucketId::OCEAN_MID_FAR) &&
+              stats.last_skipped_bucket_bytes[0] == 16,
+          "the last-frame deferred inventory identifies the exact bucket and payload bytes");
+    check(stats.draw_calls == 0 && stats.triangles == 0 && stats.jak2_screen_filter_draws == 0 &&
+              stats.jak2_screen_filter_triangles == 0,
+          "the SCREEN_FILTER Direct binding traverses its NOP payload without drawing");
     check(stats.direct_unsupported_blends == 0,
-          "the DEBUG3 Direct binding traverses NOP payload without unsupported blends");
+          "the SCREEN_FILTER Direct binding traverses its NOP payload without unsupported blends");
     check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
               metal_renderer::kJak2MetalBucketExpectedFingerprint,
           "the dispatcher links the reviewed 327-slot policy table");
+
+    const auto inventory_chain = make_policy_inventory_chain();
+    renderer.render_chain_frame(options, nil, inventory_chain.data(), 0, inventory_chain.size());
+    const auto inventory = renderer.chain_stats();
+    check(inventory.skipped_bucket_bytes == 16 + 1 * 16,
+          "cumulative deferred bytes exclude implemented Merc and Generic2 buckets");
+    check(inventory.last_skipped_bucket_count == 1 &&
+              inventory.last_skipped_bucket_ids[0] ==
+                  static_cast<u32>(jak2::BucketId::OCEAN_NEAR) &&
+              inventory.last_skipped_bucket_bytes[0] == 1 * 16,
+          "the last-frame deferred inventory retains only the ocean bucket");
+    check(inventory.generic_unexpected_dma == 2 && inventory.generic_draws == 0 &&
+              inventory.generic_triangles == 0,
+          "both malformed synthetic Generic2 payloads fail closed without drawing");
 
     if (failures) {
       std::printf("FAIL: %d Jak 2 nil-layer Metal dispatcher checks failed\n", failures);

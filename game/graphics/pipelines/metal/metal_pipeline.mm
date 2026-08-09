@@ -14,9 +14,12 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <exception>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 
 #include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
@@ -24,6 +27,7 @@
 #include "common/util/FrameLimiter.h"
 #include "common/util/Timer.h"
 
+#include "game/graphics/pipelines/metal/metal_chain_handoff_state.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
@@ -57,7 +61,7 @@ struct ChainSync {
   std::condition_variable sync_cv;
   u64 frame_idx = 0;
   u64 frame_idx_of_input_data = 0;
-  bool has_data_to_render = false;
+  metal_renderer::MetalChainHandoffState handoff;
   std::unique_ptr<FixedChunkDmaCopier> copier;
   float pmode_alp = 1.f;
   // Which thread renders. A host that renders on the thread it sends from (the proof, and any
@@ -348,9 +352,11 @@ void MetalDisplay::render() {
   {
     std::unique_lock<std::mutex> lock(g_chain.dma_mutex);
     got_chain = g_chain.dma_cv.wait_for(lock, std::chrono::milliseconds(40),
-                                        [] { return g_chain.has_data_to_render; });
+                                        [] { return g_chain.handoff.pending; });
   }
 
+  std::string chain_error;
+  bool chain_rejected = false;
   if (got_chain) {
     g_chain.frame_idx_of_input_data = g_chain.frame_idx;
     MetalRenderOptions opts;
@@ -369,10 +375,23 @@ void MetalDisplay::render() {
     opts.pmode_alp = g_chain.pmode_alp;
     opts.brightness_contrast_color = Gfx::g_global_settings.brightness_contrast_color;
     opts.brightness_contrast_alpha = Gfx::g_global_settings.brightness_contrast_alpha;
+    opts.target_fps = Gfx::g_global_settings.target_fps;
     opts.min_present_duration = g_present_min_duration;
 
     const auto& chain = g_chain.copier->get_last_result();
-    g_renderer->render_chain_frame(opts, m_layer, chain.data.data(), chain.start_offset);
+    try {
+      g_renderer->render_chain_frame(opts, m_layer, chain.data.data(), chain.start_offset,
+                                     chain.data.size());
+    } catch (const std::exception& error) {
+      chain_rejected = true;
+      chain_error = error.what();
+    } catch (...) {
+      chain_rejected = true;
+      chain_error = "unknown exception during Metal DMA dispatch";
+    }
+    if (chain_rejected) {
+      lg::error("Metal dropped a DMA chain: {}", chain_error);
+    }
   } else {
     MetalRenderOptions opts;
     compute_draw_region(fb_w, fb_h, &opts.draw_region_w, &opts.draw_region_h);
@@ -404,7 +423,13 @@ void MetalDisplay::render() {
   // dma mutex with the sync cv; mirrored here)
   {
     std::unique_lock<std::mutex> lock(g_chain.dma_mutex);
-    g_chain.has_data_to_render = false;
+    if (got_chain) {
+      if (chain_rejected) {
+        g_chain.handoff.reject(std::move(chain_error));
+      } else {
+        g_chain.handoff.complete();
+      }
+    }
     g_chain.sync_cv.notify_all();
   }
 
@@ -574,15 +599,15 @@ bool render_last_chain_to_external_target(int width,
     const bool rejected =
         missing_color_usage && missing_depth_usage &&
         !g_renderer->render_chain_frame_to_external_target(
-            opts, bad_bounds, chain.data.data(), chain.start_offset) &&
+            opts, bad_bounds, chain.data.data(), chain.start_offset, chain.data.size()) &&
         !g_renderer->render_chain_frame_to_external_target(
-            opts, bad_viewport, chain.data.data(), chain.start_offset) &&
+            opts, bad_viewport, chain.data.data(), chain.start_offset, chain.data.size()) &&
         !g_renderer->render_chain_frame_to_external_target(
-            opts, bad_depth_clear, chain.data.data(), chain.start_offset) &&
+            opts, bad_depth_clear, chain.data.data(), chain.start_offset, chain.data.size()) &&
         !g_renderer->render_chain_frame_to_external_target(
-            opts, bad_color_usage, chain.data.data(), chain.start_offset) &&
+            opts, bad_color_usage, chain.data.data(), chain.start_offset, chain.data.size()) &&
         !g_renderer->render_chain_frame_to_external_target(
-            opts, bad_depth_usage, chain.data.data(), chain.start_offset);
+            opts, bad_depth_usage, chain.data.data(), chain.start_offset, chain.data.size());
     const ChainStats after_invalid = g_renderer->chain_stats();
     static_assert(std::is_trivially_copyable_v<ChainStats>);
 
@@ -590,11 +615,12 @@ bool render_last_chain_to_external_target(int width,
     out->invalid_descriptors_preserved_stats =
         std::memcmp(&before_invalid, &after_invalid, sizeof(ChainStats)) == 0;
     const bool first_external = g_renderer->render_chain_frame_to_external_target(
-        opts, target, chain.data.data(), chain.start_offset);
+        opts, target, chain.data.data(), chain.start_offset, chain.data.size());
     const ScaffoldStats after_first_external = g_renderer->stats();
     const bool second_external =
         first_external && g_renderer->render_chain_frame_to_external_target(
-                              opts, target, chain.data.data(), chain.start_offset);
+                              opts, target, chain.data.data(), chain.start_offset,
+                              chain.data.size());
     const ScaffoldStats after_second_external = g_renderer->stats();
     if (!out->framebuffer_copy_used_selected_slice || !rejected ||
         !out->invalid_descriptors_preserved_stats || !second_external ||
@@ -996,7 +1022,7 @@ static void metal_exit() {
     g_level_art.stats = {};
   }
   g_chain.copier.reset();
-  g_chain.has_data_to_render = false;
+  g_chain.handoff = {};
   delete g_renderer;
   g_renderer = nullptr;
 }
@@ -1025,10 +1051,10 @@ static u32 metal_sync_path() {
   if (!g_renderer) {
     return 0;
   }
-  // `has_data_to_render` is written under dma_mutex, so it has to be waited on under dma_mutex:
+  // `handoff.pending` is written under dma_mutex, so it has to be waited on under dma_mutex:
   // waiting under sync_mutex left the predicate unsynchronized with the thread that clears it.
   std::unique_lock<std::mutex> lock(g_chain.dma_mutex);
-  g_chain.sync_cv.wait(lock, [] { return !g_chain.has_data_to_render || !g_renderer; });
+  g_chain.sync_cv.wait(lock, [] { return !g_chain.handoff.pending || !g_renderer; });
   return 0;
 }
 
@@ -1055,15 +1081,27 @@ static void metal_send_chain(const void* data, u32 offset) {
     return;
   }
   std::unique_lock<std::mutex> lock(g_chain.dma_mutex);
-  if (g_chain.has_data_to_render) {
+  if (g_chain.handoff.pending) {
     lg::error(
         "Gfx::send_chain called when the Metal renderer has pending data. Was this called "
         "multiple times per frame?");
     return;
   }
 
-  g_chain.copier->set_input_data(data, offset, /*run_copy*/ true);
-  g_chain.has_data_to_render = true;
+  try {
+    g_chain.copier->set_input_data(data, offset, /*run_copy*/ true);
+  } catch (const std::exception& error) {
+    g_chain.handoff.reject(error.what());
+    lg::error("Metal dropped a DMA chain before handoff: {}", error.what());
+    g_chain.sync_cv.notify_all();
+    return;
+  } catch (...) {
+    g_chain.handoff.reject("unknown exception while copying the DMA chain");
+    lg::error("Metal dropped a DMA chain before handoff: unknown exception");
+    g_chain.sync_cv.notify_all();
+    return;
+  }
+  g_chain.handoff.queue();
   g_chain.dma_cv.notify_all();
 
   // Hold the game here until the renderer has read the frame, so the bone matrices it resolves
@@ -1072,7 +1110,7 @@ static void metal_send_chain(const void* data, u32 offset) {
   // itself. Bounded, so a renderer that has stopped never strands the game thread.
   if (g_chain.render_thread_known.load() &&
       g_chain.render_thread.load() != std::this_thread::get_id()) {
-    while (g_chain.has_data_to_render && MasterExit == RuntimeExitStatus::RUNNING) {
+    while (g_chain.handoff.pending && MasterExit == RuntimeExitStatus::RUNNING) {
       g_chain.sync_cv.wait_for(lock, std::chrono::milliseconds(50));
     }
   }

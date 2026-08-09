@@ -13,6 +13,7 @@
  * silently dropped.
  */
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,8 @@ class TexturePool;
 struct MetalBackgroundState;
 // composes eye textures other renderers sample (metal_eye_renderer.h)
 class MetalEyeRenderer;
+
+using MetalHostBucketCallback = void (*)(void* context, u32 bucket_id);
 
 /*!
  * Per-frame bump allocator for dynamic vertex data. The GL renderers stream
@@ -81,12 +84,19 @@ struct MetalSharedRenderState {
   MetalBackgroundState* background = nullptr;
   // merc resolves its eye draws through this, like the GL renderer does
   MetalEyeRenderer* eye_renderer = nullptr;
+  const u8* dma_copy_base = nullptr;
+  std::size_t dma_copy_size = 0;
   const u8* ee_memory = nullptr;
   u32 offset_of_s7 = 0;
   u64 engine_frame_id = 0;
   GameVersion version = GameVersion::Jak1;
   int game_res_w = 640;
   int game_res_h = 480;
+  const u64* animated_texture_slots = nullptr;
+  std::size_t animated_texture_slot_count = 0;
+  void* host_bucket_context = nullptr;
+  MetalHostBucketCallback host_bucket_callback = nullptr;
+  float target_fps = 60.f;
 };
 
 /*!
@@ -164,10 +174,41 @@ class MetalSkipRenderer : public MetalBucketRenderer {
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
   u64 skipped_bytes() const { return m_skipped_bytes; }
+  u64 last_skipped_bytes() const { return m_last_skipped_bytes; }
 
  private:
   u64 m_skipped_bytes = 0;
+  u64 m_last_skipped_bytes = 0;
   bool m_warned = false;
+};
+
+/*!
+ * Drains a bucket whose side effects are completed synchronously by its host.
+ * A per-frame callback runs at this exact bucket boundary when one is supplied.
+ */
+class MetalHostHandledRenderer : public MetalBucketRenderer {
+ public:
+  MetalHostHandledRenderer(const std::string& name, int my_id)
+      : MetalBucketRenderer(name, my_id) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+};
+
+/*!
+ * Copies a frame's per-level visibility strings and optional background
+ * fallback block into owned shared state. This bucket does not draw.
+ */
+class MetalVisibilityBucketRenderer : public MetalBucketRenderer {
+ public:
+  MetalVisibilityBucketRenderer(const std::string& name, int my_id, std::size_t level_count)
+      : MetalBucketRenderer(name, my_id), m_level_count(level_count) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+
+ private:
+  std::size_t m_level_count = 0;
 };
 
 /*!

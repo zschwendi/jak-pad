@@ -18,6 +18,7 @@ extern "C" const unsigned long g_goalpad_metallib_size;
 namespace {
 
 constexpr int kTargetSize = 64;
+constexpr int kScreenFilterReferenceBatchSize = 256;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 
@@ -190,14 +191,15 @@ int main() {
     state.game_res_w = kTargetSize;
     state.game_res_h = kTargetSize;
 
-    constexpr std::size_t kDebug3 = static_cast<std::size_t>(jak2::BucketId::DEBUG3);
-    const int batch_size = metal_renderer::jak2_metal_direct_batch_size(kDebug3);
-    check(batch_size == 0x2000, "DEBUG3 retains its audited Jak II Direct batch size");
-    if (batch_size != 0x2000) {
+    constexpr std::size_t kScreenFilter = static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER);
+    const int batch_size = metal_renderer::jak2_metal_direct_batch_size(kScreenFilter);
+    check(batch_size == kScreenFilterReferenceBatchSize,
+          "SCREEN_FILTER retains its reference Jak II Direct batch size of 256");
+    if (batch_size != kScreenFilterReferenceBatchSize) {
       return 1;
     }
 
-    MetalDirectRenderer direct("jak2-submit-readback", static_cast<int>(kDebug3), batch_size);
+    MetalDirectRenderer direct("jak2-submit-readback", static_cast<int>(kScreenFilter), batch_size);
     direct.reset_state();
     const auto payload = make_debug_triangle_payload();
     direct.render_gif(payload.data(), static_cast<u32>(payload.size()), &state, context);
@@ -212,7 +214,7 @@ int main() {
 
     check(context.draw_calls == 1 && context.triangles == 1 && direct.stats().draw_calls == 1 &&
               direct.stats().triangles == 1 && direct.stats().unsupported_blends == 0,
-          "one audited Direct payload encoded one supported triangle draw");
+          "one SCREEN_FILTER Direct payload encoded one supported triangle draw");
 
     [commands commit];
     [commands waitUntilCompleted];
@@ -254,7 +256,8 @@ int main() {
       std::printf("FAIL: %d Jak II offscreen submit/readback checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak II Direct GIF payload submitted and read back from Metal offscreen\n");
+    std::printf("PASS: Jak II SCREEN_FILTER Direct GIF payload submitted and read back from Metal "
+                "offscreen\n");
     return 0;
   }
 }

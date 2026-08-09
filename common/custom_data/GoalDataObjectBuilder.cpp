@@ -1,6 +1,7 @@
 #include "GoalDataObjectBuilder.h"
 
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include <stdexcept>
 
@@ -57,6 +58,11 @@ std::uint32_t Builder::add_word(std::uint32_t word) {
   const auto result = static_cast<std::uint32_t>(m_words.size());
   m_words.push_back(word);
   return result;
+}
+
+std::uint32_t Builder::add_word_float(float value) {
+  static_assert(sizeof(float) == sizeof(std::uint32_t));
+  return add_word(std::bit_cast<std::uint32_t>(value));
 }
 
 std::uint32_t Builder::add_ref_to_string(std::string_view value) {

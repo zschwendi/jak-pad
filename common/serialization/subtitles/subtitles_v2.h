@@ -71,6 +71,11 @@ struct GameSubtitlePackage {
   std::unordered_set<std::string> scenes_defined_in_lang;
 };
 
+GameSubtitlePackage read_json_values_v2(const json& lines,
+                                        const json& meta,
+                                        const std::optional<json>& lines_base = std::nullopt,
+                                        const std::optional<json>& meta_base = std::nullopt);
+
 struct GameSubtitleSceneInfo {
   std::string m_name;
   std::vector<SubtitleLine> m_lines;
@@ -137,8 +142,8 @@ class GameSubtitleBank {
   void add_scenes_from_files(const GameSubtitlePackage& package);
 
   std::unordered_map<std::string, std::string> m_speakers;
-  std::vector<std::string> speaker_names_ordered_by_enum_value();
-  u16 speaker_enum_value_from_name(const std::string& speaker_id);
+  std::vector<std::string> speaker_names_ordered_by_enum_value() const;
+  u16 speaker_enum_value_from_name(const std::string& speaker_id) const;
 };
 
 /*!

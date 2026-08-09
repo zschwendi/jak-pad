@@ -1,10 +1,15 @@
 #include "metal_bucket_renderer.h"
 
+#include <array>
+#include <cstring>
+
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
 #include "game/graphics/pipelines/metal/metal_bucket_chain_semantics.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
+#include "game/graphics/pipelines/metal/metal_level_data.h"
+#include "game/graphics/pipelines/metal/metal_vis_data.h"
 #include "game/graphics/texture/TexturePool.h"
 
 void* MetalStreamBuffer::alloc(u32 size, id<MTLBuffer>* out_buffer, u32* out_offset) {
@@ -121,6 +126,7 @@ void MetalSkipRenderer::render(DmaFollower& dma,
       dma.read_and_advance();  // ret
     }
   }
+  m_last_skipped_bytes = bytes;
   if (bytes > 0) {
     m_skipped_bytes += bytes;
     if (!m_warned) {
@@ -129,6 +135,117 @@ void MetalSkipRenderer::render(DmaFollower& dma,
       m_warned = true;
     }
   }
+}
+
+void MetalHostHandledRenderer::render(DmaFollower& dma,
+                                      MetalSharedRenderState* render_state,
+                                      MetalFrameContext& /*ctx*/) {
+  ASSERT(metal_renderer::bucket_chain_layout(render_state->version) ==
+         metal_renderer::MetalBucketChainLayout::Jak2Direct);
+  if (render_state->host_bucket_callback) {
+    render_state->host_bucket_callback(render_state->host_bucket_context,
+                                       static_cast<u32>(m_my_id));
+  }
+  while (dma.current_tag_offset() != render_state->next_bucket) {
+    dma.read_and_advance();
+  }
+}
+
+void MetalVisibilityBucketRenderer::render(DmaFollower& dma,
+                                           MetalSharedRenderState* render_state,
+                                           MetalFrameContext& /*ctx*/) {
+  auto* background = render_state->background;
+  ASSERT(background);
+  auto reject = [&](const char* reason) {
+    metal_background_expect(false, m_name, reason, background);
+    metal_finish_bucket(dma, *render_state);
+  };
+
+  if (metal_renderer::bucket_chain_layout(render_state->version) !=
+      metal_renderer::MetalBucketChainLayout::Jak2Direct) {
+    reject("the Jak 2 direct bucket layout");
+    return;
+  }
+  if (m_level_count > metal_renderer::kMetalMaxVisibilityLevels) {
+    reject("a visibility level count within owned-state capacity");
+    return;
+  }
+
+  const auto start_tag = dma.current_tag();
+  if (metal_renderer::is_strict_empty_bucket_tag(
+          metal_renderer::MetalBucketChainLayout::Jak2Direct, start_tag)) {
+    dma.read_and_advance();
+    if (dma.current_tag_offset() != render_state->next_bucket) {
+      reject("one strict Jak 2 empty-bucket tag");
+    }
+    return;
+  }
+  if (start_tag.kind != DmaTag::Kind::NEXT || start_tag.qwc != 0) {
+    reject("a zero-byte NEXT before visibility payloads");
+    return;
+  }
+  dma.read_and_advance();
+  if (dma.current_tag_offset() == render_state->next_bucket) {
+    metal_background_expect(false, m_name, "visibility payloads after the opening NEXT",
+                            background);
+    return;
+  }
+
+  std::array<DmaTransfer, metal_renderer::kMetalMaxVisDataTransfers> transfers;
+  std::size_t transfer_count = 0;
+  for (std::size_t level = 0; level < m_level_count; level++) {
+    if (dma.current_tag_offset() == render_state->next_bucket) {
+      reject("one CNT visibility payload per level");
+      return;
+    }
+    const auto payload_tag = dma.current_tag();
+    if (payload_tag.kind != DmaTag::Kind::CNT ||
+        (payload_tag.qwc != metal_renderer::kMetalVisibilityBytes / 16 &&
+         payload_tag.qwc != metal_renderer::kMetalInactiveVisibilityBytes / 16)) {
+      reject("one exact CNT visibility payload per level");
+      return;
+    }
+    transfers[transfer_count++] = dma.read_and_advance();
+    if (dma.current_tag_offset() == render_state->next_bucket ||
+        dma.current_tag().kind != DmaTag::Kind::NEXT || dma.current_tag().qwc != 0) {
+      reject("one zero-byte NEXT boundary per visibility payload");
+      return;
+    }
+    transfers[transfer_count++] = dma.read_and_advance();
+  }
+
+  if (dma.current_tag_offset() != render_state->next_bucket) {
+    const auto fallback_tag = dma.current_tag();
+    if (fallback_tag.kind != DmaTag::Kind::CNT ||
+        fallback_tag.qwc != metal_renderer::kMetalBackgroundFallbackBytes / 16) {
+      reject("an optional CNT background fallback payload");
+      return;
+    }
+    transfers[transfer_count++] = dma.read_and_advance();
+    if (dma.current_tag_offset() == render_state->next_bucket ||
+        dma.current_tag().kind != DmaTag::Kind::NEXT || dma.current_tag().qwc != 0) {
+      reject("a zero-byte NEXT boundary after the background fallback");
+      return;
+    }
+    transfers[transfer_count++] = dma.read_and_advance();
+  }
+  if (dma.current_tag_offset() != render_state->next_bucket) {
+    reject("only visibility pairs and one optional background fallback pair");
+    return;
+  }
+
+  if (!metal_renderer::decode_metal_visibility_frame(
+          transfers.data(), transfer_count, m_level_count, &background->visibility)) {
+    metal_background_expect(false, m_name, "an exact owned visibility frame", background);
+    return;
+  }
+  if (!background->use_occlusion_culling) {
+    for (std::size_t level = 0; level < background->visibility.level_count; level++) {
+      background->visibility.levels[level].valid = false;
+    }
+  }
+  std::memcpy(render_state->fog_color.data(), &background->visibility.fog_vif0,
+              sizeof(background->visibility.fog_vif0));
 }
 
 void MetalTextureBucketRenderer::render(DmaFollower& dma,

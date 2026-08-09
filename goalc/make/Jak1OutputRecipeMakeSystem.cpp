@@ -42,7 +42,10 @@ std::optional<Error> check_cancelled(const Options& options,
 
 bool valid_options(const Options& options) {
   return options.limits.max_graph_archives > 0 && options.limits.max_graph_objects > 0 &&
-         !options.iso_target.empty() && !options.source_target.empty();
+         options.expected_source_object_count > 0 && !options.iso_target.empty() &&
+         !options.source_target.empty() && !options.public_provenance.game_name.empty() &&
+         !options.public_provenance.all_objects_path.empty() &&
+         !options.public_provenance.decompiler_inputs_path.empty();
 }
 
 std::string basename(std::string_view path) {
@@ -63,10 +66,10 @@ std::optional<ObjectProducerKind> producer_kind(std::string_view tool) {
   if (tool == "game-cnt") {
     return ObjectProducerKind::game_count;
   }
-  if (tool == "build-actor") {
+  if (tool == "build-actor" || tool == "build-actor2") {
     return ObjectProducerKind::custom_actor;
   }
-  if (tool == "build-level") {
+  if (tool == "build-level" || tool == "build-level2") {
     return ObjectProducerKind::custom_level;
   }
   return {};
@@ -80,25 +83,28 @@ std::string source_key(std::string_view value) {
   return key;
 }
 
-std::optional<Error> attach_public_retail_provenance(Graph* graph) {
+std::optional<Error> attach_public_retail_provenance(Graph* graph,
+                                                     const PublicProvenanceInputs& provenance) {
   const auto all_objects = parse_commented_json(
-      file_util::read_text_file(file_util::get_file_path({"goal_src/jak1/build/all_objs.json"})),
-      "goal_src/jak1/build/all_objs.json");
-  const auto inputs = parse_commented_json(file_util::read_text_file(file_util::get_file_path(
-                                               {"decompiler/config/jak1/ntsc_v1/inputs.jsonc"})),
-                                           "decompiler/config/jak1/ntsc_v1/inputs.jsonc");
+      file_util::read_text_file(file_util::get_file_path({provenance.all_objects_path})),
+      provenance.all_objects_path);
+  const auto inputs = parse_commented_json(
+      file_util::read_text_file(file_util::get_file_path({provenance.decompiler_inputs_path})),
+      provenance.decompiler_inputs_path);
+  const auto malformed = [&](std::string_view detail) {
+    return make_error(ErrorCode::invalid_graph,
+                      "The public " + provenance.game_name + " " + std::string(detail));
+  };
 
   std::unordered_map<std::string, std::vector<std::string>> sources_by_unique_name;
   for (const auto& row : all_objects) {
     if (!row.is_array() || row.size() < 4 || !row[0].is_string() || !row[3].is_array()) {
-      return make_error(ErrorCode::invalid_graph,
-                        "The public Jak 1 object provenance table is malformed.");
+      return malformed("object provenance table is malformed.");
     }
     auto sources = row[3].get<std::vector<std::string>>();
     if (sources.empty() ||
         !sources_by_unique_name.emplace(row[0].get<std::string>(), std::move(sources)).second) {
-      return make_error(ErrorCode::invalid_graph,
-                        "The public Jak 1 object provenance table repeats an identity.");
+      return malformed("object provenance table repeats an identity.");
     }
   }
 
@@ -113,14 +119,12 @@ std::optional<Error> attach_public_retail_provenance(Graph* graph) {
     const auto slash = path.find_last_of('/');
     const auto dot = path.find_last_of('.');
     if (dot == std::string::npos || dot <= (slash == std::string::npos ? 0 : slash + 1)) {
-      return make_error(ErrorCode::invalid_graph,
-                        "The public Jak 1 input archive order contains an invalid path.");
+      return malformed("input archive order contains an invalid path.");
     }
     const auto stem = path.substr(slash == std::string::npos ? 0 : slash + 1,
                                   dot - (slash == std::string::npos ? 0 : slash + 1));
     if (!archives_by_stem.emplace(source_key(stem), OrderedArchive{index, path}).second) {
-      return make_error(ErrorCode::invalid_graph,
-                        "The public Jak 1 input archive order repeats an archive stem.");
+      return malformed("input archive order repeats an archive stem.");
     }
   }
 
@@ -197,6 +201,11 @@ Result<Graph> inspect_make_system(const MakeSystem& make_system, const Options& 
       return Result<Graph>::failure(make_error(
           ErrorCode::invalid_graph, "GROUP:all-code contains no compiler source steps."));
     }
+    if (graph.ordered_source_files.size() != options.expected_source_object_count) {
+      return Result<Graph>::failure(
+          make_error(ErrorCode::invalid_graph,
+                     "GROUP:all-code does not match the checked source-object count."));
+    }
 
     const auto* iso_group = make_system.find_step(options.iso_target);
     if (!iso_group || iso_group->tool != "group" || iso_group->deps.empty()) {
@@ -253,7 +262,9 @@ Result<Graph> inspect_make_system(const MakeSystem& make_system, const Options& 
           if (!producer || !kind || description_entry.name_in_dgo.empty()) {
             return Result<Graph>::failure(make_error(
                 ErrorCode::unsupported_step,
-                "An archive object is produced by an unsupported or malformed MakeSystem step.",
+                "An archive object is produced by an unsupported or malformed MakeSystem step: " +
+                    description_entry.file_name + " (" +
+                    (producer ? producer->tool : "missing producer") + ").",
                 static_cast<uint32_t>(graph.archives.size()), object_index));
           }
           archive.objects.push_back(
@@ -281,7 +292,7 @@ Result<Graph> inspect_make_system(const MakeSystem& make_system, const Options& 
       std::optional<jak1_output_recipe::GeneratedFlatFileKind> generated_kind;
       if (step->tool == "text") {
         generated_kind = jak1_output_recipe::GeneratedFlatFileKind::game_text;
-      } else if (step->tool == "subtitle") {
+      } else if (step->tool == "subtitle" || step->tool == "subtitle-v2") {
         generated_kind = jak1_output_recipe::GeneratedFlatFileKind::game_subtitle;
       }
       if (generated_kind) {
@@ -309,7 +320,7 @@ Result<Graph> inspect_make_system(const MakeSystem& make_system, const Options& 
     std::sort(graph.archives.begin(), graph.archives.end(), by_destination);
     std::sort(graph.flat_file_copies.begin(), graph.flat_file_copies.end(), by_destination);
     std::sort(graph.generated_flat_files.begin(), graph.generated_flat_files.end(), by_destination);
-    if (const auto error = attach_public_retail_provenance(&graph)) {
+    if (const auto error = attach_public_retail_provenance(&graph, options.public_provenance)) {
       return Result<Graph>::failure(*error);
     }
     return Result<Graph>::success(std::move(graph));

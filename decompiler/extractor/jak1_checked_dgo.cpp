@@ -11,6 +11,9 @@
 
 #include "third-party/lzokay/lzokay.hpp"
 
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
+
 namespace jak1_checked_dgo {
 namespace {
 
@@ -19,8 +22,22 @@ constexpr std::size_t kNameFieldBytes = 60;
 constexpr std::size_t kObjectAlignment = 16;
 constexpr std::size_t kBlzoBlockBytes = 0x8000;
 constexpr std::array<std::uint8_t, 4> kBlzoMagic = {'o', 'Z', 'l', 'B'};
-constexpr const char* kJak1ArtGroupPrefix = "/src/next/data/art-group6/";
 constexpr const char* kArtGroupSuffix = "-ag.go";
+
+std::optional<std::string_view> art_group_prefix(GameVersion game_version) {
+  switch (game_version) {
+    case GameVersion::Jak1:
+      return "/src/next/data/art-group6/";
+    case GameVersion::Jak2:
+      return "/src/jak2/final/art-group7/";
+    default:
+      return {};
+  }
+}
+
+std::string_view game_name(GameVersion game_version) {
+  return game_version == GameVersion::Jak1 ? "Jak 1" : "Jak II";
+}
 
 Error make_error(ErrorCode code,
                  std::size_t offset,
@@ -29,8 +46,23 @@ Error make_error(ErrorCode code,
   return {code, offset, object_index, std::move(message)};
 }
 
-bool cancelled(const Options& options) {
-  return options.should_cancel && options.should_cancel();
+std::optional<Error> cancellation_error(
+    const Options& options,
+    std::size_t offset,
+    std::string message,
+    std::optional<std::uint32_t> object_index = {}) {
+  if (!options.should_cancel) {
+    return {};
+  }
+  try {
+    if (options.should_cancel()) {
+      return make_error(ErrorCode::cancelled, offset, std::move(message), object_index);
+    }
+  } catch (...) {
+    return make_error(ErrorCode::callback_failed, offset,
+                      "The DGO cancellation callback failed.", object_index);
+  }
+  return {};
 }
 
 std::optional<Error> validate_options(const Options& options) {
@@ -41,7 +73,13 @@ std::optional<Error> validate_options(const Options& options) {
       options.file_read_chunk_bytes >
           static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) ||
       options.max_compressed_chunk_bytes == 0 ||
-      options.max_compressed_chunk_bytes >= kBlzoBlockBytes) {
+      options.max_compressed_chunk_bytes >= kBlzoBlockBytes ||
+      (options.compressed_trailing_alignment_bytes &&
+       *options.compressed_trailing_alignment_bytes == 0) ||
+      !art_group_prefix(options.game_version) ||
+      (options.expected_input &&
+       (options.expected_input->relative_path.empty() || options.expected_input->size == 0 ||
+        options.expected_input->size > options.max_input_bytes))) {
     return make_error(ErrorCode::invalid_argument, 0, "The DGO reader options are invalid.");
   }
   return {};
@@ -114,17 +152,19 @@ Result<std::string> derive_unique_name(const std::string& internal_name,
                    "An internal DGO object name contains the reserved -ag suffix.", object_index));
   }
 
-  const std::string prefix(kJak1ArtGroupPrefix);
+  const std::string prefix(*art_group_prefix(options.game_version));
   const std::string expected_tail = internal_name + kArtGroupSuffix;
   if (object_data.size() < prefix.size()) {
     return Result<std::string>::success(internal_name);
   }
   for (std::size_t marker_offset = 0; marker_offset <= object_data.size() - prefix.size();
        ++marker_offset) {
-    if ((marker_offset % options.file_read_chunk_bytes) == 0 && cancelled(options)) {
-      return Result<std::string>::failure(
-          make_error(ErrorCode::cancelled, object_offset + marker_offset,
-                     "DGO art-group name detection was cancelled.", object_index));
+    if ((marker_offset % options.file_read_chunk_bytes) == 0) {
+      if (auto error = cancellation_error(options, object_offset + marker_offset,
+                                           "DGO art-group name detection was cancelled.",
+                                           object_index)) {
+        return Result<std::string>::failure(std::move(*error));
+      }
     }
     if (std::memcmp(object_data.data() + marker_offset, prefix.data(), prefix.size())) {
       continue;
@@ -135,13 +175,17 @@ Result<std::string> derive_unique_name(const std::string& internal_name,
         expected_tail.size() + 1 > object_data.size() - tail_offset) {
       return Result<std::string>::failure(
           make_error(ErrorCode::invalid_art_group_marker, object_offset + marker_offset,
-                     "A Jak 1 art-group marker is truncated.", object_index));
+                     "A " + std::string(game_name(options.game_version)) +
+                         " art-group marker is truncated.",
+                     object_index));
     }
     if (std::memcmp(object_data.data() + tail_offset, expected_tail.data(), expected_tail.size()) ||
         object_data[tail_offset + expected_tail.size()] != 0) {
       return Result<std::string>::failure(
           make_error(ErrorCode::invalid_art_group_marker, object_offset + marker_offset,
-                     "A Jak 1 art-group marker does not match its DGO object name.", object_index));
+                     "A " + std::string(game_name(options.game_version)) +
+                         " art-group marker does not match its DGO object name.",
+                     object_index));
     }
     return Result<std::string>::success(internal_name + "-ag");
   }
@@ -189,9 +233,9 @@ Result<std::vector<std::uint8_t>> decompress_blzo(std::span<const std::uint8_t> 
   std::size_t output_offset = 0;
   std::uint32_t chunks = 0;
   while (output_offset < output.size()) {
-    if (cancelled(options)) {
-      return Result<std::vector<std::uint8_t>>::failure(
-          make_error(ErrorCode::cancelled, input_offset, "DGO decompression was cancelled."));
+    if (auto error =
+            cancellation_error(options, input_offset, "DGO decompression was cancelled.")) {
+      return Result<std::vector<std::uint8_t>>::failure(std::move(*error));
     }
     if (++chunks > options.max_compressed_chunks) {
       return Result<std::vector<std::uint8_t>>::failure(
@@ -272,7 +316,12 @@ Result<std::vector<std::uint8_t>> decompress_blzo(std::span<const std::uint8_t> 
   }
 
   const auto trailing_bytes = input.size() - input_offset;
-  if (trailing_bytes > options.max_compressed_padding_bytes) {
+  bool invalid_trailing_layout = trailing_bytes > options.max_compressed_padding_bytes;
+  if (options.compressed_trailing_alignment_bytes) {
+    const auto alignment = *options.compressed_trailing_alignment_bytes;
+    invalid_trailing_layout = input.size() % alignment != 0 || trailing_bytes >= alignment;
+  }
+  if (invalid_trailing_layout) {
     return Result<std::vector<std::uint8_t>>::failure(
         make_error(ErrorCode::compressed_padding_limit_exceeded, input_offset,
                    "The compressed DGO has excessive trailing padding."));
@@ -298,9 +347,8 @@ Result<Archive> parse_expanded(std::span<const std::uint8_t> input,
     return Result<Archive>::failure(
         make_error(ErrorCode::truncated_header, 0, "The DGO archive header is truncated."));
   }
-  if (cancelled(options)) {
-    return Result<Archive>::failure(
-        make_error(ErrorCode::cancelled, 0, "DGO parsing was cancelled."));
+  if (auto error = cancellation_error(options, 0, "DGO parsing was cancelled.")) {
+    return Result<Archive>::failure(std::move(*error));
   }
 
   const auto object_count = read_u32_le(input.data());
@@ -334,9 +382,9 @@ Result<Archive> parse_expanded(std::span<const std::uint8_t> input,
   std::size_t total_object_bytes = 0;
   std::size_t offset = kHeaderBytes;
   for (std::uint32_t index = 0; index < object_count; ++index) {
-    if (cancelled(options)) {
-      return Result<Archive>::failure(
-          make_error(ErrorCode::cancelled, offset, "DGO parsing was cancelled.", index));
+    if (auto error =
+            cancellation_error(options, offset, "DGO parsing was cancelled.", index)) {
+      return Result<Archive>::failure(std::move(*error));
     }
     if (offset % kObjectAlignment != 0) {
       return Result<Archive>::failure(make_error(ErrorCode::invalid_alignment, offset,
@@ -405,9 +453,9 @@ Result<Archive> parse_expanded(std::span<const std::uint8_t> input,
       object.data.resize(object_size);
       std::size_t copied = 0;
       while (copied < object_size) {
-        if (cancelled(options)) {
-          return Result<Archive>::failure(make_error(ErrorCode::cancelled, data_offset + copied,
-                                                     "Copying a DGO object was cancelled.", index));
+        if (auto error = cancellation_error(options, data_offset + copied,
+                                             "Copying a DGO object was cancelled.", index)) {
+          return Result<Archive>::failure(std::move(*error));
         }
         const auto chunk = std::min(options.file_read_chunk_bytes, object_size - copied);
         std::memcpy(object.data.data() + copied, input.data() + data_offset + copied, chunk);
@@ -448,9 +496,15 @@ Result<Archive> read(std::span<const std::uint8_t> input,
       return Result<Archive>::failure(make_error(
           ErrorCode::input_too_large, 0, "The DGO input exceeds the configured input limit."));
     }
-    if (cancelled(options)) {
-      return Result<Archive>::failure(
-          make_error(ErrorCode::cancelled, 0, "DGO processing was cancelled."));
+    if (options.expected_input &&
+        (input.size() != options.expected_input->size ||
+         XXH64(input.data(), input.size(), 0) != options.expected_input->xxh64)) {
+      return Result<Archive>::failure(make_error(
+          ErrorCode::input_identity_mismatch, 0,
+          "The DGO input does not match its validated size and hash."));
+    }
+    if (auto error = cancellation_error(options, 0, "DGO processing was cancelled.")) {
+      return Result<Archive>::failure(std::move(*error));
     }
 
     const bool compressed = input.size() >= kBlzoMagic.size() &&
@@ -510,6 +564,11 @@ Result<Archive> read_file(const std::filesystem::path& input_path,
       return Result<Archive>::failure(make_error(
           ErrorCode::input_too_large, 0, "The DGO input file exceeds the configured input limit."));
     }
+    if (options.expected_input && input_size != options.expected_input->size) {
+      return Result<Archive>::failure(make_error(
+          ErrorCode::input_identity_mismatch, 0,
+          "The DGO input file does not match its validated size."));
+    }
 
     if (input_size >= kBlzoMagic.size()) {
       std::array<std::uint8_t, kBlzoMagic.size()> prefix{};
@@ -536,9 +595,9 @@ Result<Archive> read_file(const std::filesystem::path& input_path,
     bytes.resize(static_cast<std::size_t>(input_size));
     std::size_t offset = 0;
     while (offset < bytes.size()) {
-      if (cancelled(options)) {
-        return Result<Archive>::failure(
-            make_error(ErrorCode::cancelled, offset, "Reading the DGO input file was cancelled."));
+      if (auto error =
+              cancellation_error(options, offset, "Reading the DGO input file was cancelled.")) {
+        return Result<Archive>::failure(std::move(*error));
       }
       const auto chunk = std::min(options.file_read_chunk_bytes, bytes.size() - offset);
       input.read(reinterpret_cast<char*>(bytes.data() + offset),
@@ -566,6 +625,8 @@ const char* error_code_name(ErrorCode code) {
       return "invalid_argument";
     case ErrorCode::cancelled:
       return "cancelled";
+    case ErrorCode::callback_failed:
+      return "callback_failed";
     case ErrorCode::input_open_failed:
       return "input_open_failed";
     case ErrorCode::input_read_failed:
@@ -610,6 +671,8 @@ const char* error_code_name(ErrorCode code) {
       return "invalid_art_group_marker";
     case ErrorCode::duplicate_object_name:
       return "duplicate_object_name";
+    case ErrorCode::input_identity_mismatch:
+      return "input_identity_mismatch";
   }
   return "unknown";
 }

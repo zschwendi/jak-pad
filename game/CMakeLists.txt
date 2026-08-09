@@ -21,6 +21,7 @@ set(RUNTIME_SOURCE
         graphics/jak3_texture_remap.cpp
         graphics/jakx_texture_remap.cpp
         graphics/screenshot.cpp
+        graphics/sprite_glow_math.cpp
         graphics/opengl_renderer/background/background_common.cpp
         graphics/opengl_renderer/background/Hfrag.cpp
         graphics/opengl_renderer/background/Shrub.cpp
@@ -394,6 +395,18 @@ if(WIN32)
 endif()
 
 if(GOAL_HOST_TESTS_ENABLED)
+    add_executable(sprite-glow-math-test
+            graphics/sprite_glow_math.cpp
+            graphics/sprite_glow_math_test.cpp)
+    add_test(NAME sprite-glow-math-test COMMAND sprite-glow-math-test)
+
+    add_executable(metal-vis-data-test
+            graphics/pipelines/metal/metal_vis_data.cpp
+            graphics/pipelines/metal/metal_vis_data_test.cpp)
+    target_include_directories(metal-vis-data-test PRIVATE
+            "${CMAKE_SOURCE_DIR}/third-party/fmt/include")
+    add_test(NAME metal-vis-data-test COMMAND metal-vis-data-test)
+
     add_executable(metal-bucket-chain-semantics-test
             graphics/pipelines/metal/metal_bucket_chain_semantics_test.cpp)
     add_test(NAME metal-bucket-chain-semantics-test COMMAND metal-bucket-chain-semantics-test)
@@ -402,6 +415,40 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_jak2_bucket_table.cpp
             graphics/pipelines/metal/metal_jak2_bucket_table_test.cpp)
     add_test(NAME jak2-metal-bucket-table-test COMMAND jak2-metal-bucket-table-test)
+
+    add_executable(jak2-blit-display-plan-test
+            graphics/pipelines/metal/metal_jak2_blit_display_plan.cpp
+            graphics/pipelines/metal/metal_jak2_blit_display_plan_test.cpp)
+    add_test(NAME jak2-blit-display-plan-test COMMAND jak2-blit-display-plan-test)
+
+    add_executable(jak2-raw-image-upload-plan-test
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_plan_test.cpp)
+    add_test(NAME jak2-raw-image-upload-plan-test COMMAND jak2-raw-image-upload-plan-test)
+
+    add_executable(jak2-str-load-size-test
+            overlord/jak2/str_load_size_test.cpp)
+    add_test(NAME jak2-str-load-size-test COMMAND jak2-str-load-size-test)
+
+    add_executable(jak2-metal-opcode27-skull-gem-cpu-test
+            graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_cpu.cpp
+            graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_cpu_test.cpp)
+    add_test(NAME jak2-metal-opcode27-skull-gem-cpu-test
+            COMMAND jak2-metal-opcode27-skull-gem-cpu-test)
+
+    add_executable(jak2-metal-merc-dma-test
+            graphics/pipelines/metal/metal_jak2_merc_dma_test.cpp)
+    target_compile_definitions(jak2-metal-merc-dma-test PRIVATE NO_ASSERT=1)
+    add_test(NAME jak2-metal-merc-dma-test COMMAND jak2-metal-merc-dma-test)
+
+    add_executable(jak2-metal-chain-validation-test
+            graphics/pipelines/metal/metal_jak2_chain_validation_test.cpp)
+    target_compile_definitions(jak2-metal-chain-validation-test PRIVATE NO_ASSERT=1)
+    add_test(NAME jak2-metal-chain-validation-test COMMAND jak2-metal-chain-validation-test)
+
+    add_executable(metal-chain-handoff-state-test
+            graphics/pipelines/metal/metal_chain_handoff_state_test.cpp)
+    add_test(NAME metal-chain-handoff-state-test COMMAND metal-chain-handoff-state-test)
 endif()
 
 # The portable kernel core is built the same way here as it is for iOS, so that host runs keep the
@@ -445,6 +492,18 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_executable(jak2-pc-rand-test kernel/core/jak2_pc_rand_test.cpp)
         target_link_libraries(jak2-pc-rand-test jak2-kernel-core)
         add_test(NAME jak2-pc-rand-test COMMAND jak2-pc-rand-test)
+
+        add_executable(jak2-method-set-guard-test
+                kernel/jak2/method_set_guard_test.cpp)
+        add_test(NAME jak2-method-set-guard-test COMMAND jak2-method-set-guard-test)
+
+        add_executable(jak2-runtime-metrics-reader-test
+                kernel/core/jak2_runtime_metrics_reader_test.cpp)
+        add_test(NAME jak2-runtime-metrics-reader-test COMMAND jak2-runtime-metrics-reader-test)
+
+        add_executable(jak2-progress-menu-reader-test
+                kernel/core/jak2_progress_menu_reader_test.cpp)
+        add_test(NAME jak2-progress-menu-reader-test COMMAND jak2-progress-menu-reader-test)
 
         # `file-stream-valid?` is a GOAL macro, so exercise its emitted C rather than duplicating
         # the comparison in the native machine test. File I/O is the 50th Jak 2 object; the sweep
@@ -1114,6 +1173,80 @@ if(APPLE)
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak2-metal-dispatch-proof COMMAND jak2-metal-dispatch-proof)
 
+        add_executable(jak2-metal-sprite-renderer-test
+            graphics/pipelines/metal/metal_jak2_sprite_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_sprite_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-sprite-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-sprite-renderer-test COMMAND jak2-metal-sprite-renderer-test)
+
+        add_executable(jak2-metal-tfrag-renderer-test
+            graphics/pipelines/metal/metal_jak2_tfrag_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_tfrag_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-tfrag-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-tfrag-renderer-test COMMAND jak2-metal-tfrag-renderer-test)
+
+        add_executable(jak2-metal-shrub-renderer-test
+            graphics/pipelines/metal/metal_jak2_shrub_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_shrub_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-shrub-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-shrub-renderer-test COMMAND jak2-metal-shrub-renderer-test)
+
+        add_executable(jak2-metal-tie-renderer-test
+            graphics/pipelines/metal/metal_jak2_tie_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_tie_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-tie-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-tie-renderer-test COMMAND jak2-metal-tie-renderer-test)
+
+        add_executable(jak2-metal-merc-renderer-test
+            graphics/pipelines/metal/metal_jak2_merc_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_merc_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-merc-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-merc-renderer-test COMMAND jak2-metal-merc-renderer-test)
+
+        add_executable(jak2-metal-generic2-renderer-test
+            graphics/pipelines/metal/metal_jak2_generic2_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_generic2_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-generic2-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-generic2-renderer-test COMMAND jak2-metal-generic2-renderer-test)
+
+        add_executable(jak2-metal-glow-final-flare-proof
+            graphics/pipelines/metal/metal_jak2_glow_final_flare_proof.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_glow_final_flare_proof.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-glow-final-flare-proof
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-glow-final-flare-proof
+            COMMAND jak2-metal-glow-final-flare-proof)
+
+        add_executable(jak2-metal-ocean-envmap-proof
+            graphics/pipelines/metal/metal_jak2_ocean_envmap_proof.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_ocean_envmap_proof.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-ocean-envmap-proof
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-ocean-envmap-proof
+            COMMAND jak2-metal-ocean-envmap-proof)
+
         add_executable(jak2-metal-submit-readback-proof
             graphics/pipelines/metal/metal_jak2_submit_readback_proof.mm)
         set_source_files_properties(
@@ -1122,13 +1255,45 @@ if(APPLE)
         target_link_libraries(jak2-metal-submit-readback-proof goalpad-metal-gfx)
         add_test(NAME jak2-metal-submit-readback-proof COMMAND jak2-metal-submit-readback-proof)
 
+        add_executable(jak2-metal-blit-display-spatial-test
+            graphics/pipelines/metal/metal_jak2_blit_display_spatial_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_blit_display_spatial_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-blit-display-spatial-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-blit-display-spatial-test
+            COMMAND jak2-metal-blit-display-spatial-test)
+
         add_library(goalpad-jak2-metal-host STATIC
-            graphics/pipelines/metal/metal_jak2_host_bridge.mm)
+            graphics/pipelines/metal/metal_jak2_host_bridge.mm
+            graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_link_libraries(goalpad-jak2-metal-host PUBLIC
             goalpad-metal-product jak2-kernel-core)
+
+        # The signed-code Jak 2 runtime and the app-owned CAMetalLayer renderer in one macOS
+        # process, with bounded proof and opt-in interactive modes. This deliberately does not
+        # link the desktop runtime or Jak 1 Metal shell: both would select a second game kernel.
+        add_executable(jak2-metal-runtime-proof
+            goalpad_audio.cpp
+            kernel/core/jak2_macos_metal_runtime_proof.mm
+            kernel/core/jak2_runtime.cpp
+            "${JAK2_AOT_BOOT_DIR}/aot_boot_manifest.c"
+            ${JAK2_AOT_BOOT_C_SOURCES})
+        set_source_files_properties(
+            kernel/core/jak2_macos_metal_runtime_proof.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_include_directories(jak2-metal-runtime-proof PRIVATE "${JAK2_AOT_BOOT_DIR}")
+        target_link_libraries(jak2-metal-runtime-proof PRIVATE
+            goalpad-jak2-metal-host jak2-kernel-core SDL3::SDL3
+            "-framework AudioToolbox" "-framework CoreAudio")
+
         add_executable(jak2-metal-host-bridge-test
             graphics/pipelines/metal/metal_jak2_host_bridge_test.mm)
         set_source_files_properties(
@@ -1136,6 +1301,76 @@ if(APPLE)
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_link_libraries(jak2-metal-host-bridge-test goalpad-jak2-metal-host)
         add_test(NAME jak2-metal-host-bridge-test COMMAND jak2-metal-host-bridge-test)
+
+        add_executable(jak2-raw-image-upload-readback-test
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_readback_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_readback_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-raw-image-upload-readback-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-raw-image-upload-readback-test
+            COMMAND jak2-raw-image-upload-readback-test)
+
+        add_executable(jak2-bucket4-texture-upload-capture-test
+            graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture_test.cpp)
+        add_test(NAME jak2-bucket4-texture-upload-capture-test
+            COMMAND jak2-bucket4-texture-upload-capture-test)
+
+        add_executable(jak2-common-tfrag-texture-upload-capture-test
+            graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture_test.cpp)
+        add_test(NAME jak2-common-tfrag-texture-upload-capture-test
+            COMMAND jak2-common-tfrag-texture-upload-capture-test)
+
+        add_executable(jak2-sprite-texture-upload-plan-test
+            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan_test.cpp)
+        add_test(NAME jak2-sprite-texture-upload-plan-test
+            COMMAND jak2-sprite-texture-upload-plan-test)
+
+        add_executable(jak2-metal-fog-texture-convert-test
+            graphics/pipelines/metal/metal_jak2_fog_texture_convert.cpp
+            graphics/pipelines/metal/metal_jak2_fog_texture_convert_test.cpp)
+        add_test(NAME jak2-metal-fog-texture-convert-test
+            COMMAND jak2-metal-fog-texture-convert-test)
+
+        add_executable(jak2-metal-opcode41-cloud-cpu-test
+            graphics/pipelines/metal/metal_jak2_opcode41_cloud_cpu.cpp
+            graphics/pipelines/metal/metal_jak2_opcode41_cloud_cpu_test.cpp)
+        add_test(NAME jak2-metal-opcode41-cloud-cpu-test
+            COMMAND jak2-metal-opcode41-cloud-cpu-test)
+
+        add_executable(metal-pool-texture-test
+            graphics/pipelines/metal/metal_pool_texture_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_pool_texture_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(metal-pool-texture-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME metal-pool-texture-test COMMAND metal-pool-texture-test)
+
+        add_executable(jak2-opcode27-skull-gem-executor-test
+            graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_executor_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_executor_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-opcode27-skull-gem-executor-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-opcode27-skull-gem-executor-test
+            COMMAND jak2-opcode27-skull-gem-executor-test)
+
+        add_executable(jak2-bucket4-mixed-executor-test
+            graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-bucket4-mixed-executor-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-bucket4-mixed-executor-test
+            COMMAND jak2-bucket4-mixed-executor-test)
 
         add_executable(goalpad-play
             goalpad_play.cpp

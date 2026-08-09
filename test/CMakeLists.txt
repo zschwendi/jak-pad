@@ -40,6 +40,12 @@ add_executable(goalc-test
 target_link_libraries(goalc-test common runtime compiler gtest decomp Zydis libzstd_static tree-sitter)
 
 if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
+  add_executable(dma-chain-validation-test
+                 ${CMAKE_CURRENT_LIST_DIR}/common/test_dma_chain_validation.cpp)
+  target_compile_definitions(dma-chain-validation-test PRIVATE NO_ASSERT=1)
+  target_link_libraries(dma-chain-validation-test PRIVATE common)
+  add_test(NAME dma-chain-validation COMMAND dma-chain-validation-test)
+
   add_executable(jak1-data-arena-test ${CMAKE_CURRENT_LIST_DIR}/test_jak1_data_arena.cpp)
   target_link_libraries(jak1-data-arena-test jak1-data-arena gtest_main)
   gtest_discover_tests(jak1-data-arena-test)

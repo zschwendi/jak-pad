@@ -7,6 +7,7 @@
  * (there may be different object files with the same name sometimes)
  */
 
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -199,6 +200,12 @@ class ObjectFileDB {
   void dump_raw_objects(const fs::path& output_dir);
   void add_checked_dgo(const jak1_checked_dgo::Archive& archive, const Config& config);
   void add_plain_object_file(const fs::path& object_file, const Config& config);
+  void add_plain_object_data(const fs::path& object_file,
+                             std::vector<u8> data,
+                             const Config& config);
+  void add_streamed_texture_file(const fs::path& object_file, const Config& config);
+  void add_streamed_texture_data(std::span<const u8> data,
+                                 const Config& config);
   void dump_part_group_table(const fs::path& output_dir,
                              const std::unordered_map<u32, std::string>& part_group_table);
   void write_object_file_words(const fs::path& output_dir, bool dump_data, bool dump_code);

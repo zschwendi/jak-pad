@@ -685,9 +685,11 @@ Result<std::string> read_goal_string(const DecodedObject& object,
   return Result<std::string>::success(std::move(value));
 }
 
-Result<artifacts::DirectoryTpages> parse_directory_tpages(std::span<const std::uint8_t> data,
-                                                          const ObjectContext& context,
-                                                          const Options& options) {
+Result<artifacts::DirectoryTpages> parse_directory_tpages(
+    std::span<const std::uint8_t> data,
+    const ObjectContext& context,
+    const Options& options,
+    bool allow_nonzero_canonical_tail = false) {
   auto decoded = decode_data_object(data, context, options);
   if (!decoded) {
     return Result<artifacts::DirectoryTpages>::failure(decoded.error());
@@ -732,6 +734,9 @@ Result<artifacts::DirectoryTpages> parse_directory_tpages(std::span<const std::u
     return Result<artifacts::DirectoryTpages>::failure(
         object_error(ErrorCode::invalid_data_object,
                      "The directory-tpage object has unexpected linked data.", context));
+  }
+  if (allow_nonzero_canonical_tail) {
+    mark_words(&used, meaningful_words, canonical_words - meaningful_words);
   }
   if (const auto error = validate_unmarked_words(decoded.value(), used, context, options)) {
     return Result<artifacts::DirectoryTpages>::failure(*error);
@@ -1105,6 +1110,86 @@ std::optional<Error> canonicalize_public_data(const PublicAdditions& additions,
 }
 
 }  // namespace
+
+namespace {
+
+Result<std::vector<std::uint8_t>> checked_object_extent(std::span<const std::uint8_t> bytes,
+                                                        const std::string& source_relative_path,
+                                                        const Options& options,
+                                                        CheckedObjectProfile profile) {
+  if (profile == CheckedObjectProfile::jak1_exact) {
+    return Result<std::vector<std::uint8_t>>::success(
+        std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+  }
+  if (bytes.size() < kV2HeaderBytes || read_u32(bytes, 0) != 0xffffffffu) {
+    return Result<std::vector<std::uint8_t>>::failure(
+        make_error(ErrorCode::invalid_data_object, "The Jak II GOAL data-object header is invalid.",
+                   source_relative_path, {}, {}, 0));
+  }
+  if (read_u32(bytes, 8) == 4) {
+    return Result<std::vector<std::uint8_t>>::success(
+        std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+  }
+  if (read_u32(bytes, 8) != 2) {
+    return Result<std::vector<std::uint8_t>>::failure(
+        make_error(ErrorCode::unsupported_data_object_version,
+                   "The Jak II retail object is not a V2 or V4 GOAL data object.",
+                   source_relative_path, {}, {}, 8));
+  }
+  const auto link_length = static_cast<std::size_t>(read_u32(bytes, 4));
+  if (link_length < kV2HeaderBytes || link_length >= bytes.size() ||
+      link_length % kLinkAlignment != 0) {
+    return Result<std::vector<std::uint8_t>>::failure(make_error(
+        ErrorCode::invalid_data_object, "The Jak II V2 data-object link extent is invalid.",
+        source_relative_path, {}, {}, 4));
+  }
+  const auto physical_tail = (bytes.size() - link_length) % 4;
+  const auto physical_padding = physical_tail == 0 ? 0 : 4 - physical_tail;
+  const auto word_aligned_code_size = bytes.size() + physical_padding - link_length;
+  const auto semantic_tail = word_aligned_code_size % kObjectAlignment;
+  const auto semantic_padding = semantic_tail == 0 ? 0 : kObjectAlignment - semantic_tail;
+  const auto padding = physical_padding + semantic_padding;
+  if (bytes.size() > options.limits.max_archive_object_bytes ||
+      padding > options.limits.max_archive_object_bytes - bytes.size()) {
+    return Result<std::vector<std::uint8_t>>::failure(make_error(
+        ErrorCode::limit_exceeded, "The padded Jak II V2 object exceeds the configured bound.",
+        source_relative_path));
+  }
+  std::vector<std::uint8_t> padded(bytes.begin(), bytes.end());
+  padded.resize(padded.size() + padding, 0);
+  return Result<std::vector<std::uint8_t>>::success(std::move(padded));
+}
+
+}  // namespace
+
+Result<artifacts::DirectoryTpages> parse_checked_directory_tpages(
+    std::span<const std::uint8_t> bytes,
+    std::string source_relative_path,
+    const Options& options,
+    CheckedObjectProfile profile) {
+  auto owned = checked_object_extent(bytes, source_relative_path, options, profile);
+  if (!owned) {
+    return Result<artifacts::DirectoryTpages>::failure(owned.error());
+  }
+  return parse_directory_tpages(owned.value(), {std::move(source_relative_path), {}, {}}, options,
+                                profile == CheckedObjectProfile::jak2_retail_extent);
+}
+
+Result<artifacts::GameTextBank> parse_checked_game_text(std::span<const std::uint8_t> bytes,
+                                                        std::uint32_t language_id,
+                                                        std::string destination_basename,
+                                                        std::string source_relative_path,
+                                                        const Options& options,
+                                                        CheckedObjectProfile profile) {
+  auto owned = checked_object_extent(bytes, source_relative_path, options, profile);
+  if (!owned) {
+    auto error = owned.error();
+    error.language_id = language_id;
+    return Result<artifacts::GameTextBank>::failure(std::move(error));
+  }
+  return parse_game_text(owned.value(), language_id, destination_basename,
+                         {std::move(source_relative_path), {}, language_id}, options);
+}
 
 Result<artifacts::Inputs> build(const ValidatedTree& tree,
                                 const PublicAdditions& public_additions,

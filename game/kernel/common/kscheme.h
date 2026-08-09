@@ -40,6 +40,8 @@ u64 goal_malloc(u32 heap, u32 size, u32 flags, u32 name);
 
 u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset);
 u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset);
+/*! The suspended native caller stack published while ARM64 GOAL runs on an EE-memory stack. */
+u64 goal_native_host_stack_pointer();
 u64 call_goal_function(Ptr<Function> func);
 u64 print_structure(u32 s);
 u64 print_integer(u64 obj);

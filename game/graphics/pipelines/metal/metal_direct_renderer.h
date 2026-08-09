@@ -51,9 +51,55 @@ class MetalDirectRenderer : public MetalBucketRenderer {
   void reset_state();
   void flush_pending(MetalSharedRenderState* render_state, MetalFrameContext& ctx);
 
+  // Composite renderers such as the Jak II ocean envmap reuse Direct against
+  // a small offscreen target. The shader already carries the source-faithful
+  // transform; keep its selection explicit at the call site.
+  void set_offscreen_mode(bool enabled) { m_offscreen_mode = enabled; }
+  bool offscreen_mode() const { return m_offscreen_mode; }
+
+  struct ScissorSnapshot {
+    u16 scax0 = 0;
+    u16 scax1 = 0;
+    u16 scay0 = 0;
+    u16 scay1 = 0;
+    bool enabled = false;
+
+    bool operator==(const ScissorSnapshot& other) const = default;
+  };
+
+  ScissorSnapshot capture_scissor() const;
+  void restore_scissor(const ScissorSnapshot& snapshot);
+  math::Vector<float, 2> coordinate_offset() const {
+    return math::Vector<float, 2>{m_prim_buffer.x_off, m_prim_buffer.y_off};
+  }
+
+  struct LastBatchStats {
+    bool valid = false;
+    bool textured = false;
+    int vertices = 0;
+    int nonzero_rgb_vertices = 0;
+    u32 tex0_tbp = 0;
+    bool tex0_tcc = false;
+    bool tex0_decal = false;
+    bool texture_lookup_hit = false;
+    bool used_placeholder = false;
+    bool write_rgb = false;
+    bool blend_enabled = false;
+    u8 blend_a = 0;
+    u8 blend_b = 0;
+    u8 blend_c = 0;
+    u8 blend_d = 0;
+    bool alpha_test_enabled = false;
+    u8 alpha_test_mode = 0;
+    u8 alpha_aref = 0;
+    u8 alpha_afail = 0;
+  };
+
   struct Stats {
     int triangles = 0;
     int draw_calls = 0;
+    int textured_draw_calls = 0;
+    int missing_texture_draw_calls = 0;
     int flush_from_tex_0 = 0;
     int flush_from_zbuf = 0;
     int flush_from_test = 0;
@@ -62,6 +108,7 @@ class MetalDirectRenderer : public MetalBucketRenderer {
     int flush_from_prim = 0;
     int flush_from_state_exhaust = 0;
     int unsupported_blends = 0;  // draws whose GS blend mode has no mapping yet
+    LastBatchStats last_batch;
   };
   const Stats& stats() const { return m_stats; }
 
@@ -232,6 +279,7 @@ class MetalDirectRenderer : public MetalBucketRenderer {
     u16 scax1 = 0, scay1 = 0;
   } m_scissor;
   bool m_scissor_enable = false;
+  bool m_offscreen_mode = false;
 
   float m_color_mult = 1.0f;
   float m_alpha_mult = 1.0f;
@@ -240,4 +288,31 @@ class MetalDirectRenderer : public MetalBucketRenderer {
 
   Stats m_stats;
   bool m_warned_unsupported_blend = false;
+};
+
+/*!
+ * Jak II TextureUploadHandler counterpart for the source buckets constructed with add_direct.
+ * The host callback performs the already-validated uploads at this bucket boundary; exact
+ * PC_PORT records are then omitted while Direct payloads retain their source order.
+ */
+class MetalHostTextureUploadDirectRenderer : public MetalDirectRenderer {
+ public:
+  enum class CallbackPoint {
+    BucketEntry,
+    PcPort12,
+  };
+
+  MetalHostTextureUploadDirectRenderer(
+      const std::string& name,
+      int my_id,
+      int batch_size,
+      CallbackPoint callback_point = CallbackPoint::BucketEntry)
+      : MetalDirectRenderer(name, my_id, batch_size), m_callback_point(callback_point) {}
+
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+
+ private:
+  CallbackPoint m_callback_point;
 };

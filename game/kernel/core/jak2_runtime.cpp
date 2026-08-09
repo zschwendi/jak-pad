@@ -29,8 +29,10 @@ extern "C" {
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/gfx_host.h"
+#include "game/kernel/core/jak2_progress_menu_reader.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/kernel_game.h"
+#include "game/kernel/core/jak2_runtime_metrics_reader.h"
 #include "game/kernel/core/pad.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/klisten.h"
@@ -234,6 +236,143 @@ DmaWindow audit_dma_window(const goal_gfx_dma_stats& before,
   return out;
 }
 
+uint32_t goal_u32(uint32_t object, int offset = 0) {
+  uint32_t value = 0;
+  copy_goal_bytes(object, offset, &value, sizeof(value));
+  return value;
+}
+
+uint32_t symbol_value_if_present(const char* name) {
+  uint32_t value = 0;
+  return goal_game_find_symbol(name, &value) ? value : 0;
+}
+
+uint32_t pointer_symbol_process(const char* name) {
+  const uint32_t pointer = symbol_value_if_present(name);
+  return pointer && pointer != goal_game_false_offset() ? goal_u32(pointer) : 0;
+}
+
+void copy_known_symbol_name(uint32_t symbol, char* out, size_t size) {
+  static const char* names[] = {"game",       "menu",    "progress", "pause",
+                                "freeze",     "startup", "wait",     "idle",
+                                "scrap-book", "release", "play-anim", "come-in",
+                                "go-away",    "gone",    "target-title", "pending",
+                                "active",     "locked"};
+  out[0] = '\0';
+  for (const char* name : names) {
+    if (goal_game_find_symbol(name, nullptr) == symbol) {
+      std::snprintf(out, size, "%s", name);
+      return;
+    }
+  }
+}
+
+void copy_process_state(uint32_t process, char* out, size_t size) {
+  const uint32_t state =
+      process ? goal_u32(process, jak2_runtime_metrics_reader::layout::kProcessState) : 0;
+  copy_known_symbol_name(state ? goal_u32(state) : 0, out, size);
+}
+
+void update_scene_diagnostic_metrics() {
+  using namespace jak2_runtime_metrics_reader;
+  const MemoryView memory = {reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE,
+                             goal_game_false_offset()};
+  const Inputs inputs = {
+      symbol_value_if_present("*display*"), symbol_value_if_present("*game-info*"),
+      symbol_value_if_present("*setting-control*"), g_metrics.scene_player_process};
+  const Snapshot scene = read(memory, inputs);
+
+  g_metrics.display_timing_valid = scene.display_timing_valid;
+  g_metrics.display_base_frame_counter = scene.display_base_frame_counter;
+  g_metrics.blackout_time = scene.blackout_time;
+  g_metrics.blackout_remaining = scene.blackout_remaining;
+
+  g_metrics.settings_diagnostics_valid = scene.settings_valid;
+  g_metrics.background_alpha = scene.background_alpha;
+  g_metrics.background_alpha_force = scene.background_alpha_force;
+  g_metrics.movie_process = scene.movie_process;
+  g_metrics.spooling_process = scene.spooling_process;
+
+  g_metrics.scene_diagnostics_valid = scene.scene_valid;
+  g_metrics.scene_identity_valid = scene.scene_identity_valid;
+  g_metrics.scene_list = scene.scene_list;
+  g_metrics.scene_list_length = scene.scene_list_length;
+  g_metrics.scene = scene.scene;
+  g_metrics.scene_index = scene.scene_index;
+  g_metrics.scene_animation = scene.animation;
+  g_metrics.scene_next_animation = scene.next_animation;
+  g_metrics.scene_start_time = scene.scene_start_time;
+  g_metrics.scene_elapsed = scene.scene_elapsed;
+  std::snprintf(g_metrics.scene_entity, sizeof(g_metrics.scene_entity), "%s",
+                scene.scene_entity.data());
+  std::snprintf(g_metrics.scene_art_group, sizeof(g_metrics.scene_art_group), "%s",
+                scene.scene_art_group.data());
+  std::snprintf(g_metrics.scene_animation_name, sizeof(g_metrics.scene_animation_name), "%s",
+                scene.scene_animation.data());
+
+  g_metrics.skeleton_diagnostics_valid = scene.skeleton_valid;
+  g_metrics.skeleton_status = scene.skeleton_status;
+  g_metrics.skeleton_active_channels = scene.active_channels;
+  g_metrics.skeleton_padding = 0;
+  g_metrics.animation_diagnostics_valid = scene.animation_valid;
+  g_metrics.animation_frame_group = scene.animation_frame_group;
+  g_metrics.animation_frame = scene.animation_frame;
+  g_metrics.animation_aframe = scene.animation_aframe;
+
+  uint32_t wait_gate = 0;
+  uint32_t entry_gui_id = 0;
+  uint32_t entry_gui_status = 0;
+  uint32_t art_file_status = 0;
+  uint32_t art_gui_id = 0;
+  uint32_t art_gui_channel = 0;
+  uint32_t art_gui_action = 0;
+  uint32_t art_gui_status = 0;
+  g_metrics.scene_wait_diagnostics_valid =
+      goal_game_find_symbol("*pc-scene-wait-gate*", &wait_gate) &&
+      goal_game_find_symbol("*pc-scene-wait-entry-gui-id*", &entry_gui_id) &&
+      goal_game_find_symbol("*pc-scene-wait-entry-gui-status*", &entry_gui_status) &&
+      goal_game_find_symbol("*pc-scene-wait-art-file-status*", &art_file_status) &&
+      goal_game_find_symbol("*pc-scene-wait-art-gui-id*", &art_gui_id) &&
+      goal_game_find_symbol("*pc-scene-wait-art-gui-channel*", &art_gui_channel) &&
+      goal_game_find_symbol("*pc-scene-wait-art-gui-action*", &art_gui_action) &&
+      goal_game_find_symbol("*pc-scene-wait-art-gui-status*", &art_gui_status);
+  g_metrics.scene_wait_gate = static_cast<int32_t>(wait_gate);
+  g_metrics.scene_wait_entry_gui_id = entry_gui_id;
+  g_metrics.scene_wait_entry_gui_status = static_cast<int32_t>(entry_gui_status);
+  g_metrics.scene_wait_art_file_status = art_file_status;
+  copy_known_symbol_name(art_file_status, g_metrics.scene_wait_art_file_status_name,
+                         sizeof(g_metrics.scene_wait_art_file_status_name));
+  g_metrics.scene_wait_art_gui_id = art_gui_id;
+  g_metrics.scene_wait_art_gui_channel = static_cast<int32_t>(art_gui_channel);
+  g_metrics.scene_wait_art_gui_action = static_cast<int32_t>(art_gui_action);
+  g_metrics.scene_wait_art_gui_status = static_cast<int32_t>(art_gui_status);
+}
+
+void update_title_state_metrics() {
+  copy_known_symbol_name(symbol_value_if_present("*master-mode*"), g_metrics.master_mode,
+                         sizeof(g_metrics.master_mode));
+
+  g_metrics.title_control_process = pointer_symbol_process("*title-control*");
+  copy_process_state(g_metrics.title_control_process, g_metrics.title_control_state,
+                     sizeof(g_metrics.title_control_state));
+  g_metrics.title_control_time = 0;
+  const uint32_t title_clock = goal_u32(g_metrics.title_control_process, 8);
+  // GOAL keeps uint64 fields four-byte aligned; clock::frame-counter is at offset 20.
+  copy_goal_bytes(title_clock, 20, &g_metrics.title_control_time,
+                  sizeof(g_metrics.title_control_time));
+
+  g_metrics.scene_player_process = pointer_symbol_process("*scene-player*");
+  copy_process_state(g_metrics.scene_player_process, g_metrics.scene_player_state,
+                     sizeof(g_metrics.scene_player_state));
+  g_metrics.progress_process = pointer_symbol_process("*progress-process*");
+  copy_process_state(g_metrics.progress_process, g_metrics.progress_state,
+                     sizeof(g_metrics.progress_state));
+  g_metrics.target_process = symbol_value_if_present("*target*");
+  copy_process_state(g_metrics.target_process, g_metrics.target_state,
+                     sizeof(g_metrics.target_state));
+  update_scene_diagnostic_metrics();
+}
+
 void update_metrics() {
   g_metrics.master_exit = static_cast<int32_t>(MasterExit);
   if (!g_owns_kernel || !goal_kernel_core_is_initialized()) {
@@ -252,11 +391,20 @@ void update_metrics() {
   g_metrics.dgo_objects = dgo.dgo_objects;
   g_metrics.dgo_code_objects = dgo.linked_code_objects;
   g_metrics.dgo_data_objects = dgo.linked_data_objects;
+  g_metrics.dgo_failures = dgo.dgo_failures;
+  g_metrics.dgo_last_result = dgo.last_dgo_result;
   std::snprintf(g_metrics.first_dgo_name, sizeof(g_metrics.first_dgo_name), "%s",
                 dgo.first_dgo_name);
+  std::snprintf(g_metrics.current_dgo_name, sizeof(g_metrics.current_dgo_name), "%s",
+                dgo.current_dgo_name);
+  std::snprintf(g_metrics.last_dgo_name, sizeof(g_metrics.last_dgo_name), "%s",
+                dgo.last_dgo_name);
+  std::snprintf(g_metrics.last_dgo_error, sizeof(g_metrics.last_dgo_error), "%s",
+                dgo.last_dgo_error);
   g_metrics.title_ready = std::strcmp(dgo.first_dgo_name, "TITLE.DGO") == 0 &&
                           dgo.dgo_archives >= 1 && dgo.dgo_objects >= 1 &&
                           dgo.linked_code_objects + dgo.linked_data_objects >= 1;
+  update_title_state_metrics();
 
   goal_jak2_sound_rpc_stats sound = {};
   goal_jak2_sound_rpc_stats_get(&sound);
@@ -266,10 +414,29 @@ void update_metrics() {
   g_metrics.sound_player_failures = sound.player_failures;
   g_metrics.sound_str_failures = sound.str_failures;
   g_metrics.sound_rejected_calls = sound.rejected_calls;
+  g_metrics.sound_player_batches = sound.player_batches;
+  g_metrics.sound_player_commands = sound.player_commands;
+  g_metrics.sound_play_requests = sound.play_requests;
+  g_metrics.sound_sounds_started = sound.sounds_started;
+  g_metrics.sound_updates = sound.sound_updates;
+  g_metrics.sound_str_requests = sound.str_requests;
+  g_metrics.sound_str_reads = sound.str_reads;
+  g_metrics.sound_str_bytes = sound.str_bytes;
 
   if (g_metrics.graphics == GOAL_JAK2_RUNTIME_GRAPHICS_STUBS) {
     return;
   }
+
+  goal_gfx_host_stats gfx = {};
+  goal_gfx_host_stats_get(&gfx);
+  g_metrics.host_desired_level_sets = gfx.level_sets;
+  g_metrics.host_active_level_sets = gfx.active_level_sets;
+  g_metrics.host_pmode_calls = gfx.pmode_calls;
+  g_metrics.host_last_pmode_alpha = gfx.last_pmode_alpha;
+  std::snprintf(g_metrics.host_desired_levels, sizeof(g_metrics.host_desired_levels), "%s",
+                gfx.last_levels ? gfx.last_levels : "");
+  std::snprintf(g_metrics.host_active_levels, sizeof(g_metrics.host_active_levels), "%s",
+                gfx.last_active_levels ? gfx.last_active_levels : "");
 
   const HostObservations host = host_delta(g_host_before, g_host_observations);
   g_metrics.host_chains = host.chains;
@@ -279,10 +446,8 @@ void update_metrics() {
   g_metrics.host_texture_relocations = host.texture_relocations;
   g_metrics.host_desired_level_calls = host.desired_level_calls;
   g_metrics.host_active_level_calls = host.active_level_calls;
-  g_metrics.host_pmode_calls = host.pmode_calls;
   g_metrics.host_last_desired_level_count = host.last_desired_level_count;
   g_metrics.host_last_active_level_count = host.last_active_level_count;
-  g_metrics.host_last_pmode_alpha = host.last_pmode_alpha;
 
   if (g_metrics.graphics != GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION) {
     return;
@@ -301,6 +466,72 @@ void update_metrics() {
   g_metrics.dma_valid_tags = window.valid.tags;
   g_metrics.dma_valid_payload_bytes = window.valid.payload_bytes;
   g_metrics.dma_valid_copied_bytes = window.valid.copied_bytes;
+}
+
+jak2_progress_menu_reader::TypeIdentity progress_type_identity(const char* name,
+                                                               uint16_t exact_size) {
+  jak2_progress_menu_reader::TypeIdentity identity;
+  identity.symbol = goal_game_find_symbol(name, &identity.type);
+  identity.exact_size = exact_size;
+  return identity;
+}
+
+jak2_progress_menu_reader::Inputs progress_menu_inputs() {
+  using namespace jak2_progress_menu_reader;
+  Inputs inputs;
+  inputs.master_mode = symbol_value_if_present("*master-mode*");
+  inputs.progress_pointer = symbol_value_if_present("*progress-process*");
+  inputs.progress_state = symbol_value_if_present("*progress-state*");
+  inputs.title_pc_options = symbol_value_if_present("*title-pc*");
+  inputs.save_options_title = symbol_value_if_present("*save-options-title*");
+  inputs.insufficient_space_options = symbol_value_if_present("*insufficient-space-options*");
+  inputs.create_game_options = symbol_value_if_present("*create-game-options*");
+  inputs.already_exists_options = symbol_value_if_present("*already-exists-options*");
+  inputs.icon_info_options = symbol_value_if_present("*icon-info-options*");
+  inputs.loading_options = symbol_value_if_present("*loading-options*");
+  inputs.progress_type =
+      progress_type_identity("progress", static_cast<uint16_t>(layout::kProgressSize));
+  inputs.progress_global_state_type = progress_type_identity(
+      "progress-global-state", static_cast<uint16_t>(layout::kProgressGlobalStateSize));
+  inputs.menu_option_list_type = progress_type_identity(
+      "menu-option-list", static_cast<uint16_t>(layout::kMenuOptionListSize));
+  inputs.state_type = progress_type_identity("state", static_cast<uint16_t>(layout::kStateSize));
+  inputs.progress_symbol = inputs.progress_type.symbol;
+  inputs.title_symbol = goal_game_find_symbol("title", nullptr);
+  inputs.none_symbol = goal_game_find_symbol("none", nullptr);
+  inputs.idle_symbol = goal_game_find_symbol("idle", nullptr);
+  inputs.select_save_title_symbol = goal_game_find_symbol("select-save-title", nullptr);
+  inputs.no_memory_card_symbol = goal_game_find_symbol("no-memory-card", nullptr);
+  inputs.create_game_symbol = goal_game_find_symbol("create-game", nullptr);
+  inputs.already_exists_symbol = goal_game_find_symbol("already-exists", nullptr);
+  inputs.icon_info_symbol = goal_game_find_symbol("icon-info", nullptr);
+  inputs.creating_symbol = goal_game_find_symbol("creating", nullptr);
+  inputs.saving_symbol = goal_game_find_symbol("saving", nullptr);
+  inputs.true_object = goal_game_true_offset();
+  return inputs;
+}
+
+jak2_progress_menu_reader::Snapshot read_progress_menu(
+    jak2_progress_menu_reader::Diagnostics* diagnostics) {
+  using namespace jak2_progress_menu_reader;
+  return read({reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE,
+               goal_game_false_offset()},
+              progress_menu_inputs(), diagnostics);
+}
+
+goal_jak2_progress_menu_snapshot unavailable_progress_menu_snapshot() {
+  goal_jak2_progress_menu_snapshot out = {};
+  out.screen = GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE;
+  out.option_index = -1;
+  out.starting_screen = GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE;
+  return out;
+}
+
+goal_jak2_progress_menu_semantic_snapshot unavailable_progress_menu_semantic_snapshot() {
+  goal_jak2_progress_menu_semantic_snapshot out = {};
+  out.phase = GOAL_JAK2_PROGRESS_MENU_PHASE_UNAVAILABLE;
+  out.option_index = -1;
+  return out;
 }
 
 goal_jak2_runtime_status fail_start(std::string message) {
@@ -380,7 +611,7 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     constexpr u32 kBootFlags =
         LINK_FLAG_OUTPUT_LOAD | LINK_FLAG_EXECUTE | LINK_FLAG_PRINT_LOGIN;
     goal_dgo_load_stats load = {};
-    if (goal_dgo_load("KERNEL", kBootFlags, 0x400000, &load) != GOAL_KERNEL_CORE_OK) {
+    if (goal_jak2_dgo_load_boot("KERNEL", kBootFlags, 0x400000, &load) != GOAL_KERNEL_CORE_OK) {
       const std::string error = std::string("KERNEL.CGO: ") + goal_dgo_last_error();
       drain_goal_print_buffer();
       return fail_start(error);
@@ -426,7 +657,7 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     }
 
     load = {};
-    if (goal_dgo_load("GAME", kBootFlags, 0x400000, &load) != GOAL_KERNEL_CORE_OK) {
+    if (goal_jak2_dgo_load_boot("GAME", kBootFlags, 0x400000, &load) != GOAL_KERNEL_CORE_OK) {
       const std::string error = std::string("GAME.CGO: ") + goal_dgo_last_error();
       drain_goal_print_buffer();
       return fail_start(error);
@@ -553,6 +784,9 @@ goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
       }
     }
     g_current_tick = g_metrics.ticks + 1;
+    // Jak 2's overlord publishes sound/stream state from its vblank handler. The portable runtime
+    // has no IOP vblank, so publish the previous dispatcher frame before GOAL consumes it.
+    goal_jak2_sound_frame();
     g_metrics.last_dispatch_result =
         call_goal_on_stack(Ptr<Function>(g_dispatcher), goal_kernel_stack_top(), s7.offset,
                            g_ee_main_mem);
@@ -578,6 +812,118 @@ goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics
   }
   update_metrics();
   *out = g_metrics;
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
+    goal_jak2_progress_menu_snapshot* out) {
+  if (!out) {
+    g_error = "goal_jak2_runtime_get_progress_menu_snapshot: out is null";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  *out = unavailable_progress_menu_snapshot();
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_ee_main_mem) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  using namespace jak2_progress_menu_reader;
+  const Snapshot snapshot = read_progress_menu(nullptr);
+  if (!snapshot.available) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  out->available = 1;
+  out->screen = snapshot.screen;
+  out->option_index = snapshot.option_index;
+  out->selected_option = snapshot.selected_option;
+  out->in_transition = snapshot.in_transition;
+  out->navigation_available = snapshot.navigation_available;
+  out->starting_screen = snapshot.starting_screen;
+  out->can_exit_with_start = snapshot.can_exit_with_start;
+  out->can_go_back = snapshot.can_go_back;
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_semantic_snapshot(
+    goal_jak2_progress_menu_semantic_snapshot* out) {
+  static_assert(sizeof(goal_jak2_progress_menu_semantic_snapshot) == 16);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::select_save_title) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_SELECT_SAVE_TITLE);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::no_memory_card) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_NO_MEMORY_CARD);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::create_game) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_CREATE_GAME);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::creating) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_CREATING);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::saving) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_SAVING);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::already_exists) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_ALREADY_EXISTS);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::icon_info) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_ICON_INFO);
+  static_assert(jak2_progress_menu_reader::action_up == GOAL_JAK2_PROGRESS_MENU_ACTION_UP);
+  static_assert(jak2_progress_menu_reader::action_down == GOAL_JAK2_PROGRESS_MENU_ACTION_DOWN);
+  static_assert(jak2_progress_menu_reader::action_left == GOAL_JAK2_PROGRESS_MENU_ACTION_LEFT);
+  static_assert(jak2_progress_menu_reader::action_right == GOAL_JAK2_PROGRESS_MENU_ACTION_RIGHT);
+  static_assert(jak2_progress_menu_reader::action_confirm ==
+                GOAL_JAK2_PROGRESS_MENU_ACTION_CONFIRM);
+  if (!out) {
+    g_error = "goal_jak2_runtime_get_progress_menu_semantic_snapshot: out is null";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  *out = unavailable_progress_menu_semantic_snapshot();
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_ee_main_mem) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  const auto snapshot = jak2_progress_menu_reader::read_semantic(
+      {reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE,
+       goal_game_false_offset()},
+      progress_menu_inputs());
+  if (!snapshot.available) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  out->available = 1;
+  out->phase = static_cast<int32_t>(snapshot.phase);
+  out->option_index = snapshot.option_index;
+  out->action_mask = snapshot.action_mask;
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_diagnostics(
+    goal_jak2_progress_menu_diagnostics* out) {
+  if (!out) {
+    g_error = "goal_jak2_runtime_get_progress_menu_diagnostics: out is null";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  *out = {};
+  out->option_index = -1;
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_ee_main_mem) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  const auto inputs = progress_menu_inputs();
+  jak2_progress_menu_reader::Diagnostics detail;
+  read_progress_menu(&detail);
+  out->rejection = static_cast<int32_t>(detail.rejection);
+  out->progress = detail.progress;
+  out->process_state = detail.process_state;
+  out->process_state_name = detail.process_state_name;
+  out->process_next_state = detail.process_next_state;
+  out->current_options = detail.current_options;
+  out->expected_options = inputs.title_pc_options;
+  out->current = detail.current;
+  out->expected_current = inputs.title_symbol;
+  out->next = detail.next;
+  out->expected_next = inputs.none_symbol;
+  out->starting_state = detail.starting_state;
+  out->option_index = detail.option_index;
+  out->selected_option = detail.selected_option;
+  out->menu_transition = detail.menu_transition;
   return GOAL_JAK2_RUNTIME_OK;
 }
 
