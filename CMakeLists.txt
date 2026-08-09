@@ -27,8 +27,12 @@ option(OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY
        "Build only the portable Jak II FR3 preparation static library" OFF)
 option(OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY
        "Build only the portable Jak 1 output materializer static library" OFF)
+option(OPENGOAL_BUILD_JAK2_OUTPUT_MATERIALIZER_ONLY
+       "Build only the portable Jak II output materializer static library" OFF)
 option(OPENGOAL_BUILD_JAK1_OUTPUT_RECIPE_CORE_ONLY
        "Build only the portable Jak 1 output graph and recipe-generation libraries" OFF)
+option(OPENGOAL_BUILD_JAK2_OUTPUT_RECIPE_CORE_ONLY
+       "Build only the portable Jak II output graph and recipe-generation libraries" OFF)
 option(OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY
        "Build only the portable checked Jak 1 public generated-artifact library" OFF)
 option(OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY
@@ -55,7 +59,9 @@ foreach(OPENGOAL_ISOLATED_IMPORT_MODE
         OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY
         OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY
         OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY
+        OPENGOAL_BUILD_JAK2_OUTPUT_MATERIALIZER_ONLY
         OPENGOAL_BUILD_JAK1_OUTPUT_RECIPE_CORE_ONLY
+        OPENGOAL_BUILD_JAK2_OUTPUT_RECIPE_CORE_ONLY
         OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY
         OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY
         OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY
@@ -121,8 +127,14 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   if(OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY)
     include(common/custom_data/jak1_output_materializer.cmake)
   endif()
+  if(OPENGOAL_BUILD_JAK2_OUTPUT_MATERIALIZER_ONLY)
+    include(common/custom_data/jak2_output_materializer.cmake)
+  endif()
   if(OPENGOAL_BUILD_JAK1_OUTPUT_RECIPE_CORE_ONLY)
     include(common/custom_data/jak1_output_recipe_core.cmake)
+  endif()
+  if(OPENGOAL_BUILD_JAK2_OUTPUT_RECIPE_CORE_ONLY)
+    include(common/custom_data/jak2_output_recipe_core.cmake)
   endif()
   if(OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY)
     include(common/custom_data/jak1_public_generated_artifacts.cmake)

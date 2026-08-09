@@ -10,6 +10,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "common/versions/jak2_iso_revisions.h"
+
 #define XXH_PRIVATE_API
 #include "third-party/zstd/lib/common/xxhash.h"
 
@@ -44,9 +46,12 @@ std::optional<Error> check_cancelled(const Options& options,
 }
 
 bool valid_options(const Options& options) {
-  const auto valid_profile =
-      options.output_profile == jak1_output_recipe::OutputProfile::full_public ||
-      options.output_profile == jak1_output_recipe::OutputProfile::jak1_base_retail;
+  const bool valid_profile =
+      (options.wire_game == jak1_output_recipe::WireGame::jak1 &&
+       (options.output_profile == jak1_output_recipe::OutputProfile::full_public ||
+        options.output_profile == jak1_output_recipe::OutputProfile::jak1_base_retail)) ||
+      (options.wire_game == jak1_output_recipe::WireGame::jak2 &&
+       options.output_profile == jak1_output_recipe::OutputProfile::jak2_base_retail);
   return options.limits.max_manifest_bytes > 0 && options.limits.max_manifest_entries > 0 &&
          options.limits.max_catalog_entries > 0 && options.limits.max_graph_archives > 0 &&
          options.limits.max_graph_objects > 0 && options.limits.max_path_bytes > 0 &&
@@ -166,13 +171,25 @@ std::string source_tag(std::string_view source) {
   return std::string(basename);
 }
 
-bool is_initial_revision(const jak1_output_recipe::RevisionProvenance& revision) {
-  const auto& expected = jak1_iso::default_revision();
-  return revision.serial == expected.serial && revision.executable_hash == expected.elf_hash &&
+bool is_expected_revision(const jak1_output_recipe::RevisionProvenance& revision,
+                          jak1_output_recipe::WireGame game) {
+  if (game == jak1_output_recipe::WireGame::jak1) {
+    const auto& expected = jak1_iso::default_revision();
+    return revision.serial == expected.serial && revision.executable_hash == expected.elf_hash &&
+           revision.contents_hash == expected.contents_hash &&
+           revision.file_count == expected.file_count &&
+           revision.config_version == expected.decomp_config_version &&
+           revision.territory == expected.territory &&
+           revision.black_label == expected.black_label;
+  }
+  const auto& expected = jak2_iso::default_revision();
+  return game == jak1_output_recipe::WireGame::jak2 && revision.serial == expected.serial &&
+         revision.executable_hash == expected.elf_hash &&
          revision.contents_hash == expected.contents_hash &&
          revision.file_count == expected.file_count &&
          revision.config_version == expected.decomp_config_version &&
-         revision.territory == expected.territory && revision.black_label == expected.black_label;
+         static_cast<int>(revision.territory) == static_cast<int>(expected.territory) &&
+         !revision.black_label;
 }
 
 std::optional<std::string> relative_to_root(const std::string& source,
@@ -380,16 +397,18 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
       return Result<jak1_output_recipe::Recipe>::failure(make_error(
           ErrorCode::invalid_argument, "The output-recipe generator options are invalid."));
     }
-    if (!is_initial_revision(verified_inputs.revision)) {
+    if (!is_expected_revision(verified_inputs.revision, options.wire_game)) {
       return Result<jak1_output_recipe::Recipe>::failure(make_error(
           ErrorCode::unsupported_revision,
-          "Jak 1 output recipes currently support only SCUS-97124 ntsc_v1 black label."));
+          options.wire_game == jak1_output_recipe::WireGame::jak1
+              ? "Jak 1 output recipes currently support only SCUS-97124 ntsc_v1 black label."
+              : "Jak II output recipes currently support only SCUS-97265 NTSC-U v1."));
     }
     if (graph.archives.empty() || graph.archives.size() > options.limits.max_graph_archives ||
         graph.ordered_source_files.empty() ||
         verified_inputs.retail_catalog.size() > options.limits.max_catalog_entries) {
       return Result<jak1_output_recipe::Recipe>::failure(
-          make_error(ErrorCode::invalid_graph, "The projected Jak 1 build graph is invalid."));
+          make_error(ErrorCode::invalid_graph, "The projected build graph is invalid."));
     }
 
     auto parsed_manifest = parse_source_object_pack_manifest(source_object_pack_manifest, options);
@@ -448,6 +467,10 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
     }
 
     jak1_output_recipe::Recipe recipe;
+    if (options.wire_game == jak1_output_recipe::WireGame::jak2) {
+      recipe.producer = jak1_output_recipe::kJak2ProvenanceId;
+      recipe.game = jak1_output_recipe::kJak2GameId;
+    }
     recipe.profile = options.output_profile;
     recipe.revision = verified_inputs.revision;
     recipe.source_object_pack = manifest.identity;
@@ -588,6 +611,7 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
     schema_options.limits = options.recipe_limits;
     schema_options.expected_revision = verified_inputs.revision;
     schema_options.expected_source_object_pack = manifest.identity;
+    schema_options.wire_game = options.wire_game;
     schema_options.should_cancel = options.should_cancel;
     const auto encoded = jak1_output_recipe::encode(recipe, schema_options);
     if (!encoded) {

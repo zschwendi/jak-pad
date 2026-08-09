@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "common/versions/jak2_iso_revisions.h"
+
 #define XXH_PRIVATE_API
 #include "third-party/zstd/lib/common/xxhash.h"
 
@@ -49,15 +51,42 @@ std::optional<Error> check_cancelled(const Options& options,
   return {};
 }
 
-bool known_revision(const RevisionProvenance& revision) {
-  const auto revisions = jak1_iso::supported_revisions();
-  return std::any_of(revisions.begin(), revisions.end(), [&](const auto& known) {
-    return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
-           revision.contents_hash == known.contents_hash &&
-           revision.file_count == known.file_count &&
-           revision.config_version == known.decomp_config_version &&
-           revision.territory == known.territory && revision.black_label == known.black_label;
-  });
+const std::array<uint8_t, 8>& wire_magic(WireGame game) {
+  return game == WireGame::jak1 ? kMagic : kJak2Magic;
+}
+
+std::string_view provenance_id(WireGame game) {
+  return game == WireGame::jak1 ? kProvenanceId : kJak2ProvenanceId;
+}
+
+std::string_view game_id(WireGame game) {
+  return game == WireGame::jak1 ? kGameId : kJak2GameId;
+}
+
+std::string_view game_name(WireGame game) {
+  return game == WireGame::jak1 ? "Jak 1" : "Jak II";
+}
+
+bool known_revision(const RevisionProvenance& revision, WireGame game) {
+  if (game == WireGame::jak1) {
+    const auto revisions = jak1_iso::supported_revisions();
+    return std::any_of(revisions.begin(), revisions.end(), [&](const auto& known) {
+      return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
+             revision.contents_hash == known.contents_hash &&
+             revision.file_count == known.file_count &&
+             revision.config_version == known.decomp_config_version &&
+             revision.territory == known.territory && revision.black_label == known.black_label;
+    });
+  }
+  if (game != WireGame::jak2) {
+    return false;
+  }
+  const auto& known = jak2_iso::default_revision();
+  return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
+         revision.contents_hash == known.contents_hash && revision.file_count == known.file_count &&
+         revision.config_version == known.decomp_config_version &&
+         static_cast<int>(revision.territory) == static_cast<int>(known.territory) &&
+         !revision.black_label;
 }
 
 bool valid_options(const Options& options) {
@@ -68,7 +97,8 @@ bool valid_options(const Options& options) {
          limits.max_source_pack_objects > 0 && limits.max_flat_file_copies > 0 &&
          limits.max_generated_flat_files > 0 && limits.max_expected_fr3_files > 0 &&
          limits.max_object_bytes > 0 && limits.max_total_object_bytes > 0 &&
-         limits.hash_chunk_bytes > 0 && known_revision(options.expected_revision) &&
+         limits.hash_chunk_bytes > 0 &&
+         known_revision(options.expected_revision, options.wire_game) &&
          options.expected_source_object_pack.object_count > 0 &&
          options.expected_source_object_pack.object_count <= limits.max_source_pack_objects &&
          options.expected_source_object_pack.aggregate_xxh64 != 0;
@@ -162,13 +192,11 @@ bool valid_generated_flat_kind(GeneratedFlatFileKind kind) {
   return false;
 }
 
-bool valid_output_profile(OutputProfile profile) {
-  switch (profile) {
-    case OutputProfile::full_public:
-    case OutputProfile::jak1_base_retail:
-      return true;
+bool valid_output_profile(OutputProfile profile, WireGame game) {
+  if (game == WireGame::jak1) {
+    return profile == OutputProfile::full_public || profile == OutputProfile::jak1_base_retail;
   }
-  return false;
+  return game == WireGame::jak2 && profile == OutputProfile::jak2_base_retail;
 }
 
 std::string retail_key(const VerifiedRetailObject& retail) {
@@ -207,29 +235,34 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
     return error;
   }
   const auto& limits = options.limits;
-  if (recipe.producer != kProvenanceId || recipe.game != kGameId ||
+  if (recipe.producer != provenance_id(options.wire_game) ||
+      recipe.game != game_id(options.wire_game) ||
       !valid_name(recipe.producer, limits.max_path_bytes) ||
       !valid_name(recipe.game, limits.max_name_bytes)) {
     return make_error(ErrorCode::wrong_provenance, 0,
-                      "The recipe does not identify the Jak 1 output-recipe schema.");
+                      "The recipe does not identify the expected output-recipe schema.");
   }
-  if (!valid_output_profile(recipe.profile)) {
+  if (!valid_output_profile(recipe.profile, options.wire_game)) {
     return make_error(ErrorCode::wrong_provenance, 0,
-                      "The recipe identifies an unsupported Jak 1 output profile.");
+                      "The recipe identifies an unsupported output profile.");
   }
-  if (!known_revision(recipe.revision)) {
+  if (!known_revision(recipe.revision, options.wire_game)) {
     return make_error(ErrorCode::unsupported_revision, 0,
-                      "The recipe does not identify an exact supported Jak 1 revision.");
+                      "The recipe does not identify an exact supported " +
+                          std::string(game_name(options.wire_game)) + " revision.");
   }
   if (recipe.revision != options.expected_revision) {
     return make_error(ErrorCode::unsupported_revision, 0,
-                      "The recipe revision does not match the exact expected Jak 1 revision.");
+                      "The recipe revision does not match the exact expected " +
+                          std::string(game_name(options.wire_game)) + " revision.");
   }
   if (recipe.source_object_pack != options.expected_source_object_pack) {
     return make_error(ErrorCode::wrong_source_pack, 0,
                       "The recipe source-object pack does not match the expected signed pack.");
   }
-  if ((recipe.profile == OutputProfile::full_public && !recipe.projected_source_objects.empty()) ||
+  if (((recipe.profile == OutputProfile::full_public ||
+        recipe.profile == OutputProfile::jak2_base_retail) &&
+       !recipe.projected_source_objects.empty()) ||
       (recipe.profile == OutputProfile::jak1_base_retail &&
        recipe.projected_source_objects.size() != 1)) {
     return make_error(ErrorCode::wrong_source_pack, 0,
@@ -282,14 +315,15 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
   uint64_t total_object_bytes = 0;
   uint32_t total_objects = 0;
   std::string previous_archive;
-  bool contains_base_retail_excluded_output = false;
+  bool contains_jak1_base_retail_excluded_output = false;
+  bool contains_custom_output = false;
   for (uint32_t archive_index = 0; archive_index < recipe.archives.size(); ++archive_index) {
     if (const auto error = check_cancelled(options, archive_index)) {
       return error;
     }
     const auto& archive = recipe.archives[archive_index];
     if (collision_key(archive.destination_basename) == "tsz.dgo") {
-      contains_base_retail_excluded_output = true;
+      contains_jak1_base_retail_excluded_output = true;
     }
     if (reserved_destination(archive.destination_basename)) {
       return make_error(ErrorCode::invalid_name, 0,
@@ -413,7 +447,8 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
         }
         if (generated.kind == GeneratedDataKind::custom_actor ||
             generated.kind == GeneratedDataKind::custom_level) {
-          contains_base_retail_excluded_output = true;
+          contains_jak1_base_retail_excluded_output = true;
+          contains_custom_output = true;
         }
       }
     }
@@ -435,9 +470,14 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
                             "its exact source pack."
                           : "The recipe does not reference every object in its exact source pack.");
   }
-  if (recipe.profile == OutputProfile::jak1_base_retail && contains_base_retail_excluded_output) {
+  if (recipe.profile == OutputProfile::jak1_base_retail &&
+      contains_jak1_base_retail_excluded_output) {
     return make_error(ErrorCode::wrong_provenance, 0,
                       "The base-retail recipe contains a TSZ or custom generated output.");
+  }
+  if (recipe.profile == OutputProfile::jak2_base_retail && contains_custom_output) {
+    return make_error(ErrorCode::wrong_provenance, 0,
+                      "The Jak II base-retail recipe contains a custom generated output.");
   }
 
   std::unordered_set<std::string> copy_sources;
@@ -791,7 +831,8 @@ Result<std::vector<uint8_t>> encode_impl(const Recipe& recipe, const Options& op
   }
 
   Writer wire(options.limits.max_wire_bytes);
-  if (!wire.append(kMagic) || !wire.u32(kSchemaVersion) || !wire.u64(payload.bytes.size()) ||
+  const auto& magic = wire_magic(options.wire_game);
+  if (!wire.append(magic) || !wire.u32(kSchemaVersion) || !wire.u64(payload.bytes.size()) ||
       !wire.append(payload.bytes)) {
     return Result<std::vector<uint8_t>>::failure(*wire.error);
   }
@@ -818,31 +859,32 @@ Result<Recipe> decode_impl(std::span<const uint8_t> bytes, const Options& option
     return Result<Recipe>::failure(
         make_error(ErrorCode::truncated, bytes.size(), "The output-recipe header is truncated."));
   }
-  if (!std::equal(kMagic.begin(), kMagic.end(), bytes.begin())) {
+  const auto& magic = wire_magic(options.wire_game);
+  if (!std::equal(magic.begin(), magic.end(), bytes.begin())) {
     return Result<Recipe>::failure(
         make_error(ErrorCode::wrong_magic, 0, "The output-recipe magic is invalid."));
   }
 
   Reader header(bytes);
-  header.position = kMagic.size();
+  header.position = magic.size();
   uint32_t schema = 0;
   uint64_t payload_size_u64 = 0;
   if (!header.u32(&schema) || !header.u64(&payload_size_u64)) {
     return reader_failure<Recipe>(header);
   }
   if (schema != kSchemaVersion) {
-    return Result<Recipe>::failure(make_error(ErrorCode::unsupported_schema, kMagic.size(),
+    return Result<Recipe>::failure(make_error(ErrorCode::unsupported_schema, magic.size(),
                                               "The output-recipe schema is unsupported."));
   }
   if (payload_size_u64 > std::numeric_limits<size_t>::max() - kHeaderBytes - kHashBytes) {
     return Result<Recipe>::failure(
-        make_error(ErrorCode::integer_overflow, kMagic.size() + sizeof(uint32_t),
+        make_error(ErrorCode::integer_overflow, magic.size() + sizeof(uint32_t),
                    "The output-recipe payload length cannot be represented."));
   }
   const auto expected_size = kHeaderBytes + static_cast<size_t>(payload_size_u64) + kHashBytes;
   if (expected_size > options.limits.max_wire_bytes) {
     return Result<Recipe>::failure(
-        make_error(ErrorCode::limit_exceeded, kMagic.size() + sizeof(uint32_t),
+        make_error(ErrorCode::limit_exceeded, magic.size() + sizeof(uint32_t),
                    "The declared output-recipe wire size exceeds its configured cap."));
   }
   if (bytes.size() < expected_size) {

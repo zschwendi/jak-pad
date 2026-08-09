@@ -80,6 +80,7 @@ struct Options {
   jak1_output_recipe::Limits recipe_limits;
   jak1_output_recipe::RevisionProvenance expected_revision;
   jak1_output_recipe::SourceObjectPackIdentity expected_source_object_pack;
+  jak1_output_recipe::WireGame wire_game = jak1_output_recipe::WireGame::jak1;
   CancelCallback should_cancel;
   ProgressCallback on_progress;
 };

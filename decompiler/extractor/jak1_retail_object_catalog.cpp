@@ -313,7 +313,8 @@ std::optional<Error> validate_options(const Options& options) {
       options.max_archive_compressed_bytes == 0 || options.max_archive_expanded_bytes == 0 ||
       options.max_object_bytes == 0 || options.max_source_path_bytes == 0 ||
       options.max_internal_name_bytes == 0 || options.max_internal_name_bytes >= 60 ||
-      options.hash_chunk_bytes == 0 || options.max_archive_expansion_ratio == 0) {
+      options.hash_chunk_bytes == 0 || options.max_archive_expansion_ratio == 0 ||
+      (options.game_version != GameVersion::Jak1 && options.game_version != GameVersion::Jak2)) {
     return make_error(ErrorCode::invalid_argument,
                       "The retail object catalog options are invalid.");
   }
@@ -411,6 +412,7 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
 
       bool cancellation_callback_failed = false;
       jak1_checked_dgo::Options dgo_options;
+      dgo_options.game_version = options.game_version;
       dgo_options.max_input_bytes = options.max_archive_input_bytes;
       dgo_options.max_compressed_bytes = options.max_archive_compressed_bytes;
       dgo_options.max_expanded_bytes = options.max_archive_expanded_bytes;

@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "common/versions/jak2_iso_revisions.h"
 #include "decompiler/extractor/jak1_checked_dgo.h"
 #include "decompiler/extractor/jak1_checked_dgo_writer.h"
 #include "decompiler/extractor/jak1_retail_object_catalog.h"
@@ -47,8 +48,12 @@ std::optional<Error> cancelled(const Options& options,
   }
   try {
     if (options.should_cancel()) {
-      return make_error(ErrorCode::cancelled, "Jak 1 output materialization was cancelled.",
-                        archive_index, object_index);
+      return make_error(
+          ErrorCode::cancelled,
+          std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1"
+                                                                              : "Jak II") +
+              " output materialization was cancelled.",
+          archive_index, object_index);
     }
   } catch (...) {
     return make_error(ErrorCode::callback_failed, "The materializer cancellation callback failed.",
@@ -114,15 +119,27 @@ std::string collision_key(std::string_view value) {
   return result;
 }
 
-bool known_revision(const jak1_output_recipe::RevisionProvenance& revision) {
-  const auto revisions = jak1_iso::supported_revisions();
-  return std::any_of(revisions.begin(), revisions.end(), [&](const auto& known) {
-    return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
-           revision.contents_hash == known.contents_hash &&
-           revision.file_count == known.file_count &&
-           revision.config_version == known.decomp_config_version &&
-           revision.territory == known.territory && revision.black_label == known.black_label;
-  });
+bool known_revision(const jak1_output_recipe::RevisionProvenance& revision,
+                    jak1_output_recipe::WireGame game) {
+  if (game == jak1_output_recipe::WireGame::jak1) {
+    const auto revisions = jak1_iso::supported_revisions();
+    return std::any_of(revisions.begin(), revisions.end(), [&](const auto& known) {
+      return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
+             revision.contents_hash == known.contents_hash &&
+             revision.file_count == known.file_count &&
+             revision.config_version == known.decomp_config_version &&
+             revision.territory == known.territory && revision.black_label == known.black_label;
+    });
+  }
+  if (game != jak1_output_recipe::WireGame::jak2) {
+    return false;
+  }
+  const auto& known = jak2_iso::default_revision();
+  return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
+         revision.contents_hash == known.contents_hash && revision.file_count == known.file_count &&
+         revision.config_version == known.decomp_config_version &&
+         static_cast<int>(revision.territory) == static_cast<int>(known.territory) &&
+         !revision.black_label;
 }
 
 bool valid_options(const Options& options) {
@@ -135,7 +152,7 @@ bool valid_options(const Options& options) {
          limits.max_name_bytes > 0 && limits.io_chunk_bytes > 0 &&
          options.expected_source_object_pack.object_count > 0 &&
          options.expected_source_object_pack.aggregate_xxh64 != 0 &&
-         known_revision(options.expected_revision);
+         known_revision(options.expected_revision, options.wire_game);
 }
 
 ErrorCode map_recipe_error(jak1_output_recipe::ErrorCode code) {
@@ -286,7 +303,7 @@ std::optional<Error> reserve_output(std::uint64_t size,
   std::uint64_t next = 0;
   if (!checked_add(*total, size, &next) || next > options.limits.max_total_output_bytes) {
     return make_error(ErrorCode::output_limit_exceeded,
-                      "The materialized Jak 1 output exceeds its configured size cap.");
+                      "The materialized output exceeds its configured size cap.");
   }
   *total = next;
   return {};
@@ -405,6 +422,9 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
   const std::string source_path(relative);
   const jak1_retail_object_catalog::ArchiveSource catalog_source{source_path, raw.value()};
   jak1_retail_object_catalog::Options catalog_options;
+  catalog_options.game_version = options.wire_game == jak1_output_recipe::WireGame::jak1
+                                     ? GameVersion::Jak1
+                                     : GameVersion::Jak2;
   catalog_options.max_archive_input_bytes = options.limits.max_retail_archive_bytes;
   catalog_options.max_archive_compressed_bytes = options.limits.max_retail_archive_bytes;
   catalog_options.should_cancel = options.should_cancel;
@@ -422,6 +442,9 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
   }
 
   jak1_checked_dgo::Options dgo_options;
+  dgo_options.game_version = options.wire_game == jak1_output_recipe::WireGame::jak1
+                                 ? GameVersion::Jak1
+                                 : GameVersion::Jak2;
   dgo_options.max_input_bytes = options.limits.max_retail_archive_bytes;
   dgo_options.max_compressed_bytes = options.limits.max_retail_archive_bytes;
   dgo_options.should_cancel = options.should_cancel;
@@ -467,6 +490,7 @@ Result<Summary> materialize(const Inputs& inputs,
     recipe_options.limits = options.recipe_limits;
     recipe_options.expected_revision = options.expected_revision;
     recipe_options.expected_source_object_pack = options.expected_source_object_pack;
+    recipe_options.wire_game = options.wire_game;
     recipe_options.should_cancel = options.should_cancel;
     auto decoded = jak1_output_recipe::decode(recipe_bytes.value(), recipe_options);
     if (!decoded) {
@@ -841,13 +865,16 @@ Result<Summary> materialize(const Inputs& inputs,
     stage.clear();
     return Result<Summary>::success(std::move(summary));
   } catch (const std::bad_alloc&) {
-    auto error =
-        make_error(ErrorCode::allocation_failed, "Jak 1 output materialization ran out of memory.");
+    auto error = make_error(
+        ErrorCode::allocation_failed,
+        std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
+            " output materialization ran out of memory.");
     return Result<Summary>::failure(stage.empty() ? error : *cleanup_failure(error, stage));
   } catch (const std::exception& exception) {
-    auto error =
-        make_error(ErrorCode::output_write_failed,
-                   std::string("Jak 1 output materialization failed: ") + exception.what());
+    auto error = make_error(
+        ErrorCode::output_write_failed,
+        std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
+            " output materialization failed: " + exception.what());
     return Result<Summary>::failure(stage.empty() ? error : *cleanup_failure(error, stage));
   }
 }
