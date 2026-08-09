@@ -6,7 +6,7 @@ namespace jak2_output_recipe {
 namespace {
 
 bool supported_revision(const jak2_iso::Revision& revision) {
-  const auto& expected = jak2_iso::default_revision();
+  const auto& expected = jak2_iso::import_revision();
   return revision.serial == expected.serial && revision.elf_hash == expected.elf_hash &&
          revision.contents_hash == expected.contents_hash &&
          revision.file_count == expected.file_count &&
@@ -30,7 +30,7 @@ Error unsupported_revision_error() {
           0,
           {},
           {},
-          "Jak II output recipes currently support only SCUS-97265 NTSC-U v1."};
+          "Jak II output recipes currently support only SCUS-97265 NTSC-U v2."};
 }
 
 }  // namespace

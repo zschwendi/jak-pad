@@ -141,6 +141,12 @@ bool catalog_preserves_desktop_values() {
     CHECK(revisions[index].decomp_config_version == expected[index].config);
   }
   CHECK(&jak2_iso::default_revision() == &revisions.front());
+  CHECK(&jak2_iso::import_revision() == &revisions[1]);
+  CHECK(jak2_iso::import_revision().serial == "SCUS-97265");
+  CHECK(jak2_iso::import_revision().elf_hash == 18445016742498932084U);
+  CHECK(jak2_iso::import_revision().contents_hash == 18208811100399420450U);
+  CHECK(jak2_iso::import_revision().file_count == 593);
+  CHECK(jak2_iso::import_revision().decomp_config_version == "ntsc_v1");
   return true;
 }
 

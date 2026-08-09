@@ -121,7 +121,7 @@ struct Fixture {
   materializer::Options options;
 
   bool setup() {
-    output_recipe = recipe::make_base_retail_recipe(jak2_iso::default_revision());
+    output_recipe = recipe::make_base_retail_recipe(jak2_iso::import_revision());
     recipe::ArchiveRecord archive;
     archive.destination_basename = "OUT.DGO";
     archive.objects.reserve(jak2_source_object_pack::kExpectedObjectCount + 1);
@@ -147,7 +147,7 @@ struct Fixture {
                                            "0COMMON.TXT"}};
     output_recipe.expected_fr3_basenames = {"GAME.fr3"};
 
-    const auto encoded = recipe::encode(output_recipe, jak2_iso::default_revision());
+    const auto encoded = recipe::encode(output_recipe, jak2_iso::import_revision());
     if (!encoded || !write_bytes(recipe_file, encoded.value()) ||
         !write_bytes(iso_root / "DATA.BIN", flat) ||
         !write_bytes(generated_root / "flat/0COMMON.TXT", generated_flat) ||
@@ -182,7 +182,7 @@ bool materializes_checked_jak2_layout() {
   Fixture fixture;
   CHECK(fixture.setup());
   const auto result = materializer::materialize(
-      fixture.inputs, fixture.destination, jak2_iso::default_revision(), fixture.options);
+      fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
   CHECK(result);
   CHECK(result.value().archives_written == 1);
   CHECK(result.value().objects_written == jak2_source_object_pack::kExpectedObjectCount + 1);
@@ -216,7 +216,7 @@ bool cancellation_is_atomic() {
   };
   fixture.options.should_cancel = [&] { return cancel; };
   const auto result = materializer::materialize(
-      fixture.inputs, fixture.destination, jak2_iso::default_revision(), fixture.options);
+      fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
   CHECK(!result);
   CHECK(result.error().code == materializer::ErrorCode::cancelled);
   CHECK(!fs::exists(fixture.destination));
@@ -224,7 +224,17 @@ bool cancellation_is_atomic() {
   return true;
 }
 
-bool rejects_symlink_and_wrong_game_without_staging() {
+bool rejects_v1_symlink_and_wrong_game_without_staging() {
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    const auto result = materializer::materialize(
+        fixture.inputs, fixture.destination, jak2_iso::default_revision(), fixture.options);
+    CHECK(!result);
+    CHECK(result.error().code == materializer::ErrorCode::revision_mismatch);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
   {
     Fixture fixture;
     CHECK(fixture.setup());
@@ -234,7 +244,7 @@ bool rejects_symlink_and_wrong_game_without_staging() {
     fs::create_symlink(fixture.iso_root / "DATA.BIN", fixture.source_root / "src0.o", error);
     if (!error) {
       const auto result = materializer::materialize(
-          fixture.inputs, fixture.destination, jak2_iso::default_revision(), fixture.options);
+          fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
       CHECK(!result);
       CHECK(result.error().code == materializer::ErrorCode::unsafe_path);
       CHECK(!fs::exists(fixture.destination));
@@ -263,7 +273,7 @@ bool rejects_symlink_and_wrong_game_without_staging() {
     CHECK(encoded);
     CHECK(write_bytes(fixture.recipe_file, encoded.value()));
     const auto result = materializer::materialize(
-        fixture.inputs, fixture.destination, jak2_iso::default_revision(), fixture.options);
+        fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
     CHECK(!result);
     CHECK(result.error().code == materializer::ErrorCode::recipe_invalid);
     CHECK(!fs::exists(fixture.destination));
@@ -278,7 +288,7 @@ int main() {
   const std::array tests = {
       materializes_checked_jak2_layout,
       cancellation_is_atomic,
-      rejects_symlink_and_wrong_game_without_staging,
+      rejects_v1_symlink_and_wrong_game_without_staging,
   };
   for (const auto test : tests) {
     if (!test()) {

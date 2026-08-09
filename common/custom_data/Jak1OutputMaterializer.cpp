@@ -134,7 +134,7 @@ bool known_revision(const jak1_output_recipe::RevisionProvenance& revision,
   if (game != jak1_output_recipe::WireGame::jak2) {
     return false;
   }
-  const auto& known = jak2_iso::default_revision();
+  const auto& known = jak2_iso::import_revision();
   return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
          revision.contents_hash == known.contents_hash && revision.file_count == known.file_count &&
          revision.config_version == known.decomp_config_version &&

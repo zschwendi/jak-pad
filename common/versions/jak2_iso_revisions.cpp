@@ -55,6 +55,8 @@ constexpr std::array<Revision, 5> kSupportedRevisions = {{
     },
 }};
 
+constexpr std::size_t kImportRevisionIndex = 1;
+
 }  // namespace
 
 std::span<const Revision> supported_revisions() {
@@ -63,6 +65,10 @@ std::span<const Revision> supported_revisions() {
 
 const Revision& default_revision() {
   return kSupportedRevisions.front();
+}
+
+const Revision& import_revision() {
+  return kSupportedRevisions[kImportRevisionIndex];
 }
 
 }  // namespace jak2_iso

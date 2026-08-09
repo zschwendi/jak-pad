@@ -25,5 +25,7 @@ struct Revision {
 
 std::span<const Revision> supported_revisions();
 const Revision& default_revision();
+/// Exact revision accepted by the checked Jak II import and preparation pipeline.
+const Revision& import_revision();
 
 }  // namespace jak2_iso

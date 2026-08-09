@@ -182,7 +182,7 @@ bool is_expected_revision(const jak1_output_recipe::RevisionProvenance& revision
            revision.territory == expected.territory &&
            revision.black_label == expected.black_label;
   }
-  const auto& expected = jak2_iso::default_revision();
+  const auto& expected = jak2_iso::import_revision();
   return game == jak1_output_recipe::WireGame::jak2 && revision.serial == expected.serial &&
          revision.executable_hash == expected.elf_hash &&
          revision.contents_hash == expected.contents_hash &&
@@ -402,7 +402,7 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
           ErrorCode::unsupported_revision,
           options.wire_game == jak1_output_recipe::WireGame::jak1
               ? "Jak 1 output recipes currently support only SCUS-97124 ntsc_v1 black label."
-              : "Jak II output recipes currently support only SCUS-97265 NTSC-U v1."));
+              : "Jak II output recipes currently support only SCUS-97265 NTSC-U v2."));
     }
     if (graph.archives.empty() || graph.archives.size() > options.limits.max_graph_archives ||
         graph.ordered_source_files.empty() ||

@@ -22,7 +22,7 @@ namespace generator = jak2_output_recipe_generator;
   } while (false)
 
 recipe::Recipe make_recipe() {
-  auto result = recipe::make_base_retail_recipe(jak2_iso::default_revision());
+  auto result = recipe::make_base_retail_recipe(jak2_iso::import_revision());
   recipe::ArchiveRecord archive;
   archive.destination_basename = "GAME.CGO";
   archive.objects.reserve(jak2_source_object_pack::kExpectedObjectCount + 1);
@@ -68,12 +68,16 @@ int main() {
 
   generator::VerifiedInputs graph_inputs;
   auto graph_recipe = generator::generate_from_graph(
-      graph.value(), "not-a-manifest", jak2_iso::default_revision(), graph_inputs);
+      graph.value(), "not-a-manifest", jak2_iso::import_revision(), graph_inputs);
   CHECK(!graph_recipe);
   CHECK(graph_recipe.error().code == generator::ErrorCode::invalid_manifest);
+  graph_recipe = generator::generate_from_graph(
+      graph.value(), "not-a-manifest", jak2_iso::default_revision(), graph_inputs);
+  CHECK(!graph_recipe);
+  CHECK(graph_recipe.error().code == generator::ErrorCode::unsupported_revision);
 
   auto expected = make_recipe();
-  const auto encoded = recipe::encode(expected, jak2_iso::default_revision());
+  const auto encoded = recipe::encode(expected, jak2_iso::import_revision());
   CHECK(encoded);
   CHECK(encoded.value().size() >= jak1_output_recipe::kJak2Magic.size());
   CHECK(std::equal(jak1_output_recipe::kJak2Magic.begin(),
@@ -87,7 +91,7 @@ int main() {
   CHECK(std::search(encoded.value().begin(), encoded.value().end(), retail_payload.begin(),
                     retail_payload.end()) == encoded.value().end());
 
-  const auto decoded = recipe::decode(encoded.value(), jak2_iso::default_revision());
+  const auto decoded = recipe::decode(encoded.value(), jak2_iso::import_revision());
   CHECK(decoded);
   CHECK(decoded.value() == expected);
   CHECK(decoded.value().producer == jak1_output_recipe::kJak2ProvenanceId);
@@ -96,6 +100,18 @@ int main() {
   CHECK(decoded.value().projected_source_objects.empty());
   CHECK(decoded.value().source_object_pack == recipe::kRecordedSourceObjectPack);
 
+  jak1_output_recipe::Options core_jak2_options;
+  core_jak2_options.expected_revision =
+      recipe::revision_provenance(jak2_iso::import_revision());
+  core_jak2_options.expected_source_object_pack = recipe::kRecordedSourceObjectPack;
+  core_jak2_options.wire_game = jak1_output_recipe::WireGame::jak2;
+  CHECK(jak1_output_recipe::decode(encoded.value(), core_jak2_options));
+  core_jak2_options.expected_revision =
+      recipe::revision_provenance(jak2_iso::default_revision());
+  const auto rejected_v1_core = jak1_output_recipe::decode(encoded.value(), core_jak2_options);
+  CHECK(!rejected_v1_core);
+  CHECK(rejected_v1_core.error().code == jak1_output_recipe::ErrorCode::invalid_argument);
+
   jak1_output_recipe::Options jak1_options;
   jak1_options.expected_revision = jak1_revision();
   jak1_options.expected_source_object_pack = recipe::kRecordedSourceObjectPack;
@@ -103,15 +119,13 @@ int main() {
   CHECK(!wrong_game);
   CHECK(wrong_game.error().code == jak1_output_recipe::ErrorCode::wrong_magic);
 
-  const auto revisions = jak2_iso::supported_revisions();
-  CHECK(revisions.size() > 1);
-  const auto wrong_revision = recipe::decode(encoded.value(), revisions[1]);
+  const auto wrong_revision = recipe::decode(encoded.value(), jak2_iso::default_revision());
   CHECK(!wrong_revision);
   CHECK(wrong_revision.error().code == recipe::ErrorCode::unsupported_revision);
 
   auto wrong_profile = expected;
   wrong_profile.profile = recipe::OutputProfile::jak1_base_retail;
-  const auto profile_result = recipe::encode(wrong_profile, jak2_iso::default_revision());
+  const auto profile_result = recipe::encode(wrong_profile, jak2_iso::import_revision());
   CHECK(!profile_result);
   CHECK(profile_result.error().code == recipe::ErrorCode::wrong_provenance);
   return 0;

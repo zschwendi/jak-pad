@@ -6,7 +6,7 @@ namespace jak2_output_materializer {
 namespace {
 
 bool supported_revision(const jak2_iso::Revision& revision) {
-  const auto& expected = jak2_iso::default_revision();
+  const auto& expected = jak2_iso::import_revision();
   return revision.serial == expected.serial && revision.elf_hash == expected.elf_hash &&
          revision.contents_hash == expected.contents_hash &&
          revision.file_count == expected.file_count &&
@@ -27,7 +27,7 @@ Result<Summary> materialize(const Inputs& inputs,
   if (!supported_revision(revision)) {
     return Result<Summary>::failure(
         {ErrorCode::revision_mismatch,
-         "Jak II output materialization currently supports only SCUS-97265 NTSC-U v1.",
+         "Jak II output materialization currently supports only SCUS-97265 NTSC-U v2.",
          {},
          {}});
   }
