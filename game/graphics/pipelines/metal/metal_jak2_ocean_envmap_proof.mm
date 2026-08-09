@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <utility>
@@ -1013,6 +1014,27 @@ int main() {
     texture_pool.set_placeholder(0);
     check(metal_texture_live_count() == initial_live_textures,
           "released all standalone proof textures");
+
+    {
+      auto lifecycle_pool = std::make_unique<TexturePool>(GameVersion::Jak1);
+      check(metal_setup_placeholder(device, queue, *lifecycle_pool),
+            "published the Jak 1 lifecycle placeholder");
+      const u64 lifecycle_placeholder = lifecycle_pool->get_placeholder_texture();
+      auto lifecycle_ocean = std::make_unique<MetalOceanTexture>(false, device, queue);
+      lifecycle_ocean->init_textures(*lifecycle_pool, GameVersion::Jak1);
+      check(lifecycle_pool->lookup(MetalOceanTexture::vram_slot(GameVersion::Jak1)).value_or(0) !=
+                lifecycle_placeholder,
+            "published the renderer-owned Jak 1 Ocean texture");
+
+      lifecycle_ocean.reset();
+      check(lifecycle_pool->lookup(MetalOceanTexture::vram_slot(GameVersion::Jak1)).value_or(0) ==
+                lifecycle_placeholder,
+            "unloaded the Jak 1 Ocean publication while its pool remained live");
+      metal_texture_release(lifecycle_pool->get_placeholder_texture());
+      lifecycle_pool.reset();
+      check(metal_texture_live_count() == initial_live_textures,
+            "destroyed the Jak 1 Ocean owner before its texture pool without leaking handles");
+    }
 
     if (failures) {
       std::printf("FAIL: %d Jak II ocean envmap proof check(s) failed\n", failures);

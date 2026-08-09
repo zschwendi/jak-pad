@@ -1007,6 +1007,9 @@ static std::shared_ptr<GfxDisplay> metal_make_display(int width,
 static void metal_exit() {
   metal_renderer::unload_all_levels();
   metal_merc_models().shutdown();
+  // Bucket renderers publish pool-backed textures and must unload them while the pool is live.
+  delete g_renderer;
+  g_renderer = nullptr;
   if (g_texture_pool) {
     metal_texture_release(g_texture_pool->get_placeholder_texture());
   }
@@ -1023,8 +1026,6 @@ static void metal_exit() {
   }
   g_chain.copier.reset();
   g_chain.handoff = {};
-  delete g_renderer;
-  g_renderer = nullptr;
 }
 
 /*!
