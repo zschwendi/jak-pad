@@ -216,7 +216,9 @@ inline Snapshot read(const MemoryView& memory,
     detail.rejection = Rejection::wrong_process_state;
     return out;
   }
-  if (detail.process_next_state != memory.false_object) {
+  // enter-state leaves next-state pointing at the state it just installed. A different
+  // pointer means another transition has been scheduled but has not entered yet.
+  if (detail.process_next_state != detail.process_state) {
     detail.rejection = Rejection::scheduled_state;
     return out;
   }

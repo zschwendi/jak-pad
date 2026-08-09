@@ -79,7 +79,7 @@ struct Fixture {
     write(bytes, kIdleState - BASIC_OFFSET, kStateType);
 
     write(bytes, kProgress + layout::kProcessState, kIdleState);
-    write(bytes, kProgress + layout::kProcessNextState, kFalse);
+    write(bytes, kProgress + layout::kProcessNextState, kIdleState);
     write(bytes, kProgress + layout::kProgressCurrentOptions, kTitlePCOptions);
     write(bytes, kProgress + layout::kProgressMenuTransition, 0.f);
     write<int32_t>(bytes, kProgress + layout::kProgressOptionIndex, 0);
@@ -185,9 +185,9 @@ void wrong_types_and_symbols_fail_closed() {
          "a retained title object outside progress mode is rejected");
 
   Fixture scheduled_state;
-  write(scheduled_state.bytes, kProgress + layout::kProcessNextState, kIdleState);
+  write(scheduled_state.bytes, kProgress + layout::kProcessNextState, kProgressState);
   expect(!scheduled_state.read_snapshot().available,
-         "a process with a scheduled state transition is rejected");
+         "a process whose pending state differs from its entered idle state is rejected");
 
   Fixture wrong_state_name;
   write(wrong_state_name.bytes, kIdleState + layout::kStateName, kTitleSymbol);
