@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <span>
 #include <vector>
 
 #include "common/common_types.h"
@@ -31,5 +32,14 @@ bool compose_jak2_opcode27_skull_gem_cpu(
     const Jak2Opcode27SkullGemPlan& plan,
     const std::array<Jak2Opcode27RgbaSource, kJak2Opcode27SkullGemLayerCount>& sources,
     Jak2Opcode27SkullGemRgba* output);
+
+bool compose_jak2_fixed_animation_cpu(
+    float time,
+    std::span<const float> layer_end_times,
+    std::span<const Jak2Opcode27LayerTransition> layers,
+    std::span<const Jak2Opcode27RgbaSource> sources,
+    std::size_t output_width,
+    std::size_t output_height,
+    std::vector<u8>* output);
 
 }  // namespace metal_renderer

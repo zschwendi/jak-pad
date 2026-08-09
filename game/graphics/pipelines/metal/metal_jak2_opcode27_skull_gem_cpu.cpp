@@ -110,17 +110,20 @@ bool quantize_modulation(const std::array<float, 4>& color,
   return true;
 }
 
-bool build_layer_geometry(const Jak2Opcode27LayerValues& values, LayerGeometry* geometry) {
+bool build_layer_geometry(const Jak2Opcode27LayerValues& values,
+                          std::size_t output_width,
+                          std::size_t output_height,
+                          LayerGeometry* geometry) {
   constexpr std::array<Vec2, 4> kCorners = {
       Vec2{-0.5f, -0.5f}, Vec2{0.5f, -0.5f}, Vec2{-0.5f, 0.5f}, Vec2{0.5f, 0.5f}};
   if (!quantize_modulation(values.color, &geometry->modulation)) {
     return false;
   }
 
-  const Vec2 position_scale{values.scale[0] * kJak2Opcode27SkullGemSize,
-                            values.scale[1] * kJak2Opcode27SkullGemSize};
-  const Vec2 position_offset{2048.f + values.offset[0] * kJak2Opcode27SkullGemSize,
-                             2048.f + values.offset[1] * kJak2Opcode27SkullGemSize};
+  const Vec2 position_scale{values.scale[0] * static_cast<float>(output_width),
+                            values.scale[1] * static_cast<float>(output_height)};
+  const Vec2 position_offset{2048.f + values.offset[0] * static_cast<float>(output_width),
+                             2048.f + values.offset[1] * static_cast<float>(output_height)};
 
   for (std::size_t i = 0; i < kCorners.size(); ++i) {
     Vec2 position_corner = kCorners[i];
@@ -139,8 +142,8 @@ bool build_layer_geometry(const Jak2Opcode27LayerValues& values, LayerGeometry* 
     const u32 gs_x = static_cast<u32>(packed_x);
     const u32 gs_y = static_cast<u32>(packed_y);
     geometry->positions[i] = {
-        ((static_cast<float>(gs_x) / 16.f) - 2048.f) / kJak2Opcode27SkullGemSize,
-        ((static_cast<float>(gs_y) / 16.f) - 2048.f) / kJak2Opcode27SkullGemSize};
+        ((static_cast<float>(gs_x) / 16.f) - 2048.f) / static_cast<float>(output_width),
+        ((static_cast<float>(gs_y) / 16.f) - 2048.f) / static_cast<float>(output_height)};
 
     Vec2 texture_corner{kCorners[i].x * values.st_scale[0],
                         kCorners[i].y * values.st_scale[1]};
@@ -192,9 +195,14 @@ bool interpolate_triangle(const Vec2& point,
   return std::isfinite(uv->x) && std::isfinite(uv->y);
 }
 
-bool texture_coordinate_at_pixel(const LayerGeometry& geometry, int x, int y, Vec2* uv) {
-  const Vec2 point{(static_cast<float>(x) + 0.5f) / kJak2Opcode27SkullGemSize,
-                   (static_cast<float>(y) + 0.5f) / kJak2Opcode27SkullGemSize};
+bool texture_coordinate_at_pixel(const LayerGeometry& geometry,
+                                 std::size_t x,
+                                 std::size_t y,
+                                 std::size_t output_width,
+                                 std::size_t output_height,
+                                 Vec2* uv) {
+  const Vec2 point{(static_cast<float>(x) + 0.5f) / static_cast<float>(output_width),
+                   (static_cast<float>(y) + 0.5f) / static_cast<float>(output_height)};
   if (interpolate_triangle(point, geometry.positions[0], geometry.positions[1],
                            geometry.positions[2], geometry.uvs[0], geometry.uvs[1],
                            geometry.uvs[2], uv)) {
@@ -253,11 +261,13 @@ u8 to_unorm8(float value) {
 
 bool draw_layer(const LayerGeometry& geometry,
                 const Jak2Opcode27RgbaSource& source,
-                Jak2Opcode27SkullGemRgba* output) {
-  for (int y = 0; y < kJak2Opcode27SkullGemSize; ++y) {
-    for (int x = 0; x < kJak2Opcode27SkullGemSize; ++x) {
+                std::size_t output_width,
+                std::size_t output_height,
+                std::vector<u8>* output) {
+  for (std::size_t y = 0; y < output_height; ++y) {
+    for (std::size_t x = 0; x < output_width; ++x) {
       Vec2 uv;
-      if (!texture_coordinate_at_pixel(geometry, x, y, &uv)) {
+      if (!texture_coordinate_at_pixel(geometry, x, y, output_width, output_height, &uv)) {
         continue;
       }
 
@@ -272,7 +282,7 @@ bool draw_layer(const LayerGeometry& geometry,
       }
 
       const std::size_t output_offset =
-          (static_cast<std::size_t>(y) * kJak2Opcode27SkullGemSize + x) * 4;
+          (y * output_width + x) * 4;
       const float source_alpha_for_rgb = std::clamp(source_color[3] * 2.f, 0.f, 1.f);
       for (std::size_t channel = 0; channel < 3; ++channel) {
         const float destination = static_cast<float>((*output)[output_offset + channel]) / 255.f;
@@ -291,41 +301,65 @@ bool compose_jak2_opcode27_skull_gem_cpu(
     const Jak2Opcode27SkullGemPlan& plan,
     const std::array<Jak2Opcode27RgbaSource, kJak2Opcode27SkullGemLayerCount>& sources,
     Jak2Opcode27SkullGemRgba* output) {
+  constexpr std::array<float, kJak2Opcode27SkullGemLayerCount> kEndTimes = {
+      kAnimationEndTime, kAnimationEndTime, kAnimationEndTime};
+  std::vector<u8> composed;
   if (!output || !std::isfinite(plan.time) || plan.time < 0.f ||
-      plan.time > kAnimationEndTime) {
+      plan.time > kAnimationEndTime || !compose_jak2_fixed_animation_cpu(
+                     plan.time, kEndTimes, plan.layers, sources,
+                     kJak2Opcode27SkullGemSize, kJak2Opcode27SkullGemSize, &composed) ||
+      composed.size() != output->size()) {
     return false;
   }
-  for (std::size_t layer = 0; layer < sources.size(); ++layer) {
-    if (!valid_source(sources[layer]) || !all_finite(plan.layers[layer].start) ||
-        !all_finite(plan.layers[layer].end)) {
-      return false;
-    }
+  std::copy(composed.begin(), composed.end(), output->begin());
+  return true;
+}
+
+bool compose_jak2_fixed_animation_cpu(
+    float time,
+    std::span<const float> layer_end_times,
+    std::span<const Jak2Opcode27LayerTransition> layers,
+    std::span<const Jak2Opcode27RgbaSource> sources,
+    std::size_t output_width,
+    std::size_t output_height,
+    std::vector<u8>* output) {
+  if (!output || !std::isfinite(time) || time < 0.f || output_width == 0 ||
+      output_height == 0 || output_width > std::numeric_limits<std::size_t>::max() / output_height ||
+      output_width * output_height > std::numeric_limits<std::size_t>::max() / 4 ||
+      layers.size() != sources.size() || layers.size() != layer_end_times.size()) {
+    return false;
   }
 
-  const float interpolation = plan.time / kAnimationEndTime;
-  std::array<LayerGeometry, kJak2Opcode27SkullGemLayerCount> geometries;
-  for (std::size_t layer = 0; layer < geometries.size(); ++layer) {
+  std::vector<LayerGeometry> geometries(layers.size());
+  std::vector<bool> active(layers.size());
+  for (std::size_t layer = 0; layer < layers.size(); ++layer) {
+    const float end_time = layer_end_times[layer];
+    if (!std::isfinite(end_time) || end_time <= 0.f || !valid_source(sources[layer]) ||
+        !all_finite(layers[layer].start) || !all_finite(layers[layer].end)) {
+      return false;
+    }
+    active[layer] = time <= end_time;
+    if (!active[layer]) {
+      continue;
+    }
     Jak2Opcode27LayerValues values;
-    if (!interpolate_values(interpolation, plan.layers[layer], &values) ||
-        !build_layer_geometry(values, &geometries[layer])) {
+    if (!interpolate_values(time / end_time, layers[layer], &values) ||
+        !build_layer_geometry(values, output_width, output_height, &geometries[layer])) {
       return false;
     }
   }
 
-  Jak2Opcode27SkullGemRgba composed;
+  std::vector<u8> composed(output_width * output_height * 4);
   for (std::size_t pixel = 0; pixel < composed.size(); pixel += 4) {
-    composed[pixel + 0] = 0;
-    composed[pixel + 1] = 0;
-    composed[pixel + 2] = 0;
     composed[pixel + 3] = 255;
   }
   for (std::size_t layer = 0; layer < geometries.size(); ++layer) {
-    if (!draw_layer(geometries[layer], sources[layer], &composed)) {
+    if (active[layer] &&
+        !draw_layer(geometries[layer], sources[layer], output_width, output_height, &composed)) {
       return false;
     }
   }
-
-  *output = composed;
+  *output = std::move(composed);
   return true;
 }
 

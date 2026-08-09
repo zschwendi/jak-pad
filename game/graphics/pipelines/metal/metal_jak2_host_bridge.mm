@@ -577,6 +577,8 @@ struct Jak2TextureUploadDispatch {
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
   const metal_renderer::Jak2MapTextureUploadPlan* map_plan = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
+  const metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity* security_prepared =
+      nullptr;
   const u8* live_ee_memory = nullptr;
   bool* host_texture_mutated = nullptr;
   bool* raw_image_callback_executed = nullptr;
@@ -726,6 +728,16 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
       dispatch->host, plan.ordinary, dispatch->live_ee_memory,
       &dispatch->host->metrics.water_texture_uploads[index].executions, label.c_str(),
       dispatch->host_texture_mutated);
+  if (plan.has_security_animator) {
+    if (!dispatch->security_prepared || !dispatch->host->skull_gem_executor ||
+        !dispatch->host->skull_gem_executor->publish_security(
+            *dispatch->security_prepared)) {
+      const char* detail = dispatch->host->skull_gem_executor
+                               ? dispatch->host->skull_gem_executor->last_error()
+                               : "executor is unavailable";
+      throw std::runtime_error(std::string("Jak 2 security publication failed: ") + detail);
+    }
+  }
 }
 
 bool execute_bucket4_plan(goal_jak2_metal_host* host,
@@ -938,6 +950,8 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
     metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared skull_gem_prepared;
+    metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity security_prepared;
+    const metal_renderer::Jak2WaterTextureUploadPlan* security_plan = nullptr;
     metal_renderer::Jak2Bucket4TextureUploadCapture bucket4_capture;
     const auto bucket4_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
@@ -1004,6 +1018,30 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, (std::string("Jak 2 skull-gem preparation failed: ") + detail).c_str());
       return;
     }
+    for (const auto& water_plan : water_texture_plans) {
+      if (!water_plan.has_security_animator) {
+        continue;
+      }
+      if (security_plan) {
+        record_failure(host, "Jak 2 security animator appeared in multiple water buckets");
+        return;
+      }
+      security_plan = &water_plan;
+    }
+    if (security_plan &&
+        (!host->common_level || !host->common_level->level || !host->skull_gem_executor ||
+         !host->skull_gem_executor->prepare_security(
+             security_plan->security, *host->common_level->level,
+             &security_prepared))) {
+      const char* detail = !host->common_level || !host->common_level->level
+                               ? "common level art is unavailable"
+                               : host->skull_gem_executor
+                                     ? host->skull_gem_executor->last_error()
+                                     : "executor is unavailable";
+      record_failure(host,
+                     (std::string("Jak 2 security preparation failed: ") + detail).c_str());
+      return;
+    }
     if (!execute_bucket4_plan(host, *bucket4_plan, static_cast<const u8*>(ee_base))) {
       return;
     }
@@ -1026,6 +1064,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &*common_tfrag_texture_plan,
         &*map_texture_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
+        security_plan ? &security_prepared : nullptr,
         static_cast<const u8*>(ee_base),
         &host_texture_mutated,
         &raw_image_callback_executed};

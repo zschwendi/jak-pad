@@ -18,6 +18,8 @@ struct Level;
 namespace metal_renderer {
 
 constexpr std::size_t kJak2SkullGemAnimatedTextureSlot = 14;
+constexpr std::size_t kJak2SecurityEnvironmentAnimatedTextureSlot = 20;
+constexpr std::size_t kJak2SecurityDotAnimatedTextureSlot = 21;
 
 class Jak2Opcode27SkullGemExecutor {
  public:
@@ -31,6 +33,20 @@ class Jak2Opcode27SkullGemExecutor {
     u64 publications = 0;
     u32 destination_tbp = 0;
     u64 texture_handle = 0;
+    u64 security_preparations = 0;
+    u64 security_publications = 0;
+  };
+
+  struct PreparedSecurityOutput {
+    u32 destination_tbp = 0;
+    u16 width = 0;
+    u16 height = 0;
+    std::vector<u8> rgba;
+  };
+
+  struct PreparedSecurity {
+    PreparedSecurityOutput environment;
+    PreparedSecurityOutput dot;
   };
 
   Jak2Opcode27SkullGemExecutor(id<MTLDevice> device,
@@ -45,6 +61,10 @@ class Jak2Opcode27SkullGemExecutor {
                const tfrag3::Level& common_level,
                Prepared* out);
   bool publish(const Prepared& prepared);
+  bool prepare_security(const Jak2Opcode30SecurityPlan& plan,
+                        const tfrag3::Level& common_level,
+                        PreparedSecurity* out);
+  bool publish_security(const PreparedSecurity& prepared);
   void detach_pool();
 
   const std::vector<u64>& animated_texture_slots() const { return m_animated_texture_slots; }
@@ -53,11 +73,17 @@ class Jak2Opcode27SkullGemExecutor {
 
  private:
   bool fail(const char* message);
+  bool publish_security_output(const PreparedSecurityOutput& prepared,
+                               std::size_t slot,
+                               const char* label,
+                               std::unique_ptr<MetalPoolTexture>* publication);
 
   id<MTLDevice> m_device = nil;
   id<MTLCommandQueue> m_queue = nil;
   TexturePool* m_pool = nullptr;
   std::unique_ptr<MetalPoolTexture> m_publication;
+  std::unique_ptr<MetalPoolTexture> m_security_environment_publication;
+  std::unique_ptr<MetalPoolTexture> m_security_dot_publication;
   std::vector<u64> m_animated_texture_slots;
   bool m_slot_contract_valid = false;
   Stats m_stats;
