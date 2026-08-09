@@ -72,6 +72,18 @@ struct DgoRead {
 
 DgoRead g_dgo;
 
+void record_dgo_result(int result) {
+  g_rpc_stats.last_dgo_result = result;
+  if (g_dgo.fd < 0) {
+    g_rpc_stats.current_dgo_name[0] = '\0';
+  }
+  if (result == DGO_RPC_RESULT_ERROR) {
+    g_rpc_stats.dgo_failures++;
+    const char* error = g_error.empty() ? "DGO RPC returned an error" : g_error.c_str();
+    std::snprintf(g_rpc_stats.last_dgo_error, sizeof(g_rpc_stats.last_dgo_error), "%s", error);
+  }
+}
+
 void close_dgo() {
   if (g_dgo.fd >= 0) {
     ee::sceClose(g_dgo.fd);
@@ -416,9 +428,11 @@ u64 dgo_rpc(u32 function,
   memcpy(&cmd, Ptr<u8>(send_buffer).c(), sizeof(cmd));
   switch (function) {
     case DGO_RPC_LOAD_FNO: {
+      g_error.clear();
       std::string name;
       if (!dgo_name(cmd.name, &name)) {
         g_rpc_stats.dgo_archives++;
+        set_error("the Jak 2 DGO RPC was given an invalid archive name");
         cmd.result = DGO_RPC_RESULT_ERROR;
         close_dgo();
         break;
@@ -428,6 +442,10 @@ u64 dgo_rpc(u32 function,
                       name.c_str());
       }
       g_rpc_stats.dgo_archives++;
+      std::snprintf(g_rpc_stats.current_dgo_name, sizeof(g_rpc_stats.current_dgo_name), "%s",
+                    name.c_str());
+      std::snprintf(g_rpc_stats.last_dgo_name, sizeof(g_rpc_stats.last_dgo_name), "%s",
+                    name.c_str());
       begin_loading_dgo(name.c_str(), Ptr<u8>(cmd.buffer1), Ptr<u8>(cmd.buffer2),
                         Ptr<u8>(cmd.buffer_heap_top));
       answer_with_next_object(&cmd);
@@ -435,6 +453,9 @@ u64 dgo_rpc(u32 function,
     }
     case DGO_RPC_LOAD_NEXT_FNO:
       if (g_dgo.fd < 0 || g_dgo.failed) {
+        if (g_error.empty()) {
+          set_error("the Jak 2 DGO RPC was asked for another object without an active archive");
+        }
         cmd.result = DGO_RPC_RESULT_ERROR;
         close_dgo();
         break;
@@ -444,6 +465,9 @@ u64 dgo_rpc(u32 function,
       g_dgo.buffer2 = Ptr<u8>(cmd.buffer2);
       g_dgo.heap_top = Ptr<u8>(cmd.buffer_heap_top);
       if (!read_next_object()) {
+        if (g_error.empty()) {
+          set_error("the Jak 2 DGO RPC could not read the next archive object");
+        }
         cmd.result = DGO_RPC_RESULT_ERROR;
         close_dgo();
         break;
@@ -460,6 +484,7 @@ u64 dgo_rpc(u32 function,
       break;
   }
 
+  record_dgo_result(cmd.result);
   memcpy(Ptr<u8>(recv_buffer).c(), &cmd, sizeof(cmd));
   return 0;
 }
@@ -519,6 +544,7 @@ void goal_dgo_goal_loader_stats(goal_dgo_rpc_stats* out) {
 
 void goal_dgo_install_goal_loader(void) {
   g_rpc_stats = {};
+  g_rpc_stats.last_dgo_result = DGO_RPC_RESULT_INIT;
   jak2::make_stack_arg_function_symbol_from_c("rpc-call", (void*)stack_arg_shim<goal_rpc_call>);
   jak2::make_function_symbol_from_c("rpc-busy?", (void*)goal_rpc_busy);
   jak2::make_stack_arg_function_symbol_from_c("link-begin", (void*)stack_arg_shim<goal_link_begin>);

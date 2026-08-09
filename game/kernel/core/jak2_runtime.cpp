@@ -312,8 +312,16 @@ void update_metrics() {
   g_metrics.dgo_objects = dgo.dgo_objects;
   g_metrics.dgo_code_objects = dgo.linked_code_objects;
   g_metrics.dgo_data_objects = dgo.linked_data_objects;
+  g_metrics.dgo_failures = dgo.dgo_failures;
+  g_metrics.dgo_last_result = dgo.last_dgo_result;
   std::snprintf(g_metrics.first_dgo_name, sizeof(g_metrics.first_dgo_name), "%s",
                 dgo.first_dgo_name);
+  std::snprintf(g_metrics.current_dgo_name, sizeof(g_metrics.current_dgo_name), "%s",
+                dgo.current_dgo_name);
+  std::snprintf(g_metrics.last_dgo_name, sizeof(g_metrics.last_dgo_name), "%s",
+                dgo.last_dgo_name);
+  std::snprintf(g_metrics.last_dgo_error, sizeof(g_metrics.last_dgo_error), "%s",
+                dgo.last_dgo_error);
   g_metrics.title_ready = std::strcmp(dgo.first_dgo_name, "TITLE.DGO") == 0 &&
                           dgo.dgo_archives >= 1 && dgo.dgo_objects >= 1 &&
                           dgo.linked_code_objects + dgo.linked_data_objects >= 1;
@@ -331,6 +339,15 @@ void update_metrics() {
   if (g_metrics.graphics == GOAL_JAK2_RUNTIME_GRAPHICS_STUBS) {
     return;
   }
+
+  goal_gfx_host_stats gfx = {};
+  goal_gfx_host_stats_get(&gfx);
+  g_metrics.host_desired_level_sets = gfx.level_sets;
+  g_metrics.host_active_level_sets = gfx.active_level_sets;
+  std::snprintf(g_metrics.host_desired_levels, sizeof(g_metrics.host_desired_levels), "%s",
+                gfx.last_levels ? gfx.last_levels : "");
+  std::snprintf(g_metrics.host_active_levels, sizeof(g_metrics.host_active_levels), "%s",
+                gfx.last_active_levels ? gfx.last_active_levels : "");
 
   const HostObservations host = host_delta(g_host_before, g_host_observations);
   g_metrics.host_chains = host.chains;

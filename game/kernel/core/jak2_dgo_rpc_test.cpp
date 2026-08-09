@@ -388,6 +388,12 @@ int main() {
   check_u32(reply->buffer1, object_buffers[0].data.offset, "first object lands in initial b1");
   check(memcmp(original.data(), send.data.c(), original.size()) == 0,
         "a separate 32-byte send buffer remains untouched");
+  goal_dgo_rpc_stats rpc_stats = {};
+  goal_dgo_goal_loader_stats(&rpc_stats);
+  check(std::strcmp(rpc_stats.current_dgo_name, "SYNTH.DGO") == 0 &&
+            std::strcmp(rpc_stats.last_dgo_name, "SYNTH.DGO") == 0 &&
+            rpc_stats.last_dgo_result == DGO_RPC_RESULT_MORE && rpc_stats.dgo_failures == 0,
+        "DGO diagnostics retain the active archive and MORE result");
 
   reset_dgo_command(&send, object_buffers[2].data.offset, object_buffers[3].data.offset,
                     heap_b.data.offset);
@@ -403,6 +409,11 @@ int main() {
            kDgoCommandSize, 0);
   check_u32(reply->result, DGO_RPC_RESULT_DONE, "the last object reports DONE");
   check_u32(reply->buffer1, heap_c.data.offset, "the last object lands at refreshed heap top");
+  goal_dgo_goal_loader_stats(&rpc_stats);
+  check(rpc_stats.current_dgo_name[0] == '\0' &&
+            std::strcmp(rpc_stats.last_dgo_name, "SYNTH.DGO") == 0 &&
+            rpc_stats.last_dgo_result == DGO_RPC_RESULT_DONE,
+        "DGO diagnostics close the active archive after DONE");
 
   rpc_call(3, DGO_RPC_LOAD_NEXT_FNO, 1, send.data.offset, kDgoCommandSize, recv.data.offset,
            kDgoCommandSize, 0);
@@ -416,6 +427,19 @@ int main() {
            kDgoCommandSize, 0);
   check_u32(reply->result, DGO_RPC_RESULT_ABORTED, "function 2 reports ABORTED");
 
+  reset_dgo_command(&send, object_buffers[0].data.offset, object_buffers[1].data.offset,
+                    heap_a.data.offset, "missing.dgo");
+  rpc_call(3, DGO_RPC_LOAD_FNO, 1, send.data.offset, kDgoCommandSize, recv.data.offset,
+           kDgoCommandSize, 0);
+  check_u32(reply->result, DGO_RPC_RESULT_ERROR, "a missing archive reports ERROR");
+  goal_dgo_goal_loader_stats(&rpc_stats);
+  check(rpc_stats.current_dgo_name[0] == '\0' &&
+            std::strcmp(rpc_stats.last_dgo_name, "MISSING.DGO") == 0 &&
+            rpc_stats.last_dgo_result == DGO_RPC_RESULT_ERROR &&
+            rpc_stats.dgo_failures == 2 &&
+            std::strstr(rpc_stats.last_dgo_error, "iso/MISSING.DGO"),
+        "DGO diagnostics expose the failed archive, result, count, and error");
+
   memset(recv.data.c(), 0xcc, recv.size);
   std::array<u8, kDgoCommandSize> malformed_reply;
   memcpy(malformed_reply.data(), recv.data.c(), malformed_reply.size());
@@ -424,11 +448,10 @@ int main() {
   check(memcmp(malformed_reply.data(), recv.data.c(), malformed_reply.size()) == 0,
         "non-32-byte framing is rejected without mutating the reply");
 
-  goal_dgo_rpc_stats rpc_stats = {};
   goal_dgo_goal_loader_stats(&rpc_stats);
   check(std::strcmp(rpc_stats.first_dgo_name, "SYNTH.DGO") == 0,
         "the first channel-3 archive name is retained");
-  check_u32((u32)rpc_stats.dgo_archives, 2, "two well-framed DGO loads are counted");
+  check_u32((u32)rpc_stats.dgo_archives, 3, "three well-framed DGO loads are counted");
   check_u32((u32)rpc_stats.dgo_objects, 4, "three completed and one cancelled objects are counted");
   check_guards(send, "DGO send canaries stay intact");
   check_guards(recv, "DGO receive canaries stay intact");

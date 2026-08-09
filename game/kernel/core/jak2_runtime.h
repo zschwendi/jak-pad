@@ -89,7 +89,12 @@ typedef struct goal_jak2_runtime_metrics {
   int32_t dgo_objects;
   int32_t dgo_code_objects;
   int32_t dgo_data_objects;
+  int32_t dgo_failures;
+  int32_t dgo_last_result;
   char first_dgo_name[17];
+  char current_dgo_name[17];
+  char last_dgo_name[17];
+  char last_dgo_error[256];
   int32_t title_ready;
 
   char master_mode[24];
@@ -114,6 +119,10 @@ typedef struct goal_jak2_runtime_metrics {
   int32_t host_last_desired_level_count;
   int32_t host_last_active_level_count;
   float host_last_pmode_alpha;
+  int32_t host_desired_level_sets;
+  int32_t host_active_level_sets;
+  char host_desired_levels[128];
+  char host_active_levels[128];
 
   int32_t dma_chains;
   int32_t dma_well_formed;

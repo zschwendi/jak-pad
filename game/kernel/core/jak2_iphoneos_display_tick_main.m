@@ -5,6 +5,7 @@
 #include "game/kernel/core/jak2_runtime.h"
 #include "game/kernel/core/pad.h"
 #include "game/graphics/pipelines/metal/metal_jak2_host_bridge.h"
+#include <string.h>
 #import <QuartzCore/CADisplayLink.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <TargetConditionals.h>
@@ -62,9 +63,18 @@ static BOOL runtime_metrics_match_during_pause(const goal_jak2_runtime_metrics* 
          before->master_exit == after->master_exit &&
          before->dgo_archives == after->dgo_archives &&
          before->dgo_objects == after->dgo_objects &&
+         before->dgo_failures == after->dgo_failures &&
+         before->dgo_last_result == after->dgo_last_result &&
+         strcmp(before->current_dgo_name, after->current_dgo_name) == 0 &&
+         strcmp(before->last_dgo_name, after->last_dgo_name) == 0 &&
+         strcmp(before->last_dgo_error, after->last_dgo_error) == 0 &&
          before->host_chains == after->host_chains &&
          before->host_sync_paths == after->host_sync_paths &&
          before->host_syncvs == after->host_syncvs &&
+         before->host_desired_level_sets == after->host_desired_level_sets &&
+         before->host_active_level_sets == after->host_active_level_sets &&
+         strcmp(before->host_desired_levels, after->host_desired_levels) == 0 &&
+         strcmp(before->host_active_levels, after->host_active_levels) == 0 &&
          before->sound_bank_failures == after->sound_bank_failures &&
          before->sound_player_failures == after->sound_player_failures &&
          before->sound_str_failures == after->sound_str_failures &&
@@ -907,14 +917,21 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
             (unsigned long long)_metalMetrics.last_sprite_missing_textures);
       NSLog(@"GOALPAD_JAK2_ECO_TITLE_STATE mode=%s title=#x%08x/%s time=%llu "
              "scene=#x%08x/%s progress=#x%08x/%s target=#x%08x/%s "
-             "levels=%d/%d pmode=%.3f str-failures=%u",
+             "levels=%s/%s sets=%d/%d pmode=%.3f str-failures=%u "
+             "dgo=%s/%s result=%d failures=%d error=%s",
             _metrics.master_mode, _metrics.title_control_process,
             _metrics.title_control_state, (unsigned long long)_metrics.title_control_time,
             _metrics.scene_player_process, _metrics.scene_player_state,
             _metrics.progress_process, _metrics.progress_state, _metrics.target_process,
-            _metrics.target_state, _metrics.host_last_desired_level_count,
-            _metrics.host_last_active_level_count, _metrics.host_last_pmode_alpha,
-            _metrics.sound_str_failures);
+            _metrics.target_state,
+            _metrics.host_desired_levels[0] ? _metrics.host_desired_levels : "<none>",
+            _metrics.host_active_levels[0] ? _metrics.host_active_levels : "<none>",
+            _metrics.host_desired_level_sets, _metrics.host_active_level_sets,
+            _metrics.host_last_pmode_alpha, _metrics.sound_str_failures,
+            _metrics.current_dgo_name[0] ? _metrics.current_dgo_name : "<none>",
+            _metrics.last_dgo_name[0] ? _metrics.last_dgo_name : "<none>",
+            _metrics.dgo_last_result, _metrics.dgo_failures,
+            _metrics.last_dgo_error[0] ? _metrics.last_dgo_error : "<none>");
       goal_jak2_apple_input_metrics input = {0};
       if (goal_jak2_apple_input_get_metrics(&input) == GOAL_KERNEL_CORE_OK) {
         NSLog(@"GOALPAD_JAK2_ECO_INPUT samples=%llu reads=%d connected=%d sources=%u "
