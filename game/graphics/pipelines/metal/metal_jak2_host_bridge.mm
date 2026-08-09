@@ -116,6 +116,10 @@ goal_jak2_metal_host* active_host() {
   return g_active_host;
 }
 
+bool counter_advanced_by(u64 before, u64 after, u64 expected) {
+  return after >= before && after - before == expected;
+}
+
 void record_failure(goal_jak2_metal_host* host, const char* message) {
   host->metrics.failed_chains++;
   host->error = message;
@@ -1031,8 +1035,10 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.animated_texture_slot_count = animated_texture_slots.size();
     render_options.host_bucket_context = &texture_dispatch;
     render_options.host_bucket_callback = execute_planned_texture_upload;
+    const auto renderer_before = host->renderer.chain_stats();
     const bool acquired = host->renderer.render_chain_frame(
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
+    const auto renderer_after = host->renderer.chain_stats();
     copy_renderer_metrics(host);
     if (raw_image_callback_executed != raw_image_plan->present) {
       record_send_chain_failure(
@@ -1045,12 +1051,17 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                                 host_texture_mutated);
       return;
     }
-    const bool exact_presenting_commit_count =
-        host->metrics.command_buffers_committed == host->metrics.chains;
-    const bool ocean_buffers_completed =
-        host->metrics.ocean_command_buffers_committed ==
-            host->metrics.ocean_command_buffers_completed &&
-        host->metrics.ocean_command_buffer_errors == 0;
+    const bool exact_render_attempt =
+        counter_advanced_by(renderer_before.chains_rendered, renderer_after.chains_rendered, 1);
+    const bool exact_presenting_commit_count = counter_advanced_by(
+        renderer_before.command_buffers_committed, renderer_after.command_buffers_committed, 1);
+    const bool exact_drawable_acquisition_count = counter_advanced_by(
+        renderer_before.drawables_acquired, renderer_after.drawables_acquired, 1);
+    const bool exact_submission_count =
+        counter_advanced_by(renderer_before.submissions, renderer_after.submissions, 1);
+    const bool ocean_buffers_completed = host->metrics.ocean_command_buffers_committed ==
+                                             host->metrics.ocean_command_buffers_completed &&
+                                         host->metrics.ocean_command_buffer_errors == 0;
     if (!ocean_buffers_completed) {
       record_send_chain_failure(host, "Jak 2 ocean command buffer failed its completion gate",
                                 host_texture_mutated);
@@ -1058,21 +1069,19 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     }
     if (!host->layer) {
       if (acquired || host->metrics.command_buffers_committed != 0 ||
-          host->metrics.command_buffers_completed != 0 || host->metrics.command_buffer_errors != 0 ||
-          host->metrics.drawables_acquired != 0 || host->metrics.drawable_misses != 0 ||
-          host->metrics.submissions != 0 || host->metrics.presentations != 0 ||
-          host->metrics.presentation_drops != 0 ||
+          host->metrics.command_buffers_completed != 0 ||
+          host->metrics.command_buffer_errors != 0 || host->metrics.drawables_acquired != 0 ||
+          host->metrics.drawable_misses != 0 || host->metrics.submissions != 0 ||
+          host->metrics.presentations != 0 || host->metrics.presentation_drops != 0 ||
           host->metrics.presentation_order_mismatches != 0) {
         record_send_chain_failure(
             host, "Jak 2 nil-layer renderer violated the submission-free dispatch gate",
             host_texture_mutated);
         return;
       }
-    } else if (!acquired || host->metrics.unsupported_blends != 0 ||
-               !exact_presenting_commit_count ||
-               host->metrics.drawables_acquired != host->metrics.chains ||
-               host->metrics.drawable_misses != 0 ||
-               host->metrics.submissions != host->metrics.chains ||
+    } else if (!acquired || host->metrics.unsupported_blends != 0 || !exact_render_attempt ||
+               !exact_presenting_commit_count || !exact_drawable_acquisition_count ||
+               host->metrics.drawable_misses != 0 || !exact_submission_count ||
                host->metrics.late_present_submissions != 0 ||
                host->metrics.command_buffer_errors != 0) {
       record_send_chain_failure(

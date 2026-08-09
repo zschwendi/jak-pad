@@ -24,6 +24,8 @@
 #include "game/kernel/core/kernel_core.h"
 #include "game/runtime.h"
 
+#import <QuartzCore/CAMetalLayer.h>
+
 namespace {
 
 constexpr u32 kChainOffset = 0x100000;
@@ -869,6 +871,53 @@ int main() {
             metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == initial_texture_count,
         "destroy unloaded recorded serialized keys in reverse and released every texture handle");
+
+  @autoreleasepool {
+    CAMetalLayer* recovery_layer = [CAMetalLayer layer];
+    recovery_layer.drawableSize = CGSizeMake(64, 64);
+    goal_jak2_metal_host* recovery_host = goal_jak2_metal_host_create_presenting(recovery_layer);
+    goal_gfx_host recovery_callbacks = {};
+    check(recovery_host && goal_jak2_metal_host_copy_gfx_host(recovery_host, &recovery_callbacks),
+          "created a layer-backed host for pre-render rejection recovery");
+
+    make_sprite_texture_upload_chain(1, -2);
+    recovery_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+    goal_jak2_metal_host_metrics recovery_metrics = {};
+    check(goal_jak2_metal_host_get_metrics(recovery_host, &recovery_metrics),
+          "copied layer-backed metrics after a pre-render planner rejection");
+    const char* recovery_error = goal_jak2_metal_host_last_error(recovery_host);
+    const std::string first_recovery_error = recovery_error ? recovery_error : "";
+    check(recovery_metrics.chains == 1 && recovery_metrics.completed_chains == 0 &&
+              recovery_metrics.failed_chains == 1 &&
+              recovery_metrics.command_buffers_committed == 0 &&
+              recovery_metrics.drawables_acquired == 0 && recovery_metrics.submissions == 0 &&
+              first_recovery_error.find("bucket 312 texture-upload plan rejected malformed DMA") !=
+                  std::string::npos,
+          "malformed layer-backed work fails before host mutation or renderer submission");
+
+    write_texture_page();
+    make_sprite_texture_upload_chain();
+    recovery_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+    make_empty_chain();
+    recovery_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+    recovery_error = goal_jak2_metal_host_last_error(recovery_host);
+    check(goal_jak2_metal_host_get_metrics(recovery_host, &recovery_metrics) &&
+              recovery_metrics.chains == 3 && recovery_metrics.completed_chains == 2 &&
+              recovery_metrics.failed_chains == 1 && recovery_metrics.sprite_texture_uploads == 1 &&
+              recovery_metrics.last_buckets_dispatched == kBucketCount &&
+              recovery_metrics.command_buffers_committed == 2 &&
+              recovery_metrics.drawables_acquired == 2 && recovery_metrics.drawable_misses == 0 &&
+              recovery_metrics.submissions == 2 && recovery_metrics.late_present_submissions == 0 &&
+              recovery_metrics.command_buffer_errors == 0 && recovery_error &&
+              first_recovery_error == recovery_error,
+          "valid presenting chains recover after rejection with exact renderer counters and first "
+          "error");
+    check(!goal_jak2_metal_host_metrics_pass_frame_gate(&recovery_metrics, 0),
+          "recovery does not weaken the cumulative no-error frame gate");
+    goal_jak2_metal_host_destroy(recovery_host);
+  }
+  check(metal_texture_live_count() == initial_texture_count,
+        "layer-backed recovery released its mutated host texture state");
 
   constexpr u32 kBucket4FixtureBase = 0x300000;
   auto bucket4_fixture =
