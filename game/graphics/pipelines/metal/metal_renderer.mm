@@ -391,6 +391,12 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   constexpr auto first_merc = static_cast<std::size_t>(jak2::BucketId::MERC_L0_TFRAG);
   constexpr auto merc_stride = static_cast<std::size_t>(jak2::BucketId::MERC_L1_TFRAG) -
                                first_merc;
+  constexpr auto first_merc_alpha = static_cast<std::size_t>(jak2::BucketId::MERC_L0_ALPHA);
+  constexpr auto merc_alpha_stride =
+      static_cast<std::size_t>(jak2::BucketId::MERC_L1_ALPHA) - first_merc_alpha;
+  constexpr auto first_merc_water = static_cast<std::size_t>(jak2::BucketId::MERC_L0_WATER);
+  constexpr auto merc_water_stride =
+      static_cast<std::size_t>(jak2::BucketId::MERC_L1_WATER) - first_merc_water;
   const std::vector<tfrag3::TFragmentTreeKind> normal_tfrags = {
       tfrag3::TFragmentTreeKind::NORMAL};
   const std::vector<tfrag3::TFragmentTreeKind> trans_tfrags = {
@@ -518,6 +524,28 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalMercBucketRenderer>(
           fmt::format("merc-l{}-tfrag", level_id), descriptor.id, merc);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::MercAlpha) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_merc_alpha &&
+             (bucket_id - first_merc_alpha) % merc_alpha_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_merc_alpha) / merc_alpha_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalMercBucketRenderer>(
+          fmt::format("merc-l{}-alpha", level_id), descriptor.id, merc);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::MercWater) {
+      ASSERT(batch_size == 0);
+      std::string name;
+      if (bucket_id == static_cast<std::size_t>(jak2::BucketId::MERC_LCOM_WATER)) {
+        name = "merc-lcom-water";
+      } else {
+        ASSERT(bucket_id >= first_merc_water &&
+               (bucket_id - first_merc_water) % merc_water_stride == 0);
+        const int level_id = static_cast<int>((bucket_id - first_merc_water) / merc_water_stride);
+        ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+        name = fmt::format("merc-l{}-water", level_id);
+      }
+      m_bucket_renderers[bucket_id] =
+          std::make_unique<MetalMercBucketRenderer>(name, descriptor.id, merc);
     } else if (descriptor.behavior ==
                metal_renderer::Jak2MetalBucketBehavior::HostTextureUploadDirect) {
       ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1) ||

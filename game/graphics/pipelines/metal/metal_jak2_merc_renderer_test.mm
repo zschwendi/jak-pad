@@ -1,8 +1,11 @@
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "fmt/format.h"
 
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/dma/dma.h"
@@ -22,8 +25,13 @@ namespace {
 
 constexpr int kTargetSize = 64;
 constexpr char kLevelName[] = "jak2-merc-gpu-test";
-constexpr char kModelName[] = "jak2-merc-model";
+constexpr char kNormalModelName[] = "jak2-merc-normal-model";
+constexpr char kAlphaModelName[] = "jak2-merc-alpha-model";
+constexpr char kWaterModelName[] = "jak2-merc-water-model";
 constexpr u32 kMercBucket = static_cast<u32>(jak2::BucketId::MERC_L0_TFRAG);
+constexpr u32 kMercAlphaBucket = static_cast<u32>(jak2::BucketId::MERC_L0_ALPHA);
+constexpr u32 kMercWaterBucket = static_cast<u32>(jak2::BucketId::MERC_L0_WATER);
+constexpr u32 kMercCommonWaterBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_WATER);
 constexpr u32 kOpening = 0x100;
 constexpr u32 kBoundary = 0x200;
 constexpr u32 kSetup = 0x400;
@@ -112,9 +120,11 @@ std::vector<u8> make_setup() {
   return data;
 }
 
-std::vector<u8> make_model_packet() {
+std::vector<u8> make_model_packet(const char* model_name) {
   std::vector<u8> data(128, 0);
-  std::memcpy(data.data(), kModelName, sizeof(kModelName));
+  const auto model_name_size = std::strlen(model_name) + 1;
+  ASSERT(model_name_size <= data.size());
+  std::memcpy(data.data(), model_name, model_name_size);
   data.resize(data.size() + 7 * 16, 0);
   constexpr std::size_t kAmbient = 128 + 6 * 16;
   for (int lane = 0; lane < 4; lane++) {
@@ -155,7 +165,7 @@ void write_bone(std::vector<u8>* memory, u32 address, float x, float y) {
   std::memcpy(memory->data() + address, matrix, sizeof(matrix));
 }
 
-std::vector<u8> make_source_chain() {
+std::vector<u8> make_source_chain(const char* model_name) {
   std::vector<u8> memory(kMemorySize, 0);
   put_tag(&memory, kOpening, DmaTag::Kind::NEXT, 0, kSetup, 0, 0);
 
@@ -167,7 +177,7 @@ std::vector<u8> make_source_chain() {
           static_cast<u32>(VifCode::Kind::DIRECT) << 24 | 3);
   put_tag(&memory, kSetupPatch, DmaTag::Kind::NEXT, 0, kModel, 0, 0);
 
-  const auto packet = make_model_packet();
+  const auto packet = make_model_packet(model_name);
   put_tag(&memory, kModel, DmaTag::Kind::CNT, static_cast<u16>(packet.size() / 16), 0, 0,
           static_cast<u32>(VifCode::Kind::PC_PORT) << 24);
   std::memcpy(memory.data() + kModel + 16, packet.data(), packet.size());
@@ -214,34 +224,41 @@ std::unique_ptr<tfrag3::Level> make_level() {
   }
   merc.indices = {0, 1, 2, 3};
 
-  tfrag3::MercDraw draw;
-  draw.mode.set_depth_write_enable(true);
-  draw.mode.set_zt(true);
-  draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
-  draw.mode.set_ab(false);
-  draw.mode.set_at(false);
-  draw.mode.set_fog(false);
-  draw.mode.set_decal(false);
-  draw.mode.set_filt_enable(false);
-  draw.mode.set_clamp_s_enable(true);
-  draw.mode.set_clamp_t_enable(true);
-  draw.tree_tex_id = 0;
-  draw.first_index = 0;
-  draw.index_count = 4;
-  draw.num_triangles = 2;
+  const auto add_model = [&merc](const char* name, bool alpha_blend, bool depth_write) {
+    tfrag3::MercDraw draw;
+    draw.mode.set_depth_write_enable(depth_write);
+    draw.mode.set_zt(true);
+    draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
+    draw.mode.set_ab(alpha_blend);
+    draw.mode.set_alpha_blend(alpha_blend ? DrawMode::AlphaBlend::SRC_DST_SRC_DST
+                                         : DrawMode::AlphaBlend::DISABLED);
+    draw.mode.set_at(false);
+    draw.mode.set_fog(false);
+    draw.mode.set_decal(false);
+    draw.mode.set_filt_enable(true);
+    draw.mode.set_clamp_s_enable(true);
+    draw.mode.set_clamp_t_enable(true);
+    draw.tree_tex_id = 0;
+    draw.first_index = 0;
+    draw.index_count = 4;
+    draw.num_triangles = 2;
 
-  tfrag3::MercEffect effect;
-  effect.all_draws.push_back(draw);
-  effect.envmap_texture = 0;
-  tfrag3::MercModel model;
-  model.name = kModelName;
-  model.effects.push_back(std::move(effect));
-  model.max_draws = 1;
-  model.max_bones = 1;
-  model.st_vif_add = 0;
-  model.xyz_scale = 1.f;
-  model.st_magic = 0.f;
-  merc.models.push_back(std::move(model));
+    tfrag3::MercEffect effect;
+    effect.all_draws.push_back(draw);
+    effect.envmap_texture = 0;
+    tfrag3::MercModel model;
+    model.name = name;
+    model.effects.push_back(std::move(effect));
+    model.max_draws = 1;
+    model.max_bones = 1;
+    model.st_vif_add = 0;
+    model.xyz_scale = 1.f;
+    model.st_magic = 0.f;
+    merc.models.push_back(std::move(model));
+  };
+  add_model(kNormalModelName, false, true);
+  add_model(kAlphaModelName, true, true);
+  add_model(kWaterModelName, true, false);
   return level;
 }
 
@@ -392,13 +409,20 @@ int main() {
     const u64 placeholder = texture_pool.get_placeholder_texture();
 
     auto shared = std::make_shared<MetalMerc2>(device, queue, &texture_pool);
-    MetalMercBucketRenderer renderer("merc-l0-tfrag", static_cast<int>(kMercBucket), shared);
+    MetalMercBucketRenderer normal_renderer("merc-l0-tfrag", static_cast<int>(kMercBucket),
+                                            shared);
+    MetalMercBucketRenderer alpha_renderer("merc-l0-alpha", static_cast<int>(kMercAlphaBucket),
+                                           shared);
+    MetalMercBucketRenderer water_renderer("merc-l0-water", static_cast<int>(kMercWaterBucket),
+                                           shared);
+    MetalMercBucketRenderer common_water_renderer(
+        "merc-lcom-water", static_cast<int>(kMercCommonWaterBucket), shared);
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
-              load.level_name == kLevelName && load.models == 1 && load.vertices == 4 &&
+              load.level_name == kLevelName && load.models == 3 && load.vertices == 4 &&
               load.indices == 4,
-          "registered one asset-free Merc model in the production model pool");
+          "registered normal, alpha, and water asset-free Merc models in the production pool");
     if (failures) {
       if (!load_error.empty()) {
         std::printf("Merc load error: %s\n", load_error.c_str());
@@ -409,9 +433,9 @@ int main() {
       return 1;
     }
 
-    auto positive_memory = make_source_chain();
+    auto positive_memory = make_source_chain(kNormalModelName);
     const auto positive = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                 &renderer, &positive_memory, 1);
+                                 &normal_renderer, &positive_memory, 1);
     check(positive.completed && positive.final_offset == kBoundary &&
               positive.stats.models == 1 && positive.stats.draws == 1 &&
               positive.stats.triangles == 2 && positive.draw_calls == 1 &&
@@ -425,11 +449,36 @@ int main() {
     check(count_non_black(positive.pixels) > 0,
           "the source-shaped Jak 2 Merc model produces non-black GPU pixels");
 
-    auto malformed_memory = make_source_chain();
+    struct Variant {
+      MetalMercBucketRenderer* renderer;
+      const char* name;
+      const char* model_name;
+    };
+    const std::array<Variant, 3> variants = {{
+        {&alpha_renderer, "alpha", kAlphaModelName},
+        {&water_renderer, "per-level water", kWaterModelName},
+        {&common_water_renderer, "common water", kWaterModelName},
+    }};
+    u64 variant_frame = 2;
+    for (const auto& [renderer, name, model_name] : variants) {
+      auto memory = make_source_chain(model_name);
+      const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 renderer, &memory, variant_frame++);
+      const bool rendered = result.completed && result.final_offset == kBoundary &&
+                            result.stats.models == 1 && result.stats.draws == 1 &&
+                            result.stats.triangles == 2 && result.draw_calls == 1 &&
+                            result.triangles == 2 && result.stats.malformed_dma == 0 &&
+                            count_non_black(result.pixels) > 0;
+      check(rendered,
+            fmt::format("the {} Merc bucket renders its source category draw mode", name)
+                .c_str());
+    }
+
+    auto malformed_memory = make_source_chain(kAlphaModelName);
     put_tag(&malformed_memory, kModel, DmaTag::Kind::CNT, 0xffff, 0, 0,
             static_cast<u32>(VifCode::Kind::PC_PORT) << 24);
     const auto malformed = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                  &renderer, &malformed_memory, 2);
+                                  &alpha_renderer, &malformed_memory, variant_frame);
     check(malformed.completed && malformed.final_offset == kBoundary &&
               malformed.stats.malformed_dma == 1 && malformed.stats.models == 0 &&
               malformed.stats.draws == 0 && malformed.stats.triangles == 0 &&
@@ -444,10 +493,10 @@ int main() {
       metal_texture_release(placeholder);
     }
     if (failures) {
-      std::printf("FAIL: %d Jak 2 normal Merc renderer checks failed\n", failures);
+      std::printf("FAIL: %d Jak 2 Merc category renderer checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak 2 normal Merc rendered and rejected exact asset-free fixtures\n");
+    std::printf("PASS: Jak 2 normal, alpha, and water Merc buckets rendered asset-free fixtures\n");
     return 0;
   }
 }

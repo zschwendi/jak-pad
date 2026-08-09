@@ -20,9 +20,10 @@
  *  - Geometry comes from the merc-scoped model pool (metal_merc_model_pool.h)
  *    instead of the GL-only streaming Loader.
  *
- * Jak 1's eight Merc buckets and Jak 2's six normal opaque Merc buckets each
- * route to one shared MetalMerc2, as in the GL renderer. Jak 2's producer DMA
- * is validated transactionally before any model or GPU state is published.
+ * Jak 1's eight Merc buckets and Jak 2's source-bound normal, alpha and water
+ * Merc buckets each route to one shared MetalMerc2, as in the GL renderer.
+ * Jak 2's producer DMA is validated transactionally before any model or GPU
+ * state is published.
  */
 
 #include <memory>

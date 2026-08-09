@@ -74,6 +74,12 @@ constexpr Table make_table() {
   const auto merc = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::Merc;
   };
+  const auto merc_alpha = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::MercAlpha;
+  };
+  const auto merc_water = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::MercWater;
+  };
   const auto blit_display = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::BlitDisplay;
   };
@@ -102,7 +108,7 @@ constexpr Table make_table() {
     tfragment_trans(level_bucket(BucketId::TFRAG_T_L0_ALPHA, BucketId::TFRAG_T_L1_ALPHA, level));
     tie_trans(level_bucket(BucketId::TIE_T_L0_ALPHA, BucketId::TIE_T_L1_ALPHA, level));
     tie_trans_envmap(level_bucket(BucketId::ETIE_T_L0_ALPHA, BucketId::ETIE_T_L1_ALPHA, level));
-    defer(level_bucket(BucketId::MERC_L0_ALPHA, BucketId::MERC_L1_ALPHA, level));
+    merc_alpha(level_bucket(BucketId::MERC_L0_ALPHA, BucketId::MERC_L1_ALPHA, level));
     defer(level_bucket(BucketId::GMERC_L0_ALPHA, BucketId::GMERC_L1_ALPHA, level));
 
     defer(level_bucket(BucketId::TEX_L0_PRIS, BucketId::TEX_L1_PRIS, level));
@@ -114,7 +120,7 @@ constexpr Table make_table() {
     defer(level_bucket(BucketId::GMERC_L0_PRIS2, BucketId::GMERC_L1_PRIS2, level));
 
     host_texture_upload(level_bucket(BucketId::TEX_L0_WATER, BucketId::TEX_L1_WATER, level));
-    defer(level_bucket(BucketId::MERC_L0_WATER, BucketId::MERC_L1_WATER, level));
+    merc_water(level_bucket(BucketId::MERC_L0_WATER, BucketId::MERC_L1_WATER, level));
     defer(level_bucket(BucketId::GMERC_L0_WATER, BucketId::GMERC_L1_WATER, level));
     tfragment_water(level_bucket(BucketId::TFRAG_W_L0_WATER, BucketId::TFRAG_W_L1_WATER, level));
     tie_water(level_bucket(BucketId::TIE_W_L0_WATER, BucketId::TIE_W_L1_WATER, level));
@@ -132,7 +138,7 @@ constexpr Table make_table() {
   defer(BucketId::MERC_LCOM_PRIS);
   defer(BucketId::GMERC_LCOM_PRIS);
   defer(BucketId::TEX_LCOM_WATER);
-  defer(BucketId::MERC_LCOM_WATER);
+  merc_water(BucketId::MERC_LCOM_WATER);
   defer(BucketId::TEX_LCOM_SKY_POST);
   defer(BucketId::OCEAN_NEAR);
   host_texture_upload(BucketId::TEX_ALL_SPRITE);
@@ -182,7 +188,7 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 98);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 85);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 27);
@@ -201,6 +207,8 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWater) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWaterEnvmap) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::BlitDisplay) == 1);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercAlpha) == 6);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercWater) == 7);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);
 
 }  // namespace
