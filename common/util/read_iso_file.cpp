@@ -619,8 +619,10 @@ struct OwnedStagingDirectory::Impl {
     std::vector<Entry> children;
   };
 
+  std::filesystem::path parent_path;
   std::string root_name;
   posix_file::OwnedFd parent;
+  posix_file::Identity parent_identity;
   posix_file::OwnedFd root;
   posix_file::Identity root_identity;
   std::vector<Entry> entries;
@@ -637,7 +639,7 @@ struct OwnedStagingDirectory::Impl {
 
   std::optional<Error> create(const std::filesystem::path& staging_directory) {
     root_name = staging_directory.filename().string();
-    auto parent_path = staging_directory.parent_path();
+    parent_path = staging_directory.parent_path();
     if (parent_path.empty()) {
       parent_path = ".";
     }
@@ -646,7 +648,7 @@ struct OwnedStagingDirectory::Impl {
                         "The staging directory does not have a safe basename.");
     }
     parent = posix_file::open_directory(parent_path.c_str());
-    if (!parent) {
+    if (!parent || !posix_file::descriptor_identity(parent.get(), &parent_identity)) {
       return make_error(ErrorCode::output_create_failed, 0,
                         system_error("Could not open the staging parent directory"));
     }
@@ -886,12 +888,22 @@ struct OwnedStagingDirectory::Impl {
   }
 
   bool is_linked() const {
+    auto current_parent = posix_file::open_directory(parent_path.c_str());
+    posix_file::Identity descriptor_parent_identity;
+    posix_file::Identity current_parent_identity;
     posix_file::Identity descriptor_identity;
-    return cleanup_pending && root &&
+    return cleanup_pending && parent && root && current_parent &&
+           posix_file::descriptor_identity(parent.get(), &descriptor_parent_identity) &&
+           descriptor_parent_identity.device == parent_identity.device &&
+           descriptor_parent_identity.inode == parent_identity.inode &&
+           posix_file::descriptor_identity(current_parent.get(), &current_parent_identity) &&
+           current_parent_identity.device == parent_identity.device &&
+           current_parent_identity.inode == parent_identity.inode &&
            posix_file::descriptor_identity(root.get(), &descriptor_identity) &&
            descriptor_identity.device == root_identity.device &&
            descriptor_identity.inode == root_identity.inode &&
            posix_file::entry_identity(parent.get(), root_name, root_identity) &&
+           posix_file::entry_identity(current_parent.get(), root_name, root_identity) &&
            exact_entries(root.get(), entries);
   }
 
@@ -957,11 +969,13 @@ std::optional<std::string> OwnedStagingDirectory::cleanup() {
   return error;
 }
 
-void OwnedStagingDirectory::keep() {
-  if (m_impl) {
-    m_impl->cleanup_pending = false;
-    m_impl.reset();
+bool OwnedStagingDirectory::keep() {
+  if (!m_impl || !m_impl->is_linked()) {
+    return false;
   }
+  m_impl->cleanup_pending = false;
+  m_impl.reset();
+  return true;
 }
 
 bool OwnedStagingDirectory::is_linked() const {

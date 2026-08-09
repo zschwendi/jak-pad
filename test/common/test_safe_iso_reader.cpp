@@ -448,6 +448,58 @@ bool owned_staging_rejects_and_preserves_unexpected_entries() {
   return true;
 }
 
+bool owned_staging_rejects_replaced_parent_path() {
+  TemporaryDirectory temp;
+  const auto fixture = make_synthetic_iso();
+  const auto image = temp.path / "fixture.iso";
+  const auto staging_parent = temp.path / "staging-parent";
+  const auto moved_staging_parent = temp.path / "moved-staging-parent";
+  const auto external_parent = temp.path / "external-parent";
+  const auto staging = staging_parent / "staging";
+  CHECK(write_image(image, fixture.bytes));
+  CHECK(std::filesystem::create_directory(staging_parent));
+  CHECK(std::filesystem::create_directories(external_parent / "staging" / "nested"));
+  std::ofstream(external_parent / "staging" / "external.txt") << "preserve";
+  std::ofstream(external_parent / "staging" / "nested" / "sentinel") << "external";
+
+  bool replaced = false;
+  bool replacement_failed = false;
+  iso_file::Options options;
+  options.read_chunk_bytes = 128;
+  options.on_progress = [&](const iso_file::Progress& progress) {
+    if (!replaced && progress.bytes_completed > 0) {
+      std::error_code error;
+      std::filesystem::rename(staging_parent, moved_staging_parent, error);
+      if (!error) {
+        std::filesystem::rename(external_parent, staging_parent, error);
+      }
+      replacement_failed = bool(error);
+      replaced = !replacement_failed;
+    }
+  };
+
+  OpenFile input(image);
+  CHECK(input.file);
+  iso_file::OwnedStagingDirectory owned_staging;
+  const auto result =
+      iso_file::extract_to_owned_staging(input.file, staging, &owned_staging, options);
+  CHECK(result);
+  CHECK(replaced);
+  CHECK(!replacement_failed);
+  CHECK(std::filesystem::is_regular_file(moved_staging_parent / "staging" / "SAFE.TXT"));
+  CHECK(std::filesystem::is_directory(moved_staging_parent / "staging" / "NEST"));
+  CHECK(!owned_staging.keep());
+  const auto cleanup_error = owned_staging.cleanup();
+  CHECK(!cleanup_error);
+  CHECK(read_bytes(staging / "external.txt") ==
+        std::vector<uint8_t>({'p', 'r', 'e', 's', 'e', 'r', 'v', 'e'}));
+  CHECK(read_bytes(staging / "nested" / "sentinel") ==
+        std::vector<uint8_t>({'e', 'x', 't', 'e', 'r', 'n', 'a', 'l'}));
+  CHECK(std::filesystem::is_directory(moved_staging_parent));
+  CHECK(std::filesystem::is_empty(moved_staging_parent));
+  return true;
+}
+
 bool desktop_adapter_preserves_behavior_and_throws_typed_errors() {
   TemporaryDirectory temp;
   const auto fixture = make_synthetic_iso();
@@ -498,6 +550,8 @@ int main() {
       {"existing_staging_is_preserved", existing_staging_is_preserved},
       {"owned_staging_rejects_and_preserves_unexpected_entries",
        owned_staging_rejects_and_preserves_unexpected_entries},
+      {"owned_staging_rejects_replaced_parent_path",
+       owned_staging_rejects_replaced_parent_path},
       {"desktop_adapter_preserves_behavior_and_throws_typed_errors",
        desktop_adapter_preserves_behavior_and_throws_typed_errors},
   };

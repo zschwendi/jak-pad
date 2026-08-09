@@ -434,14 +434,13 @@ ValidationResult<StagedExtraction> extract_and_validate(
     return ValidationResult<StagedExtraction>::failure(
         with_cleanup(std::move(*checkpoint_error), &owned_staging));
   }
-  if (!owned_staging.is_linked()) {
+  if (!owned_staging.keep()) {
     return ValidationResult<StagedExtraction>::failure(
         with_cleanup(make_error(ValidationErrorCode::invalid_extraction_result,
                                 "The exact validated staging directory changed before completion."),
                      &owned_staging));
   }
 
-  owned_staging.keep();
   return ValidationResult<StagedExtraction>::success(
       {std::move(match), new_staging_directory, files.take_value()});
 }

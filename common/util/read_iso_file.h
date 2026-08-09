@@ -136,7 +136,8 @@ class OwnedStagingDirectory {
   std::optional<std::string> cleanup();
 
   /// Leave the successfully validated staging directory in place and relinquish its descriptors.
-  void keep();
+  /// Returns false and retains ownership when its caller-visible path or recorded tree changed.
+  bool keep();
 
   /// Confirm that the retained directory is still linked and contains exactly the recorded tree.
   bool is_linked() const;
