@@ -256,7 +256,8 @@ void copy_known_symbol_name(uint32_t symbol, char* out, size_t size) {
   static const char* names[] = {"game",       "menu",    "progress", "pause",
                                 "freeze",     "startup", "wait",     "idle",
                                 "scrap-book", "release", "play-anim", "come-in",
-                                "go-away",    "gone",    "target-title"};
+                                "go-away",    "gone",    "target-title", "pending",
+                                "active",     "locked"};
   out[0] = '\0';
   for (const char* name : names) {
     if (goal_game_find_symbol(name, nullptr) == symbol) {
@@ -317,6 +318,34 @@ void update_scene_diagnostic_metrics() {
   g_metrics.animation_frame_group = scene.animation_frame_group;
   g_metrics.animation_frame = scene.animation_frame;
   g_metrics.animation_aframe = scene.animation_aframe;
+
+  uint32_t wait_gate = 0;
+  uint32_t entry_gui_id = 0;
+  uint32_t entry_gui_status = 0;
+  uint32_t art_file_status = 0;
+  uint32_t art_gui_id = 0;
+  uint32_t art_gui_channel = 0;
+  uint32_t art_gui_action = 0;
+  uint32_t art_gui_status = 0;
+  g_metrics.scene_wait_diagnostics_valid =
+      goal_game_find_symbol("*pc-scene-wait-gate*", &wait_gate) &&
+      goal_game_find_symbol("*pc-scene-wait-entry-gui-id*", &entry_gui_id) &&
+      goal_game_find_symbol("*pc-scene-wait-entry-gui-status*", &entry_gui_status) &&
+      goal_game_find_symbol("*pc-scene-wait-art-file-status*", &art_file_status) &&
+      goal_game_find_symbol("*pc-scene-wait-art-gui-id*", &art_gui_id) &&
+      goal_game_find_symbol("*pc-scene-wait-art-gui-channel*", &art_gui_channel) &&
+      goal_game_find_symbol("*pc-scene-wait-art-gui-action*", &art_gui_action) &&
+      goal_game_find_symbol("*pc-scene-wait-art-gui-status*", &art_gui_status);
+  g_metrics.scene_wait_gate = static_cast<int32_t>(wait_gate);
+  g_metrics.scene_wait_entry_gui_id = entry_gui_id;
+  g_metrics.scene_wait_entry_gui_status = static_cast<int32_t>(entry_gui_status);
+  g_metrics.scene_wait_art_file_status = art_file_status;
+  copy_known_symbol_name(art_file_status, g_metrics.scene_wait_art_file_status_name,
+                         sizeof(g_metrics.scene_wait_art_file_status_name));
+  g_metrics.scene_wait_art_gui_id = art_gui_id;
+  g_metrics.scene_wait_art_gui_channel = static_cast<int32_t>(art_gui_channel);
+  g_metrics.scene_wait_art_gui_action = static_cast<int32_t>(art_gui_action);
+  g_metrics.scene_wait_art_gui_status = static_cast<int32_t>(art_gui_status);
 }
 
 void update_title_state_metrics() {

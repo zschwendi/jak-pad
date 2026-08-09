@@ -7,6 +7,29 @@
 
 ;; DECOMP BEGINS
 
+(defenum pc-scene-wait-gate
+  :type int32
+  :bitfield #f
+  (none 0)
+  (progress 1)
+  (target-grab 2)
+  (setting-or-entry-gui 3)
+  (ground-time 4)
+  (levels 5)
+  (art-file 6)
+  (art-gui 7)
+  (ready 8)
+  )
+
+(define *pc-scene-wait-gate* (pc-scene-wait-gate none))
+(define *pc-scene-wait-entry-gui-id* (the-as sound-id 0))
+(define *pc-scene-wait-entry-gui-status* (gui-status unknown))
+(define *pc-scene-wait-art-file-status* (the-as symbol #f))
+(define *pc-scene-wait-art-gui-id* (the-as sound-id 0))
+(define *pc-scene-wait-art-gui-channel* (gui-channel none))
+(define *pc-scene-wait-art-gui-action* (gui-action none))
+(define *pc-scene-wait-art-gui-status* (gui-status unknown))
+
 (deftype scene-stage (process-hidden)
   ()
   )
@@ -824,6 +847,14 @@
 (defstate wait (scene-player)
   :virtual #t
   :enter (behavior ((arg0 symbol))
+    (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
+    (set! *pc-scene-wait-entry-gui-id* (the-as sound-id 0))
+    (set! *pc-scene-wait-entry-gui-status* (gui-status unknown))
+    (set! *pc-scene-wait-art-file-status* (the-as symbol #f))
+    (set! *pc-scene-wait-art-gui-id* (the-as sound-id 0))
+    (set! *pc-scene-wait-art-gui-channel* (gui-channel none))
+    (set! *pc-scene-wait-art-gui-action* (gui-action none))
+    (set! *pc-scene-wait-art-gui-status* (gui-status unknown))
     (set-time! (-> self state-time))
     (when (or (-> self scene) (-> self preload-continue))
       (let ((gp-0 (scene-decode-continue (the-as basic (if (-> self scene)
@@ -884,9 +915,11 @@
   :code (behavior ((arg0 symbol))
     (local-vars (v1-18 symbol) (v1-118 symbol))
     (when (and (-> self scene) (zero? (-> self scene wait-max-time)))
+      (set! *pc-scene-wait-gate* (pc-scene-wait-gate progress))
       (while *progress-process*
         (suspend)
         )
+      (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
       (set-setting! 'allow-progress #f 0.0 0)
       (set-setting! 'bg-a-force 'abs 1.0 0)
       (apply-settings *setting-control*)
@@ -920,11 +953,13 @@
     (suspend)
     (let ((s5-0 (current-time)))
       (when (and *target* (not (logtest? (-> *target* focus-status) (focus-status grabbed))))
+        (set! *pc-scene-wait-gate* (pc-scene-wait-gate target-grab))
         (label cfg-44)
         (when (not (process-grab? *target* #f))
           (suspend)
           (goto cfg-44)
           )
+        (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
         )
       (process-entity-status! self (entity-perm-status no-kill) #t)
       ;; og:preserve-this
@@ -935,6 +970,7 @@
                         (or (-> *setting-control* user-current talking)
                             (-> *setting-control* user-current hint)
                             (-> *setting-control* user-current ambient)))))
+        (set! *pc-scene-wait-gate* (pc-scene-wait-gate setting-or-entry-gui))
         (set-setting! 'allow-progress #f 0.0 0)
         (apply-settings *setting-control*)
         (dotimes (s4-0 2)
@@ -950,20 +986,29 @@
                               (!= (-> *setting-control* user-current movie) (process->ppointer self))
                               )
                          *progress-process*
-                         (!= (get-status *gui-control* (-> self gui-id)) 3)
+                         (!= (begin
+                               (set! *pc-scene-wait-entry-gui-id* (-> self gui-id))
+                               (set! *pc-scene-wait-entry-gui-status*
+                                     (get-status *gui-control* (-> self gui-id)))
+                               *pc-scene-wait-entry-gui-status*)
+                             (gui-status active))
                          )
                      )
+            (set! *pc-scene-wait-gate* (pc-scene-wait-gate setting-or-entry-gui))
             (suspend)
             )
           )
+        (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
         (when arg0
           (while (and (-> self scene) (not (or (time-elapsed? s5-0 (-> self scene wait-ground-time))
                                                (time-elapsed? (-> self state-time) (-> self scene wait-max-time))
                                                )
                                            )
                       )
+            (set! *pc-scene-wait-gate* (pc-scene-wait-gate ground-time))
             (suspend)
             )
+          (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
           )
         (remove-setting! 'movie)
         (remove-setting! 'sound-bank-load)
@@ -995,9 +1040,11 @@
                    (label cfg-109)
                    v1-118
                    )
+            (set! *pc-scene-wait-gate* (pc-scene-wait-gate levels))
             (set-blackout-frames (seconds 0.1))
             (suspend)
             )
+          (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
           (when (and (zero? s5-1) (< (-> self scene-index) (-> self scene-list length)))
             (scene-player-method-24 self (-> self scene-list (-> self scene-index)) #t)
             (when (-> self scene)
@@ -1016,25 +1063,55 @@
       (while (and (-> self scene)
                   (nonzero? (-> self anim anim-name))
                   (let ((v1-161 (file-status *art-control* (-> self anim name) 0)))
-                    (or (not (or (= v1-161 'active) (= v1-161 'locked)))
-                        (let* ((a1-26 (lookup-gui-connection-id
-                                        *gui-control*
-                                        (the-as string (-> self anim anim-name))
-                                        (gui-channel none)
-                                        (gui-action none)
+                    (set! *pc-scene-wait-art-file-status* v1-161)
+                    (let ((file-ready? (or (= v1-161 'active) (= v1-161 'locked))))
+                      (if (not file-ready?)
+                          (begin
+                            (set! *pc-scene-wait-gate* (pc-scene-wait-gate art-file))
+                            #t
+                            )
+                          (let* ((a1-26 (lookup-gui-connection-id
+                                          *gui-control*
+                                          (the-as string (-> self anim anim-name))
+                                          (gui-channel none)
+                                          (gui-action none)
+                                          )
                                         )
-                                      )
-                               (v1-167 (get-status *gui-control* a1-26))
-                               )
-                          (not (or (= v1-167 (gui-status ready)) (= v1-167 (gui-status active))))
+                                 (v1-167 (get-status *gui-control* a1-26))
+                                 (connection (lookup-gui-connection
+                                               *gui-control*
+                                               (the-as process #f)
+                                               (gui-channel none)
+                                               (the-as string (-> self anim anim-name))
+                                               a1-26
+                                               )
+                                             )
+                                 (gui-ready? (or (= v1-167 (gui-status ready))
+                                                 (= v1-167 (gui-status active))))
+                                 )
+                            (set! *pc-scene-wait-art-gui-id* a1-26)
+                            (set! *pc-scene-wait-art-gui-channel*
+                                  (if connection (-> connection channel) (gui-channel none)))
+                            (set! *pc-scene-wait-art-gui-action*
+                                  (if connection (-> connection action) (gui-action none)))
+                            (set! *pc-scene-wait-art-gui-status* v1-167)
+                            (if (not gui-ready?)
+                                (begin
+                                  (set! *pc-scene-wait-gate* (pc-scene-wait-gate art-gui))
+                                  #t
+                                  )
+                                #f
+                                )
+                            )
                           )
-                        )
+                      )
                     )
                   )
         (set-blackout-frames (seconds 0.1))
         (suspend)
         )
       )
+    (set! *pc-scene-wait-gate* (pc-scene-wait-gate ready))
     (go-virtual play-anim)
     )
   )

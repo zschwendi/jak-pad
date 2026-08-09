@@ -131,6 +131,18 @@ typedef struct goal_jak2_thread_suspend_probe {
   int32_t matches_expected;
 } goal_jak2_thread_suspend_probe;
 
+typedef enum goal_jak2_scene_wait_gate {
+  GOAL_JAK2_SCENE_WAIT_NONE = 0,
+  GOAL_JAK2_SCENE_WAIT_PROGRESS = 1,
+  GOAL_JAK2_SCENE_WAIT_TARGET_GRAB = 2,
+  GOAL_JAK2_SCENE_WAIT_SETTING_OR_ENTRY_GUI = 3,
+  GOAL_JAK2_SCENE_WAIT_GROUND_TIME = 4,
+  GOAL_JAK2_SCENE_WAIT_LEVELS = 5,
+  GOAL_JAK2_SCENE_WAIT_ART_FILE = 6,
+  GOAL_JAK2_SCENE_WAIT_ART_GUI = 7,
+  GOAL_JAK2_SCENE_WAIT_READY = 8,
+} goal_jak2_scene_wait_gate;
+
 /*! A copied snapshot. It owns no pointers into the GOAL heap or graphics host. */
 typedef struct goal_jak2_runtime_metrics {
   goal_jak2_runtime_state state;
@@ -247,6 +259,17 @@ typedef struct goal_jak2_runtime_metrics {
   uint32_t sound_str_requests;
   uint32_t sound_str_reads;
   uint32_t sound_str_bytes;
+
+  int32_t scene_wait_diagnostics_valid;
+  int32_t scene_wait_gate;
+  uint32_t scene_wait_entry_gui_id;
+  int32_t scene_wait_entry_gui_status;
+  uint32_t scene_wait_art_file_status;
+  char scene_wait_art_file_status_name[16];
+  uint32_t scene_wait_art_gui_id;
+  int32_t scene_wait_art_gui_channel;
+  int32_t scene_wait_art_gui_action;
+  int32_t scene_wait_art_gui_status;
 } goal_jak2_runtime_metrics;
 
 /*!
