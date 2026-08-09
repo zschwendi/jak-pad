@@ -8,9 +8,11 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 PROCESS_TASKABLE = ROOT / "goal_src/jak1/engine/common-obs/process-taskable.gc"
+SAGE_FINALBOSS = ROOT / "goal_src/jak1/levels/finalboss/sage-finalboss.gc"
 
 UNAVAILABLE = 0
 TRIANGLE_QUERY_AVAILABLE = 1
+CREDITS_TRIANGLE_AVAILABLE = 2
 
 
 def extract_form(source: str, marker: str) -> str:
@@ -53,13 +55,13 @@ class SnapshotModel:
     state: int = UNAVAILABLE
     heartbeat: int = 0
 
-    def publish(self, owner: object) -> None:
-        if self.owner is owner:
+    def publish(self, owner: object, state: int) -> None:
+        if self.owner is owner and self.state == state:
             self.heartbeat += 1
             return
-        self.owner = owner
         self.sequence += 1
-        self.state = TRIANGLE_QUERY_AVAILABLE
+        self.owner = owner
+        self.state = state
         self.heartbeat = 1
         self.sequence += 1
 
@@ -77,6 +79,7 @@ class Jak1CutsceneSkipTouchContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.source = PROCESS_TASKABLE.read_text()
+        cls.sage_finalboss = SAGE_FINALBOSS.read_text()
 
     def test_fixed_revisioned_owner_snapshot_abi(self) -> None:
         for field in (
@@ -88,9 +91,10 @@ class Jak1CutsceneSkipTouchContractTest(unittest.TestCase):
         ):
             self.assertIn(field, self.source)
         self.assertIn(":size-assert #x1c", self.source)
-        self.assertIn(":revision 1", self.source)
+        self.assertIn(":revision 2", self.source)
         self.assertIn("(unavailable 0)", self.source)
         self.assertIn("(triangle-query-available 1)", self.source)
+        self.assertIn("(credits-triangle-available 2)", self.source)
         self.assertNotIn(
             "(-> *goalpad-cutscene-skip-touch-snapshot* revision)",
             extract_form(self.source, "(defun goalpad-cutscene-skip-touch-publish!"),
@@ -104,6 +108,10 @@ class Jak1CutsceneSkipTouchContractTest(unittest.TestCase):
             self.source, "(defun goalpad-cutscene-skip-touch-clear!"
         )
         self.assertIn("(= *goalpad-cutscene-skip-touch-owner* owner)", publish)
+        self.assertIn(
+            "(= (-> *goalpad-cutscene-skip-touch-snapshot* state) state-value)",
+            publish,
+        )
         self.assertEqual(
             publish.count(
                 "(+! (-> *goalpad-cutscene-skip-touch-snapshot* sequence) 1)"
@@ -115,6 +123,12 @@ class Jak1CutsceneSkipTouchContractTest(unittest.TestCase):
             publish,
         )
         self.assertIn("(process->handle owner)", publish)
+        self.assertLess(
+            publish.index(
+                "(+! (-> *goalpad-cutscene-skip-touch-snapshot* sequence) 1)"
+            ),
+            publish.index("(set! *goalpad-cutscene-skip-touch-owner* owner)"),
+        )
         self.assertIn(
             "(when (= *goalpad-cutscene-skip-touch-owner* owner)", clear
         )
@@ -139,8 +153,12 @@ class Jak1CutsceneSkipTouchContractTest(unittest.TestCase):
         for condition in conditions:
             self.assertIn(condition, query)
         self.assertLess(
-            query.index("(goalpad-cutscene-skip-touch-publish! owner)"),
+            query.index("(goalpad-cutscene-skip-touch-publish!"),
             query.index("(get-response (-> owner query))"),
+        )
+        self.assertIn(
+            "(goalpad-cutscene-skip-touch-state triangle-query-available)",
+            query,
         )
         self.assertIn("(when (!= response 'undecided)", query)
         self.assertEqual(query.count("(goalpad-cutscene-skip-touch-clear! owner)"), 2)
@@ -179,19 +197,63 @@ class Jak1CutsceneSkipTouchContractTest(unittest.TestCase):
         second = object()
         snapshot = SnapshotModel()
 
-        snapshot.publish(first)
+        snapshot.publish(first, TRIANGLE_QUERY_AVAILABLE)
         self.assertEqual((snapshot.sequence, snapshot.heartbeat), (2, 1))
-        snapshot.publish(first)
+        snapshot.publish(first, TRIANGLE_QUERY_AVAILABLE)
         self.assertEqual((snapshot.sequence, snapshot.heartbeat), (2, 2))
-        snapshot.publish(second)
-        self.assertEqual((snapshot.owner, snapshot.sequence, snapshot.heartbeat), (second, 4, 1))
+        snapshot.publish(first, CREDITS_TRIANGLE_AVAILABLE)
+        self.assertEqual(
+            (snapshot.owner, snapshot.state, snapshot.sequence, snapshot.heartbeat),
+            (first, CREDITS_TRIANGLE_AVAILABLE, 4, 1),
+        )
+        snapshot.publish(first, CREDITS_TRIANGLE_AVAILABLE)
+        self.assertEqual((snapshot.sequence, snapshot.heartbeat), (4, 2))
+        snapshot.publish(second, CREDITS_TRIANGLE_AVAILABLE)
+        self.assertEqual((snapshot.owner, snapshot.sequence, snapshot.heartbeat), (second, 6, 1))
         snapshot.clear(first)
-        self.assertEqual((snapshot.owner, snapshot.sequence), (second, 4))
+        self.assertEqual((snapshot.owner, snapshot.sequence), (second, 6))
         snapshot.clear(second)
         self.assertEqual(
             (snapshot.owner, snapshot.sequence, snapshot.state, snapshot.heartbeat),
-            (None, 6, UNAVAILABLE, 0),
+            (None, 8, UNAVAILABLE, 0),
         )
+
+    def test_end_credits_publish_only_while_incomplete_and_clear_every_exit(self) -> None:
+        credits = extract_form(
+            self.sage_finalboss, "(defstate sage-finalboss-credits"
+        )
+        loop = extract_form(credits, "(until (or s5-0 skip-credits?)")
+        clear = "(goalpad-cutscene-skip-touch-clear! self)"
+        draw = loop.index("(set! s5-0 (draw-end-credits (the int f30-0)))")
+        natural_clear = loop.index(clear)
+        gate = loop.index("(or *cheat-mode* (-> *pc-settings* speedrunner-mode?))")
+        publish = loop.index("(goalpad-cutscene-skip-touch-publish!")
+
+        self.assertLess(draw, natural_clear)
+        self.assertLess(natural_clear, gate)
+        self.assertLess(gate, publish)
+        self.assertIn(
+            "(goalpad-cutscene-skip-touch-state credits-triangle-available)",
+            loop,
+        )
+        self.assertEqual(loop.count("(cpad-pressed? 0 triangle)"), 1)
+        self.assertEqual(loop.count("(set! s5-0"), 1)
+        self.assertNotIn("(set! s5-0 #t)", loop)
+        self.assertNotIn("skip-movies?", credits)
+        self.assertNotIn("go-virtual", loop)
+        self.assertEqual(loop.count(clear), 3)
+
+        triangle = loop.index("(cpad-pressed? 0 triangle)")
+        skip_flag = loop.index("(set! skip-credits? #t)", triangle)
+        consumed_clear = loop.index(clear, skip_flag)
+        self.assertLess(triangle, skip_flag)
+        self.assertLess(skip_flag, consumed_clear)
+
+        loop_start = credits.index("(until (or s5-0 skip-credits?)")
+        loop_end = loop_start + len(loop)
+        mask_restore = credits.index("(set! (-> self mask) gp-0)")
+        self.assertIn(clear, credits[loop_end:mask_restore])
+        self.assertIn(clear, credits[credits.index(":exit"):credits.index(":code")])
 
 
 if __name__ == "__main__":

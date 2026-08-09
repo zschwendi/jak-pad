@@ -14,7 +14,8 @@
 
 (defenum goalpad-cutscene-skip-touch-state :bitfield #f
   (unavailable 0)
-  (triangle-query-available 1))
+  (triangle-query-available 1)
+  (credits-triangle-available 2))
 
 (deftype goalpad-cutscene-skip-touch-snapshot (basic)
   ((revision  int32  :offset-assert 4)
@@ -28,7 +29,7 @@
 (define *goalpad-cutscene-skip-touch-snapshot*
   (new 'static
        'goalpad-cutscene-skip-touch-snapshot
-       :revision 1
+       :revision 2
        :sequence 0
        :state 0
        :heartbeat 0))
@@ -79,18 +80,20 @@
     (+! (-> *goalpad-face-prompt-touch-snapshot* sequence) 1))
   (none))
 
-(defun goalpad-cutscene-skip-touch-publish! ((owner process-taskable))
-  (cond
-    ((= *goalpad-cutscene-skip-touch-owner* owner)
-     (+! (-> *goalpad-cutscene-skip-touch-snapshot* heartbeat) 1))
-    (else
-     (set! *goalpad-cutscene-skip-touch-owner* owner)
-     (+! (-> *goalpad-cutscene-skip-touch-snapshot* sequence) 1)
-     (set! (-> *goalpad-cutscene-skip-touch-snapshot* state)
-           (the-as int (goalpad-cutscene-skip-touch-state triangle-query-available)))
-     (set! (-> *goalpad-cutscene-skip-touch-snapshot* owner) (process->handle owner))
-     (set! (-> *goalpad-cutscene-skip-touch-snapshot* heartbeat) 1)
-     (+! (-> *goalpad-cutscene-skip-touch-snapshot* sequence) 1)))
+(defun goalpad-cutscene-skip-touch-publish!
+  ((owner process-taskable) (state goalpad-cutscene-skip-touch-state))
+  (let ((state-value (the-as int state)))
+    (cond
+      ((and (= *goalpad-cutscene-skip-touch-owner* owner)
+            (= (-> *goalpad-cutscene-skip-touch-snapshot* state) state-value))
+       (+! (-> *goalpad-cutscene-skip-touch-snapshot* heartbeat) 1))
+      (else
+       (+! (-> *goalpad-cutscene-skip-touch-snapshot* sequence) 1)
+       (set! *goalpad-cutscene-skip-touch-owner* owner)
+       (set! (-> *goalpad-cutscene-skip-touch-snapshot* state) state-value)
+       (set! (-> *goalpad-cutscene-skip-touch-snapshot* owner) (process->handle owner))
+       (set! (-> *goalpad-cutscene-skip-touch-snapshot* heartbeat) 1)
+       (+! (-> *goalpad-cutscene-skip-touch-snapshot* sequence) 1))))
   (none))
 
 (defun goalpad-cutscene-skip-touch-clear! ((owner process-taskable))
@@ -107,7 +110,9 @@
   (if (and (= (-> owner skippable) #t)
            (= (-> *pc-settings* skip-movies?) #t)
            (= (-> owner query decision) 'undecided))
-    (goalpad-cutscene-skip-touch-publish! owner)
+    (goalpad-cutscene-skip-touch-publish!
+     owner
+     (goalpad-cutscene-skip-touch-state triangle-query-available))
     (goalpad-cutscene-skip-touch-clear! owner))
   (let ((response (get-response (-> owner query))))
     (when (!= response 'undecided)
