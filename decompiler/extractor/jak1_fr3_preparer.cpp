@@ -366,6 +366,8 @@ static Result<Summary> prepare_for_profile(const fs::path& project_root,
           static_cast<std::size_t>(options.max_expanded_archive_bytes);
       read_options.max_total_object_bytes =
           static_cast<std::size_t>(options.max_expanded_archive_bytes);
+      read_options.compressed_trailing_alignment_bytes =
+          options.compressed_trailing_alignment_bytes;
       bool read_callback_failed = false;
       read_options.should_cancel = [&] {
         const auto error = cancellation_error(options);

@@ -56,6 +56,8 @@ std::optional<Error> validate_options(const Options& options) {
           static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) ||
       options.max_compressed_chunk_bytes == 0 ||
       options.max_compressed_chunk_bytes >= kBlzoBlockBytes ||
+      (options.compressed_trailing_alignment_bytes &&
+       *options.compressed_trailing_alignment_bytes == 0) ||
       !art_group_prefix(options.game_version)) {
     return make_error(ErrorCode::invalid_argument, 0, "The DGO reader options are invalid.");
   }
@@ -291,7 +293,12 @@ Result<std::vector<std::uint8_t>> decompress_blzo(std::span<const std::uint8_t> 
   }
 
   const auto trailing_bytes = input.size() - input_offset;
-  if (trailing_bytes > options.max_compressed_padding_bytes) {
+  bool invalid_trailing_layout = trailing_bytes > options.max_compressed_padding_bytes;
+  if (options.compressed_trailing_alignment_bytes) {
+    const auto alignment = *options.compressed_trailing_alignment_bytes;
+    invalid_trailing_layout = input.size() % alignment != 0 || trailing_bytes >= alignment;
+  }
+  if (invalid_trailing_layout) {
     return Result<std::vector<std::uint8_t>>::failure(
         make_error(ErrorCode::compressed_padding_limit_exceeded, input_offset,
                    "The compressed DGO has excessive trailing padding."));

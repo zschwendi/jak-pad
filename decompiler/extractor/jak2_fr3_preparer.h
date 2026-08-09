@@ -6,6 +6,10 @@
 
 namespace jak2_fr3 {
 
+// Canonical NTSC-U v2 compressed archive entries are zero-padded to this boundary. The checked
+// reader accepts less than one alignment unit after the BLZO payload and still requires it all zero.
+inline constexpr std::size_t kNtscV2CompressedArchiveAlignmentBytes = 0x40000;
+
 using Phase = jak1_fr3::Phase;
 using Progress = jak1_fr3::Progress;
 using CancelCallback = jak1_fr3::CancelCallback;
@@ -21,6 +25,7 @@ struct Options : jak1_fr3::Options {
   Options() {
     max_archives = 256;
     max_levels = 256;
+    compressed_trailing_alignment_bytes = kNtscV2CompressedArchiveAlignmentBytes;
   }
 };
 

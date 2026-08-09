@@ -337,6 +337,44 @@ bool enforces_compressed_limits_and_rejects_corruption() {
   result = jak1_checked_dgo::read(compressed, {}, options);
   CHECK(!result);
   CHECK(result.error().code == ErrorCode::compressed_padding_limit_exceeded);
+
+  compressed = make_blzo(raw);
+  constexpr std::size_t kJak2NtscV2ArchiveAlignment = 0x40000;
+  const auto aligned_trailing =
+      kJak2NtscV2ArchiveAlignment - compressed.size() % kJak2NtscV2ArchiveAlignment;
+  CHECK(aligned_trailing < kJak2NtscV2ArchiveAlignment);
+  compressed.resize(compressed.size() + aligned_trailing, 0);
+  options = {};
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::compressed_padding_limit_exceeded);
+
+  options.game_version = GameVersion::Jak2;
+  options.compressed_trailing_alignment_bytes = kJak2NtscV2ArchiveAlignment;
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(result);
+
+  compressed.resize(compressed.size() + kJak2NtscV2ArchiveAlignment, 0);
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::compressed_padding_limit_exceeded);
+  compressed.resize(compressed.size() - kJak2NtscV2ArchiveAlignment);
+
+  compressed.push_back(0);
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::compressed_padding_limit_exceeded);
+
+  compressed.pop_back();
+  compressed.back() = 1;
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::trailing_data);
+
+  options.compressed_trailing_alignment_bytes = 0;
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::invalid_argument);
   return true;
 }
 

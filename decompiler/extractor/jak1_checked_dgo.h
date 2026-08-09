@@ -99,6 +99,8 @@ struct Options {
   std::size_t max_name_bytes = 59;
   std::size_t max_compressed_chunk_bytes = 0x7fff;
   std::size_t max_compressed_padding_bytes = 0x10000;
+  // If set, the compressed input must end on this boundary with less than one unit of zero tail.
+  std::optional<std::size_t> compressed_trailing_alignment_bytes;
   std::uint32_t max_compressed_chunks = 65536;
   std::uint32_t max_expansion_ratio = 256;
   std::size_t file_read_chunk_bytes = 256 * 1024;

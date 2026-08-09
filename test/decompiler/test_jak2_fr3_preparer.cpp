@@ -47,6 +47,15 @@ int main(int argc, char** argv) {
   jak2_fr3::Options defaults;
   CHECK(defaults.max_archives == 256);
   CHECK(defaults.max_levels == 256);
+  CHECK(defaults.compressed_trailing_alignment_bytes ==
+        jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes);
+  constexpr std::size_t kLwidebPayloadEnd = 0x14b6d0;
+  constexpr std::size_t kLwidebTrailingPadding = 0x34930;
+  CHECK(kLwidebPayloadEnd + kLwidebTrailingPadding == 0x180000);
+  CHECK((kLwidebPayloadEnd + kLwidebTrailingPadding) %
+            jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes ==
+        0);
+  CHECK(kLwidebTrailingPadding < jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes);
 
   auto invalid = jak2_fr3::prepare({}, {}, {});
   CHECK(!invalid);
