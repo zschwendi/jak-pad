@@ -479,6 +479,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak2-pc-rand-test jak2-kernel-core)
         add_test(NAME jak2-pc-rand-test COMMAND jak2-pc-rand-test)
 
+        add_executable(jak2-runtime-metrics-reader-test
+                kernel/core/jak2_runtime_metrics_reader_test.cpp)
+        add_test(NAME jak2-runtime-metrics-reader-test COMMAND jak2-runtime-metrics-reader-test)
+
         # `file-stream-valid?` is a GOAL macro, so exercise its emitted C rather than duplicating
         # the comparison in the native machine test. File I/O is the 50th Jak 2 object; the sweep
         # loads that real prefix to compile the one-function fixture and only that fixture is linked.

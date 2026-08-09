@@ -141,6 +141,49 @@ typedef struct goal_jak2_runtime_metrics {
   uint32_t sound_player_failures;
   uint32_t sound_str_failures;
   uint32_t sound_rejected_calls;
+
+  int32_t display_timing_valid;
+  int64_t display_base_frame_counter;
+  int64_t blackout_time;
+  int64_t blackout_remaining;
+
+  int32_t settings_diagnostics_valid;
+  float background_alpha;
+  float background_alpha_force;
+  uint32_t movie_process;
+  uint32_t spooling_process;
+
+  int32_t scene_diagnostics_valid;
+  int32_t scene_identity_valid;
+  uint32_t scene_list;
+  int32_t scene_list_length;
+  uint32_t scene;
+  int32_t scene_index;
+  uint32_t scene_animation;
+  uint32_t scene_next_animation;
+  int64_t scene_start_time;
+  int64_t scene_elapsed;
+  char scene_entity[48];
+  char scene_art_group[48];
+  char scene_animation_name[64];
+
+  int32_t skeleton_diagnostics_valid;
+  uint16_t skeleton_status;
+  uint8_t skeleton_active_channels;
+  uint8_t skeleton_padding;
+  int32_t animation_diagnostics_valid;
+  uint32_t animation_frame_group;
+  float animation_frame;
+  float animation_aframe;
+
+  uint32_t sound_player_batches;
+  uint32_t sound_player_commands;
+  uint32_t sound_play_requests;
+  uint32_t sound_sounds_started;
+  uint32_t sound_updates;
+  uint32_t sound_str_requests;
+  uint32_t sound_str_reads;
+  uint32_t sound_str_bytes;
 } goal_jak2_runtime_metrics;
 
 /*!

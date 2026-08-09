@@ -31,6 +31,7 @@ extern "C" {
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/kernel_game.h"
+#include "game/kernel/core/jak2_runtime_metrics_reader.h"
 #include "game/kernel/core/pad.h"
 #include "game/kernel/core/sound_rpc_jak2.h"
 #include "game/kernel/jak2/klisten.h"
@@ -265,9 +266,56 @@ void copy_known_symbol_name(uint32_t symbol, char* out, size_t size) {
 }
 
 void copy_process_state(uint32_t process, char* out, size_t size) {
-  // Jak II process::state is at offset 60. A state's first field is its name symbol.
-  const uint32_t state = process ? goal_u32(process, 60) : 0;
+  const uint32_t state =
+      process ? goal_u32(process, jak2_runtime_metrics_reader::layout::kProcessState) : 0;
   copy_known_symbol_name(state ? goal_u32(state) : 0, out, size);
+}
+
+void update_scene_diagnostic_metrics() {
+  using namespace jak2_runtime_metrics_reader;
+  const MemoryView memory = {reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE,
+                             goal_game_false_offset()};
+  const Inputs inputs = {
+      symbol_value_if_present("*display*"), symbol_value_if_present("*game-info*"),
+      symbol_value_if_present("*setting-control*"), g_metrics.scene_player_process};
+  const Snapshot scene = read(memory, inputs);
+
+  g_metrics.display_timing_valid = scene.display_timing_valid;
+  g_metrics.display_base_frame_counter = scene.display_base_frame_counter;
+  g_metrics.blackout_time = scene.blackout_time;
+  g_metrics.blackout_remaining = scene.blackout_remaining;
+
+  g_metrics.settings_diagnostics_valid = scene.settings_valid;
+  g_metrics.background_alpha = scene.background_alpha;
+  g_metrics.background_alpha_force = scene.background_alpha_force;
+  g_metrics.movie_process = scene.movie_process;
+  g_metrics.spooling_process = scene.spooling_process;
+
+  g_metrics.scene_diagnostics_valid = scene.scene_valid;
+  g_metrics.scene_identity_valid = scene.scene_identity_valid;
+  g_metrics.scene_list = scene.scene_list;
+  g_metrics.scene_list_length = scene.scene_list_length;
+  g_metrics.scene = scene.scene;
+  g_metrics.scene_index = scene.scene_index;
+  g_metrics.scene_animation = scene.animation;
+  g_metrics.scene_next_animation = scene.next_animation;
+  g_metrics.scene_start_time = scene.scene_start_time;
+  g_metrics.scene_elapsed = scene.scene_elapsed;
+  std::snprintf(g_metrics.scene_entity, sizeof(g_metrics.scene_entity), "%s",
+                scene.scene_entity.data());
+  std::snprintf(g_metrics.scene_art_group, sizeof(g_metrics.scene_art_group), "%s",
+                scene.scene_art_group.data());
+  std::snprintf(g_metrics.scene_animation_name, sizeof(g_metrics.scene_animation_name), "%s",
+                scene.scene_animation.data());
+
+  g_metrics.skeleton_diagnostics_valid = scene.skeleton_valid;
+  g_metrics.skeleton_status = scene.skeleton_status;
+  g_metrics.skeleton_active_channels = scene.active_channels;
+  g_metrics.skeleton_padding = 0;
+  g_metrics.animation_diagnostics_valid = scene.animation_valid;
+  g_metrics.animation_frame_group = scene.animation_frame_group;
+  g_metrics.animation_frame = scene.animation_frame;
+  g_metrics.animation_aframe = scene.animation_aframe;
 }
 
 void update_title_state_metrics() {
@@ -292,6 +340,7 @@ void update_title_state_metrics() {
   g_metrics.target_process = symbol_value_if_present("*target*");
   copy_process_state(g_metrics.target_process, g_metrics.target_state,
                      sizeof(g_metrics.target_state));
+  update_scene_diagnostic_metrics();
 }
 
 void update_metrics() {
@@ -335,6 +384,14 @@ void update_metrics() {
   g_metrics.sound_player_failures = sound.player_failures;
   g_metrics.sound_str_failures = sound.str_failures;
   g_metrics.sound_rejected_calls = sound.rejected_calls;
+  g_metrics.sound_player_batches = sound.player_batches;
+  g_metrics.sound_player_commands = sound.player_commands;
+  g_metrics.sound_play_requests = sound.play_requests;
+  g_metrics.sound_sounds_started = sound.sounds_started;
+  g_metrics.sound_updates = sound.sound_updates;
+  g_metrics.sound_str_requests = sound.str_requests;
+  g_metrics.sound_str_reads = sound.str_reads;
+  g_metrics.sound_str_bytes = sound.str_bytes;
 
   if (g_metrics.graphics == GOAL_JAK2_RUNTIME_GRAPHICS_STUBS) {
     return;
