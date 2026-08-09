@@ -26,6 +26,7 @@ namespace {
 constexpr int kTargetSize = 64;
 constexpr char kLevelName[] = "jak2-merc-gpu-test";
 constexpr char kNormalModelName[] = "jak2-merc-normal-model";
+constexpr char kFilteredModelName[] = "jak2-merc-filtered-model";
 constexpr char kAlphaModelName[] = "jak2-merc-alpha-model";
 constexpr char kWaterModelName[] = "jak2-merc-water-model";
 constexpr u32 kMercBucket = static_cast<u32>(jak2::BucketId::MERC_L0_TFRAG);
@@ -47,6 +48,11 @@ constexpr float kMercZ = 8388608.f;
 static_assert(kMercBucket == 14);
 
 int failures = 0;
+
+constexpr u32 rgba(u8 r, u8 g, u8 b, u8 a) {
+  return static_cast<u32>(r) | (static_cast<u32>(g) << 8) | (static_cast<u32>(b) << 16) |
+         (static_cast<u32>(a) << 24);
+}
 
 void check(bool condition, const char* what) {
   std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
@@ -197,10 +203,18 @@ std::unique_ptr<tfrag3::Level> make_level() {
   tfrag3::Texture texture;
   texture.w = 16;
   texture.h = 16;
-  texture.debug_name = "jak2-merc-solid";
+  texture.debug_name = "jak2-merc-filter-alpha";
   texture.debug_tpage_name = "jak2-merc-test";
   texture.load_to_pool = false;
-  texture.data.resize(16 * 16, 0xff3264c8u);
+  texture.data.resize(16 * 16);
+  for (int y = 0; y < 16; y++) {
+    for (int x = 0; x < 16; x++) {
+      const u8 r = x < 8 ? 96 : 16;
+      const u8 g = y < 8 ? 16 : 96;
+      const u8 b = (x < 8) == (y < 8) ? 16 : 96;
+      texture.data[y * 16 + x] = rgba(r, g, b, 32);
+    }
+  }
   level->textures.push_back(std::move(texture));
 
   auto& merc = level->merc_data;
@@ -224,7 +238,8 @@ std::unique_ptr<tfrag3::Level> make_level() {
   }
   merc.indices = {0, 1, 2, 3};
 
-  const auto add_model = [&merc](const char* name, bool alpha_blend, bool depth_write) {
+  const auto add_model =
+      [&merc](const char* name, bool alpha_blend, bool depth_write, bool filtered) {
     tfrag3::MercDraw draw;
     draw.mode.set_depth_write_enable(depth_write);
     draw.mode.set_zt(true);
@@ -235,7 +250,7 @@ std::unique_ptr<tfrag3::Level> make_level() {
     draw.mode.set_at(false);
     draw.mode.set_fog(false);
     draw.mode.set_decal(false);
-    draw.mode.set_filt_enable(true);
+    draw.mode.set_filt_enable(filtered);
     draw.mode.set_clamp_s_enable(true);
     draw.mode.set_clamp_t_enable(true);
     draw.tree_tex_id = 0;
@@ -256,9 +271,12 @@ std::unique_ptr<tfrag3::Level> make_level() {
     model.st_magic = 0.f;
     merc.models.push_back(std::move(model));
   };
-  add_model(kNormalModelName, false, true);
-  add_model(kAlphaModelName, true, true);
-  add_model(kWaterModelName, true, false);
+  // extract_merc.cpp maps category 3 to alpha blend, category 4 to alpha blend without depth
+  // writes, and preserves each shader's TEX1 MMAG filter choice in the extracted DrawMode.
+  add_model(kNormalModelName, false, true, false);
+  add_model(kFilteredModelName, false, true, true);
+  add_model(kAlphaModelName, true, true, true);
+  add_model(kWaterModelName, true, false, true);
   return level;
 }
 
@@ -269,6 +287,7 @@ struct RenderResult {
   u32 final_offset = 0;
   bool completed = false;
   std::vector<u8> pixels;
+  std::vector<float> depths;
 };
 
 RenderResult render(id<MTLDevice> device,
@@ -309,7 +328,7 @@ RenderResult render(id<MTLDevice> device,
   pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
   pass.depthAttachment.texture = depth;
   pass.depthAttachment.loadAction = MTLLoadActionClear;
-  pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+  pass.depthAttachment.storeAction = MTLStoreActionStore;
   pass.depthAttachment.clearDepth = 0;
   pass.stencilAttachment.texture = depth;
   pass.stencilAttachment.loadAction = MTLLoadActionClear;
@@ -351,11 +370,25 @@ RenderResult render(id<MTLDevice> device,
   result.final_offset = dma.current_tag_offset();
 
   [encoder endEncoding];
-#if TARGET_OS_OSX
+  constexpr std::size_t kDepthBytesPerRow = kTargetSize * sizeof(float);
+  id<MTLBuffer> depth_readback =
+      [device newBufferWithLength:kDepthBytesPerRow * kTargetSize
+                          options:MTLResourceStorageModeShared];
   id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+  [blit copyFromTexture:depth
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake(kTargetSize, kTargetSize, 1)
+               toBuffer:depth_readback
+      destinationOffset:0
+ destinationBytesPerRow:kDepthBytesPerRow
+destinationBytesPerImage:kDepthBytesPerRow * kTargetSize
+                options:MTLBlitOptionDepthFromDepthStencil];
+#if TARGET_OS_OSX
   [blit synchronizeResource:color];
-  [blit endEncoding];
 #endif
+  [blit endEncoding];
   [commands commit];
   [commands waitUntilCompleted];
   result.completed = commands.status == MTLCommandBufferStatusCompleted;
@@ -365,6 +398,9 @@ RenderResult render(id<MTLDevice> device,
         bytesPerRow:kTargetSize * 4
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
         mipmapLevel:0];
+    result.depths.resize(kTargetSize * kTargetSize);
+    std::memcpy(result.depths.data(), depth_readback.contents,
+                result.depths.size() * sizeof(float));
   }
   return result;
 }
@@ -373,6 +409,33 @@ int count_non_black(const std::vector<u8>& pixels) {
   int count = 0;
   for (std::size_t offset = 0; offset + 2 < pixels.size(); offset += 4) {
     count += pixels[offset] || pixels[offset + 1] || pixels[offset + 2];
+  }
+  return count;
+}
+
+struct Pixel {
+  u8 r = 0;
+  u8 g = 0;
+  u8 b = 0;
+  u8 a = 0;
+
+  bool operator==(const Pixel& other) const {
+    return r == other.r && g == other.g && b == other.b && a == other.a;
+  }
+
+  bool operator!=(const Pixel& other) const { return !(*this == other); }
+};
+
+Pixel center_pixel(const std::vector<u8>& pixels) {
+  const std::size_t offset = (kTargetSize / 2 * kTargetSize + kTargetSize / 2) * 4;
+  return {pixels.at(offset), pixels.at(offset + 1), pixels.at(offset + 2),
+          pixels.at(offset + 3)};
+}
+
+int count_written_depth(const std::vector<float>& depths) {
+  int count = 0;
+  for (float depth : depths) {
+    count += depth != 0.f;
   }
   return count;
 }
@@ -420,9 +483,9 @@ int main() {
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
-              load.level_name == kLevelName && load.models == 3 && load.vertices == 4 &&
+              load.level_name == kLevelName && load.models == 4 && load.vertices == 4 &&
               load.indices == 4,
-          "registered normal, alpha, and water asset-free Merc models in the production pool");
+          "registered normal, filtered, alpha, and water synthetic Merc models");
     if (failures) {
       if (!load_error.empty()) {
         std::printf("Merc load error: %s\n", load_error.c_str());
@@ -432,6 +495,31 @@ int main() {
       }
       return 1;
     }
+
+    const auto source_mode = [](const char* model_name) -> const DrawMode* {
+      const auto model = metal_merc_models().get_merc_model(model_name);
+      if (!model || model->model->effects.size() != 1 ||
+          model->model->effects.front().all_draws.size() != 1) {
+        return nullptr;
+      }
+      return &model->model->effects.front().all_draws.front().mode;
+    };
+    const DrawMode* normal_mode = source_mode(kNormalModelName);
+    const DrawMode* filtered_mode = source_mode(kFilteredModelName);
+    const DrawMode* alpha_mode = source_mode(kAlphaModelName);
+    const DrawMode* water_mode = source_mode(kWaterModelName);
+    check(normal_mode && !normal_mode->get_ab_enable() && normal_mode->get_depth_write_enable() &&
+              !normal_mode->get_filt_enable() && filtered_mode &&
+              !filtered_mode->get_ab_enable() && filtered_mode->get_depth_write_enable() &&
+              filtered_mode->get_filt_enable(),
+          "synthetic source draws preserve independent nearest and filtered opaque modes");
+    check(alpha_mode && alpha_mode->get_ab_enable() && alpha_mode->get_depth_write_enable() &&
+              alpha_mode->get_filt_enable() &&
+              alpha_mode->get_alpha_blend() == DrawMode::AlphaBlend::SRC_DST_SRC_DST &&
+              water_mode && water_mode->get_ab_enable() &&
+              !water_mode->get_depth_write_enable() && water_mode->get_filt_enable() &&
+              water_mode->get_alpha_blend() == DrawMode::AlphaBlend::SRC_DST_SRC_DST,
+          "alpha and water source categories differ only in their depth-write contract");
 
     auto positive_memory = make_source_chain(kNormalModelName);
     const auto positive = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
@@ -449,21 +537,26 @@ int main() {
     check(count_non_black(positive.pixels) > 0,
           "the source-shaped Jak 2 Merc model produces non-black GPU pixels");
 
-    struct Variant {
-      MetalMercBucketRenderer* renderer;
+    auto filtered_memory = make_source_chain(kFilteredModelName);
+    const auto filtered = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 &normal_renderer, &filtered_memory, 2);
+
+    struct VariantResult {
       const char* name;
-      const char* model_name;
+      RenderResult result;
     };
-    const std::array<Variant, 3> variants = {{
-        {&alpha_renderer, "alpha", kAlphaModelName},
-        {&water_renderer, "per-level water", kWaterModelName},
-        {&common_water_renderer, "common water", kWaterModelName},
+    auto alpha_memory = make_source_chain(kAlphaModelName);
+    auto water_memory = make_source_chain(kWaterModelName);
+    auto common_water_memory = make_source_chain(kWaterModelName);
+    std::array<VariantResult, 3> variants = {{
+        {"alpha", render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                         &alpha_renderer, &alpha_memory, 3)},
+        {"per-level water", render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                   &water_renderer, &water_memory, 4)},
+        {"common water", render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                &common_water_renderer, &common_water_memory, 5)},
     }};
-    u64 variant_frame = 2;
-    for (const auto& [renderer, name, model_name] : variants) {
-      auto memory = make_source_chain(model_name);
-      const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                 renderer, &memory, variant_frame++);
+    for (const auto& [name, result] : variants) {
       const bool rendered = result.completed && result.final_offset == kBoundary &&
                             result.stats.models == 1 && result.stats.draws == 1 &&
                             result.stats.triangles == 2 && result.draw_calls == 1 &&
@@ -474,11 +567,36 @@ int main() {
                 .c_str());
     }
 
+    const Pixel nearest_pixel = center_pixel(positive.pixels);
+    const Pixel filtered_pixel = center_pixel(filtered.pixels);
+    const Pixel alpha_pixel = center_pixel(variants[0].result.pixels);
+    const Pixel water_pixel = center_pixel(variants[1].result.pixels);
+    const Pixel common_water_pixel = center_pixel(variants[2].result.pixels);
+    check(filtered.completed && filtered.final_offset == kBoundary &&
+              filtered.stats.models == 1 && filtered.stats.draws == 1 &&
+              filtered.draw_calls == 1 && nearest_pixel != filtered_pixel,
+          "a patterned source texture visibly distinguishes nearest and filtered Merc draws");
+    check(alpha_pixel.r > 0 && alpha_pixel.g > 0 && alpha_pixel.b > 0 &&
+              alpha_pixel.r < filtered_pixel.r && alpha_pixel.g < filtered_pixel.g &&
+              alpha_pixel.b < filtered_pixel.b,
+          "partial source texture alpha visibly blends alpha Merc over the cleared target");
+    check(alpha_pixel == water_pixel && water_pixel == common_water_pixel,
+          "alpha and water variants retain identical filtered color output");
+
+    const int filtered_depth = count_written_depth(filtered.depths);
+    const int alpha_depth = count_written_depth(variants[0].result.depths);
+    const int water_depth = count_written_depth(variants[1].result.depths);
+    const int common_water_depth = count_written_depth(variants[2].result.depths);
+    check(filtered_depth > 0 && alpha_depth == filtered_depth,
+          "alpha Merc writes depth across the same covered pixels as opaque Merc");
+    check(water_depth == 0 && common_water_depth == 0,
+          "per-level and common water Merc preserve the cleared depth attachment");
+
     auto malformed_memory = make_source_chain(kAlphaModelName);
     put_tag(&malformed_memory, kModel, DmaTag::Kind::CNT, 0xffff, 0, 0,
             static_cast<u32>(VifCode::Kind::PC_PORT) << 24);
     const auto malformed = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                  &alpha_renderer, &malformed_memory, variant_frame);
+                                  &alpha_renderer, &malformed_memory, 6);
     check(malformed.completed && malformed.final_offset == kBoundary &&
               malformed.stats.malformed_dma == 1 && malformed.stats.models == 0 &&
               malformed.stats.draws == 0 && malformed.stats.triangles == 0 &&
