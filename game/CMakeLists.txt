@@ -421,6 +421,10 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan_test.cpp)
     add_test(NAME jak2-raw-image-upload-plan-test COMMAND jak2-raw-image-upload-plan-test)
 
+    add_executable(jak2-str-load-size-test
+            overlord/jak2/str_load_size_test.cpp)
+    add_test(NAME jak2-str-load-size-test COMMAND jak2-str-load-size-test)
+
     add_executable(jak2-metal-opcode27-skull-gem-cpu-test
             graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_cpu.cpp
             graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_cpu_test.cpp)

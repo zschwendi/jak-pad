@@ -11,6 +11,7 @@
 #include "game/overlord/common/isocommon.h"
 #include "game/overlord/jak2/iso.h"
 #include "game/overlord/jak2/iso_api.h"
+#include "game/overlord/jak2/str_load_size.h"
 #include "game/overlord/jak2/streamlist.h"
 #include "game/overlord/jak2/vag.h"
 #include "game/runtime.h"
@@ -105,15 +106,44 @@ void* RPC_STR(unsigned int /*fno*/, void* _cmd, int /*y*/) {
       }
 
       // load data, using the cached header to find the location of the chunk.
-      if (!LoadISOFileChunkToEE(file_record, cmd->address,
-                                sCache[cache_entry].header.sizes[cmd->section],
-                                sCache[cache_entry].header.sectors[cmd->section])) {
+      const u32 chunk_size = sCache[cache_entry].header.sizes[cmd->section];
+      const u32 destination_maxlen = cmd->maxlen;
+      const std::string_view basename_buffer(cmd->basename, sizeof(cmd->basename));
+      const std::string_view basename = basename_buffer.substr(0, basename_buffer.find('\0'));
+      const auto chunk_size_status =
+          validate_str_load_size(basename, cmd->section, destination_maxlen, chunk_size);
+      if (chunk_size_status == StrLoadSizeStatus::ExceedsDestination) {
+        printf("[OVERLORD STR] Refusing chunk %d for %.48s: chunk size %u exceeds maxlen %u\n",
+               cmd->section, cmd->basename, chunk_size, destination_maxlen);
+        cmd->result = STR_RPC_RESULT_ERROR;
+        return cmd;
+      }
+      if (chunk_size_status == StrLoadSizeStatus::TitleRawScreenLengthMismatch) {
+        printf(
+            "[OVERLORD STR] Refusing title raw screen %.48s section %d: chunk size %u, "
+            "expected %u (maxlen %u)\n",
+            cmd->basename, cmd->section, chunk_size, kTitleRawScreenLength, destination_maxlen);
+        cmd->result = STR_RPC_RESULT_ERROR;
+        return cmd;
+      }
+
+      const int read_length = LoadISOFileChunkToEE(
+          file_record, cmd->address, chunk_size, sCache[cache_entry].header.sectors[cmd->section]);
+      if (read_length <= 0) {
         printf("[OVERLORD STR] Failed to load chunk %d for animation %s\n", cmd->section,
                cmd->basename);
-        cmd->result = 1;
+        cmd->result = STR_RPC_RESULT_ERROR;
+      } else if (validate_str_load_size(basename, cmd->section, destination_maxlen,
+                                        static_cast<u32>(read_length)) ==
+                 StrLoadSizeStatus::TitleRawScreenLengthMismatch) {
+        printf(
+            "[OVERLORD STR] Failed to read complete title raw screen %.48s section %d: read "
+            "%d of %u bytes (maxlen %u)\n",
+            cmd->basename, cmd->section, read_length, chunk_size, destination_maxlen);
+        cmd->result = STR_RPC_RESULT_ERROR;
       } else {
         // successful load!
-        cmd->maxlen = sCache[cache_entry].header.sizes[cmd->section];
+        cmd->maxlen = chunk_size;
         cmd->result = 0;
       }
     }
