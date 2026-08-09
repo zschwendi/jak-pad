@@ -677,10 +677,14 @@ int main() {
       7, 18, 29, 40, 51, 62};
   constexpr std::array<u32, GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT> kShrubBuckets = {
       73, 82, 91, 100, 109, 118};
+  constexpr std::array<u32, GOAL_JAK2_ALPHA_TEXTURE_UPLOAD_BUCKET_COUNT> kAlphaBuckets = {
+      127, 137, 147, 157, 167, 177};
   check(texture_captures_are_empty(metrics.tfrag_texture_uploads, kTfragBuckets),
         "the host records all six empty normal TFRAG texture setup buckets");
   check(texture_captures_are_empty(metrics.shrub_texture_uploads, kShrubBuckets),
         "the host records all six empty normal SHRUB texture setup buckets");
+  check(texture_captures_are_empty(metrics.alpha_texture_uploads, kAlphaBuckets),
+        "the host records all six empty source-identical alpha texture setup buckets");
   check(texture_capture_is_empty(metrics.common_tfrag_texture_upload, 187),
         "the host accepts an exact empty host-owned common TFRAG texture bucket");
   check(metrics.common_tfrag_ordinary_uploads == 0 &&

@@ -78,6 +78,7 @@ typedef struct goal_jak2_map_texture_upload_metrics {
 enum {
   GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
   GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
+  GOAL_JAK2_ALPHA_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
   GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT = 7,
   GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT = 4,
 };
@@ -232,6 +233,8 @@ typedef struct goal_jak2_metal_host_metrics {
       tfrag_texture_uploads[GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT];
   goal_jak2_tfrag_texture_upload_metrics
       shrub_texture_uploads[GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT];
+  goal_jak2_tfrag_texture_upload_metrics
+      alpha_texture_uploads[GOAL_JAK2_ALPHA_TEXTURE_UPLOAD_BUCKET_COUNT];
   goal_jak2_tfrag_texture_upload_metrics common_tfrag_texture_upload;
 } goal_jak2_metal_host_metrics;
 

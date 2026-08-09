@@ -471,21 +471,18 @@ void MetalTie3::update_load(MetalLevelData* level_data) {
 
 bool MetalTie3::configure_proto_visibility(const std::vector<std::string>& hidden_names,
                                            MetalBackgroundState* background) {
-  constexpr std::array<tfrag3::TieCategory, 3> kSupportedCategories = {
-      tfrag3::TieCategory::NORMAL, tfrag3::TieCategory::NORMAL_ENVMAP,
-      tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW};
   constexpr int geom = 0;
 
   for (const auto& tree : m_trees[geom]) {
     if (!tree.has_proto_visibility) {
       continue;
     }
-    for (const auto category : kSupportedCategories) {
-      const u32 first = tree.category_draw_indices[(int)category];
-      const u32 end = tree.category_draw_indices[(int)category + 1];
+    for (int category = 0; category < tfrag3::kNumTieCategories; category++) {
+      const u32 first = tree.category_draw_indices[category];
+      const u32 end = tree.category_draw_indices[category + 1];
       if (first > end || end > tree.draws->size()) {
         return metal_background_expect(false, m_name,
-                                       "supported TIE category ranges to fit their FR3 draws",
+                                       "every TIE category range to fit its FR3 draws",
                                        background);
       }
     }
@@ -590,8 +587,9 @@ void MetalTie3::render_all_trees(int geom,
   }
 }
 
-void MetalTie3::render_envmap_from_parent(MetalSharedRenderState* render_state,
-                                          MetalFrameContext& ctx) {
+void MetalTie3::render_category_from_parent(tfrag3::TieCategory category,
+                                            MetalSharedRenderState* render_state,
+                                            MetalFrameContext& ctx) {
   if (!m_parent_state_valid || m_parent_state_frame != render_state->engine_frame_id) {
     invalidate_parent_state();
     return;
@@ -599,10 +597,11 @@ void MetalTie3::render_envmap_from_parent(MetalSharedRenderState* render_state,
 
   constexpr int geom = 0;
   for (std::size_t i = 0; i < m_trees[geom].size(); i++) {
-    render_tree(geom, (int)i, tfrag3::TieCategory::NORMAL_ENVMAP, render_state, ctx);
-    render_tree(geom, (int)i, tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW, render_state, ctx);
+    render_tree(geom, (int)i, category, render_state, ctx);
+    if (tfrag3::is_envmap_first_draw_category(category)) {
+      render_tree(geom, (int)i, tfrag3::get_second_draw_category(category), render_state, ctx);
+    }
   }
-  invalidate_parent_state();
 }
 
 void MetalTie3::invalidate_parent_state() {
@@ -619,7 +618,7 @@ void MetalTie3::render_tree(int geom,
   auto* bg = render_state->background;
   id<MTLRenderCommandEncoder> enc = ctx.enc;
 
-  const bool second_draw = category == tfrag3::TieCategory::NORMAL_ENVMAP_SECOND_DRAW;
+  const bool second_draw = tfrag3::is_envmap_second_draw_category(category);
   const bool use_envmap = second_draw || tfrag3::is_envmap_first_draw_category(category);
   const auto shader = second_draw ? MetalShaderId::ETIE
                                   : (use_envmap ? MetalShaderId::ETIE_BASE : MetalShaderId::TFRAG3);
@@ -714,9 +713,9 @@ void MetalTie3::render_tree(int geom,
   }
 }
 
-void MetalTieEnvmap::render(DmaFollower& dma,
-                            MetalSharedRenderState* render_state,
-                            MetalFrameContext& ctx) {
+void MetalTieCategory::render(DmaFollower& dma,
+                              MetalSharedRenderState* render_state,
+                              MetalFrameContext& ctx) {
   auto* bg = render_state->background;
   auto expect = [&](bool ok, const char* what) {
     return metal_background_expect(ok, m_name, what, bg);
@@ -740,5 +739,5 @@ void MetalTieEnvmap::render(DmaFollower& dma,
     return;
   }
 
-  m_parent->render_envmap_from_parent(render_state, ctx);
+  m_parent->render_category_from_parent(m_category, render_state, ctx);
 }

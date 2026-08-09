@@ -34,8 +34,11 @@ constexpr char kLeftProto[] = "left-proto";
 constexpr char kRightProto[] = "right-proto";
 constexpr u32 kTieBucket = static_cast<u32>(jak2::BucketId::TIE_L0_TFRAG);
 constexpr u32 kEtieBucket = static_cast<u32>(jak2::BucketId::ETIE_L0_TFRAG);
+constexpr u32 kAlphaTieBucket = static_cast<u32>(jak2::BucketId::TIE_T_L0_ALPHA);
+constexpr u32 kAlphaEtieBucket = static_cast<u32>(jak2::BucketId::ETIE_T_L0_ALPHA);
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
-static_assert(kTieBucket == 9 && kEtieBucket == 10);
+static_assert(kTieBucket == 9 && kEtieBucket == 10 && kAlphaTieBucket == 129 &&
+              kAlphaEtieBucket == 130);
 
 int failures = 0;
 
@@ -271,15 +274,17 @@ void add_quad(tfrag3::TieTree* tree,
 
 tfrag3::StripDraw tie_draw(const std::vector<u32>& indices,
                            std::vector<tfrag3::StripDraw::VisGroup> groups,
-                           bool envmap_second) {
+                           bool envmap_second,
+                           bool translucent = false) {
   tfrag3::StripDraw draw = {};
   draw.mode.as_int() = 0;
-  draw.mode.set_depth_write_enable(!envmap_second);
+  draw.mode.set_depth_write_enable(!envmap_second && !translucent);
   draw.mode.set_zt(true);
   draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
-  draw.mode.set_ab(envmap_second);
+  draw.mode.set_ab(envmap_second || translucent);
   draw.mode.set_alpha_blend(envmap_second ? DrawMode::AlphaBlend::SRC_0_FIX_DST
-                                         : DrawMode::AlphaBlend::DISABLED);
+                            : translucent ? DrawMode::AlphaBlend::SRC_DST_FIX_DST
+                                          : DrawMode::AlphaBlend::DISABLED);
   draw.mode.set_at(false);
   draw.mode.set_fog(false);
   draw.mode.set_decal(false);
@@ -318,24 +323,33 @@ tfrag3::TieTree make_named_tree() {
   std::vector<u32> left;
   std::vector<u32> right;
   std::vector<u32> env;
+  std::vector<u32> trans;
+  std::vector<u32> trans_env;
   add_quad(&tree, -64.f, -8.f, -32.f, 32.f, 0, 255, 255, 255, &left);
   add_quad(&tree, 8.f, 64.f, -32.f, 32.f, 1, 255, 255, 255, &right);
   add_quad(&tree, -16.f, 16.f, -16.f, 16.f, 2, 0, 255, 0, &env);
+  add_quad(&tree, -6.f, 6.f, -28.f, 28.f, 3, 255, 255, 255, &trans);
+  add_quad(&tree, -5.f, 5.f, -14.f, 14.f, 4, 255, 0, 0, &trans_env);
 
   std::vector<u32> normal = left;
   normal.insert(normal.end(), right.begin(), right.end());
   tree.static_draws.push_back(
       tie_draw(normal, {{6, 2, UINT16_MAX, 0}, {6, 2, UINT16_MAX, 1}}, false));
+  tree.static_draws.push_back(tie_draw(trans, {{6, 2, UINT16_MAX, 1}}, false, true));
   tree.static_draws.push_back(tie_draw(env, {{6, 2, UINT16_MAX, 1}}, false));
+  tree.static_draws.push_back(tie_draw(trans_env, {{6, 2, UINT16_MAX, 1}}, false, true));
   tree.static_draws.push_back(tie_draw(env, {{6, 2, UINT16_MAX, 1}}, true));
-  tree.category_draw_indices = {0, 1, 1, 1, 2, 2, 2, 3, 3, 3};
+  tree.static_draws.push_back(tie_draw(trans_env, {{6, 2, UINT16_MAX, 1}}, true));
+  tree.category_draw_indices = {0, 1, 2, 2, 3, 4, 4, 5, 6, 6};
   tree.packed_vertices.matrix_groups.push_back(
       {-1, 0, static_cast<u32>(tree.packed_vertices.vertices.size()), true});
-  tree.colors.color_count = 4;
+  tree.colors.color_count = 5;
   tree.colors.data.assign(128, 0);
   set_tod_color(&tree.colors, 0, 128, 0, 0, 64);
   set_tod_color(&tree.colors, 1, 0, 0, 128, 64);
   set_tod_color(&tree.colors, 2, 0, 0, 0, 64);
+  set_tod_color(&tree.colors, 3, 0, 128, 0, 64);
+  set_tod_color(&tree.colors, 4, 0, 0, 0, 64);
   return tree;
 }
 
@@ -398,7 +412,7 @@ RenderResult render_sequence(id<MTLDevice> device,
                              MetalSamplerCache* sampler_cache,
                              TexturePool* texture_pool,
                              MetalTie3* parent,
-                             MetalTieEnvmap* child,
+                             MetalTieCategory* child,
                              const SyntheticChain* parent_chain,
                              const SyntheticChain* child_chain,
                              u64 engine_frame_id,
@@ -573,7 +587,13 @@ int main() {
     }
 
     MetalTie3 parent("tie-l0-tfrag", static_cast<int>(kTieBucket), 0);
-    MetalTieEnvmap child("etie-l0-tfrag", static_cast<int>(kEtieBucket), &parent);
+    MetalTieCategory child("etie-l0-tfrag", static_cast<int>(kEtieBucket), &parent,
+                           tfrag3::TieCategory::NORMAL_ENVMAP);
+    MetalTieCategory alpha_child("tie-t-l0-alpha", static_cast<int>(kAlphaTieBucket), &parent,
+                                 tfrag3::TieCategory::TRANS);
+    MetalTieCategory alpha_env_child("etie-t-l0-alpha",
+                                     static_cast<int>(kAlphaEtieBucket), &parent,
+                                     tfrag3::TieCategory::TRANS_ENVMAP);
     const std::array<float, 4> half_red_tint = {64.f, 64.f, 64.f, 128.f};
     const auto empty_child = make_empty_bucket();
     const auto hidden_parent = make_parent_chain(proto_mask({kLeftProto}), half_red_tint);
@@ -628,6 +648,33 @@ int main() {
               paired.background.unexpected_dma == 0 && paired.background.missing_levels == 0 &&
               paired.background.missing_textures == 0 && paired.background.anim_slot_draws == 0,
           "the paired render reports exact normal/envmap stats and zero missing-resource gaps");
+
+    const auto alpha_after_normal = render_sequence(
+        device, queue, &pso_cache, &sampler_cache, &texture_pool, &parent, &alpha_child, nullptr,
+        &empty_child, 12);
+    check(alpha_after_normal.completed && alpha_after_normal.child_finished &&
+              alpha_after_normal.draw_calls == 1 && alpha_after_normal.triangles == 2 &&
+              alpha_after_normal.background.tie_draws == 1 &&
+              alpha_after_normal.background.tie_tris == 2 &&
+              alpha_after_normal.background.unexpected_dma == 0,
+          "the later empty alpha TIE child reuses the same-frame normal parent state once");
+    check(count_rgba(alpha_after_normal.pixels, 0, 128, 0, 255) > 20,
+          "the alpha TIE child applies its half-blend FR3 draw mode on readback");
+
+    const auto alpha_env_after_normal =
+        render_sequence(device, queue, &pso_cache, &sampler_cache, &texture_pool, &parent,
+                        &alpha_env_child, nullptr, &empty_child, 12);
+    check(alpha_env_after_normal.completed && alpha_env_after_normal.child_finished &&
+              alpha_env_after_normal.draw_calls == 2 &&
+              alpha_env_after_normal.triangles == 4 &&
+              alpha_env_after_normal.background.tie_draws == 2 &&
+              alpha_env_after_normal.background.tie_tris == 4 &&
+              alpha_env_after_normal.background.tie_envmap_second_draws == 1 &&
+              alpha_env_after_normal.background.tie_envmap_second_tris == 2 &&
+              alpha_env_after_normal.background.unexpected_dma == 0,
+          "the alpha ETIE child emits its adjacent TRANS envmap base and second draws");
+    check(count_non_black_rgb(alpha_env_after_normal.pixels) > 20,
+          "the alpha ETIE base/shine pair produces deterministic non-black readback");
 
     const auto linked_parent =
         make_parent_chain(proto_mask({kLeftProto}), half_red_tint, proto_mask({kRightProto}));

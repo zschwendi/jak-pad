@@ -224,7 +224,10 @@ bool is_audited_tfrag_texture_upload_bucket(u32 bucket_id) {
              kJak2NormalTfragTextureUploadBuckets.end() ||
          std::find(kJak2NormalShrubTextureUploadBuckets.begin(),
                    kJak2NormalShrubTextureUploadBuckets.end(), bucket_id) !=
-             kJak2NormalShrubTextureUploadBuckets.end();
+             kJak2NormalShrubTextureUploadBuckets.end() ||
+         std::find(kJak2AlphaTextureUploadBuckets.begin(),
+                   kJak2AlphaTextureUploadBuckets.end(), bucket_id) !=
+             kJak2AlphaTextureUploadBuckets.end();
 }
 
 bool is_normal_tfrag_texture_upload_bucket(u32 bucket_id) {
@@ -237,6 +240,12 @@ bool is_normal_shrub_texture_upload_bucket(u32 bucket_id) {
   return std::find(kJak2NormalShrubTextureUploadBuckets.begin(),
                    kJak2NormalShrubTextureUploadBuckets.end(), bucket_id) !=
          kJak2NormalShrubTextureUploadBuckets.end();
+}
+
+bool is_alpha_texture_upload_bucket(u32 bucket_id) {
+  return std::find(kJak2AlphaTextureUploadBuckets.begin(),
+                   kJak2AlphaTextureUploadBuckets.end(), bucket_id) !=
+         kJak2AlphaTextureUploadBuckets.end();
 }
 
 bool metadata_is_inert_next(const Jak2CommonTfragTransferMetadata& transfer) {
@@ -609,6 +618,52 @@ std::optional<Jak2NormalShrubTextureUploadPlan> plan_jak2_normal_shrub_texture_u
   }
 
   Jak2NormalShrubTextureUploadPlan plan;
+  plan.bucket_id = bucket_id;
+  if (!capture.present) {
+    if (capture.classification != Jak2CommonTfragTextureUploadClass::Absent ||
+        capture.transfer_count != 1 || capture.total_payload_bytes != 0 ||
+        capture.inert_transfers != 1 || !metadata_is_strict_empty(capture.transfers[0])) {
+      return std::nullopt;
+    }
+    return plan;
+  }
+
+  const bool exact_counts =
+      capture.classification == Jak2CommonTfragTextureUploadClass::GsSetupOnly &&
+      capture.transfer_count == 5 && capture.total_payload_bytes == 192 &&
+      capture.inert_transfers == 3 && capture.ordinary_descriptors == 0 &&
+      capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == 1 &&
+      capture.animator_arrays == 0 && capture.eye_markers == 0 &&
+      capture.other_transfers == 0 && capture.malformed_transfers == 0;
+  if (!exact_counts || !metadata_is_inert_next(capture.transfers[0]) ||
+      !metadata_is_gs_setup(capture.transfers[1]) ||
+      !metadata_is_inert_next(capture.transfers[2]) ||
+      !metadata_is_direct_setup(capture.transfers[3]) ||
+      !metadata_is_inert_next(capture.transfers[4])) {
+    return std::nullopt;
+  }
+
+  plan.present = true;
+  return plan;
+}
+
+std::optional<Jak2AlphaTextureUploadPlan> plan_jak2_alpha_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id,
+    Jak2CommonTfragTextureUploadCapture* out_capture) {
+  const auto capture = capture_jak2_tfrag_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, bucket_id);
+  if (out_capture) {
+    *out_capture = capture;
+  }
+
+  if (!is_alpha_texture_upload_bucket(bucket_id) || !capture.valid) {
+    return std::nullopt;
+  }
+
+  Jak2AlphaTextureUploadPlan plan;
   plan.bucket_id = bucket_id;
   if (!capture.present) {
     if (capture.classification != Jak2CommonTfragTextureUploadClass::Absent ||

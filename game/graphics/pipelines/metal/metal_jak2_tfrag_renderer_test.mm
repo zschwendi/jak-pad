@@ -28,7 +28,8 @@ namespace {
 constexpr int kTargetSize = 64;
 constexpr char kLevelName[] = "tfrag-test";
 constexpr u32 kTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_L0_TFRAG);
-static_assert(kTfragBucket == 8);
+constexpr u32 kAlphaTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_T_L0_ALPHA);
+static_assert(kTfragBucket == 8 && kAlphaTfragBucket == 128);
 
 int failures = 0;
 
@@ -157,46 +158,60 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
   texture.debug_name = "synthetic-green";
   texture.debug_tpage_name = "synthetic-tfrag";
   level.textures.push_back(std::move(texture));
+  texture = {};
+  texture.w = 2;
+  texture.h = 2;
+  texture.data.assign(4, 0xff0000ff);
+  texture.debug_name = "synthetic-red";
+  texture.debug_tpage_name = "synthetic-alpha";
+  level.textures.push_back(std::move(texture));
 
-  tfrag3::TfragTree tree = {};
-  tree.kind = tfrag3::TFragmentTreeKind::NORMAL;
-  tree.use_strips = false;
-  tree.packed_vertices.cluster_origins.emplace_back(300, 300, 300);
-  tree.packed_vertices.vertices = {
-      packed_vertex(0, 0, 0, 0),
-      packed_vertex(4, 0, 1024, 0),
-      packed_vertex(0, 4, 0, 1024),
-      packed_vertex(4, 4, 1024, 1024),
+  const auto make_tree = [](tfrag3::TFragmentTreeKind kind, int texture_id, bool translucent) {
+    tfrag3::TfragTree tree = {};
+    tree.kind = kind;
+    tree.use_strips = false;
+    tree.packed_vertices.cluster_origins.emplace_back(300, 300, 300);
+    tree.packed_vertices.vertices = {
+        packed_vertex(0, 0, 0, 0),
+        packed_vertex(4, 0, 1024, 0),
+        packed_vertex(0, 4, 0, 1024),
+        packed_vertex(4, 4, 1024, 1024),
+    };
+
+    tfrag3::StripDraw draw = {};
+    draw.mode.as_int() = 0;
+    draw.mode.set_depth_write_enable(!translucent);
+    draw.mode.set_zt(true);
+    draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
+    draw.mode.set_at(false);
+    draw.mode.set_ab(translucent);
+    draw.mode.set_alpha_blend(translucent ? DrawMode::AlphaBlend::SRC_DST_FIX_DST
+                                          : DrawMode::AlphaBlend::DISABLED);
+    draw.mode.set_fog(false);
+    draw.mode.set_decal(false);
+    draw.mode.set_filt_enable(false);
+    draw.mode.set_clamp_s_enable(true);
+    draw.mode.set_clamp_t_enable(true);
+    draw.tree_tex_id = texture_id;
+    draw.plain_indices = {0, 1, 2, 2, 1, 3};
+    draw.vis_groups.push_back({6, 2, UINT16_MAX, 0});
+    draw.num_triangles = 2;
+    tree.draws.push_back(std::move(draw));
+
+    tree.colors.color_count = 4;
+    tree.colors.data.assign(128, 0);
+    for (int color = 0; color < 4; color++) {
+      tree.colors.data[color * 4 + 0] = 128;
+      tree.colors.data[color * 4 + 1] = 128;
+      tree.colors.data[color * 4 + 2] = 128;
+      tree.colors.data[color * 4 + 3] = 64;
+    }
+    return tree;
   };
-
-  tfrag3::StripDraw draw = {};
-  draw.mode.as_int() = 0;
-  draw.mode.set_depth_write_enable(true);
-  draw.mode.set_zt(true);
-  draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
-  draw.mode.set_at(false);
-  draw.mode.set_ab(false);
-  draw.mode.set_alpha_blend(DrawMode::AlphaBlend::DISABLED);
-  draw.mode.set_fog(false);
-  draw.mode.set_decal(false);
-  draw.mode.set_filt_enable(false);
-  draw.mode.set_clamp_s_enable(true);
-  draw.mode.set_clamp_t_enable(true);
-  draw.tree_tex_id = 0;
-  draw.plain_indices = {0, 1, 2, 2, 1, 3};
-  draw.vis_groups.push_back({6, 2, UINT16_MAX, 0});
-  draw.num_triangles = 2;
-  tree.draws.push_back(std::move(draw));
-
-  tree.colors.color_count = 4;
-  tree.colors.data.assign(128, 0);
-  for (int color = 0; color < 4; color++) {
-    tree.colors.data[color * 4 + 0] = 128;
-    tree.colors.data[color * 4 + 1] = 128;
-    tree.colors.data[color * 4 + 2] = 128;
-    tree.colors.data[color * 4 + 3] = 64;
-  }
-  level.tfrag_trees[0].push_back(std::move(tree));
+  level.tfrag_trees[0].push_back(
+      make_tree(tfrag3::TFragmentTreeKind::NORMAL, 0, false));
+  level.tfrag_trees[0].push_back(
+      make_tree(tfrag3::TFragmentTreeKind::TRANS, 1, true));
 
   Serializer serializer;
   level.serialize(serializer);
@@ -217,6 +232,7 @@ struct RenderResult {
   bool finished_bucket = false;
   bool completed = false;
   std::vector<u8> pixels;
+  std::vector<float> depths;
 };
 
 RenderResult render_chain(id<MTLDevice> device,
@@ -258,7 +274,7 @@ RenderResult render_chain(id<MTLDevice> device,
   pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
   pass.depthAttachment.texture = depth;
   pass.depthAttachment.loadAction = MTLLoadActionClear;
-  pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+  pass.depthAttachment.storeAction = MTLStoreActionStore;
   pass.depthAttachment.clearDepth = 0.0;
   pass.stencilAttachment.texture = depth;
   pass.stencilAttachment.loadAction = MTLLoadActionClear;
@@ -305,11 +321,25 @@ RenderResult render_chain(id<MTLDevice> device,
   result.triangles = context.triangles;
 
   [encoder endEncoding];
-#if TARGET_OS_OSX
+  constexpr std::size_t kDepthBytesPerRow = kTargetSize * sizeof(float);
+  id<MTLBuffer> depth_readback =
+      [device newBufferWithLength:kDepthBytesPerRow * kTargetSize
+                          options:MTLResourceStorageModeShared];
   id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+  [blit copyFromTexture:depth
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake(kTargetSize, kTargetSize, 1)
+               toBuffer:depth_readback
+      destinationOffset:0
+ destinationBytesPerRow:kDepthBytesPerRow
+destinationBytesPerImage:kDepthBytesPerRow * kTargetSize
+                options:MTLBlitOptionDepthFromDepthStencil];
+#if TARGET_OS_OSX
   [blit synchronizeResource:color];
-  [blit endEncoding];
 #endif
+  [blit endEncoding];
   [commands commit];
   [commands waitUntilCompleted];
   result.completed = commands.status == MTLCommandBufferStatusCompleted;
@@ -320,6 +350,9 @@ RenderResult render_chain(id<MTLDevice> device,
         bytesPerRow:kTargetSize * 4
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
         mipmapLevel:0];
+    result.depths.resize(kTargetSize * kTargetSize);
+    std::memcpy(result.depths.data(), depth_readback.contents,
+                result.depths.size() * sizeof(float));
   }
   return result;
 }
@@ -425,6 +458,38 @@ int main() {
               rgba_is(good.pixels, 2, 2, 0, 0, 0, 0) && green_pixels == 1024 &&
               clear_pixels == 3072 && unexpected_pixels == 0,
           "readback is the exact centered 32x32 green mask over transparent black");
+    check(good.depths[32 * kTargetSize + 32] > 0.f && good.depths[2 * kTargetSize + 2] == 0.f,
+          "normal TFRAG writes depth only under its exact centered mask");
+
+    MetalTFragment alpha_renderer("tfrag-t-l0-alpha", static_cast<int>(kAlphaTfragBucket),
+                                  {tfrag3::TFragmentTreeKind::TRANS}, 0, false);
+    const auto alpha = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                    &alpha_renderer, make_tfrag_chain(false));
+    int half_red_pixels = 0;
+    int alpha_clear_pixels = 0;
+    int alpha_unexpected_pixels = 0;
+    for (int y = 0; y < kTargetSize; y++) {
+      for (int x = 0; x < kTargetSize; x++) {
+        if (rgba_is(alpha.pixels, x, y, 128, 0, 0, 255)) {
+          half_red_pixels++;
+        } else if (rgba_is(alpha.pixels, x, y, 0, 0, 0, 0)) {
+          alpha_clear_pixels++;
+        } else {
+          alpha_unexpected_pixels++;
+        }
+      }
+    }
+    check(alpha.completed && alpha.finished_bucket && alpha.renderer.trees_rendered == 1 &&
+              alpha.renderer.draws == 1 && alpha.renderer.runs == 1 &&
+              alpha.renderer.triangles == 2 && alpha.draw_calls == 1 &&
+              alpha.triangles == 2 && alpha.background.unexpected_dma == 0 &&
+              alpha.background.missing_levels == 0 && alpha.background.missing_textures == 0,
+          "the source-shaped translucent TFRAG packet selects one TRANS tree exactly");
+    check(half_red_pixels == 1024 && alpha_clear_pixels == 3072 &&
+              alpha_unexpected_pixels == 0,
+          "TRANS readback applies its FR3 half-blend draw mode to the exact centered mask");
+    check(alpha.depths[32 * kTargetSize + 32] == 0.f,
+          "the translucent FR3 draw mode preserves cleared depth under its visible mask");
 
     const auto malformed = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                                         &renderer, make_tfrag_chain(true));

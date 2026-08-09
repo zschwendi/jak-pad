@@ -13,6 +13,7 @@ namespace metal_renderer {
 constexpr u32 kJak2CommonTfragTextureUploadBucket = 187;
 constexpr std::array<u32, 6> kJak2NormalTfragTextureUploadBuckets = {7, 18, 29, 40, 51, 62};
 constexpr std::array<u32, 6> kJak2NormalShrubTextureUploadBuckets = {73, 82, 91, 100, 109, 118};
+constexpr std::array<u32, 6> kJak2AlphaTextureUploadBuckets = {127, 137, 147, 157, 167, 177};
 constexpr std::size_t kJak2CommonTfragTextureUploadMaximumTransfers = 64;
 constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
 
@@ -71,6 +72,8 @@ struct Jak2NormalShrubTextureUploadPlan {
   u32 bucket_id = 0;
   bool present = false;
 };
+
+using Jak2AlphaTextureUploadPlan = Jak2NormalShrubTextureUploadPlan;
 
 struct Jak2Opcode27LayerValues {
   std::array<float, 4> color = {};
@@ -141,6 +144,18 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
  * is read and no texture-pool mutation is planned.
  */
 std::optional<Jak2NormalShrubTextureUploadPlan> plan_jak2_normal_shrub_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id,
+    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+/*!
+ * Plan the alpha setup written by upload-vram-pages-pris. On PC that writer is
+ * the same Direct-only inert GS setup used by normal SHRUB; category and level
+ * change only the destination bucket selected by *texture-page-translate*.
+ */
+std::optional<Jak2AlphaTextureUploadPlan> plan_jak2_alpha_texture_upload(
     const u8* dma_packet_snapshot,
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,

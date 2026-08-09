@@ -14,15 +14,16 @@
  * TIE draws are grouped into categories (tfrag3::TieCategory). On Jak 1 the one
  * bucket per level draws the NORMAL category, the base draw of the envmapped
  * category, then the envmap second draw. Jak 2 keeps NORMAL in the populated
- * parent bucket and drives the two envmap draws from the immediately following
- * empty ETIE child bucket. For static draws with non-animated textures, this
- * slice covers all three:
+ * parent bucket and drives every other category from source-empty child
+ * buckets later in the same frame. For static draws with non-animated
+ * textures, this slice covers:
  *  - NORMAL uses the tfrag3 shader, exactly as GL does.
- *  - NORMAL_ENVMAP's base draw uses the etie_base shader, exactly as GL does
+ *  - TRANS/WATER use the same tfrag3 draw path with their FR3 draw modes.
+ *  - Each *_ENVMAP base draw uses the etie_base shader, exactly as GL does
  *    (GL uses the envmap-style math for the base draw to avoid a rounding
  *    mismatch with the second draw).
- *  - NORMAL_ENVMAP_SECOND_DRAW - the shiny reflective pass - uses the etie
- *    shader, with the frame's envmap tint from the chain.
+ *  - Each *_ENVMAP_SECOND_DRAW reflective pass uses the etie shader, with the
+ *    frame's envmap tint from the chain.
  *
  * Not ported, and honestly missing rather than faked:
  *  - wind-instanced draws (trees/flags that sway). They need the per-instance
@@ -62,7 +63,7 @@ class MetalTie3 : public MetalBucketRenderer {
   const Stats& stats() const { return m_stats; }
 
  private:
-  friend class MetalTieEnvmap;
+  friend class MetalTieCategory;
   struct Tree;
 
   bool set_up_common_data_from_dma(DmaFollower& dma, MetalSharedRenderState* render_state);
@@ -84,8 +85,9 @@ class MetalTie3 : public MetalBucketRenderer {
                    tfrag3::TieCategory category,
                    MetalSharedRenderState* render_state,
                    MetalFrameContext& ctx);
-  void render_envmap_from_parent(MetalSharedRenderState* render_state,
-                                 MetalFrameContext& ctx);
+  void render_category_from_parent(tfrag3::TieCategory category,
+                                   MetalSharedRenderState* render_state,
+                                   MetalFrameContext& ctx);
   void invalidate_parent_state();
 
   struct Tree {
@@ -126,10 +128,13 @@ class MetalTie3 : public MetalBucketRenderer {
   bool m_warned_missing_level = false;
 };
 
-class MetalTieEnvmap : public MetalBucketRenderer {
+class MetalTieCategory : public MetalBucketRenderer {
  public:
-  MetalTieEnvmap(const std::string& name, int my_id, MetalTie3* parent)
-      : MetalBucketRenderer(name, my_id), m_parent(parent) {}
+  MetalTieCategory(const std::string& name,
+                   int my_id,
+                   MetalTie3* parent,
+                   tfrag3::TieCategory category)
+      : MetalBucketRenderer(name, my_id), m_parent(parent), m_category(category) {}
 
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
@@ -137,4 +142,5 @@ class MetalTieEnvmap : public MetalBucketRenderer {
 
  private:
   MetalTie3* m_parent = nullptr;
+  tfrag3::TieCategory m_category = tfrag3::TieCategory::NORMAL;
 };

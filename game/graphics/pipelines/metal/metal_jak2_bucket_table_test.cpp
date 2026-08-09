@@ -32,9 +32,12 @@ int main() {
   std::size_t visibility = 0;
   std::size_t sprite = 0;
   std::size_t tfragment = 0;
+  std::size_t tfragment_trans = 0;
   std::size_t shrub = 0;
   std::size_t tie = 0;
   std::size_t tie_envmap = 0;
+  std::size_t tie_trans = 0;
+  std::size_t tie_trans_envmap = 0;
   std::size_t merc = 0;
   std::size_t blit_display = 0;
   bool contiguous = true;
@@ -48,28 +51,36 @@ int main() {
     visibility += table[i].behavior == Behavior::Visibility;
     sprite += table[i].behavior == Behavior::Sprite;
     tfragment += table[i].behavior == Behavior::TFragment;
+    tfragment_trans += table[i].behavior == Behavior::TFragmentTrans;
     shrub += table[i].behavior == Behavior::Shrub;
     tie += table[i].behavior == Behavior::Tie;
     tie_envmap += table[i].behavior == Behavior::TieEnvmap;
+    tie_trans += table[i].behavior == Behavior::TieTrans;
+    tie_trans_envmap += table[i].behavior == Behavior::TieTransEnvmap;
     merc += table[i].behavior == Behavior::Merc;
     blit_display += table[i].behavior == Behavior::BlitDisplay;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 146, "146 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 122, "122 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
-  check(host_texture_upload == 15,
-        "fifteen exact texture/setup buckets are handled synchronously by the host");
+  check(host_texture_upload == 21,
+        "twenty-one exact texture/setup buckets are handled synchronously by the host");
   check(host_texture_upload_direct == 2,
         "two exact texture/setup buckets also retain their Direct payloads");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
   check(sprite == 1, "one normal Sprite3 bucket is implemented by Metal");
   check(tfragment == 6, "six normal per-level TFRAG buckets are implemented by Metal");
+  check(tfragment_trans == 6,
+        "six translucent per-level TFRAG buckets are implemented by Metal");
   check(shrub == 6, "six normal per-level SHRUB buckets are implemented by Metal");
   check(tie == 6, "six normal per-level TIE parent buckets are implemented by Metal");
   check(tie_envmap == 6,
         "six normal per-level ETIE child buckets are implemented by Metal");
+  check(tie_trans == 6, "six translucent per-level TIE child buckets are implemented by Metal");
+  check(tie_trans_envmap == 6,
+        "six translucent per-level ETIE child buckets are implemented by Metal");
   check(merc == 6, "six normal per-level Merc buckets are implemented by Metal");
   check(blit_display == 1, "one source-proven BlitDisplays bucket is implemented by Metal");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
@@ -94,9 +105,9 @@ int main() {
             has_behavior(jak2::BucketId::TEX_L4_TFRAG, Behavior::HostTextureUpload) &&
             has_behavior(jak2::BucketId::TEX_L5_TFRAG, Behavior::HostTextureUpload) &&
             has_behavior(jak2::BucketId::TFRAG_S_L0_TFRAG, Behavior::StrictEmpty) &&
-            has_behavior(jak2::BucketId::TFRAG_T_L0_ALPHA, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TFRAG_T_L0_ALPHA, Behavior::TFragmentTrans) &&
             has_behavior(jak2::BucketId::TFRAG_W_L0_WATER, Behavior::DeferredSkip),
-        "normal texture setup is host-owned while other TFRAG neighbors remain unpromoted");
+        "normal and translucent TFRAG are explicit while water remains unpromoted");
   check(has_behavior(jak2::BucketId::TIE_L0_TFRAG, Behavior::Tie) &&
             has_behavior(jak2::BucketId::TIE_L1_TFRAG, Behavior::Tie) &&
             has_behavior(jak2::BucketId::TIE_L2_TFRAG, Behavior::Tie) &&
@@ -127,11 +138,11 @@ int main() {
   check(has_behavior(jak2::BucketId::TIE_S_L0_TFRAG, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::ETIE_S_L0_TFRAG, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::TIE_V_L0_TFRAG, Behavior::StrictEmpty) &&
-            has_behavior(jak2::BucketId::TIE_T_L0_ALPHA, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::ETIE_T_L0_ALPHA, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TIE_T_L0_ALPHA, Behavior::TieTrans) &&
+            has_behavior(jak2::BucketId::ETIE_T_L0_ALPHA, Behavior::TieTransEnvmap) &&
             has_behavior(jak2::BucketId::TIE_W_L0_WATER, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::ETIE_W_L0_WATER, Behavior::DeferredSkip),
-        "TIE scissor/vanish remain unbound while translucent and water stay deferred");
+        "TIE scissor/vanish stay unbound, translucent is explicit, and water remains deferred");
   check(has_behavior(jak2::BucketId::MERC_L0_TFRAG, Behavior::Merc) &&
             has_behavior(jak2::BucketId::MERC_L1_TFRAG, Behavior::Merc) &&
             has_behavior(jak2::BucketId::MERC_L2_TFRAG, Behavior::Merc) &&
