@@ -1100,6 +1100,18 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       game_color = m_game_color;
       game_depth = m_game_depth;
     }
+    bool external_target_has_history = false;
+    if (external_target && m_shared_state.version == GameVersion::Jak2) {
+      const auto previous = m_external_target_history.find(view_id);
+      if (previous != m_external_target_history.end()) {
+        id<MTLTexture> previous_color = previous->second->color_texture;
+        id<MTLTexture> previous_depth = previous->second->depth_texture;
+        external_target_has_history =
+            previous_color && previous_depth && previous_color == game_color &&
+            previous->second->color_slice == color_slice && previous_depth == game_depth &&
+            previous->second->depth_slice == depth_slice;
+      }
+    }
     // mirror of SharedRenderState::reset for the background state
     m_background.reset_frame();
     m_background.camera_trace.reset(opts.expected_camera_valid ? &opts.expected_camera : nullptr);
@@ -1144,10 +1156,11 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = game_color;
     pass.colorAttachments[0].slice = color_slice;
+    const bool load_previous_jak2_color =
+        m_shared_state.version == GameVersion::Jak2 &&
+        (external_target ? external_target_has_history : !m_game_target_fresh);
     pass.colorAttachments[0].loadAction =
-        !external_target && m_shared_state.version == GameVersion::Jak2 && !m_game_target_fresh
-            ? MTLLoadActionLoad
-            : MTLLoadActionClear;
+        load_previous_jak2_color ? MTLLoadActionLoad : MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     pass.depthAttachment.texture = game_depth;
@@ -1442,7 +1455,31 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         completion_state->command_buffer_cv.notify_all();
       }];
       [cmds commit];
-      m_game_target_fresh = false;
+      if (external_target && m_shared_state.version == GameVersion::Jak2) {
+        for (auto history = m_external_target_history.begin();
+             history != m_external_target_history.end();) {
+          id<MTLTexture> previous_color = history->second->color_texture;
+          id<MTLTexture> previous_depth = history->second->depth_texture;
+          const bool dead = !previous_color || !previous_depth;
+          const bool aliases_color = previous_color == game_color &&
+                                     history->second->color_slice == color_slice;
+          const bool aliases_depth = previous_depth == game_depth &&
+                                     history->second->depth_slice == depth_slice;
+          if (dead || history->first == view_id || aliases_color || aliases_depth) {
+            history = m_external_target_history.erase(history);
+          } else {
+            ++history;
+          }
+        }
+        auto history = std::make_unique<ExternalTargetHistory>();
+        history->color_texture = game_color;
+        history->color_slice = color_slice;
+        history->depth_texture = game_depth;
+        history->depth_slice = depth_slice;
+        m_external_target_history.emplace(view_id, std::move(history));
+      } else if (!external_target) {
+        m_game_target_fresh = false;
+      }
       m_chain_stats.command_buffers_committed++;
       {
         std::lock_guard<std::mutex> lock(m_frame_mutex);

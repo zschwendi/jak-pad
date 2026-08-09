@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <vector>
@@ -189,6 +190,8 @@ int main() {
                                      width:kTargetSize
                                     height:kTargetSize
                                  mipmapped:NO];
+    color_desc.textureType = MTLTextureType2DArray;
+    color_desc.arrayLength = 2;
     color_desc.usage = MTLTextureUsageRenderTarget;
 #if TARGET_OS_OSX
     color_desc.storageMode = MTLStorageModeManaged;
@@ -202,22 +205,40 @@ int main() {
                                      width:kTargetSize
                                     height:kTargetSize
                                  mipmapped:NO];
-    depth_desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    depth_desc.textureType = MTLTextureType2DArray;
+    depth_desc.arrayLength = 2;
+    depth_desc.usage = MTLTextureUsageRenderTarget;
     depth_desc.storageMode = MTLStorageModePrivate;
     id<MTLTexture> depth = [device newTextureWithDescriptor:depth_desc];
-    check(color != nil && depth != nil, "created offscreen color and depth targets");
+    check(color != nil && depth != nil,
+          "created two-slice render-target-only color and depth targets");
+
+    constexpr u8 kSliceZeroBgra[4] = {0x3d, 0x7a, 0xc1, 0xff};
+    std::vector<u8> slice_zero_sentinel(kTargetSize * kTargetSize * 4);
+    for (std::size_t offset = 0; offset < slice_zero_sentinel.size(); offset += 4) {
+      std::copy(kSliceZeroBgra, kSliceZeroBgra + 4, slice_zero_sentinel.data() + offset);
+    }
+    [color replaceRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+             mipmapLevel:0
+                   slice:0
+               withBytes:slice_zero_sentinel.data()
+             bytesPerRow:kTargetSize * 4
+           bytesPerImage:slice_zero_sentinel.size()];
 
     id<MTLCommandBuffer> commands = [queue commandBuffer];
     auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = color;
+    pass.colorAttachments[0].slice = 1;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     pass.depthAttachment.texture = depth;
+    pass.depthAttachment.slice = 1;
     pass.depthAttachment.loadAction = MTLLoadActionClear;
     pass.depthAttachment.storeAction = MTLStoreActionStore;
     pass.depthAttachment.clearDepth = 0.0;
     pass.stencilAttachment.texture = depth;
+    pass.stencilAttachment.slice = 1;
     pass.stencilAttachment.loadAction = MTLLoadActionClear;
     pass.stencilAttachment.storeAction = MTLStoreActionStore;
     pass.stencilAttachment.clearStencil = 0;
@@ -239,7 +260,11 @@ int main() {
     context.depth_format = MTLPixelFormatDepth32Float_Stencil8;
     context.cmds = commands;
     context.game_color = color;
+    context.game_color_slice = 1;
     context.game_depth = depth;
+    context.game_depth_slice = 1;
+    context.game_viewport = {0.0, 0.0, kTargetSize, kTargetSize, 0.0, 1.0};
+    [context.enc setViewport:context.game_viewport];
 
     MetalSharedRenderState state;
     state.version = GameVersion::Jak2;
@@ -346,8 +371,10 @@ int main() {
     std::vector<u8> pixels(kTargetSize * kTargetSize * 4);
     [color getBytes:pixels.data()
         bytesPerRow:kTargetSize * 4
+      bytesPerImage:pixels.size()
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
-        mipmapLevel:0];
+        mipmapLevel:0
+              slice:1];
 
     int red_pixels = 0;
     int clear_pixels = 0;
@@ -374,19 +401,23 @@ int main() {
     id<MTLCommandBuffer> boosted_commands = [queue commandBuffer];
     auto* boosted_pass = [MTLRenderPassDescriptor renderPassDescriptor];
     boosted_pass.colorAttachments[0].texture = color;
+    boosted_pass.colorAttachments[0].slice = 1;
     boosted_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     boosted_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     boosted_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     boosted_pass.depthAttachment.texture = depth;
+    boosted_pass.depthAttachment.slice = 1;
     boosted_pass.depthAttachment.loadAction = MTLLoadActionClear;
     boosted_pass.depthAttachment.storeAction = MTLStoreActionStore;
     boosted_pass.depthAttachment.clearDepth = 0.0;
     boosted_pass.stencilAttachment.texture = depth;
+    boosted_pass.stencilAttachment.slice = 1;
     boosted_pass.stencilAttachment.loadAction = MTLLoadActionClear;
     boosted_pass.stencilAttachment.storeAction = MTLStoreActionStore;
     boosted_pass.stencilAttachment.clearStencil = 0;
     context.enc = [boosted_commands renderCommandEncoderWithDescriptor:boosted_pass];
     context.cmds = boosted_commands;
+    [context.enc setViewport:context.game_viewport];
     context.draw_calls = 0;
     context.triangles = 0;
     state.target_fps = 120.f;
@@ -415,8 +446,10 @@ int main() {
     }
     [color getBytes:pixels.data()
         bytesPerRow:kTargetSize * 4
+      bytesPerImage:pixels.size()
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
-        mipmapLevel:0];
+        mipmapLevel:0
+              slice:1];
     check(is_half_red(pixels, kTargetSize / 2, kTargetSize / 2),
           "a 120 Hz flare is half the 60 Hz RGB intensity within UNORM quantization");
     check(is_bgra(pixels, 2, 2, 0, 0, 0, 0),
@@ -427,19 +460,23 @@ int main() {
     id<MTLCommandBuffer> cell_commands = [queue commandBuffer];
     auto* cell_pass = [MTLRenderPassDescriptor renderPassDescriptor];
     cell_pass.colorAttachments[0].texture = color;
+    cell_pass.colorAttachments[0].slice = 1;
     cell_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     cell_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     cell_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     cell_pass.depthAttachment.texture = depth;
+    cell_pass.depthAttachment.slice = 1;
     cell_pass.depthAttachment.loadAction = MTLLoadActionClear;
     cell_pass.depthAttachment.storeAction = MTLStoreActionStore;
     cell_pass.depthAttachment.clearDepth = 0.0;
     cell_pass.stencilAttachment.texture = depth;
+    cell_pass.stencilAttachment.slice = 1;
     cell_pass.stencilAttachment.loadAction = MTLLoadActionClear;
     cell_pass.stencilAttachment.storeAction = MTLStoreActionStore;
     cell_pass.stencilAttachment.clearStencil = 0;
     context.enc = [cell_commands renderCommandEncoderWithDescriptor:cell_pass];
     context.cmds = cell_commands;
+    [context.enc setViewport:context.game_viewport];
     context.draw_calls = 0;
     context.triangles = 0;
 
@@ -479,8 +516,10 @@ int main() {
     }
     [color getBytes:pixels.data()
         bytesPerRow:kTargetSize * 4
+      bytesPerImage:pixels.size()
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
-        mipmapLevel:0];
+        mipmapLevel:0
+              slice:1];
     check(is_bgra(pixels, 11, kTargetSize / 2, 0, 0, 255, 255),
           "the unoccluded cell remains fully visible beside an occluded cell");
     check(is_black_rgb(pixels, 32, kTargetSize / 2),
@@ -494,19 +533,23 @@ int main() {
     id<MTLCommandBuffer> occluded_commands = [queue commandBuffer];
     auto* occluded_pass = [MTLRenderPassDescriptor renderPassDescriptor];
     occluded_pass.colorAttachments[0].texture = color;
+    occluded_pass.colorAttachments[0].slice = 1;
     occluded_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     occluded_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     occluded_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     occluded_pass.depthAttachment.texture = depth;
+    occluded_pass.depthAttachment.slice = 1;
     occluded_pass.depthAttachment.loadAction = MTLLoadActionClear;
     occluded_pass.depthAttachment.storeAction = MTLStoreActionStore;
     occluded_pass.depthAttachment.clearDepth = 1.0;
     occluded_pass.stencilAttachment.texture = depth;
+    occluded_pass.stencilAttachment.slice = 1;
     occluded_pass.stencilAttachment.loadAction = MTLLoadActionClear;
     occluded_pass.stencilAttachment.storeAction = MTLStoreActionStore;
     occluded_pass.stencilAttachment.clearStencil = 0;
     context.enc = [occluded_commands renderCommandEncoderWithDescriptor:occluded_pass];
     context.cmds = occluded_commands;
+    [context.enc setViewport:context.game_viewport];
     context.draw_calls = 0;
     context.triangles = 0;
 
@@ -535,8 +578,10 @@ int main() {
 
     [color getBytes:pixels.data()
         bytesPerRow:kTargetSize * 4
+      bytesPerImage:pixels.size()
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
-        mipmapLevel:0];
+        mipmapLevel:0
+              slice:1];
     int non_black_occluded_pixels = 0;
     for (int y = 0; y < kTargetSize; y++) {
       for (int x = 0; x < kTargetSize; x++) {
@@ -548,6 +593,16 @@ int main() {
     }
     check(non_black_occluded_pixels == 0,
           "a fully occluded opaque flare contributes no visible color to the final target");
+
+    std::vector<u8> slice_zero(slice_zero_sentinel.size());
+    [color getBytes:slice_zero.data()
+         bytesPerRow:kTargetSize * 4
+       bytesPerImage:slice_zero.size()
+          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+         mipmapLevel:0
+               slice:0];
+    check(slice_zero == slice_zero_sentinel,
+          "Glow depth snapshot and game-pass restarts preserve unselected slice 0");
 
     flare_texture.detach_pool();
     metal_texture_release(placeholder_handle);

@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
@@ -86,7 +87,9 @@ struct MetalRenderOptions {
 };
 
 // Borrowed render attachments for one host-owned view. The submitted command buffer retains the
-// textures through GPU completion; ownership stays with the host.
+// textures through GPU completion; ownership stays with the host. Jak 2 retains color between
+// submissions only while view_id and the live color/depth texture slices remain identical. A host
+// that discards an attachment's contents must supply a new view_id or attachment identity.
 struct MetalExternalRenderTargetDescriptor {
   u64 view_id = 0;
   id<MTLTexture> color_texture = nil;
@@ -175,6 +178,13 @@ class MetalRenderer {
     MetalDepthStencilKey depth;
   };
 
+  struct ExternalTargetHistory {
+    __weak id<MTLTexture> color_texture = nil;
+    NSUInteger color_slice = 0;
+    __weak id<MTLTexture> depth_texture = nil;
+    NSUInteger depth_slice = 0;
+  };
+
   void setup_frame(const MetalRenderOptions& opts);
   void encode_game_passes(id<MTLCommandBuffer> cmds,
                           id<MTLTexture> color,
@@ -241,4 +251,5 @@ class MetalRenderer {
   std::shared_ptr<MetalPresentationState> m_presentation_state;
   u64 m_submission_count = 0;
   bool m_game_target_fresh = true;
+  std::unordered_map<u64, std::unique_ptr<ExternalTargetHistory>> m_external_target_history;
 };

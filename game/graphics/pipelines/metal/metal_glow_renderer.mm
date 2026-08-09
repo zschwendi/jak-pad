@@ -143,6 +143,23 @@ bool MetalGlowRenderer::ensure_probe_targets(id<MTLDevice> device) {
   return m_probe_depth != nil;
 }
 
+bool MetalGlowRenderer::ensure_game_depth_snapshot(id<MTLTexture> source) {
+  if (m_game_depth_snapshot && m_game_depth_snapshot.width == source.width &&
+      m_game_depth_snapshot.height == source.height &&
+      m_game_depth_snapshot.pixelFormat == source.pixelFormat) {
+    return true;
+  }
+  auto* descriptor =
+      [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:source.pixelFormat
+                                                         width:source.width
+                                                        height:source.height
+                                                     mipmapped:NO];
+  descriptor.usage = MTLTextureUsageShaderRead;
+  descriptor.storageMode = MTLStorageModePrivate;
+  m_game_depth_snapshot = [source.device newTextureWithDescriptor:descriptor];
+  return m_game_depth_snapshot != nil;
+}
+
 void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
                              std::size_t count,
                              MetalSharedRenderState* render_state,
@@ -244,8 +261,7 @@ void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
   ASSERT(ctx.cmds);
   ASSERT(ctx.game_color);
   ASSERT(ctx.game_depth);
-  ASSERT(ctx.game_depth.usage & MTLTextureUsageShaderRead);
-  if (!ensure_probe_targets(ctx.game_depth.device)) {
+  if (!ensure_probe_targets(ctx.game_depth.device) || !ensure_game_depth_snapshot(ctx.game_depth)) {
     lg::error("Metal glow: failed to allocate visibility-probe targets");
     return;
   }
@@ -283,10 +299,21 @@ void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
   id<MTLSamplerState> probe_sampler = ctx.sampler_cache->get(probe_sampler_key);
 
   // OpenGL first blits the game depth to a sampling texture, then paints each
-  // flare's sampled rectangle into one cell of a 20x20 depth grid. The Metal
-  // game depth is already stored and shader-readable, so ending the game pass
-  // gives the same immutable source without a second full-size depth copy.
+  // flare's sampled rectangle into one cell of a 20x20 depth grid. Keep that
+  // snapshot explicit so a selected slice of a render-target-only host texture
+  // remains a valid immutable depth source for the probe shader.
   [ctx.enc endEncoding];
+  id<MTLBlitCommandEncoder> depth_snapshot = [ctx.cmds blitCommandEncoder];
+  [depth_snapshot copyFromTexture:ctx.game_depth
+                      sourceSlice:ctx.game_depth_slice
+                      sourceLevel:0
+                     sourceOrigin:MTLOriginMake(0, 0, 0)
+                       sourceSize:MTLSizeMake(ctx.game_depth.width, ctx.game_depth.height, 1)
+                        toTexture:m_game_depth_snapshot
+                 destinationSlice:0
+                 destinationLevel:0
+                destinationOrigin:MTLOriginMake(0, 0, 0)];
+  [depth_snapshot endEncoding];
 
   auto* probe_pass = [MTLRenderPassDescriptor renderPassDescriptor];
   probe_pass.colorAttachments[0].texture = m_probe_color[0];
@@ -314,7 +341,7 @@ void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
   depth_copy_state.depth_write = true;
   [probe_encoder setRenderPipelineState:ctx.pso_cache->get_pipeline(depth_copy_pso)];
   [probe_encoder setDepthStencilState:ctx.pso_cache->get_depth_stencil(depth_copy_state)];
-  [probe_encoder setFragmentTexture:ctx.game_depth atIndex:0];
+  [probe_encoder setFragmentTexture:m_game_depth_snapshot atIndex:0];
   [probe_encoder setFragmentSamplerState:probe_sampler atIndex:0];
   [probe_encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
                              indexCount:probe_indices.size()
@@ -369,17 +396,21 @@ void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
 
   auto* game_pass = [MTLRenderPassDescriptor renderPassDescriptor];
   game_pass.colorAttachments[0].texture = ctx.game_color;
+  game_pass.colorAttachments[0].slice = ctx.game_color_slice;
   game_pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
   game_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
   game_pass.depthAttachment.texture = ctx.game_depth;
+  game_pass.depthAttachment.slice = ctx.game_depth_slice;
   game_pass.depthAttachment.loadAction = MTLLoadActionLoad;
   game_pass.depthAttachment.storeAction = MTLStoreActionStore;
   game_pass.stencilAttachment.texture = ctx.game_depth;
+  game_pass.stencilAttachment.slice = ctx.game_depth_slice;
   game_pass.stencilAttachment.loadAction = MTLLoadActionLoad;
   game_pass.stencilAttachment.storeAction = MTLStoreActionStore;
   ctx.enc = [ctx.cmds renderCommandEncoderWithDescriptor:game_pass];
   ASSERT(ctx.enc);
   [ctx.enc setCullMode:MTLCullModeNone];
+  [ctx.enc setViewport:ctx.game_viewport];
 
   m_stats.visibility_draw_calls = 2 + (kDownsampleIterations - 1);
   m_stats.visibility_triangles =

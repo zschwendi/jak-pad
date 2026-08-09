@@ -14,21 +14,25 @@ namespace {
 void begin_game_pass(MetalFrameContext& ctx, MTLLoadAction color_load_action) {
   auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
   pass.colorAttachments[0].texture = ctx.game_color;
+  pass.colorAttachments[0].slice = ctx.game_color_slice;
   pass.colorAttachments[0].loadAction = color_load_action;
   pass.colorAttachments[0].storeAction = MTLStoreActionStore;
   pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
   pass.depthAttachment.texture = ctx.game_depth;
+  pass.depthAttachment.slice = ctx.game_depth_slice;
   pass.depthAttachment.loadAction =
       color_load_action == MTLLoadActionClear ? MTLLoadActionClear : MTLLoadActionLoad;
   pass.depthAttachment.storeAction = MTLStoreActionStore;
   pass.depthAttachment.clearDepth = 0.0;
   pass.stencilAttachment.texture = ctx.game_depth;
+  pass.stencilAttachment.slice = ctx.game_depth_slice;
   pass.stencilAttachment.loadAction =
       color_load_action == MTLLoadActionClear ? MTLLoadActionClear : MTLLoadActionLoad;
   pass.stencilAttachment.storeAction = MTLStoreActionStore;
   pass.stencilAttachment.clearStencil = 0;
   ctx.enc = [ctx.cmds renderCommandEncoderWithDescriptor:pass];
   [ctx.enc setCullMode:MTLCullModeNone];
+  [ctx.enc setViewport:ctx.game_viewport];
 }
 
 }  // namespace
@@ -114,7 +118,7 @@ void Jak2BlitDisplayExecutor::restart_with_clear(MetalFrameContext& ctx, bool co
            m_snapshot.height == ctx.game_color.height);
     id<MTLBlitCommandEncoder> blit = [ctx.cmds blitCommandEncoder];
     [blit copyFromTexture:ctx.game_color
-              sourceSlice:0
+              sourceSlice:ctx.game_color_slice
               sourceLevel:0
              sourceOrigin:MTLOriginMake(0, 0, 0)
                sourceSize:MTLSizeMake(ctx.game_color.width, ctx.game_color.height, 1)
@@ -137,7 +141,7 @@ void Jak2BlitDisplayExecutor::restore_snapshot(MetalFrameContext& ctx) {
            sourceOrigin:MTLOriginMake(0, 0, 0)
              sourceSize:MTLSizeMake(m_snapshot.width, m_snapshot.height, 1)
               toTexture:ctx.game_color
-       destinationSlice:0
+       destinationSlice:ctx.game_color_slice
        destinationLevel:0
       destinationOrigin:MTLOriginMake(0, 0, 0)];
   [blit endEncoding];

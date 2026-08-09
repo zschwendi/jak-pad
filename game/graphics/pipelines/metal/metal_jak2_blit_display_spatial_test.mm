@@ -303,6 +303,63 @@ id<MTLTexture> make_depth_target(id<MTLDevice> device) {
   return [device newTextureWithDescriptor:descriptor];
 }
 
+id<MTLTexture> make_array_color_target(id<MTLDevice> device) {
+  auto* descriptor =
+      [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                         width:kTargetSize
+                                                        height:kTargetSize
+                                                     mipmapped:NO];
+  descriptor.textureType = MTLTextureType2DArray;
+  descriptor.arrayLength = 2;
+  descriptor.usage = MTLTextureUsageRenderTarget;
+#if TARGET_OS_OSX
+  descriptor.storageMode = MTLStorageModeManaged;
+#else
+  descriptor.storageMode = MTLStorageModeShared;
+#endif
+  return [device newTextureWithDescriptor:descriptor];
+}
+
+id<MTLTexture> make_array_depth_target(id<MTLDevice> device) {
+  auto* descriptor =
+      [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                                         width:kTargetSize
+                                                        height:kTargetSize
+                                                     mipmapped:NO];
+  descriptor.textureType = MTLTextureType2DArray;
+  descriptor.arrayLength = 2;
+  descriptor.usage = MTLTextureUsageRenderTarget;
+  descriptor.storageMode = MTLStorageModePrivate;
+  return [device newTextureWithDescriptor:descriptor];
+}
+
+void fill_color_slice(id<MTLTexture> color, NSUInteger slice, const Pixel& pixel) {
+  std::vector<u8> bgra(kTargetSize * kTargetSize * 4);
+  for (std::size_t offset = 0; offset < bgra.size(); offset += 4) {
+    bgra[offset] = pixel.b;
+    bgra[offset + 1] = pixel.g;
+    bgra[offset + 2] = pixel.r;
+    bgra[offset + 3] = pixel.a;
+  }
+  [color replaceRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+           mipmapLevel:0
+                 slice:slice
+             withBytes:bgra.data()
+           bytesPerRow:kTargetSize * 4
+         bytesPerImage:bgra.size()];
+}
+
+std::vector<u8> read_color_slice(id<MTLTexture> color, NSUInteger slice) {
+  std::vector<u8> bgra(kTargetSize * kTargetSize * 4);
+  [color getBytes:bgra.data()
+       bytesPerRow:kTargetSize * 4
+     bytesPerImage:bgra.size()
+        fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+       mipmapLevel:0
+             slice:slice];
+  return bgra;
+}
+
 MetalFrameContext begin_frame(id<MTLCommandQueue> queue,
                               id<MTLTexture> color,
                               id<MTLTexture> depth,
@@ -334,6 +391,8 @@ MetalFrameContext begin_frame(id<MTLCommandQueue> queue,
   ctx.depth_format = MTLPixelFormatDepth32Float_Stencil8;
   ctx.game_color = color;
   ctx.game_depth = depth;
+  ctx.game_viewport = {0.0, 0.0, kTargetSize, kTargetSize, 0.0, 1.0};
+  [ctx.enc setViewport:ctx.game_viewport];
   return ctx;
 }
 
@@ -534,6 +593,135 @@ void test_renderer_fallback_lifecycle(id<MTLDevice> device) {
         "the lifecycle test releases its placeholder and snapshot handles");
 }
 
+void test_external_target_lifecycle(id<MTLDevice> device) {
+  const std::size_t initial_texture_count = metal_texture_live_count();
+  TexturePool texture_pool(GameVersion::Jak2);
+  u64 placeholder = 0;
+  {
+    MetalRenderer renderer;
+    check(renderer.init(device), "initialized the external-target Jak II renderer lifecycle");
+    check(metal_setup_placeholder(device, renderer.queue(), texture_pool),
+          "published the external-target test placeholder");
+    placeholder = texture_pool.get_placeholder_texture();
+    renderer.init_bucket_renderers(&texture_pool, GameVersion::Jak2);
+
+    id<MTLTexture> color = make_array_color_target(device);
+    id<MTLTexture> depth = make_array_depth_target(device);
+    check(color != nil && depth != nil, "created two-slice external game attachments");
+    if (!color || !depth) {
+      metal_texture_release(placeholder);
+      texture_pool.set_placeholder(0);
+      return;
+    }
+
+    constexpr Pixel kSliceZeroSentinel = {17, 93, 201, 255};
+    constexpr Pixel kFirstUsePoison = {220, 80, 160, 255};
+    fill_color_slice(color, 0, kSliceZeroSentinel);
+    fill_color_slice(color, 1, kFirstUsePoison);
+
+    MetalRenderOptions options;
+    options.game_res_w = kTargetSize;
+    options.game_res_h = kTargetSize;
+
+    MetalExternalRenderTargetDescriptor target;
+    target.view_id = 0x5350415449414c31ull;  // "SPATIAL1"
+    target.color_texture = color;
+    target.color_slice = 1;
+    target.depth_texture = depth;
+    target.depth_slice = 1;
+    target.viewport = {0.0, 0.0, kTargetSize, kTargetSize, 0.0, 1.0};
+
+    const auto frame_a_chain =
+        make_renderer_chain(metal_renderer::Jak2BlitDisplayCommand::None, make_spatial_frame_a());
+    const bool frame_a_submitted = renderer.render_chain_frame_to_external_target(
+        options, target, frame_a_chain.data(), 0, frame_a_chain.size());
+    check(frame_a_submitted && renderer.wait_for_last_chain_frame(5.0),
+          "first use rendered frame A into external slice 1");
+    const std::vector<u8> frame_a = read_color_slice(color, 1);
+
+    const auto snapshot_chain = make_renderer_chain(
+        metal_renderer::Jak2BlitDisplayCommand::Snapshot, make_snapshot_sky_draw());
+    const bool frame_b_submitted = renderer.render_chain_frame_to_external_target(
+        options, target, snapshot_chain.data(), 0, snapshot_chain.size());
+    check(frame_b_submitted && renderer.wait_for_last_chain_frame(5.0),
+          "repeated external view submitted the bucket-3 snapshot frame");
+    const std::vector<u8> frame_b = read_color_slice(color, 1);
+
+    const std::array<std::array<int, 2>, 4> samples = {
+        std::array<int, 2>{16, 16}, {48, 16}, {16, 48}, {48, 48}};
+    bool retained_prior_frame = true;
+    for (const auto& sample : samples) {
+      retained_prior_frame &= near_pixel(pixel_at(frame_b, sample[0], sample[1]),
+                                         tinted(pixel_at(frame_a, sample[0], sample[1])), 4);
+    }
+    check(retained_prior_frame,
+          "same view and attachment slices retain Jak II color for bucket-3 snapshot");
+
+    const auto copyback_chain = make_renderer_chain(
+        metal_renderer::Jak2BlitDisplayCommand::SnapshotThenCopyBack, make_copy_back_decoy());
+    const bool copyback_submitted = renderer.render_chain_frame_to_external_target(
+        options, target, copyback_chain.data(), 0, copyback_chain.size());
+    check(copyback_submitted && renderer.wait_for_last_chain_frame(5.0),
+          "external slice 1 submitted snapshot then copyback");
+    const std::vector<u8> copyback = read_color_slice(color, 1);
+    bool copyback_restored = true;
+    for (const auto& sample : samples) {
+      copyback_restored &= near_pixel(pixel_at(copyback, sample[0], sample[1]),
+                                      pixel_at(frame_b, sample[0], sample[1]), 0);
+    }
+    check(copyback_restored,
+          "bucket-3 copyback restores the selected external slice over later draws");
+
+    const std::vector<u8> slice_zero = read_color_slice(color, 0);
+    check(near_pixel(pixel_at(slice_zero, 16, 16), kSliceZeroSentinel, 0) &&
+              near_pixel(pixel_at(slice_zero, 48, 48), kSliceZeroSentinel, 0),
+          "bucket-3 restart, snapshot, and copyback never touch external slice 0");
+
+    target.view_id++;
+    fill_color_slice(color, 1, kFirstUsePoison);
+    const bool recycled_view_submitted = renderer.render_chain_frame_to_external_target(
+        options, target, snapshot_chain.data(), 0, snapshot_chain.size());
+    check(recycled_view_submitted && renderer.wait_for_last_chain_frame(5.0),
+          "a new view identity submitted on the reused attachments");
+    const std::vector<u8> recycled_view = read_color_slice(color, 1);
+    bool recycled_view_cleared = true;
+    for (const auto& sample : samples) {
+      const Pixel actual = pixel_at(recycled_view, sample[0], sample[1]);
+      recycled_view_cleared &= near(actual.r, 0, 1) && near(actual.g, 0, 1) && near(actual.b, 0, 1);
+    }
+    check(recycled_view_cleared,
+          "new view identity clears first use instead of loading recycled attachment color");
+
+    id<MTLTexture> replacement_color = make_array_color_target(device);
+    id<MTLTexture> replacement_depth = make_array_depth_target(device);
+    check(replacement_color != nil && replacement_depth != nil,
+          "created replacement attachments for descriptor-identity proof");
+    if (replacement_color && replacement_depth) {
+      fill_color_slice(replacement_color, 1, kFirstUsePoison);
+      target.color_texture = replacement_color;
+      target.depth_texture = replacement_depth;
+      const bool replacement_submitted = renderer.render_chain_frame_to_external_target(
+          options, target, snapshot_chain.data(), 0, snapshot_chain.size());
+      check(replacement_submitted && renderer.wait_for_last_chain_frame(5.0),
+            "replacement attachments submitted under the stable view identity");
+      const std::vector<u8> replacement = read_color_slice(replacement_color, 1);
+      bool replacement_cleared = true;
+      for (const auto& sample : samples) {
+        const Pixel actual = pixel_at(replacement, sample[0], sample[1]);
+        replacement_cleared &=
+            near(actual.r, 0, 1) && near(actual.g, 0, 1) && near(actual.b, 0, 1);
+      }
+      check(replacement_cleared,
+            "replacement descriptor identity clears first use under the same view ID");
+    }
+  }
+
+  metal_texture_release(placeholder);
+  texture_pool.set_placeholder(0);
+  check(metal_texture_live_count() == initial_texture_count,
+        "the external-target test releases its placeholder and snapshot handles");
+}
+
 }  // namespace
 
 int main() {
@@ -673,6 +861,7 @@ int main() {
           "the focused test releases both placeholder and bucket-3 snapshot handles");
 
     test_renderer_fallback_lifecycle(device);
+    test_external_target_lifecycle(device);
 
     if (failures) {
       std::printf("FAIL: %d Jak II BlitDisplays spatial checks failed\n", failures);

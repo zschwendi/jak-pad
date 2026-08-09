@@ -36,8 +36,10 @@ class MetalGlowRenderer {
   static constexpr int kFirstDownsampleSize = 32;
 
   bool ensure_probe_targets(id<MTLDevice> device);
+  bool ensure_game_depth_snapshot(id<MTLTexture> source);
 
   id<MTLTexture> m_probe_color[kDownsampleIterations] = {};
   id<MTLTexture> m_probe_depth = nil;
+  id<MTLTexture> m_game_depth_snapshot = nil;
   Stats m_stats;
 };
