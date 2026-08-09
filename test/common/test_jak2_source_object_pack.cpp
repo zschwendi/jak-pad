@@ -166,7 +166,7 @@ bool valid_pack_reports_exact_identity_and_progress() {
 
 bool recorded_bundle_identity_is_pinned_and_fails_closed() {
   Fixture fixture;
-  CHECK(pack::kRecordedAggregateXXH64 == 0x97a122324eb71fb3ULL);
+  CHECK(pack::kRecordedAggregateXXH64 == 0x8568d70061609617ULL);
   auto result = pack::validate_recorded(fixture.root);
   CHECK(!result);
   CHECK(result.error().code == pack::ErrorCode::wrong_identity);
