@@ -253,12 +253,12 @@ void kdgo_init_globals() {
  * (game/kernel/jak2/kdgo.cpp) with one branch added: an object whose code this platform cannot
  * execute is taken from the AOT path instead of from the archive.
  */
-void load_and_link_dgo_from_c(const char* name,
-                              Ptr<kheapinfo> heap,
-                              u32 linkFlag,
-                              s32 bufferSize,
-                              bool jump_from_c_to_goal,
-                              bool boot_method_propagation) {
+static void load_and_link_dgo_from_c_impl(const char* name,
+                                          Ptr<kheapinfo> heap,
+                                          u32 linkFlag,
+                                          s32 bufferSize,
+                                          bool jump_from_c_to_goal,
+                                          bool boot_method_propagation) {
   g_error.clear();
   memset(&g_stats, 0, sizeof(g_stats));
   g_stats.heap_used_before = kheapused(heap);
@@ -336,12 +336,20 @@ void load_and_link_dgo_from_c(const char* name,
   close_dgo();
 }
 
+void load_and_link_dgo_from_c(const char* name,
+                              Ptr<kheapinfo> heap,
+                              u32 linkFlag,
+                              s32 bufferSize,
+                              bool jump_from_c_to_goal) {
+  load_and_link_dgo_from_c_impl(name, heap, linkFlag, bufferSize, jump_from_c_to_goal, false);
+}
+
 void load_and_link_dgo_from_c_fast(const char* name,
                                    Ptr<kheapinfo> heap,
                                    u32 linkFlag,
                                    s32 bufferSize) {
   // upstream's fast path skips the IOP round trips; this loader has none to skip
-  load_and_link_dgo_from_c(name, heap, linkFlag, bufferSize, true, false);
+  load_and_link_dgo_from_c(name, heap, linkFlag, bufferSize, true);
 }
 
 /*!
@@ -350,7 +358,7 @@ void load_and_link_dgo_from_c_fast(const char* name,
 void load_and_link_dgo(u64 name_gstr, u64 heap_info, u64 flag, u64 buffer_size) {
   auto name = Ptr<char>((u32)name_gstr + 4).c();
   auto heap = Ptr<kheapinfo>((u32)heap_info);
-  load_and_link_dgo_from_c(name, heap, (u32)flag, (s32)buffer_size, false, false);
+  load_and_link_dgo_from_c(name, heap, (u32)flag, (s32)buffer_size, false);
 }
 
 }  // namespace jak2
@@ -571,8 +579,8 @@ static goal_kernel_core_status goal_dgo_load_impl(const char* name,
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
   g_error.clear();
-  jak2::load_and_link_dgo_from_c(name, kglobalheap, link_flags, buffer_size, true,
-                                 boot_method_propagation);
+  jak2::load_and_link_dgo_from_c_impl(name, kglobalheap, link_flags, buffer_size, true,
+                                      boot_method_propagation);
   if (out) {
     *out = g_stats;
   }
