@@ -1028,16 +1028,21 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       security_plan = &water_plan;
     }
+    auto* ctywide_level = security_plan ? metal_level_data::get("ctywide") : nullptr;
     if (security_plan &&
-        (!host->common_level || !host->common_level->level || !host->skull_gem_executor ||
+        (!host->common_level || !host->common_level->level || !ctywide_level ||
+         !ctywide_level->level || !host->skull_gem_executor ||
          !host->skull_gem_executor->prepare_security(
              security_plan->security, *host->common_level->level,
+             *ctywide_level->level,
              &security_prepared))) {
-      const char* detail = !host->common_level || !host->common_level->level
-                               ? "common level art is unavailable"
-                               : host->skull_gem_executor
-                                     ? host->skull_gem_executor->last_error()
-                                     : "executor is unavailable";
+      const char* detail =
+          !host->common_level || !host->common_level->level
+              ? "common level art is unavailable"
+              : !ctywide_level || !ctywide_level->level
+                    ? "ctywide level art is unavailable"
+                    : host->skull_gem_executor ? host->skull_gem_executor->last_error()
+                                               : "executor is unavailable";
       record_failure(host,
                      (std::string("Jak 2 security preparation failed: ") + detail).c_str());
       return;

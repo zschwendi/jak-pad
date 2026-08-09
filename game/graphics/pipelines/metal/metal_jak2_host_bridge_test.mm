@@ -16,6 +16,7 @@
 
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_fixture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_fixture.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
@@ -46,6 +47,10 @@ constexpr u32 kSpriteTextureUploadTailOffset = kChainOffset + 0x11000;
 constexpr u32 kMapTextureUploadGroupOffset = kChainOffset + 0x12000;
 constexpr u32 kMapTextureUploadTailOffset = kChainOffset + 0x13000;
 constexpr u32 kProgressPayloadOffset = kChainOffset + 0x14000;
+constexpr u32 kWaterSecurityBucket = 252;
+constexpr u32 kWaterSecurityDescriptorOffset = kChainOffset + 0x15000;
+constexpr u32 kWaterSecurityAnimatorOffset = kChainOffset + 0x15100;
+constexpr u32 kWaterSecurityDirectOffset = kChainOffset + 0x15800;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -86,6 +91,59 @@ void make_empty_chain() {
     put_tag(kChainOffset + bucket * 16, DmaTag::Kind::CNT);
   }
   put_tag(kChainOffset + kBucketCount * 16, DmaTag::Kind::END);
+}
+
+metal_renderer::Jak2Opcode27LayerValues identity_layer_values() {
+  metal_renderer::Jak2Opcode27LayerValues values;
+  values.color = {1.f, 1.f, 1.f, 1.f};
+  values.scale = {1.f, 1.f};
+  values.offset = {0.5f, 0.5f};
+  values.st_scale = {1.f, 1.f};
+  values.st_offset = {0.5f, 0.5f};
+  values.qs = {1.f, 1.f, 1.f, 1.f};
+  return values;
+}
+
+void make_water_security_chain() {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  constexpr s64 kMode = -1;
+  const u32 bucket_offset = kChainOffset + kWaterSecurityBucket * 16;
+
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kWaterSecurityDescriptorOffset);
+  put_tag(kWaterSecurityDescriptorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  constexpr u64 kPageOffset = kTexturePageOffset;
+  std::memcpy(ee + kWaterSecurityDescriptorOffset + 16, &kPageOffset, sizeof(kPageOffset));
+  std::memcpy(ee + kWaterSecurityDescriptorOffset + 24, &kMode, sizeof(kMode));
+  put_tag(kWaterSecurityDescriptorOffset + 32, DmaTag::Kind::NEXT, 0,
+          kWaterSecurityAnimatorOffset);
+
+  put_tag(kWaterSecurityAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
+  const u32 animator_body_tag = kWaterSecurityAnimatorOffset + 16;
+  put_tag(animator_body_tag, DmaTag::Kind::CNT, 52, 0, kPcPort | 30, 0);
+  metal_renderer::Jak2Opcode30SecurityPlan plan;
+  plan.environment.time = 0.f;
+  plan.environment.destination_tbp = 0x760;
+  for (auto& layer : plan.environment.layers) {
+    layer.start = identity_layer_values();
+    layer.end = identity_layer_values();
+  }
+  plan.dot.time = 0.f;
+  plan.dot.destination_tbp = 0x761;
+  for (auto& layer : plan.dot.layers) {
+    layer.start = identity_layer_values();
+    layer.end = identity_layer_values();
+  }
+  std::memcpy(ee + animator_body_tag + 16, &plan, sizeof(plan));
+  const u32 animator_finish = animator_body_tag + 16 + sizeof(plan);
+  put_tag(animator_finish, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, 0);
+  put_tag(animator_finish + 16, DmaTag::Kind::NEXT, 0, kWaterSecurityDirectOffset);
+
+  put_tag(kWaterSecurityDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  put_tag(kWaterSecurityDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
 void put_u64(std::array<u8, kGifBytes>& payload, std::size_t offset, u64 value) {
@@ -370,6 +428,42 @@ bool write_synthetic_fr3(const std::filesystem::path& path,
   return std::filesystem::exists(path);
 }
 
+tfrag3::Texture synthetic_source_texture(const char* name, u32 color) {
+  tfrag3::Texture texture;
+  texture.w = 2;
+  texture.h = 2;
+  texture.data.assign(4, color);
+  texture.debug_name = name;
+  texture.debug_tpage_name = "synthetic-security-water";
+  texture.load_to_pool = false;
+  return texture;
+}
+
+bool write_security_fr3(const std::filesystem::path& path,
+                        const std::string& level_name,
+                        bool common) {
+  tfrag3::Level level;
+  level.level_name = level_name;
+  if (common) {
+    level.textures.push_back(synthetic_source_texture("common-white", 0xffffffff));
+  } else {
+    level.textures.push_back(synthetic_source_texture("security-env-dest", 0xff000000));
+    level.textures.push_back(synthetic_source_texture("security-env-uscroll", 0xff102030));
+    level.textures.push_back(synthetic_source_texture("security-dot-dest", 0xff000000));
+    level.textures.push_back(synthetic_source_texture("security-dot-src", 0xff403020));
+  }
+
+  Serializer serializer;
+  level.serialize(serializer);
+  const auto serialized = serializer.get_save_result();
+  const auto compressed = compression::compress_zstd(serialized.first, serialized.second);
+  if (compressed.empty()) {
+    return false;
+  }
+  file_util::write_binary_file(path, compressed.data(), compressed.size());
+  return std::filesystem::exists(path);
+}
+
 void write_texture_page() {
   auto* ee = static_cast<u8*>(g_ee_main_mem);
   GoalTexturePage page = {};
@@ -569,10 +663,13 @@ int main() {
   fixture_error.clear();
   std::filesystem::create_directories(fixture_root / "fr3", fixture_error);
   std::filesystem::create_directories(fixture_root / "wrong", fixture_error);
+  std::filesystem::create_directories(fixture_root / "security", fixture_error);
   check(!fixture_error &&
             write_synthetic_fr3(fixture_root / "fr3/GAME.fr3", "synthetic-common-key", true) &&
             write_synthetic_fr3(fixture_root / "fr3/arena.fr3", "synthetic-arena-key", false) &&
-            write_synthetic_fr3(fixture_root / "wrong/arena.fr3", "wrong-directory-key", false),
+            write_synthetic_fr3(fixture_root / "wrong/arena.fr3", "wrong-directory-key", false) &&
+            write_security_fr3(fixture_root / "security/GAME.fr3", "security-common", true) &&
+            write_security_fr3(fixture_root / "security/ctywide.fr3", "ctywide", false),
         "created public synthetic FR3 level-art fixtures");
   if (failures) {
     goal_kernel_core_shutdown();
@@ -871,6 +968,41 @@ int main() {
             metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == initial_texture_count,
         "destroy unloaded recorded serialized keys in reverse and released every texture handle");
+
+  goal_jak2_metal_host* security_host = goal_jak2_metal_host_create();
+  goal_gfx_host security_callbacks = {};
+  const std::string security_directory = (fixture_root / "security").string();
+  check(security_host &&
+            goal_jak2_metal_host_configure_level_art(security_host,
+                                                     security_directory.c_str()) &&
+            goal_jak2_metal_host_copy_gfx_host(security_host, &security_callbacks),
+        "created a host with synthetic common security input");
+  write_empty_texture_page(kTexturePageOffset, kTexturePageId);
+  make_water_security_chain();
+  security_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  goal_jak2_metal_host_metrics security_metrics = {};
+  const char* security_error = goal_jak2_metal_host_last_error(security_host);
+  check(goal_jak2_metal_host_get_metrics(security_host, &security_metrics) &&
+            security_metrics.chains == 1 && security_metrics.completed_chains == 0 &&
+            security_metrics.failed_chains == 1 &&
+            security_metrics.water_texture_uploads[0].executions == 0 && security_error &&
+            std::strstr(security_error, "ctywide level art is unavailable"),
+        "security preparation fails closed before its ctywide owner is loaded");
+
+  const char* ctywide[] = {"ctywide"};
+  security_callbacks.set_levels(ctywide, 1);
+  security_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(security_host, &security_metrics) &&
+            security_metrics.chains == 2 && security_metrics.completed_chains == 1 &&
+            security_metrics.failed_chains == 1 &&
+            security_metrics.water_texture_uploads[0].executions == 1,
+        "loaded ctywide inputs prepare and publish the exact security water bucket");
+  goal_jak2_metal_host_destroy(security_host);
+  check(metal_level_data::level_count() == initial_level_count &&
+            metal_merc_models().level_count() == initial_merc_level_count &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
+            metal_texture_live_count() == initial_texture_count,
+        "security host teardown releases common, ctywide, and both publications");
 
   @autoreleasepool {
     CAMetalLayer* recovery_layer = [CAMetalLayer layer];

@@ -63,19 +63,33 @@ bool load_sources(const tfrag3::Level& level,
   return true;
 }
 
+template <std::size_t Size>
+bool load_sources(const std::array<const tfrag3::Level*, Size>& levels,
+                  const std::array<std::string_view, Size>& names,
+                  std::array<Jak2Opcode27RgbaSource, Size>* out) {
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    if (!levels[i] ||
+        !copy_rgba_source(find_unique_texture(*levels[i], names[i]), &(*out)[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 template <typename Plan, std::size_t Size>
 bool prepare_security_output(const Plan& plan,
-                             const tfrag3::Level& common_level,
+                             const tfrag3::Level& destination_level,
                              std::string_view destination_name,
+                             const std::array<const tfrag3::Level*, Size>& source_levels,
                              const std::array<std::string_view, Size>& source_names,
                              const std::array<float, Size>& end_times,
                              Jak2Opcode27SkullGemExecutor::PreparedSecurityOutput* out) {
-  const auto* destination = find_unique_texture(common_level, destination_name);
+  const auto* destination = find_unique_texture(destination_level, destination_name);
   std::array<Jak2Opcode27RgbaSource, Size> sources;
   if (!destination || destination->w == 0 || destination->h == 0 ||
       destination->data.size() !=
           static_cast<std::size_t>(destination->w) * destination->h ||
-      !load_sources(common_level, source_names, &sources)) {
+      !load_sources(source_levels, source_names, &sources)) {
     return false;
   }
 
@@ -173,6 +187,7 @@ bool Jak2Opcode27SkullGemExecutor::publish(const Prepared& prepared) {
 bool Jak2Opcode27SkullGemExecutor::prepare_security(
     const Jak2Opcode30SecurityPlan& plan,
     const tfrag3::Level& common_level,
+    const tfrag3::Level& ctywide_level,
     PreparedSecurity* out) {
   m_error.clear();
   if (!m_pool || !out || !m_slot_contract_valid ||
@@ -182,12 +197,15 @@ bool Jak2Opcode27SkullGemExecutor::prepare_security(
   }
 
   PreparedSecurity prepared;
-  if (!prepare_security_output(plan.environment, common_level, "security-env-dest",
-                               kSecurityEnvironmentSourceTextureNames,
+  const std::array<const tfrag3::Level*, 2> environment_source_levels = {
+      &ctywide_level, &ctywide_level};
+  const std::array<const tfrag3::Level*, 3> dot_source_levels = {
+      &common_level, &ctywide_level, &ctywide_level};
+  if (!prepare_security_output(plan.environment, ctywide_level, "security-env-dest",
+                               environment_source_levels, kSecurityEnvironmentSourceTextureNames,
                                kSecurityEnvironmentEndTimes, &prepared.environment) ||
-      !prepare_security_output(plan.dot, common_level, "security-dot-dest",
-                               kSecurityDotSourceTextureNames, kSecurityDotEndTimes,
-                               &prepared.dot)) {
+      !prepare_security_output(plan.dot, ctywide_level, "security-dot-dest", dot_source_levels,
+                               kSecurityDotSourceTextureNames, kSecurityDotEndTimes, &prepared.dot)) {
     return fail("required security textures are unavailable, duplicated, or malformed");
   }
   *out = std::move(prepared);

@@ -60,11 +60,12 @@ int main() {
     common_level.textures.push_back(source_texture("skull-gem-alpha-00", 0xff0000ff));
     common_level.textures.push_back(source_texture("skull-gem-alpha-01", 0x80402010));
     common_level.textures.push_back(source_texture("skull-gem-alpha-02", 0x40201008));
-    common_level.textures.push_back(source_texture("security-env-dest", 0xff000000));
-    common_level.textures.push_back(source_texture("security-env-uscroll", 0xff102030));
-    common_level.textures.push_back(source_texture("security-dot-dest", 0xff000000));
     common_level.textures.push_back(source_texture("common-white", 0xffffffff));
-    common_level.textures.push_back(source_texture("security-dot-src", 0xff403020));
+    tfrag3::Level ctywide_level;
+    ctywide_level.textures.push_back(source_texture("security-env-dest", 0xff000000));
+    ctywide_level.textures.push_back(source_texture("security-env-uscroll", 0xff102030));
+    ctywide_level.textures.push_back(source_texture("security-dot-dest", 0xff000000));
+    ctywide_level.textures.push_back(source_texture("security-dot-src", 0xff403020));
 
     metal_renderer::Jak2Opcode27SkullGemPlan plan;
     plan.time = 0.f;
@@ -116,14 +117,30 @@ int main() {
       layer.end = identity_values();
     }
     metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity security_prepared;
-    check(!executor.prepare_security(security_plan, missing_level, &security_prepared),
+    check(!executor.prepare_security(security_plan, missing_level, missing_level,
+                                     &security_prepared),
           "missing named security sources and destinations fail before publication");
-    check(executor.prepare_security(security_plan, common_level, &security_prepared) &&
+    check(!executor.prepare_security(security_plan, ctywide_level, common_level,
+                                     &security_prepared),
+          "security textures in the wrong level owners fail before publication");
+    tfrag3::Level duplicate_ctywide_level = ctywide_level;
+    duplicate_ctywide_level.textures.push_back(
+        source_texture("security-env-dest", 0xff101010));
+    check(!executor.prepare_security(security_plan, common_level, duplicate_ctywide_level,
+                                     &security_prepared),
+          "duplicate ctywide security destinations fail before publication");
+    tfrag3::Level malformed_ctywide_level = ctywide_level;
+    malformed_ctywide_level.textures[1].data.pop_back();
+    check(!executor.prepare_security(security_plan, common_level, malformed_ctywide_level,
+                                     &security_prepared),
+          "malformed ctywide security sources fail before publication");
+    check(executor.prepare_security(security_plan, common_level, ctywide_level,
+                                    &security_prepared) &&
               security_prepared.environment.width == 2 &&
               security_prepared.environment.height == 2 &&
               security_prepared.environment.destination_tbp == 130 &&
               security_prepared.dot.destination_tbp == 131,
-          "owned security preparation composes both fixed-animation outputs");
+          "owned security preparation composes common and ctywide sources in GOAL order");
     check(executor.publish_security(security_prepared),
           "prepared security outputs publish to Metal and TexturePool");
     const u64 security_environment_handle = executor.animated_texture_slots().at(

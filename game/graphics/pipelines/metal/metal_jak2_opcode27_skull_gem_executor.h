@@ -63,6 +63,7 @@ class Jak2Opcode27SkullGemExecutor {
   bool publish(const Prepared& prepared);
   bool prepare_security(const Jak2Opcode30SecurityPlan& plan,
                         const tfrag3::Level& common_level,
+                        const tfrag3::Level& ctywide_level,
                         PreparedSecurity* out);
   bool publish_security(const PreparedSecurity& prepared);
   void detach_pool();
