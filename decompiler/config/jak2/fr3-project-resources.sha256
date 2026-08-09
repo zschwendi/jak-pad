@@ -1,0 +1,19 @@
+# Public OpenGOAL project files required by jak2_fr3::prepare for NTSC-U v2.
+# The supported disc revision uses the ntsc_v1 decompiler configuration.
+# Keep paths sorted. The bundle generator verifies Git tracking, closure, and SHA-256.
+4ab20e4af2ef341b2c259e11fb79ca05d5aa0f52f64693181d4688be8ad68244  decompiler/config/jak2/all-types.gc
+7e489e8b3da35c25544e512dea5c72deec0a4c058f1c636712a2056f5d6ce5f0  decompiler/config/jak2/jak2_config.jsonc
+077e6b1941fa35885c7157511262e63efc343dc10a0bf3dadf9e45fdb120c9f0  decompiler/config/jak2/ntsc_v1/anonymous_function_types.jsonc
+61a66f41676284121b06e4a8b2cd12bcec31ed3d338d20381b21325dcbaa532a  decompiler/config/jak2/ntsc_v1/art-group-info.min.json
+faaf3831a9af6e216488cf525e1b1e88aafca4280040964745130f86fc2d268f  decompiler/config/jak2/ntsc_v1/art_info.jsonc
+2d3fad178abce80b87e413a9f8d8d2530bfee8db9567f697d8a2dae72c3494a1  decompiler/config/jak2/ntsc_v1/hacks.jsonc
+ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356  decompiler/config/jak2/ntsc_v1/import_deps.jsonc
+321892821d9571cdab4595b638f11145b5a520cedaa96c6bf2a5d7bbd8a68ccc  decompiler/config/jak2/ntsc_v1/inputs.jsonc
+38a9957fd143223061ff04433e3295ff97b4a6250a0a324a11f208d9d10dc10b  decompiler/config/jak2/ntsc_v1/joint-node-info.min.json
+1791fdf12c87449391c9bce1edad53b5484c7d8df428abf06c3d121001f1ece6  decompiler/config/jak2/ntsc_v1/label_types.jsonc
+4b08199f1734350a409f637575dbb900f89c19b7a50b1f8a0c31026353b1eacc  decompiler/config/jak2/ntsc_v1/part-groups.min.json
+290d6f344babaec9537ac49d9bb333f9d2323c510f939670eb35e7892c57ffbc  decompiler/config/jak2/ntsc_v1/process_stack_size_overrides.jsonc
+3c8418e8dd2970600573b19ab7013d245cb63bb0234f62b87917b2aa92123a62  decompiler/config/jak2/ntsc_v1/stack_structures.jsonc
+4f5fa21bc61251d7bbc9e8668757f4a4ab80e5467a4d6c93408862fc14042948  decompiler/config/jak2/ntsc_v1/tex-info.min.json
+4450b7eb6ab82ba2c38b5456f1e0453949eb73f62bbb551952989630aa412833  decompiler/config/jak2/ntsc_v1/type_casts.jsonc
+fc45fc608ebf08c109a1bfd177e0fb55a56744198623917176dc7da0bd90b3a4  decompiler/config/jak2/ntsc_v1/var_names.jsonc

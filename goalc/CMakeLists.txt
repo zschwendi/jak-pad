@@ -139,8 +139,6 @@ add_executable(goalc main.cpp)
 add_executable(goalc-simple simple_main.cpp)
 add_executable(goalc-cbackend aot/c_backend_main.cpp)
 add_executable(goalc-cbackend-sweep aot/c_backend_sweep_main.cpp)
-add_executable(jak2-source-object-pack-verify
-               "${CMAKE_SOURCE_DIR}/common/custom_data/jak2_source_object_pack_verify.cpp")
 
 add_executable(build_level build_level/main.cpp)
 add_executable(build_actor build_actor/main.cpp)
@@ -150,9 +148,6 @@ target_link_libraries(goalc-simple common Zydis compiler)
 target_link_libraries(goalc-cbackend common Zydis compiler)
 target_link_libraries(goalc-cbackend-sweep
                       common Zydis compiler jak2-source-object-pack)
-target_link_libraries(jak2-source-object-pack-verify
-                      PRIVATE compiler jak2-source-object-pack)
-target_compile_features(jak2-source-object-pack-verify PRIVATE cxx_std_20)
 target_link_libraries(build_level common Zydis compiler)
 target_link_libraries(build_actor common Zydis compiler)
 

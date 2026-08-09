@@ -37,6 +37,8 @@ option(OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY
        "Build only the portable checked Jak 1 public generated-artifact library" OFF)
 option(OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY
        "Build only the portable checked Jak 1 source-object-pack library" OFF)
+option(OPENGOAL_BUILD_JAK2_SOURCE_OBJECT_PACK_ONLY
+       "Build only the portable checked Jak II source-object-pack library and verifier" OFF)
 option(OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY
        "Build only the portable Jak 1 extracted-tree generated-input adapter" OFF)
 option(OPENGOAL_BUILD_JAK2_EXTRACTED_GENERATED_INPUTS_ONLY
@@ -64,6 +66,7 @@ foreach(OPENGOAL_ISOLATED_IMPORT_MODE
         OPENGOAL_BUILD_JAK2_OUTPUT_RECIPE_CORE_ONLY
         OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY
         OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY
+        OPENGOAL_BUILD_JAK2_SOURCE_OBJECT_PACK_ONLY
         OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY
         OPENGOAL_BUILD_JAK2_EXTRACTED_GENERATED_INPUTS_ONLY
         OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY
@@ -141,6 +144,10 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   endif()
   if(OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY)
     include(common/custom_data/jak1_source_object_pack.cmake)
+  endif()
+  if(OPENGOAL_BUILD_JAK2_SOURCE_OBJECT_PACK_ONLY)
+    include(common/custom_data/jak1_source_object_pack.cmake)
+    include(common/custom_data/jak2_source_object_pack.cmake)
   endif()
   if(OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY)
     include(decompiler/extractor/jak1_extracted_generated_inputs.cmake)
