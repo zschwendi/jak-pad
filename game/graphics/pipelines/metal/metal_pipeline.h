@@ -14,6 +14,7 @@
  * implementation lives in metal_renderer.h/.mm and metal_pipeline.mm.
  */
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,8 @@ struct Level;
 }
 
 namespace metal_renderer {
+
+inline constexpr std::size_t kTrackedDeferredBuckets = 4;
 
 // RGBA8 copy of a rendered frame, used by tests to verify that rendering
 // actually happened. Origin is the top-left corner.
@@ -326,6 +329,10 @@ struct ChainStats {
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets
+  // largest deferred buckets in the last frame, descending by payload bytes
+  int last_skipped_bucket_count = 0;
+  std::array<u32, kTrackedDeferredBuckets> last_skipped_bucket_ids = {};
+  std::array<u64, kTrackedDeferredBuckets> last_skipped_bucket_bytes = {};
   int direct_unsupported_blends = 0;
 };
 

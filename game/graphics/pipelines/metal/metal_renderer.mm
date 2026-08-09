@@ -1234,6 +1234,33 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.jak2_debug_no_zbuf2_triangles = 0;
     int uploads = 0;
     u64 skipped = 0;
+    m_chain_stats.last_skipped_bucket_count = 0;
+    m_chain_stats.last_skipped_bucket_ids.fill(0);
+    m_chain_stats.last_skipped_bucket_bytes.fill(0);
+    const auto track_skipped_bucket = [this](u32 bucket_id, u64 bytes) {
+      if (bytes == 0) {
+        return;
+      }
+      std::size_t insert_at = 0;
+      while (insert_at < metal_renderer::kTrackedDeferredBuckets &&
+             m_chain_stats.last_skipped_bucket_bytes[insert_at] >= bytes) {
+        insert_at++;
+      }
+      if (insert_at == metal_renderer::kTrackedDeferredBuckets) {
+        return;
+      }
+      for (std::size_t i = metal_renderer::kTrackedDeferredBuckets - 1; i > insert_at; i--) {
+        m_chain_stats.last_skipped_bucket_ids[i] =
+            m_chain_stats.last_skipped_bucket_ids[i - 1];
+        m_chain_stats.last_skipped_bucket_bytes[i] =
+            m_chain_stats.last_skipped_bucket_bytes[i - 1];
+      }
+      m_chain_stats.last_skipped_bucket_ids[insert_at] = bucket_id;
+      m_chain_stats.last_skipped_bucket_bytes[insert_at] = bytes;
+      m_chain_stats.last_skipped_bucket_count = std::min<int>(
+          m_chain_stats.last_skipped_bucket_count + 1,
+          static_cast<int>(metal_renderer::kTrackedDeferredBuckets));
+    };
     int unsupported_blends = 0;
     m_chain_stats.ocean_draws = 0;
     m_chain_stats.ocean_triangles = 0;
@@ -1259,6 +1286,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         uploads += t->last_stats().uploads;
       } else if (auto* s = dynamic_cast<MetalSkipRenderer*>(r.get())) {
         skipped += s->skipped_bytes();
+        track_skipped_bucket(static_cast<u32>(bucket_id), s->last_skipped_bytes());
       } else if (auto* d = dynamic_cast<MetalDirectRenderer*>(r.get())) {
         unsupported_blends += d->stats().unsupported_blends;
         if (m_shared_state.version == GameVersion::Jak2 &&

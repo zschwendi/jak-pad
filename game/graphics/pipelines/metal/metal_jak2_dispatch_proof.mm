@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdio>
 #include <stdexcept>
+#include <utility>
 
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_jak2_synthetic_chain.h"
@@ -12,6 +13,37 @@
 namespace {
 
 int failures = 0;
+
+std::vector<u8> make_deferred_inventory_chain() {
+  using BucketId = jak2::BucketId;
+  constexpr std::array<std::pair<BucketId, u16>, 5> kPayloads = {{
+      {BucketId::TEX_L0_ALPHA, 5},
+      {BucketId::TFRAG_T_L0_ALPHA, 4},
+      {BucketId::TEX_L0_WATER, 3},
+      {BucketId::TFRAG_W_L0_WATER, 2},
+      {BucketId::OCEAN_NEAR, 1},
+  }};
+
+  std::vector<u8> chain((metal_renderer::kJak2SyntheticBucketCount + 1) * 16, 0);
+  for (std::size_t bucket = 0; bucket < metal_renderer::kJak2SyntheticBucketCount; bucket++) {
+    metal_renderer::put_jak2_synthetic_tag(chain, bucket * 16, DmaTag::Kind::CNT);
+  }
+  metal_renderer::put_jak2_synthetic_tag(
+      chain, metal_renderer::kJak2SyntheticBucketCount * 16, DmaTag::Kind::END);
+
+  for (const auto& [bucket, qwc] : kPayloads) {
+    const auto bucket_id = static_cast<std::size_t>(bucket);
+    const auto payload_offset = chain.size();
+    chain.resize(payload_offset + 16 + qwc * 16 + 16, 0);
+    metal_renderer::put_jak2_synthetic_tag(chain, bucket_id * 16, DmaTag::Kind::NEXT, 0,
+                                           static_cast<u32>(payload_offset));
+    metal_renderer::put_jak2_synthetic_tag(chain, payload_offset, DmaTag::Kind::CNT, qwc);
+    metal_renderer::put_jak2_synthetic_tag(chain, payload_offset + 16 + qwc * 16,
+                                           DmaTag::Kind::NEXT, 0,
+                                           static_cast<u32>((bucket_id + 1) * 16));
+  }
+  return chain;
+}
 
 void check(bool condition, const char* what) {
   std::printf("%s %s\n", condition ? "ok  " : "FAIL", what);
@@ -69,6 +101,11 @@ int main() {
           "nil-layer dispatch records zero submissions and presentations");
     check(stats.skipped_bucket_bytes == 16,
           "one DeferredSkip slot consumes exactly its 16-byte synthetic payload");
+    check(stats.last_skipped_bucket_count == 1 &&
+              stats.last_skipped_bucket_ids[0] ==
+                  static_cast<u32>(jak2::BucketId::OCEAN_MID_FAR) &&
+              stats.last_skipped_bucket_bytes[0] == 16,
+          "the last-frame deferred inventory identifies the exact bucket and payload bytes");
     check(stats.draw_calls == 0 && stats.triangles == 0 && stats.jak2_screen_filter_draws == 0 &&
               stats.jak2_screen_filter_triangles == 0,
           "the SCREEN_FILTER Direct binding traverses its NOP payload without drawing");
@@ -77,6 +114,26 @@ int main() {
     check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
               metal_renderer::kJak2MetalBucketExpectedFingerprint,
           "the dispatcher links the reviewed 327-slot policy table");
+
+    const auto inventory_chain = make_deferred_inventory_chain();
+    renderer.render_chain_frame(options, nil, inventory_chain.data(), 0, inventory_chain.size());
+    const auto inventory = renderer.chain_stats();
+    check(inventory.skipped_bucket_bytes == 16 + (5 + 4 + 3 + 2 + 1) * 16,
+          "cumulative deferred bytes include all five synthetic inventory buckets");
+    check(inventory.last_skipped_bucket_count == 4 &&
+              inventory.last_skipped_bucket_ids[0] ==
+                  static_cast<u32>(jak2::BucketId::TEX_L0_ALPHA) &&
+              inventory.last_skipped_bucket_bytes[0] == 5 * 16 &&
+              inventory.last_skipped_bucket_ids[1] ==
+                  static_cast<u32>(jak2::BucketId::TFRAG_T_L0_ALPHA) &&
+              inventory.last_skipped_bucket_bytes[1] == 4 * 16 &&
+              inventory.last_skipped_bucket_ids[2] ==
+                  static_cast<u32>(jak2::BucketId::TEX_L0_WATER) &&
+              inventory.last_skipped_bucket_bytes[2] == 3 * 16 &&
+              inventory.last_skipped_bucket_ids[3] ==
+                  static_cast<u32>(jak2::BucketId::TFRAG_W_L0_WATER) &&
+              inventory.last_skipped_bucket_bytes[3] == 2 * 16,
+          "the last-frame deferred inventory retains the four largest buckets in byte order");
 
     if (failures) {
       std::printf("FAIL: %d Jak 2 nil-layer Metal dispatcher checks failed\n", failures);

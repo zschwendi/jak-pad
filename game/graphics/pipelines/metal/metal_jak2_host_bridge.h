@@ -79,6 +79,7 @@ enum {
   GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
   GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
   GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT = 7,
+  GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT = 4,
 };
 
 typedef struct goal_jak2_tfrag_texture_upload_metrics {
@@ -217,6 +218,9 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t presentation_drops;
   uint64_t presentation_order_mismatches;
   uint64_t skipped_bucket_bytes;
+  uint32_t last_skipped_bucket_count;
+  uint32_t last_skipped_bucket_ids[GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT];
+  uint64_t last_skipped_bucket_bytes[GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT];
   uint64_t unsupported_blends;
   int32_t last_command_buffer_status;
   int64_t last_command_buffer_error_code;

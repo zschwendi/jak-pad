@@ -103,6 +103,11 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
          before->presentation_drops == after->presentation_drops &&
          before->presentation_order_mismatches == after->presentation_order_mismatches &&
          before->skipped_bucket_bytes == after->skipped_bucket_bytes &&
+         before->last_skipped_bucket_count == after->last_skipped_bucket_count &&
+         memcmp(before->last_skipped_bucket_ids, after->last_skipped_bucket_ids,
+                sizeof(before->last_skipped_bucket_ids)) == 0 &&
+         memcmp(before->last_skipped_bucket_bytes, after->last_skipped_bucket_bytes,
+                sizeof(before->last_skipped_bucket_bytes)) == 0 &&
          before->last_screen_filter_draws == after->last_screen_filter_draws &&
          before->last_screen_filter_triangles == after->last_screen_filter_triangles &&
          before->last_debug_no_zbuf2_draws == after->last_debug_no_zbuf2_draws &&
@@ -915,6 +920,15 @@ static BOOL metal_metrics_match_during_pause(const goal_jak2_metal_host_metrics*
             (unsigned long long)_metalMetrics.last_background_missing_levels,
             (unsigned long long)_metalMetrics.last_background_missing_textures,
             (unsigned long long)_metalMetrics.last_sprite_missing_textures);
+      NSLog(@"GOALPAD_JAK2_ECO_DEFERRED count=%u top=%u/%llu,%u/%llu,%u/%llu,%u/%llu",
+            _metalMetrics.last_skipped_bucket_count, _metalMetrics.last_skipped_bucket_ids[0],
+            (unsigned long long)_metalMetrics.last_skipped_bucket_bytes[0],
+            _metalMetrics.last_skipped_bucket_ids[1],
+            (unsigned long long)_metalMetrics.last_skipped_bucket_bytes[1],
+            _metalMetrics.last_skipped_bucket_ids[2],
+            (unsigned long long)_metalMetrics.last_skipped_bucket_bytes[2],
+            _metalMetrics.last_skipped_bucket_ids[3],
+            (unsigned long long)_metalMetrics.last_skipped_bucket_bytes[3]);
       NSLog(@"GOALPAD_JAK2_ECO_TITLE_STATE mode=%s title=#x%08x/%s time=%llu "
              "scene=#x%08x/%s progress=#x%08x/%s target=#x%08x/%s "
              "levels=%s/%s sets=%d/%d pmode=%.3f str-failures=%u "

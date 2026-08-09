@@ -122,6 +122,7 @@ void MetalSkipRenderer::render(DmaFollower& dma,
       dma.read_and_advance();  // ret
     }
   }
+  m_last_skipped_bytes = bytes;
   if (bytes > 0) {
     m_skipped_bytes += bytes;
     if (!m_warned) {

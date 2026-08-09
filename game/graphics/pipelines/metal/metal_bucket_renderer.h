@@ -169,9 +169,11 @@ class MetalSkipRenderer : public MetalBucketRenderer {
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
   u64 skipped_bytes() const { return m_skipped_bytes; }
+  u64 last_skipped_bytes() const { return m_last_skipped_bytes; }
 
  private:
   u64 m_skipped_bytes = 0;
+  u64 m_last_skipped_bytes = 0;
   bool m_warned = false;
 };
 

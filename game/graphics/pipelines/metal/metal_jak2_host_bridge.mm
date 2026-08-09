@@ -64,6 +64,8 @@ struct goal_jak2_metal_host {
 
 namespace metal_renderer {
 
+static_assert(GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT == kTrackedDeferredBuckets);
+
 bool jak2_metal_host_policy_table_is_audited() {
   const auto& table = jak2_metal_bucket_table();
   if (table.size() != kJak2MetalBucketCount ||
@@ -291,6 +293,11 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.presentation_drops = stats.presentation_drops;
   host->metrics.presentation_order_mismatches = stats.presentation_order_mismatches;
   host->metrics.skipped_bucket_bytes = stats.skipped_bucket_bytes;
+  host->metrics.last_skipped_bucket_count = stats.last_skipped_bucket_count;
+  std::copy(stats.last_skipped_bucket_ids.begin(), stats.last_skipped_bucket_ids.end(),
+            host->metrics.last_skipped_bucket_ids);
+  std::copy(stats.last_skipped_bucket_bytes.begin(), stats.last_skipped_bucket_bytes.end(),
+            host->metrics.last_skipped_bucket_bytes);
   host->metrics.unsupported_blends = stats.direct_unsupported_blends;
   host->metrics.last_command_buffer_status = stats.last_command_buffer_status;
   host->metrics.last_command_buffer_error_code = stats.last_command_buffer_error_code;
