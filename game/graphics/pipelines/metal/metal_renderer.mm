@@ -405,6 +405,7 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       tfrag3::TFragmentTreeKind::WATER};
   std::array<MetalTie3*, jak2::LEVEL_MAX> normal_ties = {};
   auto merc = std::make_shared<MetalMerc2>(m_device, m_queue, m_texture_pool);
+  auto generic2 = std::make_shared<MetalGeneric2>();
 
   for (const auto& descriptor : table) {
     const auto bucket_id = static_cast<std::size_t>(descriptor.id);
@@ -546,6 +547,30 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       }
       m_bucket_renderers[bucket_id] =
           std::make_unique<MetalMercBucketRenderer>(name, descriptor.id, merc);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Generic2) {
+      ASSERT(batch_size == 0);
+      const auto first_alpha = static_cast<std::size_t>(jak2::BucketId::GMERC_L0_ALPHA);
+      const auto alpha_stride = static_cast<std::size_t>(jak2::BucketId::GMERC_L1_ALPHA) -
+                                first_alpha;
+      const auto first_water = static_cast<std::size_t>(jak2::BucketId::GMERC_L0_WATER);
+      const auto water_stride = static_cast<std::size_t>(jak2::BucketId::GMERC_L1_WATER) -
+                                first_water;
+      const bool is_alpha = bucket_id >= first_alpha &&
+                            (bucket_id - first_alpha) % alpha_stride == 0 &&
+                            (bucket_id - first_alpha) / alpha_stride < jak2::LEVEL_MAX;
+      std::string name;
+      if (is_alpha) {
+        const int level_id = static_cast<int>((bucket_id - first_alpha) / alpha_stride);
+        ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+        name = fmt::format("gmerc-l{}-alpha", level_id);
+      } else {
+        ASSERT(bucket_id >= first_water && (bucket_id - first_water) % water_stride == 0);
+        const int level_id = static_cast<int>((bucket_id - first_water) / water_stride);
+        ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+        name = fmt::format("gmerc-l{}-water", level_id);
+      }
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalGeneric2BucketRenderer>(
+          name, descriptor.id, generic2);
     } else if (descriptor.behavior ==
                metal_renderer::Jak2MetalBucketBehavior::HostTextureUploadDirect) {
       ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1) ||

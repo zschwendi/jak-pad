@@ -12,9 +12,8 @@
  * and sampler keys, and the vertex/index data goes into the frame's stream
  * buffer instead of a re-uploaded GL_STREAM_DRAW buffer.
  *
- * Jak 1 uses Mode::NORMAL for every generic bucket (OpenGLRenderer.cpp), so
- * that is what is ported; the LIGHTNING / WARP / PRIM modes and the Jak 2/3 DMA
- * layout are not.
+ * Mode::NORMAL is ported for Jak 1 and Jak 2. The LIGHTNING / WARP / PRIM modes
+ * and the Jak 3 DMA layout are not.
  */
 
 #include <memory>
@@ -142,10 +141,11 @@ class MetalGeneric2 {
     u32 tri_count = 0;
   };
 
-  // --- DMA (mirror of Generic2_DMA.cpp, Jak 1 path) ---
+  // --- DMA (mirror of Generic2_DMA.cpp, NORMAL paths) ---
   bool check_for_end_of_generic_data(DmaFollower& dma, u32 next_bucket);
   bool handle_bucket_setup_dma(DmaFollower& dma, u32 next_bucket);
   void process_dma_jak1(DmaFollower& dma, u32 next_bucket);
+  void process_dma_jak2(DmaFollower& dma, u32 next_bucket);
   u32 handle_fragments_after_unpack_v4_32(const u8* data,
                                           u32 off,
                                           u32 first_unpack_bytes,

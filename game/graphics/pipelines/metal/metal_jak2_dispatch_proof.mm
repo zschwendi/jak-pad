@@ -14,7 +14,7 @@ namespace {
 
 int failures = 0;
 
-std::vector<u8> make_deferred_inventory_chain() {
+std::vector<u8> make_policy_inventory_chain() {
   using BucketId = jak2::BucketId;
   constexpr std::array<std::pair<BucketId, u16>, 5> kPayloads = {{
       {BucketId::MERC_L0_ALPHA, 5},
@@ -115,25 +115,19 @@ int main() {
               metal_renderer::kJak2MetalBucketExpectedFingerprint,
           "the dispatcher links the reviewed 327-slot policy table");
 
-    const auto inventory_chain = make_deferred_inventory_chain();
+    const auto inventory_chain = make_policy_inventory_chain();
     renderer.render_chain_frame(options, nil, inventory_chain.data(), 0, inventory_chain.size());
     const auto inventory = renderer.chain_stats();
-    check(inventory.skipped_bucket_bytes == 16 + (5 + 4 + 3 + 2 + 1) * 16,
-          "cumulative deferred bytes include all five synthetic inventory buckets");
-    check(inventory.last_skipped_bucket_count == 4 &&
+    check(inventory.skipped_bucket_bytes == 16 + 1 * 16,
+          "cumulative deferred bytes exclude implemented Merc and Generic2 buckets");
+    check(inventory.last_skipped_bucket_count == 1 &&
               inventory.last_skipped_bucket_ids[0] ==
-                  static_cast<u32>(jak2::BucketId::MERC_L0_ALPHA) &&
-              inventory.last_skipped_bucket_bytes[0] == 5 * 16 &&
-              inventory.last_skipped_bucket_ids[1] ==
-                  static_cast<u32>(jak2::BucketId::GMERC_L0_ALPHA) &&
-              inventory.last_skipped_bucket_bytes[1] == 4 * 16 &&
-              inventory.last_skipped_bucket_ids[2] ==
-                  static_cast<u32>(jak2::BucketId::MERC_L0_WATER) &&
-              inventory.last_skipped_bucket_bytes[2] == 3 * 16 &&
-              inventory.last_skipped_bucket_ids[3] ==
-                  static_cast<u32>(jak2::BucketId::GMERC_L0_WATER) &&
-              inventory.last_skipped_bucket_bytes[3] == 2 * 16,
-          "the last-frame deferred inventory retains the four largest buckets in byte order");
+                  static_cast<u32>(jak2::BucketId::OCEAN_NEAR) &&
+              inventory.last_skipped_bucket_bytes[0] == 1 * 16,
+          "the last-frame deferred inventory retains only the ocean bucket");
+    check(inventory.generic_unexpected_dma == 2 && inventory.generic_draws == 0 &&
+              inventory.generic_triangles == 0,
+          "both malformed synthetic Generic2 payloads fail closed without drawing");
 
     if (failures) {
       std::printf("FAIL: %d Jak 2 nil-layer Metal dispatcher checks failed\n", failures);

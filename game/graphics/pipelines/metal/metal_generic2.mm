@@ -4,11 +4,10 @@
 
 #include "common/log/log.h"
 
+#include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/texture/TexturePool.h"
 
 namespace {
-
-constexpr float kGameHeightJak1 = 448.f;
 
 // Must match GenericVsParams in shaders/generic.metal.
 struct GenericVsParams {
@@ -48,6 +47,16 @@ bool is_nop_or_flushe_vif(const u8* data) {
   memcpy(&tag0_data, data, 4);
   auto k = VifCode(tag0_data).kind;
   return k == VifCode::Kind::NOP || k == VifCode::Kind::FLUSHE;
+}
+
+bool is_nop_zero(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 0 && transfer.vifcode0().kind == VifCode::Kind::NOP &&
+         transfer.vifcode1().kind == VifCode::Kind::NOP;
+}
+
+bool is_jak2_end(const DmaTransfer& transfer) {
+  return transfer.size_bytes == 160 && transfer.vifcode0().kind == VifCode::Kind::FLUSHA &&
+         transfer.vifcode1().kind == VifCode::Kind::DIRECT;
 }
 
 u32 unpack_vtx_positions(MetalGeneric2::Vertex* vtx, const u8* data, u32 vtx_count) {
@@ -498,6 +507,170 @@ void MetalGeneric2::process_dma_jak1(DmaFollower& dma, u32 next_bucket) {
       }
     }
   }
+}
+
+void MetalGeneric2::process_dma_jak2(DmaFollower& dma, u32 next_bucket) {
+  reset_buffers();
+
+  auto first_data = dma.read_and_advance();
+  if (is_nop_zero(first_data) && dma.current_tag_offset() == next_bucket) {
+    return;
+  }
+
+  const auto first_kind = first_data.vifcode0().kind;
+  if (!expect((first_kind == VifCode::Kind::MARK || first_kind == VifCode::Kind::NOP) &&
+                  first_data.vifcode1().kind == VifCode::Kind::NOP,
+              "the Jak 2 generic bucket marker")) {
+    return;
+  }
+
+  auto direct_setup = dma.read_and_advance();
+  if (!expect(direct_setup.size_bytes == 32 &&
+                  direct_setup.vifcode0().kind == VifCode::Kind::NOP &&
+                  direct_setup.vifcode1().kind == VifCode::Kind::DIRECT,
+              "the Jak 2 32-byte zbuf DIRECT setup")) {
+    return;
+  }
+  u64 zbuf_val;
+  memcpy(&zbuf_val, direct_setup.data + 16, sizeof(zbuf_val));
+  m_drawing_config.zmsk = GsZbuf(zbuf_val).zmsk();
+
+  auto constants = dma.read_and_advance();
+  if (!expect(constants.size_bytes == 128 &&
+                  constants.vifcode0().kind == VifCode::Kind::STCYCL &&
+                  constants.vifcode1().kind == VifCode::Kind::UNPACK_V4_32,
+              "the Jak 2 128-byte VU constants unpack")) {
+    return;
+  }
+  memcpy(&m_drawing_config.pfog0, constants.data + 0, 4);
+  memcpy(&m_drawing_config.fog_min, constants.data + 4, 4);
+  memcpy(&m_drawing_config.fog_max, constants.data + 8, 4);
+  memcpy(m_drawing_config.hvdf_offset.data(), constants.data + 32, 16);
+
+  auto vu_setup = dma.read_and_advance();
+  if (!expect(vu_setup.size_bytes == 32, "the Jak 2 32-byte VU register setup")) {
+    return;
+  }
+
+  if (is_nop_zero(first_data) && dma.current_tag_offset() == next_bucket) {
+    return;
+  }
+
+  Fragment* continued_fragment = nullptr;
+  if (!expect(dma.current_tag_offset() != next_bucket,
+              "the Jak 2 generic end marker after setup")) {
+    return;
+  }
+  auto vif_transfer = dma.read_and_advance();
+  while (is_nop_zero(vif_transfer)) {
+    if (!expect(dma.current_tag_offset() != next_bucket,
+                "the Jak 2 generic end marker after setup NOPs")) {
+      return;
+    }
+    vif_transfer = dma.read_and_advance();
+  }
+
+  while (!is_jak2_end(vif_transfer)) {
+    if (continued_fragment) {
+      auto up = vif_transfer.vifcode1();
+      if (!expect(vif_transfer.vifcode0().kind == VifCode::Kind::NOP &&
+                      up.kind == VifCode::Kind::UNPACK_V3_32 &&
+                      vif_transfer.size_bytes * 4 / 48 == up.num &&
+                      up.num == continued_fragment->vtx_count,
+                  "the Jak 2 continued fragment's V3_32 position unpack")) {
+        return;
+      }
+      unpack_vtx_positions(&m_verts[continued_fragment->vtx_idx], vif_transfer.data,
+                           continued_fragment->vtx_count);
+      continued_fragment = nullptr;
+      auto call = dma.read_and_advance();
+      if (!expect(call.size_bytes == 0 && call.vifcode1().kind == VifCode::Kind::MSCAL,
+                  "the Jak 2 MSCAL after a continued fragment")) {
+        return;
+      }
+      if (check_for_end_of_generic_data(dma, next_bucket)) {
+        return;
+      }
+    } else {
+      auto header_unpack = vif_transfer.vifcode1();
+      if (!expect(vif_transfer.vifcode0().kind == VifCode::Kind::STCYCL &&
+                      header_unpack.kind == VifCode::Kind::UNPACK_V4_32,
+                  "a Jak 2 fragment's STCYCL + V4_32 header unpack")) {
+        return;
+      }
+      auto* frag = next_frag();
+      if (!frag) {
+        return;
+      }
+      u32 off = handle_fragments_after_unpack_v4_32(
+          vif_transfer.data, 0, header_unpack.num * 16, vif_transfer.size_bytes, frag, false);
+      if (m_failed) {
+        return;
+      }
+
+      if (check_for_end_of_generic_data(dma, next_bucket)) {
+        return;
+      }
+
+      if (off < vif_transfer.size_bytes) {
+        if (!expect(off + 8 <= vif_transfer.size_bytes,
+                    "the Jak 2 second-fragment unpack tags to fit")) {
+          return;
+        }
+        u32 stcycl_reset;
+        memcpy(&stcycl_reset, vif_transfer.data + off, 4);
+        if (!expect(VifCode(stcycl_reset).kind == VifCode::Kind::STCYCL,
+                    "an STCYCL before a second Jak 2 fragment")) {
+          return;
+        }
+        off += 4;
+        u32 next;
+        memcpy(&next, vif_transfer.data + off, 4);
+        VifCode next_unpack(next);
+        if (!expect(next_unpack.kind == VifCode::Kind::UNPACK_V4_32,
+                    "a V4_32 header unpack for the second Jak 2 fragment")) {
+          return;
+        }
+        auto* continue_frag = next_frag();
+        if (!continue_frag) {
+          return;
+        }
+        off = handle_fragments_after_unpack_v4_32(vif_transfer.data, off,
+                                                  next_unpack.num * 16,
+                                                  vif_transfer.size_bytes, continue_frag, true);
+        continued_fragment = continue_frag;
+        if (!expect(off == vif_transfer.size_bytes,
+                    "the second Jak 2 fragment to end the transfer")) {
+          return;
+        }
+      }
+    }
+
+    if (!expect(dma.current_tag_offset() != next_bucket,
+                "the Jak 2 generic FLUSHA/DIRECT end marker")) {
+      return;
+    }
+    vif_transfer = dma.read_and_advance();
+    while (is_nop_zero(vif_transfer)) {
+      if (!expect(dma.current_tag_offset() != next_bucket,
+                  "the Jak 2 generic end marker after fragment NOPs")) {
+        return;
+      }
+      vif_transfer = dma.read_and_advance();
+    }
+  }
+
+  if (!expect(continued_fragment == nullptr,
+              "a completed Jak 2 fragment before the end marker")) {
+    return;
+  }
+  if (!expect(dma.current_tag_offset() != next_bucket,
+              "the final Jak 2 generic NOP transfer")) {
+    return;
+  }
+  const auto end = dma.read_and_advance();
+  expect(is_nop_zero(end) && dma.current_tag_offset() == next_bucket,
+         "the final Jak 2 generic NOP and bucket boundary");
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,10 +1312,10 @@ void MetalGeneric2::do_draws(MetalSharedRenderState* render_state, MetalFrameCon
   vs.fog_constants[1] = m_drawing_config.fog_min;
   vs.fog_constants[2] = m_drawing_config.fog_max;
   memcpy(vs.hvdf_offset, m_drawing_config.hvdf_offset.data(), sizeof(vs.hvdf_offset));
-  vs.use_full_matrix = 0;  // Jak 1 NORMAL mode never sets one
+  vs.use_full_matrix = 0;  // NORMAL mode never sets one
   vs.warp_sample_mode = 0;
-  vs.height_scale = 1.f;  // Jak 1
-  vs.scissor_adjust = 512.f / kGameHeightJak1;
+  vs.height_scale = metal_height_scale(render_state->version);
+  vs.scissor_adjust = metal_scissor_adjust(render_state->version);
   vs.warp_off = 0.f;
   [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
 
@@ -1192,10 +1365,16 @@ void MetalGeneric2::render(DmaFollower& dma,
   m_stats = stats;
   m_failed = false;
 
-  process_dma_jak1(dma, render_state->next_bucket);
+  if (render_state->version == GameVersion::Jak1) {
+    process_dma_jak1(dma, render_state->next_bucket);
+  } else if (render_state->version == GameVersion::Jak2) {
+    process_dma_jak2(dma, render_state->next_bucket);
+  } else {
+    expect(false, "a supported Generic2 game version");
+  }
 
   if (!m_failed) {
-    // Jak 1 uses Mode::NORMAL for every generic bucket
+    // Both bound paths use Mode::NORMAL.
     setup_draws(true, true);
   }
   if (!m_failed) {
