@@ -169,14 +169,15 @@ class Jak2SceneWaitDiagnosticsContractTest(unittest.TestCase):
             for gui_status in (GUI_READY, GUI_ACTIVE):
                 self.assertEqual(final_art_gate(file_status, gui_status), READY)
 
-    def test_current_port_cannot_infer_gui_readiness_from_successful_str_reads(self) -> None:
+    def test_gui_readiness_requires_published_stream_state_not_str_reads(self) -> None:
         get_status = extract_form(self.loader, "(defmethod get-status ((this gui-control)")
         self.assertIn("(-> *sound-iop-info* stream-name s4-0 name)", get_status)
         self.assertIn("(-> *sound-iop-info* stream-status s4-0)", get_status)
         self.assertIn("(stream-status ststatus-one ststatus-six)", get_status)
         self.assertIn("(file-status *art-control* (-> gp-0 name)", get_status)
-        self.assertIn("Music and streaming", self.sound_header)
-        self.assertIn("remain unsupported", self.sound_header)
+        sound_header = " ".join(self.sound_header.replace("\n * ", " ").split())
+        self.assertIn("channel-5 stream state consumed by GOAL's GUI loader", sound_header)
+        self.assertIn("actual streamed audio remains unsupported", sound_header)
 
     def test_native_metrics_copy_every_goal_diagnostic(self) -> None:
         fields = (
