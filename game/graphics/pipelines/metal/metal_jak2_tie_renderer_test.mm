@@ -285,7 +285,7 @@ tfrag3::StripDraw tie_draw(
   tfrag3::StripDraw draw = {};
   const bool water = water_pass != SyntheticWaterPass::NONE;
   draw.mode.as_int() = 0;
-  draw.mode.set_depth_write_enable(!water && !envmap_second && !translucent);
+  draw.mode.set_depth_write_enable(water || (!envmap_second && !translucent));
   draw.mode.set_zt(true);
   draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
   draw.mode.set_ab(water || envmap_second || translucent);
@@ -637,7 +637,7 @@ int main() {
     const auto& water_env_second_mode = source_contract_tree.static_draws.at(8).mode;
     const auto water_test_mode_matches = [](const DrawMode& mode) {
       return mode.get_zt_enable() && mode.get_depth_test() == GsTest::ZTest::GEQUAL &&
-             !mode.get_depth_write_enable() && mode.get_at_enable() &&
+             mode.get_depth_write_enable() && mode.get_at_enable() &&
              mode.get_alpha_test() == DrawMode::AlphaTest::NEVER &&
              mode.get_alpha_fail() == GsTest::AlphaFail::FB_ONLY && mode.get_ab_enable();
     };
@@ -645,11 +645,13 @@ int main() {
               water_mode.get_alpha_blend() == DrawMode::AlphaBlend::SRC_DST_SRC_DST &&
               water_env_base_mode.get_alpha_blend() ==
                   DrawMode::AlphaBlend::SRC_DST_SRC_DST,
-          "water TIE and ETIE base draws use the extracted test, depth, and source-over mode");
+          "water TIE and ETIE base draws retain raw depth-write with the extracted test and "
+          "source-over mode");
     check(water_test_mode_matches(water_env_second_mode) &&
               water_env_second_mode.get_alpha_blend() == DrawMode::AlphaBlend::SRC_0_DST_DST &&
               water_env_second_mode.get_filt_enable(),
-          "the water ETIE second draw uses its extracted SRC_0_DST_DST filtered mode");
+          "the water ETIE second draw retains raw depth-write with its extracted "
+          "SRC_0_DST_DST filtered mode");
     const auto fixture_path =
         std::filesystem::temp_directory_path() / "goalpad-jak2-normal-tie-test.fr3";
     std::error_code remove_error;
