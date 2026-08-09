@@ -8,7 +8,16 @@
 
 #include "game/graphics/pipelines/metal/metal_sprite_renderer.h"
 
+#import <Metal/Metal.h>
+#import <TargetConditionals.h>
+
+extern "C" const unsigned char g_goalpad_metallib[];
+extern "C" const unsigned long g_goalpad_metallib_size;
+
 namespace {
+
+constexpr int kDistortTargetWidth = 128;
+constexpr int kDistortTargetHeight = 96;
 
 u32 vif_code(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
   return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
@@ -25,6 +34,28 @@ u32 vif_unpack_v4_32(u8 qwc, u16 address, bool tops) {
 void write_u64(std::vector<u8>& bytes, std::size_t offset, u64 value) {
   ASSERT(offset + sizeof(value) <= bytes.size());
   std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+
+void write_u32(std::vector<u8>& bytes, std::size_t offset, u32 value) {
+  ASSERT(offset + sizeof(value) <= bytes.size());
+  std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+
+void write_float(std::vector<u8>& bytes, std::size_t offset, float value) {
+  ASSERT(offset + sizeof(value) <= bytes.size());
+  std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+
+void write_vec4(std::vector<u8>& bytes,
+                std::size_t offset,
+                float x,
+                float y,
+                float z = 0.f,
+                float w = 0.f) {
+  write_float(bytes, offset + 0, x);
+  write_float(bytes, offset + 4, y);
+  write_float(bytes, offset + 8, z);
+  write_float(bytes, offset + 12, w);
 }
 
 u64 gs_zbuf(u32 zbp, bool masked) {
@@ -89,8 +120,28 @@ std::vector<u8> make_distorter_setup() {
 
 std::vector<u8> make_sine_tables() {
   std::vector<u8> data(0x8b * 16, 0);
+
+  // Resolution three uses entry pairs [0, 1], [2, 3], [4, 5], then the
+  // repeated first vertex of the following table at [6, 7]. The texture
+  // deltas are zero so each synthetic distorter samples one exact color field.
+  constexpr float kSin60 = 0.8660254037844386f;
+  write_vec4(data, 0 * 16, 0.f, -1.f);
+  write_vec4(data, 1 * 16, 0.f, 0.f);
+  write_vec4(data, 2 * 16, kSin60, 0.5f);
+  write_vec4(data, 3 * 16, 0.f, 0.f);
+  write_vec4(data, 4 * 16, -kSin60, 0.5f);
+  write_vec4(data, 5 * 16, 0.f, 0.f);
+  write_vec4(data, 6 * 16, 0.f, -1.f);
+  write_vec4(data, 7 * 16, 0.f, 0.f);
+
+  constexpr std::size_t kIentryOffset = 128 * 16;
+  write_u32(data, kIentryOffset, 352);
   const u64 gif_tag_lo = static_cast<u64>(GsPrim::Kind::TRI_STRIP) << 47;
   write_u64(data, (128 + 9) * 16, gif_tag_lo);
+  constexpr std::size_t kColorOffset = (128 + 9 + 1) * 16;
+  for (int lane = 0; lane < 4; lane++) {
+    write_u32(data, kColorOffset + lane * sizeof(u32), 128);
+  }
   return data;
 }
 
@@ -196,7 +247,9 @@ SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
                                       bool include_glow_marked_group0 = false,
                                       const GlowFixture* glow = nullptr,
                                       bool malformed_glow_template = false,
-                                      int glow_record_count = 1) {
+                                      int glow_record_count = 1,
+                                      const std::vector<MetalSpriteRenderer::SpriteDistortFrameData>*
+                                          distorters = nullptr) {
   SyntheticChain chain;
   chain.empty_next();
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 7),
@@ -205,6 +258,21 @@ SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
                  std::vector<u8>(16, 0));
   chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(0x8b, 0x160, false),
                  make_sine_tables());
+  if (distorters && !distorters->empty()) {
+    ASSERT(distorters->size() <= 85);
+    std::vector<u8> frame_bytes(distorters->size() *
+                                sizeof(MetalSpriteRenderer::SpriteDistortFrameData));
+    std::memcpy(frame_bytes.data(), distorters->data(), frame_bytes.size());
+    const u8 frame_qwc = static_cast<u8>(frame_bytes.size() / 16);
+    chain.transfer(vif_code(VifCode::Kind::NOP), vif_unpack_v4_32(frame_qwc, 512, false),
+                   frame_bytes);
+
+    std::vector<u8> count(16, 0);
+    const u32 sprite_count = static_cast<u32>(distorters->size());
+    std::memcpy(count.data(), &sprite_count, sizeof(sprite_count));
+    chain.transfer(vif_code(VifCode::Kind::NOP), vif_unpack_v4_32(1, 511, false), count);
+    chain.transfer(vif_code(VifCode::Kind::MSCALF), vif_code(VifCode::Kind::FLUSH));
+  }
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 3),
                  make_sprite_direct_setup());
   chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(0x2a, SpriteDataMem::FrameData, false),
@@ -527,6 +595,198 @@ void test_control_led_glow_without_constants_remains_explicitly_unsupported() {
   ASSERT(renderer.stats().unsupported_bytes == 50 * 16);
 }
 
+struct Pixel {
+  u8 r;
+  u8 g;
+  u8 b;
+  u8 a;
+};
+
+Pixel read_bgra_pixel(const std::vector<u8>& pixels, int x, int y) {
+  ASSERT(x >= 0 && x < kDistortTargetWidth);
+  ASSERT(y >= 0 && y < kDistortTargetHeight);
+  const std::size_t offset =
+      static_cast<std::size_t>(y * kDistortTargetWidth + x) * sizeof(Pixel);
+  return {pixels[offset + 2], pixels[offset + 1], pixels[offset], pixels[offset + 3]};
+}
+
+bool pixel_near(Pixel actual, Pixel expected, int tolerance = 2) {
+  const auto near = [tolerance](u8 a, u8 b) {
+    return std::abs(static_cast<int>(a) - static_cast<int>(b)) <= tolerance;
+  };
+  return near(actual.r, expected.r) && near(actual.g, expected.g) &&
+         near(actual.b, expected.b) && near(actual.a, expected.a);
+}
+
+void test_multi_distorter_spatial_sampling_and_alpha() {
+  id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+  ASSERT(device);
+  id<MTLCommandQueue> queue = [device newCommandQueue];
+  ASSERT(queue);
+
+  dispatch_data_t library_data = dispatch_data_create(
+      g_goalpad_metallib, g_goalpad_metallib_size, nullptr,
+      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  NSError* library_error = nil;
+  id<MTLLibrary> library = [device newLibraryWithData:library_data error:&library_error];
+  if (!library && library_error) {
+    std::printf("Metal library error: %s\n", library_error.localizedDescription.UTF8String);
+  }
+  ASSERT(library);
+
+  MetalPsoCache pso_cache;
+  MetalSamplerCache sampler_cache;
+  MetalStreamBuffer stream;
+  ASSERT(pso_cache.init(device, library));
+  sampler_cache.init(device);
+  stream.init(device);
+
+  std::vector<MetalSpriteRenderer::SpriteDistortFrameData> distorters(2);
+  distorters[0].xyz = math::Vector3f(1888.f, 2048.f, 8388608.f);
+  distorters[0].num_255 = 255.f;
+  distorters[0].st = math::Vector2f(0.75f, 0.40625f);
+  distorters[0].num_1 = 1.f;
+  distorters[0].flag = 3;
+  distorters[0].rgba = math::Vector4f(60.f, 0.f, 0.f, 0.f);
+  distorters[1] = distorters[0];
+  distorters[1].xyz.x() = 2208.f;
+  distorters[1].st.x() = 0.25f;
+
+  auto chain = make_normal_jak2_chain(false, false, false, nullptr, false, 1, &distorters);
+  const u32 next_bucket = chain.finish();
+  constexpr u8 kSourceAlphas[] = {255, 0};
+  for (u8 source_alpha : kSourceAlphas) {
+    stream.reset();
+
+    auto* color_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                     width:kDistortTargetWidth
+                                    height:kDistortTargetHeight
+                                 mipmapped:NO];
+    color_desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+#if TARGET_OS_OSX
+    color_desc.storageMode = MTLStorageModeManaged;
+#else
+    color_desc.storageMode = MTLStorageModeShared;
+#endif
+    id<MTLTexture> color = [device newTextureWithDescriptor:color_desc];
+    ASSERT(color);
+
+    auto* depth_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                     width:kDistortTargetWidth
+                                    height:kDistortTargetHeight
+                                 mipmapped:NO];
+    depth_desc.usage = MTLTextureUsageRenderTarget;
+    depth_desc.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> depth = [device newTextureWithDescriptor:depth_desc];
+    ASSERT(depth);
+
+    const Pixel left = {24, 72, 208, source_alpha};
+    const Pixel right = {216, 176, 32, source_alpha};
+    std::vector<u8> initial(kDistortTargetWidth * kDistortTargetHeight * 4);
+    for (int y = 0; y < kDistortTargetHeight; y++) {
+      for (int x = 0; x < kDistortTargetWidth; x++) {
+        const Pixel pixel = x < kDistortTargetWidth / 2 ? left : right;
+        const std::size_t offset =
+            static_cast<std::size_t>(y * kDistortTargetWidth + x) * 4;
+        initial[offset + 0] = pixel.b;
+        initial[offset + 1] = pixel.g;
+        initial[offset + 2] = pixel.r;
+        initial[offset + 3] = pixel.a;
+      }
+    }
+    [color replaceRegion:MTLRegionMake2D(0, 0, kDistortTargetWidth, kDistortTargetHeight)
+              mipmapLevel:0
+                withBytes:initial.data()
+              bytesPerRow:kDistortTargetWidth * 4];
+
+    id<MTLCommandBuffer> commands = [queue commandBuffer];
+    auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = color;
+    pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.depthAttachment.texture = depth;
+    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.storeAction = MTLStoreActionStore;
+    pass.depthAttachment.clearDepth = 0;
+    pass.stencilAttachment.texture = depth;
+    pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    pass.stencilAttachment.clearStencil = 0;
+
+    MetalFrameContext ctx;
+    ctx.cmds = commands;
+    ctx.enc = [commands renderCommandEncoderWithDescriptor:pass];
+    ctx.pso_cache = &pso_cache;
+    ctx.sampler_cache = &sampler_cache;
+    ctx.stream = &stream;
+    ctx.color_format = MTLPixelFormatBGRA8Unorm;
+    ctx.depth_format = MTLPixelFormatDepth32Float_Stencil8;
+    ctx.game_color = color;
+    ctx.game_depth = depth;
+    [ctx.enc setCullMode:MTLCullModeNone];
+
+    MetalSharedRenderState state;
+    state.version = GameVersion::Jak2;
+    state.next_bucket = next_bucket;
+    state.game_res_w = kDistortTargetWidth;
+    state.game_res_h = kDistortTargetHeight;
+    DmaFollower dma(chain.bytes.data(), 0, chain.bytes.size());
+    MetalSpriteRenderer renderer("synthetic-jak2-distort", 313);
+    renderer.render(dma, &state, ctx);
+
+    ASSERT(dma.current_tag_offset() == next_bucket);
+    ASSERT(renderer.stats().distort_sprites == 2);
+    ASSERT(renderer.stats().draw_calls == 1);
+    ASSERT(renderer.stats().triangles == 12);
+    [ctx.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> sync = [commands blitCommandEncoder];
+    [sync synchronizeResource:color];
+    [sync endEncoding];
+#endif
+    [commands commit];
+    [commands waitUntilCompleted];
+    if (commands.status != MTLCommandBufferStatusCompleted && commands.error) {
+      std::printf("Metal command-buffer error: %s\n",
+                  commands.error.localizedDescription.UTF8String);
+    }
+    ASSERT(commands.status == MTLCommandBufferStatusCompleted);
+
+    std::vector<u8> pixels(initial.size());
+    [color getBytes:pixels.data()
+        bytesPerRow:kDistortTargetWidth * 4
+         fromRegion:MTLRegionMake2D(0, 0, kDistortTargetWidth, kDistortTargetHeight)
+        mipmapLevel:0];
+
+    Pixel expected_left_sample = right;
+    expected_left_sample.a = 255;
+    Pixel expected_right_sample = left;
+    expected_right_sample.a = 255;
+    ASSERT(pixel_near(read_bgra_pixel(pixels, 24, 48), expected_left_sample));
+    ASSERT(pixel_near(read_bgra_pixel(pixels, 104, 48), expected_right_sample));
+
+    // Checking every pixel outside the two conservative bounds catches an
+    // out-of-range vertex or a failed primitive restart, not just one bridge.
+    for (int y = 0; y < kDistortTargetHeight; y++) {
+      for (int x = 0; x < kDistortTargetWidth; x++) {
+        const bool in_left_bounds = x >= 8 && x <= 40 && y >= 34 && y <= 62;
+        const bool in_right_bounds = x >= 88 && x <= 120 && y >= 34 && y <= 62;
+        if (!in_left_bounds && !in_right_bounds) {
+          ASSERT(pixel_near(read_bgra_pixel(pixels, x, y),
+                            x < kDistortTargetWidth / 2 ? left : right, 0));
+        }
+      }
+    }
+    ASSERT(pixel_near(read_bgra_pixel(pixels, 64, 48), right, 0));
+
+    if (source_alpha == 255) {
+      std::puts("jak2-metal-sprite-renderer-test: fixed-index restart PASS");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -541,6 +801,7 @@ int main() {
     test_jak2_hud_program();
     test_jak2_glow_marker_is_not_submitted_as_an_ordinary_sprite();
     test_control_led_glow_without_constants_remains_explicitly_unsupported();
+    test_multi_distorter_spatial_sampling_and_alpha();
   }
   std::puts("jak2-metal-sprite-renderer-test: PASS");
   return 0;
