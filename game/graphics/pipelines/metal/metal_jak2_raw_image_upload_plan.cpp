@@ -132,4 +132,53 @@ std::optional<Jak2RawImageUploadPlan> plan_jak2_raw_image_upload(
   }
 }
 
+static std::optional<u32> count_jak2_raw_image_upload_markers(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset) {
+  const std::size_t packet_size =
+      std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
+  const u64 bucket_offset64 =
+      static_cast<u64>(chain_offset) + static_cast<u64>(kJak2RawImageUploadBucket) * 16;
+  const u64 bucket_end64 = bucket_offset64 + 16;
+  if (!dma_packet_snapshot || bucket_end64 > packet_size ||
+      bucket_end64 > std::numeric_limits<u32>::max()) {
+    return std::nullopt;
+  }
+
+  try {
+    const u32 bucket_offset = static_cast<u32>(bucket_offset64);
+    const u32 bucket_end = static_cast<u32>(bucket_end64);
+    DmaFollower dma(dma_packet_snapshot, bucket_offset, packet_size);
+    u32 marker_count = 0;
+    std::size_t transfer_count = 0;
+    while (dma.current_tag_offset() != bucket_end) {
+      if (++transfer_count > 4096) {
+        return std::nullopt;
+      }
+      CheckedTransfer transfer;
+      if (!read_transfer(&dma, &transfer)) {
+        return std::nullopt;
+      }
+      const auto vif0 = transfer.data.vifcode0();
+      if (vif0.kind == VifCode::Kind::PC_PORT && vif0.immediate == 12) {
+        ++marker_count;
+      }
+    }
+    return marker_count;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+bool copied_jak2_raw_image_upload_markers_match_plan(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    bool plan_present) {
+  const auto marker_count = count_jak2_raw_image_upload_markers(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset);
+  return marker_count && *marker_count == (plan_present ? 1u : 0u);
+}
+
 }  // namespace metal_renderer

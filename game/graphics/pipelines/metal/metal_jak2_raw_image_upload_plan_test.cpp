@@ -103,6 +103,26 @@ void test_strict_empty_plan() {
         "a canonical strict-empty bucket produces an absent plan");
 }
 
+void test_copied_marker_divergence() {
+  auto absent_source = metal_renderer::make_jak2_raw_image_direct_only_fixture();
+  const auto absent_plan = plan(absent_source);
+  auto unexpected_copied = metal_renderer::make_jak2_raw_image_upload_fixture();
+  check(absent_plan && !absent_plan->present &&
+            !metal_renderer::copied_jak2_raw_image_upload_markers_match_plan(
+                unexpected_copied.ee_memory.data(), unexpected_copied.ee_memory.size(),
+                unexpected_copied.chain_offset, absent_plan->present),
+        "an absent live plan detects an unexpected copied publication marker");
+
+  auto present_source = metal_renderer::make_jak2_raw_image_upload_fixture();
+  const auto present_plan = plan(present_source);
+  auto missing_copied = metal_renderer::make_jak2_raw_image_direct_only_fixture();
+  check(present_plan && present_plan->present &&
+            !metal_renderer::copied_jak2_raw_image_upload_markers_match_plan(
+                missing_copied.ee_memory.data(), missing_copied.ee_memory.size(),
+                missing_copied.chain_offset, present_plan->present),
+        "a present live plan detects a missing copied publication marker");
+}
+
 void test_rejections() {
   {
     auto fixture = metal_renderer::make_jak2_raw_image_upload_fixture();
@@ -151,6 +171,7 @@ int main() {
   test_live_source_owned_plan();
   test_supported_layouts();
   test_strict_empty_plan();
+  test_copied_marker_divergence();
   test_rejections();
   std::puts("PASS: Jak II bucket-318 raw-image upload planner");
   return 0;

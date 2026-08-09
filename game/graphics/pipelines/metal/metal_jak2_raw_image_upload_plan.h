@@ -40,4 +40,16 @@ std::optional<Jak2RawImageUploadPlan> plan_jak2_raw_image_upload(
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size);
 
+/*!
+ * Validate that a bounded copied bucket 318 snapshot has exactly the
+ * renderer-visible PC_PORT 12 marker count required by the live plan. This
+ * intentionally checks only callback parity; the live plan remains
+ * responsible for the exact upload grammar.
+ */
+bool copied_jak2_raw_image_upload_markers_match_plan(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    bool plan_present);
+
 }  // namespace metal_renderer

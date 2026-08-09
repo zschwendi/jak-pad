@@ -521,14 +521,16 @@ struct Jak2TextureUploadDispatch {
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
   if (bucket_id == metal_renderer::kJak2RawImageUploadBucket) {
-    if (!dispatch->raw_image_plan || !dispatch->raw_image_plan->present) {
-      return;
+    if (!dispatch->raw_image_callback_executed) {
+      throw std::runtime_error("Jak 2 bucket 318 raw-image marker tracking is unavailable");
     }
-    if (!dispatch->raw_image_callback_executed ||
-        *dispatch->raw_image_callback_executed) {
+    if (*dispatch->raw_image_callback_executed) {
       throw std::runtime_error("Jak 2 bucket 318 raw-image publication marker repeated");
     }
     *dispatch->raw_image_callback_executed = true;
+    if (!dispatch->raw_image_plan || !dispatch->raw_image_plan->present) {
+      throw std::runtime_error("Jak 2 bucket 318 raw-image publication marker was unexpected");
+    }
     *dispatch->host_texture_mutated = true;
     if (!dispatch->host->raw_image_upload_executor ||
         !dispatch->host->raw_image_upload_executor->execute(*dispatch->raw_image_plan)) {
@@ -801,19 +803,6 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
     metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared skull_gem_prepared;
-    if (common_tfrag_texture_plan->present &&
-        (!host->common_level || !host->common_level->level || !host->skull_gem_executor ||
-         !host->skull_gem_executor->prepare(common_tfrag_texture_plan->skull_gem,
-                                            *host->common_level->level,
-                                            &skull_gem_prepared))) {
-      const char* detail = !host->common_level || !host->common_level->level
-                               ? "common level art is unavailable"
-                               : host->skull_gem_executor
-                                     ? host->skull_gem_executor->last_error()
-                                     : "executor is unavailable";
-      record_failure(host, (std::string("Jak 2 skull-gem preparation failed: ") + detail).c_str());
-      return;
-    }
     metal_renderer::Jak2Bucket4TextureUploadCapture bucket4_capture;
     const auto bucket4_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
@@ -841,16 +830,6 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, message.c_str());
       return;
     }
-    if (!execute_bucket4_plan(host, *bucket4_plan, static_cast<const u8*>(ee_base))) {
-      return;
-    }
-    host_texture_mutated =
-        !std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(*bucket4_plan);
-    if (!execute_sprite_texture_upload_plan(host, *sprite_texture_plan,
-                                            static_cast<const u8*>(ee_base))) {
-      return;
-    }
-    host_texture_mutated = host_texture_mutated || sprite_texture_plan->present;
     const auto& copied = host->copier.run(ee_base, chain_offset, false);
     host->metrics.last_copied_bytes = static_cast<uint32_t>(copied.data.size());
 
@@ -867,6 +846,39 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           host_texture_mutated);
       return;
     }
+
+    if (!metal_renderer::copied_jak2_raw_image_upload_markers_match_plan(
+            copied.data.data(), copied.data.size(), copied.start_offset,
+            raw_image_plan->present)) {
+      record_send_chain_failure(
+          host, "Jak 2 copied bucket 318 raw-image marker count did not match its plan",
+          false);
+      return;
+    }
+
+    if (common_tfrag_texture_plan->present &&
+        (!host->common_level || !host->common_level->level || !host->skull_gem_executor ||
+         !host->skull_gem_executor->prepare(common_tfrag_texture_plan->skull_gem,
+                                            *host->common_level->level,
+                                            &skull_gem_prepared))) {
+      const char* detail = !host->common_level || !host->common_level->level
+                               ? "common level art is unavailable"
+                               : host->skull_gem_executor
+                                     ? host->skull_gem_executor->last_error()
+                                     : "executor is unavailable";
+      record_failure(host, (std::string("Jak 2 skull-gem preparation failed: ") + detail).c_str());
+      return;
+    }
+    if (!execute_bucket4_plan(host, *bucket4_plan, static_cast<const u8*>(ee_base))) {
+      return;
+    }
+    host_texture_mutated =
+        !std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(*bucket4_plan);
+    if (!execute_sprite_texture_upload_plan(host, *sprite_texture_plan,
+                                            static_cast<const u8*>(ee_base))) {
+      return;
+    }
+    host_texture_mutated = host_texture_mutated || sprite_texture_plan->present;
 
     bool raw_image_callback_executed = false;
     Jak2TextureUploadDispatch texture_dispatch{
