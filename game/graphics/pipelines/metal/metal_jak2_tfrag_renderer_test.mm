@@ -178,6 +178,7 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
                             int texture_id,
                             DrawMode::AlphaBlend blend) {
     const bool translucent = blend != DrawMode::AlphaBlend::DISABLED;
+    const bool water = kind == tfrag3::TFragmentTreeKind::WATER;
     tfrag3::TfragTree tree = {};
     tree.kind = kind;
     tree.use_strips = false;
@@ -195,8 +196,9 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
     draw.mode.set_zt(true);
     draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
     draw.mode.set_at(translucent);
-    draw.mode.set_alpha_test(DrawMode::AlphaTest::GEQUAL);
-    draw.mode.set_aref(translucent ? 0x7e : 0);
+    draw.mode.set_alpha_test(water ? DrawMode::AlphaTest::NEVER
+                                   : DrawMode::AlphaTest::GEQUAL);
+    draw.mode.set_aref(translucent && !water ? 0x7e : 0);
     draw.mode.set_alpha_fail(translucent ? GsTest::AlphaFail::FB_ONLY
                                          : GsTest::AlphaFail::KEEP);
     draw.mode.set_ab(translucent);
@@ -226,8 +228,18 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
       make_tree(tfrag3::TFragmentTreeKind::NORMAL, 0, DrawMode::AlphaBlend::DISABLED));
   level.tfrag_trees[0].push_back(
       make_tree(tfrag3::TFragmentTreeKind::TRANS, 1, DrawMode::AlphaBlend::SRC_DST_SRC_DST));
-  level.tfrag_trees[0].push_back(
-      make_tree(tfrag3::TFragmentTreeKind::WATER, 2, DrawMode::AlphaBlend::SRC_0_SRC_DST));
+  auto water_tree =
+      make_tree(tfrag3::TFragmentTreeKind::WATER, 2, DrawMode::AlphaBlend::SRC_DST_SRC_DST);
+  const auto& water_mode = water_tree.draws.front().mode;
+  if (!water_mode.get_depth_write_enable() || !water_mode.get_zt_enable() ||
+      water_mode.get_depth_test() != GsTest::ZTest::GEQUAL || !water_mode.get_at_enable() ||
+      water_mode.get_alpha_test() != DrawMode::AlphaTest::NEVER ||
+      water_mode.get_alpha_fail() != GsTest::AlphaFail::FB_ONLY ||
+      !water_mode.get_ab_enable() ||
+      water_mode.get_alpha_blend() != DrawMode::AlphaBlend::SRC_DST_SRC_DST) {
+    return false;
+  }
+  level.tfrag_trees[0].push_back(std::move(water_tree));
 
   Serializer serializer;
   level.serialize(serializer);
@@ -412,7 +424,8 @@ int main() {
         std::filesystem::temp_directory_path() / "goalpad-jak2-normal-tfrag-test.fr3";
     std::error_code remove_error;
     std::filesystem::remove(fixture_path, remove_error);
-    check(write_synthetic_fr3(fixture_path), "created an asset-free synthetic normal TFRAG FR3");
+    check(write_synthetic_fr3(fixture_path),
+          "created an asset-free FR3 with the extracted WATER draw-mode contract");
 
     std::string load_error;
     auto* level = metal_level_data::load_fr3(device, queue, texture_pool, fixture_path.string(),
@@ -538,7 +551,7 @@ int main() {
           "the source-shaped water TFRAG packet selects one WATER tree exactly");
     check(blue_pixels == 1024 && water_clear_pixels == 3072 &&
               water_unexpected_pixels == 0,
-          "WATER readback applies its FR3 source-alpha additive mode to the exact mask");
+          "WATER readback applies its extracted source-over mode to the exact mask");
     check(water.depths[32 * kTargetSize + 32] == 0.f,
           "the water FR3 draw mode preserves cleared depth under its visible mask");
 

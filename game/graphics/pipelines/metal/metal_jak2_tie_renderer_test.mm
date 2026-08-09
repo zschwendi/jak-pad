@@ -274,23 +274,36 @@ void add_quad(tfrag3::TieTree* tree,
   *indices = {first, first + 1, first + 2, first + 2, first + 1, first + 3};
 }
 
-tfrag3::StripDraw tie_draw(const std::vector<u32>& indices,
-                           std::vector<tfrag3::StripDraw::VisGroup> groups,
-                           bool envmap_second,
-                           bool translucent = false) {
+enum class SyntheticWaterPass { NONE, BASE, ENVMAP_SECOND };
+
+tfrag3::StripDraw tie_draw(
+    const std::vector<u32>& indices,
+    std::vector<tfrag3::StripDraw::VisGroup> groups,
+    bool envmap_second,
+    bool translucent = false,
+    SyntheticWaterPass water_pass = SyntheticWaterPass::NONE) {
   tfrag3::StripDraw draw = {};
+  const bool water = water_pass != SyntheticWaterPass::NONE;
   draw.mode.as_int() = 0;
-  draw.mode.set_depth_write_enable(!envmap_second && !translucent);
+  draw.mode.set_depth_write_enable(!water && !envmap_second && !translucent);
   draw.mode.set_zt(true);
   draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
-  draw.mode.set_ab(envmap_second || translucent);
-  draw.mode.set_alpha_blend(envmap_second ? DrawMode::AlphaBlend::SRC_0_FIX_DST
-                            : translucent ? DrawMode::AlphaBlend::SRC_DST_FIX_DST
-                                          : DrawMode::AlphaBlend::DISABLED);
-  draw.mode.set_at(false);
+  draw.mode.set_ab(water || envmap_second || translucent);
+  draw.mode.set_alpha_blend(
+      water_pass == SyntheticWaterPass::ENVMAP_SECOND
+          ? DrawMode::AlphaBlend::SRC_0_DST_DST
+          : water ? DrawMode::AlphaBlend::SRC_DST_SRC_DST
+                  : envmap_second ? DrawMode::AlphaBlend::SRC_0_FIX_DST
+                                  : translucent ? DrawMode::AlphaBlend::SRC_DST_FIX_DST
+                                                : DrawMode::AlphaBlend::DISABLED);
+  draw.mode.set_at(water);
+  draw.mode.set_alpha_test(water ? DrawMode::AlphaTest::NEVER
+                                 : DrawMode::AlphaTest::GEQUAL);
+  draw.mode.set_aref(0);
+  draw.mode.set_alpha_fail(water ? GsTest::AlphaFail::FB_ONLY : GsTest::AlphaFail::KEEP);
   draw.mode.set_fog(false);
   draw.mode.set_decal(false);
-  draw.mode.set_filt_enable(false);
+  draw.mode.set_filt_enable(water_pass == SyntheticWaterPass::ENVMAP_SECOND);
   draw.mode.set_clamp_s_enable(true);
   draw.mode.set_clamp_t_enable(true);
   draw.tree_tex_id = 0;
@@ -342,25 +355,28 @@ tfrag3::TieTree make_named_tree() {
   tree.static_draws.push_back(
       tie_draw(normal, {{6, 2, UINT16_MAX, 0}, {6, 2, UINT16_MAX, 1}}, false));
   tree.static_draws.push_back(tie_draw(trans, {{6, 2, UINT16_MAX, 1}}, false, true));
-  tree.static_draws.push_back(tie_draw(water, {{6, 2, UINT16_MAX, 1}}, false, true));
+  tree.static_draws.push_back(tie_draw(water, {{6, 2, UINT16_MAX, 1}}, false, true,
+                                       SyntheticWaterPass::BASE));
   tree.static_draws.push_back(tie_draw(env, {{6, 2, UINT16_MAX, 1}}, false));
   tree.static_draws.push_back(tie_draw(trans_env, {{6, 2, UINT16_MAX, 1}}, false, true));
-  tree.static_draws.push_back(tie_draw(water_env, {{6, 2, UINT16_MAX, 1}}, false, true));
+  tree.static_draws.push_back(tie_draw(water_env, {{6, 2, UINT16_MAX, 1}}, false, true,
+                                       SyntheticWaterPass::BASE));
   tree.static_draws.push_back(tie_draw(env, {{6, 2, UINT16_MAX, 1}}, true));
   tree.static_draws.push_back(tie_draw(trans_env, {{6, 2, UINT16_MAX, 1}}, true));
-  tree.static_draws.push_back(tie_draw(water_env, {{6, 2, UINT16_MAX, 1}}, true));
+  tree.static_draws.push_back(tie_draw(water_env, {{6, 2, UINT16_MAX, 1}}, true, false,
+                                       SyntheticWaterPass::ENVMAP_SECOND));
   tree.category_draw_indices = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   tree.packed_vertices.matrix_groups.push_back(
       {-1, 0, static_cast<u32>(tree.packed_vertices.vertices.size()), true});
-  tree.colors.color_count = 7;
-  tree.colors.data.assign(((tree.colors.color_count + 3) / 4) * 128, 0);
+  tree.colors.color_count = 8;
+  tree.colors.data.assign(tree.colors.color_count * 8 * 4, 0);
   set_tod_color(&tree.colors, 0, 128, 0, 0, 64);
   set_tod_color(&tree.colors, 1, 0, 0, 128, 64);
   set_tod_color(&tree.colors, 2, 0, 0, 0, 64);
   set_tod_color(&tree.colors, 3, 0, 128, 0, 64);
   set_tod_color(&tree.colors, 4, 0, 0, 0, 64);
   set_tod_color(&tree.colors, 5, 0, 0, 128, 64);
-  set_tod_color(&tree.colors, 6, 0, 0, 0, 64);
+  set_tod_color(&tree.colors, 6, 0, 0, 128, 64);
   return tree;
 }
 
@@ -415,6 +431,7 @@ struct RenderResult {
   bool child_finished = true;
   bool completed = false;
   std::vector<u8> pixels;
+  std::vector<float> depths;
 };
 
 RenderResult render_sequence(id<MTLDevice> device,
@@ -458,7 +475,7 @@ RenderResult render_sequence(id<MTLDevice> device,
   pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
   pass.depthAttachment.texture = depth;
   pass.depthAttachment.loadAction = MTLLoadActionClear;
-  pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+  pass.depthAttachment.storeAction = MTLStoreActionStore;
   pass.depthAttachment.clearDepth = 0.0;
   pass.stencilAttachment.texture = depth;
   pass.stencilAttachment.loadAction = MTLLoadActionClear;
@@ -512,11 +529,25 @@ RenderResult render_sequence(id<MTLDevice> device,
   result.draw_calls = context.draw_calls;
   result.triangles = context.triangles;
   [encoder endEncoding];
-#if TARGET_OS_OSX
+  constexpr std::size_t kDepthBytesPerRow = kTargetSize * sizeof(float);
+  id<MTLBuffer> depth_readback =
+      [device newBufferWithLength:kDepthBytesPerRow * kTargetSize
+                          options:MTLResourceStorageModeShared];
   id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+  [blit copyFromTexture:depth
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake(kTargetSize, kTargetSize, 1)
+               toBuffer:depth_readback
+      destinationOffset:0
+ destinationBytesPerRow:kDepthBytesPerRow
+destinationBytesPerImage:kDepthBytesPerRow * kTargetSize
+                options:MTLBlitOptionDepthFromDepthStencil];
+#if TARGET_OS_OSX
   [blit synchronizeResource:color];
-  [blit endEncoding];
 #endif
+  [blit endEncoding];
   [commands commit];
   [commands waitUntilCompleted];
   result.completed = commands.status == MTLCommandBufferStatusCompleted;
@@ -526,6 +557,9 @@ RenderResult render_sequence(id<MTLDevice> device,
         bytesPerRow:kTargetSize * 4
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
         mipmapLevel:0];
+    result.depths.resize(kTargetSize * kTargetSize);
+    std::memcpy(result.depths.data(), depth_readback.contents,
+                result.depths.size() * sizeof(float));
   }
   return result;
 }
@@ -543,6 +577,14 @@ int count_non_black_rgb(const std::vector<u8>& pixels) {
   int count = 0;
   for (std::size_t offset = 0; offset + 2 < pixels.size(); offset += 4) {
     count += pixels[offset] != 0 || pixels[offset + 1] != 0 || pixels[offset + 2] != 0;
+  }
+  return count;
+}
+
+int count_clear_depth(const std::vector<float>& depths) {
+  int count = 0;
+  for (float depth : depths) {
+    count += depth == 0.f;
   }
   return count;
 }
@@ -579,6 +621,35 @@ int main() {
     const u64 placeholder_handle = texture_pool.get_placeholder_texture();
     check(placeholder_handle != 0 && metal_texture_lookup(placeholder_handle) != nil,
           "the counted fallback resolves to a live placeholder texture");
+    const auto source_contract_tree = make_named_tree();
+    check(source_contract_tree.colors.color_count == 8 &&
+              source_contract_tree.colors.data.size() ==
+                  source_contract_tree.colors.color_count * 8 * 4,
+          "the synthetic TIE palette follows the extractor's four-color padding contract");
+    const GsAlpha water_alpha_override(68);
+    check(water_alpha_override.a_mode() == GsAlpha::BlendMode::SOURCE &&
+              water_alpha_override.b_mode() == GsAlpha::BlendMode::DEST &&
+              water_alpha_override.c_mode() == GsAlpha::BlendMode::SOURCE &&
+              water_alpha_override.d_mode() == GsAlpha::BlendMode::DEST,
+          "Jak II water alpha override 68 maps exactly to SRC_DST_SRC_DST");
+    const auto& water_mode = source_contract_tree.static_draws.at(2).mode;
+    const auto& water_env_base_mode = source_contract_tree.static_draws.at(5).mode;
+    const auto& water_env_second_mode = source_contract_tree.static_draws.at(8).mode;
+    const auto water_test_mode_matches = [](const DrawMode& mode) {
+      return mode.get_zt_enable() && mode.get_depth_test() == GsTest::ZTest::GEQUAL &&
+             !mode.get_depth_write_enable() && mode.get_at_enable() &&
+             mode.get_alpha_test() == DrawMode::AlphaTest::NEVER &&
+             mode.get_alpha_fail() == GsTest::AlphaFail::FB_ONLY && mode.get_ab_enable();
+    };
+    check(water_test_mode_matches(water_mode) && water_test_mode_matches(water_env_base_mode) &&
+              water_mode.get_alpha_blend() == DrawMode::AlphaBlend::SRC_DST_SRC_DST &&
+              water_env_base_mode.get_alpha_blend() ==
+                  DrawMode::AlphaBlend::SRC_DST_SRC_DST,
+          "water TIE and ETIE base draws use the extracted test, depth, and source-over mode");
+    check(water_test_mode_matches(water_env_second_mode) &&
+              water_env_second_mode.get_alpha_blend() == DrawMode::AlphaBlend::SRC_0_DST_DST &&
+              water_env_second_mode.get_filt_enable(),
+          "the water ETIE second draw uses its extracted SRC_0_DST_DST filtered mode");
     const auto fixture_path =
         std::filesystem::temp_directory_path() / "goalpad-jak2-normal-tie-test.fr3";
     std::error_code remove_error;
@@ -701,8 +772,11 @@ int main() {
               water_after_normal.background.tie_tris == 2 &&
               water_after_normal.background.unexpected_dma == 0,
           "the later empty water TIE child reuses the same-frame normal parent state once");
-    check(count_rgba(water_after_normal.pixels, 0, 0, 128, 255) > 20,
-          "the water TIE child applies its half-blend FR3 draw mode on readback");
+    const int water_blue = count_rgba(water_after_normal.pixels, 0, 0, 255, 255);
+    check(water_blue > 20 && water_blue == count_non_black_rgb(water_after_normal.pixels),
+          "the water TIE child produces only its source-derived full-blue color");
+    check(count_clear_depth(water_after_normal.depths) == kTargetSize * kTargetSize,
+          "the water TIE AT NEVER/FB_ONLY mode preserves cleared depth exactly");
 
     const auto water_env_after_normal =
         render_sequence(device, queue, &pso_cache, &sampler_cache, &texture_pool, &parent,
@@ -716,8 +790,12 @@ int main() {
               water_env_after_normal.background.tie_envmap_second_tris == 2 &&
               water_env_after_normal.background.unexpected_dma == 0,
           "the water ETIE child emits its adjacent WATER envmap base and second draws");
-    check(count_non_black_rgb(water_env_after_normal.pixels) > 20,
-          "the water ETIE base/shine pair produces deterministic non-black readback");
+    const int water_env_blue = count_rgba(water_env_after_normal.pixels, 0, 0, 255, 255);
+    check(water_env_blue > 20 &&
+              water_env_blue == count_non_black_rgb(water_env_after_normal.pixels),
+          "the water ETIE base/shine pair preserves the source-derived full-blue result");
+    check(count_clear_depth(water_env_after_normal.depths) == kTargetSize * kTargetSize,
+          "both water ETIE passes preserve cleared depth exactly");
 
     const auto linked_parent =
         make_parent_chain(proto_mask({kLeftProto}), half_red_tint, proto_mask({kRightProto}));
