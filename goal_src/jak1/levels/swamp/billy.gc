@@ -357,6 +357,25 @@
 (defmethod get-reject-anim ((this billy) (arg0 symbol))
   (new 'static 'spool-anim :name "billy-reject" :index 7 :parts 3 :command-list '()))
 
+(defstate query (billy)
+  :virtual #t
+  :trans
+    (behavior ()
+      (case (current-status (-> self tasks))
+        (((task-status need-reminder-a))
+         (case (goalpad-face-prompt-touch-get-response self (-> self query))
+           (('yes) (go-virtual play-accept))
+           (('no) (go-virtual play-reject)))
+         (push-accept-anim self))
+        (else
+         (let ((gp-0 (goalpad-face-prompt-touch-get-response self (-> self query))))
+           (cond
+             ((and (= gp-0 'yes) (process-release? *target*)) (go-virtual enter-playing))
+             ((= gp-0 'no) (go-virtual play-reject))))))
+      (push-reject-anim self)
+      (set! *camera-look-through-other* 2)
+      ((-> self cur-trans-hook))))
+
 (defstate billy-done (billy)
   :event
     (behavior ((proc process) (argc int) (message symbol) (block event-message-block))
@@ -396,21 +415,29 @@
             (else (play-ambient (-> self ambient) "BIL-TA5A" #t (the-as vector #f)))))))
   :exit
     (behavior ()
+      (goalpad-face-prompt-touch-clear! self)
       (billy-kill-all-but-farthy)
       (send-event *camera* 'change-target *target*)
       (send-event *camera* 'change-state *camera-base-mode* 0))
   :trans
     (behavior ()
       (cond
-        ((> (-> self num-snacks) 0) (when (process-grab? *target*) (close-current! (-> self tasks)) (go-virtual play-anim)))
-        ((< (-> self num-snacks) 0) (go-virtual idle))
+        ((> (-> self num-snacks) 0)
+         (goalpad-face-prompt-touch-clear! self)
+         (when (process-grab? *target*) (close-current! (-> self tasks)) (go-virtual play-anim)))
+        ((< (-> self num-snacks) 0)
+         (goalpad-face-prompt-touch-clear! self)
+         (go-virtual idle))
         (else
          (process-grab? *target*)
-         (when (and *target* (logtest? (-> *target* state-flags) (state-flags grabbed)))
-           (let ((gp-0 (get-response (-> self query))))
-             (cond
-               ((and (= gp-0 'yes) (process-release? *target*)) (go-virtual enter-playing))
-               ((= gp-0 'no) (go-virtual play-reject)))))))
+         (cond
+           ((and *target* (logtest? (-> *target* state-flags) (state-flags grabbed)))
+            (let ((gp-0 (goalpad-face-prompt-touch-get-response self (-> self query))))
+              (cond
+                ((and (= gp-0 'yes) (process-release? *target*)) (go-virtual enter-playing))
+                ((= gp-0 'no) (go-virtual play-reject)))))
+           (else
+            (goalpad-face-prompt-touch-clear! self)))))
       (spool-push *art-control* "billy-reject" 0 self -99.0))
   :code process-taskable-anim-loop
   :post

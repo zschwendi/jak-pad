@@ -17,7 +17,7 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"direct_textured_vs", "direct_textured_fs"},  // DIRECT_TEXTURED
     {"sprite3_vs", "sprite3_fs"},                  // SPRITE3
     {"tfrag3_vs", "tfrag3_fs"},                    // TFRAG3
-    {"etie_base_vs", "tfrag3_fs"},                 // ETIE_BASE
+    {"etie_shared_vs", "tfrag3_fs"},               // ETIE_BASE
     {"shrub_vs", "shrub_fs"},                      // SHRUB
     {"ocean_texture_vs", "ocean_texture_fs"},      // OCEAN_TEXTURE
     {"ocean_texture_mipmap_vs", "ocean_texture_mipmap_fs"},  // OCEAN_TEXTURE_MIPMAP
@@ -27,7 +27,7 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"eye_vs", "eye_fs"},                          // EYE
     {"generic_vs", "generic_fs"},                  // GENERIC
     {"shadow_vs", "shadow_fs"},                    // SHADOW
-    {"etie_vs", "tfrag3_fs"},                      // ETIE (etie.frag == tfrag3.frag)
+    {"etie_shared_vs", "tfrag3_fs"},               // ETIE (etie.frag == tfrag3.frag)
     {"sprite_distort_vs", "sprite_distort_fs"},    // SPRITE_DISTORT
     {"sprite_glow_vs", "sprite_glow_fs"},          // SPRITE_GLOW_DRAW
 };

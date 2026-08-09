@@ -676,6 +676,7 @@ void MetalTie3::render_tree(int geom,
 
     MetalBackgroundDrawParams draw_params;
     draw_params.decal = draw.mode.get_decal() ? 1 : 0;
+    draw_params.etie_shine = second_draw ? 1 : 0;
     [enc setVertexBytes:&draw_params length:sizeof(draw_params) atIndex:2];
 
     fs_params.alpha_min = settings.aref_first;

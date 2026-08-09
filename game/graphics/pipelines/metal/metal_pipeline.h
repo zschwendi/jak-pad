@@ -340,6 +340,13 @@ void set_window_hidden(bool hidden);
 // unchanged. Enabled by default; callers must opt out explicitly.
 void set_jak1_tie_envmap_second_pass_enabled(bool enabled);
 
+// Physical A/B diagnostic: disable only the final color-writing composite of
+// Jak 1 shadow volumes. The same shadow DMA and VU work are still consumed so
+// this isolates shadow output from level material and depth behavior. Enabled
+// by default; callers must opt out explicitly.
+void set_jak1_shadow_output_enabled(bool enabled);
+bool jak1_shadow_output_enabled();
+
 // --- texture path (plain C++ mirror of the Objective-C++ API in
 // metal_texture.h, so tests can drive it) ----------------------------------
 
@@ -370,6 +377,10 @@ TexturePool* get_texture_pool();
 // the registry handle, or 0 on failure.
 u64 upload_texture_rgba8(const u8* data, int w, int h);
 
+// Number of registry-owned MTLTexture handles. Used by lifecycle proofs to
+// verify that failed and unloaded levels publish no residual resources.
+size_t texture_registry_live_count();
+
 // Mirror of the GL loader's add_texture against the pipeline's pool.
 u64 pool_add_texture(const tfrag3::Texture& tex, bool is_common);
 
@@ -393,7 +404,7 @@ struct LevelLoadResult {
 // streaming Loader does for a level, in one call. Requires a created display.
 LevelLoadResult load_level_fr3(const std::string& path, bool is_common);
 
-// Frees every loaded level.
+// Frees every loaded background and Merc level and their texture handles.
 void unload_all_levels();
 
 // Per-frame background-renderer counters from the last chain frame.

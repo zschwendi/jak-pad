@@ -308,8 +308,72 @@
    hidden))
 
 
+(defenum goalpad-warp-gate-touch-state :bitfield #f
+  (unavailable 0)
+  (circle-use-available 1)
+  (destination-list-active 2)
+  (transitioning 3))
+
+(deftype goalpad-warp-gate-touch-snapshot (basic)
+  ((revision         int32 :offset-assert 4)
+   (sequence         int32 :offset-assert 8)
+   (state            int32 :offset-assert 12)
+   (selected-slot    int32 :offset-assert 16)
+   (permitted-mask   int32 :offset-assert 20)
+   (selection-moving int32 :offset-assert 24))
+  :method-count-assert 9
+  :size-assert #x1c)
+
+(define *goalpad-warp-gate-touch-snapshot*
+  (new 'static
+       'goalpad-warp-gate-touch-snapshot
+       :revision 1
+       :sequence 0
+       :state 0
+       :selected-slot -1
+       :permitted-mask 0
+       :selection-moving 0))
+
+(define *goalpad-warp-gate-touch-owner* (the-as warp-gate #f))
+
+(defun goalpad-warp-gate-touch-publish!
+  ((owner warp-gate)
+   (state goalpad-warp-gate-touch-state)
+   (selected-slot int)
+   (permitted-mask int)
+   (selection-moving int))
+  (let ((state-value (the-as int state)))
+    (unless (and (= *goalpad-warp-gate-touch-owner* owner)
+                 (= (-> *goalpad-warp-gate-touch-snapshot* state) state-value)
+                 (= (-> *goalpad-warp-gate-touch-snapshot* selected-slot) selected-slot)
+                 (= (-> *goalpad-warp-gate-touch-snapshot* permitted-mask) permitted-mask)
+                 (= (-> *goalpad-warp-gate-touch-snapshot* selection-moving) selection-moving))
+      (set! *goalpad-warp-gate-touch-owner* owner)
+      (+! (-> *goalpad-warp-gate-touch-snapshot* sequence) 1)
+      (set! (-> *goalpad-warp-gate-touch-snapshot* state) state-value)
+      (set! (-> *goalpad-warp-gate-touch-snapshot* selected-slot) selected-slot)
+      (set! (-> *goalpad-warp-gate-touch-snapshot* permitted-mask) permitted-mask)
+      (set! (-> *goalpad-warp-gate-touch-snapshot* selection-moving) selection-moving)
+      (+! (-> *goalpad-warp-gate-touch-snapshot* sequence) 1)))
+  (none))
+
+(defun goalpad-warp-gate-touch-clear! ((owner warp-gate))
+  (when (= *goalpad-warp-gate-touch-owner* owner)
+    (+! (-> *goalpad-warp-gate-touch-snapshot* sequence) 1)
+    (set! *goalpad-warp-gate-touch-owner* (the-as warp-gate #f))
+    (set! (-> *goalpad-warp-gate-touch-snapshot* state) 0)
+    (set! (-> *goalpad-warp-gate-touch-snapshot* selected-slot) -1)
+    (set! (-> *goalpad-warp-gate-touch-snapshot* permitted-mask) 0)
+    (set! (-> *goalpad-warp-gate-touch-snapshot* selection-moving) 0)
+    (+! (-> *goalpad-warp-gate-touch-snapshot* sequence) 1))
+  (none))
+
+
 (defstate use (warp-gate)
   :virtual #t
+  :exit
+    (behavior ()
+      (goalpad-warp-gate-touch-clear! self))
   :trans
     (behavior ()
       (send-event *camera* 'joystick 0.0 0.0))

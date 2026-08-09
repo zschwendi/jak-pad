@@ -90,6 +90,9 @@
 
 (defstate idle (gondola)
   :virtual #t
+  :exit
+    (behavior ()
+      (goalpad-face-prompt-touch-clear! self))
   :code
     (behavior ((arg0 symbol))
       (set-time! (-> self state-time))
@@ -131,7 +134,8 @@
          (ja :group! gondola-idle-down-ja)))
       (transform-post)
       (loop
-        (when (and *target*
+        (let ((goalpad-face-prompt? #f))
+          (when (and *target*
                    (and (< (vector-vector-distance (vector<-cspace! (new 'stack-no-clear 'vector) (joint-node gondola-lod0-jg main)) (target-pos 0))
                            81920.0)
                         (not (movie?))
@@ -185,8 +189,14 @@
                    (set-height! s5-2 80)
                    (set! (-> s5-2 flags) (font-flags shadow kerning large))
                    (print-game-text (lookup-text! *common-text* (text-id press-to-use) #f) s5-2 #f 128 22))
+                 (set! goalpad-face-prompt? #t)
                  (when (and (cpad-pressed? 0 circle) (process-grab? *target*))
+                   (set! goalpad-face-prompt? #f)
+                   (goalpad-face-prompt-touch-clear! self)
                    (if arg0 (go-virtual ride-down) (go-virtual ride-up))))))))
+          (if goalpad-face-prompt?
+            (goalpad-face-prompt-touch-publish! self (pad-buttons circle))
+            (goalpad-face-prompt-touch-clear! self)))
         (spool-push *art-control* (-> self anim name) 0 self -99.0)
         (suspend))))
 

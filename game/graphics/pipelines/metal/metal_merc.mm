@@ -22,8 +22,10 @@ namespace {
 metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observation(
     u32 source_address,
     u64 source_base,
-    int root_bone,
-    const float* output_matrix) {
+    int bone_slot,
+    const float* output_matrix,
+    const u8* ee_memory,
+    std::size_t ee_memory_size) {
   metal_merc_transform_trace::ProvenanceObservation out;
   if (source_base > UINT32_MAX) {
     return out;
@@ -42,14 +44,31 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
   if (calculation->output_base != source_base || !calculation->camera.valid) {
     return out;
   }
-
-  if (root_bone < 1 || root_bone > static_cast<int>(calculation->root_anchors.size()) ||
-      !calculation->root_anchors[root_bone - 1].valid) {
+  if (bone_slot < 0 || bone_slot >= static_cast<int>(calculation->bone_count)) {
     return out;
   }
-  const auto& root = calculation->root_anchors[root_bone - 1];
-  const auto& bind_pose = calculation->root_bind_poses[root_bone - 1];
-  out.input_root_bone = root_bone;
+  const u64 producer_output_address =
+      static_cast<u64>(calculation->output_base) +
+      static_cast<u64>(bone_slot) * jak1_bones_provenance_trace::kOutputStride;
+  const std::size_t output_bytes = metal_merc_transform_trace::kMatrixLaneCount * sizeof(float);
+  if (!output_matrix || !ee_memory || producer_output_address > ee_memory_size ||
+      output_bytes > ee_memory_size - producer_output_address) {
+    return out;
+  }
+  out.mapping_valid = true;
+  out.producer_serial = calculation->serial;
+  out.producer_output_hash = fnv64(ee_memory + producer_output_address, output_bytes);
+  out.renderer_output_hash = fnv64(output_matrix, output_bytes);
+  out.output_identity_checked = true;
+  out.output_identity_matches = out.producer_output_hash == out.renderer_output_hash;
+
+  if (bone_slot < 1 || bone_slot > static_cast<int>(calculation->root_anchors.size()) ||
+      !calculation->root_anchors[bone_slot - 1].valid) {
+    return out;
+  }
+  const auto& root = calculation->root_anchors[bone_slot - 1];
+  const auto& bind_pose = calculation->root_bind_poses[bone_slot - 1];
+  out.input_root_bone = bone_slot;
 
   std::array<u64, jak1_bones_provenance_trace::kRootAnchorCount> root_hashes = {};
   for (std::size_t anchor = 0; anchor < calculation->root_anchors.size(); anchor++) {
@@ -64,7 +83,6 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
   memcpy(root_matrix.data(), root.bytes.data(), root.bytes.size());
   memcpy(camera_matrix.data(), calculation->camera.bytes.data(), calculation->camera.bytes.size());
 
-  out.producer_serial = calculation->serial;
   out.input_root_hash = fnv64(root_hashes.data(), sizeof(root_hashes));
   out.camera_hash = fnv64(calculation->camera.bytes.data(), calculation->camera.bytes.size());
   out.input_root_basis = metal_merc_transform_trace::make_basis_snapshot(root_matrix.data());
@@ -146,8 +164,6 @@ metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observat
       control.capture_result = jak1_target_control_capture::Result::INVALID_DEFORMATION;
     }
   }
-  out.mapping_valid =
-      out.input_root_basis.valid && out.camera_basis.valid && out.output_basis.valid;
   return out;
 }
 
@@ -1149,11 +1165,10 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
       }
 
       if (matrix_is_finite && model->name == "eichar-lod0") {
-        metal_merc_transform_trace::ProvenanceObservation provenance;
+        auto provenance = make_bones_provenance_observation(
+            source_address, source_base, slot, reinterpret_cast<const float*>(&matrix), ee0,
+            EE_MAIN_MEM_SIZE);
         if (slot == provenance_probe_slot) {
-          provenance =
-              make_bones_provenance_observation(source_address, source_base, provenance_probe_slot,
-                                                reinterpret_cast<const float*>(&matrix));
           const auto target_control_trace = m_eichar_target_control_tracker.observe_with_status(
               render_state->engine_frame_id, slot, provenance.target_control);
           if (target_control_trace.capture_attempted) {

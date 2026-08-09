@@ -1,0 +1,16 @@
+(start-test "dgo-load-response")
+
+(let ((response (new 'stack-no-clear 'load-dgo-msg)))
+  (expect-eq (dgo-load-response-state (the-as load-dgo-msg #f)) 'pending)
+  (set! (-> response result) (load-msg-result error))
+  (expect-eq (dgo-load-response-state response) 'error)
+  (set! (-> response result) (load-msg-result aborted))
+  (expect-eq (dgo-load-response-state response) 'error)
+  (set! (-> response result) (load-msg-result invalid))
+  (expect-eq (dgo-load-response-state response) 'error)
+  (set! (-> response result) (load-msg-result more))
+  (expect-eq (dgo-load-response-state response) 'more)
+  (set! (-> response result) (load-msg-result done))
+  (expect-eq (dgo-load-response-state response) 'done))
+
+(finish-test)

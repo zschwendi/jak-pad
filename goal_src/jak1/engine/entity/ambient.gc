@@ -3,6 +3,7 @@
 (bundles "ENGINE.CGO" "GAME.CGO")
 (require "engine/level/bsp.gc")
 (require "engine/ui/text.gc")
+(require "engine/ui/progress/progress-h.gc")
 (require "engine/game/task/hint-control.gc")
 (require "engine/game/settings.gc")
 (define-extern level-hint-init-by-other (function text-id string entity none :behavior level-hint))
@@ -398,20 +399,44 @@
   0
   (none))
 
+(defun level-name-hint-for-level? ((hint-id text-id) (hint-level level-load-info))
+  (when hint-level
+    (let ((level-info-index (+ (-> hint-level index) -1)))
+      (when (and (>= level-info-index 0) (< level-info-index (length *level-task-data-remap*)))
+        (let ((level-task-index (-> *level-task-data-remap* level-info-index)))
+          (and (>= level-task-index 0)
+               (< level-task-index (length *level-task-data*))
+               (= hint-id (-> *level-task-data* level-task-index level-name-id))))))))
+
+(defun level-name-hint-for-other-level? ((hint-id text-id) (hint-level level-load-info) (target-level level-load-info))
+  (and hint-level target-level (!= hint-level target-level) (level-name-hint-for-level? hint-id hint-level)))
+
+(defun ambient-level-name-hint-for-other-level? ((ambient entity-ambient))
+  (when *target*
+    (let ((ambient-level (get-level ambient))
+          (target-level (-> *target* current-level)))
+      (and ambient-level
+           target-level
+           (level-name-hint-for-other-level?
+             (the-as text-id (res-lump-value ambient 'text-id uint128))
+             (-> ambient-level info)
+             (-> target-level info))))))
+
 (defun ambient-type-hint ((arg0 drawable-ambient) (arg1 vector))
-  (with-pp
-    (let ((s5-0 (level-hint-task-process (-> arg0 ambient) (the-as uint128 0) (the-as string #f))))
-      (cond
-        ((zero? s5-0)
-         (when (and *debug-segment* (not (paused?)) (not (str-is-playing?)) (bottom-hud-hidden?))
-           (let ((a1-3 (new 'stack 'font-context *font-default-matrix* 56 160 0.0 (font-color default) (font-flags shadow kerning))))
-             (set-width! a1-3 400)
-             (set-height! a1-3 96)
-             (set! (-> a1-3 flags) (font-flags shadow kerning middle large))
-             (print-game-text "AS: UNKNOWN ID" a1-3 #f 128 22))))
-        ((!= s5-0 -1) (kill-current-level-hint '() '() 'exit) (process-spawn level-hint s5-0 #f (-> arg0 ambient) :to pp))))
-    0
-    (none)))
+  (unless (ambient-level-name-hint-for-other-level? (-> arg0 ambient))
+    (with-pp
+      (let ((s5-0 (level-hint-task-process (-> arg0 ambient) (the-as uint128 0) (the-as string #f))))
+        (cond
+          ((zero? s5-0)
+           (when (and *debug-segment* (not (paused?)) (not (str-is-playing?)) (bottom-hud-hidden?))
+             (let ((a1-3 (new 'stack 'font-context *font-default-matrix* 56 160 0.0 (font-color default) (font-flags shadow kerning))))
+               (set-width! a1-3 400)
+               (set-height! a1-3 96)
+               (set! (-> a1-3 flags) (font-flags shadow kerning middle large))
+               (print-game-text "AS: UNKNOWN ID" a1-3 #f 128 22))))
+          ((!= s5-0 -1) (kill-current-level-hint '() '() 'exit) (process-spawn level-hint s5-0 #f (-> arg0 ambient) :to pp))))))
+  0
+  (none))
 
 (defun ambient-type-sound ((arg0 drawable-ambient) (arg1 vector))
   (let* ((s5-0 (-> arg0 ambient))

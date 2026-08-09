@@ -55,21 +55,55 @@ id<MTLTexture> make_time_of_day_texture(id<MTLDevice> device) {
 }
 
 // Uploads one tree's static geometry. Both buffers are immutable after this.
-MetalLevelData::TreeBuffers upload_tree(id<MTLDevice> device,
-                                        const void* verts,
-                                        size_t vert_bytes,
-                                        u32 vert_count,
-                                        const std::vector<u32>& indices,
-                                        MetalLevelData* out) {
+bool upload_tree(id<MTLDevice> device,
+                 const void* verts,
+                 size_t vert_bytes,
+                 u32 vert_count,
+                 const std::vector<u32>& indices,
+                 const std::string& label,
+                 MetalLevelData::TreeBuffers* out,
+                 MetalLevelData* level,
+                 std::string* error) {
   MetalLevelData::TreeBuffers tree;
   tree.vertices = make_static_buffer(device, verts, vert_bytes);
+  if (vert_bytes && !tree.vertices) {
+    *error = fmt::format("{} vertex buffer allocation failed ({} bytes)", label, vert_bytes);
+    return false;
+  }
   tree.indices = make_static_buffer(device, indices.data(), indices.size() * sizeof(u32));
+  if (!indices.empty() && !tree.indices) {
+    *error = fmt::format("{} index buffer allocation failed ({} bytes)", label,
+                         indices.size() * sizeof(u32));
+    return false;
+  }
   tree.time_of_day = make_time_of_day_texture(device);
+  if (!tree.time_of_day) {
+    *error = fmt::format("{} time-of-day texture allocation failed ({} texels)", label,
+                         kMetalTimeOfDayColorCount);
+    return false;
+  }
   tree.vertex_count = vert_count;
   tree.index_count = (u32)indices.size();
-  out->vertex_bytes += vert_bytes;
-  out->index_bytes += indices.size() * sizeof(u32);
-  return tree;
+  level->vertex_bytes += vert_bytes;
+  level->index_bytes += indices.size() * sizeof(u32);
+  *out = std::move(tree);
+  return true;
+}
+
+void release_level_textures(TexturePool& pool, MetalLevelData& data) {
+  {
+    std::lock_guard<std::mutex> pool_lock(pool.mutex());
+    for (size_t i = 0; i < data.level->textures.size() && i < data.textures.size(); i++) {
+      const auto& tex = data.level->textures[i];
+      if (tex.load_to_pool && data.textures[i]) {
+        pool.unload_texture(PcTextureId::from_combo_id(tex.combo_id), data.textures[i]);
+      }
+    }
+  }
+  for (u64 handle : data.textures) {
+    metal_texture_release(handle);
+  }
+  data.textures.clear();
 }
 
 }  // namespace
@@ -170,39 +204,62 @@ MetalLevelData* load_fr3(id<MTLDevice> device,
   tfrag3::Level& level = *data->level;
 
   // textures: same order and same rule as the GL TextureLoaderStage.
-  metal_add_textures(device, queue, pool, level.textures, is_common, &data->textures);
+  if (!metal_add_textures(device, queue, pool, level.textures, is_common, &data->textures, error)) {
+    return nullptr;
+  }
 
   // geometry. The unpack step (packed -> GPU vertices and the full index list)
   // is the shared tfrag3 code, unchanged.
   for (int geo = 0; geo < tfrag3::TFRAG_GEOS; geo++) {
-    for (auto& tree : level.tfrag_trees[geo]) {
+    for (size_t tree_idx = 0; tree_idx < level.tfrag_trees[geo].size(); tree_idx++) {
+      auto& tree = level.tfrag_trees[geo][tree_idx];
       tree.unpack();
-      data->tfrag[geo].push_back(upload_tree(
-          device, tree.unpacked.vertices.data(),
-          tree.unpacked.vertices.size() * sizeof(tfrag3::PreloadedVertex),
-          (u32)tree.unpacked.vertices.size(), tree.unpacked.indices, data.get()));
+      MetalLevelData::TreeBuffers buffers;
+      if (!upload_tree(device, tree.unpacked.vertices.data(),
+                       tree.unpacked.vertices.size() * sizeof(tfrag3::PreloadedVertex),
+                       (u32)tree.unpacked.vertices.size(), tree.unpacked.indices,
+                       fmt::format("tfrag geo {} tree {}", geo, tree_idx), &buffers, data.get(),
+                       error)) {
+        release_level_textures(pool, *data);
+        return nullptr;
+      }
+      data->tfrag[geo].push_back(std::move(buffers));
     }
   }
 
   for (int geo = 0; geo < tfrag3::TIE_GEOS; geo++) {
-    for (auto& tree : level.tie_trees[geo]) {
+    for (size_t tree_idx = 0; tree_idx < level.tie_trees[geo].size(); tree_idx++) {
+      auto& tree = level.tie_trees[geo][tree_idx];
       tree.unpack();
-      data->tie[geo].push_back(upload_tree(
-          device, tree.unpacked.vertices.data(),
-          tree.unpacked.vertices.size() * sizeof(tfrag3::PreloadedVertex),
-          (u32)tree.unpacked.vertices.size(), tree.unpacked.indices, data.get()));
+      MetalLevelData::TreeBuffers buffers;
+      if (!upload_tree(device, tree.unpacked.vertices.data(),
+                       tree.unpacked.vertices.size() * sizeof(tfrag3::PreloadedVertex),
+                       (u32)tree.unpacked.vertices.size(), tree.unpacked.indices,
+                       fmt::format("tie geo {} tree {}", geo, tree_idx), &buffers, data.get(),
+                       error)) {
+        release_level_textures(pool, *data);
+        return nullptr;
+      }
+      data->tie[geo].push_back(std::move(buffers));
     }
   }
 
-  for (auto& tree : level.shrub_trees) {
+  for (size_t tree_idx = 0; tree_idx < level.shrub_trees.size(); tree_idx++) {
+    auto& tree = level.shrub_trees[tree_idx];
     tree.unpack();
-    data->shrub.push_back(upload_tree(device, tree.unpacked.vertices.data(),
-                                      tree.unpacked.vertices.size() * sizeof(tfrag3::ShrubGpuVertex),
-                                      (u32)tree.unpacked.vertices.size(), tree.indices,
-                                      data.get()));
+    MetalLevelData::TreeBuffers buffers;
+    if (!upload_tree(device, tree.unpacked.vertices.data(),
+                     tree.unpacked.vertices.size() * sizeof(tfrag3::ShrubGpuVertex),
+                     (u32)tree.unpacked.vertices.size(), tree.indices,
+                     fmt::format("shrub tree {}", tree_idx), &buffers, data.get(), error)) {
+      release_level_textures(pool, *data);
+      return nullptr;
+    }
+    data->shrub.push_back(std::move(buffers));
   }
 
   const std::string name = level.level_name;
+  unload(pool, name);
   auto* raw = data.get();
   level_map()[name] = std::move(data);
   lg::info("Metal level '{}' loaded in {:.1f}ms: {} textures, {:.1f} MB verts, {:.1f} MB indices",
@@ -226,23 +283,10 @@ bool unload(TexturePool& pool, const std::string& name) {
     return false;
   }
   MetalLevelData& data = *it->second;
-  {
-    // The pool's contract: give/unload run under its published mutex, never
-    // across a GPU wait. unload_texture repoints any slot still holding this
-    // texture at the placeholder.
-    std::lock_guard<std::mutex> pool_lock(pool.mutex());
-    for (size_t i = 0; i < data.level->textures.size() && i < data.textures.size(); i++) {
-      const auto& tex = data.level->textures[i];
-      if (tex.load_to_pool && data.textures[i]) {
-        pool.unload_texture(PcTextureId::from_combo_id(tex.combo_id), data.textures[i]);
-      }
-    }
-  }
-  for (u64 handle : data.textures) {
-    if (handle) {
-      metal_texture_release(handle);
-    }
-  }
+  // The pool's contract: give/unload run under its published mutex, never
+  // across a GPU wait. unload_texture repoints any slot still holding this
+  // texture at the placeholder.
+  release_level_textures(pool, data);
   // The buffers and time-of-day textures go with the MetalLevelData. Command
   // buffers already committed retain what they reference, so an in-flight
   // frame keeps its resources alive until the GPU is done with them.
@@ -250,8 +294,10 @@ bool unload(TexturePool& pool, const std::string& name) {
   return true;
 }
 
-void clear() {
-  level_map().clear();
+void clear(TexturePool& pool) {
+  while (!level_map().empty()) {
+    unload(pool, level_map().begin()->first);
+  }
 }
 
 }  // namespace metal_level_data

@@ -12,6 +12,21 @@
 (deftype warpgate (process-hidden) ())
 
 
+(defun goalpad-warp-gate-touch-permitted-mask ((gate warp-gate))
+  (let ((mask 0))
+    (dotimes (slot 5)
+      (when (and (>= slot (-> gate min-slot))
+                 (<= slot (-> gate max-slot))
+                 (!= slot (-> gate level-slot)))
+        (logior! mask (ash 1 slot))))
+    mask))
+
+(defmethod deactivate ((this warp-gate))
+  (goalpad-warp-gate-touch-clear! this)
+  ((method-of-type process-drawable deactivate) this)
+  (none))
+
+
 (defstate target-warp-in (target)
   :event target-generic-event-handler
   :enter
@@ -68,41 +83,53 @@
     (behavior ((proc process) (argc int) (message symbol) (block event-message-block))
       (case message
         (('hide) (go-virtual hidden))))
+  :exit
+    (behavior ()
+      (goalpad-warp-gate-touch-clear! self))
   :code
     (behavior ()
       (remove-setting! 'allow-progress)
       (set-time! (-> self state-time))
       (loop
-        (when (and (and *target* (>= 20480.0 (vector-vector-distance (-> self root trans) (-> *target* control trans))))
-                   (and (>= (-> self level-slot) 0)
-                        (not (movie?))
-                        (not (level-hint-displayed?))
-                        (not (logtest? (-> *target* control root-prim prim-core action)
-                                       (collide-action edgegrab-cam swingpole-active racer snowball tube flut)))
-                        (let* ((v1-16 (-> self root))
-                               (a1-2 (-> *target* control trans))
-                               (f0-1 (vector-y-angle (vector-! (new 'stack-no-clear 'vector) a1-2 (-> v1-16 trans)))))
-                          (or (!= (-> self level-slot) 3) (and (< f0-1 -9102.223) (< -32768.0 f0-1))))))
-          (hide-hud)
-          (level-hint-surpress!)
-          (kill-current-level-hint '() '(sidekick voicebox) 'exit)
-          (when (and (hud-hidden?)
-                     (can-grab-display? self)
-                     (cond
-                       ((or (= (-> *target* next-state name) 'target-warp-in) (= (-> *target* next-state name) 'target-warp-out))
-                        (set-time! (-> self state-time))
-                        #f)
-                       (else #t))
-                     (time-elapsed? (-> self state-time) (seconds 0.1)))
-            (if (and (cpad-pressed? 0 circle) (process-grab? *target*)) (go-virtual active))
-            (if (and *cheat-mode* (cpad-pressed? 0 l3)) (set! (-> self max-slot) 4))
-            (let ((gp-0 (new 'stack 'font-context *font-default-matrix* 32 160 0.0 (font-color default) (font-flags shadow kerning))))
-              (set-width! gp-0 440)
-              (set-height! gp-0 80)
-              (set-scale! gp-0 0.9)
-              (set! (-> gp-0 flags) (font-flags shadow kerning large))
-              (print-game-text (lookup-text! *common-text* (text-id press-to-use) #f) gp-0 #f 128 22))))
-        (suspend))))
+        (let ((touch-available? #f))
+          (when (and (and *target* (>= 20480.0 (vector-vector-distance (-> self root trans) (-> *target* control trans))))
+                     (and (>= (-> self level-slot) 0)
+                          (not (movie?))
+                          (not (level-hint-displayed?))
+                          (not (logtest? (-> *target* control root-prim prim-core action)
+                                         (collide-action edgegrab-cam swingpole-active racer snowball tube flut)))
+                          (let* ((v1-16 (-> self root))
+                                 (a1-2 (-> *target* control trans))
+                                 (f0-1 (vector-y-angle (vector-! (new 'stack-no-clear 'vector) a1-2 (-> v1-16 trans)))))
+                            (or (!= (-> self level-slot) 3) (and (< f0-1 -9102.223) (< -32768.0 f0-1))))))
+            (hide-hud)
+            (level-hint-surpress!)
+            (kill-current-level-hint '() '(sidekick voicebox) 'exit)
+            (when (and (hud-hidden?)
+                       (can-grab-display? self)
+                       (cond
+                         ((or (= (-> *target* next-state name) 'target-warp-in) (= (-> *target* next-state name) 'target-warp-out))
+                          (set-time! (-> self state-time))
+                          #f)
+                         (else #t))
+                       (time-elapsed? (-> self state-time) (seconds 0.1)))
+              (set! touch-available? #t)
+              (goalpad-warp-gate-touch-publish!
+                self
+                (goalpad-warp-gate-touch-state circle-use-available)
+                -1
+                0
+                0)
+              (if (and (cpad-pressed? 0 circle) (process-grab? *target*)) (go-virtual active))
+              (if (and *cheat-mode* (cpad-pressed? 0 l3)) (set! (-> self max-slot) 4))
+              (let ((gp-0 (new 'stack 'font-context *font-default-matrix* 32 160 0.0 (font-color default) (font-flags shadow kerning))))
+                (set-width! gp-0 440)
+                (set-height! gp-0 80)
+                (set-scale! gp-0 0.9)
+                (set! (-> gp-0 flags) (font-flags shadow kerning large))
+                (print-game-text (lookup-text! *common-text* (text-id press-to-use) #f) gp-0 #f 128 22))))
+          (when (not touch-available?) (goalpad-warp-gate-touch-clear! self))
+          (suspend)))))
 
 (defun get-next-slot-up ((arg0 warp-gate) (arg1 int))
   (let ((v0-0 (+ arg1 1)))
@@ -132,12 +159,31 @@
 
 (defstate active (warp-gate)
   :virtual #t
+  :event
+    (behavior ((proc process) (argc int) (message symbol) (block event-message-block))
+      (case message
+        (('hide) (go-virtual hidden))))
   :enter
     (behavior ()
+      (goalpad-warp-gate-touch-publish! self
+                                        (goalpad-warp-gate-touch-state destination-list-active)
+                                        (get-next-slot-up self (+ (-> self level-slot) -1))
+                                        (goalpad-warp-gate-touch-permitted-mask self)
+                                        0)
       (set-setting! 'allow-progress #f 0.0 0)
       (apply-settings *setting-control*)
       (sound-play "start-options")
       (set-time! (-> self state-time)))
+  :exit
+    (behavior ()
+      (if (= (-> self next-state name) 'use)
+        (goalpad-warp-gate-touch-publish!
+          self
+          (goalpad-warp-gate-touch-state transitioning)
+          -1
+          0
+          0)
+        (goalpad-warp-gate-touch-clear! self)))
   :trans
     (behavior ()
       (when (or (and (cpad-pressed? 0 triangle) (time-elapsed? (-> self state-time) (seconds 0.1)) (process-release? *target*))
@@ -178,6 +224,11 @@
               (set! gp-0 s3-0)
               (set! s5-0 #f)
               (set! s2-0 0))
+            (goalpad-warp-gate-touch-publish! self
+                                              (goalpad-warp-gate-touch-state destination-list-active)
+                                              gp-0
+                                              (goalpad-warp-gate-touch-permitted-mask self)
+                                              (if s5-0 1 0))
             (can-grab-display? self)
             (hide-hud)
             (let ((s1-2 (get-continue-by-name *game-info* (-> *warp-info* gp-0))))
@@ -224,6 +275,12 @@
 
 (defstate hidden (warp-gate)
   :virtual #t
+  :enter
+    (behavior ()
+      (goalpad-warp-gate-touch-clear! self))
+  :exit
+    (behavior ()
+      (goalpad-warp-gate-touch-clear! self))
   :code anim-loop)
 
 (defbehavior warp-gate-init-by-other warp-gate ((arg0 vector))

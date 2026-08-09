@@ -29,6 +29,8 @@
  *                                                registers the Jak 1 functions instead
  */
 
+#include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -57,7 +59,13 @@
 #include "game/sce/libscf.h"
 #include "game/sce/sif_ee.h"
 
+u64 goal_kernel_core_machine_stub_report(const char* what);
+
 namespace {
+std::atomic<bool> g_portable_display_enabled{false};
+std::atomic<int32_t> g_portable_display_width{640};
+std::atomic<int32_t> g_portable_display_height{480};
+
 [[noreturn]] void missing(const char* subsystem, const char* symbol) {
   lg::error("[kernel-core] {} is not part of this build; {} cannot be used.", subsystem, symbol);
   ASSERT_NOT_REACHED_MSG("kernel-core stub called");
@@ -280,14 +288,29 @@ u32 portable_pc_get_display_mode() {
   return goal_game_intern("windowed");
 }
 
-u64 portable_pc_get_display_size(u32 width, u32 height) {
+u64 portable_pc_host_manages_display() {
+  return goal_bool(true);
+}
+
+u64 portable_pc_get_display_size(u32 width, u32 height, const char* function_name) {
+  if (!g_portable_display_enabled.load(std::memory_order_relaxed)) {
+    return goal_kernel_core_machine_stub_report(function_name);
+  }
   if (width) {
-    *Ptr<s64>(width).c() = 640;
+    *Ptr<s64>(width).c() = g_portable_display_width.load(std::memory_order_relaxed);
   }
   if (height) {
-    *Ptr<s64>(height).c() = 480;
+    *Ptr<s64>(height).c() = g_portable_display_height.load(std::memory_order_relaxed);
   }
   return 0;
+}
+
+u64 portable_pc_get_active_display_size(u32 width, u32 height) {
+  return portable_pc_get_display_size(width, height, "pc-get-active-display-size");
+}
+
+u64 portable_pc_get_window_size(u32 width, u32 height) {
+  return portable_pc_get_display_size(width, height, "pc-get-window-size");
 }
 
 s64 portable_pc_get_refresh_rate() {
@@ -373,6 +396,36 @@ void goal_kernel_core_install_implemented_machine_functions() {
   goal_game_make_function_symbol("install-handler", (void*)InstallHandler);
 }
 
+void goal_kernel_core_install_portable_display_functions() {
+  goal_game_make_function_symbol("pc-host-manages-display?",
+                                 (void*)portable_pc_host_manages_display);
+  goal_game_make_function_symbol("pc-get-active-display-size",
+                                 (void*)portable_pc_get_active_display_size);
+  goal_game_make_function_symbol("pc-get-window-size", (void*)portable_pc_get_window_size);
+}
+
+void goal_kernel_core_set_portable_display_enabled(bool enabled) {
+  g_portable_display_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool goal_kernel_core_get_portable_display_enabled() {
+  return g_portable_display_enabled.load(std::memory_order_relaxed);
+}
+
+void goal_kernel_core_set_portable_display_size(int32_t width, int32_t height) {
+  g_portable_display_width.store(std::max(width, 1), std::memory_order_relaxed);
+  g_portable_display_height.store(std::max(height, 1), std::memory_order_relaxed);
+}
+
+void goal_kernel_core_get_portable_display_size(int32_t* width, int32_t* height) {
+  if (width) {
+    *width = g_portable_display_width.load(std::memory_order_relaxed);
+  }
+  if (height) {
+    *height = g_portable_display_height.load(std::memory_order_relaxed);
+  }
+}
+
 void goal_kernel_core_install_portable_pc_settings_functions() {
   goal_game_make_function_symbol("file-stream-open", (void*)portable_file_stream_open);
   goal_game_make_function_symbol("file-stream-close", (void*)portable_file_stream_close);
@@ -382,8 +435,7 @@ void goal_kernel_core_install_portable_pc_settings_functions() {
   goal_game_make_function_symbol("file-stream-write", (void*)portable_file_stream_write);
   goal_game_make_function_symbol("pc-get-os", (void*)portable_pc_get_os);
   goal_game_make_function_symbol("pc-get-display-mode", (void*)portable_pc_get_display_mode);
-  goal_game_make_function_symbol("pc-get-active-display-size", (void*)portable_pc_get_display_size);
-  goal_game_make_function_symbol("pc-get-window-size", (void*)portable_pc_get_display_size);
+  goal_kernel_core_install_portable_display_functions();
   goal_game_make_function_symbol("pc-get-active-display-refresh-rate",
                                  (void*)portable_pc_get_refresh_rate);
   goal_game_make_function_symbol("pc-is-supported-resolution?",

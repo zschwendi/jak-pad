@@ -81,6 +81,11 @@ TEST_F(WithGameTests, ReturnSymbol) {
   shared_compiler->runner.run_static_test(testCategory, "defun-return-symbol.static.gc", {"42\n"});
 }
 
+TEST_F(WithGameTests, LevelNameHintGate) {
+  shared_compiler->runner.run_static_test(testCategory, "level-name-hint-gate.static.gc",
+                                          {"#t#f#f#f#f\n0\n"});
+}
+
 TEST_F(WithGameTests, MinMax) {
   shared_compiler->runner.run_static_test(testCategory, "test-min-max.gc", {"10\n"});
 }
@@ -211,6 +216,11 @@ TEST_F(WithGameTests, TestTests) {
       testCategory, "test-tests.gc",
       {"Test Failed On Test 0: \"unknown\"\nTest Failed On Test 0: "
        "\"test\"\nTest \"test-of-test\": 1 Passes\n0\n"});
+}
+
+TEST_F(WithGameTests, DgoLoadResponse) {
+  shared_compiler->runner.run_static_test(
+      testCategory, "test-dgo-load-response.gc", get_test_pass_string("dgo-load-response", 6));
 }
 
 TEST_F(WithGameTests, TypeArrays) {

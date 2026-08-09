@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 /*!
@@ -36,7 +37,7 @@ struct Texture;
 
 // --- texture registry ------------------------------------------------------
 
-// Registers a texture and returns its handle (never 0).
+// Registers a texture and returns its handle, or 0 for nil.
 u64 metal_texture_register(id<MTLTexture> tex);
 
 // Returns nil if the handle is unknown.
@@ -76,13 +77,15 @@ bool metal_update_texture_rgba8(u64 handle,
 // a level whose textures appear one at a time is a level the game can catch mid-registration -
 // which is exactly what `setup-font-texture!` did during the GAME.CGO boot. The uploads (and
 // their GPU waits) happen outside the pool's lock; the registration, which is pure bookkeeping,
-// happens inside it in one go.
-void metal_add_textures(id<MTLDevice> device,
+// happens inside it in one go. On failure no texture is registered with the pool,
+// every handle uploaded earlier in the batch is released, and `out` is empty.
+bool metal_add_textures(id<MTLDevice> device,
                         id<MTLCommandQueue> queue,
                         TexturePool& pool,
                         const std::vector<tfrag3::Texture>& textures,
                         bool is_common,
-                        std::vector<u64>* out);
+                        std::vector<u64>* out,
+                        std::string* error);
 
 u64 metal_add_texture(id<MTLDevice> device,
                       id<MTLCommandQueue> queue,

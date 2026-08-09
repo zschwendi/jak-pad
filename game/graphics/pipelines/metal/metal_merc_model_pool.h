@@ -103,6 +103,13 @@ class MetalMercModelPool {
   // level is loaded.
   bool remove_level(const std::string& name);
 
+  // Releases every loaded level while keeping the pool ready for later loads.
+  void clear();
+
+  // Releases every level and drops the renderer-owned device, queue, and
+  // texture-pool references.
+  void shutdown();
+
   size_t level_count() const { return m_levels.size(); }
   size_t model_count() const { return m_by_name.size(); }
 
@@ -112,6 +119,8 @@ class MetalMercModelPool {
   TexturePool* m_texture_pool = nullptr;
   std::vector<std::unique_ptr<MetalMercLevel>> m_levels;
   std::unordered_map<std::string, std::vector<Ref>> m_by_name;
+
+  void release_level_textures(MetalMercLevel& level);
 };
 
 // The process-wide merc model pool, the way the texture registry in

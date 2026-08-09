@@ -194,9 +194,9 @@ size_t level_count();
 // levels, between frames. Returns false when no such level is loaded.
 bool unload(TexturePool& pool, const std::string& name);
 
-// Releases every loaded level (buffers, textures stay in the pool's registry
-// exactly like the GL loader's unload path leaves them to the pool).
-void clear();
+// Releases every loaded level, including its pool entries and Metal texture
+// registry handles.
+void clear(TexturePool& pool);
 
 }  // namespace metal_level_data
 
@@ -233,11 +233,13 @@ struct MetalEtieVsParams {
 };
 static_assert(sizeof(MetalEtieVsParams) == 208, "MetalEtieVsParams size");
 
-// The GL `decal` uniform, set per draw.
+// The GL `decal` uniform plus the Metal ETIE pass selector, set per draw.
 struct MetalBackgroundDrawParams {
   int decal = 0;
-  int pad[3] = {0, 0, 0};
+  int etie_shine = 0;
+  int pad[2] = {0, 0};
 };
+static_assert(sizeof(MetalBackgroundDrawParams) == 16, "MetalBackgroundDrawParams size");
 
 // tfrag3.frag / shrub.frag constants.
 struct MetalBackgroundFsParams {
