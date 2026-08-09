@@ -697,6 +697,19 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
       capture.malformed_transfers == 0 && metadata_is_inert_next(capture.transfers[0]) &&
       metadata_is_ordinary_descriptor(capture.transfers[1]) &&
       metadata_is_inert_next(capture.transfers[2]);
+  const bool descriptor_and_standard_reset =
+      capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryOnly &&
+      capture.transfer_count == 5 && capture.total_payload_bytes == 176 &&
+      capture.inert_transfers == 3 && capture.ordinary_descriptors == 1 &&
+      capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == 0 &&
+      capture.animator_arrays == 0 && capture.animator_body_transfers == 0 &&
+      capture.animator_payload_bytes == 0 && capture.eye_markers == 0 &&
+      capture.other_transfers == 0 && capture.malformed_transfers == 0 &&
+      metadata_is_inert_next(capture.transfers[0]) &&
+      metadata_is_ordinary_descriptor(capture.transfers[1]) &&
+      metadata_is_inert_next(capture.transfers[2]) &&
+      metadata_is_direct_setup(capture.transfers[3]) &&
+      metadata_is_inert_next(capture.transfers[4]);
   const bool security_composite =
       capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator &&
       capture.transfer_count == 9 && capture.total_payload_bytes == 1008 &&
@@ -715,7 +728,7 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
       metadata_is_inert_next(capture.transfers[6]) &&
       metadata_is_direct_setup(capture.transfers[7]) &&
       metadata_is_inert_next(capture.transfers[8]);
-  if (!descriptor_only && !security_composite) {
+  if (!descriptor_only && !descriptor_and_standard_reset && !security_composite) {
     return std::nullopt;
   }
 
@@ -736,11 +749,15 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
   }
 
   plan.present = true;
+  plan.variant = descriptor_and_standard_reset
+                     ? Jak2WaterTextureUploadVariant::DescriptorAndStandardReset
+                     : Jak2WaterTextureUploadVariant::DescriptorOnly;
   plan.ordinary.page_offset = page_offset;
   plan.ordinary.mode = mode;
   std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
               plan.ordinary.page_header.size());
   if (security_composite) {
+    plan.variant = Jak2WaterTextureUploadVariant::DescriptorSecurityAndStandardReset;
     u64 animator_data_offset = 0;
     if (!transfer_data_offset(chain_offset, bucket_id, capture.transfers[4],
                               checked_snapshot_size, &animator_data_offset)) {

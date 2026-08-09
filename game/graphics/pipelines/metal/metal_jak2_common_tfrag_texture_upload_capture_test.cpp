@@ -462,12 +462,21 @@ void test_alpha_execution_plan() {
 
 void test_water_execution_plan() {
   for (const u32 bucket_id : metal_renderer::kJak2WaterTextureUploadBuckets) {
-    auto packet = make_water_ordinary_fixture(bucket_id);
+    auto packet = make_empty_fixture(bucket_id);
+    const auto absent = metal_renderer::plan_jak2_water_texture_upload(
+        packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size());
+    check(absent.has_value() && !absent->present &&
+              absent->variant == metal_renderer::Jak2WaterTextureUploadVariant::Absent,
+          "each water texture bucket preserves the exact absent plan");
+
+    packet = make_water_ordinary_fixture(bucket_id);
     metal_renderer::Jak2CommonTfragTextureUploadCapture result;
     const auto plan = metal_renderer::plan_jak2_water_texture_upload(
         packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size(),
         &result);
     check(plan.has_value() && plan->present && plan->bucket_id == bucket_id &&
+              plan->variant ==
+                  metal_renderer::Jak2WaterTextureUploadVariant::DescriptorOnly &&
               plan->ordinary.page_offset == kTexturePageOffset && plan->ordinary.mode == -1 &&
               result.valid && result.classification == Classification::OrdinaryOnly &&
               result.transfer_count == 3 && result.inert_transfers == 2 &&
@@ -483,12 +492,49 @@ void test_water_execution_plan() {
              .has_value(),
         "the alpha-style Direct-only setup is rejected for water texture upload");
 
-  packet = make_normal_ordinary_fixture(metal_renderer::kJak2WaterTextureUploadBuckets[0]);
+  for (const u32 bucket_id : metal_renderer::kJak2WaterTextureUploadBuckets) {
+    packet = make_normal_ordinary_fixture(bucket_id);
+    metal_renderer::Jak2CommonTfragTextureUploadCapture result;
+    const auto plan = metal_renderer::plan_jak2_water_texture_upload(
+        packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size(),
+        &result);
+    check(plan.has_value() && plan->present && !plan->has_security_animator &&
+              plan->variant ==
+                  metal_renderer::Jak2WaterTextureUploadVariant::DescriptorAndStandardReset &&
+              plan->bucket_id == bucket_id &&
+              plan->ordinary.page_offset == kTexturePageOffset &&
+              result.valid && result.classification == Classification::OrdinaryOnly &&
+              result.transfer_count == 5 && result.total_payload_bytes == 176 &&
+              result.inert_transfers == 3 && result.ordinary_descriptors == 1 &&
+              result.direct_setup_transfers == 1 && result.animator_arrays == 0 &&
+              result.other_transfers == 0,
+          "each water slot accepts the exact descriptor/standard-reset envelope");
+  }
+
+  constexpr u32 bucket_id = metal_renderer::kJak2WaterTextureUploadBuckets[0];
+  packet = make_unobserved_direct_first_fixture(bucket_id);
   check(!metal_renderer::plan_jak2_water_texture_upload(
-             packet.data(), packet.size(), kChainOffset,
-             metal_renderer::kJak2WaterTextureUploadBuckets[0], packet.data(), packet.size())
+             packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size())
              .has_value(),
-        "a Direct reset without its source-owned security animator is rejected for water upload");
+        "a standard reset before the water descriptor is rejected");
+
+  packet = make_normal_ordinary_fixture(bucket_id);
+  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 9, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 9);
+  check(!metal_renderer::plan_jak2_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size())
+             .has_value(),
+        "a water reset other than the exact qwc-10 Direct transfer is rejected");
+
+  packet = make_normal_ordinary_fixture(bucket_id);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0,
+          kExtraTransferOffset, 0, 0);
+  put_tag(&packet, kExtraTransferOffset, DmaTag::Kind::NEXT, 0,
+          bucket_offset(bucket_id) + 16, 0, 0);
+  check(!metal_renderer::plan_jak2_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size())
+             .has_value(),
+        "an extra transfer after the water standard reset is rejected");
 
   for (const u32 bucket_id : metal_renderer::kJak2WaterTextureUploadBuckets) {
     packet = make_water_security_fixture(bucket_id);
@@ -497,6 +543,8 @@ void test_water_execution_plan() {
         packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size(),
         &result);
     check(plan.has_value() && plan->present && plan->has_security_animator &&
+              plan->variant == metal_renderer::Jak2WaterTextureUploadVariant::
+                                   DescriptorSecurityAndStandardReset &&
               plan->bucket_id == bucket_id &&
               plan->ordinary.page_offset == kTexturePageOffset &&
               result.valid && result.classification == Classification::OrdinaryAndAnimator &&

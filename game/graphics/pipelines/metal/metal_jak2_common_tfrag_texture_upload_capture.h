@@ -125,10 +125,18 @@ struct Jak2Opcode30SecurityPlan {
 };
 static_assert(sizeof(Jak2Opcode30SecurityPlan) == 832);
 
+enum class Jak2WaterTextureUploadVariant : u8 {
+  Absent,
+  DescriptorOnly,
+  DescriptorAndStandardReset,
+  DescriptorSecurityAndStandardReset,
+};
+
 struct Jak2WaterTextureUploadPlan {
   u32 bucket_id = 0;
   bool present = false;
   bool has_security_animator = false;
+  Jak2WaterTextureUploadVariant variant = Jak2WaterTextureUploadVariant::Absent;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
   Jak2Opcode30SecurityPlan security;
 };
@@ -173,7 +181,8 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
  * Plan a water page upload written by upload-vram-pages-pris-pc. The page writer itself emits only
  * the ordinary descriptor. A level can append its fixed texture animator to the same bucket, and
  * display-frame-finish appends the standard Direct GS reset to every nonempty normal bucket. The
- * typed composite accepted here is the exact two-output opcode-30 security animator.
+ * accepted typed variants are descriptor-only, descriptor followed by that exact reset, and the
+ * descriptor/security-animator/reset composite.
  */
 std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     const u8* dma_packet_snapshot,
