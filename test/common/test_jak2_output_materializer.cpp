@@ -180,9 +180,10 @@ struct Fixture {
     output_recipe = recipe::make_base_retail_recipe(jak2_iso::import_revision());
     recipe::ArchiveRecord archive;
     archive.destination_basename = "OUT.DGO";
-    archive.objects.reserve(jak2_source_object_pack::kExpectedObjectCount + 1);
-    bundled.reserve(jak2_source_object_pack::kExpectedObjectCount);
-    for (std::uint32_t index = 0; index < jak2_source_object_pack::kExpectedObjectCount; ++index) {
+    archive.objects.reserve(jak2_source_object_pack::kExpectedObjectCount);
+    bundled.reserve(jak2_source_object_pack::kExpectedObjectCount - 1);
+    for (std::uint32_t index = 0; index + 1 < jak2_source_object_pack::kExpectedObjectCount;
+         ++index) {
       bundled.push_back({static_cast<std::uint8_t>(index), static_cast<std::uint8_t>(index >> 8),
                          0x5a, 0xa5});
       const auto name = "src" + std::to_string(index);
@@ -198,6 +199,14 @@ struct Fixture {
         {"retail", recipe::VerifiedRetailObject{"DGO/RETAIL.DGO", 0, 4, retail.size(),
                                                   hash_of(retail)}});
     output_recipe.archives.push_back(std::move(archive));
+    const std::vector<std::uint8_t> projected = {0xde, 0xad, 0xbe, 0xef};
+    if (!write_bytes(source_root / jak1_output_recipe::kBaseRetailProjectedBundlePath,
+                     projected)) {
+      return false;
+    }
+    output_recipe.projected_source_objects = {
+        {jak1_output_recipe::kBaseRetailProjectedBundlePath, projected.size(),
+         hash_of(projected)}};
     output_recipe.flat_file_copies = {{"DATA.BIN", "DATA.BIN"}};
     output_recipe.generated_flat_files = {{recipe::GeneratedFlatFileKind::game_text,
                                            "0COMMON.TXT"}};
@@ -281,7 +290,7 @@ bool materializes_checked_jak2_layout() {
       fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
   CHECK(result);
   CHECK(result.value().archives_written == 1);
-  CHECK(result.value().objects_written == jak2_source_object_pack::kExpectedObjectCount + 1);
+  CHECK(result.value().objects_written == jak2_source_object_pack::kExpectedObjectCount);
   CHECK(result.value().flat_files_written == 2);
   CHECK(result.value().fr3_files_written == materializer::kNtscV2ExpectedFr3Files);
   CHECK(fixture.stage_absent());
@@ -294,7 +303,7 @@ bool materializes_checked_jak2_layout() {
   const auto output = jak1_checked_dgo::read(read_bytes(fixture.destination / "iso/OUT.DGO"),
                                               "OUT.DGO", read_options);
   CHECK(output);
-  CHECK(output.value().objects.size() == jak2_source_object_pack::kExpectedObjectCount + 1);
+  CHECK(output.value().objects.size() == jak2_source_object_pack::kExpectedObjectCount);
   CHECK(output.value().objects.back().internal_name == "retail");
   CHECK(output.value().objects.back().unique_name == "retail-ag");
   CHECK(output.value().objects.back().data == fixture.retail);
@@ -465,6 +474,12 @@ bool rejects_v1_symlink_and_wrong_game_without_staging() {
     Fixture fixture;
     CHECK(fixture.setup());
     auto jak1_recipe = fixture.output_recipe;
+    const auto projected = jak1_recipe.projected_source_objects.front();
+    jak1_recipe.archives.front().objects.push_back(
+        {jak1_output_recipe::kBaseRetailProjectedSourceTag,
+         recipe::BundledSourceObject{projected.bundle_relative_path, projected.size,
+                                     projected.xxh64}});
+    jak1_recipe.projected_source_objects.clear();
     const auto& jak1_revision = jak1_iso::default_revision();
     jak1_recipe.producer = jak1_output_recipe::kProvenanceId;
     jak1_recipe.game = jak1_output_recipe::kGameId;

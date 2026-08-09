@@ -546,12 +546,17 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
       recipe.archives.push_back(std::move(archive));
     }
 
+    const char* projected_source_file = nullptr;
+    if (options.output_profile == jak1_output_recipe::OutputProfile::jak1_base_retail) {
+      projected_source_file = jak1_output_recipe::kBaseRetailProjectedSourceFile;
+    } else if (options.output_profile == jak1_output_recipe::OutputProfile::jak2_base_retail) {
+      projected_source_file = jak1_output_recipe::kJak2BaseRetailProjectedSourceFile;
+    }
     for (const auto& entry : manifest.entries) {
       if (referenced_source_objects.contains(entry.bundle_relative_path)) {
         continue;
       }
-      if (options.output_profile != jak1_output_recipe::OutputProfile::jak1_base_retail ||
-          entry.source_file != jak1_output_recipe::kBaseRetailProjectedSourceFile ||
+      if (!projected_source_file || entry.source_file != projected_source_file ||
           entry.tag != jak1_output_recipe::kBaseRetailProjectedSourceTag ||
           entry.bundle_relative_path != jak1_output_recipe::kBaseRetailProjectedBundlePath ||
           !recipe.projected_source_objects.empty()) {
@@ -562,8 +567,7 @@ Result<jak1_output_recipe::Recipe> generate_from_graph(const Graph& graph,
       recipe.projected_source_objects.push_back(
           {entry.bundle_relative_path, entry.size, entry.xxh64});
     }
-    if (options.output_profile == jak1_output_recipe::OutputProfile::jak1_base_retail &&
-        recipe.projected_source_objects.size() != 1) {
+    if (projected_source_file && recipe.projected_source_objects.size() != 1) {
       return Result<jak1_output_recipe::Recipe>::failure(make_error(
           ErrorCode::manifest_graph_mismatch,
           "The base-retail graph did not project exactly the checked test-zone source object."));

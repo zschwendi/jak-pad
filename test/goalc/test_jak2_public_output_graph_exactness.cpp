@@ -2,9 +2,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "common/custom_data/Jak2PublicOutputGraph.h"
 #include "common/util/FileUtil.h"
@@ -145,6 +150,56 @@ int main() {
           return 1;
         }
       }
+    }
+
+    std::map<std::string, std::pair<std::string, std::string>> sources_by_bundle;
+    for (const auto& source : embedded.value().ordered_source_files) {
+      const auto tag = fs::path(source).stem().string();
+      if (tag.empty() ||
+          !sources_by_bundle.emplace(tag + ".o", std::pair(source, tag)).second) {
+        std::fputs("The Jak II source graph contains a duplicate object identity.\n", stderr);
+        return 1;
+      }
+    }
+    const auto collect_bundled_sources = [&](const auto& graph,
+                                             std::set<std::string>* referenced) {
+      for (const auto& archive : graph.archives) {
+        for (const auto& object : archive.objects) {
+          if (object.producer != jak1_output_graph::ObjectProducerKind::bundled_source) {
+            continue;
+          }
+          const auto source = sources_by_bundle.find(object.prepared_basename);
+          if (source == sources_by_bundle.end() || source->second.second != object.internal_name) {
+            return false;
+          }
+          referenced->emplace(object.prepared_basename);
+        }
+      }
+      return true;
+    };
+    std::set<std::string> full_bundled_sources;
+    std::set<std::string> base_bundled_sources;
+    if (!collect_bundled_sources(embedded.value(), &full_bundled_sources) ||
+        !collect_bundled_sources(base_retail.value(), &base_bundled_sources) ||
+        full_bundled_sources.size() != embedded.value().ordered_source_files.size()) {
+      std::fputs("The embedded graph does not resolve every source tag and bundle path.\n", stderr);
+      return 1;
+    }
+    std::vector<std::string> projected_sources;
+    std::set_difference(full_bundled_sources.begin(), full_bundled_sources.end(),
+                        base_bundled_sources.begin(), base_bundled_sources.end(),
+                        std::back_inserter(projected_sources));
+    const auto projected =
+        sources_by_bundle.find(jak1_output_recipe::kBaseRetailProjectedBundlePath);
+    if (base_bundled_sources.size() != 839 ||
+        projected_sources != std::vector<std::string>{
+                                 jak1_output_recipe::kBaseRetailProjectedBundlePath} ||
+        projected == sources_by_bundle.end() ||
+        projected->second.first != jak1_output_recipe::kJak2BaseRetailProjectedSourceFile ||
+        projected->second.second != jak1_output_recipe::kBaseRetailProjectedSourceTag) {
+      std::fputs("The Jak II base-retail graph does not project exactly test-zone-obs.o.\n",
+                 stderr);
+      return 1;
     }
 
     const auto encode_options = jak2_public_output_graph::default_options();

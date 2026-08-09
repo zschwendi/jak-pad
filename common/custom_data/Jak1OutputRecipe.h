@@ -24,6 +24,8 @@ inline constexpr const char* kGameId = "jak1";
 inline constexpr const char* kJak2GameId = "jak2";
 inline constexpr const char* kBaseRetailProjectedSourceFile =
     "goal_src/jak1/levels/test-zone/test-zone-obs.gc";
+inline constexpr const char* kJak2BaseRetailProjectedSourceFile =
+    "goal_src/jak2/levels/test-zone/test-zone-obs.gc";
 inline constexpr const char* kBaseRetailProjectedSourceTag = "test-zone-obs";
 inline constexpr const char* kBaseRetailProjectedBundlePath = "test-zone-obs.o";
 

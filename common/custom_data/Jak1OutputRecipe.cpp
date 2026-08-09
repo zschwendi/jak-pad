@@ -260,11 +260,11 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
     return make_error(ErrorCode::wrong_source_pack, 0,
                       "The recipe source-object pack does not match the expected signed pack.");
   }
-  if (((recipe.profile == OutputProfile::full_public ||
-        recipe.profile == OutputProfile::jak2_base_retail) &&
+  const bool base_retail_profile = recipe.profile == OutputProfile::jak1_base_retail ||
+                                   recipe.profile == OutputProfile::jak2_base_retail;
+  if ((recipe.profile == OutputProfile::full_public &&
        !recipe.projected_source_objects.empty()) ||
-      (recipe.profile == OutputProfile::jak1_base_retail &&
-       recipe.projected_source_objects.size() != 1)) {
+      (base_retail_profile && recipe.projected_source_objects.size() != 1)) {
     return make_error(ErrorCode::wrong_source_pack, 0,
                       "The recipe source projection does not match its output profile.");
   }
@@ -283,7 +283,7 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
                         "A projected source object identity is invalid or repeated.");
     }
   }
-  if (recipe.profile == OutputProfile::jak1_base_retail &&
+  if (base_retail_profile &&
       recipe.projected_source_objects.front().bundle_relative_path !=
           kBaseRetailProjectedBundlePath) {
     return make_error(ErrorCode::wrong_source_pack, 0,
@@ -465,7 +465,7 @@ std::optional<Error> validate_recipe(const Recipe& recipe, const Options& option
   if (total_objects > limits.max_total_objects ||
       referenced_source_objects != expected_referenced_source_objects) {
     return make_error(ErrorCode::wrong_source_pack, 0,
-                      recipe.profile == OutputProfile::jak1_base_retail
+                      base_retail_profile
                           ? "The base-retail recipe does not project exactly one object out of "
                             "its exact source pack."
                           : "The recipe does not reference every object in its exact source pack.");
