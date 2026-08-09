@@ -1374,6 +1374,14 @@ void test_dma_chain(const GfxRendererModule* mod,
   check(external_rendered, "external target: rendered the same one-view DMA fixture to slice 1");
   check(external.view_id == 0x4255494c44313336ull,
         "external target: stable host view ID reached the renderer seam");
+  check(external.internal_readback_identity_preserved,
+        "external target: internal readback submission identity was preserved");
+  check(external.internal_readback_pixels_preserved,
+        "external target: read_last_frame pixels were preserved");
+  check(external.internal_readback_bookkeeping_preserved,
+        "external target: internal readback frame bookkeeping was preserved");
+  check(external.stream_reuse_synchronized,
+        "external target: the following submission synchronized stream reuse");
   check(external.framebuffer_copy_used_selected_slice,
         "external target: pass split copied and reopened the selected array slices");
   check(external.invalid_descriptors_rejected,

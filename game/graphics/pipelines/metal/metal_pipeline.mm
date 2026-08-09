@@ -547,6 +547,10 @@ bool render_last_chain_to_external_target(int width,
     target.depth_slice = 1;
     target.viewport = {0.0, 0.0, (double)width, (double)height, 0.0, 1.0};
 
+    FramePixels internal_before;
+    const bool read_internal_before = g_renderer->read_game_frame(&internal_before);
+    const ScaffoldStats readback_before = g_renderer->stats();
+
     MTLTextureDescriptor* missing_color_usage_desc = [color_desc copy];
     missing_color_usage_desc.usage = MTLTextureUsageShaderRead;
     id<MTLTexture> missing_color_usage =
@@ -585,14 +589,41 @@ bool render_last_chain_to_external_target(int width,
     out->invalid_descriptors_rejected = rejected;
     out->invalid_descriptors_preserved_stats =
         std::memcmp(&before_invalid, &after_invalid, sizeof(ChainStats)) == 0;
+    const bool first_external = g_renderer->render_chain_frame_to_external_target(
+        opts, target, chain.data.data(), chain.start_offset);
+    const ScaffoldStats after_first_external = g_renderer->stats();
+    const bool second_external =
+        first_external && g_renderer->render_chain_frame_to_external_target(
+                              opts, target, chain.data.data(), chain.start_offset);
+    const ScaffoldStats after_second_external = g_renderer->stats();
     if (!out->framebuffer_copy_used_selected_slice || !rejected ||
-        !out->invalid_descriptors_preserved_stats ||
-        !g_renderer->render_chain_frame_to_external_target(
-            opts, target, chain.data.data(), chain.start_offset) ||
+        !out->invalid_descriptors_preserved_stats || !second_external ||
         !g_renderer->wait_for_last_chain_frame(5.0)) {
       return false;
     }
     out->view_id = target.view_id;
+
+    FramePixels internal_after;
+    const bool read_internal_after = g_renderer->read_game_frame(&internal_after);
+    const ScaffoldStats readback_after = g_renderer->stats();
+    out->internal_readback_identity_preserved =
+        readback_before.last_internal_frame_submission != 0 &&
+        readback_before.last_internal_frame_submission ==
+            after_first_external.last_internal_frame_submission &&
+        readback_before.last_internal_frame_submission ==
+            after_second_external.last_internal_frame_submission &&
+        readback_before.last_internal_frame_submission ==
+            readback_after.last_internal_frame_submission;
+    out->internal_readback_pixels_preserved =
+        read_internal_before && read_internal_after && internal_before.width == internal_after.width &&
+        internal_before.height == internal_after.height &&
+        internal_before.rgba == internal_after.rgba;
+    out->internal_readback_bookkeeping_preserved =
+        readback_before.frames_rendered == after_first_external.frames_rendered &&
+        readback_before.frames_rendered == after_second_external.frames_rendered &&
+        readback_before.frames_rendered == readback_after.frames_rendered;
+    out->stream_reuse_synchronized =
+        after_second_external.stream_reuse_waits == after_first_external.stream_reuse_waits + 1;
 
     std::vector<u8> slice_zero(sentinel.size());
     [color getBytes:slice_zero.data()

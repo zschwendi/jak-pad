@@ -199,9 +199,13 @@ class MetalRenderer {
   id<MTLTexture> m_checker_texture;
   std::vector<SceneDraw> m_scene_draws;
 
-  id<MTLCommandBuffer> m_last_frame_cmds;
+  id<MTLCommandBuffer> m_last_internal_frame_cmds;
   std::mutex m_frame_mutex;
   u64 m_frame_count = 0;
+  u64 m_command_submission_count = 0;
+  u64 m_last_internal_frame_submission = 0;
+  u64 m_last_stream_submission = 0;
+  u64 m_stream_reuse_wait_count = 0;
 
   // --- DMA chain path (stage 4) ---------------------------------------------
   MetalStreamBuffer m_stream;

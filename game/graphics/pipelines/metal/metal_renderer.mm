@@ -40,6 +40,7 @@ struct MetalPresentationState {
   u64 last_chain_ordinal = 0;
   u64 command_buffers_completed = 0;
   u64 command_buffer_errors = 0;
+  u64 last_stream_submission_completed = 0;
   int last_command_buffer_status = 0;
   s64 last_command_buffer_error_code = 0;
   bool mismatch_reported = false;
@@ -671,7 +672,8 @@ void MetalRenderer::render_frame(const MetalRenderOptions& opts, CAMetalLayer* l
     [cmds commit];
     {
       std::lock_guard<std::mutex> lock(m_frame_mutex);
-      m_last_frame_cmds = cmds;
+      m_last_internal_frame_cmds = cmds;
+      m_last_internal_frame_submission = ++m_command_submission_count;
       m_frame_count++;
     }
   }
@@ -774,13 +776,20 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     // the stream buffer pages are reused in place, so the previous frame's GPU
     // work must be done with them (correctness first; pipelining is a later,
     // measured change)
-    id<MTLCommandBuffer> prev;
+    u64 previous_stream_submission;
     {
       std::lock_guard<std::mutex> lock(m_frame_mutex);
-      prev = m_last_frame_cmds;
+      previous_stream_submission = m_last_stream_submission;
     }
-    if (prev) {
-      [prev waitUntilCompleted];
+    if (previous_stream_submission) {
+      std::unique_lock<std::mutex> lock(m_presentation_state->mutex);
+      m_presentation_state->command_buffer_cv.wait(lock, [&] {
+        return m_presentation_state->last_stream_submission_completed >=
+               previous_stream_submission;
+      });
+      lock.unlock();
+      std::lock_guard<std::mutex> frame_lock(m_frame_mutex);
+      m_stream_reuse_wait_count++;
     }
     m_stream.reset();
 
@@ -1069,6 +1078,12 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     }
 
     if (layer || external_target) {
+      u64 command_submission_id;
+      {
+        std::lock_guard<std::mutex> lock(m_frame_mutex);
+        command_submission_id = ++m_command_submission_count;
+        m_last_stream_submission = command_submission_id;
+      }
       const auto completion_state = m_presentation_state;
       [cmds addCompletedHandler:^(id<MTLCommandBuffer> completed) {
         const MTLCommandBufferStatus status = completed.status;
@@ -1087,6 +1102,9 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
               report_error = true;
             }
           }
+          completion_state->last_stream_submission_completed =
+              std::max(completion_state->last_stream_submission_completed,
+                       command_submission_id);
         }
         if (report_error) {
           lg::error("Metal command buffer failed with status {} and error code {}",
@@ -1098,8 +1116,11 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       m_chain_stats.command_buffers_committed++;
       {
         std::lock_guard<std::mutex> lock(m_frame_mutex);
-        m_last_frame_cmds = cmds;
-        m_frame_count++;
+        if (!external_target) {
+          m_last_internal_frame_cmds = cmds;
+          m_last_internal_frame_submission = command_submission_id;
+          m_frame_count++;
+        }
       }
     }
 
@@ -1386,7 +1407,7 @@ bool MetalRenderer::read_game_frame(metal_renderer::FramePixels* out) {
     if (m_frame_count == 0) {
       return false;
     }
-    cmds = m_last_frame_cmds;
+    cmds = m_last_internal_frame_cmds;
   }
   [cmds waitUntilCompleted];
   return read_color_target(m_game_color, out);
@@ -1496,6 +1517,8 @@ metal_renderer::ScaffoldStats MetalRenderer::stats() {
   {
     std::lock_guard<std::mutex> lock(m_frame_mutex);
     s.frames_rendered = m_frame_count;
+    s.last_internal_frame_submission = m_last_internal_frame_submission;
+    s.stream_reuse_waits = m_stream_reuse_wait_count;
   }
   s.pso_count = m_pso_cache.pipeline_count();
   s.depth_stencil_count = m_pso_cache.depth_stencil_count();

@@ -47,10 +47,12 @@ struct FramePixels {
   std::vector<u8> rgba;
 };
 
-// Cache and frame counters, used by tests to verify that PSOs are created once
-// and reused rather than rebuilt per draw or per frame.
+// Cache, frame, and submission counters used by tests to verify readback identity, stream reuse,
+// and that PSOs are reused rather than rebuilt per draw or per frame.
 struct ScaffoldStats {
   u64 frames_rendered = 0;
+  u64 last_internal_frame_submission = 0;
+  u64 stream_reuse_waits = 0;
   u64 pso_count = 0;
   u64 depth_stencil_count = 0;
   u64 pso_misses = 0;
@@ -72,6 +74,10 @@ struct PresentTestOptions {
 struct ExternalRenderTargetProofResult {
   FramePixels rendered_slice;
   u64 view_id = 0;
+  bool internal_readback_identity_preserved = false;
+  bool internal_readback_pixels_preserved = false;
+  bool internal_readback_bookkeeping_preserved = false;
+  bool stream_reuse_synchronized = false;
   bool invalid_descriptors_rejected = false;
   bool invalid_descriptors_preserved_stats = false;
   bool color_slice_zero_preserved = false;
