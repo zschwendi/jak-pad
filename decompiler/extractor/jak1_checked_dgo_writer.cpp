@@ -12,6 +12,11 @@
 #include <unistd.h>
 #include <unordered_set>
 
+#include "common/util/PosixFile.h"
+
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
+
 namespace jak1_checked_dgo_writer {
 namespace {
 
@@ -286,115 +291,52 @@ std::string system_error_message(const char* action, int error_number) {
          std::error_code(error_number, std::generic_category()).message();
 }
 
-struct OwnedStage {
-  int descriptor = -1;
-  std::filesystem::path path;
-  bool exists = false;
-
-  OwnedStage() = default;
-  OwnedStage(const OwnedStage&) = delete;
-  OwnedStage& operator=(const OwnedStage&) = delete;
-  OwnedStage(OwnedStage&& other) noexcept
-      : descriptor(std::exchange(other.descriptor, -1)),
-        path(std::move(other.path)),
-        exists(std::exchange(other.exists, false)) {}
-  OwnedStage& operator=(OwnedStage&&) = delete;
-
-  ~OwnedStage() {
-    if (descriptor >= 0) {
-      ::close(descriptor);
-    }
-    if (exists) {
-      std::error_code ignored;
-      std::filesystem::remove(path, ignored);
-    }
-  }
-
-  std::optional<Error> close_checked() {
-    if (descriptor < 0) {
-      return {};
-    }
-    const int current = descriptor;
-    descriptor = -1;
-    if (::close(current) != 0) {
-      return make_error(ErrorCode::stage_close_failed,
-                        system_error_message("Could not close the owned DGO stage file", errno));
-    }
-    return {};
-  }
-
-  std::optional<Error> remove_checked() {
-    if (!exists) {
-      return {};
-    }
-    std::error_code error;
-    const bool removed = std::filesystem::remove(path, error);
-    if (error || !removed) {
-      return make_error(ErrorCode::stage_cleanup_failed,
-                        "Could not remove the owned DGO stage file: " +
-                            (error ? error.message() : std::string("the file was not present")));
-    }
-    exists = false;
-    return {};
-  }
-};
-
-Result<OwnedStage> create_stage(const std::filesystem::path& destination) {
-  const auto filename = destination.filename().string();
-  if (filename.empty()) {
-    return Result<OwnedStage>::failure(
-        make_error(ErrorCode::invalid_argument, "The DGO destination has no file name."));
-  }
-  auto directory = destination.parent_path();
-  if (directory.empty()) {
-    directory = ".";
-  }
-  const auto template_path = directory / ("." + filename + ".opengoal-stage-XXXXXX");
-  auto template_string = template_path.string();
-  if (template_string.find('\0') != std::string::npos) {
-    return Result<OwnedStage>::failure(
-        make_error(ErrorCode::invalid_argument, "The DGO destination contains a null byte."));
-  }
-
-  std::vector<char> writable_template;
-  try {
-    writable_template.assign(template_string.begin(), template_string.end());
-    writable_template.push_back('\0');
-  } catch (const std::bad_alloc&) {
-    return Result<OwnedStage>::failure(make_error(
-        ErrorCode::allocation_failed, "Could not allocate the owned DGO stage-file path."));
-  }
-
-  const int descriptor = ::mkstemp(writable_template.data());
-  if (descriptor < 0) {
-    return Result<OwnedStage>::failure(
-        make_error(ErrorCode::stage_create_failed,
-                   system_error_message("Could not create an owned DGO stage file", errno)));
-  }
-  OwnedStage stage;
-  stage.descriptor = descriptor;
-  try {
-    stage.path = std::filesystem::path(writable_template.data());
-  } catch (const std::bad_alloc&) {
-    ::close(descriptor);
-    ::unlink(writable_template.data());
-    stage.descriptor = -1;
-    return Result<OwnedStage>::failure(make_error(
-        ErrorCode::allocation_failed, "Could not retain the owned DGO stage-file path."));
-  }
-  stage.exists = true;
-  return Result<OwnedStage>::success(std::move(stage));
+bool safe_destination_basename(std::string_view name, std::size_t cap) {
+  return !name.empty() && name.size() <= cap && name != "." && name != ".." &&
+         name.back() != '.' &&
+         std::all_of(name.begin(), name.end(), [](unsigned char byte) {
+           return byte >= 0x21 && byte <= 0x7e && byte != '/' && byte != '\\' && byte != ':';
+         });
 }
 
-std::optional<Error> destination_error(const std::filesystem::path& destination) {
-  std::error_code error;
-  const auto status = std::filesystem::symlink_status(destination, error);
-  if (error && error != std::errc::no_such_file_or_directory) {
-    return make_error(ErrorCode::destination_inspection_failed,
-                      "Could not inspect the DGO destination: " + error.message());
+std::optional<Error> remove_owned_output(int directory,
+                                         std::string_view name,
+                                         const posix_file::Identity& identity) {
+  if (!posix_file::entry_identity(directory, name, identity)) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "The owned DGO output changed before cleanup.");
   }
-  if (status.type() != std::filesystem::file_type::not_found) {
-    return make_error(ErrorCode::destination_exists, "The DGO destination already exists.");
+  const std::string owned_name(name);
+  if (::unlinkat(directory, owned_name.c_str(), 0) != 0) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      system_error_message("Could not remove the owned DGO output", errno));
+  }
+  return {};
+}
+
+std::optional<Error> verify_descriptor_hash(int descriptor,
+                                            std::size_t size,
+                                            std::uint64_t expected_hash) {
+  XXH64_state_t hash_state;
+  XXH64_reset(&hash_state, 0);
+  std::vector<std::uint8_t> buffer(64 * 1024);
+  std::size_t offset = 0;
+  while (offset < size) {
+    const auto chunk = std::min(buffer.size(), size - offset);
+    const auto count = ::pread(descriptor, buffer.data(), chunk, static_cast<off_t>(offset));
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count != static_cast<ssize_t>(chunk)) {
+      return make_error(ErrorCode::stage_write_failed,
+                        "Could not re-read the exact owned DGO output.");
+    }
+    XXH64_update(&hash_state, buffer.data(), chunk);
+    offset += chunk;
+  }
+  if (XXH64_digest(&hash_state) != expected_hash) {
+    return make_error(ErrorCode::atomic_install_failed,
+                      "The owned DGO output changed after it was written.");
   }
   return {};
 }
@@ -437,28 +379,62 @@ Result<WriteSummary> write_file(const std::filesystem::path& destination,
                                 std::string_view archive_name,
                                 std::span<const ObjectRecord> objects,
                                 const Options& options) {
-  if (destination.empty()) {
+  if (destination.empty() || destination.filename().empty()) {
     return Result<WriteSummary>::failure(
         make_error(ErrorCode::invalid_argument, "The DGO destination is empty."));
+  }
+  auto parent = destination.parent_path();
+  if (parent.empty()) {
+    parent = ".";
+  }
+  auto directory = posix_file::open_directory(parent.c_str());
+  if (!directory) {
+    return Result<WriteSummary>::failure(make_error(
+        ErrorCode::stage_create_failed,
+        system_error_message("Could not open the DGO destination directory", errno)));
+  }
+  return write_file_at(directory.get(), destination.filename().string(), archive_name, objects,
+                       options);
+}
+
+Result<WriteSummary> write_file_at(int directory_fd,
+                                   std::string_view destination_basename,
+                                   std::string_view archive_name,
+                                   std::span<const ObjectRecord> objects,
+                                   const Options& options) {
+  if (directory_fd < 0 ||
+      !safe_destination_basename(destination_basename, options.max_name_bytes)) {
+    return Result<WriteSummary>::failure(
+        make_error(ErrorCode::invalid_argument, "The DGO destination basename is unsafe."));
   }
   auto prepared = prepare(archive_name, objects, options);
   if (!prepared) {
     return Result<WriteSummary>::failure(prepared.error());
   }
-  if (const auto error = destination_error(destination)) {
-    return Result<WriteSummary>::failure(*error);
+
+  auto output = posix_file::open_file_at(
+      directory_fd, destination_basename, O_RDWR | O_CREAT | O_EXCL, 0600);
+  if (!output) {
+    return Result<WriteSummary>::failure(make_error(
+        errno == EEXIST ? ErrorCode::destination_exists : ErrorCode::stage_create_failed,
+        system_error_message("Could not exclusively create the DGO output", errno)));
+  }
+  posix_file::Identity output_identity;
+  struct stat output_status {};
+  if (!posix_file::descriptor_identity(output.get(), &output_identity, &output_status) ||
+      !S_ISREG(output_status.st_mode) || output_status.st_nlink != 1) {
+    return Result<WriteSummary>::failure(
+        make_error(ErrorCode::stage_create_failed,
+                   "The exclusively created DGO output is not a private regular file."));
   }
 
-  auto stage_result = create_stage(destination);
-  if (!stage_result) {
-    return Result<WriteSummary>::failure(stage_result.error());
-  }
-  auto stage = stage_result.take_value();
+  XXH64_state_t hash_state;
+  XXH64_reset(&hash_state, 0);
 
   const auto sink = [&](std::span<const std::uint8_t> bytes) -> std::optional<Error> {
     std::size_t offset = 0;
     while (offset < bytes.size()) {
-      const auto written = ::write(stage.descriptor, bytes.data() + offset, bytes.size() - offset);
+      const auto written = ::write(output.get(), bytes.data() + offset, bytes.size() - offset);
       if (written < 0) {
         if (errno == EINTR) {
           continue;
@@ -470,55 +446,56 @@ Result<WriteSummary> write_file(const std::filesystem::path& destination,
         return make_error(ErrorCode::stage_write_failed,
                           "Writing the owned DGO stage file made no progress.");
       }
+      XXH64_update(&hash_state, bytes.data() + offset, static_cast<std::size_t>(written));
       offset += static_cast<std::size_t>(written);
     }
     return {};
   };
   if (const auto error = emit(archive_name, objects, prepared.value(), options, sink)) {
-    const auto cleanup = stage.remove_checked();
+    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
     return Result<WriteSummary>::failure(cleanup ? *cleanup : *error);
   }
-  if (::fsync(stage.descriptor) != 0) {
+  if (::fsync(output.get()) != 0) {
     const auto error =
         make_error(ErrorCode::stage_sync_failed,
-                   system_error_message("Could not synchronize the owned DGO stage file", errno));
-    const auto cleanup = stage.remove_checked();
+                   system_error_message("Could not synchronize the owned DGO output", errno));
+    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
     return Result<WriteSummary>::failure(cleanup ? *cleanup : error);
   }
-  if (const auto error = stage.close_checked()) {
-    const auto cleanup = stage.remove_checked();
-    return Result<WriteSummary>::failure(cleanup ? *cleanup : *error);
-  }
   if (const auto error = check_cancelled(options)) {
-    const auto cleanup = stage.remove_checked();
+    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
     return Result<WriteSummary>::failure(cleanup ? *cleanup : *error);
   }
   if (const auto error = report_progress(
           options, ProgressPhase::installing, prepared.value().summary.object_count,
           prepared.value().summary.object_count, prepared.value().summary.output_bytes,
           prepared.value().summary.output_bytes)) {
-    const auto cleanup = stage.remove_checked();
+    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
     return Result<WriteSummary>::failure(cleanup ? *cleanup : *error);
   }
-
-  std::error_code install_error;
-  std::filesystem::create_hard_link(stage.path, destination, install_error);
-  if (install_error) {
-    auto error = make_error(ErrorCode::atomic_install_failed,
-                            "Could not atomically install the DGO: " + install_error.message());
-    std::error_code inspect_error;
-    const auto status = std::filesystem::symlink_status(destination, inspect_error);
-    if (!inspect_error && status.type() != std::filesystem::file_type::not_found) {
-      error = make_error(ErrorCode::destination_exists,
-                         "The DGO destination was created before atomic installation.");
-    }
-    const auto cleanup = stage.remove_checked();
+  struct stat final_descriptor_status {};
+  struct stat final_entry_status {};
+  if (!posix_file::descriptor_identity(output.get(), nullptr, &final_descriptor_status) ||
+      !posix_file::entry_identity(directory_fd, destination_basename, output_identity,
+                                  &final_entry_status) ||
+      !S_ISREG(final_entry_status.st_mode) || final_entry_status.st_nlink != 1 ||
+      final_descriptor_status.st_size !=
+          static_cast<off_t>(prepared.value().summary.output_bytes) ||
+      final_entry_status.st_size != final_descriptor_status.st_size) {
+    const auto error = make_error(
+        ErrorCode::atomic_install_failed,
+        "The owned DGO output changed before descriptor-relative installation completed.");
+    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
     return Result<WriteSummary>::failure(cleanup ? *cleanup : error);
   }
-  if (const auto cleanup = stage.remove_checked()) {
-    return Result<WriteSummary>::failure(*cleanup);
+  auto summary = prepared.value().summary;
+  summary.output_xxh64 = XXH64_digest(&hash_state);
+  if (const auto error =
+          verify_descriptor_hash(output.get(), summary.output_bytes, summary.output_xxh64)) {
+    const auto cleanup = remove_owned_output(directory_fd, destination_basename, output_identity);
+    return Result<WriteSummary>::failure(cleanup ? *cleanup : *error);
   }
-  return Result<WriteSummary>::success(prepared.value().summary);
+  return Result<WriteSummary>::success(std::move(summary));
 }
 
 const char* error_code_name(ErrorCode code) {

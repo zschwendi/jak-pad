@@ -102,9 +102,11 @@ bool exact_prepared_tree_is_promoted() {
   std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
   std::optional<composer::internal::FinalContract> produced_contract = contract;
   std::vector<composer::Phase> phases;
+  std::optional<composer::Progress> last_progress;
   composer::Options options;
   options.on_progress = [&](const composer::Progress& progress) {
     phases.push_back(progress.phase);
+    last_progress = progress;
   };
   const std::array<composer::internal::StageAction, 1> stages = {{
       {composer::Phase::materializing_output,
@@ -126,6 +128,10 @@ bool exact_prepared_tree_is_promoted() {
   CHECK(!fs::exists(candidate / ".opengoal-import"));
   CHECK(!phases.empty());
   CHECK(phases.back() == composer::Phase::finalizing_candidate);
+  CHECK(last_progress.has_value());
+  CHECK(last_progress->phase == composer::Phase::finalizing_candidate);
+  CHECK(last_progress->completed == 2);
+  CHECK(last_progress->total == 2);
   return true;
 }
 
@@ -188,6 +194,197 @@ bool linked_output_is_rejected() {
   CHECK(!result);
   CHECK(result.error().code == composer::ErrorCode::candidate_finalize_failed);
   CHECK(result.error().preserved_candidate_root == candidate);
+  return true;
+}
+
+bool descriptor_promotion_rejects_callback_races() {
+  const auto contract = launch_contract();
+  {
+    TemporaryRoot temporary;
+    const auto candidate = temporary.root / "symlink-swap.candidate";
+    const auto outside = temporary.root / "outside";
+    fs::create_directory(outside);
+    write_text(outside / "sentinel", "outside stays");
+    std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
+    std::optional<composer::internal::FinalContract> produced_contract = contract;
+    bool swapped = false;
+    composer::Options options;
+    options.on_progress = [&](const composer::Progress& progress) {
+      if (!swapped && progress.phase == composer::Phase::materializing_output &&
+          progress.completed == 1) {
+        const auto prepared = candidate / ".opengoal-import/.prepared";
+        std::error_code error;
+        fs::rename(prepared / "iso", prepared / "iso-held", error);
+        if (!error) {
+          fs::create_directory_symlink(outside, prepared / "iso", error);
+          swapped = !error;
+        }
+      }
+    };
+    const std::array<composer::internal::StageAction, 1> stages = {{
+        {composer::Phase::materializing_output,
+         [&](const composer::internal::WorkPaths& paths) -> std::optional<composer::Error> {
+           write_prepared_tree(paths, contract);
+           return {};
+         }},
+    }};
+    const auto result = composer::internal::compose_in_fresh_candidate(
+        candidate, options, stages, &summary, &produced_contract);
+    CHECK(swapped);
+    CHECK(!result);
+    CHECK(result.error().code == composer::ErrorCode::candidate_finalize_failed);
+    CHECK(read_text(outside / "sentinel") == "outside stays");
+    CHECK(!fs::exists(candidate / "iso"));
+  }
+  {
+    TemporaryRoot temporary;
+    const auto candidate = temporary.root / "destination-race.candidate";
+    std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
+    std::optional<composer::internal::FinalContract> produced_contract = contract;
+    bool raced = false;
+    composer::Options options;
+    options.on_progress = [&](const composer::Progress& progress) {
+      if (!raced && progress.phase == composer::Phase::finalizing_candidate &&
+          progress.completed == 0) {
+        std::error_code error;
+        raced = fs::create_directory(candidate / "iso", error) && !error;
+        if (raced) {
+          write_text(candidate / "iso/sentinel", "race stays");
+        }
+      }
+    };
+    const std::array<composer::internal::StageAction, 1> stages = {{
+        {composer::Phase::materializing_output,
+         [&](const composer::internal::WorkPaths& paths) -> std::optional<composer::Error> {
+           write_prepared_tree(paths, contract);
+           return {};
+         }},
+    }};
+    const auto result = composer::internal::compose_in_fresh_candidate(
+        candidate, options, stages, &summary, &produced_contract);
+    CHECK(raced);
+    CHECK(!result);
+    CHECK(result.error().code == composer::ErrorCode::candidate_finalize_failed);
+    CHECK(read_text(candidate / "iso/sentinel") == "race stays");
+  }
+  {
+    TemporaryRoot temporary;
+    const auto candidate = temporary.root / "work-cleanup-race.candidate";
+    std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
+    std::optional<composer::internal::FinalContract> produced_contract = contract;
+    bool raced = false;
+    composer::Options options;
+    options.on_progress = [&](const composer::Progress& progress) {
+      if (!raced && progress.phase == composer::Phase::finalizing_candidate &&
+          progress.completed == 1) {
+        const auto work = candidate / ".opengoal-import";
+        std::error_code error;
+        fs::rename(work, candidate / ".opengoal-import-held", error);
+        if (!error) {
+          raced = fs::create_directory(work, error) && !error;
+          if (raced) {
+            write_text(work / "sentinel", "replacement stays");
+          }
+        }
+      }
+    };
+    const std::array<composer::internal::StageAction, 1> stages = {{
+        {composer::Phase::materializing_output,
+         [&](const composer::internal::WorkPaths& paths) -> std::optional<composer::Error> {
+           write_prepared_tree(paths, contract);
+           return {};
+         }},
+    }};
+    const auto result = composer::internal::compose_in_fresh_candidate(
+        candidate, options, stages, &summary, &produced_contract);
+    CHECK(raced);
+    CHECK(!result);
+    CHECK(result.error().code == composer::ErrorCode::candidate_cleanup_failed);
+    CHECK(read_text(candidate / ".opengoal-import/sentinel") == "replacement stays");
+  }
+  {
+    TemporaryRoot temporary;
+    const auto candidate = temporary.root / "cleanup-depth.candidate";
+    std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
+    std::optional<composer::internal::FinalContract> produced_contract = contract;
+    bool expanded = false;
+    composer::Options options;
+    options.on_progress = [&](const composer::Progress& progress) {
+      if (!expanded && progress.phase == composer::Phase::finalizing_candidate &&
+          progress.completed == 1) {
+        auto cursor = candidate / ".opengoal-import";
+        std::error_code error;
+        for (std::size_t depth = 0; depth < 65 && !error; ++depth) {
+          cursor /= "nested-" + std::to_string(depth);
+          fs::create_directory(cursor, error);
+        }
+        expanded = !error;
+      }
+    };
+    const std::array<composer::internal::StageAction, 1> stages = {{
+        {composer::Phase::materializing_output,
+         [&](const composer::internal::WorkPaths& paths) -> std::optional<composer::Error> {
+           write_prepared_tree(paths, contract);
+           return {};
+         }},
+    }};
+    const auto result = composer::internal::compose_in_fresh_candidate(
+        candidate, options, stages, &summary, &produced_contract);
+    CHECK(expanded);
+    CHECK(!result);
+    CHECK(result.error().code == composer::ErrorCode::candidate_cleanup_failed);
+    CHECK(result.error().cleanup_error.has_value());
+  }
+  {
+    TemporaryRoot temporary;
+    const auto candidate = temporary.root / "terminal-mutation.candidate";
+    std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
+    std::optional<composer::internal::FinalContract> produced_contract = contract;
+    bool mutated = false;
+    composer::Options options;
+    options.on_progress = [&](const composer::Progress& progress) {
+      if (!mutated && progress.phase == composer::Phase::finalizing_candidate &&
+          progress.completed == 2) {
+        write_text(candidate / "iso/KERNEL.CGO", "mutation!");
+        mutated = true;
+      }
+    };
+    const std::array<composer::internal::StageAction, 1> stages = {{
+        {composer::Phase::materializing_output,
+         [&](const composer::internal::WorkPaths& paths) -> std::optional<composer::Error> {
+           write_prepared_tree(paths, contract);
+           return {};
+         }},
+    }};
+    const auto result = composer::internal::compose_in_fresh_candidate(
+        candidate, options, stages, &summary, &produced_contract);
+    CHECK(mutated);
+    CHECK(!result);
+    CHECK(result.error().code == composer::ErrorCode::candidate_finalize_failed);
+  }
+  {
+    TemporaryRoot temporary;
+    const auto candidate = temporary.root / "terminal-throw.candidate";
+    std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
+    std::optional<composer::internal::FinalContract> produced_contract = contract;
+    composer::Options options;
+    options.on_progress = [&](const composer::Progress& progress) {
+      if (progress.phase == composer::Phase::finalizing_candidate && progress.completed == 2) {
+        throw std::runtime_error("terminal failure");
+      }
+    };
+    const std::array<composer::internal::StageAction, 1> stages = {{
+        {composer::Phase::materializing_output,
+         [&](const composer::internal::WorkPaths& paths) -> std::optional<composer::Error> {
+           write_prepared_tree(paths, contract);
+           return {};
+         }},
+    }};
+    const auto result = composer::internal::compose_in_fresh_candidate(
+        candidate, options, stages, &summary, &produced_contract);
+    CHECK(!result);
+    CHECK(result.error().code == composer::ErrorCode::callback_failed);
+  }
   return true;
 }
 
@@ -465,6 +662,7 @@ int main() {
       exact_prepared_tree_is_promoted,
       incomplete_or_extra_output_never_succeeds,
       linked_output_is_rejected,
+      descriptor_promotion_rejects_callback_races,
       failure_preserves_work_and_removes_partial_files,
       cancellation_and_callback_failures_are_typed,
       existing_candidate_and_input_containment_are_rejected,

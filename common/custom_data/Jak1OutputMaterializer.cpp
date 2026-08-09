@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <dirent.h>
+#include <fcntl.h>
 #include <fstream>
 #include <limits>
 #include <new>
@@ -10,7 +12,9 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <unistd.h>
 
+#include "common/util/PosixFile.h"
 #include "common/versions/jak2_iso_revisions.h"
 #include "decompiler/extractor/jak1_checked_dgo.h"
 #include "decompiler/extractor/jak1_checked_dgo_writer.h"
@@ -24,6 +28,8 @@ namespace {
 
 namespace fs = std::filesystem;
 constexpr std::uint64_t kDgoHeaderBytes = 64;
+
+using OutputMap = std::unordered_map<std::string, checked_file_identity::Identity>;
 
 Error make_error(ErrorCode code,
                  std::string message,
@@ -158,6 +164,255 @@ Result<const checked_file_identity::Identity*> required_identity(
         "A required input has no exact validated file identity."));
   }
   return Result<const checked_file_identity::Identity*>::success(nullptr);
+}
+
+std::optional<Error> inspect_parent_identity(const fs::path& path,
+                                             const posix_file::Identity& expected) {
+  struct stat status {};
+  if (::lstat(path.c_str(), &status) != 0 || !S_ISDIR(status.st_mode) ||
+      !posix_file::same_identity(status, expected)) {
+    return make_error(ErrorCode::stage_install_failed,
+                      "The output parent directory changed during materialization.");
+  }
+  return {};
+}
+
+std::optional<Error> remove_direct_entries(int directory) {
+  auto enumeration = posix_file::open_directory_at(directory, ".");
+  if (!enumeration) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "Could not reopen an owned output directory for cleanup.");
+  }
+  DIR* stream = ::fdopendir(enumeration.release());
+  if (!stream) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "Could not enumerate an owned output directory for cleanup.");
+  }
+  int read_error = 0;
+  while (true) {
+    errno = 0;
+    const auto* entry = ::readdir(stream);
+    if (!entry) {
+      read_error = errno;
+      break;
+    }
+    const std::string_view name(entry->d_name);
+    if (name == "." || name == "..") {
+      continue;
+    }
+    struct stat status {};
+    if (::fstatat(directory, entry->d_name, &status, AT_SYMLINK_NOFOLLOW) != 0 ||
+        S_ISDIR(status.st_mode)) {
+      ::closedir(stream);
+      return make_error(ErrorCode::stage_cleanup_failed,
+                        "An owned output directory changed or gained a nested directory.");
+    }
+    const posix_file::Identity identity{status.st_dev, status.st_ino};
+    if (!posix_file::entry_identity(directory, entry->d_name, identity) ||
+        ::unlinkat(directory, entry->d_name, 0) != 0) {
+      ::closedir(stream);
+      return make_error(ErrorCode::stage_cleanup_failed,
+                        "An owned staged output changed during cleanup.");
+    }
+  }
+  ::closedir(stream);
+  if (read_error != 0) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "Could not completely enumerate an owned output directory.");
+  }
+  return {};
+}
+
+struct OutputStage {
+  fs::path parent_path;
+  std::string destination_name;
+  std::string stage_name;
+  posix_file::OwnedFd parent;
+  posix_file::OwnedFd root;
+  posix_file::OwnedFd iso;
+  posix_file::OwnedFd fr3;
+  posix_file::Identity parent_identity;
+  posix_file::Identity root_identity;
+  posix_file::Identity iso_identity;
+  posix_file::Identity fr3_identity;
+  bool linked = false;
+  bool iso_linked = false;
+  bool fr3_linked = false;
+  bool installed = false;
+
+  std::optional<Error> cleanup() {
+    if (!linked || installed) {
+      return {};
+    }
+    if (!root) {
+      root = posix_file::open_directory_at(parent.get(), stage_name);
+      posix_file::Identity current;
+      if (!root || !posix_file::descriptor_identity(root.get(), &current) ||
+          current.device != root_identity.device || current.inode != root_identity.inode) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not retain the exact owned materializer stage for cleanup.");
+      }
+    }
+    if (iso_linked && !iso) {
+      iso = posix_file::open_directory_at(root.get(), "iso");
+      posix_file::Identity current;
+      if (!iso || !posix_file::descriptor_identity(iso.get(), &current) ||
+          current.device != iso_identity.device || current.inode != iso_identity.inode) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not retain the exact owned ISO stage for cleanup.");
+      }
+    }
+    if (fr3_linked && !fr3) {
+      fr3 = posix_file::open_directory_at(root.get(), "fr3");
+      posix_file::Identity current;
+      if (!fr3 || !posix_file::descriptor_identity(fr3.get(), &current) ||
+          current.device != fr3_identity.device || current.inode != fr3_identity.inode) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not retain the exact owned FR3 stage for cleanup.");
+      }
+    }
+    if (iso_linked) {
+      if (const auto error = remove_direct_entries(iso.get())) {
+        return error;
+      }
+      if (!posix_file::entry_identity(root.get(), "iso", iso_identity) ||
+          ::unlinkat(root.get(), "iso", AT_REMOVEDIR) != 0) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not remove the exact owned ISO stage.");
+      }
+      iso_linked = false;
+    }
+    if (fr3_linked) {
+      if (const auto error = remove_direct_entries(fr3.get())) {
+        return error;
+      }
+      if (!posix_file::entry_identity(root.get(), "fr3", fr3_identity) ||
+          ::unlinkat(root.get(), "fr3", AT_REMOVEDIR) != 0) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not remove the exact owned FR3 stage.");
+      }
+      fr3_linked = false;
+    }
+    if (!posix_file::entry_identity(parent.get(), stage_name, root_identity) ||
+        ::unlinkat(parent.get(), stage_name.c_str(), AT_REMOVEDIR) != 0) {
+      return make_error(ErrorCode::stage_cleanup_failed,
+                        "Could not remove the exact owned materializer stage.");
+    }
+    linked = false;
+    return {};
+  }
+
+  std::optional<Error> install() {
+    if (!linked || !iso_linked || !fr3_linked || installed ||
+        inspect_parent_identity(parent_path, parent_identity) ||
+        !posix_file::entry_identity(parent.get(), stage_name, root_identity) ||
+        !posix_file::entry_identity(root.get(), "iso", iso_identity) ||
+        !posix_file::entry_identity(root.get(), "fr3", fr3_identity)) {
+      return make_error(ErrorCode::stage_install_failed,
+                        "The exact owned materializer stage changed before installation.");
+    }
+    if (posix_file::exclusive_rename_at(parent.get(), stage_name, parent.get(),
+                                        destination_name) != 0 ||
+        !posix_file::entry_identity(parent.get(), destination_name, root_identity)) {
+      return make_error(ErrorCode::stage_install_failed,
+                        "Could not exclusively install the exact materializer stage.");
+    }
+    installed = true;
+    linked = false;
+    return {};
+  }
+};
+
+std::optional<Error> create_output_stage(const fs::path& destination, OutputStage* stage) {
+  if (!stage || !destination.is_absolute() || destination.filename().empty()) {
+    return make_error(ErrorCode::invalid_argument,
+                      "The output destination is not a safe absolute path.");
+  }
+  stage->parent_path = destination.parent_path();
+  stage->destination_name = destination.filename().string();
+  stage->stage_name = stage->destination_name + ".stage";
+  if (!valid_name(stage->destination_name, 255) || !valid_name(stage->stage_name, 255)) {
+    return make_error(ErrorCode::invalid_argument,
+                      "The output destination basename is unsafe.");
+  }
+  stage->parent = posix_file::open_directory(stage->parent_path.c_str());
+  if (!stage->parent ||
+      !posix_file::descriptor_identity(stage->parent.get(), &stage->parent_identity)) {
+    return make_error(ErrorCode::destination_inspection_failed,
+                      "Could not open the direct output parent directory.");
+  }
+  struct stat destination_status {};
+  if (::fstatat(stage->parent.get(), stage->destination_name.c_str(), &destination_status,
+                AT_SYMLINK_NOFOLLOW) == 0) {
+    return make_error(ErrorCode::destination_exists, "The output destination already exists.");
+  }
+  if (errno != ENOENT) {
+    return make_error(ErrorCode::destination_inspection_failed,
+                      "Could not inspect the output destination.");
+  }
+  if (::mkdirat(stage->parent.get(), stage->stage_name.c_str(), 0700) != 0) {
+    return make_error(errno == EEXIST ? ErrorCode::destination_exists
+                                      : ErrorCode::stage_create_failed,
+                      "The private output stage already exists or could not be created.");
+  }
+  stage->linked = true;
+  struct stat root_status {};
+  if (::fstatat(stage->parent.get(), stage->stage_name.c_str(), &root_status,
+                AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISDIR(root_status.st_mode)) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not retain the exact output-stage identity.");
+  }
+  stage->root_identity = {root_status.st_dev, root_status.st_ino};
+  stage->root = posix_file::open_directory_at(stage->parent.get(), stage->stage_name);
+  posix_file::Identity opened_root;
+  if (!stage->root || !posix_file::descriptor_identity(stage->root.get(), &opened_root) ||
+      opened_root.device != stage->root_identity.device ||
+      opened_root.inode != stage->root_identity.inode) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not open the exact descriptor-owned output stage.");
+  }
+  if (::mkdirat(stage->root.get(), "iso", 0700) != 0) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not create the descriptor-owned ISO output directory.");
+  }
+  stage->iso_linked = true;
+  struct stat iso_status {};
+  if (::fstatat(stage->root.get(), "iso", &iso_status, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISDIR(iso_status.st_mode)) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not retain the exact ISO output identity.");
+  }
+  stage->iso_identity = {iso_status.st_dev, iso_status.st_ino};
+  stage->iso = posix_file::open_directory_at(stage->root.get(), "iso");
+  posix_file::Identity opened_iso;
+  if (!stage->iso || !posix_file::descriptor_identity(stage->iso.get(), &opened_iso) ||
+      opened_iso.device != stage->iso_identity.device ||
+      opened_iso.inode != stage->iso_identity.inode) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not open the exact descriptor-owned ISO output directory.");
+  }
+  if (::mkdirat(stage->root.get(), "fr3", 0700) != 0) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not create the descriptor-owned FR3 output directory.");
+  }
+  stage->fr3_linked = true;
+  struct stat fr3_status {};
+  if (::fstatat(stage->root.get(), "fr3", &fr3_status, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISDIR(fr3_status.st_mode)) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not retain the exact FR3 output identity.");
+  }
+  stage->fr3_identity = {fr3_status.st_dev, fr3_status.st_ino};
+  stage->fr3 = posix_file::open_directory_at(stage->root.get(), "fr3");
+  posix_file::Identity opened_fr3;
+  if (!stage->fr3 || !posix_file::descriptor_identity(stage->fr3.get(), &opened_fr3) ||
+      opened_fr3.device != stage->fr3_identity.device ||
+      opened_fr3.inode != stage->fr3_identity.inode) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not open the exact descriptor-owned FR3 output directory.");
+  }
+  return {};
 }
 
 bool known_revision(const jak1_output_recipe::RevisionProvenance& revision,
@@ -356,14 +611,56 @@ std::optional<Error> reserve_output(std::uint64_t size,
   return {};
 }
 
-std::optional<Error> copy_file(
+std::optional<Error> hash_descriptor(int descriptor,
+                                     std::uint64_t size,
+                                     std::uint64_t* result) {
+  XXH64_state_t hash_state;
+  XXH64_reset(&hash_state, 0);
+  std::vector<std::uint8_t> buffer(64 * 1024);
+  std::uint64_t offset = 0;
+  while (offset < size) {
+    const auto chunk = static_cast<std::size_t>(
+        std::min<std::uint64_t>(buffer.size(), size - offset));
+    const auto count = ::pread(descriptor, buffer.data(), chunk, static_cast<off_t>(offset));
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count != static_cast<ssize_t>(chunk)) {
+      return make_error(ErrorCode::output_write_failed,
+                        "Could not re-read an exact staged output.");
+    }
+    XXH64_update(&hash_state, buffer.data(), chunk);
+    offset += chunk;
+  }
+  *result = XXH64_digest(&hash_state);
+  return {};
+}
+
+std::optional<Error> remove_owned_file(int directory,
+                                       std::string_view name,
+                                       const posix_file::Identity& identity) {
+  if (!posix_file::entry_identity(directory, name, identity)) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "A staged output changed before cleanup.");
+  }
+  const std::string owned_name(name);
+  if (::unlinkat(directory, owned_name.c_str(), 0) != 0) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "Could not remove an exact staged output.");
+  }
+  return {};
+}
+
+std::optional<Error> copy_file_at(
     const fs::path& source,
-    const fs::path& destination,
+    int destination_directory,
+    std::string_view destination_name,
     std::uint64_t cap,
     const std::optional<std::pair<std::uint64_t, std::uint64_t>>& expected,
     ErrorCode mismatch_code,
     std::uint64_t* total_output,
-    const Options& options) {
+    const Options& options,
+    checked_file_identity::Identity* produced) {
   std::error_code error;
   const auto size = fs::file_size(source, error);
   if (error || size == 0 || size > cap) {
@@ -377,11 +674,20 @@ std::optional<Error> copy_file(
   if (const auto budget = reserve_output(size, &next_total, options)) {
     return budget;
   }
-  std::ifstream input(source, std::ios::binary);
-  std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+  const int input_descriptor = ::open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  posix_file::OwnedFd input(input_descriptor);
+  auto output = posix_file::open_file_at(
+      destination_directory, destination_name, O_RDWR | O_CREAT | O_EXCL, 0600);
   if (!input || !output) {
     return make_error(ErrorCode::output_write_failed,
                       "Could not open a materializer copy input or output.");
+  }
+  posix_file::Identity output_identity;
+  struct stat output_status {};
+  if (!posix_file::descriptor_identity(output.get(), &output_identity, &output_status) ||
+      !S_ISREG(output_status.st_mode) || output_status.st_nlink != 1) {
+    return make_error(ErrorCode::output_write_failed,
+                      "The copied output is not a private regular file.");
   }
   XXH64_state_t hash_state;
   XXH64_reset(&hash_state, 0);
@@ -393,29 +699,146 @@ std::optional<Error> copy_file(
     }
     const auto chunk =
         static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - copied));
-    input.read(buffer.data(), static_cast<std::streamsize>(chunk));
-    if (input.gcount() != static_cast<std::streamsize>(chunk)) {
+    const auto read_count = ::read(input.get(), buffer.data(), chunk);
+    if (read_count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (read_count != static_cast<ssize_t>(chunk)) {
       return make_error(ErrorCode::input_read_failed,
                         "Could not completely read a copied input: " + source.string());
     }
-    output.write(buffer.data(), static_cast<std::streamsize>(chunk));
-    if (!output) {
-      return make_error(ErrorCode::output_write_failed,
-                        "Could not write a staged output: " + destination.string());
+    std::size_t written = 0;
+    while (written < chunk) {
+      const auto write_count =
+          ::write(output.get(), buffer.data() + written, chunk - written);
+      if (write_count < 0 && errno == EINTR) {
+        continue;
+      }
+      if (write_count <= 0) {
+        return make_error(ErrorCode::output_write_failed,
+                          "Could not write a staged output.");
+      }
+      written += static_cast<std::size_t>(write_count);
     }
     XXH64_update(&hash_state, buffer.data(), chunk);
     copied += chunk;
   }
-  output.flush();
-  if (!output) {
+  if (::fsync(output.get()) != 0) {
     return make_error(ErrorCode::output_write_failed,
-                      "Could not flush a staged output: " + destination.string());
+                      "Could not synchronize a staged output.");
   }
-  if (expected && XXH64_digest(&hash_state) != expected->second) {
+  const auto copied_hash = XXH64_digest(&hash_state);
+  if (expected && copied_hash != expected->second) {
     return make_error(mismatch_code, "A copied artifact has the wrong hash: " + source.string());
   }
+  struct stat final_status {};
+  std::uint64_t installed_hash = 0;
+  if (!posix_file::descriptor_identity(output.get(), nullptr, &final_status) ||
+      !posix_file::entry_identity(destination_directory, destination_name, output_identity) ||
+      !S_ISREG(final_status.st_mode) || final_status.st_nlink != 1 ||
+      final_status.st_size != static_cast<off_t>(size) ||
+      hash_descriptor(output.get(), size, &installed_hash) || installed_hash != copied_hash) {
+    const auto cleanup = remove_owned_file(destination_directory, destination_name, output_identity);
+    return cleanup ? cleanup
+                   : std::optional<Error>(make_error(
+                         ErrorCode::output_write_failed,
+                         "A staged output changed while it was descriptor-validated."));
+  }
   *total_output = next_total;
+  if (produced) {
+    *produced = {std::string(destination_name), size, copied_hash};
+  }
   return {};
+}
+
+std::optional<Error> validate_output_directory(int directory,
+                                               const OutputMap& expected,
+                                               std::uint64_t file_cap,
+                                               std::uint32_t name_cap) {
+  auto enumeration = posix_file::open_directory_at(directory, ".");
+  if (!enumeration) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not reopen a staged output directory.");
+  }
+  DIR* stream = ::fdopendir(enumeration.release());
+  if (!stream) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not enumerate a staged output directory.");
+  }
+  std::unordered_set<std::string> found;
+  int read_error = 0;
+  while (true) {
+    errno = 0;
+    const auto* entry = ::readdir(stream);
+    if (!entry) {
+      read_error = errno;
+      break;
+    }
+    const std::string name(entry->d_name);
+    if (name == "." || name == "..") {
+      continue;
+    }
+    if (!valid_name(name, name_cap) || !found.emplace(collision_key(name)).second) {
+      ::closedir(stream);
+      return make_error(ErrorCode::output_write_failed,
+                        "A staged output directory contains an unsafe entry.");
+    }
+    const auto expected_entry = expected.find(collision_key(name));
+    if (expected_entry == expected.end() || expected_entry->second.relative_path != name ||
+        expected_entry->second.size == 0 || expected_entry->second.size > file_cap) {
+      ::closedir(stream);
+      return make_error(ErrorCode::output_write_failed,
+                        "A staged output directory differs from its exact manifest.");
+    }
+    auto file = posix_file::open_file_at(directory, name, O_RDONLY);
+    posix_file::Identity identity;
+    struct stat before {};
+    if (!file || !posix_file::descriptor_identity(file.get(), &identity, &before) ||
+        !S_ISREG(before.st_mode) || before.st_nlink != 1 ||
+        before.st_size != static_cast<off_t>(expected_entry->second.size)) {
+      ::closedir(stream);
+      return make_error(ErrorCode::output_write_failed,
+                        "A staged output is not the expected private regular file.");
+    }
+    std::uint64_t hash = 0;
+    struct stat after {};
+    if (hash_descriptor(file.get(), expected_entry->second.size, &hash) ||
+        hash != expected_entry->second.xxh64 ||
+        !posix_file::descriptor_identity(file.get(), nullptr, &after) ||
+        !posix_file::same_identity(after, identity) || before.st_size != after.st_size ||
+        !posix_file::entry_identity(directory, name, identity)) {
+      ::closedir(stream);
+      return make_error(ErrorCode::output_write_failed,
+                        "A staged output changed during final descriptor validation.");
+    }
+  }
+  ::closedir(stream);
+  if (read_error != 0 || found.size() != expected.size()) {
+    return make_error(ErrorCode::output_write_failed,
+                      "A staged output directory is incomplete or changed during enumeration.");
+  }
+  return {};
+}
+
+std::optional<Error> validate_stage(const OutputStage& stage,
+                                    const OutputMap& iso_outputs,
+                                    const OutputMap& fr3_outputs,
+                                    const Options& options) {
+  if (inspect_parent_identity(stage.parent_path, stage.parent_identity) ||
+      !posix_file::entry_identity(stage.parent.get(), stage.stage_name, stage.root_identity) ||
+      !posix_file::entry_identity(stage.root.get(), "iso", stage.iso_identity) ||
+      !posix_file::entry_identity(stage.root.get(), "fr3", stage.fr3_identity)) {
+    return make_error(ErrorCode::output_write_failed,
+                      "The descriptor-owned materializer stage changed before validation.");
+  }
+  if (const auto error = validate_output_directory(
+          stage.iso.get(), iso_outputs, options.limits.max_total_output_bytes,
+          options.limits.max_name_bytes)) {
+    return error;
+  }
+  return validate_output_directory(stage.fr3.get(), fr3_outputs,
+                                   options.limits.max_fr3_file_bytes,
+                                   options.limits.max_name_bytes);
 }
 
 std::string generated_object_key(jak1_output_recipe::GeneratedDataKind kind,
@@ -438,12 +861,11 @@ bool known_generated_flat_kind(jak1_output_recipe::GeneratedFlatFileKind kind) {
          kind <= jak1_output_recipe::GeneratedFlatFileKind::game_subtitle;
 }
 
-std::optional<Error> cleanup_failure(Error error, const fs::path& stage) {
-  std::error_code cleanup_error;
-  fs::remove_all(stage, cleanup_error);
-  if (cleanup_error) {
-    return make_error(ErrorCode::stage_cleanup_failed,
-                      error.message + " Cleanup also failed: " + cleanup_error.message());
+std::optional<Error> cleanup_failure(Error error, OutputStage& stage) {
+  if (const auto cleanup = stage.cleanup()) {
+    auto cleanup_error = *cleanup;
+    cleanup_error.message = error.message + " Cleanup also failed: " + cleanup_error.message;
+    return cleanup_error;
   }
   return error;
 }
@@ -532,7 +954,7 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
 Result<Summary> materialize(const Inputs& inputs,
                             const fs::path& destination_root,
                             const Options& options) {
-  fs::path stage;
+  OutputStage stage;
   try {
     if (!valid_options(options) || !destination_root.is_absolute() ||
         destination_root.filename().empty() ||
@@ -636,44 +1058,13 @@ Result<Summary> materialize(const Inputs& inputs,
       }
     }
 
-    std::error_code fs_error;
-    const auto parent_status = fs::symlink_status(destination_root.parent_path(), fs_error);
-    if (fs_error || parent_status.type() != fs::file_type::directory) {
-      return Result<Summary>::failure(make_error(
-          ErrorCode::destination_inspection_failed,
-          "The output destination parent is missing, a symbolic link, or not a directory."));
-    }
-    const auto destination_status = fs::symlink_status(destination_root, fs_error);
-    if ((fs_error && fs_error != std::errc::no_such_file_or_directory) ||
-        destination_status.type() != fs::file_type::not_found) {
-      return Result<Summary>::failure(make_error(
-          fs_error ? ErrorCode::destination_inspection_failed : ErrorCode::destination_exists,
-          "The output destination already exists or could not be inspected."));
-    }
-    fs_error.clear();
-    stage = fs::path(destination_root.string() + ".stage");
-    const auto stage_status = fs::symlink_status(stage, fs_error);
-    if ((fs_error && fs_error != std::errc::no_such_file_or_directory) ||
-        stage_status.type() != fs::file_type::not_found) {
-      return Result<Summary>::failure(make_error(
-          fs_error ? ErrorCode::destination_inspection_failed : ErrorCode::destination_exists,
-          "The private output staging path already exists or could not be inspected."));
-    }
-    fs_error.clear();
-    if (!fs::create_directory(stage, fs_error) || fs_error) {
-      return Result<Summary>::failure(make_error(
-          ErrorCode::stage_create_failed, "Could not create the private output staging root."));
-    }
-    const auto iso_root = stage / "iso";
-    const auto fr3_root = stage / "fr3";
-    if (!fs::create_directory(iso_root, fs_error) || fs_error ||
-        !fs::create_directory(fr3_root, fs_error) || fs_error) {
-      return Result<Summary>::failure(*cleanup_failure(
-          make_error(ErrorCode::stage_create_failed, "Could not create staged output directories."),
-          stage));
+    if (const auto error = create_output_stage(destination_root, &stage)) {
+      return Result<Summary>::failure(stage.linked ? *cleanup_failure(*error, stage) : *error);
     }
 
     Summary summary;
+    OutputMap iso_outputs;
+    OutputMap fr3_outputs;
     std::unordered_set<std::string> used_generated_objects;
     for (std::uint32_t archive_index = 0; archive_index < recipe.archives.size(); ++archive_index) {
       const auto& archive_record = recipe.archives[archive_index];
@@ -825,9 +1216,9 @@ Result<Summary> materialize(const Inputs& inputs,
           std::min(writer_options.write_chunk_bytes, options.limits.io_chunk_bytes);
       writer_options.duplicate_name_policy = jak1_checked_dgo_writer::DuplicateNamePolicy::allow;
       writer_options.should_cancel = options.should_cancel;
-      auto written = jak1_checked_dgo_writer::write_file(
-          iso_root / archive_record.destination_basename, archive_record.destination_basename,
-          write_objects, writer_options);
+      auto written = jak1_checked_dgo_writer::write_file_at(
+          stage.iso.get(), archive_record.destination_basename,
+          archive_record.destination_basename, write_objects, writer_options);
       if (!written) {
         return Result<Summary>::failure(*cleanup_failure(
             make_error(
@@ -842,6 +1233,17 @@ Result<Summary> materialize(const Inputs& inputs,
       }
       ++summary.archives_written;
       summary.objects_written += written.value().object_count;
+      if (!iso_outputs
+               .emplace(collision_key(archive_record.destination_basename),
+                        checked_file_identity::Identity{archive_record.destination_basename,
+                                                        written.value().output_bytes,
+                                                        written.value().output_xxh64})
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged archive destination collides with another output."),
+            stage));
+      }
     }
     if (used_generated_objects.size() != generated_objects.size()) {
       return Result<Summary>::failure(*cleanup_failure(
@@ -872,12 +1274,18 @@ Result<Summary> materialize(const Inputs& inputs,
                                 ? std::optional<std::pair<std::uint64_t, std::uint64_t>>(
                                       std::pair{identity.value()->size, identity.value()->xxh64})
                                 : std::nullopt;
-      if (const auto error =
-              copy_file(source.value(), iso_root / copy.destination_basename,
-                        options.limits.max_flat_file_bytes, expected,
-                        ErrorCode::input_identity_mismatch,
-                        &summary.output_bytes, options)) {
+      checked_file_identity::Identity produced;
+      if (const auto error = copy_file_at(
+              source.value(), stage.iso.get(), copy.destination_basename,
+              options.limits.max_flat_file_bytes, expected, ErrorCode::input_identity_mismatch,
+              &summary.output_bytes, options, &produced)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
+      }
+      if (!iso_outputs.emplace(collision_key(copy.destination_basename), std::move(produced)).second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged flat destination collides with another output."),
+            stage));
       }
       ++summary.flat_files_written;
     }
@@ -901,12 +1309,22 @@ Result<Summary> materialize(const Inputs& inputs,
                                     summary.output_bytes, generated.destination_basename)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
-      if (const auto error =
-              copy_file(source.value(), iso_root / generated.destination_basename,
-                        options.limits.max_flat_file_bytes,
-                        std::pair<std::uint64_t, std::uint64_t>{artifact.size, artifact.xxh64},
-                        ErrorCode::generated_artifact_mismatch, &summary.output_bytes, options)) {
+      checked_file_identity::Identity produced;
+      if (const auto error = copy_file_at(
+              source.value(), stage.iso.get(), generated.destination_basename,
+              options.limits.max_flat_file_bytes,
+              std::pair<std::uint64_t, std::uint64_t>{artifact.size, artifact.xxh64},
+              ErrorCode::generated_artifact_mismatch, &summary.output_bytes, options,
+              &produced)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
+      }
+      if (!iso_outputs
+               .emplace(collision_key(generated.destination_basename), std::move(produced))
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A generated flat destination collides with another output."),
+            stage));
       }
       used_generated_flats.emplace(key);
       ++summary.flat_files_written;
@@ -918,6 +1336,7 @@ Result<Summary> materialize(const Inputs& inputs,
           stage));
     }
 
+    std::error_code fs_error;
     std::unordered_set<std::string> actual_fr3;
     const auto fr3_status = fs::symlink_status(inputs.prepared_fr3_root, fs_error);
     if (fs_error || fr3_status.type() != fs::file_type::directory) {
@@ -971,14 +1390,21 @@ Result<Summary> materialize(const Inputs& inputs,
                      summary.output_bytes, name)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
-      if (const auto error =
-              copy_file(source.value(), fr3_root / name, options.limits.max_fr3_file_bytes,
-                        identity.value()
-                            ? std::optional<std::pair<std::uint64_t, std::uint64_t>>(
-                                  std::pair{identity.value()->size, identity.value()->xxh64})
-                            : std::nullopt,
-                        ErrorCode::input_identity_mismatch, &summary.output_bytes, options)) {
+      checked_file_identity::Identity produced;
+      if (const auto error = copy_file_at(
+              source.value(), stage.fr3.get(), name, options.limits.max_fr3_file_bytes,
+              identity.value()
+                  ? std::optional<std::pair<std::uint64_t, std::uint64_t>>(
+                        std::pair{identity.value()->size, identity.value()->xxh64})
+                  : std::nullopt,
+              ErrorCode::input_identity_mismatch, &summary.output_bytes, options, &produced)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
+      }
+      if (!fr3_outputs.emplace(collision_key(name), std::move(produced)).second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged FR3 destination collides with another output."),
+            stage));
       }
       ++summary.fr3_files_written;
     }
@@ -987,33 +1413,31 @@ Result<Summary> materialize(const Inputs& inputs,
                                   destination_root.filename().string())) {
       return Result<Summary>::failure(*cleanup_failure(*error, stage));
     }
-    fs::rename(stage, destination_root, fs_error);
-    if (fs_error) {
-      return Result<Summary>::failure(*cleanup_failure(
-          make_error(ErrorCode::stage_install_failed,
-                     "Could not atomically install the prepared output: " + fs_error.message()),
-          stage));
+    if (const auto validation = validate_stage(stage, iso_outputs, fr3_outputs, options)) {
+      return Result<Summary>::failure(*cleanup_failure(*validation, stage));
     }
-    stage.clear();
+    if (const auto error = stage.install()) {
+      return Result<Summary>::failure(*cleanup_failure(*error, stage));
+    }
     return Result<Summary>::success(std::move(summary));
   } catch (const std::bad_alloc&) {
     auto error = make_error(
         ErrorCode::allocation_failed,
         std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
             " output materialization ran out of memory.");
-    return Result<Summary>::failure(stage.empty() ? error : *cleanup_failure(error, stage));
+    return Result<Summary>::failure(stage.linked ? *cleanup_failure(error, stage) : error);
   } catch (const std::exception& exception) {
     auto error = make_error(
         ErrorCode::output_write_failed,
         std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
             " output materialization failed: " + exception.what());
-    return Result<Summary>::failure(stage.empty() ? error : *cleanup_failure(error, stage));
+    return Result<Summary>::failure(stage.linked ? *cleanup_failure(error, stage) : error);
   } catch (...) {
     auto error = make_error(
         ErrorCode::output_write_failed,
         std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
             " output materialization failed unexpectedly.");
-    return Result<Summary>::failure(stage.empty() ? error : *cleanup_failure(error, stage));
+    return Result<Summary>::failure(stage.linked ? *cleanup_failure(error, stage) : error);
   }
 }
 

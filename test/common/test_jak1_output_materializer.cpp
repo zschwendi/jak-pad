@@ -337,6 +337,87 @@ bool validated_input_mutations_fail_without_promotion() {
   return true;
 }
 
+bool descriptor_owned_outputs_reject_terminal_races() {
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    bool mutated = false;
+    fixture.options.on_progress = [&](const Progress& progress) {
+      if (!mutated && progress.phase == Phase::installing) {
+        auto bytes = read_bytes(fs::path(fixture.destination.string() + ".stage") / "iso/DATA.BIN");
+        if (!bytes.empty()) {
+          bytes.front() ^= 1;
+          mutated = write_bytes(fs::path(fixture.destination.string() + ".stage") /
+                                    "iso/DATA.BIN",
+                                bytes);
+        }
+      }
+    };
+    const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+    CHECK(mutated);
+    CHECK(!result);
+    CHECK(result.error().code == ErrorCode::output_write_failed);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    bool raced = false;
+    fixture.options.on_progress = [&](const Progress& progress) {
+      if (!raced && progress.phase == Phase::installing) {
+        std::error_code error;
+        raced = fs::create_directory(fixture.destination, error) && !error;
+      }
+    };
+    const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+    CHECK(raced);
+    CHECK(!result);
+    CHECK(result.error().code == ErrorCode::stage_install_failed);
+    CHECK(fs::is_directory(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    const auto outside = fixture.temp.path / "outside";
+    CHECK(write_bytes(outside / "sentinel", std::array<std::uint8_t, 1>{0x5a}));
+    bool swapped = false;
+    fixture.options.on_progress = [&](const Progress& progress) {
+      if (!swapped && progress.phase == Phase::copying_flat_files) {
+        const auto stage_root = fs::path(fixture.destination.string() + ".stage");
+        std::error_code error;
+        fs::rename(stage_root / "iso", stage_root / "iso-held", error);
+        if (!error) {
+          fs::create_directory_symlink(outside, stage_root / "iso", error);
+          swapped = !error;
+        }
+      }
+    };
+    const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+    CHECK(swapped);
+    CHECK(!result);
+    CHECK(result.error().code == ErrorCode::stage_cleanup_failed);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(read_bytes(outside / "sentinel") == std::vector<std::uint8_t>{0x5a});
+  }
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    fixture.options.on_progress = [](const Progress& progress) {
+      if (progress.phase == Phase::installing) {
+        throw std::runtime_error("terminal callback failure");
+      }
+    };
+    const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+    CHECK(!result);
+    CHECK(result.error().code == ErrorCode::callback_failed);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
+  return true;
+}
+
 bool rejects_mismatched_checked_inputs_and_cleans_stage() {
   {
     Fixture fixture;
@@ -544,6 +625,7 @@ int main() {
       materializes_checked_desktop_layout,
       rejects_exact_recipe_mismatch_before_staging,
       validated_input_mutations_fail_without_promotion,
+      descriptor_owned_outputs_reject_terminal_races,
       rejects_mismatched_checked_inputs_and_cleans_stage,
       preserves_typed_recipe_identity_failures,
       rejects_inexact_generated_and_fr3_catalogs,

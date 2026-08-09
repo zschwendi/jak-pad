@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/util/PosixFile.h"
 #include "decompiler/extractor/jak1_checked_dgo.h"
 #include "decompiler/extractor/jak1_checked_dgo_writer.h"
 
@@ -74,6 +75,23 @@ std::size_t owned_stage_count(const std::filesystem::path& directory,
 std::uint32_t read_u32_le(std::span<const std::uint8_t> bytes, std::size_t offset) {
   return std::uint32_t(bytes[offset]) | (std::uint32_t(bytes[offset + 1]) << 8) |
          (std::uint32_t(bytes[offset + 2]) << 16) | (std::uint32_t(bytes[offset + 3]) << 24);
+}
+
+bool owned_fd_move_and_reset_are_single_owner() {
+  TemporaryDirectory temp;
+  auto descriptor = posix_file::open_directory(temp.path.c_str());
+  CHECK(descriptor);
+  const int original = descriptor.get();
+  posix_file::OwnedFd moved(std::move(descriptor));
+  CHECK(!descriptor);
+  CHECK(moved.get() == original);
+  posix_file::OwnedFd assigned;
+  assigned = std::move(moved);
+  CHECK(!moved);
+  CHECK(assigned.get() == original);
+  assigned.reset();
+  CHECK(!assigned);
+  return true;
 }
 
 bool builds_exact_raw_archive_and_round_trips() {
@@ -243,6 +261,15 @@ bool writes_atomically_and_refuses_existing_destination() {
   const std::vector<std::uint8_t> two{4, 5};
   const std::array<writer::ObjectRecord, 2> objects{{{"one", one}, {"two", two}}};
 
+  auto unsafe = writer::write_file(temp.path / "BAD:NAME.DGO", "OK.DGO", objects);
+  CHECK(!unsafe);
+  CHECK(unsafe.error().code == writer::ErrorCode::invalid_argument);
+  writer::Options name_limits;
+  name_limits.max_name_bytes = 8;
+  unsafe = writer::write_file(temp.path / "TOO-LONG.DGO", "OK.DGO", objects, name_limits);
+  CHECK(!unsafe);
+  CHECK(unsafe.error().code == writer::ErrorCode::invalid_argument);
+
   std::vector<writer::ProgressPhase> phases;
   writer::Options options;
   options.on_progress = [&](const writer::Progress& update) { phases.push_back(update.phase); };
@@ -271,19 +298,22 @@ bool writes_atomically_and_refuses_existing_destination() {
   CHECK(owned_stage_count(temp.path, destination.filename().string()) == 0);
 
   const auto raced_destination = temp.path / "RACE.DGO";
-  const std::vector<std::uint8_t> raced_contents{'r', 'a', 'c', 'e'};
   options = {};
   options.on_progress = [&](const writer::Progress& update) {
     if (update.phase == writer::ProgressPhase::installing) {
-      std::ofstream raced(raced_destination, std::ios::binary);
-      raced.write(reinterpret_cast<const char*>(raced_contents.data()),
-                  static_cast<std::streamsize>(raced_contents.size()));
+      std::fstream raced(raced_destination, std::ios::binary | std::ios::in | std::ios::out);
+      char byte = 0;
+      raced.read(&byte, 1);
+      byte ^= 1;
+      raced.seekp(0);
+      raced.write(&byte, 1);
+      raced.flush();
     }
   };
   const auto raced = writer::write_file(raced_destination, "RACE.DGO", objects, options);
   CHECK(!raced);
-  CHECK(raced.error().code == writer::ErrorCode::destination_exists);
-  CHECK(read_bytes(raced_destination) == raced_contents);
+  CHECK(raced.error().code == writer::ErrorCode::atomic_install_failed);
+  CHECK(!std::filesystem::exists(raced_destination));
   CHECK(owned_stage_count(temp.path, raced_destination.filename().string()) == 0);
   return true;
 }
@@ -327,6 +357,7 @@ bool failure_cleans_only_its_owned_stage() {
 
 int main() {
   const std::vector<std::pair<const char*, bool (*)()>> tests = {
+      {"owned_fd_move_and_reset_are_single_owner", owned_fd_move_and_reset_are_single_owner},
       {"builds_exact_raw_archive_and_round_trips", builds_exact_raw_archive_and_round_trips},
       {"rejects_invalid_names", rejects_invalid_names},
       {"enforces_object_total_output_and_option_caps",

@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
+#include <dirent.h>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
@@ -24,6 +25,7 @@
 #include "common/custom_data/Jak2PublicGeneratedArtifacts.h"
 #include "common/custom_data/Jak2PublicOutputGraph.h"
 #include "common/custom_data/Jak2SourceObjectPack.h"
+#include "common/util/PosixFile.h"
 
 #include "decompiler/extractor/jak2_extracted_generated_inputs.h"
 #include "decompiler/extractor/jak2_fr3_preparer.h"
@@ -56,6 +58,8 @@ constexpr std::size_t kIoChunkBytes = 256 * 1024;
 constexpr std::uint64_t kMaxRetailArchiveBytes = 512ull * 1024 * 1024;
 constexpr std::uint64_t kMaxTotalRetailArchiveBytes = 512ull * 1024 * 1024;
 constexpr std::size_t kMaxIndexedRetailEntries = 4096;
+constexpr std::size_t kMaxWorkCleanupDepth = 64;
+constexpr std::size_t kMaxWorkCleanupEntries = 100000;
 constexpr std::string_view kGraphIsoRoot = "iso_data/jak2";
 constexpr std::string_view kWorkDirectoryName = ".opengoal-import";
 constexpr std::string_view kPreparedDirectoryName = ".prepared";
@@ -508,9 +512,8 @@ struct PipelineState {
   std::optional<internal::FinalContract> final_contract;
 };
 
-std::optional<Error> remove_partial_residue(const fs::path& work_root);
-Error preserve_error(Error error, const internal::WorkPaths& paths);
-std::optional<Error> promote_directory(const fs::path& source, const fs::path& destination);
+std::optional<Error> remove_partial_residue_at(int work_directory);
+Error preserve_error_at(Error error, const internal::WorkPaths& paths, int work_directory);
 std::optional<Error> write_file_atomically(const fs::path& destination,
                                            std::span<const std::uint8_t> bytes,
                                            CallbackForwarder& callbacks);
@@ -1135,114 +1138,411 @@ std::optional<Error> materialize_stage(const Request& request,
   return {};
 }
 
-Result<std::set<std::string>> exact_regular_file_set(const fs::path& root,
-                                                     ErrorCode code,
-                                                     std::string_view description) {
-  if (!direct_directory(root)) {
-    return Result<std::set<std::string>>::failure(
-        make_error(code, std::string(description) + " is missing or linked."));
-  }
-  std::set<std::string> files;
-  std::error_code error;
-  for (fs::directory_iterator iterator(root, error), end; !error && iterator != end;
-       iterator.increment(error)) {
-    const auto status = iterator->symlink_status(error);
-    const auto name = iterator->path().filename().string();
-    if (error || status.type() != fs::file_type::regular || !safe_basename(name) ||
-        !files.emplace(name).second) {
-      return Result<std::set<std::string>>::failure(make_error(
-          code, std::string(description) + " contains an unsafe or duplicate entry."));
-    }
-  }
-  if (error) {
-    return Result<std::set<std::string>>::failure(
-        make_error(code, std::string(description) + " changed during inspection."));
-  }
-  return Result<std::set<std::string>>::success(std::move(files));
-}
+struct CapturedPreparedOutput {
+  posix_file::OwnedFd root;
+  posix_file::OwnedFd iso;
+  posix_file::OwnedFd fr3;
+  posix_file::Identity root_identity;
+  posix_file::Identity iso_identity;
+  posix_file::Identity fr3_identity;
+  std::map<std::string, checked_file_identity::Identity> iso_files;
+  std::map<std::string, checked_file_identity::Identity> fr3_files;
+};
 
-std::optional<Error> validate_output_tree(const fs::path& root,
-                                          const internal::FinalContract& contract,
-                                          ErrorCode code) {
-  const auto iso = exact_regular_file_set(root / "iso", code, "The candidate ISO directory");
-  if (!iso) {
-    return iso.error();
+Result<checked_file_identity::Identity> capture_file_at(int directory,
+                                                       const std::string& name) {
+  auto file = posix_file::open_file_at(directory, name, O_RDONLY);
+  posix_file::Identity identity;
+  struct stat before {};
+  if (!file || !posix_file::descriptor_identity(file.get(), &identity, &before) ||
+      !S_ISREG(before.st_mode) || before.st_nlink != 1 || before.st_size <= 0 ||
+      static_cast<std::uint64_t>(before.st_size) > 8ull * 1024 * 1024 * 1024) {
+    return Result<checked_file_identity::Identity>::failure(make_error(
+        ErrorCode::candidate_finalize_failed,
+        "A prepared output is not a bounded private regular file."));
   }
-  const auto fr3 = exact_regular_file_set(root / "fr3", code, "The candidate FR3 directory");
-  if (!fr3) {
-    return fr3.error();
-  }
-  if (iso.value() != std::set<std::string>(contract.iso_basenames.begin(),
-                                           contract.iso_basenames.end()) ||
-      fr3.value() != std::set<std::string>(contract.fr3_basenames.begin(),
-                                           contract.fr3_basenames.end())) {
-    return make_error(code, "The candidate does not exactly match its checked output contract.");
-  }
-  std::set<std::string> entries;
-  std::error_code error;
-  for (fs::directory_iterator iterator(root, error), end; !error && iterator != end;
-       iterator.increment(error)) {
-    entries.emplace(iterator->path().filename().string());
-  }
-  if (error || entries != std::set<std::string>{"fr3", "iso"}) {
-    return make_error(code, "The candidate contains unexpected top-level entries.");
-  }
-  return {};
-}
-
-std::optional<Error> remove_partial_residue(const fs::path& work_root) {
-  if (!direct_directory(work_root)) {
-    return {};
-  }
-  std::error_code error;
-  fs::recursive_directory_iterator iterator(work_root, error);
-  const fs::recursive_directory_iterator end;
-  for (; !error && iterator != end; iterator.increment(error)) {
-    if (!iterator->path().filename().string().ends_with(".partial")) {
+  XXH64_state_t hash_state;
+  XXH64_reset(&hash_state, 0);
+  std::vector<std::uint8_t> buffer(64 * 1024);
+  std::uint64_t offset = 0;
+  const auto size = static_cast<std::uint64_t>(before.st_size);
+  while (offset < size) {
+    const auto chunk = static_cast<std::size_t>(
+        std::min<std::uint64_t>(buffer.size(), size - offset));
+    const auto count = ::pread(file.get(), buffer.data(), chunk, static_cast<off_t>(offset));
+    if (count < 0 && errno == EINTR) {
       continue;
     }
-    const auto status = iterator->symlink_status(error);
-    if (error || status.type() != fs::file_type::regular ||
-        !fs::remove(iterator->path(), error) || error) {
-      return make_error(ErrorCode::candidate_cleanup_failed,
-                        "Could not remove an import partial file from the preserved candidate.");
+    if (count != static_cast<ssize_t>(chunk)) {
+      return Result<checked_file_identity::Identity>::failure(make_error(
+          ErrorCode::candidate_finalize_failed,
+          "Could not completely read a prepared output through its descriptor."));
+    }
+    XXH64_update(&hash_state, buffer.data(), chunk);
+    offset += chunk;
+  }
+  struct stat after {};
+  if (!posix_file::descriptor_identity(file.get(), nullptr, &after) ||
+      !posix_file::same_identity(after, identity) || before.st_size != after.st_size ||
+      !posix_file::entry_identity(directory, name, identity)) {
+    return Result<checked_file_identity::Identity>::failure(make_error(
+        ErrorCode::candidate_finalize_failed,
+        "A prepared output changed while its identity was captured."));
+  }
+  return Result<checked_file_identity::Identity>::success(
+      {name, size, XXH64_digest(&hash_state)});
+}
+
+Result<std::map<std::string, checked_file_identity::Identity>> capture_directory_at(
+    int directory,
+    const std::set<std::string>& expected) {
+  auto enumeration = posix_file::open_directory_at(directory, ".");
+  if (!enumeration) {
+    return Result<std::map<std::string, checked_file_identity::Identity>>::failure(make_error(
+        ErrorCode::candidate_finalize_failed,
+        "Could not reopen a prepared output directory."));
+  }
+  DIR* stream = ::fdopendir(enumeration.release());
+  if (!stream) {
+    return Result<std::map<std::string, checked_file_identity::Identity>>::failure(make_error(
+        ErrorCode::candidate_finalize_failed,
+        "Could not enumerate a prepared output directory."));
+  }
+  std::map<std::string, checked_file_identity::Identity> result;
+  int read_error = 0;
+  while (true) {
+    errno = 0;
+    const auto* entry = ::readdir(stream);
+    if (!entry) {
+      read_error = errno;
+      break;
+    }
+    const std::string name(entry->d_name);
+    if (name == "." || name == "..") {
+      continue;
+    }
+    if (!safe_basename(name) || !expected.contains(name) || result.contains(name)) {
+      ::closedir(stream);
+      return Result<std::map<std::string, checked_file_identity::Identity>>::failure(make_error(
+          ErrorCode::candidate_finalize_failed,
+          "A prepared output directory differs from its exact contract."));
+    }
+    auto identity = capture_file_at(directory, name);
+    if (!identity) {
+      ::closedir(stream);
+      return Result<std::map<std::string, checked_file_identity::Identity>>::failure(
+          identity.error());
+    }
+    result.emplace(name, identity.take_value());
+  }
+  ::closedir(stream);
+  if (read_error != 0 || result.size() != expected.size()) {
+    return Result<std::map<std::string, checked_file_identity::Identity>>::failure(make_error(
+        ErrorCode::candidate_finalize_failed,
+        "A prepared output directory is incomplete or changed during enumeration."));
+  }
+  return Result<std::map<std::string, checked_file_identity::Identity>>::success(
+      std::move(result));
+}
+
+Result<CapturedPreparedOutput> capture_prepared_output(
+    int work_directory,
+    const internal::FinalContract& contract) {
+  CapturedPreparedOutput output;
+  output.root = posix_file::open_directory_at(work_directory, kPreparedDirectoryName);
+  if (!output.root ||
+      !posix_file::descriptor_identity(output.root.get(), &output.root_identity)) {
+    return Result<CapturedPreparedOutput>::failure(make_error(
+        ErrorCode::candidate_finalize_failed,
+        "Could not retain the exact prepared-output root."));
+  }
+  output.iso = posix_file::open_directory_at(output.root.get(), "iso");
+  output.fr3 = posix_file::open_directory_at(output.root.get(), "fr3");
+  if (!output.iso || !output.fr3 ||
+      !posix_file::descriptor_identity(output.iso.get(), &output.iso_identity) ||
+      !posix_file::descriptor_identity(output.fr3.get(), &output.fr3_identity)) {
+    return Result<CapturedPreparedOutput>::failure(make_error(
+        ErrorCode::candidate_finalize_failed,
+        "Could not retain the exact prepared output directories."));
+  }
+  const std::set<std::string> expected_iso(contract.iso_basenames.begin(),
+                                           contract.iso_basenames.end());
+  const std::set<std::string> expected_fr3(contract.fr3_basenames.begin(),
+                                           contract.fr3_basenames.end());
+  auto iso = capture_directory_at(output.iso.get(), expected_iso);
+  auto fr3 = capture_directory_at(output.fr3.get(), expected_fr3);
+  if (!iso || !fr3) {
+    return Result<CapturedPreparedOutput>::failure(!iso ? iso.error() : fr3.error());
+  }
+  output.iso_files = iso.take_value();
+  output.fr3_files = fr3.take_value();
+  return Result<CapturedPreparedOutput>::success(std::move(output));
+}
+
+bool exact_child_directories(
+    int directory,
+    const std::map<std::string, posix_file::Identity>& expected) {
+  auto enumeration = posix_file::open_directory_at(directory, ".");
+  if (!enumeration) {
+    return false;
+  }
+  DIR* stream = ::fdopendir(enumeration.release());
+  if (!stream) {
+    return false;
+  }
+  std::set<std::string> found;
+  int read_error = 0;
+  while (true) {
+    errno = 0;
+    const auto* entry = ::readdir(stream);
+    if (!entry) {
+      read_error = errno;
+      break;
+    }
+    const std::string name(entry->d_name);
+    if (name == "." || name == "..") {
+      continue;
+    }
+    const auto expected_entry = expected.find(name);
+    struct stat status {};
+    if (expected_entry == expected.end() ||
+        !posix_file::entry_identity(directory, name, expected_entry->second, &status) ||
+        !S_ISDIR(status.st_mode) || !found.emplace(name).second) {
+      ::closedir(stream);
+      return false;
     }
   }
-  if (error) {
+  ::closedir(stream);
+  return read_error == 0 && found.size() == expected.size();
+}
+
+struct WorkCleanupBudget {
+  std::size_t entries = 0;
+};
+
+std::optional<Error> remove_tree_contents_at(int directory,
+                                             std::size_t depth,
+                                             WorkCleanupBudget* budget) {
+  if (!budget || depth > kMaxWorkCleanupDepth) {
     return make_error(ErrorCode::candidate_cleanup_failed,
-                      "The preserved candidate changed during partial cleanup.");
+                      "The import work tree exceeds its cleanup depth limit.");
+  }
+  auto enumeration = posix_file::open_directory_at(directory, ".");
+  if (!enumeration) {
+    return make_error(ErrorCode::candidate_cleanup_failed,
+                      "Could not reopen an owned work directory for cleanup.");
+  }
+  DIR* stream = ::fdopendir(enumeration.release());
+  if (!stream) {
+    return make_error(ErrorCode::candidate_cleanup_failed,
+                      "Could not enumerate an owned work directory for cleanup.");
+  }
+  int read_error = 0;
+  while (true) {
+    errno = 0;
+    const auto* entry = ::readdir(stream);
+    if (!entry) {
+      read_error = errno;
+      break;
+    }
+    const std::string name(entry->d_name);
+    if (name == "." || name == "..") {
+      continue;
+    }
+    if (budget->entries == kMaxWorkCleanupEntries) {
+      ::closedir(stream);
+      return make_error(ErrorCode::candidate_cleanup_failed,
+                        "The import work tree exceeds its cleanup entry limit.");
+    }
+    ++budget->entries;
+    struct stat status {};
+    if (::fstatat(directory, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
+      ::closedir(stream);
+      return make_error(ErrorCode::candidate_cleanup_failed,
+                        "An owned work entry changed during cleanup.");
+    }
+    const posix_file::Identity identity{status.st_dev, status.st_ino};
+    if (S_ISDIR(status.st_mode)) {
+      auto child = posix_file::open_directory_at(directory, name);
+      if (!child || !posix_file::entry_identity(directory, name, identity)) {
+        ::closedir(stream);
+        return make_error(ErrorCode::candidate_cleanup_failed,
+                          "An owned work directory changed during cleanup.");
+      }
+      if (const auto error = remove_tree_contents_at(child.get(), depth + 1, budget)) {
+        ::closedir(stream);
+        return error;
+      }
+      if (!posix_file::entry_identity(directory, name, identity) ||
+          ::unlinkat(directory, name.c_str(), AT_REMOVEDIR) != 0) {
+        ::closedir(stream);
+        return make_error(ErrorCode::candidate_cleanup_failed,
+                          "Could not remove an exact owned work directory.");
+      }
+    } else if (!posix_file::entry_identity(directory, name, identity) ||
+               ::unlinkat(directory, name.c_str(), 0) != 0) {
+      ::closedir(stream);
+      return make_error(ErrorCode::candidate_cleanup_failed,
+                        "Could not remove an exact owned work entry.");
+    }
+  }
+  ::closedir(stream);
+  if (read_error != 0) {
+    return make_error(ErrorCode::candidate_cleanup_failed,
+                      "Could not completely enumerate an owned work directory.");
   }
   return {};
 }
 
-Error preserve_error(Error error, const internal::WorkPaths& paths) {
+std::optional<Error> remove_tree_contents_at(int directory) {
+  WorkCleanupBudget budget;
+  return remove_tree_contents_at(directory, 0, &budget);
+}
+
+std::optional<Error> validate_captured_directory(
+    int directory,
+    const std::map<std::string, checked_file_identity::Identity>& expected) {
+  std::set<std::string> names;
+  for (const auto& [name, identity] : expected) {
+    names.emplace(name);
+    auto current = capture_file_at(directory, name);
+    if (!current || current.value() != identity) {
+      return make_error(ErrorCode::candidate_finalize_failed,
+                        "A prepared output changed after its exact identity was captured.");
+    }
+  }
+  auto current = capture_directory_at(directory, names);
+  if (!current || current.value() != expected) {
+    return make_error(ErrorCode::candidate_finalize_failed,
+                      "A prepared output directory changed after capture.");
+  }
+  return {};
+}
+
+std::optional<Error> validate_captured_output(const CapturedPreparedOutput& output,
+                                              int containing_directory,
+                                              std::string_view root_name) {
+  if (!posix_file::entry_identity(containing_directory, root_name, output.root_identity) ||
+      !posix_file::entry_identity(output.root.get(), "iso", output.iso_identity) ||
+      !posix_file::entry_identity(output.root.get(), "fr3", output.fr3_identity) ||
+      !exact_child_directories(output.root.get(),
+                               {{"fr3", output.fr3_identity}, {"iso", output.iso_identity}})) {
+    return make_error(ErrorCode::candidate_finalize_failed,
+                      "The prepared output directory identity changed before promotion.");
+  }
+  if (const auto error = validate_captured_directory(output.iso.get(), output.iso_files)) {
+    return error;
+  }
+  return validate_captured_directory(output.fr3.get(), output.fr3_files);
+}
+
+std::optional<Error> promote_captured_directory(int prepared_root,
+                                                int candidate_root,
+                                                std::string_view name,
+                                                const posix_file::Identity& identity) {
+  if (!posix_file::entry_identity(prepared_root, name, identity)) {
+    return make_error(ErrorCode::candidate_finalize_failed,
+                      "A prepared output directory changed before promotion.");
+  }
+  if (posix_file::exclusive_rename_at(prepared_root, name, candidate_root, name) != 0 ||
+      !posix_file::entry_identity(candidate_root, name, identity)) {
+    return make_error(ErrorCode::candidate_finalize_failed,
+                      "Could not exclusively promote the exact prepared output directory.");
+  }
+  return {};
+}
+
+std::optional<Error> remove_partial_residue_at(int work_directory,
+                                               std::size_t depth,
+                                               WorkCleanupBudget* budget) {
+  if (work_directory < 0) {
+    return {};
+  }
+  if (!budget || depth > kMaxWorkCleanupDepth) {
+    return make_error(ErrorCode::candidate_cleanup_failed,
+                      "The preserved import tree exceeds its cleanup depth limit.");
+  }
+  auto enumeration = posix_file::open_directory_at(work_directory, ".");
+  if (!enumeration) {
+    return make_error(ErrorCode::candidate_cleanup_failed,
+                      "Could not reopen the preserved import work directory.");
+  }
+  DIR* stream = ::fdopendir(enumeration.release());
+  if (!stream) {
+    return make_error(ErrorCode::candidate_cleanup_failed,
+                      "Could not enumerate the preserved import work directory.");
+  }
+  while (true) {
+    errno = 0;
+    const auto* entry = ::readdir(stream);
+    if (!entry) {
+      const int read_error = errno;
+      ::closedir(stream);
+      if (read_error != 0) {
+        return make_error(ErrorCode::candidate_cleanup_failed,
+                          "The preserved candidate changed during partial cleanup.");
+      }
+      return {};
+    }
+    const std::string name(entry->d_name);
+    if (name == "." || name == "..") {
+      continue;
+    }
+    if (budget->entries == kMaxWorkCleanupEntries) {
+      ::closedir(stream);
+      return make_error(ErrorCode::candidate_cleanup_failed,
+                        "The preserved import tree exceeds its cleanup entry limit.");
+    }
+    ++budget->entries;
+    struct stat status {};
+    if (::fstatat(work_directory, name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
+      ::closedir(stream);
+      return make_error(ErrorCode::candidate_cleanup_failed,
+                        "The preserved candidate changed during partial cleanup.");
+    }
+    const posix_file::Identity identity{status.st_dev, status.st_ino};
+    if (S_ISDIR(status.st_mode)) {
+      auto child = posix_file::open_directory_at(work_directory, name);
+      if (!child || !posix_file::entry_identity(work_directory, name, identity)) {
+        ::closedir(stream);
+        return make_error(ErrorCode::candidate_cleanup_failed,
+                          "A preserved import directory changed during partial cleanup.");
+      }
+      if (const auto error = remove_partial_residue_at(child.get(), depth + 1, budget)) {
+        ::closedir(stream);
+        return error;
+      }
+      if (!posix_file::entry_identity(work_directory, name, identity)) {
+        ::closedir(stream);
+        return make_error(ErrorCode::candidate_cleanup_failed,
+                          "A preserved import directory changed during partial cleanup.");
+      }
+      continue;
+    }
+    if (!name.ends_with(".partial")) {
+      continue;
+    }
+    if (!S_ISREG(status.st_mode) ||
+        !posix_file::entry_identity(work_directory, name, identity) ||
+        ::unlinkat(work_directory, name.c_str(), 0) != 0) {
+      ::closedir(stream);
+      return make_error(ErrorCode::candidate_cleanup_failed,
+                        "Could not remove an exact import partial file.");
+    }
+  }
+}
+
+std::optional<Error> remove_partial_residue_at(int work_directory) {
+  WorkCleanupBudget budget;
+  return remove_partial_residue_at(work_directory, 0, &budget);
+}
+
+Error preserve_error_at(Error error, const internal::WorkPaths& paths, int work_directory) {
   error.preserved_candidate_root = paths.candidate_root;
-  if (const auto cleanup = remove_partial_residue(paths.work_root)) {
+  if (const auto cleanup = remove_partial_residue_at(work_directory)) {
     error.cleanup_error = cleanup->message;
   }
   return error;
-}
-
-std::optional<Error> promote_directory(const fs::path& source, const fs::path& destination) {
-  if (!direct_directory(source) || !missing_path(destination)) {
-    return make_error(ErrorCode::candidate_finalize_failed,
-                      "A prepared output is missing or its destination already exists.");
-  }
-#if defined(__APPLE__)
-  if (::renamex_np(source.c_str(), destination.c_str(), RENAME_EXCL) != 0) {
-    return make_filesystem_error(ErrorCode::candidate_finalize_failed,
-                                 "Could not exclusively promote a prepared output directory",
-                                 std::error_code(errno, std::generic_category()));
-  }
-#else
-  std::error_code error;
-  fs::rename(source, destination, error);
-  if (error) {
-    return make_filesystem_error(ErrorCode::candidate_finalize_failed,
-                                 "Could not promote a prepared output directory", error);
-  }
-#endif
-  return {};
 }
 
 Error map_source_pack_failure(const source_pack::Error& error, CallbackForwarder& callbacks) {
@@ -1477,6 +1777,16 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
   WorkPaths paths{candidate_root, candidate_root / kWorkDirectoryName,
                   candidate_root / kWorkDirectoryName / kPreparedDirectoryName};
   bool candidate_created = false;
+  posix_file::OwnedFd candidate_parent;
+  posix_file::OwnedFd candidate_directory;
+  posix_file::OwnedFd work_directory;
+  posix_file::Identity candidate_parent_identity;
+  posix_file::Identity candidate_identity;
+  posix_file::Identity work_identity;
+  std::optional<CapturedPreparedOutput> captured_output;
+  const auto preserve_error = [&](Error error, const WorkPaths& preserved_paths) {
+    return preserve_error_at(std::move(error), preserved_paths, work_directory.get());
+  };
   try {
     if (!candidate_root.is_absolute() || candidate_root.filename().empty() ||
         !direct_directory(candidate_root.parent_path()) || !missing_path(candidate_root) ||
@@ -1491,17 +1801,31 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
             make_error(ErrorCode::invalid_argument, "The composer stage list is incomplete."));
       }
     }
-    std::error_code error;
-    if (!fs::create_directory(candidate_root, error) || error) {
-      return Result<Summary>::failure(make_filesystem_error(
-          ErrorCode::candidate_create_failed, "Could not exclusively create the import candidate",
-          error));
+    candidate_parent = posix_file::open_directory(candidate_root.parent_path().c_str());
+    if (!candidate_parent ||
+        !posix_file::descriptor_identity(candidate_parent.get(), &candidate_parent_identity) ||
+        ::mkdirat(candidate_parent.get(), candidate_root.filename().c_str(), 0700) != 0) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::candidate_create_failed,
+          "Could not exclusively create the descriptor-owned import candidate."));
     }
     candidate_created = true;
-    if (!fs::create_directory(paths.work_root, error) || error) {
+    candidate_directory =
+        posix_file::open_directory_at(candidate_parent.get(), candidate_root.filename().string());
+    if (!candidate_directory ||
+        !posix_file::descriptor_identity(candidate_directory.get(), &candidate_identity) ||
+        ::mkdirat(candidate_directory.get(), std::string(kWorkDirectoryName).c_str(), 0700) != 0) {
       return Result<Summary>::failure(preserve_error(
-          make_filesystem_error(ErrorCode::candidate_create_failed,
-                                "Could not create the hidden import work directory", error),
+          make_error(ErrorCode::candidate_create_failed,
+                     "Could not create the descriptor-owned import work directory."),
+          paths));
+    }
+    work_directory = posix_file::open_directory_at(candidate_directory.get(), kWorkDirectoryName);
+    if (!work_directory ||
+        !posix_file::descriptor_identity(work_directory.get(), &work_identity)) {
+      return Result<Summary>::failure(preserve_error(
+          make_error(ErrorCode::candidate_create_failed,
+                     "Could not retain the descriptor-owned import work directory."),
           paths));
     }
 
@@ -1520,13 +1844,26 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
       if (const auto stage_error = stage.run(paths)) {
         return Result<Summary>::failure(preserve_error(*stage_error, paths));
       }
+      if (stage.phase == Phase::materializing_output) {
+        if (captured_output || !produced_contract->has_value()) {
+          return Result<Summary>::failure(preserve_error(
+              make_error(ErrorCode::candidate_finalize_failed,
+                         "The materialization stage did not produce one checked contract."),
+              paths));
+        }
+        auto captured = capture_prepared_output(work_directory.get(), produced_contract->value());
+        if (!captured) {
+          return Result<Summary>::failure(preserve_error(captured.error(), paths));
+        }
+        captured_output.emplace(captured.take_value());
+      }
       if (!callbacks.report({stage.phase, 1, 1, 0, {}})) {
         return Result<Summary>::failure(
             preserve_error(callbacks.cancellation_or_callback_error({}), paths));
       }
     }
 
-    if (!produced_summary->has_value() || !produced_contract->has_value()) {
+    if (!produced_summary->has_value() || !produced_contract->has_value() || !captured_output) {
       return Result<Summary>::failure(preserve_error(
           make_error(ErrorCode::candidate_finalize_failed,
                      "The composition stages did not produce a checked final contract."),
@@ -1548,10 +1885,6 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
                      "The composition summary does not match its exact final contract."),
           paths));
     }
-    if (const auto validation = validate_output_tree(
-            paths.prepared_root, contract, ErrorCode::candidate_finalize_failed)) {
-      return Result<Summary>::failure(preserve_error(*validation, paths));
-    }
     if (callbacks.poll_cancel()) {
       return Result<Summary>::failure(preserve_error(
           callbacks.cancellation_or_callback_error(
@@ -1562,38 +1895,91 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
       return Result<Summary>::failure(
           preserve_error(callbacks.cancellation_or_callback_error({}), paths));
     }
-    if (const auto promote = promote_directory(paths.prepared_root / "iso", candidate_root / "iso")) {
+    if (!posix_file::entry_identity(candidate_parent.get(), candidate_root.filename().string(),
+                                    candidate_identity) ||
+        !posix_file::entry_identity(candidate_directory.get(), kWorkDirectoryName, work_identity)) {
+      return Result<Summary>::failure(preserve_error(
+          make_error(ErrorCode::candidate_finalize_failed,
+                     "The candidate or import work directory changed before finalization."),
+          paths));
+    }
+    if (const auto validation = validate_captured_output(
+            *captured_output, work_directory.get(), kPreparedDirectoryName)) {
+      return Result<Summary>::failure(preserve_error(*validation, paths));
+    }
+    if (const auto promote = promote_captured_directory(
+            captured_output->root.get(), candidate_directory.get(), "iso",
+            captured_output->iso_identity)) {
       return Result<Summary>::failure(preserve_error(*promote, paths));
     }
     if (!callbacks.report({Phase::finalizing_candidate, 1, 2, 0, "fr3"})) {
       return Result<Summary>::failure(
           preserve_error(callbacks.cancellation_or_callback_error({}), paths));
     }
-    if (const auto promote = promote_directory(paths.prepared_root / "fr3", candidate_root / "fr3")) {
+    if (!posix_file::entry_identity(candidate_directory.get(), "iso",
+                                    captured_output->iso_identity) ||
+        !posix_file::entry_identity(captured_output->root.get(), "fr3",
+                                    captured_output->fr3_identity) ||
+        validate_captured_directory(captured_output->iso.get(), captured_output->iso_files) ||
+        validate_captured_directory(captured_output->fr3.get(), captured_output->fr3_files)) {
+      return Result<Summary>::failure(preserve_error(
+          make_error(ErrorCode::candidate_finalize_failed,
+                     "A prepared output changed between directory promotions."),
+          paths));
+    }
+    if (const auto promote = promote_captured_directory(
+            captured_output->root.get(), candidate_directory.get(), "fr3",
+            captured_output->fr3_identity)) {
       return Result<Summary>::failure(preserve_error(*promote, paths));
     }
-    if (!fs::remove(paths.prepared_root, error) || error) {
+    if (!posix_file::entry_identity(work_directory.get(), kPreparedDirectoryName,
+                                    captured_output->root_identity) ||
+        ::unlinkat(work_directory.get(), std::string(kPreparedDirectoryName).c_str(),
+                   AT_REMOVEDIR) != 0) {
       return Result<Summary>::failure(preserve_error(
           make_error(ErrorCode::candidate_cleanup_failed,
-                     "Could not remove the empty prepared-output directory."),
+                     "Could not remove the exact empty prepared-output directory."),
           paths));
     }
-    fs::remove_all(paths.work_root, error);
-    if (error) {
+    if (!posix_file::entry_identity(candidate_directory.get(), kWorkDirectoryName,
+                                    work_identity)) {
       return Result<Summary>::failure(preserve_error(
           make_error(ErrorCode::candidate_cleanup_failed,
-                     "Could not remove the completed import work directory."),
+                     "The import work directory changed before cleanup."),
           paths));
     }
-    if (const auto validation = validate_output_tree(
-            candidate_root, contract, ErrorCode::candidate_finalize_failed)) {
-      return Result<Summary>::failure(preserve_error(*validation, paths));
+    if (const auto cleanup = remove_tree_contents_at(work_directory.get())) {
+      return Result<Summary>::failure(preserve_error(*cleanup, paths));
+    }
+    if (!posix_file::entry_identity(candidate_directory.get(), kWorkDirectoryName,
+                                    work_identity) ||
+        ::unlinkat(candidate_directory.get(), std::string(kWorkDirectoryName).c_str(),
+                   AT_REMOVEDIR) != 0) {
+      return Result<Summary>::failure(preserve_error(
+          make_error(ErrorCode::candidate_cleanup_failed,
+                     "Could not remove the exact completed import work directory."),
+          paths));
     }
     if (!callbacks.report({Phase::finalizing_candidate, 2, 2,
                            summary.output_bytes, {}})) {
       auto callback_error = callbacks.cancellation_or_callback_error({});
       callback_error.preserved_candidate_root = candidate_root;
       return Result<Summary>::failure(std::move(callback_error));
+    }
+    struct stat candidate_parent_status {};
+    if (::lstat(candidate_root.parent_path().c_str(), &candidate_parent_status) != 0 ||
+        !posix_file::same_identity(candidate_parent_status, candidate_parent_identity) ||
+        !posix_file::entry_identity(candidate_parent.get(), candidate_root.filename().string(),
+                                    candidate_identity) ||
+        !exact_child_directories(candidate_directory.get(),
+                                 {{"fr3", captured_output->fr3_identity},
+                                  {"iso", captured_output->iso_identity}}) ||
+        validate_captured_directory(captured_output->iso.get(), captured_output->iso_files) ||
+        validate_captured_directory(captured_output->fr3.get(), captured_output->fr3_files)) {
+      return Result<Summary>::failure(preserve_error(
+          make_error(ErrorCode::candidate_finalize_failed,
+                     "The candidate changed during terminal descriptor validation."),
+          paths));
     }
     return Result<Summary>::success(summary);
   } catch (const std::bad_alloc&) {

@@ -33,6 +33,20 @@ if(NOT TARGET jak1-output-materializer)
       endif()
       add_test(NAME jak1-output-materializer-test COMMAND jak1-output-materializer-test)
 
+      if(NOT TARGET jak1-checked-dgo-writer-test)
+        add_executable(jak1-checked-dgo-writer-test
+                       "${CMAKE_SOURCE_DIR}/test/common/test_jak1_checked_dgo_writer.cpp")
+        target_link_libraries(jak1-checked-dgo-writer-test PRIVATE jak1-output-materializer)
+        target_compile_features(jak1-checked-dgo-writer-test PRIVATE cxx_std_20)
+        if(MSVC)
+          target_compile_options(jak1-checked-dgo-writer-test PRIVATE /W4 /WX)
+        else()
+          target_compile_options(jak1-checked-dgo-writer-test
+                                 PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        endif()
+        add_test(NAME jak1-checked-dgo-writer-test COMMAND jak1-checked-dgo-writer-test)
+      endif()
+
       if(NOT TARGET jak1-retail-object-catalog-test)
         add_executable(jak1-retail-object-catalog-test
                        "${CMAKE_SOURCE_DIR}/test/common/test_jak1_retail_object_catalog.cpp")
