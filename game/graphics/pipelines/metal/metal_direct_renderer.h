@@ -274,10 +274,22 @@ class MetalDirectRenderer : public MetalBucketRenderer {
  */
 class MetalHostTextureUploadDirectRenderer : public MetalDirectRenderer {
  public:
-  MetalHostTextureUploadDirectRenderer(const std::string& name, int my_id, int batch_size)
-      : MetalDirectRenderer(name, my_id, batch_size) {}
+  enum class CallbackPoint {
+    BucketEntry,
+    PcPort12,
+  };
+
+  MetalHostTextureUploadDirectRenderer(
+      const std::string& name,
+      int my_id,
+      int batch_size,
+      CallbackPoint callback_point = CallbackPoint::BucketEntry)
+      : MetalDirectRenderer(name, my_id, batch_size), m_callback_point(callback_point) {}
 
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
+
+ private:
+  CallbackPoint m_callback_point;
 };

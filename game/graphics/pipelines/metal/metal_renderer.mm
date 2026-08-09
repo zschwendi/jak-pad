@@ -436,8 +436,12 @@ void MetalRenderer::init_bucket_renderers_jak2() {
         const char* name = bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1)
                                ? "debug-no-zbuf1"
                                : "tex-all-map";
+        const auto callback_point =
+            bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1)
+                ? MetalHostTextureUploadDirectRenderer::CallbackPoint::PcPort12
+                : MetalHostTextureUploadDirectRenderer::CallbackPoint::BucketEntry;
         m_bucket_renderers[bucket_id] = std::make_unique<MetalHostTextureUploadDirectRenderer>(
-            name, descriptor.id, batch_size);
+            name, descriptor.id, batch_size, callback_point);
       } else {
         m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
             "jak2-host-texture-upload-direct-unavailable", descriptor.id);

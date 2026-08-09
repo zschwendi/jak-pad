@@ -515,6 +515,7 @@ struct Jak2TextureUploadDispatch {
   const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
   const u8* live_ee_memory = nullptr;
   bool* host_texture_mutated = nullptr;
+  bool* raw_image_callback_executed = nullptr;
 };
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
@@ -523,6 +524,11 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
     if (!dispatch->raw_image_plan || !dispatch->raw_image_plan->present) {
       return;
     }
+    if (!dispatch->raw_image_callback_executed ||
+        *dispatch->raw_image_callback_executed) {
+      throw std::runtime_error("Jak 2 bucket 318 raw-image publication marker repeated");
+    }
+    *dispatch->raw_image_callback_executed = true;
     *dispatch->host_texture_mutated = true;
     if (!dispatch->host->raw_image_upload_executor ||
         !dispatch->host->raw_image_upload_executor->execute(*dispatch->raw_image_plan)) {
@@ -862,6 +868,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
+    bool raw_image_callback_executed = false;
     Jak2TextureUploadDispatch texture_dispatch{
         host,
         &*raw_image_plan,
@@ -871,7 +878,8 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &*map_texture_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         static_cast<const u8*>(ee_base),
-        &host_texture_mutated};
+        &host_texture_mutated,
+        &raw_image_callback_executed};
     auto render_options = host->options;
     const auto& animated_texture_slots = host->skull_gem_executor->animated_texture_slots();
     render_options.animated_texture_slots = animated_texture_slots.data();
@@ -881,6 +889,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     const bool acquired = host->renderer.render_chain_frame(
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
     copy_renderer_metrics(host);
+    if (raw_image_callback_executed != raw_image_plan->present) {
+      record_send_chain_failure(
+          host, "Jak 2 bucket 318 raw-image publication marker did not match its plan",
+          host_texture_mutated);
+      return;
+    }
     if (host->metrics.last_buckets_dispatched != metal_renderer::kJak2MetalBucketCount) {
       record_send_chain_failure(host, "Jak 2 Metal renderer violated its audited bucket policy",
                                 host_texture_mutated);

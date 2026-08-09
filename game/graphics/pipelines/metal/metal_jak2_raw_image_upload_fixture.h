@@ -26,6 +26,13 @@ struct Jak2RawImageUploadFixture {
   u32 source_offset = 0;
 };
 
+enum class Jak2RawImageFixtureLayout {
+  DirectOnly,
+  DirectBeforeUpload,
+  UploadBeforeDirect,
+  MixedOverlay,
+};
+
 namespace jak2_raw_image_fixture_detail {
 
 inline u32 vif(VifCode::Kind kind, u16 immediate = 0) {
@@ -105,10 +112,13 @@ inline void put_packed_xy(std::vector<u8>& memory,
 }  // namespace jak2_raw_image_fixture_detail
 
 /*!
- * Public original-data-free fixture built from the tracked GOAL packet grammar
- * in engine/gfx/blit-displays.gc. The image is a synthetic opaque-red field.
+ * Public original-data-free fixtures assembled from tracked DEBUG_NO_ZBUF1
+ * producers and the draw-raw-image grammar. Image-bearing layouts use a
+ * synthetic opaque-red field.
  */
-inline Jak2RawImageUploadFixture make_jak2_raw_image_upload_fixture(u32 memory_base = 0) {
+inline Jak2RawImageUploadFixture make_jak2_raw_image_fixture(
+    Jak2RawImageFixtureLayout layout,
+    u32 memory_base = 0) {
   using namespace jak2_raw_image_fixture_detail;
   Jak2RawImageUploadFixture out;
   constexpr u32 kChainOffset = 0x100;
@@ -116,7 +126,7 @@ inline Jak2RawImageUploadFixture make_jak2_raw_image_upload_fixture(u32 memory_b
   constexpr u32 kSourceOffset = 0x10000;
   constexpr std::size_t kMemorySize = 0xf0000;
   constexpr u32 kBucketCount = 327;
-  constexpr u64 kOpaqueRed = 0xff0000ffu;
+  constexpr u32 kOpaqueRed = 0xff0000ffu;
   out.ee_memory.resize(static_cast<std::size_t>(memory_base) + kMemorySize);
   out.chain_offset = memory_base + kChainOffset;
   out.bucket_offset = out.chain_offset + kJak2RawImageUploadBucket * 16;
@@ -129,98 +139,147 @@ inline Jak2RawImageUploadFixture make_jak2_raw_image_upload_fixture(u32 memory_b
   put_tag(out.ee_memory, out.bucket_offset, DmaTag::Kind::NEXT, 0,
           memory_base + kPayloadOffset);
 
-  out.black_sprite_tag_offset = memory_base + kPayloadOffset;
-  put_tag(out.ee_memory, out.black_sprite_tag_offset, DmaTag::Kind::CNT, 3, 0, 0,
-          vif(VifCode::Kind::DIRECT, 3));
-  const u32 black = out.black_sprite_tag_offset + 16;
-  put_u64(out.ee_memory, black,
-          gif_tag(1, true, false, GsPrim{}, GifTag::Format::REGLIST, 4));
-  put_u64(out.ee_memory, black + 8,
-          registers({GifTag::RegisterDescriptor::PRIM,
-                     GifTag::RegisterDescriptor::RGBAQ,
-                     GifTag::RegisterDescriptor::XYZF2,
-                     GifTag::RegisterDescriptor::XYZF2}));
-  put_u64(out.ee_memory, black + 16,
-          static_cast<u64>(GsPrim::Kind::SPRITE) | (1ull << 6));
-  put_u64(out.ee_memory, black + 24, 0x80000000ull);
-  put_u64(out.ee_memory, black + 32, xyzf(0x7000, 0x7300, 0x3fffff));
-  put_u64(out.ee_memory, black + 40, xyzf(0x9000, 0x8d00, 0x3fffff));
-
-  out.start_tag_offset = out.black_sprite_tag_offset + 64;
-  put_tag(out.ee_memory, out.start_tag_offset, DmaTag::Kind::CNT, 0, 0,
-          vif(VifCode::Kind::PC_PORT, 12), 0);
-
-  out.upload_tag_offset = out.start_tag_offset + 16;
-  put_tag(out.ee_memory, out.upload_tag_offset, DmaTag::Kind::CNT, 1, 0,
-          vif(VifCode::Kind::PC_PORT, 16), 0);
-  out.upload_data_offset = out.upload_tag_offset + 16;
-  put_u32(out.ee_memory, out.upload_data_offset, out.source_offset);
-  const u16 dimensions[2] = {kJak2RawImageWidth, kJak2RawImageHeight};
-  std::memcpy(out.ee_memory.data() + out.upload_data_offset + 4, dimensions,
-              sizeof(dimensions));
-  put_u32(out.ee_memory, out.upload_data_offset + 8, kJak2RawImageDestination);
-  out.ee_memory[out.upload_data_offset + 12] = kJak2RawImagePsmct32;
-  out.ee_memory[out.upload_data_offset + 13] = 1;
-
-  out.finish_tag_offset = out.upload_tag_offset + 32;
-  put_tag(out.ee_memory, out.finish_tag_offset, DmaTag::Kind::CNT, 0, 0,
-          vif(VifCode::Kind::PC_PORT, 13), 0);
-
-  out.state_tag_offset = out.finish_tag_offset + 16;
-  put_tag(out.ee_memory, out.state_tag_offset, DmaTag::Kind::CNT, 7, 0, 0,
-          vif(VifCode::Kind::DIRECT, 7));
-  const u32 state = out.state_tag_offset + 16;
-  put_u64(out.ee_memory, state,
-          gif_tag(1, true, false, GsPrim{}, GifTag::Format::PACKED, 6));
-  put_u64(out.ee_memory, state + 8,
-          registers({GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
-                     GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
-                     GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD}));
-  constexpr u64 kTest = 1ull | (1ull << 1) | (3ull << 12) | (1ull << 16) | (1ull << 17);
-  constexpr u64 kTex0 = (8ull << 14) | (9ull << 26) | (9ull << 30) | (1ull << 34);
-  constexpr u64 kTex1 = (1ull << 5) | (1ull << 6);
-  constexpr u64 kValues[6] = {kTest, 0, kTex0, kTex1, 0b101, 0};
-  constexpr GsRegisterAddress kAddresses[6] = {
-      GsRegisterAddress::TEST_1, GsRegisterAddress::ALPHA_1,
-      GsRegisterAddress::TEX0_1, GsRegisterAddress::TEX1_1,
-      GsRegisterAddress::CLAMP_1, GsRegisterAddress::TEXFLUSH,
+  u32 cursor = memory_base + kPayloadOffset;
+  const auto emit_black_sprite = [&]() {
+    out.black_sprite_tag_offset = cursor;
+    put_tag(out.ee_memory, cursor, DmaTag::Kind::CNT, 3, 0, 0,
+            vif(VifCode::Kind::DIRECT, 3));
+    const u32 black = cursor + 16;
+    put_u64(out.ee_memory, black,
+            gif_tag(1, true, false, GsPrim{}, GifTag::Format::REGLIST, 4));
+    put_u64(out.ee_memory, black + 8,
+            registers({GifTag::RegisterDescriptor::PRIM,
+                       GifTag::RegisterDescriptor::RGBAQ,
+                       GifTag::RegisterDescriptor::XYZF2,
+                       GifTag::RegisterDescriptor::XYZF2}));
+    put_u64(out.ee_memory, black + 16,
+            static_cast<u64>(GsPrim::Kind::SPRITE) | (1ull << 6));
+    put_u64(out.ee_memory, black + 24, 0x80000000ull);
+    put_u64(out.ee_memory, black + 32, xyzf(0x7000, 0x7300, 0x3fffff));
+    put_u64(out.ee_memory, black + 40, xyzf(0x9000, 0x8d00, 0x3fffff));
+    cursor += 64;
   };
-  for (u32 i = 0; i < 6; ++i) {
-    put_u64(out.ee_memory, state + 16 + i * 16, kValues[i]);
-    put_u64(out.ee_memory, state + 24 + i * 16, static_cast<u64>(kAddresses[i]));
+
+  const auto emit_raw_upload = [&]() {
+    out.start_tag_offset = cursor;
+    put_tag(out.ee_memory, cursor, DmaTag::Kind::CNT, 0, 0,
+            vif(VifCode::Kind::PC_PORT, 12), 0);
+    out.upload_tag_offset = cursor + 16;
+    put_tag(out.ee_memory, out.upload_tag_offset, DmaTag::Kind::CNT, 1, 0,
+            vif(VifCode::Kind::PC_PORT, 16), 0);
+    out.upload_data_offset = out.upload_tag_offset + 16;
+    put_u32(out.ee_memory, out.upload_data_offset, out.source_offset);
+    const u16 dimensions[2] = {kJak2RawImageWidth, kJak2RawImageHeight};
+    std::memcpy(out.ee_memory.data() + out.upload_data_offset + 4, dimensions,
+                sizeof(dimensions));
+    put_u32(out.ee_memory, out.upload_data_offset + 8, kJak2RawImageDestination);
+    out.ee_memory[out.upload_data_offset + 12] = kJak2RawImagePsmct32;
+    out.ee_memory[out.upload_data_offset + 13] = 1;
+    out.finish_tag_offset = cursor + 48;
+    put_tag(out.ee_memory, out.finish_tag_offset, DmaTag::Kind::CNT, 0, 0,
+            vif(VifCode::Kind::PC_PORT, 13), 0);
+    cursor += 64;
+  };
+
+  const auto emit_textured_sprite = [&]() {
+    out.state_tag_offset = cursor;
+    put_tag(out.ee_memory, cursor, DmaTag::Kind::CNT, 7, 0, 0,
+            vif(VifCode::Kind::DIRECT, 7));
+    const u32 state = cursor + 16;
+    put_u64(out.ee_memory, state,
+            gif_tag(1, true, false, GsPrim{}, GifTag::Format::PACKED, 6));
+    put_u64(out.ee_memory, state + 8,
+            registers({GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                       GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                       GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD}));
+    constexpr u64 kTest =
+        1ull | (1ull << 1) | (3ull << 12) | (1ull << 16) | (1ull << 17);
+    constexpr u64 kTex0 =
+        (8ull << 14) | (9ull << 26) | (9ull << 30) | (1ull << 34);
+    constexpr u64 kTex1 = (1ull << 5) | (1ull << 6);
+    constexpr u64 kValues[6] = {kTest, 0, kTex0, kTex1, 0b101, 0};
+    constexpr GsRegisterAddress kAddresses[6] = {
+        GsRegisterAddress::TEST_1, GsRegisterAddress::ALPHA_1,
+        GsRegisterAddress::TEX0_1, GsRegisterAddress::TEX1_1,
+        GsRegisterAddress::CLAMP_1, GsRegisterAddress::TEXFLUSH,
+    };
+    for (u32 i = 0; i < 6; ++i) {
+      put_u64(out.ee_memory, state + 16 + i * 16, kValues[i]);
+      put_u64(out.ee_memory, state + 24 + i * 16,
+              static_cast<u64>(kAddresses[i]));
+    }
+
+    out.sprite_tag_offset = cursor + 128;
+    put_tag(out.ee_memory, out.sprite_tag_offset, DmaTag::Kind::CNT, 6, 0, 0,
+            vif(VifCode::Kind::DIRECT, 6));
+    const u32 sprite = out.sprite_tag_offset + 16;
+    const GsPrim sprite_prim(static_cast<u64>(GsPrim::Kind::SPRITE) | (1ull << 4) |
+                             (1ull << 8));
+    put_u64(out.ee_memory, sprite,
+            gif_tag(1, true, true, sprite_prim, GifTag::Format::PACKED, 5));
+    put_u64(out.ee_memory, sprite + 8,
+            registers({GifTag::RegisterDescriptor::RGBAQ,
+                       GifTag::RegisterDescriptor::UV,
+                       GifTag::RegisterDescriptor::XYZ2,
+                       GifTag::RegisterDescriptor::UV,
+                       GifTag::RegisterDescriptor::XYZ2}));
+    put_packed_rgba(out.ee_memory, sprite + 16, 0x80, 0x80, 0x80, 0x80);
+    put_packed_xy(out.ee_memory, sprite + 32, 0, 0);
+    put_packed_xy(out.ee_memory, sprite + 48, 0x7000, 0x7300);
+    put_packed_xy(out.ee_memory, sprite + 64, kJak2RawImageWidth * 16,
+                  kJak2RawImageHeight * 16);
+    put_packed_xy(out.ee_memory, sprite + 80, 0x9000, 0x8d00);
+    cursor += 240;
+  };
+
+  if (layout == Jak2RawImageFixtureLayout::DirectOnly ||
+      layout == Jak2RawImageFixtureLayout::DirectBeforeUpload ||
+      layout == Jak2RawImageFixtureLayout::MixedOverlay) {
+    emit_black_sprite();
+  }
+  if (layout != Jak2RawImageFixtureLayout::DirectOnly) {
+    emit_raw_upload();
+  }
+  if (layout == Jak2RawImageFixtureLayout::UploadBeforeDirect ||
+      layout == Jak2RawImageFixtureLayout::MixedOverlay) {
+    emit_textured_sprite();
   }
 
-  out.sprite_tag_offset = out.state_tag_offset + 128;
-  put_tag(out.ee_memory, out.sprite_tag_offset, DmaTag::Kind::CNT, 6, 0, 0,
-          vif(VifCode::Kind::DIRECT, 6));
-  const u32 sprite = out.sprite_tag_offset + 16;
-  const GsPrim sprite_prim(static_cast<u64>(GsPrim::Kind::SPRITE) | (1ull << 4) |
-                           (1ull << 8));
-  put_u64(out.ee_memory, sprite,
-          gif_tag(1, true, true, sprite_prim, GifTag::Format::PACKED, 5));
-  put_u64(out.ee_memory, sprite + 8,
-          registers({GifTag::RegisterDescriptor::RGBAQ,
-                     GifTag::RegisterDescriptor::UV,
-                     GifTag::RegisterDescriptor::XYZ2,
-                     GifTag::RegisterDescriptor::UV,
-                     GifTag::RegisterDescriptor::XYZ2}));
-  put_packed_rgba(out.ee_memory, sprite + 16, 0x80, 0x80, 0x80, 0x80);
-  put_packed_xy(out.ee_memory, sprite + 32, 0, 0);
-  put_packed_xy(out.ee_memory, sprite + 48, 0x7000, 0x7300);
-  put_packed_xy(out.ee_memory, sprite + 64, kJak2RawImageWidth * 16,
-                kJak2RawImageHeight * 16);
-  put_packed_xy(out.ee_memory, sprite + 80, 0x9000, 0x8d00);
-
-  out.final_boundary_offset = out.sprite_tag_offset + 112;
+  out.final_boundary_offset = cursor;
   put_tag(out.ee_memory, out.final_boundary_offset, DmaTag::Kind::NEXT, 0,
           out.bucket_offset + 16);
 
   for (std::size_t i = 0;
        i < static_cast<std::size_t>(kJak2RawImageWidth) * kJak2RawImageHeight; ++i) {
     put_u32(out.ee_memory, out.source_offset + static_cast<u32>(i * sizeof(u32)),
-            static_cast<u32>(kOpaqueRed));
+            kOpaqueRed);
   }
   return out;
+}
+
+inline Jak2RawImageUploadFixture make_jak2_raw_image_upload_fixture(u32 memory_base = 0) {
+  return make_jak2_raw_image_fixture(Jak2RawImageFixtureLayout::MixedOverlay, memory_base);
+}
+
+inline Jak2RawImageUploadFixture make_jak2_raw_image_direct_only_fixture(u32 memory_base = 0) {
+  return make_jak2_raw_image_fixture(Jak2RawImageFixtureLayout::DirectOnly, memory_base);
+}
+
+inline Jak2RawImageUploadFixture make_jak2_raw_image_direct_before_upload_fixture(
+    u32 memory_base = 0) {
+  return make_jak2_raw_image_fixture(Jak2RawImageFixtureLayout::DirectBeforeUpload,
+                                     memory_base);
+}
+
+inline Jak2RawImageUploadFixture make_jak2_raw_image_upload_before_direct_fixture(
+    u32 memory_base = 0) {
+  return make_jak2_raw_image_fixture(Jak2RawImageFixtureLayout::UploadBeforeDirect,
+                                     memory_base);
+}
+
+inline Jak2RawImageUploadFixture make_jak2_raw_image_mixed_overlay_fixture(
+    u32 memory_base = 0) {
+  return make_jak2_raw_image_fixture(Jak2RawImageFixtureLayout::MixedOverlay, memory_base);
 }
 
 }  // namespace metal_renderer

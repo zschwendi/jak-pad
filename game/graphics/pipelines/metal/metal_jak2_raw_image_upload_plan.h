@@ -26,11 +26,12 @@ struct Jak2RawImageUploadPlan {
 };
 
 /*!
- * Parse the exact public Jak II `draw-raw-image` bucket grammar. The returned
- * plan owns the source pixels because PC_PORT metadata points outside the DMA
- * graph copied by FixedChunkDmaCopier. A canonical strict-empty bucket returns
- * an absent plan. Any other transfer order, image shape, format, destination,
- * or Direct packet shape is rejected before host texture mutation.
+ * Inspect the general Jak II DEBUG_NO_ZBUF1 Direct bucket for zero or one exact
+ * public `pc-upload-raw-texture` PC_PORT 12/16/13 sequence. Direct transfers
+ * before and after that optional sequence remain renderer-owned. The returned
+ * plan owns live source pixels because the metadata points outside the DMA
+ * graph copied by FixedChunkDmaCopier. Unexpected, malformed, or duplicate
+ * PC_PORT sequences are rejected before host texture mutation.
  */
 std::optional<Jak2RawImageUploadPlan> plan_jak2_raw_image_upload(
     const u8* dma_packet_snapshot,

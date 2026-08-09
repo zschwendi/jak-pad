@@ -22,30 +22,76 @@ void check(bool condition, const char* message) {
 }
 
 std::optional<metal_renderer::Jak2RawImageUploadPlan> plan(
-    const metal_renderer::Jak2RawImageUploadFixture& fixture) {
+    const metal_renderer::Jak2RawImageUploadFixture& fixture,
+    const u8* live_memory = nullptr,
+    std::size_t live_memory_size = 0) {
+  if (!live_memory) {
+    live_memory = fixture.ee_memory.data();
+    live_memory_size = fixture.ee_memory.size();
+  }
   return metal_renderer::plan_jak2_raw_image_upload(
       fixture.ee_memory.data(), fixture.ee_memory.size(), fixture.chain_offset,
-      fixture.ee_memory.data(), fixture.ee_memory.size());
+      live_memory, live_memory_size);
 }
 
-void test_exact_owned_plan() {
+void test_live_source_owned_plan() {
   auto fixture = metal_renderer::make_jak2_raw_image_upload_fixture();
-  auto result = plan(fixture);
+  auto live_memory = fixture.ee_memory;
+  constexpr u32 kLiveGreen = 0xff00ff00u;
+  constexpr u32 kLaterBlue = 0xffff0000u;
+  const std::size_t pixel_count =
+      static_cast<std::size_t>(metal_renderer::kJak2RawImageWidth) *
+      metal_renderer::kJak2RawImageHeight;
+  for (std::size_t i = 0; i < pixel_count; ++i) {
+    metal_renderer::jak2_raw_image_fixture_detail::put_u32(
+        live_memory, fixture.source_offset + static_cast<u32>(i * sizeof(u32)),
+        kLiveGreen);
+  }
+
+  auto result = plan(fixture, live_memory.data(), live_memory.size());
   check(result && result->present &&
             result->width == metal_renderer::kJak2RawImageWidth &&
             result->height == metal_renderer::kJak2RawImageHeight &&
             result->destination == metal_renderer::kJak2RawImageDestination &&
             result->format == metal_renderer::kJak2RawImagePsmct32 &&
             result->force_to_gpu == 1 &&
-            result->rgba.size() == static_cast<std::size_t>(metal_renderer::kJak2RawImageWidth) *
-                                       metal_renderer::kJak2RawImageHeight &&
-            result->rgba.front() == 0xff0000ffu && result->rgba.back() == 0xff0000ffu,
-        "the exact public 512x416 raw-image grammar produces an owning RGBA plan");
+            result->rgba.size() == pixel_count && result->rgba.front() == kLiveGreen &&
+            result->rgba.back() == kLiveGreen,
+        "raw-image metadata from the snapshot copies pixels from distinct live EE memory");
 
   std::memset(fixture.ee_memory.data() + fixture.source_offset, 0,
               result->rgba.size() * sizeof(u32));
-  check(result->rgba.front() == 0xff0000ffu && result->rgba.back() == 0xff0000ffu,
-        "reusing live EE source memory cannot change the planned image");
+  for (std::size_t i = 0; i < pixel_count; ++i) {
+    metal_renderer::jak2_raw_image_fixture_detail::put_u32(
+        live_memory, fixture.source_offset + static_cast<u32>(i * sizeof(u32)),
+        kLaterBlue);
+  }
+  check(result->rgba.front() == kLiveGreen && result->rgba.back() == kLiveGreen,
+        "later snapshot and live-memory reuse cannot change the owned plan");
+}
+
+void test_supported_layouts() {
+  auto direct_only = metal_renderer::make_jak2_raw_image_direct_only_fixture();
+  auto result = metal_renderer::plan_jak2_raw_image_upload(
+      direct_only.ee_memory.data(), direct_only.ee_memory.size(), direct_only.chain_offset,
+      nullptr, 0);
+  check(result && !result->present && result->rgba.empty(),
+        "a structurally valid Direct-only bucket produces an absent upload plan");
+
+  auto direct_before = metal_renderer::make_jak2_raw_image_direct_before_upload_fixture();
+  result = plan(direct_before);
+  check(result && result->present,
+        "Direct transfers before the raw-image marker are accepted");
+
+  auto upload_before = metal_renderer::make_jak2_raw_image_upload_before_direct_fixture();
+  result = plan(upload_before);
+  check(result && result->present,
+        "Direct transfers after the raw-image marker are accepted");
+
+  auto mixed = metal_renderer::make_jak2_raw_image_mixed_overlay_fixture();
+  result = plan(mixed);
+  check(result && result->present,
+        "Direct transfers on both sides of one raw-image marker are accepted");
 }
 
 void test_strict_empty_plan() {
@@ -86,17 +132,24 @@ void test_rejections() {
   }
   {
     auto fixture = metal_renderer::make_jak2_raw_image_upload_fixture();
-    const u64 wrong_state_address = static_cast<u64>(GsRegisterAddress::TEX0_2);
-    std::memcpy(fixture.ee_memory.data() + fixture.state_tag_offset + 16 + 2 * 16 + 8,
-                &wrong_state_address, sizeof(wrong_state_address));
-    check(!plan(fixture), "a non-source GS register sequence is rejected");
+    constexpr u32 kDuplicateOffset = 0x6000;
+    metal_renderer::jak2_raw_image_fixture_detail::put_tag(
+        fixture.ee_memory, fixture.final_boundary_offset, DmaTag::Kind::NEXT, 0,
+        kDuplicateOffset);
+    std::memcpy(fixture.ee_memory.data() + kDuplicateOffset,
+                fixture.ee_memory.data() + fixture.start_tag_offset, 64);
+    metal_renderer::jak2_raw_image_fixture_detail::put_tag(
+        fixture.ee_memory, kDuplicateOffset + 64, DmaTag::Kind::NEXT, 0,
+        fixture.bucket_offset + 16);
+    check(!plan(fixture), "a second exact raw-image marker sequence is rejected");
   }
 }
 
 }  // namespace
 
 int main() {
-  test_exact_owned_plan();
+  test_live_source_owned_plan();
+  test_supported_layouts();
   test_strict_empty_plan();
   test_rejections();
   std::puts("PASS: Jak II bucket-318 raw-image upload planner");

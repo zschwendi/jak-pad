@@ -1121,36 +1121,80 @@ int main() {
   check(raw_image_host &&
             goal_jak2_metal_host_copy_gfx_host(raw_image_host, &raw_image_callbacks),
         "created a host for bucket-318 raw-image upload integration");
-  auto raw_image_fixture =
-      metal_renderer::make_jak2_raw_image_upload_fixture(kChainOffset);
-  std::memcpy(static_cast<u8*>(g_ee_main_mem) + kChainOffset,
-              raw_image_fixture.ee_memory.data() + kChainOffset,
-              raw_image_fixture.ee_memory.size() - kChainOffset);
-  raw_image_callbacks.send_chain(g_ee_main_mem, raw_image_fixture.chain_offset);
   goal_jak2_metal_host_metrics raw_image_metrics = {};
+  const auto send_raw_image_fixture = [&](const auto& fixture) {
+    std::memcpy(static_cast<u8*>(g_ee_main_mem) + kChainOffset,
+                fixture.ee_memory.data() + kChainOffset,
+                fixture.ee_memory.size() - kChainOffset);
+    raw_image_callbacks.send_chain(g_ee_main_mem, fixture.chain_offset);
+  };
+
+  auto raw_image_fixture =
+      metal_renderer::make_jak2_raw_image_direct_only_fixture(kChainOffset);
+  send_raw_image_fixture(raw_image_fixture);
   check(raw_image_host &&
             goal_jak2_metal_host_get_metrics(raw_image_host, &raw_image_metrics),
-        "copied metrics after the public synthetic raw-image chain");
+        "copied metrics after the public synthetic Direct-only chain");
   check(raw_image_metrics.chains == 1 && raw_image_metrics.completed_chains == 1 &&
+            raw_image_metrics.failed_chains == 0 &&
+            raw_image_metrics.raw_image_publications == 0 &&
+            raw_image_metrics.last_debug_no_zbuf1_draws == 1 &&
+            raw_image_metrics.last_debug_no_zbuf1_triangles == 2 &&
+            raw_image_metrics.last_debug_no_zbuf1_textured_draws == 0 &&
+            raw_image_metrics.skipped_bucket_bytes == 0,
+        "bucket 318 accepts a Direct-only overlay without publishing a raw image");
+
+  raw_image_fixture =
+      metal_renderer::make_jak2_raw_image_direct_before_upload_fixture(kChainOffset);
+  send_raw_image_fixture(raw_image_fixture);
+  check(goal_jak2_metal_host_get_metrics(raw_image_host, &raw_image_metrics) &&
+            raw_image_metrics.chains == 2 && raw_image_metrics.completed_chains == 2 &&
             raw_image_metrics.failed_chains == 0 &&
             raw_image_metrics.raw_image_publications == 1 &&
             raw_image_metrics.raw_image_texture != 0 &&
             raw_image_metrics.raw_image_pixels ==
                 static_cast<u64>(metal_renderer::kJak2RawImageWidth) *
                     metal_renderer::kJak2RawImageHeight &&
+            raw_image_metrics.last_debug_no_zbuf1_draws == 1 &&
+            raw_image_metrics.last_debug_no_zbuf1_triangles == 2 &&
+            raw_image_metrics.last_debug_no_zbuf1_textured_draws == 0 &&
+            raw_image_metrics.skipped_bucket_bytes == 0,
+        "bucket 318 preserves Direct-before work and then publishes at PC_PORT 12");
+
+  raw_image_fixture =
+      metal_renderer::make_jak2_raw_image_upload_before_direct_fixture(kChainOffset);
+  send_raw_image_fixture(raw_image_fixture);
+  check(goal_jak2_metal_host_get_metrics(raw_image_host, &raw_image_metrics) &&
+            raw_image_metrics.chains == 3 && raw_image_metrics.completed_chains == 3 &&
+            raw_image_metrics.failed_chains == 0 &&
+            raw_image_metrics.raw_image_publications == 2 &&
+            raw_image_metrics.last_debug_no_zbuf1_draws == 2 &&
+            raw_image_metrics.last_debug_no_zbuf1_triangles == 2 &&
+            raw_image_metrics.last_debug_no_zbuf1_textured_draws == 2 &&
+            raw_image_metrics.last_debug_no_zbuf1_missing_texture_draws == 0 &&
+            raw_image_metrics.skipped_bucket_bytes == 0,
+        "bucket 318 publishes before a trailing textured Direct overlay resolves TBP0");
+
+  raw_image_fixture =
+      metal_renderer::make_jak2_raw_image_mixed_overlay_fixture(kChainOffset);
+  send_raw_image_fixture(raw_image_fixture);
+  check(goal_jak2_metal_host_get_metrics(raw_image_host, &raw_image_metrics) &&
+            raw_image_metrics.chains == 4 && raw_image_metrics.completed_chains == 4 &&
+            raw_image_metrics.failed_chains == 0 &&
+            raw_image_metrics.raw_image_publications == 3 &&
             raw_image_metrics.last_debug_no_zbuf1_draws == 3 &&
             raw_image_metrics.last_debug_no_zbuf1_triangles == 4 &&
             raw_image_metrics.last_debug_no_zbuf1_textured_draws == 2 &&
             raw_image_metrics.last_debug_no_zbuf1_missing_texture_draws == 0 &&
             raw_image_metrics.skipped_bucket_bytes == 0,
-        "bucket 318 publishes TBP0 before its black and textured fullscreen Direct draws");
+        "bucket 318 accepts Direct on both sides of one raw-image publication marker");
 
   make_empty_chain();
   raw_image_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(raw_image_host, &raw_image_metrics) &&
-            raw_image_metrics.chains == 2 && raw_image_metrics.completed_chains == 2 &&
+            raw_image_metrics.chains == 5 && raw_image_metrics.completed_chains == 5 &&
             raw_image_metrics.failed_chains == 0 &&
-            raw_image_metrics.raw_image_publications == 1 &&
+            raw_image_metrics.raw_image_publications == 3 &&
             raw_image_metrics.last_debug_no_zbuf1_draws == 0 &&
             raw_image_metrics.last_debug_no_zbuf1_triangles == 0,
         "a strict-empty bucket 318 neither republishes nor draws");
@@ -1158,15 +1202,12 @@ int main() {
 
   raw_image_fixture = metal_renderer::make_jak2_raw_image_upload_fixture(kChainOffset);
   raw_image_fixture.ee_memory[raw_image_fixture.upload_data_offset + 13] = 0;
-  std::memcpy(static_cast<u8*>(g_ee_main_mem) + kChainOffset,
-              raw_image_fixture.ee_memory.data() + kChainOffset,
-              raw_image_fixture.ee_memory.size() - kChainOffset);
-  raw_image_callbacks.send_chain(g_ee_main_mem, raw_image_fixture.chain_offset);
+  send_raw_image_fixture(raw_image_fixture);
   const char* raw_image_error = goal_jak2_metal_host_last_error(raw_image_host);
   check(goal_jak2_metal_host_get_metrics(raw_image_host, &raw_image_metrics) &&
-            raw_image_metrics.chains == 3 && raw_image_metrics.completed_chains == 2 &&
+            raw_image_metrics.chains == 6 && raw_image_metrics.completed_chains == 5 &&
             raw_image_metrics.failed_chains == 1 &&
-            raw_image_metrics.raw_image_publications == 1 &&
+            raw_image_metrics.raw_image_publications == 3 &&
             raw_image_metrics.last_copied_bytes == raw_image_empty_copied_bytes &&
             raw_image_error &&
             std::strstr(raw_image_error,
@@ -1174,14 +1215,33 @@ int main() {
         "malformed bucket 318 fails before publication, copying, or dispatch");
 
   raw_image_fixture = metal_renderer::make_jak2_raw_image_upload_fixture(kChainOffset);
-  std::memcpy(static_cast<u8*>(g_ee_main_mem) + kChainOffset,
-              raw_image_fixture.ee_memory.data() + kChainOffset,
-              raw_image_fixture.ee_memory.size() - kChainOffset);
-  raw_image_callbacks.send_chain(g_ee_main_mem, raw_image_fixture.chain_offset);
+  constexpr u32 kDuplicateRawImageOffset = kChainOffset + 0x7000;
+  metal_renderer::jak2_raw_image_fixture_detail::put_tag(
+      raw_image_fixture.ee_memory, raw_image_fixture.final_boundary_offset,
+      DmaTag::Kind::NEXT, 0, kDuplicateRawImageOffset);
+  std::memcpy(raw_image_fixture.ee_memory.data() + kDuplicateRawImageOffset,
+              raw_image_fixture.ee_memory.data() + raw_image_fixture.start_tag_offset, 64);
+  metal_renderer::jak2_raw_image_fixture_detail::put_tag(
+      raw_image_fixture.ee_memory, kDuplicateRawImageOffset + 64, DmaTag::Kind::NEXT, 0,
+      raw_image_fixture.bucket_offset + 16);
+  send_raw_image_fixture(raw_image_fixture);
+  raw_image_error = goal_jak2_metal_host_last_error(raw_image_host);
   check(goal_jak2_metal_host_get_metrics(raw_image_host, &raw_image_metrics) &&
-            raw_image_metrics.chains == 4 && raw_image_metrics.completed_chains == 3 &&
-            raw_image_metrics.failed_chains == 1 &&
-            raw_image_metrics.raw_image_publications == 2 &&
+            raw_image_metrics.chains == 7 && raw_image_metrics.completed_chains == 5 &&
+            raw_image_metrics.failed_chains == 2 &&
+            raw_image_metrics.raw_image_publications == 3 &&
+            raw_image_metrics.last_copied_bytes == raw_image_empty_copied_bytes &&
+            raw_image_error &&
+            std::strstr(raw_image_error,
+                        "bucket 318 raw-image upload plan rejected malformed DMA"),
+        "duplicate bucket-318 publication markers fail before mutation or dispatch");
+
+  raw_image_fixture = metal_renderer::make_jak2_raw_image_upload_fixture(kChainOffset);
+  send_raw_image_fixture(raw_image_fixture);
+  check(goal_jak2_metal_host_get_metrics(raw_image_host, &raw_image_metrics) &&
+            raw_image_metrics.chains == 8 && raw_image_metrics.completed_chains == 6 &&
+            raw_image_metrics.failed_chains == 2 &&
+            raw_image_metrics.raw_image_publications == 4 &&
             raw_image_metrics.last_debug_no_zbuf1_textured_draws == 2,
         "a pre-mutation bucket-318 rejection leaves publication and Direct drawing usable");
   goal_jak2_metal_host_destroy(raw_image_host);

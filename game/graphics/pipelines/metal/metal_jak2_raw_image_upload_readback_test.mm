@@ -39,13 +39,17 @@ bool is_bgra(const std::vector<u8>& pixels,
 struct UploadCallback {
   metal_renderer::Jak2RawImageUploadExecutor* executor = nullptr;
   const metal_renderer::Jak2RawImageUploadPlan* plan = nullptr;
+  MetalDirectRenderer* renderer = nullptr;
   int calls = 0;
+  int draw_calls_at_publication = -1;
   bool executed = false;
 };
 
 void publish_raw_image(void* opaque, u32 bucket_id) {
   auto* callback = static_cast<UploadCallback*>(opaque);
   callback->calls++;
+  callback->draw_calls_at_publication =
+      callback->renderer ? callback->renderer->stats().draw_calls : -1;
   callback->executed =
       bucket_id == metal_renderer::kJak2RawImageUploadBucket && callback->executor &&
       callback->plan && callback->executor->execute(*callback->plan);
@@ -100,7 +104,13 @@ int main() {
     }
 
     metal_renderer::Jak2RawImageUploadExecutor executor(device, queue, &texture_pool);
-    UploadCallback callback{&executor, &*plan};
+    const int batch_size = metal_renderer::jak2_metal_direct_batch_size(
+        metal_renderer::kJak2RawImageUploadBucket);
+    check(batch_size == 1024 * 6, "bucket 318 retains the OpenGL Direct batch capacity");
+    MetalHostTextureUploadDirectRenderer renderer(
+        "debug-no-zbuf1", metal_renderer::kJak2RawImageUploadBucket, batch_size,
+        MetalHostTextureUploadDirectRenderer::CallbackPoint::PcPort12);
+    UploadCallback callback{&executor, &*plan, &renderer};
 
     auto* color_desc = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -170,19 +180,15 @@ int main() {
     state.host_bucket_context = &callback;
     state.host_bucket_callback = publish_raw_image;
 
-    const int batch_size = metal_renderer::jak2_metal_direct_batch_size(
-        metal_renderer::kJak2RawImageUploadBucket);
-    check(batch_size == 1024 * 6, "bucket 318 retains the OpenGL Direct batch capacity");
-    MetalHostTextureUploadDirectRenderer renderer(
-        "debug-no-zbuf1", metal_renderer::kJak2RawImageUploadBucket, batch_size);
     DmaFollower dma(fixture.ee_memory.data(), fixture.bucket_offset,
                     fixture.ee_memory.size());
     renderer.render(dma, &state, context);
 
     const auto& stats = renderer.stats();
     check(dma.current_tag_offset() == state.next_bucket && callback.calls == 1 &&
-              callback.executed && executor.stats().publications == 1,
-          "host publication and Direct parsing execute once in bucket order");
+              callback.draw_calls_at_publication == 1 && callback.executed &&
+              executor.stats().publications == 1,
+          "Direct-before work flushes before publication at the source PC_PORT 12 marker");
     check(texture_pool.lookup(metal_renderer::kJak2RawImageDestination).value_or(0) ==
               executor.stats().texture_handle,
           "the published synthetic raw image resolves at TEX0 TBP0");
@@ -217,14 +223,11 @@ int main() {
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
         mipmapLevel:0];
     int red_pixels = 0;
-    int clear_pixels = 0;
     int unexpected_pixels = 0;
     for (int y = 0; y < kTargetSize; ++y) {
       for (int x = 0; x < kTargetSize; ++x) {
         if (is_bgra(pixels, x, y, 0, 0, 255, 255)) {
           red_pixels++;
-        } else if (is_bgra(pixels, x, y, 0, 0, 0, 0)) {
-          clear_pixels++;
         } else {
           unexpected_pixels++;
         }
@@ -232,10 +235,10 @@ int main() {
     }
     check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, 0, 0, 255, 255),
           "frame readback contains the exact synthetic opaque red image at center");
-    check(is_bgra(pixels, 2, 2, 0, 0, 0, 0),
-          "frame readback retains clear pixels outside the Jak II game viewport");
-    check(red_pixels > 3000 && clear_pixels > 500 && unexpected_pixels == 0,
-          "the game viewport contains only the synthetic image and clear exterior");
+    check(is_bgra(pixels, 2, 2, 0, 0, 255, 255),
+          "frame readback contains the exact synthetic image at the fullscreen corner");
+    check(red_pixels == kTargetSize * kTargetSize && unexpected_pixels == 0,
+          "the source-ordered black background is fully covered by the synthetic image");
 
     executor.detach_pool();
     metal_texture_release(placeholder_handle);
