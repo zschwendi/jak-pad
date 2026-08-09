@@ -21,6 +21,8 @@ constexpr u32 kAnimatorBodyTagOffset = kAnimatorOffset + 16;
 constexpr u32 kAnimatorBodyOffset = kAnimatorBodyTagOffset + 16;
 constexpr u32 kAnimatorFinishOffset = kAnimatorBodyOffset + 496;
 constexpr u32 kAnimatorNextOffset = kAnimatorFinishOffset + 16;
+constexpr u32 kSecurityAnimatorFinishOffset = kAnimatorBodyOffset + 832;
+constexpr u32 kSecurityAnimatorNextOffset = kSecurityAnimatorFinishOffset + 16;
 constexpr std::size_t kMemorySize = 0x10000;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
@@ -209,6 +211,48 @@ std::vector<u8> make_common_execution_fixture() {
   }
   put_tag(&packet, kAnimatorFinishOffset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 13, 0);
   put_tag(&packet, kAnimatorNextOffset, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+
+  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+
+  packet[kTexturePageOffset + 8] = 0x44;
+  return packet;
+}
+
+std::vector<u8> make_water_security_fixture(u32 bucket_id) {
+  std::vector<u8> packet(kMemorySize);
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
+  put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(-1));
+  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+
+  put_tag(&packet, kAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 12, 0);
+  put_tag(&packet, kAnimatorBodyTagOffset, DmaTag::Kind::CNT, 52, 0, kPcPortVif | 30, 0);
+  put_float(&packet, kAnimatorBodyOffset, 1200.f);
+  put_u32(&packet, kAnimatorBodyOffset + 4, 0x2345);
+  for (u32 i = 0; i < 4; ++i) {
+    put_layer_values(&packet, kAnimatorBodyOffset + 16 + i * 80,
+                     20.f + static_cast<float>(i) * 20.f,
+                     static_cast<u8>(0xc0 + i));
+  }
+
+  constexpr u32 kDotOffset = kAnimatorBodyOffset + 336;
+  put_float(&packet, kDotOffset, 300.f);
+  put_u32(&packet, kDotOffset + 4, 0x3456);
+  for (u32 i = 0; i < 6; ++i) {
+    put_layer_values(&packet, kDotOffset + 16 + i * 80,
+                     100.f + static_cast<float>(i) * 20.f,
+                     static_cast<u8>(0xd0 + i));
+  }
+  put_tag(&packet, kSecurityAnimatorFinishOffset, DmaTag::Kind::CNT, 0, 0,
+          kPcPortVif | 13, 0);
+  put_tag(&packet, kSecurityAnimatorNextOffset, DmaTag::Kind::NEXT, 0,
+          kDirectSetupOffset, 0, 0);
 
   put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
           static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
@@ -444,7 +488,89 @@ void test_water_execution_plan() {
              packet.data(), packet.size(), kChainOffset,
              metal_renderer::kJak2WaterTextureUploadBuckets[0], packet.data(), packet.size())
              .has_value(),
-        "the non-source normal TFRAG Direct tail is rejected for water texture upload");
+        "a Direct reset without its source-owned security animator is rejected for water upload");
+
+  for (const u32 bucket_id : metal_renderer::kJak2WaterTextureUploadBuckets) {
+    packet = make_water_security_fixture(bucket_id);
+    metal_renderer::Jak2CommonTfragTextureUploadCapture result;
+    const auto plan = metal_renderer::plan_jak2_water_texture_upload(
+        packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size(),
+        &result);
+    check(plan.has_value() && plan->present && plan->has_security_animator &&
+              plan->bucket_id == bucket_id &&
+              plan->ordinary.page_offset == kTexturePageOffset &&
+              result.valid && result.classification == Classification::OrdinaryAndAnimator &&
+              result.transfer_count == 9 && result.total_payload_bytes == 1008 &&
+              result.inert_transfers == 4 && result.ordinary_descriptors == 1 &&
+              result.direct_setup_transfers == 1 && result.animator_arrays == 1 &&
+              result.animator_body_transfers == 1 && result.animator_payload_bytes == 832 &&
+              result.opcode_counts[12] == 1 && result.opcode_counts[13] == 1 &&
+              result.opcode_counts[30] == 1 && result.other_transfers == 0,
+          "each water slot accepts the exact descriptor/security/reset startup envelope");
+    check(plan->security.environment.time == 1200.f &&
+              plan->security.environment.destination_tbp == 0x2345 &&
+              plan->security.environment.layers[0].start.color[0] == 20.f &&
+              plan->security.environment.layers[1].end.st_rot == 84.25f &&
+              plan->security.dot.time == 300.f &&
+              plan->security.dot.destination_tbp == 0x3456 &&
+              plan->security.dot.layers[0].start.color[0] == 100.f &&
+              plan->security.dot.layers[2].end.source_padding.back() == 0xd5,
+          "the opcode-30 security body is copied into two typed owned animation plans");
+  }
+}
+
+void test_water_security_shape_and_payload_fail_closed() {
+  constexpr u32 bucket_id = metal_renderer::kJak2WaterTextureUploadBuckets[0];
+  const auto rejected = [](const std::vector<u8>& packet) {
+    return !metal_renderer::plan_jak2_water_texture_upload(
+                packet.data(), packet.size(), kChainOffset,
+                metal_renderer::kJak2WaterTextureUploadBuckets[0], packet.data(), packet.size())
+                .has_value();
+  };
+
+  auto packet = make_water_security_fixture(bucket_id);
+  put_u32(&packet, kAnimatorBodyTagOffset + 8, kPcPortVif | 29);
+  check(rejected(packet), "a water animator opcode other than security 30 is rejected");
+
+  packet = make_water_security_fixture(bucket_id);
+  put_tag(&packet, kAnimatorBodyTagOffset, DmaTag::Kind::CNT, 51, 0, kPcPortVif | 30, 0);
+  check(rejected(packet), "a security body other than qwc 52 is rejected");
+
+  packet = make_water_security_fixture(bucket_id);
+  put_tag(&packet, kSecurityAnimatorNextOffset, DmaTag::Kind::NEXT, 0,
+          bucket_offset(bucket_id) + 16, 0, 0);
+  check(rejected(packet), "a security water bucket without its terminal GS reset is rejected");
+
+  packet = make_water_security_fixture(bucket_id);
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+  put_tag(&packet, kSecurityAnimatorNextOffset, DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  check(rejected(packet), "an animator-before-descriptor water order is rejected");
+
+  packet = make_water_security_fixture(bucket_id);
+  put_float(&packet, kAnimatorBodyOffset + 336,
+            std::numeric_limits<float>::quiet_NaN());
+  check(rejected(packet), "a nonfinite security-dot time is rejected");
+
+  packet = make_water_security_fixture(bucket_id);
+  put_u32(&packet, kAnimatorBodyOffset + 4, 0x40000);
+  check(rejected(packet), "an out-of-VRAM security destination is rejected");
+
+  packet = make_water_security_fixture(bucket_id);
+  put_float(&packet, kAnimatorBodyOffset + 336 + 16 + 48,
+            std::numeric_limits<float>::infinity());
+  check(rejected(packet), "a nonfinite security LayerVals scalar is rejected");
+
+  packet = make_water_security_fixture(bucket_id);
+  const auto owned = metal_renderer::plan_jak2_water_texture_upload(
+      packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size());
+  check(owned.has_value(), "the exact security fixture produces an owned plan");
+  std::fill(packet.begin(), packet.end(), 0xa5);
+  check(owned->ordinary.page_header[8] == 0x44 &&
+            owned->security.environment.time == 1200.f &&
+            owned->security.dot.destination_tbp == 0x3456 &&
+            owned->security.dot.layers[2].end.source_padding.back() == 0xd5,
+        "snapshot reuse cannot change any owned opcode-30 plan data");
 }
 
 void test_common_opcode27_execution_plan() {
@@ -851,6 +977,7 @@ int main() {
   test_normal_shrub_execution_plan();
   test_alpha_execution_plan();
   test_water_execution_plan();
+  test_water_security_shape_and_payload_fail_closed();
   test_common_opcode27_execution_plan();
   test_empty_common_execution_plan();
   test_common_opcode27_shape_variants_fail_closed();

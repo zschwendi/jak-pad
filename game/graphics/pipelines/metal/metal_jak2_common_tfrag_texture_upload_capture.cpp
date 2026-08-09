@@ -15,6 +15,7 @@ namespace {
 constexpr u16 kStartAnimatorArray = 12;
 constexpr u16 kFinishAnimatorArray = 13;
 constexpr u16 kSkullGemOpcode = 27;
+constexpr u16 kSecurityOpcode = 30;
 constexpr u32 kPs2VramTbpUpperBound = 0x40000;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kFlushaVif = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
@@ -320,6 +321,16 @@ bool metadata_is_opcode27_body(const Jak2CommonTfragTransferMetadata& transfer) 
          transfer.vif1_immediate == 0;
 }
 
+bool metadata_is_opcode30_security_body(
+    const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 52 &&
+         transfer.payload_bytes == sizeof(Jak2Opcode30SecurityPlan) &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+         transfer.vif0_immediate == kSecurityOpcode &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif1_immediate == 0;
+}
+
 bool metadata_is_animator_finish(const Jak2CommonTfragTransferMetadata& transfer) {
   return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 0 &&
          transfer.payload_bytes == 0 &&
@@ -333,6 +344,17 @@ bool has_exact_opcode27_counts(const Jak2CommonTfragTextureUploadCapture& captur
   for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
     const u32 expected =
         i == kStartAnimatorArray || i == kFinishAnimatorArray || i == kSkullGemOpcode;
+    if (capture.opcode_counts[i] != expected) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool has_exact_security_counts(const Jak2CommonTfragTextureUploadCapture& capture) {
+  for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
+    const u32 expected =
+        i == kStartAnimatorArray || i == kFinishAnimatorArray || i == kSecurityOpcode;
     if (capture.opcode_counts[i] != expected) {
       return false;
     }
@@ -395,6 +417,33 @@ bool parse_opcode27_skull_gem(const u8* source, Jak2Opcode27SkullGemPlan* out) {
     layer_source += sizeof(Jak2Opcode27LayerTransition);
   }
   return true;
+}
+
+template <typename Plan>
+bool parse_fixed_animation(const u8* source, Plan* out) {
+  out->time = read_unaligned<float>(source);
+  out->destination_tbp = read_unaligned<u32>(source + 4);
+  std::memcpy(out->source_header_tail.data(), source + 8,
+              out->source_header_tail.size());
+  if (!std::isfinite(out->time) || out->destination_tbp >= kPs2VramTbpUpperBound) {
+    return false;
+  }
+
+  const u8* layer_source = source + 16;
+  for (auto& layer : out->layers) {
+    if (!parse_layer_values(layer_source, &layer.start) ||
+        !parse_layer_values(layer_source + sizeof(Jak2Opcode27LayerValues),
+                            &layer.end)) {
+      return false;
+    }
+    layer_source += sizeof(Jak2Opcode27LayerTransition);
+  }
+  return true;
+}
+
+bool parse_opcode30_security(const u8* source, Jak2Opcode30SecurityPlan* out) {
+  return parse_fixed_animation(source, &out->environment) &&
+         parse_fixed_animation(source + sizeof(out->environment), &out->dot);
 }
 
 bool page_header_is_valid(const u8* live_ee_memory,
@@ -639,16 +688,34 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     return plan;
   }
 
-  const bool exact_counts =
+  const bool descriptor_only =
       capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryOnly &&
       capture.transfer_count == 3 && capture.total_payload_bytes == 16 &&
       capture.inert_transfers == 2 && capture.ordinary_descriptors == 1 &&
       capture.direct_setup_transfers == 0 && capture.animator_arrays == 0 &&
       capture.eye_markers == 0 && capture.other_transfers == 0 &&
-      capture.malformed_transfers == 0;
-  if (!exact_counts || !metadata_is_inert_next(capture.transfers[0]) ||
-      !metadata_is_inert_next(capture.transfers[2]) ||
-      !metadata_is_ordinary_descriptor(capture.transfers[1])) {
+      capture.malformed_transfers == 0 && metadata_is_inert_next(capture.transfers[0]) &&
+      metadata_is_ordinary_descriptor(capture.transfers[1]) &&
+      metadata_is_inert_next(capture.transfers[2]);
+  const bool security_composite =
+      capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator &&
+      capture.transfer_count == 9 && capture.total_payload_bytes == 1008 &&
+      capture.inert_transfers == 4 && capture.ordinary_descriptors == 1 &&
+      capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == 0 &&
+      capture.animator_arrays == 1 && capture.animator_body_transfers == 1 &&
+      capture.animator_payload_bytes == sizeof(Jak2Opcode30SecurityPlan) &&
+      capture.eye_markers == 0 && capture.other_transfers == 0 &&
+      capture.malformed_transfers == 0 && has_exact_security_counts(capture) &&
+      metadata_is_inert_next(capture.transfers[0]) &&
+      metadata_is_ordinary_descriptor(capture.transfers[1]) &&
+      metadata_is_inert_next(capture.transfers[2]) &&
+      metadata_is_animator_start(capture.transfers[3]) &&
+      metadata_is_opcode30_security_body(capture.transfers[4]) &&
+      metadata_is_animator_finish(capture.transfers[5]) &&
+      metadata_is_inert_next(capture.transfers[6]) &&
+      metadata_is_direct_setup(capture.transfers[7]) &&
+      metadata_is_inert_next(capture.transfers[8]);
+  if (!descriptor_only && !security_composite) {
     return std::nullopt;
   }
 
@@ -673,6 +740,26 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
   plan.ordinary.mode = mode;
   std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
               plan.ordinary.page_header.size());
+  if (security_composite) {
+    u64 animator_data_offset = 0;
+    if (!transfer_data_offset(chain_offset, bucket_id, capture.transfers[4],
+                              checked_snapshot_size, &animator_data_offset)) {
+      return std::nullopt;
+    }
+    constexpr u64 kExactOpcode30BodyTag =
+        52ull | (static_cast<u64>(DmaTag::Kind::CNT) << 28);
+    const u64 animator_tag_offset = animator_data_offset - 16;
+    if (read_unaligned<u64>(dma_packet_snapshot + animator_tag_offset) !=
+            kExactOpcode30BodyTag ||
+        read_unaligned<u32>(dma_packet_snapshot + animator_tag_offset + 8) !=
+            (kPcPortVif | kSecurityOpcode) ||
+        read_unaligned<u32>(dma_packet_snapshot + animator_tag_offset + 12) != 0 ||
+        !parse_opcode30_security(dma_packet_snapshot + animator_data_offset,
+                                 &plan.security)) {
+      return std::nullopt;
+    }
+    plan.has_security_animator = true;
+  }
   return plan;
 }
 

@@ -69,8 +69,6 @@ struct Jak2NormalTfragTextureUploadPlan {
   Jak2Bucket4OrdinaryUploadPlan ordinary;
 };
 
-using Jak2WaterTextureUploadPlan = Jak2NormalTfragTextureUploadPlan;
-
 struct Jak2NormalShrubTextureUploadPlan {
   u32 bucket_id = 0;
   bool present = false;
@@ -104,6 +102,36 @@ struct Jak2Opcode27SkullGemPlan {
   std::array<Jak2Opcode27LayerTransition, 3> layers = {};
 };
 static_assert(sizeof(Jak2Opcode27SkullGemPlan) == 496);
+
+struct Jak2Opcode30SecurityEnvironmentPlan {
+  float time = 0;
+  u32 destination_tbp = 0;
+  std::array<u8, 8> source_header_tail = {};
+  std::array<Jak2Opcode27LayerTransition, 2> layers = {};
+};
+static_assert(sizeof(Jak2Opcode30SecurityEnvironmentPlan) == 336);
+
+struct Jak2Opcode30SecurityDotPlan {
+  float time = 0;
+  u32 destination_tbp = 0;
+  std::array<u8, 8> source_header_tail = {};
+  std::array<Jak2Opcode27LayerTransition, 3> layers = {};
+};
+static_assert(sizeof(Jak2Opcode30SecurityDotPlan) == 496);
+
+struct Jak2Opcode30SecurityPlan {
+  Jak2Opcode30SecurityEnvironmentPlan environment;
+  Jak2Opcode30SecurityDotPlan dot;
+};
+static_assert(sizeof(Jak2Opcode30SecurityPlan) == 832);
+
+struct Jak2WaterTextureUploadPlan {
+  u32 bucket_id = 0;
+  bool present = false;
+  bool has_security_animator = false;
+  Jak2Bucket4OrdinaryUploadPlan ordinary;
+  Jak2Opcode30SecurityPlan security;
+};
 
 struct Jak2CommonTfragTextureUploadPlan {
   bool present = false;
@@ -142,9 +170,10 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*!
- * Plan the water page upload written by upload-vram-pages-pris-pc. The writer emits only the
- * ordinary descriptor and its insertion links; unlike the normal TFRAG envelope, it does not add
- * a Direct setup tail. *texture-page-translate* supplies the water category and per-level bucket.
+ * Plan a water page upload written by upload-vram-pages-pris-pc. The page writer itself emits only
+ * the ordinary descriptor. A level can append its fixed texture animator to the same bucket, and
+ * display-frame-finish appends the standard Direct GS reset to every nonempty normal bucket. The
+ * typed composite accepted here is the exact two-output opcode-30 security animator.
  */
 std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     const u8* dma_packet_snapshot,
