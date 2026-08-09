@@ -130,6 +130,24 @@ bool derives_art_group_and_duplicate_names() {
   return true;
 }
 
+bool derives_jak2_art_group_names_without_changing_the_default() {
+  const std::string marker = "/src/jak2/final/art-group7/plat-ag.go";
+  std::vector<std::uint8_t> art_data(marker.begin(), marker.end());
+  art_data.push_back(0);
+  const auto fixture = make_raw_dgo("ART.DGO", {{"plat", art_data}});
+
+  const auto jak1_result = jak1_checked_dgo::read(fixture);
+  CHECK(jak1_result);
+  CHECK(jak1_result.value().objects[0].unique_name == "plat");
+
+  jak1_checked_dgo::Options options;
+  options.game_version = GameVersion::Jak2;
+  const auto jak2_result = jak1_checked_dgo::read(fixture, {}, options);
+  CHECK(jak2_result);
+  CHECK(jak2_result.value().objects[0].unique_name == "plat-ag");
+  return true;
+}
+
 bool rejects_ambiguous_duplicate_names() {
   const auto fixture =
       make_raw_dgo("DUP.DGO", {{"same", {1, 2}}, {"same", {3, 4}}, {"same", {5, 6}}});
@@ -228,6 +246,16 @@ bool rejects_malformed_art_group_marker_and_reserved_name() {
   result = jak1_checked_dgo::read(fixture);
   CHECK(!result);
   CHECK(result.error().code == ErrorCode::invalid_name);
+
+  const std::string jak2_marker = "/src/jak2/final/art-group7/other-ag.go";
+  data.assign(jak2_marker.begin(), jak2_marker.end());
+  data.push_back(0);
+  fixture = make_raw_dgo("ART.DGO", {{"plat", data}});
+  jak1_checked_dgo::Options jak2_options;
+  jak2_options.game_version = GameVersion::Jak2;
+  result = jak1_checked_dgo::read(fixture, {}, jak2_options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::invalid_art_group_marker);
   return true;
 }
 
@@ -378,6 +406,8 @@ int main() {
   const std::vector<std::pair<const char*, bool (*)()>> tests = {
       {"valid_raw_preserves_order_and_names", valid_raw_preserves_order_and_names},
       {"derives_art_group_and_duplicate_names", derives_art_group_and_duplicate_names},
+      {"derives_jak2_art_group_names_without_changing_the_default",
+       derives_jak2_art_group_names_without_changing_the_default},
       {"rejects_ambiguous_duplicate_names", rejects_ambiguous_duplicate_names},
       {"valid_compressed_fixture", valid_compressed_fixture},
       {"valid_compressed_raw_chunk_fixture", valid_compressed_raw_chunk_fixture},

@@ -19,8 +19,22 @@ constexpr std::size_t kNameFieldBytes = 60;
 constexpr std::size_t kObjectAlignment = 16;
 constexpr std::size_t kBlzoBlockBytes = 0x8000;
 constexpr std::array<std::uint8_t, 4> kBlzoMagic = {'o', 'Z', 'l', 'B'};
-constexpr const char* kJak1ArtGroupPrefix = "/src/next/data/art-group6/";
 constexpr const char* kArtGroupSuffix = "-ag.go";
+
+std::optional<std::string_view> art_group_prefix(GameVersion game_version) {
+  switch (game_version) {
+    case GameVersion::Jak1:
+      return "/src/next/data/art-group6/";
+    case GameVersion::Jak2:
+      return "/src/jak2/final/art-group7/";
+    default:
+      return {};
+  }
+}
+
+std::string_view game_name(GameVersion game_version) {
+  return game_version == GameVersion::Jak1 ? "Jak 1" : "Jak II";
+}
 
 Error make_error(ErrorCode code,
                  std::size_t offset,
@@ -41,7 +55,8 @@ std::optional<Error> validate_options(const Options& options) {
       options.file_read_chunk_bytes >
           static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) ||
       options.max_compressed_chunk_bytes == 0 ||
-      options.max_compressed_chunk_bytes >= kBlzoBlockBytes) {
+      options.max_compressed_chunk_bytes >= kBlzoBlockBytes ||
+      !art_group_prefix(options.game_version)) {
     return make_error(ErrorCode::invalid_argument, 0, "The DGO reader options are invalid.");
   }
   return {};
@@ -114,7 +129,7 @@ Result<std::string> derive_unique_name(const std::string& internal_name,
                    "An internal DGO object name contains the reserved -ag suffix.", object_index));
   }
 
-  const std::string prefix(kJak1ArtGroupPrefix);
+  const std::string prefix(*art_group_prefix(options.game_version));
   const std::string expected_tail = internal_name + kArtGroupSuffix;
   if (object_data.size() < prefix.size()) {
     return Result<std::string>::success(internal_name);
@@ -135,13 +150,17 @@ Result<std::string> derive_unique_name(const std::string& internal_name,
         expected_tail.size() + 1 > object_data.size() - tail_offset) {
       return Result<std::string>::failure(
           make_error(ErrorCode::invalid_art_group_marker, object_offset + marker_offset,
-                     "A Jak 1 art-group marker is truncated.", object_index));
+                     "A " + std::string(game_name(options.game_version)) +
+                         " art-group marker is truncated.",
+                     object_index));
     }
     if (std::memcmp(object_data.data() + tail_offset, expected_tail.data(), expected_tail.size()) ||
         object_data[tail_offset + expected_tail.size()] != 0) {
       return Result<std::string>::failure(
           make_error(ErrorCode::invalid_art_group_marker, object_offset + marker_offset,
-                     "A Jak 1 art-group marker does not match its DGO object name.", object_index));
+                     "A " + std::string(game_name(options.game_version)) +
+                         " art-group marker does not match its DGO object name.",
+                     object_index));
     }
     return Result<std::string>::success(internal_name + "-ag");
   }

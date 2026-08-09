@@ -129,6 +129,17 @@ target_link_libraries(jak1-fr3-prepare
         stb_image
         tiny_gltf)
 
+add_executable(jak2-fr3-prepare
+        extractor/jak2_fr3_prepare_main.cpp)
+
+target_link_libraries(jak2-fr3-prepare
+        decomp
+        common
+        lzokay
+        fmt
+        stb_image
+        tiny_gltf)
+
 
 add_executable(extractor
         extractor/main.cpp)
@@ -164,6 +175,18 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
     target_compile_options(jak1-fr3-preparer-test PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
   add_test(NAME jak1-fr3-preparer-test COMMAND jak1-fr3-preparer-test)
+
+  add_executable(jak2-fr3-preparer-test
+                 ../test/decompiler/test_jak2_fr3_preparer.cpp)
+  target_link_libraries(jak2-fr3-preparer-test PRIVATE decomp common)
+  target_compile_features(jak2-fr3-preparer-test PRIVATE cxx_std_20)
+  if(MSVC)
+    target_compile_options(jak2-fr3-preparer-test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(jak2-fr3-preparer-test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME jak2-fr3-preparer-test
+           COMMAND jak2-fr3-preparer-test ${CMAKE_SOURCE_DIR})
 
   add_executable(jak1-retail-object-catalog-test
                  ../test/common/test_jak1_retail_object_catalog.cpp

@@ -23,6 +23,8 @@ option(OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY
        "Build only the checked Jak 1 prepared-retail catalog static library" OFF)
 option(OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY
        "Build only the portable Jak 1 FR3 preparation static library" OFF)
+option(OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY
+       "Build only the portable Jak II FR3 preparation static library" OFF)
 option(OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY
        "Build only the portable Jak 1 output materializer static library" OFF)
 option(OPENGOAL_BUILD_JAK1_OUTPUT_RECIPE_CORE_ONLY
@@ -49,6 +51,7 @@ foreach(OPENGOAL_ISOLATED_IMPORT_MODE
         OPENGOAL_BUILD_JAK1_CHECKED_DGO_ONLY
         OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY
         OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY
+        OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY
         OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY
         OPENGOAL_BUILD_JAK1_OUTPUT_RECIPE_CORE_ONLY
         OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY
@@ -104,7 +107,12 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   if(OPENGOAL_BUILD_JAK1_PREPARED_RETAIL_ONLY)
     include(common/custom_data/jak1_prepared_retail.cmake)
   endif()
-  if(OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY)
+  if(OPENGOAL_BUILD_JAK1_FR3_PREPARER_ONLY OR OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY)
+    if(OPENGOAL_BUILD_JAK2_FR3_PREPARER_ONLY)
+      set(OPENGOAL_FR3_PREPARER_GAME jak2)
+    else()
+      set(OPENGOAL_FR3_PREPARER_GAME jak1)
+    endif()
     include(decompiler/extractor/jak1_fr3_preparer.cmake)
   endif()
   if(OPENGOAL_BUILD_JAK1_OUTPUT_MATERIALIZER_ONLY)

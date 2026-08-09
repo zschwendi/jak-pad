@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 
+#include "common/versions/versions.h"
+
 namespace jak1_checked_dgo {
 
 enum class ErrorCode {
@@ -100,6 +102,7 @@ struct Options {
   std::uint32_t max_compressed_chunks = 65536;
   std::uint32_t max_expansion_ratio = 256;
   std::size_t file_read_chunk_bytes = 256 * 1024;
+  GameVersion game_version = GameVersion::Jak1;
   CancelCallback should_cancel;
 };
 
