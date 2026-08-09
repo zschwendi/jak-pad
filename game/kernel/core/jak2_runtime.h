@@ -70,6 +70,7 @@ typedef enum goal_jak2_progress_menu_semantic_phase {
   GOAL_JAK2_PROGRESS_MENU_PHASE_CREATE_GAME = 3,
   GOAL_JAK2_PROGRESS_MENU_PHASE_CREATING = 4,
   GOAL_JAK2_PROGRESS_MENU_PHASE_SAVING = 5,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_ALREADY_EXISTS = 6,
 } goal_jak2_progress_menu_semantic_phase;
 
 typedef enum goal_jak2_progress_menu_semantic_action {

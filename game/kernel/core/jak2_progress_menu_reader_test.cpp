@@ -23,6 +23,7 @@ constexpr uint32_t kNoMemoryCardSymbol = 0x40;
 constexpr uint32_t kCreateGameSymbol = 0x44;
 constexpr uint32_t kCreatingSymbol = 0x48;
 constexpr uint32_t kSavingSymbol = 0x4c;
+constexpr uint32_t kAlreadyExistsSymbol = 0x50;
 constexpr uint32_t kProgressType = 0x200;
 constexpr uint32_t kProgressGlobalStateType = 0x240;
 constexpr uint32_t kMenuOptionListType = 0x280;
@@ -37,6 +38,7 @@ constexpr uint32_t kInsufficientSpaceOptions = 0x1504;
 constexpr uint32_t kCreateGameOptions = 0x1604;
 constexpr uint32_t kLoadingOptions = 0x1704;
 constexpr uint32_t kIdleState = 0x1804;
+constexpr uint32_t kAlreadyExistsOptions = 0x1a04;
 
 int g_failures = 0;
 
@@ -64,6 +66,7 @@ struct Fixture {
     inputs.save_options_title = kSaveOptionsTitle;
     inputs.insufficient_space_options = kInsufficientSpaceOptions;
     inputs.create_game_options = kCreateGameOptions;
+    inputs.already_exists_options = kAlreadyExistsOptions;
     inputs.loading_options = kLoadingOptions;
     inputs.progress_type = {kProgressSymbol, kProgressType,
                             static_cast<uint16_t>(layout::kProgressSize)};
@@ -81,6 +84,7 @@ struct Fixture {
     inputs.select_save_title_symbol = kSelectSaveTitleSymbol;
     inputs.no_memory_card_symbol = kNoMemoryCardSymbol;
     inputs.create_game_symbol = kCreateGameSymbol;
+    inputs.already_exists_symbol = kAlreadyExistsSymbol;
     inputs.creating_symbol = kCreatingSymbol;
     inputs.saving_symbol = kSavingSymbol;
     inputs.true_object = kTrue;
@@ -99,6 +103,7 @@ struct Fixture {
     write(bytes, kSaveOptionsTitle - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kInsufficientSpaceOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kCreateGameOptions - BASIC_OFFSET, kMenuOptionListType);
+    write(bytes, kAlreadyExistsOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kLoadingOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kIdleState - BASIC_OFFSET, kStateType);
 
@@ -281,6 +286,13 @@ void reads_source_proven_save_flow_semantics() {
              snapshot.action_mask == (action_left | action_right | action_confirm),
          "create-game exposes its source responder's Left, Right, and Confirm");
 
+  fixture.set_semantic_state(kAlreadyExistsSymbol, kAlreadyExistsOptions);
+  snapshot = fixture.read_semantic_snapshot();
+  expect(snapshot.available && snapshot.phase == SemanticPhase::already_exists &&
+             snapshot.option_index == 0 &&
+             snapshot.action_mask == (action_left | action_right | action_confirm),
+         "already-exists exposes its source responder's Left, Right, and Confirm");
+
   fixture.set_semantic_state(kCreatingSymbol, kLoadingOptions);
   snapshot = fixture.read_semantic_snapshot();
   expect(snapshot.available && snapshot.phase == SemanticPhase::creating &&
@@ -305,6 +317,16 @@ void semantic_identity_and_stability_fail_closed() {
   write(wrong_option_type.bytes, kCreateGameOptions - BASIC_OFFSET, kStateType);
   expect(!wrong_option_type.read_semantic_snapshot().available,
          "a current option list with the wrong BASIC type tag is rejected");
+
+  Fixture wrong_overwrite_options;
+  wrong_overwrite_options.set_semantic_state(kAlreadyExistsSymbol, kCreateGameOptions);
+  expect(!wrong_overwrite_options.read_semantic_snapshot().available,
+         "already-exists paired with create-game options is rejected");
+
+  Fixture wrong_overwrite_index;
+  wrong_overwrite_index.set_semantic_state(kAlreadyExistsSymbol, kAlreadyExistsOptions, 1);
+  expect(!wrong_overwrite_index.read_semantic_snapshot().available,
+         "already-exists rejects a second option row");
 
   Fixture wrong_option_type_size;
   wrong_option_type_size.set_semantic_state(kCreateGameSymbol, kCreateGameOptions);

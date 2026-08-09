@@ -95,6 +95,7 @@ struct Inputs {
   uint32_t save_options_title = 0;
   uint32_t insufficient_space_options = 0;
   uint32_t create_game_options = 0;
+  uint32_t already_exists_options = 0;
   uint32_t loading_options = 0;
 
   TypeIdentity progress_type;
@@ -109,6 +110,7 @@ struct Inputs {
   uint32_t select_save_title_symbol = 0;
   uint32_t no_memory_card_symbol = 0;
   uint32_t create_game_symbol = 0;
+  uint32_t already_exists_symbol = 0;
   uint32_t creating_symbol = 0;
   uint32_t saving_symbol = 0;
   uint32_t true_object = 0;
@@ -133,6 +135,7 @@ enum class SemanticPhase : int32_t {
   create_game = 3,
   creating = 4,
   saving = 5,
+  already_exists = 6,
 };
 
 enum SemanticAction : uint32_t {
@@ -373,11 +376,12 @@ inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& in
   const std::array state_symbols = {
       inputs.progress_symbol, inputs.title_symbol, inputs.none_symbol, inputs.idle_symbol,
       inputs.select_save_title_symbol, inputs.no_memory_card_symbol,
-      inputs.create_game_symbol, inputs.creating_symbol, inputs.saving_symbol,
+      inputs.create_game_symbol, inputs.already_exists_symbol, inputs.creating_symbol,
+      inputs.saving_symbol,
   };
   const std::array option_lists = {
       inputs.title_pc_options, inputs.save_options_title, inputs.insufficient_space_options,
-      inputs.create_game_options, inputs.loading_options,
+      inputs.create_game_options, inputs.already_exists_options, inputs.loading_options,
   };
   if (!all_nonzero_unique(state_symbols) || !all_nonzero_unique(option_lists)) {
     return out;
@@ -404,6 +408,11 @@ inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& in
              fields.current_options == inputs.create_game_options &&
              fields.option_index == 0) {
     out.phase = SemanticPhase::create_game;
+    out.action_mask = action_left | action_right | action_confirm;
+  } else if (fields.current == inputs.already_exists_symbol &&
+             fields.current_options == inputs.already_exists_options &&
+             fields.option_index == 0) {
+    out.phase = SemanticPhase::already_exists;
     out.action_mask = action_left | action_right | action_confirm;
   } else if (fields.current == inputs.creating_symbol &&
              fields.current_options == inputs.loading_options && fields.option_index == 0) {
