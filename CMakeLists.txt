@@ -35,6 +35,8 @@ option(OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY
        "Build only the portable Jak 1 extracted-tree generated-input adapter" OFF)
 option(OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY
        "Build only the portable Jak 1 raw-ISO import composer" OFF)
+option(OPENGOAL_BUILD_JAK2_IMPORT_COMPOSER_ONLY
+       "Build only the fail-closed Jak II raw-ISO importer foundation" OFF)
 set(OPENGOAL_JAK2_AOT_DIR "" CACHE PATH
     "Host-generated Jak 2 AOT C directory used by the iPhoneOS link proof")
 set(OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT "" CACHE PATH
@@ -52,7 +54,8 @@ foreach(OPENGOAL_ISOLATED_IMPORT_MODE
         OPENGOAL_BUILD_JAK1_PUBLIC_GENERATED_ARTIFACTS_ONLY
         OPENGOAL_BUILD_JAK1_SOURCE_OBJECT_PACK_ONLY
         OPENGOAL_BUILD_JAK1_EXTRACTED_GENERATED_INPUTS_ONLY
-        OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY)
+        OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY
+        OPENGOAL_BUILD_JAK2_IMPORT_COMPOSER_ONLY)
   if(${OPENGOAL_ISOLATED_IMPORT_MODE})
     math(EXPR OPENGOAL_ISOLATED_IMPORT_MODE_COUNT
          "${OPENGOAL_ISOLATED_IMPORT_MODE_COUNT} + 1")
@@ -71,7 +74,7 @@ endif()
 
 if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 1)
   message(FATAL_ERROR
-          "Select only one isolated Jak 1 import-library mode.")
+          "Select only one isolated import-library mode.")
 endif()
 
 if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
@@ -80,12 +83,12 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
     if(NOT APPLE OR
        NOT OPENGOAL_IMPORT_APPLE_SYSROOT MATCHES "iphone(os|simulator)")
       message(FATAL_ERROR
-              "iOS Jak 1 import-library builds require CMAKE_OSX_SYSROOT=iphoneos or "
+              "iOS import-library builds require CMAKE_OSX_SYSROOT=iphoneos or "
               "iphonesimulator.")
     endif()
     if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
       message(FATAL_ERROR
-              "iOS Jak 1 import-library builds require CMAKE_OSX_ARCHITECTURES=arm64.")
+              "iOS import-library builds require CMAKE_OSX_ARCHITECTURES=arm64.")
     endif()
   endif()
   include(CTest)
@@ -121,6 +124,9 @@ if(OPENGOAL_ISOLATED_IMPORT_MODE_COUNT GREATER 0)
   endif()
   if(OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY)
     include(decompiler/extractor/jak1_import_composer.cmake)
+  endif()
+  if(OPENGOAL_BUILD_JAK2_IMPORT_COMPOSER_ONLY)
+    include(decompiler/extractor/jak2_import_composer.cmake)
   endif()
   return()
 endif()
