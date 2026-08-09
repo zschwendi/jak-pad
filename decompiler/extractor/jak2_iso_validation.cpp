@@ -2,10 +2,16 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <unistd.h>
 #include <vector>
+
+#include "common/util/PosixFile.h"
 
 #define XXH_PRIVATE_API
 #include "third-party/zstd/lib/common/xxhash.h"
@@ -106,13 +112,12 @@ bool collect_file_identities(const IsoFile::Entry& entry,
       !paths->emplace(std::move(collision_path)).second) {
     return false;
   }
-  files->push_back({relative_path, static_cast<std::uint64_t>(entry.size),
-                    layout.hashes[(*next_hash_index)++]});
+  files->push_back(
+      {relative_path, static_cast<std::uint64_t>(entry.size), layout.hashes[(*next_hash_index)++]});
   return true;
 }
 
-std::optional<std::vector<checked_file_identity::Identity>> file_identities(
-    const IsoFile& layout) {
+std::optional<std::vector<checked_file_identity::Identity>> file_identities(const IsoFile& layout) {
   std::vector<checked_file_identity::Identity> files;
   files.reserve(layout.hashes.size());
   std::set<std::string> paths;
@@ -129,13 +134,22 @@ std::optional<std::vector<checked_file_identity::Identity>> file_identities(
 }
 
 ValidationError with_cleanup(ValidationError error,
-                             const std::filesystem::path& staging_directory) {
-  std::error_code cleanup_error;
-  std::filesystem::remove_all(staging_directory, cleanup_error);
-  if (cleanup_error) {
-    error.cleanup_error = cleanup_error.message();
+                             iso_file::OwnedStagingDirectory* staging_directory) {
+  if (auto cleanup_error = staging_directory->cleanup()) {
+    error.cleanup_error = std::move(*cleanup_error);
   }
   return error;
+}
+
+std::string checkpoint_contents(const RevisionMatch& match) {
+  std::ostringstream contents;
+  contents << "[\n"
+           << "  {\n"
+           << "    \"elf_hash\": " << match.fingerprint.elf_hash << ",\n"
+           << "    \"serial\": \"" << match.fingerprint.serial << "\"\n"
+           << "  }\n"
+           << "]";
+  return contents.str();
 }
 
 std::optional<ValidationError> write_checkpoint_file(const RevisionMatch& match,
@@ -153,17 +167,9 @@ std::optional<ValidationError> write_checkpoint_file(const RevisionMatch& match,
         "The validated staging directory already contains a buildinfo temporary file.");
   }
 
-  std::ostringstream contents;
-  contents << "[\n"
-           << "  {\n"
-           << "    \"elf_hash\": " << match.fingerprint.elf_hash << ",\n"
-           << "    \"serial\": \"" << match.fingerprint.serial << "\"\n"
-           << "  }\n"
-           << "]";
-
   {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-    output << contents.str();
+    output << checkpoint_contents(match);
     output.close();
     if (!output) {
       std::error_code ignored;
@@ -180,6 +186,46 @@ std::optional<ValidationError> write_checkpoint_file(const RevisionMatch& match,
     return make_error(ValidationErrorCode::checkpoint_write_failed,
                       "Could not atomically install the validated extraction checkpoint: " +
                           file_error.message());
+  }
+  return std::nullopt;
+}
+
+std::optional<ValidationError> write_checkpoint_file_at(
+    const RevisionMatch& match,
+    iso_file::OwnedStagingDirectory* staging_directory) {
+  constexpr std::string_view kCheckpoint = "buildinfo.json";
+  constexpr std::string_view kTemporary = ".buildinfo.json.tmp";
+  const auto directory = staging_directory->directory_descriptor();
+  if (directory < 0) {
+    return make_error(ValidationErrorCode::checkpoint_write_failed,
+                      "The exact validated staging directory is unavailable.");
+  }
+
+  auto temporary =
+      posix_file::open_file_at(directory, kTemporary, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (!temporary || !staging_directory->track_created_file(kTemporary, temporary.get())) {
+    return make_error(ValidationErrorCode::checkpoint_write_failed,
+                      "Could not exclusively create and retain the extraction checkpoint.");
+  }
+
+  const auto contents = checkpoint_contents(match);
+  size_t written = 0;
+  while (written < contents.size()) {
+    const auto result =
+        ::write(temporary.get(), contents.data() + written, contents.size() - written);
+    if (result < 0 && errno == EINTR) {
+      continue;
+    }
+    if (result <= 0) {
+      return make_error(ValidationErrorCode::checkpoint_write_failed,
+                        "Could not write the validated extraction checkpoint: " +
+                            std::string(std::strerror(errno)));
+    }
+    written += static_cast<size_t>(result);
+  }
+  if (!staging_directory->rename_tracked_file(kTemporary, kCheckpoint)) {
+    return make_error(ValidationErrorCode::checkpoint_write_failed,
+                      "Could not atomically install the exact extraction checkpoint.");
   }
   return std::nullopt;
 }
@@ -208,8 +254,7 @@ ValidationResult<std::vector<checked_file_identity::Identity>> validated_file_id
         make_error(ValidationErrorCode::invalid_extraction_result,
                    "The extracted-file identity mapping is incomplete, unsafe, or ambiguous."));
   }
-  return ValidationResult<std::vector<checked_file_identity::Identity>>::success(
-      std::move(*files));
+  return ValidationResult<std::vector<checked_file_identity::Identity>>::success(std::move(*files));
 }
 
 ValidationResult<RevisionMatch> match_supported_revision(const Fingerprint& fingerprint) {
@@ -340,7 +385,9 @@ ValidationResult<StagedExtraction> extract_and_validate(
     }
   };
   options.hash_files = true;
-  auto extracted = iso_file::extract_to_staging(image, new_staging_directory, options);
+  iso_file::OwnedStagingDirectory owned_staging;
+  auto extracted =
+      iso_file::extract_to_owned_staging(image, new_staging_directory, &owned_staging, options);
   if (!extracted) {
     const auto code = callback_failed ? ValidationErrorCode::callback_failed
                       : extracted.error().code == iso_file::ErrorCode::cancelled
@@ -358,13 +405,13 @@ ValidationResult<StagedExtraction> extract_and_validate(
     return ValidationResult<StagedExtraction>::failure(
         with_cleanup(make_error(code, callback_failed ? "A disc-validation callback failed."
                                                       : "Disc validation was cancelled."),
-                     new_staging_directory));
+                     &owned_staging));
   }
 
   auto matched = validate_extracted_layout(extracted.value());
   if (!matched) {
     return ValidationResult<StagedExtraction>::failure(
-        with_cleanup(matched.error(), new_staging_directory));
+        with_cleanup(matched.error(), &owned_staging));
   }
   auto match = matched.take_value();
   auto files = validated_file_identities(extracted.value());
@@ -372,7 +419,7 @@ ValidationResult<StagedExtraction> extract_and_validate(
     return ValidationResult<StagedExtraction>::failure(with_cleanup(
         make_error(ValidationErrorCode::invalid_extraction_result,
                    "The ISO reader did not return an exact extracted-file identity manifest."),
-        new_staging_directory));
+        &owned_staging));
   }
 
   if (options.should_cancel()) {
@@ -381,14 +428,20 @@ ValidationResult<StagedExtraction> extract_and_validate(
     return ValidationResult<StagedExtraction>::failure(
         with_cleanup(make_error(code, callback_failed ? "A disc-validation callback failed."
                                                       : "Disc validation was cancelled."),
-                     new_staging_directory));
+                     &owned_staging));
   }
-  auto checkpoint = write_buildinfo_checkpoint(match, new_staging_directory);
-  if (!checkpoint) {
+  if (auto checkpoint_error = write_checkpoint_file_at(match, &owned_staging)) {
     return ValidationResult<StagedExtraction>::failure(
-        with_cleanup(checkpoint.error(), new_staging_directory));
+        with_cleanup(std::move(*checkpoint_error), &owned_staging));
+  }
+  if (!owned_staging.is_linked()) {
+    return ValidationResult<StagedExtraction>::failure(
+        with_cleanup(make_error(ValidationErrorCode::invalid_extraction_result,
+                                "The exact validated staging directory changed before completion."),
+                     &owned_staging));
   }
 
+  owned_staging.keep();
   return ValidationResult<StagedExtraction>::success(
       {std::move(match), new_staging_directory, files.take_value()});
 }

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -22,6 +23,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
+constexpr size_t kSectorSize = 2048;
+
 #define CHECK(condition)                                                                         \
   do {                                                                                           \
     if (!(condition)) {                                                                          \
@@ -29,6 +32,92 @@ namespace fs = std::filesystem;
       return false;                                                                              \
     }                                                                                            \
   } while (false)
+
+void write_le16(uint8_t* output, uint16_t value) {
+  output[0] = value & 0xff;
+  output[1] = value >> 8;
+}
+
+void write_be16(uint8_t* output, uint16_t value) {
+  output[0] = value >> 8;
+  output[1] = value & 0xff;
+}
+
+void write_both16(uint8_t* output, uint16_t value) {
+  write_le16(output, value);
+  write_be16(output + 2, value);
+}
+
+void write_le32(uint8_t* output, uint32_t value) {
+  output[0] = value & 0xff;
+  output[1] = (value >> 8) & 0xff;
+  output[2] = (value >> 16) & 0xff;
+  output[3] = value >> 24;
+}
+
+void write_be32(uint8_t* output, uint32_t value) {
+  output[0] = value >> 24;
+  output[1] = (value >> 16) & 0xff;
+  output[2] = (value >> 8) & 0xff;
+  output[3] = value & 0xff;
+}
+
+void write_both32(uint8_t* output, uint32_t value) {
+  write_le32(output, value);
+  write_be32(output + 4, value);
+}
+
+size_t write_record(std::vector<uint8_t>* image,
+                    size_t offset,
+                    uint32_t extent_sector,
+                    uint32_t data_size,
+                    bool directory,
+                    std::span<const uint8_t> identifier) {
+  const size_t record_size = 33 + identifier.size() + (identifier.size() % 2 == 0 ? 1 : 0);
+  auto* record = image->data() + offset;
+  record[0] = static_cast<uint8_t>(record_size);
+  write_both32(record + 2, extent_sector);
+  write_both32(record + 10, data_size);
+  record[25] = directory ? 0x02 : 0;
+  write_both16(record + 28, 1);
+  record[32] = static_cast<uint8_t>(identifier.size());
+  std::copy(identifier.begin(), identifier.end(), record + 33);
+  return record_size;
+}
+
+std::vector<uint8_t> make_progress_iso() {
+  constexpr uint32_t kSectors = 24;
+  constexpr uint32_t kRootSector = 20;
+  constexpr uint32_t kFileSector = 21;
+  constexpr uint32_t kFileSize = 256;
+  std::vector<uint8_t> image(size_t(kSectors) * kSectorSize);
+
+  auto* primary = image.data() + 16 * kSectorSize;
+  primary[0] = 1;
+  std::memcpy(primary + 1, "CD001", 5);
+  primary[6] = 1;
+  write_both32(primary + 80, kSectors);
+  write_both16(primary + 128, kSectorSize);
+  const std::array<uint8_t, 1> dot = {0};
+  const std::array<uint8_t, 1> dot_dot = {1};
+  write_record(&image, 16 * kSectorSize + 156, kRootSector, kSectorSize, true, dot);
+
+  auto* terminator = image.data() + 17 * kSectorSize;
+  terminator[0] = 255;
+  std::memcpy(terminator + 1, "CD001", 5);
+  terminator[6] = 1;
+
+  size_t root_offset = kRootSector * kSectorSize;
+  root_offset += write_record(&image, root_offset, kRootSector, kSectorSize, true, dot);
+  root_offset += write_record(&image, root_offset, kRootSector, kSectorSize, true, dot_dot);
+  const std::string filename = "PAYLOAD.BIN;1";
+  const std::vector<uint8_t> identifier(filename.begin(), filename.end());
+  write_record(&image, root_offset, kFileSector, kFileSize, false, identifier);
+  for (uint32_t index = 0; index < kFileSize; ++index) {
+    image[kFileSector * kSectorSize + index] = static_cast<uint8_t>(index);
+  }
+  return image;
+}
 
 class TemporaryDirectory {
  public:
@@ -61,6 +150,12 @@ class OpenFile {
 void write_bytes(const fs::path& path, std::string_view bytes) {
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+void write_bytes(const fs::path& path, std::span<const uint8_t> bytes) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
 }
 
 std::string read_text(const fs::path& path) {
@@ -322,10 +417,19 @@ bool reader_failures_and_cancellation_leave_no_staging() {
   CHECK(malformed.error().reader_error);
   CHECK(!fs::exists(temp.path / "malformed-staging"));
 
-  OpenFile cancelled_image(image_path);
+  const auto progress_image_path = temp.path / "progress.iso";
+  const auto progress_image = make_progress_iso();
+  write_bytes(progress_image_path, progress_image);
+
+  OpenFile cancelled_image(progress_image_path);
   CHECK(cancelled_image.file);
   iso_file::Options options;
-  options.should_cancel = [] { return true; };
+  options.read_chunk_bytes = 64;
+  bool cancel = false;
+  options.should_cancel = [&] { return cancel; };
+  options.on_progress = [&](const iso_file::Progress& progress) {
+    cancel = progress.bytes_completed > 0;
+  };
   const auto cancelled = jak2_iso::extract_and_validate(cancelled_image.file,
                                                         temp.path / "cancelled-staging", options);
   CHECK(!cancelled);
@@ -334,9 +438,14 @@ bool reader_failures_and_cancellation_leave_no_staging() {
   CHECK(cancelled.error().reader_error->code == iso_file::ErrorCode::cancelled);
   CHECK(!fs::exists(temp.path / "cancelled-staging"));
 
-  OpenFile callback_image(image_path);
+  OpenFile callback_image(progress_image_path);
   CHECK(callback_image.file);
-  options.should_cancel = []() -> bool { throw std::runtime_error("synthetic callback"); };
+  options.should_cancel = {};
+  options.on_progress = [](const iso_file::Progress& progress) {
+    if (progress.bytes_completed > 0) {
+      throw std::runtime_error("synthetic callback");
+    }
+  };
   const auto callback =
       jak2_iso::extract_and_validate(callback_image.file, temp.path / "callback-staging", options);
   CHECK(!callback);
@@ -354,6 +463,50 @@ bool reader_failures_and_cancellation_leave_no_staging() {
   CHECK(preexisting.error().reader_error);
   CHECK(preexisting.error().reader_error->code == iso_file::ErrorCode::output_create_failed);
   CHECK(read_text(existing / "sentinel") == "keep");
+  return true;
+}
+
+bool progress_path_replacement_preserves_external_directory() {
+  TemporaryDirectory temp;
+  const auto image_path = temp.path / "progress.iso";
+  const auto image = make_progress_iso();
+  write_bytes(image_path, image);
+
+  const auto staging = temp.path / "staging";
+  const auto moved_owned_stage = temp.path / "moved-owned-stage";
+  const auto external = temp.path / "external";
+  CHECK(fs::create_directories(external / "nested"));
+  write_bytes(external / "PAYLOAD.BIN", "external payload");
+  write_bytes(external / "nested" / "sentinel", "preserve me");
+
+  bool moved = false;
+  bool move_failed = false;
+  iso_file::Options options;
+  options.should_cancel = [&] { return moved; };
+  options.on_progress = [&](const iso_file::Progress& progress) {
+    if (!moved && progress.bytes_completed > 0) {
+      std::error_code error;
+      fs::rename(staging, moved_owned_stage, error);
+      if (!error) {
+        fs::rename(external, staging, error);
+      }
+      move_failed = bool(error);
+      moved = !move_failed;
+    }
+  };
+
+  OpenFile input(image_path);
+  CHECK(input.file);
+  const auto result = jak2_iso::extract_and_validate(input.file, staging, options);
+  CHECK(moved);
+  CHECK(!move_failed);
+  CHECK(!result);
+  CHECK(result.error().code == jak2_iso::ValidationErrorCode::cancelled);
+  CHECK(result.error().cleanup_error);
+  CHECK(read_text(staging / "PAYLOAD.BIN") == "external payload");
+  CHECK(read_text(staging / "nested" / "sentinel") == "preserve me");
+  CHECK(fs::is_directory(moved_owned_stage));
+  CHECK(fs::is_empty(moved_owned_stage));
   return true;
 }
 
@@ -407,6 +560,7 @@ int main() {
       file_identity_mapping_matches_exact_extraction_order,
       buildinfo_checkpoint_is_atomic_and_desktop_compatible,
       reader_failures_and_cancellation_leave_no_staging,
+      progress_path_replacement_preserves_external_directory,
       optionally_matches_extracted_retail_oracle,
   };
   for (const auto test : tests) {

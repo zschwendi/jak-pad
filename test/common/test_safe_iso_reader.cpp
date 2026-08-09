@@ -425,6 +425,29 @@ bool existing_staging_is_preserved() {
   return true;
 }
 
+bool owned_staging_rejects_and_preserves_unexpected_entries() {
+  TemporaryDirectory temp;
+  const auto fixture = make_synthetic_iso();
+  const auto image = temp.path / "fixture.iso";
+  const auto staging = temp.path / "staging";
+  CHECK(write_image(image, fixture.bytes));
+  OpenFile input(image);
+  CHECK(input.file);
+
+  iso_file::OwnedStagingDirectory owned_staging;
+  const auto result = iso_file::extract_to_owned_staging(input.file, staging, &owned_staging);
+  CHECK(result);
+  std::ofstream(staging / "unexpected.txt") << "preserve";
+  CHECK(!owned_staging.is_linked());
+  const auto cleanup_error = owned_staging.cleanup();
+  CHECK(cleanup_error);
+  CHECK(read_bytes(staging / "unexpected.txt") ==
+        std::vector<uint8_t>({'p', 'r', 'e', 's', 'e', 'r', 'v', 'e'}));
+  CHECK(!std::filesystem::exists(staging / "SAFE.TXT"));
+  CHECK(!std::filesystem::exists(staging / "NEST"));
+  return true;
+}
+
 bool desktop_adapter_preserves_behavior_and_throws_typed_errors() {
   TemporaryDirectory temp;
   const auto fixture = make_synthetic_iso();
@@ -473,6 +496,8 @@ int main() {
       {"rejects_unsafe_path", rejects_unsafe_path},
       {"enforces_depth_entry_and_size_limits", enforces_depth_entry_and_size_limits},
       {"existing_staging_is_preserved", existing_staging_is_preserved},
+      {"owned_staging_rejects_and_preserves_unexpected_entries",
+       owned_staging_rejects_and_preserves_unexpected_entries},
       {"desktop_adapter_preserves_behavior_and_throws_typed_errors",
        desktop_adapter_preserves_behavior_and_throws_typed_errors},
   };
