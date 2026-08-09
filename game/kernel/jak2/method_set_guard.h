@@ -58,8 +58,10 @@ MethodSetTypeChainResult check_method_set_type_chain(u32 candidate,
   u32 current = candidate;
 
   for (std::size_t depth = 0; depth < METHOD_SET_TYPE_PARENT_LIMIT; ++depth) {
-    const bool in_ee_memory = symbol_table2 <= current && current < EE_MAIN_MEM_SIZE;
-    const bool in_kernel_memory = 0x84000 <= current && current < 0x100000;
+    constexpr u32 parent_read_size = 2 * sizeof(u32);
+    const bool in_ee_memory =
+        symbol_table2 <= current && current <= EE_MAIN_MEM_SIZE - parent_read_size;
+    const bool in_kernel_memory = 0x84000 <= current && current <= 0x100000 - parent_read_size;
     if (!in_ee_memory && !in_kernel_memory) {
       return {MethodSetTypeChainStatus::INVALID_RANGE, current, (u32)depth};
     }

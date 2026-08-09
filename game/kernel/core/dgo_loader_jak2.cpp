@@ -155,7 +155,8 @@ bool is_data_object(Ptr<u8> object) {
 bool load_code_object(const char* object_name,
                       u32 link_flags,
                       bool on_goal_stack,
-                      u32 heap) {
+                      u32 heap,
+                      bool boot_method_propagation) {
   const goal_aot_object_file* aot = goal_aot_registered_object(object_name);
   if (!aot) {
     set_error(fmt::format("the code object '{}' has no native translation", object_name));
@@ -179,9 +180,12 @@ bool load_code_object(const char* object_name,
     g_rpc_stats.level_code_bytes += Ptr<kheapinfo>(heap)->current.offset - before;
   }
   if (link_flags & LINK_FLAG_EXECUTE) {
-    const auto status = on_goal_stack
-                            ? goal_aot_run_top_level_here_for_link(aot->tag, link_flags, nullptr)
-                            : goal_aot_run_top_level_for_link(aot->tag, link_flags, nullptr);
+    const auto status =
+        boot_method_propagation
+            ? (on_goal_stack ? goal_aot_run_top_level_here(aot->tag, nullptr)
+                             : goal_aot_run_top_level(aot->tag, nullptr))
+            : (on_goal_stack ? goal_aot_run_top_level_here_for_link(aot->tag, link_flags, nullptr)
+                             : goal_aot_run_top_level_for_link(aot->tag, link_flags, nullptr));
     if (status != GOAL_KERNEL_CORE_OK) {
       set_error(fmt::format("the top-level of '{}' failed: {}", object_name,
                             goal_kernel_core_last_error()));
@@ -253,7 +257,8 @@ void load_and_link_dgo_from_c(const char* name,
                               Ptr<kheapinfo> heap,
                               u32 linkFlag,
                               s32 bufferSize,
-                              bool jump_from_c_to_goal) {
+                              bool jump_from_c_to_goal,
+                              bool boot_method_propagation) {
   g_error.clear();
   memset(&g_stats, 0, sizeof(g_stats));
   g_stats.heap_used_before = kheapused(heap);
@@ -314,7 +319,7 @@ void load_and_link_dgo_from_c(const char* name,
       link_and_exec(obj, objName, objSize, heap, linkFlag, jump_from_c_to_goal);
     } else {
       g_stats.code_objects++;
-      if (!load_code_object(objName, linkFlag, false, heap.offset)) {
+      if (!load_code_object(objName, linkFlag, false, heap.offset, boot_method_propagation)) {
         g_dgo.failed = true;
         break;
       }
@@ -336,7 +341,7 @@ void load_and_link_dgo_from_c_fast(const char* name,
                                    u32 linkFlag,
                                    s32 bufferSize) {
   // upstream's fast path skips the IOP round trips; this loader has none to skip
-  load_and_link_dgo_from_c(name, heap, linkFlag, bufferSize, true);
+  load_and_link_dgo_from_c(name, heap, linkFlag, bufferSize, true, false);
 }
 
 /*!
@@ -345,7 +350,7 @@ void load_and_link_dgo_from_c_fast(const char* name,
 void load_and_link_dgo(u64 name_gstr, u64 heap_info, u64 flag, u64 buffer_size) {
   auto name = Ptr<char>((u32)name_gstr + 4).c();
   auto heap = Ptr<kheapinfo>((u32)heap_info);
-  load_and_link_dgo_from_c(name, heap, (u32)flag, (s32)buffer_size, false);
+  load_and_link_dgo_from_c(name, heap, (u32)flag, (s32)buffer_size, false, false);
 }
 
 }  // namespace jak2
@@ -518,7 +523,7 @@ u64 goal_link_begin(const u64* args) {
   }
 
   g_rpc_stats.linked_code_objects++;
-  if (!load_code_object(name, flags, true, (u32)args[3])) {
+  if (!load_code_object(name, flags, true, (u32)args[3], false)) {
     lg::error("[dgo-loader] link-begin: {}", g_error);
     ASSERT_NOT_REACHED_MSG("link-begin was given a code object this build cannot supply");
   }
@@ -552,10 +557,11 @@ void goal_dgo_install_goal_loader(void) {
   jak2::make_function_symbol_from_c("link-resume", (void*)goal_link_resume);
 }
 
-goal_kernel_core_status goal_dgo_load(const char* name,
-                                      uint32_t link_flags,
-                                      int32_t buffer_size,
-                                      goal_dgo_load_stats* out) {
+static goal_kernel_core_status goal_dgo_load_impl(const char* name,
+                                                  uint32_t link_flags,
+                                                  int32_t buffer_size,
+                                                  goal_dgo_load_stats* out,
+                                                  bool boot_method_propagation) {
   if (!name || buffer_size <= 0) {
     set_error("goal_dgo_load: bad argument");
     return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
@@ -565,11 +571,26 @@ goal_kernel_core_status goal_dgo_load(const char* name,
     return GOAL_KERNEL_CORE_NOT_INITIALIZED;
   }
   g_error.clear();
-  jak2::load_and_link_dgo_from_c(name, kglobalheap, link_flags, buffer_size, true);
+  jak2::load_and_link_dgo_from_c(name, kglobalheap, link_flags, buffer_size, true,
+                                 boot_method_propagation);
   if (out) {
     *out = g_stats;
   }
   return g_error.empty() ? GOAL_KERNEL_CORE_OK : GOAL_KERNEL_CORE_NOT_FOUND;
+}
+
+goal_kernel_core_status goal_dgo_load(const char* name,
+                                      uint32_t link_flags,
+                                      int32_t buffer_size,
+                                      goal_dgo_load_stats* out) {
+  return goal_dgo_load_impl(name, link_flags, buffer_size, out, false);
+}
+
+goal_kernel_core_status goal_jak2_dgo_load_boot(const char* name,
+                                                uint32_t link_flags,
+                                                int32_t buffer_size,
+                                                goal_dgo_load_stats* out) {
+  return goal_dgo_load_impl(name, link_flags, buffer_size, out, true);
 }
 
 void goal_dgo_set_verbose(int on) {

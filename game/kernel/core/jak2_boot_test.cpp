@@ -213,7 +213,7 @@ int run_boot(const std::string& data_dir,
 
   // InitHeapAndSymbol's kernel load
   say("\n=== KERNEL.CGO\n");
-  if (goal_dgo_load("KERNEL", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
+  if (goal_jak2_dgo_load_boot("KERNEL", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
     say("FAILED: %s\n", goal_dgo_last_error());
     drain_goal_print_buffer();
     say("  got through %d of KERNEL.CGO's objects (%d code, %d data)\n", stats.objects,
@@ -253,7 +253,7 @@ int run_boot(const std::string& data_dir,
 
   if (with_game) {
     say("\n=== GAME.CGO (exploratory; expected to stop at the first missing subsystem)\n");
-    if (goal_dgo_load("GAME", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
+    if (goal_jak2_dgo_load_boot("GAME", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
       say("STOPPED: %s\n", goal_dgo_last_error());
       drain_goal_print_buffer();
       say("  got through %d of GAME.CGO's objects (%d code, %d data)\n", stats.objects,

@@ -40,6 +40,15 @@ goal_kernel_core_status goal_dgo_load(const char* name,
                                       goal_dgo_load_stats* out);
 
 /*!
+ * Jak 2 boot-only variant. KERNEL and GAME need method propagation while their AOT top-levels
+ * establish the initial type system. Ordinary package and level loads must use `goal_dgo_load`.
+ */
+goal_kernel_core_status goal_jak2_dgo_load_boot(const char* name,
+                                                uint32_t link_flags,
+                                                int32_t buffer_size,
+                                                goal_dgo_load_stats* out);
+
+/*!
  * Install the entry points GOAL's own level loader drives a DGO with: the DGO RPC (`rpc-call` /
  * `rpc-busy?`, answered synchronously out of the same reader) and `link-begin` / `link-resume`
  * with this platform's code/data rule applied. See dgo_loader.cpp.

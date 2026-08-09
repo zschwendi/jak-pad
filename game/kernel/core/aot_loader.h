@@ -119,9 +119,9 @@ uint64_t goal_kernel_stack_top(void);
  *
  * `*enable-method-set*` is raised around it, exactly as InitHeapAndSymbol raises it around the
  * kernel DGO and InitMachineScheme around the engine DGO. A top-level's `defmethod` on a type
- * whose subtypes already exist only reaches those subtypes while it is raised. The Jak II DGO
- * loader uses the link-context variants below so FORCE_FAST_LINK level objects retain klink
- * semantics.
+ * whose subtypes already exist only reaches those subtypes while it is raised. This direct API is
+ * for boot callers standing in for InitHeapAndSymbol or InitMachineScheme. The Jak II DGO loader
+ * uses the link-context variants below for ordinary object loads.
  */
 goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_result);
 
@@ -133,10 +133,10 @@ goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_re
 goal_kernel_core_status goal_aot_run_top_level_here(const char* tag, uint64_t* out_result);
 
 /*!
- * Run a Jak II DGO code object's top-level with the supplied LINK_FLAG_* context. KERNEL/GAME
- * loads, which do not use FORCE_FAST_LINK, retain boot-time method propagation. FORCE_FAST_LINK
- * level objects do not enable propagation unless FORCE_DEBUG's ordinary m_keep_debug condition
- * holds.
+ * Run a Jak II DGO code object's top-level with the supplied LINK_FLAG_* context. Like klink, this
+ * enables method propagation only when FORCE_DEBUG's ordinary m_keep_debug condition holds;
+ * FORCE_FAST_LINK is also reflected in FastLink while the top-level runs. Boot callers that need
+ * the kernel/engine wrapper semantics use goal_aot_run_top_level directly.
  */
 goal_kernel_core_status goal_aot_run_top_level_for_link(const char* tag,
                                                         uint32_t link_flags,

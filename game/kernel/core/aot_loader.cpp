@@ -368,11 +368,11 @@ static goal_kernel_core_status run_top_level(const char* tag,
 }
 
 goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_result) {
-  return run_top_level(tag, out_result, true, {true, false});
+  return run_top_level(tag, out_result, true, aot_boot_method_set_policy());
 }
 
 goal_kernel_core_status goal_aot_run_top_level_here(const char* tag, uint64_t* out_result) {
-  return run_top_level(tag, out_result, false, {true, false});
+  return run_top_level(tag, out_result, false, aot_boot_method_set_policy());
 }
 
 goal_kernel_core_status goal_aot_run_top_level_for_link(const char* tag,

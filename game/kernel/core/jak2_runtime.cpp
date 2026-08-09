@@ -607,7 +607,7 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     constexpr u32 kBootFlags =
         LINK_FLAG_OUTPUT_LOAD | LINK_FLAG_EXECUTE | LINK_FLAG_PRINT_LOGIN;
     goal_dgo_load_stats load = {};
-    if (goal_dgo_load("KERNEL", kBootFlags, 0x400000, &load) != GOAL_KERNEL_CORE_OK) {
+    if (goal_jak2_dgo_load_boot("KERNEL", kBootFlags, 0x400000, &load) != GOAL_KERNEL_CORE_OK) {
       const std::string error = std::string("KERNEL.CGO: ") + goal_dgo_last_error();
       drain_goal_print_buffer();
       return fail_start(error);
@@ -653,7 +653,7 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     }
 
     load = {};
-    if (goal_dgo_load("GAME", kBootFlags, 0x400000, &load) != GOAL_KERNEL_CORE_OK) {
+    if (goal_jak2_dgo_load_boot("GAME", kBootFlags, 0x400000, &load) != GOAL_KERNEL_CORE_OK) {
       const std::string error = std::string("GAME.CGO: ") + goal_dgo_last_error();
       drain_goal_print_buffer();
       return fail_start(error);

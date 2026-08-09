@@ -59,13 +59,32 @@ jak2::MethodSetTypeChainResult check(const std::vector<u8>& memory,
       });
 }
 
+jak2::MethodSetTypeChainResult check_boundary(u32 candidate,
+                                              int* type_tag_reads,
+                                              int* parent_reads) {
+  return jak2::check_method_set_type_chain(
+      candidate, kTarget, kObjectType, 0x100000, kTypeType,
+      [&](u32) {
+        ++*type_tag_reads;
+        return kTypeType;
+      },
+      [&](u32) {
+        ++*parent_reads;
+        return kTarget;
+      });
+}
+
 }  // namespace
 
 int main() {
   constexpr u32 kBootLinkFlags = LINK_FLAG_OUTPUT_LOAD | LINK_FLAG_EXECUTE | LINK_FLAG_PRINT_LOGIN;
-  const auto boot_policy = aot_method_set_link_policy(kBootLinkFlags, false, true);
+  const auto boot_policy = aot_boot_method_set_policy();
   expect(boot_policy.enable_method_set && !boot_policy.force_fast_link,
-         "KERNEL/GAME AOT top-levels preserve method propagation");
+         "direct AOT top-level APIs preserve boot method propagation");
+
+  const auto package_policy = aot_method_set_link_policy(kBootLinkFlags, false, false);
+  expect(!package_policy.enable_method_set && !package_policy.force_fast_link,
+         "non-fast package AOT top-levels do not infer boot propagation");
 
   const auto level_policy =
       aot_method_set_link_policy(kBootLinkFlags | LINK_FLAG_FORCE_FAST_LINK, false, false);
@@ -77,10 +96,44 @@ int main() {
   expect(debug_level_policy.enable_method_set && debug_level_policy.force_fast_link,
          "forced-debug level AOT top-levels retain klink's keep-debug propagation");
 
-  const auto disk_boot_debug_policy = aot_method_set_link_policy(
-      kBootLinkFlags | LINK_FLAG_FORCE_FAST_LINK | LINK_FLAG_FORCE_DEBUG, true, true);
-  expect(!disk_boot_debug_policy.enable_method_set && disk_boot_debug_policy.force_fast_link,
-         "disk boot suppresses FORCE_DEBUG level propagation");
+  const auto debug_package_policy =
+      aot_method_set_link_policy(kBootLinkFlags | LINK_FLAG_FORCE_DEBUG, true, false);
+  expect(debug_package_policy.enable_method_set && !debug_package_policy.force_fast_link,
+         "non-fast FORCE_DEBUG package enables propagation in MasterDebug");
+
+  const auto disk_boot_debug_policy =
+      aot_method_set_link_policy(kBootLinkFlags | LINK_FLAG_FORCE_DEBUG, true, true);
+  expect(!disk_boot_debug_policy.enable_method_set && !disk_boot_debug_policy.force_fast_link,
+         "disk boot suppresses non-fast FORCE_DEBUG package propagation");
+
+  int boundary_tag_reads = 0;
+  int boundary_parent_reads = 0;
+  expect(
+      check_boundary(EE_MAIN_MEM_SIZE - 12, &boundary_tag_reads, &boundary_parent_reads).status ==
+              jak2::MethodSetTypeChainStatus::SUBTYPE &&
+          boundary_tag_reads == 1 && boundary_parent_reads == 1,
+      "last safe EE BASIC type permits the full parent read");
+  boundary_tag_reads = 0;
+  boundary_parent_reads = 0;
+  expect(
+      check_boundary(EE_MAIN_MEM_SIZE - BASIC_OFFSET, &boundary_tag_reads, &boundary_parent_reads)
+                  .status == jak2::MethodSetTypeChainStatus::INVALID_RANGE &&
+          boundary_tag_reads == 0 && boundary_parent_reads == 0,
+      "top EE BASIC pointer is rejected before any read");
+
+  boundary_tag_reads = 0;
+  boundary_parent_reads = 0;
+  expect(check_boundary(0x100000 - 12, &boundary_tag_reads, &boundary_parent_reads).status ==
+                 jak2::MethodSetTypeChainStatus::SUBTYPE &&
+             boundary_tag_reads == 1 && boundary_parent_reads == 1,
+         "last safe kernel BASIC type permits the full parent read");
+  boundary_tag_reads = 0;
+  boundary_parent_reads = 0;
+  expect(
+      check_boundary(0x100000 - BASIC_OFFSET, &boundary_tag_reads, &boundary_parent_reads).status ==
+              jak2::MethodSetTypeChainStatus::INVALID_RANGE &&
+          boundary_tag_reads == 0 && boundary_parent_reads == 0,
+      "top kernel BASIC pointer is rejected before any read");
 
   std::vector<u8> memory(0x101000);
   make_type(memory, kTypeType, kObjectType);
