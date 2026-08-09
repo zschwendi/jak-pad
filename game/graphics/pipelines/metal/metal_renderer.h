@@ -33,6 +33,7 @@
 
 class TexturePool;
 class MetalSkyBlendHandler;
+class MetalJak2BlitDisplayRenderer;
 struct MetalPresentationState;
 
 // Backs metal_renderer::set_s7_override (see metal_pipeline.h).
@@ -186,6 +187,7 @@ class MetalRenderer {
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
   TexturePool* m_texture_pool = nullptr;
   bool m_host_texture_uploads = false;
+  MetalJak2BlitDisplayRenderer* m_jak2_blit_display = nullptr;
   MetalSkyBlendHandler* m_sky_blend_handlers[2] = {nullptr, nullptr};
   // level-geometry frame state, shared with the tfrag/tie/shrub renderers
   MetalBackgroundState m_background;
@@ -193,4 +195,5 @@ class MetalRenderer {
   bool m_reported_camera_mismatch = false;
   std::shared_ptr<MetalPresentationState> m_presentation_state;
   u64 m_submission_count = 0;
+  bool m_game_target_fresh = true;
 };

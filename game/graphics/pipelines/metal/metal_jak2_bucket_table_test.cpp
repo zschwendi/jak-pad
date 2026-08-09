@@ -36,6 +36,7 @@ int main() {
   std::size_t tie = 0;
   std::size_t tie_envmap = 0;
   std::size_t merc = 0;
+  std::size_t blit_display = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -51,10 +52,11 @@ int main() {
     tie += table[i].behavior == Behavior::Tie;
     tie_envmap += table[i].behavior == Behavior::TieEnvmap;
     merc += table[i].behavior == Behavior::Merc;
+    blit_display += table[i].behavior == Behavior::BlitDisplay;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 147, "147 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 146, "146 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 15,
@@ -69,12 +71,15 @@ int main() {
   check(tie_envmap == 6,
         "six normal per-level ETIE child buckets are implemented by Metal");
   check(merc == 6, "six normal per-level Merc buckets are implemented by Metal");
+  check(blit_display == 1, "one source-proven BlitDisplays bucket is implemented by Metal");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
             metal_renderer::kJak2MetalBucketExpectedFingerprint,
         "the ordered descriptor policy matches its fixed reference fingerprint");
 
   check(has_behavior(jak2::BucketId::BUCKET_2, Behavior::Visibility),
         "BUCKET_2 is the explicit non-draw visibility-state bucket");
+  check(has_behavior(jak2::BucketId::BUCKET_3, Behavior::BlitDisplay),
+        "BUCKET_3 owns the Jak II framebuffer snapshot and clear semantics");
   check(has_behavior(jak2::BucketId::TFRAG_L0_TFRAG, Behavior::TFragment) &&
             has_behavior(jak2::BucketId::TFRAG_L1_TFRAG, Behavior::TFragment) &&
             has_behavior(jak2::BucketId::TFRAG_L2_TFRAG, Behavior::TFragment) &&

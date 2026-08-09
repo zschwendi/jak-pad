@@ -189,6 +189,15 @@ struct ChainStats {
   int jak2_sky_draw_draws = 0;
   int jak2_sky_draw_triangles = 0;
   DirectBatchStats jak2_sky_draw_last_batch;
+  bool jak2_blit_display_plan_valid = false;
+  bool jak2_blit_display_snapshot_requested = false;
+  bool jak2_blit_display_copy_back_requested = false;
+  bool jak2_blit_display_copy_back_performed = false;
+  bool jak2_blit_display_texture_lookup_hit = false;
+  bool jak2_blit_display_used_placeholder = false;
+  u64 jak2_blit_display_texture_handle = 0;
+  u32 jak2_blit_display_texture_tbp = 0;
+  u64 jak2_blit_display_unsupported_pc_ports = 0;
   int jak2_screen_filter_draws = 0;
   int jak2_screen_filter_triangles = 0;
   int jak2_progress_draws = 0;

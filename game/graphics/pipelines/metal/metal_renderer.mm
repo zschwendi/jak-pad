@@ -18,6 +18,7 @@
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_generic2.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
+#include "game/graphics/pipelines/metal/metal_jak2_blit_display_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
@@ -383,6 +384,13 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalVisibilityBucketRenderer>(
           "jak2-vis-data", descriptor.id, jak2::LEVEL_MAX);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::BlitDisplay) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::BUCKET_3));
+      ASSERT(batch_size == 0);
+      auto renderer = std::make_unique<MetalJak2BlitDisplayRenderer>(
+          "blit-display", descriptor.id, m_texture_pool);
+      m_jak2_blit_display = renderer.get();
+      m_bucket_renderers[bucket_id] = std::move(renderer);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Sprite) {
       ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::PARTICLES));
       ASSERT(batch_size == 0);
@@ -496,6 +504,7 @@ void MetalRenderer::init_bucket_renderers(TexturePool* pool,
                                           bool host_texture_uploads) {
   m_texture_pool = pool;
   m_host_texture_uploads = host_texture_uploads;
+  m_jak2_blit_display = nullptr;
   m_shared_state.version = version;
   switch (version) {
     case GameVersion::Jak1:
@@ -613,6 +622,7 @@ void MetalRenderer::setup_frame(const MetalRenderOptions& opts) {
     lg::info("Metal game target setup: {}x{}", opts.game_res_w, opts.game_res_h);
     m_game_color = make_color_target(m_device, opts.game_res_w, opts.game_res_h, true);
     m_game_depth = make_depth_target(m_device, opts.game_res_w, opts.game_res_h);
+    m_game_target_fresh = true;
   }
 }
 
@@ -736,6 +746,7 @@ void MetalRenderer::render_frame(const MetalRenderOptions& opts, CAMetalLayer* l
     }
 
     [cmds commit];
+    m_game_target_fresh = false;
     {
       std::lock_guard<std::mutex> lock(m_frame_mutex);
       m_last_frame_cmds = cmds;
@@ -880,11 +891,14 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
 
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
 
-    // one render pass over the game target for all buckets, cleared like
-    // Jak 1's setup_frame (color 0, depth 0, PS2 reversed depth)
+    // Start the game-target pass. Jak 2 retains color across submitted frames
+    // until bucket 3 snapshots it and restarts with a clear; Jak 1 and newly
+    // allocated targets keep the original frame-start clear.
     auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = m_game_color;
-    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].loadAction =
+        m_shared_state.version == GameVersion::Jak2 && !m_game_target_fresh ? MTLLoadActionLoad
+                                                                           : MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     pass.depthAttachment.texture = m_game_depth;
@@ -922,6 +936,10 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         break;
       default:
         ASSERT_MSG(false, "Metal DMA dispatch only supports Jak 1 and Jak 2");
+    }
+    if (m_shared_state.version == GameVersion::Jak2) {
+      ASSERT(m_jak2_blit_display);
+      m_jak2_blit_display->finish_frame(ctx);
     }
     [ctx.enc endEncoding];
 
@@ -1153,6 +1171,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
         completion_state->command_buffer_cv.notify_all();
       }];
       [cmds commit];
+      m_game_target_fresh = false;
       m_chain_stats.command_buffers_committed++;
       {
         std::lock_guard<std::mutex> lock(m_frame_mutex);
@@ -1168,6 +1187,15 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.jak2_sky_draw_draws = 0;
     m_chain_stats.jak2_sky_draw_triangles = 0;
     m_chain_stats.jak2_sky_draw_last_batch = {};
+    m_chain_stats.jak2_blit_display_plan_valid = false;
+    m_chain_stats.jak2_blit_display_snapshot_requested = false;
+    m_chain_stats.jak2_blit_display_copy_back_requested = false;
+    m_chain_stats.jak2_blit_display_copy_back_performed = false;
+    m_chain_stats.jak2_blit_display_texture_lookup_hit = false;
+    m_chain_stats.jak2_blit_display_used_placeholder = false;
+    m_chain_stats.jak2_blit_display_texture_handle = 0;
+    m_chain_stats.jak2_blit_display_texture_tbp = 0;
+    m_chain_stats.jak2_blit_display_unsupported_pc_ports = 0;
     m_chain_stats.jak2_screen_filter_draws = 0;
     m_chain_stats.jak2_screen_filter_triangles = 0;
     m_chain_stats.jak2_progress_draws = 0;
@@ -1188,6 +1216,19 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.ocean_missing_textures = 0;
     MetalMerc2::Stats merc_stats;
     MetalGeneric2::Stats generic_stats;
+    if (m_shared_state.version == GameVersion::Jak2 && m_jak2_blit_display) {
+      const auto& stats = m_jak2_blit_display->stats();
+      m_chain_stats.jak2_blit_display_plan_valid = stats.plan_valid;
+      m_chain_stats.jak2_blit_display_snapshot_requested = stats.snapshot_requested;
+      m_chain_stats.jak2_blit_display_copy_back_requested = stats.copy_back_requested;
+      m_chain_stats.jak2_blit_display_copy_back_performed = stats.copy_back_performed;
+      m_chain_stats.jak2_blit_display_texture_lookup_hit = stats.texture_lookup_hit;
+      m_chain_stats.jak2_blit_display_used_placeholder = stats.used_placeholder;
+      m_chain_stats.jak2_blit_display_texture_handle = stats.texture_handle;
+      m_chain_stats.jak2_blit_display_texture_tbp = stats.texture_tbp;
+      m_chain_stats.jak2_blit_display_unsupported_pc_ports =
+          stats.unsupported_pc_port_count;
+    }
     for (std::size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
       auto& r = m_bucket_renderers[bucket_id];
       if (auto* t = dynamic_cast<MetalTextureBucketRenderer*>(r.get())) {

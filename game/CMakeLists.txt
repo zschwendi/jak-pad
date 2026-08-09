@@ -416,6 +416,11 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_jak2_bucket_table_test.cpp)
     add_test(NAME jak2-metal-bucket-table-test COMMAND jak2-metal-bucket-table-test)
 
+    add_executable(jak2-blit-display-plan-test
+            graphics/pipelines/metal/metal_jak2_blit_display_plan.cpp
+            graphics/pipelines/metal/metal_jak2_blit_display_plan_test.cpp)
+    add_test(NAME jak2-blit-display-plan-test COMMAND jak2-blit-display-plan-test)
+
     add_executable(jak2-raw-image-upload-plan-test
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan_test.cpp)
@@ -1226,6 +1231,16 @@ if(APPLE)
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_link_libraries(jak2-metal-submit-readback-proof goalpad-metal-gfx)
         add_test(NAME jak2-metal-submit-readback-proof COMMAND jak2-metal-submit-readback-proof)
+
+        add_executable(jak2-metal-blit-display-spatial-test
+            graphics/pipelines/metal/metal_jak2_blit_display_spatial_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_blit_display_spatial_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-blit-display-spatial-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-blit-display-spatial-test
+            COMMAND jak2-metal-blit-display-spatial-test)
 
         add_library(goalpad-jak2-metal-host STATIC
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
