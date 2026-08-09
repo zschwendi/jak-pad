@@ -246,6 +246,43 @@ bool layout_structure_and_hash_failures_are_typed() {
   return true;
 }
 
+bool file_identity_mapping_matches_exact_extraction_order() {
+  IsoFile layout;
+  IsoFile::Entry dgo;
+  dgo.is_dir = true;
+  dgo.name = "DGO";
+  dgo.children.push_back({false, "A.DGO", 0, 5, {}});
+  IsoFile::Entry cgo;
+  cgo.is_dir = true;
+  cgo.name = "CGO";
+  cgo.children.push_back({false, "WATER_AN.CGO", 0, 7, {}});
+  layout.root.children = {dgo, cgo, {false, "ROOT.BIN", 0, 9, {}}};
+  layout.shouldHash = true;
+  layout.files_extracted = 3;
+  layout.hashes = {11, 22, 33};
+
+  auto result = jak2_iso::validated_file_identities(layout);
+  CHECK(result);
+  const std::vector<checked_file_identity::Identity> expected = {
+      {"DGO/A.DGO", 5, 11}, {"CGO/WATER-AN.CGO", 7, 22}, {"ROOT.BIN", 9, 33}};
+  CHECK(result.value() == expected);
+
+  auto missing_hash = layout;
+  missing_hash.hashes.pop_back();
+  result = jak2_iso::validated_file_identities(missing_hash);
+  CHECK(!result);
+  CHECK(result.error().code == jak2_iso::ValidationErrorCode::invalid_extraction_result);
+
+  auto duplicate = layout;
+  duplicate.root.children.push_back({false, "root.bin", 0, 4, {}});
+  duplicate.files_extracted = 4;
+  duplicate.hashes.push_back(44);
+  result = jak2_iso::validated_file_identities(duplicate);
+  CHECK(!result);
+  CHECK(result.error().code == jak2_iso::ValidationErrorCode::invalid_extraction_result);
+  return true;
+}
+
 bool buildinfo_checkpoint_is_atomic_and_desktop_compatible() {
   TemporaryDirectory temp;
   const auto staging = temp.path / "staging";
@@ -367,6 +404,7 @@ int main() {
       fingerprint_matching_fails_closed,
       aggregate_matches_desktop_algorithm,
       layout_structure_and_hash_failures_are_typed,
+      file_identity_mapping_matches_exact_extraction_order,
       buildinfo_checkpoint_is_atomic_and_desktop_compatible,
       reader_failures_and_cancellation_leave_no_staging,
       optionally_matches_extracted_retail_oracle,

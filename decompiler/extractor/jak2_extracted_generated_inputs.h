@@ -5,10 +5,12 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "common/custom_data/CheckedFileIdentity.h"
 #include "common/custom_data/Jak1OutputGraph.h"
 #include "common/versions/jak2_iso_revisions.h"
 
@@ -20,6 +22,7 @@ struct ValidatedTree {
   /// Private extracted-disc root and exact revision returned by the validation phase.
   std::filesystem::path root;
   jak2_iso::Revision revision;
+  std::span<const checked_file_identity::Identity> files = {};
 };
 
 enum class RetailSourceKind : std::uint8_t {
@@ -107,12 +110,15 @@ struct Limits {
   std::size_t file_read_chunk_bytes = 256 * 1024;
   std::uint32_t max_archive_objects = 4096;
   std::uint32_t max_archive_expansion_ratio = 256;
+  std::uint32_t max_validated_files = 10000;
+  std::uint32_t max_validated_path_bytes = 1024;
 };
 
 struct Options {
   Limits limits;
   CancelCallback should_cancel;
   ProgressCallback on_progress;
+  bool require_validated_file_identities = false;
 };
 
 enum class ErrorCode {
@@ -132,6 +138,7 @@ enum class ErrorCode {
   cancelled,
   callback_failed,
   allocation_failed,
+  input_identity_mismatch,
 };
 
 struct Error {

@@ -7,7 +7,9 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "common/custom_data/CheckedFileIdentity.h"
 #include "common/util/read_iso_file.h"
 #include "common/versions/jak2_iso_revisions.h"
 
@@ -75,6 +77,7 @@ struct RevisionMatch {
 struct StagedExtraction {
   RevisionMatch match;
   std::filesystem::path staging_directory;
+  std::vector<checked_file_identity::Identity> files = {};
 };
 
 uint64_t aggregate_contents_hash(std::span<const uint64_t> file_hashes);
@@ -84,6 +87,10 @@ ValidationResult<RevisionMatch> match_supported_revision(const Fingerprint& fing
 /// Validate the result returned by iso_file::extract_to_staging. IsoFile::hashes must contain one
 /// digest per file in the reader's depth-first, on-disc record order.
 ValidationResult<RevisionMatch> validate_extracted_layout(const IsoFile& layout);
+
+/// Bind the reader's depth-first file hashes to the exact normalized relative paths it extracted.
+ValidationResult<std::vector<checked_file_identity::Identity>> validated_file_identities(
+    const IsoFile& layout);
 
 /// Atomically add the desktop-compatible buildinfo.json checkpoint to a validated staging tree.
 ValidationResult<std::filesystem::path> write_buildinfo_checkpoint(

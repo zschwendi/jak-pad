@@ -49,6 +49,7 @@ namespace source_pack = jak2_source_object_pack;
 
 static_assert(materializer::kNtscV2CompressedArchiveAlignmentBytes ==
               jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes);
+static_assert(materializer::kNtscV2ExpectedFr3Files == jak2_fr3::kNtscV2ExpectedFr3Files);
 
 constexpr std::uint64_t kMaxManifestBytes = 4ull * 1024 * 1024;
 constexpr std::size_t kIoChunkBytes = 256 * 1024;
@@ -500,6 +501,8 @@ struct PipelineState {
   std::vector<generator::RetailCatalogObject> retail_objects;
   std::vector<std::string> verified_flat_paths;
   std::vector<std::string> expected_fr3_basenames;
+  std::vector<checked_file_identity::Identity> prepared_fr3_files;
+  std::vector<std::uint8_t> output_recipe_wire;
   std::optional<recipe::Recipe> output_recipe;
   std::optional<Summary> summary;
   std::optional<internal::FinalContract> final_contract;
@@ -553,14 +556,17 @@ std::optional<Error> generate_data_stage(const Request& request,
   }
   CallbackForwarder callbacks(options);
   jak2_extracted_generated_inputs::Options input_options;
+  input_options.limits.max_validated_files = state->extraction->match.revision.file_count;
+  input_options.require_validated_file_identities = true;
   input_options.should_cancel = [&] { return callbacks.poll_cancel(); };
   input_options.on_progress = [&](const jak2_extracted_generated_inputs::Progress& progress) {
     callbacks.report({Phase::generating_data, progress.units_completed, progress.units_total, 0,
                       progress.source_relative_path});
   };
   auto inputs = jak2_extracted_generated_inputs::build(
-      {state->extraction->staging_directory, state->extraction->match.revision}, state->graph,
-      input_options);
+      {state->extraction->staging_directory, state->extraction->match.revision,
+       state->extraction->files},
+      state->graph, input_options);
   if (!inputs) {
     const bool cancelled =
         inputs.error().code == jak2_extracted_generated_inputs::ErrorCode::cancelled;
@@ -608,6 +614,8 @@ std::optional<Error> prepare_fr3_stage(const Request& request,
   }
   CallbackForwarder callbacks(options);
   jak2_fr3::Options fr3_options;
+  fr3_options.validated_extracted_files = state->extraction->files;
+  fr3_options.require_validated_file_identities = true;
   fr3_options.should_cancel = [&] { return callbacks.poll_cancel(); };
   fr3_options.report_progress = [&](const jak2_fr3::Progress& progress) {
     callbacks.report({Phase::preparing_fr3, progress.completed, progress.total, 0,
@@ -647,7 +655,12 @@ std::optional<Error> prepare_fr3_stage(const Request& request,
     return make_error(ErrorCode::fr3_failed,
                       "FR3 preparation returned an incomplete output set.");
   }
+  if (prepared.value().fr3_files.size() != basenames.size()) {
+    return make_error(ErrorCode::fr3_failed,
+                      "FR3 preparation returned an incomplete checked identity set.");
+  }
   state->expected_fr3_basenames.assign(basenames.begin(), basenames.end());
+  state->prepared_fr3_files = prepared.value().fr3_files;
   return {};
 }
 
@@ -697,7 +710,8 @@ std::optional<Error> catalog_retail_stage(const Options& options, PipelineState*
   std::vector<retail_catalog::Entry> entries;
   entries.reserve(kMaxIndexedRetailEntries);
   std::uint64_t total_archive_bytes = 0;
-  std::uint64_t total_object_bytes = 0;
+  std::uint64_t total_expanded_archive_bytes = 0;
+  std::uint64_t total_all_object_bytes = 0;
   const auto& archive_paths = requirements.value().source_archive_relative_paths;
   for (std::size_t index = 0; index < archive_paths.size(); ++index) {
     if (callbacks.poll_cancel()) {
@@ -710,11 +724,25 @@ std::optional<Error> catalog_retail_stage(const Options& options, PipelineState*
       return make_error(ErrorCode::retail_catalog_failed,
                         "A graph-required retail archive is missing, linked, or unsafe.");
     }
-    auto bytes = read_direct_file(archive_path, kMaxRetailArchiveBytes, false,
+    if (total_archive_bytes >= kMaxTotalRetailArchiveBytes) {
+      return make_error(ErrorCode::retail_catalog_failed,
+                        "The graph-required retail archives exhaust their aggregate input cap.");
+    }
+    const auto remaining_archive_bytes = kMaxTotalRetailArchiveBytes - total_archive_bytes;
+    auto bytes = read_direct_file(archive_path,
+                                  std::min(kMaxRetailArchiveBytes, remaining_archive_bytes), false,
                                   ErrorCode::retail_catalog_failed,
                                   "A graph-required retail archive", callbacks);
     if (!bytes) {
       return bytes.error();
+    }
+    const auto identity = std::find_if(
+        state->extraction->files.begin(), state->extraction->files.end(),
+        [&](const auto& candidate) { return candidate.relative_path == relative_path; });
+    if (identity == state->extraction->files.end() || bytes.value().size() != identity->size ||
+        XXH64(bytes.value().data(), bytes.value().size(), 0) != identity->xxh64) {
+      return make_error(ErrorCode::retail_catalog_failed,
+                        "A graph-required retail archive does not match its validated identity.");
     }
     if (bytes.value().size() > kMaxTotalRetailArchiveBytes - total_archive_bytes) {
       return make_error(ErrorCode::retail_catalog_failed,
@@ -722,14 +750,27 @@ std::optional<Error> catalog_retail_stage(const Options& options, PipelineState*
     }
     total_archive_bytes += bytes.value().size();
 
+    if (total_expanded_archive_bytes >= jak2_fr3::kNtscV2TotalExpandedArchiveBytes ||
+        total_all_object_bytes >= jak2_fr3::kNtscV2TotalExpandedArchiveBytes) {
+      return make_error(ErrorCode::retail_catalog_failed,
+                        "The graph-required retail archives exhaust their expanded-data cap.");
+    }
+    const auto remaining_expanded_bytes =
+        jak2_fr3::kNtscV2TotalExpandedArchiveBytes - total_expanded_archive_bytes;
+    const auto remaining_all_object_bytes =
+        jak2_fr3::kNtscV2TotalExpandedArchiveBytes - total_all_object_bytes;
+
     const retail_catalog::ArchiveSource source{relative_path, bytes.value()};
     retail_catalog::Options catalog_options;
     catalog_options.max_archives = 1;
     catalog_options.max_entries = kMaxIndexedRetailEntries;
-    catalog_options.max_total_object_bytes = jak2_fr3::kNtscV2TotalExpandedArchiveBytes;
-    catalog_options.max_archive_input_bytes = kMaxRetailArchiveBytes;
+    catalog_options.max_total_object_bytes = remaining_all_object_bytes;
+    catalog_options.max_archive_input_bytes =
+        std::min<std::uint64_t>(kMaxRetailArchiveBytes, remaining_archive_bytes);
+    catalog_options.max_total_archive_input_bytes = remaining_archive_bytes;
     catalog_options.max_archive_compressed_bytes = kMaxRetailArchiveBytes;
-    catalog_options.max_archive_expanded_bytes = jak2_fr3::kNtscV2TotalExpandedArchiveBytes;
+    catalog_options.max_archive_expanded_bytes = remaining_expanded_bytes;
+    catalog_options.max_total_expanded_archive_bytes = remaining_expanded_bytes;
     catalog_options.compressed_trailing_alignment_bytes =
         jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes;
     catalog_options.game_version = GameVersion::Jak2;
@@ -748,13 +789,14 @@ std::optional<Error> catalog_retail_stage(const Options& options, PipelineState*
       return make_error(ErrorCode::retail_catalog_failed,
                         "The checked Jak II retail catalog exceeds its entry cap.");
     }
+    if (catalog.value().expanded_archive_bytes() > remaining_expanded_bytes ||
+        catalog.value().all_object_payload_bytes() > remaining_all_object_bytes) {
+      return make_error(ErrorCode::retail_catalog_failed,
+                        "The checked Jak II retail catalog exceeded its remaining byte budget.");
+    }
+    total_expanded_archive_bytes += catalog.value().expanded_archive_bytes();
+    total_all_object_bytes += catalog.value().all_object_payload_bytes();
     for (const auto& entry : catalog.value().entries()) {
-      if (entry.provenance.byte_size >
-          jak2_fr3::kNtscV2TotalExpandedArchiveBytes - total_object_bytes) {
-        return make_error(ErrorCode::retail_catalog_failed,
-                          "The checked Jak II retail catalog exceeds its object-byte cap.");
-      }
-      total_object_bytes += entry.provenance.byte_size;
       entries.push_back(entry);
     }
     if (!callbacks.report({Phase::cataloging_retail, index + 1, archive_paths.size(),
@@ -1029,6 +1071,7 @@ std::optional<Error> generate_recipe_stage(const Request& request,
   }
   state->generated_artifacts.reset();
   state->final_contract.emplace(contract.take_value());
+  state->output_recipe_wire = wire.take_value();
   state->output_recipe.emplace(output.take_value());
   return {};
 }
@@ -1037,7 +1080,8 @@ std::optional<Error> materialize_stage(const Request& request,
                                        const internal::WorkPaths& paths,
                                        const Options& options,
                                        PipelineState* state) {
-  if (!state->extraction || !state->output_recipe || !state->final_contract) {
+  if (!state->extraction || !state->output_recipe || state->output_recipe_wire.empty() ||
+      !state->final_contract || state->prepared_fr3_files.empty()) {
     return make_error(ErrorCode::materialization_failed,
                       "The materializer stage is missing checked inputs.");
   }
@@ -1049,9 +1093,13 @@ std::optional<Error> materialize_stage(const Request& request,
   inputs.prepared_fr3_root = paths.work_root / "fr3-work/fr3";
   inputs.generated_objects = state->generated_objects;
   inputs.generated_flat_files = state->generated_flat_files;
+  inputs.validated_extracted_files = state->extraction->files;
+  inputs.validated_fr3_files = state->prepared_fr3_files;
 
   CallbackForwarder callbacks(options);
   materializer::Options materializer_options;
+  materializer_options.expected_recipe_bytes = state->output_recipe_wire;
+  materializer_options.require_validated_file_identities = true;
   materializer_options.should_cancel = [&] { return callbacks.poll_cancel(); };
   materializer_options.on_progress = [&](const materializer::Progress& progress) {
     callbacks.report({Phase::materializing_output, progress.completed, progress.total,

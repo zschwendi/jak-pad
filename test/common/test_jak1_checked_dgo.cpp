@@ -5,12 +5,16 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "decompiler/extractor/jak1_checked_dgo.h"
 
 #include "third-party/lzokay/lzokay.hpp"
+
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
 
 namespace {
 
@@ -390,6 +394,31 @@ bool cancellation_is_recoverable() {
   return true;
 }
 
+bool callback_failures_and_input_identity_are_typed() {
+  const auto fixture = make_raw_dgo("BOUND.DGO", {{"one", {1, 2, 3}}});
+  jak1_checked_dgo::Options options;
+  options.should_cancel = []() -> bool { throw std::runtime_error("boom"); };
+  auto result = jak1_checked_dgo::read(fixture, "BOUND.DGO", options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::callback_failed);
+
+  options.should_cancel = []() -> bool { throw 7; };
+  result = jak1_checked_dgo::read(fixture, "BOUND.DGO", options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::callback_failed);
+
+  options = {};
+  CHECK(!options.expected_input);
+  options.expected_input = checked_file_identity::Identity{
+      "DGO/BOUND.DGO", fixture.size(), XXH64(fixture.data(), fixture.size(), 0)};
+  CHECK(jak1_checked_dgo::read(fixture, "BOUND.DGO", options));
+  ++options.expected_input->xxh64;
+  result = jak1_checked_dgo::read(fixture, "BOUND.DGO", options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::input_identity_mismatch);
+  return true;
+}
+
 bool bounded_file_adapter() {
   const auto fixture = make_raw_dgo("FILE.DGO", {{"one", {1, 2, 3}}});
   const auto path = std::filesystem::temp_directory_path() /
@@ -433,6 +462,8 @@ bool bounded_file_adapter() {
 
 bool error_names_are_stable() {
   CHECK(std::string(jak1_checked_dgo::error_code_name(ErrorCode::cancelled)) == "cancelled");
+  CHECK(std::string(jak1_checked_dgo::error_code_name(ErrorCode::callback_failed)) ==
+        "callback_failed");
   CHECK(std::string(jak1_checked_dgo::error_code_name(ErrorCode::decompression_failed)) ==
         "decompression_failed");
   return true;
@@ -457,6 +488,8 @@ int main() {
       {"enforces_compressed_limits_and_rejects_corruption",
        enforces_compressed_limits_and_rejects_corruption},
       {"cancellation_is_recoverable", cancellation_is_recoverable},
+      {"callback_failures_and_input_identity_are_typed",
+       callback_failures_and_input_identity_are_typed},
       {"bounded_file_adapter", bounded_file_adapter},
       {"error_names_are_stable", error_names_are_stable},
   };

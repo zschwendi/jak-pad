@@ -50,6 +50,8 @@ int main(int argc, char** argv) {
   CHECK(defaults.max_levels == 256);
   CHECK(!defaults.require_game_count);
   CHECK(defaults.expected_distinct_fr3_files == jak2_fr3::kNtscV2ExpectedFr3Files);
+  CHECK(defaults.max_validated_file_identities ==
+        jak2_fr3::kNtscV2ExpectedExtractedFiles);
   constexpr std::uintmax_t kRecordedTotalExpandedArchiveBytes = 596'611'024;
   CHECK(jak2_fr3::kNtscV2TotalExpandedArchiveBytes ==
         kRecordedTotalExpandedArchiveBytes);

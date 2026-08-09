@@ -6,11 +6,13 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "common/versions/jak1_iso_revisions.h"
+#include "common/custom_data/CheckedFileIdentity.h"
 
 namespace jak1_fr3 {
 
@@ -43,6 +45,9 @@ struct Options {
   bool require_game_count = true;
   std::optional<std::uint32_t> expected_distinct_fr3_files;
   std::optional<std::size_t> compressed_trailing_alignment_bytes;
+  std::span<const checked_file_identity::Identity> validated_extracted_files;
+  std::uint32_t max_validated_file_identities = 10000;
+  bool require_validated_file_identities = false;
   CancelCallback should_cancel;
   ProgressCallback report_progress;
 };
@@ -93,6 +98,7 @@ struct Summary {
   std::uint32_t levels_written = 0;
   std::uint32_t raw_objects_written = 0;
   std::uintmax_t output_bytes = 0;
+  std::vector<checked_file_identity::Identity> fr3_files;
 };
 
 template <typename T>

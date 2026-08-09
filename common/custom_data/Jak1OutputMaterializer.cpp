@@ -119,6 +119,47 @@ std::string collision_key(std::string_view value) {
   return result;
 }
 
+using IdentityMap =
+    std::unordered_map<std::string, const checked_file_identity::Identity*>;
+
+Result<IdentityMap> index_file_identities(
+    std::span<const checked_file_identity::Identity> identities,
+    std::size_t cap,
+    const Options& options) {
+  if (identities.size() > cap) {
+    return Result<IdentityMap>::failure(make_error(
+        ErrorCode::input_identity_mismatch,
+        "A validated file-identity manifest exceeds its entry cap."));
+  }
+  IdentityMap indexed;
+  indexed.reserve(identities.size());
+  for (const auto& identity : identities) {
+    if (!safe_relative_path(identity.relative_path, options.limits.max_path_bytes) ||
+        !indexed.emplace(collision_key(identity.relative_path), &identity).second) {
+      return Result<IdentityMap>::failure(make_error(
+          ErrorCode::input_identity_mismatch,
+          "A validated file-identity manifest is unsafe or ambiguous."));
+    }
+  }
+  return Result<IdentityMap>::success(std::move(indexed));
+}
+
+Result<const checked_file_identity::Identity*> required_identity(
+    const IdentityMap& identities,
+    std::string_view relative_path,
+    const Options& options) {
+  const auto found = identities.find(collision_key(relative_path));
+  if (found != identities.end() && found->second->relative_path == relative_path) {
+    return Result<const checked_file_identity::Identity*>::success(found->second);
+  }
+  if (options.require_validated_file_identities || !identities.empty()) {
+    return Result<const checked_file_identity::Identity*>::failure(make_error(
+        ErrorCode::input_identity_mismatch,
+        "A required input has no exact validated file identity."));
+  }
+  return Result<const checked_file_identity::Identity*>::success(nullptr);
+}
+
 bool known_revision(const jak1_output_recipe::RevisionProvenance& revision,
                     jak1_output_recipe::WireGame game) {
   if (game == jak1_output_recipe::WireGame::jak1) {
@@ -149,9 +190,13 @@ bool valid_options(const Options& options) {
          limits.max_flat_file_bytes > 0 && limits.max_fr3_file_bytes > 0 &&
          limits.max_total_output_bytes > 0 && limits.max_generated_objects > 0 &&
          limits.max_generated_flat_files > 0 && limits.max_path_bytes > 0 &&
-         limits.max_name_bytes > 0 && limits.io_chunk_bytes > 0 &&
+         limits.max_name_bytes > 0 && limits.max_validated_extracted_files > 0 &&
+         limits.max_validated_fr3_files > 0 && limits.io_chunk_bytes > 0 &&
          (!options.compressed_trailing_alignment_bytes ||
           *options.compressed_trailing_alignment_bytes > 0) &&
+         (!options.expected_recipe_bytes ||
+          (!options.expected_recipe_bytes->empty() &&
+           options.expected_recipe_bytes->size() <= limits.max_recipe_bytes)) &&
          options.expected_source_object_pack.object_count > 0 &&
          options.expected_source_object_pack.aggregate_xxh64 != 0 &&
          known_revision(options.expected_revision, options.wire_game);
@@ -411,6 +456,7 @@ struct LoadedRetailArchive {
 
 Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
                                                 std::string_view relative,
+                                                const checked_file_identity::Identity* identity,
                                                 const Options& options) {
   auto resolved = resolve_regular_file(inputs.extracted_iso_root, relative, options);
   if (!resolved) {
@@ -419,6 +465,13 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
   auto raw = read_file(resolved.value(), options.limits.max_retail_archive_bytes, options);
   if (!raw) {
     return Result<LoadedRetailArchive>::failure(raw.error());
+  }
+  if (identity &&
+      (raw.value().size() != identity->size ||
+       XXH64(raw.value().data(), raw.value().size(), 0) != identity->xxh64)) {
+    return Result<LoadedRetailArchive>::failure(make_error(
+        ErrorCode::input_identity_mismatch,
+        "A retail archive does not match its validated size and hash."));
   }
 
   const std::string source_path(relative);
@@ -453,6 +506,9 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
   dgo_options.max_compressed_bytes = options.limits.max_retail_archive_bytes;
   dgo_options.compressed_trailing_alignment_bytes =
       options.compressed_trailing_alignment_bytes;
+  if (identity) {
+    dgo_options.expected_input = *identity;
+  }
   dgo_options.should_cancel = options.should_cancel;
   const auto archive_name = fs::path(relative).filename().string();
   auto archive = jak1_checked_dgo::read(raw.value(), archive_name, dgo_options);
@@ -460,6 +516,10 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
     return Result<LoadedRetailArchive>::failure(make_error(
         archive.error().code == jak1_checked_dgo::ErrorCode::cancelled
             ? ErrorCode::cancelled
+        : archive.error().code == jak1_checked_dgo::ErrorCode::callback_failed
+            ? ErrorCode::callback_failed
+        : archive.error().code == jak1_checked_dgo::ErrorCode::input_identity_mismatch
+            ? ErrorCode::input_identity_mismatch
             : ErrorCode::retail_archive_failed,
         "The checked DGO reader rejected " + source_path + ": " + archive.error().message));
   }
@@ -488,9 +548,41 @@ Result<Summary> materialize(const Inputs& inputs,
       return Result<Summary>::failure(*error);
     }
 
+    if ((options.expected_validated_extracted_file_count &&
+         inputs.validated_extracted_files.size() !=
+             *options.expected_validated_extracted_file_count) ||
+        (options.expected_validated_fr3_file_count &&
+         inputs.validated_fr3_files.size() != *options.expected_validated_fr3_file_count)) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::input_identity_mismatch,
+          "A validated file-identity manifest has the wrong exact entry count."));
+    }
+    auto extracted_identities =
+        index_file_identities(inputs.validated_extracted_files,
+                              options.limits.max_validated_extracted_files, options);
+    auto fr3_identities = index_file_identities(inputs.validated_fr3_files,
+                                                options.limits.max_validated_fr3_files, options);
+    if (!extracted_identities || !fr3_identities ||
+        (options.require_validated_file_identities &&
+         (extracted_identities.value().empty() || fr3_identities.value().empty()))) {
+      return Result<Summary>::failure(
+          !extracted_identities ? extracted_identities.error()
+          : !fr3_identities    ? fr3_identities.error()
+                               : make_error(ErrorCode::input_identity_mismatch,
+                                            "Required validated file identities are missing."));
+    }
+
     auto recipe_bytes = read_file(inputs.recipe_file, options.limits.max_recipe_bytes, options);
     if (!recipe_bytes) {
       return Result<Summary>::failure(recipe_bytes.error());
+    }
+    if (options.expected_recipe_bytes &&
+        !std::equal(recipe_bytes.value().begin(), recipe_bytes.value().end(),
+                    options.expected_recipe_bytes->begin(),
+                    options.expected_recipe_bytes->end())) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::recipe_mismatch,
+          "The safely read output recipe does not match the caller's exact expected bytes."));
     }
     jak1_output_recipe::Options recipe_options;
     recipe_options.limits = options.recipe_limits;
@@ -626,7 +718,16 @@ Result<Summary> materialize(const Inputs& inputs,
           const auto& source = std::get<jak1_output_recipe::VerifiedRetailObject>(object.source);
           auto found = retail_archives.find(source.source_archive_relative_path);
           if (found == retail_archives.end()) {
-            auto loaded = load_retail_archive(inputs, source.source_archive_relative_path, options);
+            auto identity = required_identity(extracted_identities.value(),
+                                              source.source_archive_relative_path, options);
+            if (!identity) {
+              auto error = identity.error();
+              error.archive_index = archive_index;
+              error.object_index = object_index;
+              return Result<Summary>::failure(*cleanup_failure(std::move(error), stage));
+            }
+            auto loaded = load_retail_archive(inputs, source.source_archive_relative_path,
+                                              identity.value(), options);
             if (!loaded) {
               auto error = loaded.error();
               error.archive_index = archive_index;
@@ -753,6 +854,11 @@ Result<Summary> materialize(const Inputs& inputs,
     const auto flat_total = static_cast<std::uint32_t>(recipe.flat_file_copies.size() +
                                                        recipe.generated_flat_files.size());
     for (const auto& copy : recipe.flat_file_copies) {
+      auto identity = required_identity(extracted_identities.value(),
+                                        copy.extracted_iso_relative_path, options);
+      if (!identity) {
+        return Result<Summary>::failure(*cleanup_failure(identity.error(), stage));
+      }
       auto source = resolve_regular_file(inputs.extracted_iso_root,
                                          copy.extracted_iso_relative_path, options);
       if (!source) {
@@ -762,9 +868,14 @@ Result<Summary> materialize(const Inputs& inputs,
                                     summary.output_bytes, copy.destination_basename)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
+      const auto expected = identity.value()
+                                ? std::optional<std::pair<std::uint64_t, std::uint64_t>>(
+                                      std::pair{identity.value()->size, identity.value()->xxh64})
+                                : std::nullopt;
       if (const auto error =
               copy_file(source.value(), iso_root / copy.destination_basename,
-                        options.limits.max_flat_file_bytes, {}, ErrorCode::input_read_failed,
+                        options.limits.max_flat_file_bytes, expected,
+                        ErrorCode::input_identity_mismatch,
                         &summary.output_bytes, options)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
@@ -837,8 +948,19 @@ Result<Summary> materialize(const Inputs& inputs,
                      "The prepared FR3 directory does not exactly match the output recipe."),
           stage));
     }
+    if (options.require_validated_file_identities &&
+        fr3_identities.value().size() != actual_fr3.size()) {
+      return Result<Summary>::failure(*cleanup_failure(
+          make_error(ErrorCode::input_identity_mismatch,
+                     "The prepared FR3 identity manifest does not match the exact FR3 set."),
+          stage));
+    }
     for (std::uint32_t index = 0; index < recipe.expected_fr3_basenames.size(); ++index) {
       const auto& name = recipe.expected_fr3_basenames[index];
+      auto identity = required_identity(fr3_identities.value(), name, options);
+      if (!identity) {
+        return Result<Summary>::failure(*cleanup_failure(identity.error(), stage));
+      }
       auto source = resolve_regular_file(inputs.prepared_fr3_root, name, options);
       if (!source) {
         return Result<Summary>::failure(*cleanup_failure(source.error(), stage));
@@ -850,8 +972,12 @@ Result<Summary> materialize(const Inputs& inputs,
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
       if (const auto error =
-              copy_file(source.value(), fr3_root / name, options.limits.max_fr3_file_bytes, {},
-                        ErrorCode::fr3_set_mismatch, &summary.output_bytes, options)) {
+              copy_file(source.value(), fr3_root / name, options.limits.max_fr3_file_bytes,
+                        identity.value()
+                            ? std::optional<std::pair<std::uint64_t, std::uint64_t>>(
+                                  std::pair{identity.value()->size, identity.value()->xxh64})
+                            : std::nullopt,
+                        ErrorCode::input_identity_mismatch, &summary.output_bytes, options)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
       ++summary.fr3_files_written;
@@ -882,6 +1008,12 @@ Result<Summary> materialize(const Inputs& inputs,
         std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
             " output materialization failed: " + exception.what());
     return Result<Summary>::failure(stage.empty() ? error : *cleanup_failure(error, stage));
+  } catch (...) {
+    auto error = make_error(
+        ErrorCode::output_write_failed,
+        std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
+            " output materialization failed unexpectedly.");
+    return Result<Summary>::failure(stage.empty() ? error : *cleanup_failure(error, stage));
   }
 }
 
@@ -907,6 +1039,10 @@ const char* error_code_name(ErrorCode code) {
       return "input_read_failed";
     case ErrorCode::recipe_invalid:
       return "recipe_invalid";
+    case ErrorCode::recipe_mismatch:
+      return "recipe_mismatch";
+    case ErrorCode::input_identity_mismatch:
+      return "input_identity_mismatch";
     case ErrorCode::revision_mismatch:
       return "revision_mismatch";
     case ErrorCode::source_pack_mismatch:

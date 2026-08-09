@@ -2,14 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <fstream>
 #include <limits>
 #include <map>
 #include <new>
 #include <set>
 #include <string_view>
+#include <unordered_map>
 
 #include "common/custom_data/Jak2PublicOutputGraph.h"
+
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
 
 namespace jak2_extracted_generated_inputs {
 namespace {
@@ -36,6 +41,75 @@ Error make_error(ErrorCode code,
                  std::optional<std::size_t> byte_offset = {}) {
   return {code,        std::move(message), std::move(source_path), object_index, language_id,
           byte_offset, std::nullopt};
+}
+
+using IdentityMap =
+    std::unordered_map<std::string, const checked_file_identity::Identity*>;
+
+bool safe_identity_path(const std::string& path, std::size_t max_bytes) {
+  if (path.empty() || path.size() > max_bytes) {
+    return false;
+  }
+  const auto parsed = std::filesystem::path(path);
+  return parsed.is_relative() && parsed == parsed.lexically_normal() && path != "." &&
+         !path.starts_with("../") && path.find('\\') == std::string::npos;
+}
+
+std::string identity_key(std::string_view path) {
+  std::string key(path);
+  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char byte) {
+    return static_cast<char>(std::tolower(byte));
+  });
+  return key;
+}
+
+Result<IdentityMap> index_identities(const ValidatedTree& tree, const Options& options) {
+  if (tree.files.empty()) {
+    if (options.require_validated_file_identities) {
+      return Result<IdentityMap>::failure(make_error(
+          ErrorCode::invalid_extracted_tree,
+          "The validated extraction has no checked file-identity manifest."));
+    }
+    return Result<IdentityMap>::success({});
+  }
+  if (tree.files.size() > options.limits.max_validated_files) {
+    return Result<IdentityMap>::failure(make_error(
+        ErrorCode::invalid_extracted_tree,
+        "The validated extraction file-identity manifest exceeds its entry cap."));
+  }
+  if (options.require_validated_file_identities &&
+      tree.files.size() != tree.revision.file_count) {
+    return Result<IdentityMap>::failure(make_error(
+        ErrorCode::invalid_extracted_tree,
+        "The required validated extraction manifest has the wrong exact entry count."));
+  }
+  IdentityMap identities;
+  identities.reserve(tree.files.size());
+  for (const auto& identity : tree.files) {
+    if (!safe_identity_path(identity.relative_path, options.limits.max_validated_path_bytes) ||
+        !identities.emplace(identity_key(identity.relative_path), &identity).second) {
+      return Result<IdentityMap>::failure(make_error(
+          ErrorCode::invalid_extracted_tree,
+          "The validated extraction file-identity manifest is unsafe or ambiguous."));
+    }
+  }
+  return Result<IdentityMap>::success(std::move(identities));
+}
+
+Result<const checked_file_identity::Identity*> required_identity(
+    const IdentityMap& identities,
+    const std::string& relative_path,
+    const Options& options) {
+  const auto found = identities.find(identity_key(relative_path));
+  if (found != identities.end() && found->second->relative_path == relative_path) {
+    return Result<const checked_file_identity::Identity*>::success(found->second);
+  }
+  if (options.require_validated_file_identities || !identities.empty()) {
+    return Result<const checked_file_identity::Identity*>::failure(make_error(
+        ErrorCode::input_identity_mismatch,
+        "A required retail input has no validated file identity.", relative_path));
+  }
+  return Result<const checked_file_identity::Identity*>::success(nullptr);
 }
 
 enum class CallbackState {
@@ -108,7 +182,8 @@ bool valid_options(const Options& options) {
          limits.file_read_chunk_bytes > 0 &&
          limits.file_read_chunk_bytes <=
              static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) &&
-         limits.max_archive_objects > 0 && limits.max_archive_expansion_ratio > 0;
+         limits.max_archive_objects > 0 && limits.max_archive_expansion_ratio > 0 &&
+         limits.max_validated_files > 0 && limits.max_validated_path_bytes > 0;
 }
 
 Result<std::filesystem::path> checked_input_path(const ValidatedTree& tree,
@@ -155,6 +230,7 @@ Result<std::filesystem::path> checked_input_path(const ValidatedTree& tree,
 
 Result<std::vector<std::uint8_t>> read_direct_input(const ValidatedTree& tree,
                                                     const std::string& relative_path,
+                                                    const IdentityMap& identities,
                                                     const Options& options,
                                                     std::uint32_t language_id) {
   auto checked_path = checked_input_path(tree, relative_path);
@@ -215,6 +291,20 @@ Result<std::vector<std::uint8_t>> read_direct_input(const ValidatedTree& tree,
     return Result<std::vector<std::uint8_t>>::failure(make_error(
         ErrorCode::input_read_failed, "A retail game-text input changed while it was read.",
         relative_path, {}, language_id, bytes.size()));
+  }
+  auto identity = required_identity(identities, relative_path, options);
+  if (!identity) {
+    auto error = identity.error();
+    error.language_id = language_id;
+    return Result<std::vector<std::uint8_t>>::failure(std::move(error));
+  }
+  if (identity.value() &&
+      (bytes.size() != identity.value()->size ||
+       XXH64(bytes.data(), bytes.size(), 0) != identity.value()->xxh64)) {
+    return Result<std::vector<std::uint8_t>>::failure(make_error(
+        ErrorCode::input_identity_mismatch,
+        "A retail game-text input does not match its validated size and hash.", relative_path, {},
+        language_id));
   }
   return Result<std::vector<std::uint8_t>>::success(std::move(bytes));
 }
@@ -336,6 +426,10 @@ Result<Inputs> build(const ValidatedTree& tree,
           make_error(ErrorCode::unsupported_revision,
                      "Only the proven SCUS-97265 Jak II NTSC-U v2 extracted layout is supported."));
     }
+    auto identities = index_identities(tree, options);
+    if (!identities) {
+      return Result<Inputs>::failure(identities.error());
+    }
     if (const auto error = cancellation_error(options)) {
       return Result<Inputs>::failure(*error);
     }
@@ -377,6 +471,14 @@ Result<Inputs> build(const ValidatedTree& tree,
     dgo_options.max_objects = options.limits.max_archive_objects;
     dgo_options.max_expansion_ratio = options.limits.max_archive_expansion_ratio;
     dgo_options.file_read_chunk_bytes = options.limits.file_read_chunk_bytes;
+    auto game_identity =
+        required_identity(identities.value(), std::string(kGameArchivePath), options);
+    if (!game_identity) {
+      return Result<Inputs>::failure(game_identity.error());
+    }
+    if (game_identity.value()) {
+      dgo_options.expected_input = *game_identity.value();
+    }
     dgo_options.should_cancel = [&]() {
       const auto state = poll_cancel(options);
       cancellation_callback_failed = state == CallbackState::failed;
@@ -385,7 +487,8 @@ Result<Inputs> build(const ValidatedTree& tree,
     auto archive =
         jak1_checked_dgo::read_file(game_path.value(), std::string(kGameArchiveName), dgo_options);
     if (!archive) {
-      if (cancellation_callback_failed) {
+      if (cancellation_callback_failed ||
+          archive.error().code == jak1_checked_dgo::ErrorCode::callback_failed) {
         return Result<Inputs>::failure(
             make_error(ErrorCode::callback_failed, "The cancellation callback failed.",
                        std::string(kGameArchivePath), archive.error().object_index));
@@ -394,6 +497,13 @@ Result<Inputs> build(const ValidatedTree& tree,
         return Result<Inputs>::failure(
             make_error(ErrorCode::cancelled, "Retail GAME.CGO loading was cancelled.",
                        std::string(kGameArchivePath), archive.error().object_index));
+      }
+      if (archive.error().code == jak1_checked_dgo::ErrorCode::input_identity_mismatch) {
+        auto error = make_error(ErrorCode::input_identity_mismatch,
+                                "Retail GAME.CGO does not match its validated size and hash.",
+                                std::string(kGameArchivePath));
+        error.checked_dgo_error = archive.error();
+        return Result<Inputs>::failure(std::move(error));
       }
       auto error = make_error(ErrorCode::checked_dgo_failed,
                               "The checked DGO reader rejected retail GAME.CGO.",
@@ -449,7 +559,7 @@ Result<Inputs> build(const ValidatedTree& tree,
                                                      kProgressUnits, relative_path, language})) {
         return Result<Inputs>::failure(*error);
       }
-      auto bytes = read_direct_input(tree, relative_path, options, language);
+      auto bytes = read_direct_input(tree, relative_path, identities.value(), options, language);
       if (!bytes) {
         return Result<Inputs>::failure(bytes.error());
       }
@@ -517,6 +627,8 @@ const char* error_code_name(ErrorCode code) {
       return "callback_failed";
     case ErrorCode::allocation_failed:
       return "allocation_failed";
+    case ErrorCode::input_identity_mismatch:
+      return "input_identity_mismatch";
   }
   return "unknown";
 }

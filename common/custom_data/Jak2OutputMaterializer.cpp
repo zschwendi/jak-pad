@@ -18,6 +18,8 @@ bool supported_revision(const jak2_iso::Revision& revision) {
 
 Options::Options() {
   recipe_limits.max_archives = jak2_public_output_graph::kArchiveLimit;
+  limits.max_validated_extracted_files = jak2_iso::import_revision().file_count;
+  limits.max_validated_fr3_files = kNtscV2ExpectedFr3Files;
 }
 
 Result<Summary> materialize(const Inputs& inputs,
@@ -39,6 +41,12 @@ Result<Summary> materialize(const Inputs& inputs,
   core_options.wire_game = jak1_output_recipe::WireGame::jak2;
   core_options.compressed_trailing_alignment_bytes =
       kNtscV2CompressedArchiveAlignmentBytes;
+  core_options.expected_recipe_bytes = options.expected_recipe_bytes;
+  core_options.require_validated_file_identities = options.require_validated_file_identities;
+  if (options.require_validated_file_identities) {
+    core_options.expected_validated_extracted_file_count = revision.file_count;
+    core_options.expected_validated_fr3_file_count = kNtscV2ExpectedFr3Files;
+  }
   core_options.should_cancel = options.should_cancel;
   core_options.on_progress = options.on_progress;
   return jak1_output_materializer::materialize(inputs, destination_root, core_options);

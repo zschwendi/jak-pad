@@ -11,12 +11,14 @@
 #include <vector>
 
 #include "common/versions/versions.h"
+#include "common/custom_data/CheckedFileIdentity.h"
 
 namespace jak1_checked_dgo {
 
 enum class ErrorCode {
   invalid_argument,
   cancelled,
+  callback_failed,
   input_open_failed,
   input_read_failed,
   input_too_large,
@@ -39,6 +41,7 @@ enum class ErrorCode {
   decompression_failed,
   invalid_art_group_marker,
   duplicate_object_name,
+  input_identity_mismatch,
 };
 
 struct Error {
@@ -105,6 +108,7 @@ struct Options {
   std::uint32_t max_expansion_ratio = 256;
   std::size_t file_read_chunk_bytes = 256 * 1024;
   GameVersion game_version = GameVersion::Jak1;
+  std::optional<checked_file_identity::Identity> expected_input;
   CancelCallback should_cancel;
 };
 

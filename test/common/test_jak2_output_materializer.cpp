@@ -15,6 +15,7 @@
 
 #include "decompiler/extractor/jak1_checked_dgo.h"
 #include "decompiler/extractor/jak1_checked_dgo_writer.h"
+#include "decompiler/extractor/jak2_fr3_preparer.h"
 #include "third-party/lzokay/lzokay.hpp"
 
 #define XXH_PRIVATE_API
@@ -157,6 +158,8 @@ struct Fixture {
   std::vector<std::uint8_t> generated_flat = {0x40, 0x50};
   std::vector<std::uint8_t> fr3 = {0x60, 0x70, 0x80};
   recipe::Recipe output_recipe;
+  std::vector<checked_file_identity::Identity> extracted_identities;
+  std::vector<checked_file_identity::Identity> fr3_identities;
   materializer::Inputs inputs;
   materializer::Options options;
 
@@ -225,18 +228,62 @@ struct Fixture {
   }
 
   bool stage_absent() const { return !fs::exists(fs::path(destination.string() + ".stage")); }
+
+  bool bind_validated_identities() {
+    const auto archive = read_bytes(iso_root / "DGO/RETAIL.DGO");
+    extracted_identities = {
+        {"DGO/RETAIL.DGO", archive.size(), hash_of(archive)},
+        {"DATA.BIN", flat.size(), hash_of(flat)},
+    };
+    for (std::size_t index = extracted_identities.size();
+         index < jak2_iso::import_revision().file_count; ++index) {
+      extracted_identities.push_back(
+          {"UNUSED/" + std::to_string(index) + ".BIN", 0, static_cast<std::uint64_t>(index + 1)});
+    }
+    fr3_identities = {{"GAME.fr3", fr3.size(), hash_of(fr3)}};
+    for (std::size_t index = 1; index < materializer::kNtscV2ExpectedFr3Files; ++index) {
+      const auto name = "synthetic-" + std::to_string(index) + ".fr3";
+      const std::vector<std::uint8_t> bytes = {static_cast<std::uint8_t>(index)};
+      if (!write_bytes(fr3_root / name, bytes)) {
+        return false;
+      }
+      output_recipe.expected_fr3_basenames.push_back(name);
+      fr3_identities.push_back({name, bytes.size(), hash_of(bytes)});
+    }
+    std::sort(output_recipe.expected_fr3_basenames.begin(),
+              output_recipe.expected_fr3_basenames.end());
+    const auto encoded = recipe::encode(output_recipe, jak2_iso::import_revision());
+    if (!encoded || !write_bytes(recipe_file, encoded.value())) {
+      return false;
+    }
+    inputs.validated_extracted_files = extracted_identities;
+    inputs.validated_fr3_files = fr3_identities;
+    options.require_validated_file_identities = true;
+    return true;
+  }
 };
 
 bool materializes_checked_jak2_layout() {
   Fixture fixture;
   CHECK(fixture.setup());
+  CHECK(fixture.options.limits.max_validated_extracted_files ==
+        jak2_iso::import_revision().file_count);
+  CHECK(jak2_fr3::kNtscV2ExpectedExtractedFiles ==
+        jak2_iso::import_revision().file_count);
+  CHECK(fixture.options.limits.max_validated_fr3_files ==
+        materializer::kNtscV2ExpectedFr3Files);
+  CHECK(!fixture.options.require_validated_file_identities);
+  CHECK(fixture.bind_validated_identities());
+  const auto expected_recipe = read_bytes(fixture.recipe_file);
+  CHECK(!expected_recipe.empty());
+  fixture.options.expected_recipe_bytes = expected_recipe;
   const auto result = materializer::materialize(
       fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
   CHECK(result);
   CHECK(result.value().archives_written == 1);
   CHECK(result.value().objects_written == jak2_source_object_pack::kExpectedObjectCount + 1);
   CHECK(result.value().flat_files_written == 2);
-  CHECK(result.value().fr3_files_written == 1);
+  CHECK(result.value().fr3_files_written == materializer::kNtscV2ExpectedFr3Files);
   CHECK(fixture.stage_absent());
   CHECK(read_bytes(fixture.destination / "iso/DATA.BIN") == fixture.flat);
   CHECK(read_bytes(fixture.destination / "iso/0COMMON.TXT") == fixture.generated_flat);
@@ -251,6 +298,87 @@ bool materializes_checked_jak2_layout() {
   CHECK(output.value().objects.back().internal_name == "retail");
   CHECK(output.value().objects.back().unique_name == "retail-ag");
   CHECK(output.value().objects.back().data == fixture.retail);
+  return true;
+}
+
+bool validated_archive_mutation_is_rejected() {
+  Fixture fixture;
+  CHECK(fixture.setup());
+  CHECK(fixture.bind_validated_identities());
+  bool callback_write_ok = true;
+  fixture.options.on_progress = [&](const materializer::Progress& progress) {
+    if (progress.phase == materializer::Phase::writing_archives) {
+      auto archive = read_bytes(fixture.iso_root / "DGO/RETAIL.DGO");
+      archive.back() ^= 1;
+      callback_write_ok = write_bytes(fixture.iso_root / "DGO/RETAIL.DGO", archive);
+    }
+  };
+  const auto result = materializer::materialize(
+      fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
+  CHECK(callback_write_ok);
+  CHECK(!result);
+  CHECK(result.error().code == materializer::ErrorCode::input_identity_mismatch);
+  CHECK(!fs::exists(fixture.destination));
+  CHECK(fixture.stage_absent());
+  return true;
+}
+
+bool progress_callback_recipe_swap_is_rejected() {
+  Fixture fixture;
+  CHECK(fixture.setup());
+  CHECK(fixture.bind_validated_identities());
+  const auto expected_recipe = read_bytes(fixture.recipe_file);
+  CHECK(!expected_recipe.empty());
+
+  auto& source = std::get<recipe::BundledSourceObject>(
+      fixture.output_recipe.archives.front().objects.front().source);
+  source.bundle_relative_path = "alternate-src0.o";
+  CHECK(write_bytes(fixture.source_root / source.bundle_relative_path, fixture.bundled.front()));
+  const auto replacement = recipe::encode(fixture.output_recipe, jak2_iso::import_revision());
+  CHECK(replacement);
+
+  bool swapped = false;
+  fixture.options.expected_recipe_bytes = expected_recipe;
+  fixture.options.on_progress = [&](const materializer::Progress& progress) {
+    if (!swapped && progress.phase == materializer::Phase::validating) {
+      swapped = write_bytes(fixture.recipe_file, replacement.value());
+    }
+  };
+  const auto result = materializer::materialize(
+      fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
+  CHECK(swapped);
+  CHECK(!result);
+  CHECK(result.error().code == materializer::ErrorCode::recipe_mismatch);
+  CHECK(!fs::exists(fixture.destination));
+  CHECK(fixture.stage_absent());
+  return true;
+}
+
+bool required_identity_manifests_are_exact_and_bounded() {
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    CHECK(fixture.bind_validated_identities());
+    fixture.extracted_identities.push_back({"EXTRA.BIN", 1, 1});
+    fixture.inputs.validated_extracted_files = fixture.extracted_identities;
+    const auto result = materializer::materialize(
+        fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
+    CHECK(!result);
+    CHECK(result.error().code == materializer::ErrorCode::input_identity_mismatch);
+    CHECK(fixture.stage_absent());
+  }
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    CHECK(fixture.bind_validated_identities());
+    fixture.extracted_identities.back().relative_path = "dgo/retail.dgo";
+    fixture.inputs.validated_extracted_files = fixture.extracted_identities;
+    const auto result = materializer::materialize(
+        fixture.inputs, fixture.destination, jak2_iso::import_revision(), fixture.options);
+    CHECK(!result);
+    CHECK(result.error().code == materializer::ErrorCode::input_identity_mismatch);
+    CHECK(fixture.stage_absent());
+  }
   return true;
 }
 
@@ -369,6 +497,9 @@ bool rejects_v1_symlink_and_wrong_game_without_staging() {
 int main() {
   const std::array tests = {
       materializes_checked_jak2_layout,
+      validated_archive_mutation_is_rejected,
+      progress_callback_recipe_swap_is_rejected,
+      required_identity_manifests_are_exact_and_bounded,
       cancellation_is_atomic,
       retail_revalidation_rejects_hash_and_wrong_archive,
       rejects_v1_symlink_and_wrong_game_without_staging,

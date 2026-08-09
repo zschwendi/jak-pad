@@ -65,8 +65,10 @@ struct Options {
   std::size_t max_entries = 16384;
   std::size_t max_total_object_bytes = 1024ull * 1024 * 1024;
   std::size_t max_archive_input_bytes = 512ull * 1024 * 1024;
+  std::size_t max_total_archive_input_bytes = 1024ull * 1024 * 1024;
   std::size_t max_archive_compressed_bytes = 512ull * 1024 * 1024;
   std::size_t max_archive_expanded_bytes = 1024ull * 1024 * 1024;
+  std::size_t max_total_expanded_archive_bytes = 1024ull * 1024 * 1024;
   std::size_t max_object_bytes = 256ull * 1024 * 1024;
   std::size_t max_source_path_bytes = 255;
   std::size_t max_internal_name_bytes = 59;
@@ -88,6 +90,7 @@ enum class ErrorCode {
   archive_limit_exceeded,
   entry_limit_exceeded,
   total_byte_limit_exceeded,
+  expanded_byte_limit_exceeded,
   checked_dgo_failed,
   invalid_object_header,
   unsupported_object_version,
@@ -134,12 +137,16 @@ class Catalog {
  public:
   const std::vector<Entry>& entries() const { return m_entries; }
   std::size_t skipped_code_object_count() const { return m_skipped_code_objects; }
+  std::size_t expanded_archive_bytes() const { return m_expanded_archive_bytes; }
+  std::size_t all_object_payload_bytes() const { return m_all_object_payload_bytes; }
   Result<const Entry*> lookup(const Provenance& expected) const;
 
  private:
   friend Result<Catalog> build(std::span<const ArchiveSource>, const Options&);
   std::vector<Entry> m_entries;
   std::size_t m_skipped_code_objects = 0;
+  std::size_t m_expanded_archive_bytes = 0;
+  std::size_t m_all_object_payload_bytes = 0;
 };
 
 Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& options = {});

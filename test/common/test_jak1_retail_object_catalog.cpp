@@ -289,12 +289,20 @@ bool retains_checked_unique_names_and_rejects_ambiguity() {
 }
 
 bool skips_code_and_rejects_invalid_or_unsupported_headers() {
-  auto archive = make_dgo("CODE.DGO", {{"code", make_v3("code")}});
+  const auto code_object = make_v3("code");
+  auto archive = make_dgo("CODE.DGO", {{"code", code_object}});
   std::vector<ArchiveSource> sources = {{"DGO/CODE.DGO", archive}};
   auto result = jak1_retail_object_catalog::build(sources);
   CHECK(result);
   CHECK(result.value().entries().empty());
   CHECK(result.value().skipped_code_object_count() == 1);
+  CHECK(result.value().all_object_payload_bytes() == code_object.size());
+
+  jak1_retail_object_catalog::Options code_budget;
+  code_budget.max_total_object_bytes = code_object.size() - 1;
+  result = jak1_retail_object_catalog::build(sources, code_budget);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::total_byte_limit_exceeded);
 
   archive =
       make_dgo("MIXED.DGO",
@@ -364,6 +372,39 @@ bool enforces_caps_paths_and_callbacks() {
   result = jak1_retail_object_catalog::build(sources, options);
   CHECK(!result);
   CHECK(result.error().code == ErrorCode::total_byte_limit_exceeded);
+
+  options = {};
+  options.max_total_archive_input_bytes = archive_a.size() + archive_b.size();
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(result);
+  --options.max_total_archive_input_bytes;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::archive_limit_exceeded);
+  CHECK(result.error().source_archive_relative_path == "DGO/B.DGO");
+
+  options = {};
+  options.max_total_expanded_archive_bytes = archive_a.size() + archive_b.size();
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(result);
+  CHECK(result.value().expanded_archive_bytes() == archive_a.size() + archive_b.size());
+  --options.max_total_expanded_archive_bytes;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::expanded_byte_limit_exceeded);
+  CHECK(result.error().source_archive_relative_path == "DGO/B.DGO");
+
+  const auto expected_object_bytes = make_v2().size() + make_v4().size();
+  options = {};
+  options.max_total_object_bytes = expected_object_bytes;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(result);
+  CHECK(result.value().all_object_payload_bytes() == expected_object_bytes);
+  --options.max_total_object_bytes;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::total_byte_limit_exceeded);
+  CHECK(result.error().source_archive_relative_path == "DGO/B.DGO");
 
   options = {};
   options.max_internal_name_bytes = 2;

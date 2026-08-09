@@ -8,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -116,6 +117,9 @@ struct Options {
   CancelCallback should_cancel;
   ProgressCallback on_progress;
 };
+
+/// Return the exact safe basename used when an inspected ISO entry is extracted.
+std::string extracted_output_name(std::string_view entry_name);
 
 /// Parse and validate an ISO9660 image without writing any output.
 Result<IsoFile> inspect(FILE* file, const Options& options = {});

@@ -6,6 +6,7 @@
 namespace jak2_output_materializer {
 
 inline constexpr std::size_t kNtscV2CompressedArchiveAlignmentBytes = 0x40000;
+inline constexpr std::size_t kNtscV2ExpectedFr3Files = 147;
 
 using GeneratedObjectArtifact = jak1_output_materializer::GeneratedObjectArtifact;
 using GeneratedFlatArtifact = jak1_output_materializer::GeneratedFlatArtifact;
@@ -25,6 +26,8 @@ using Result = jak1_output_materializer::Result<T>;
 struct Options {
   Limits limits;
   jak2_output_recipe::Limits recipe_limits;
+  std::optional<std::span<const std::uint8_t>> expected_recipe_bytes;
+  bool require_validated_file_identities = false;
   CancelCallback should_cancel;
   ProgressCallback on_progress;
 

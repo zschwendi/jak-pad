@@ -598,6 +598,10 @@ void IsoFile::Entry::print(std::string* result, const std::string& prefix) const
 
 namespace iso_file {
 
+std::string extracted_output_name(std::string_view entry_name) {
+  return output_name(std::string(entry_name));
+}
+
 const char* error_code_name(ErrorCode code) {
   switch (code) {
     case ErrorCode::invalid_argument:

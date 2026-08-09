@@ -14,6 +14,9 @@
 
 #include "decompiler/extractor/jak2_extracted_generated_inputs.h"
 
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
+
 namespace adapter = jak2_extracted_generated_inputs;
 namespace graph = jak1_output_graph;
 namespace recipe = jak1_output_recipe;
@@ -103,6 +106,26 @@ class Fixture {
   }
 
   adapter::ValidatedTree tree() const { return {root, proven_revision()}; }
+
+  std::vector<checked_file_identity::Identity> identities() const {
+    std::vector<checked_file_identity::Identity> result;
+    const auto add = [&](const std::string& relative_path) {
+      std::ifstream input(root / relative_path, std::ios::binary);
+      std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(input),
+                                      std::istreambuf_iterator<char>()};
+      result.push_back(
+          {relative_path, bytes.size(), XXH64(bytes.data(), bytes.size(), 0)});
+    };
+    add("CGO/GAME.CGO");
+    for (std::uint32_t language = 0; language < 8; ++language) {
+      add("TEXT/" + std::to_string(language) + "COMMON.TXT");
+    }
+    for (std::size_t index = result.size(); index < proven_revision().file_count; ++index) {
+      result.push_back(
+          {"UNUSED/" + std::to_string(index) + ".BIN", 0, static_cast<std::uint64_t>(index + 1)});
+    }
+    return result;
+  }
 
   std::filesystem::path root;
   const std::vector<std::uint8_t> directory_bytes = {0xff, 0xff, 0xff, 0xff, 0x44, 0x49, 0x52};
@@ -257,6 +280,81 @@ bool cancellation_and_callback_failures_are_explicit() {
   return true;
 }
 
+bool validated_file_identities_bind_the_same_reads() {
+  {
+    Fixture fixture;
+    auto identities = fixture.identities();
+    auto tree = fixture.tree();
+    tree.files = identities;
+    adapter::Options options;
+    options.require_validated_file_identities = true;
+    CHECK(adapter::build(tree, options));
+
+    auto archive = identities.front();
+    ++identities.front().xxh64;
+    const auto result = adapter::build(tree, options);
+    CHECK(!result);
+    CHECK(result.error().code == adapter::ErrorCode::input_identity_mismatch);
+    CHECK(result.error().source_relative_path == archive.relative_path);
+  }
+  {
+    Fixture fixture;
+    auto identities = fixture.identities();
+    auto tree = fixture.tree();
+    tree.files = identities;
+    adapter::Options options;
+    options.require_validated_file_identities = true;
+    ++identities.at(8).xxh64;
+    const auto result = adapter::build(tree, options);
+    CHECK(!result);
+    CHECK(result.error().code == adapter::ErrorCode::input_identity_mismatch);
+    CHECK(result.error().source_relative_path == "TEXT/7COMMON.TXT");
+  }
+  {
+    Fixture fixture;
+    adapter::Options options;
+    options.require_validated_file_identities = true;
+    const auto result = adapter::build(fixture.tree(), options);
+    CHECK(!result);
+    CHECK(result.error().code == adapter::ErrorCode::invalid_extracted_tree);
+  }
+  {
+    Fixture fixture;
+    auto identities = fixture.identities();
+    identities.resize(9);
+    auto tree = fixture.tree();
+    tree.files = identities;
+    adapter::Options options;
+    options.require_validated_file_identities = true;
+    const auto result = adapter::build(tree, options);
+    CHECK(!result);
+    CHECK(result.error().code == adapter::ErrorCode::invalid_extracted_tree);
+  }
+  {
+    Fixture fixture;
+    auto identities = fixture.identities();
+    identities.back() = identities.front();
+    identities.back().relative_path = "cgo/game.cgo";
+    auto tree = fixture.tree();
+    tree.files = identities;
+    const auto result = adapter::build(tree);
+    CHECK(!result);
+    CHECK(result.error().code == adapter::ErrorCode::invalid_extracted_tree);
+  }
+  {
+    Fixture fixture;
+    auto identities = fixture.identities();
+    auto tree = fixture.tree();
+    tree.files = identities;
+    adapter::Options options;
+    options.limits.max_validated_files = identities.size() - 1;
+    const auto result = adapter::build(tree, options);
+    CHECK(!result);
+    CHECK(result.error().code == adapter::ErrorCode::invalid_extracted_tree);
+  }
+  return true;
+}
+
 bool optional_local_oracle() {
   const char* root = std::getenv("OPENGOAL_JAK2_EXTRACTED_TREE");
   if (!root || !*root) {
@@ -281,6 +379,7 @@ int main() {
       rejects_unproven_revision_and_graph_shape,
       rejects_missing_symlinked_and_oversized_inputs,
       cancellation_and_callback_failures_are_explicit,
+      validated_file_identities_bind_the_same_reads,
       optional_local_oracle,
   };
   for (const auto test : tests) {

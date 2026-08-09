@@ -1,6 +1,9 @@
 #include "jak2_iso_validation.h"
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -73,6 +76,58 @@ void scan_entry(const IsoFile::Entry& entry,
   ++*next_hash_index;
 }
 
+bool collect_file_identities(const IsoFile::Entry& entry,
+                             const std::string& prefix,
+                             const IsoFile& layout,
+                             std::size_t* next_hash_index,
+                             std::set<std::string>* paths,
+                             std::vector<checked_file_identity::Identity>* files) {
+  const auto basename = iso_file::extracted_output_name(entry.name);
+  const auto relative_path = prefix.empty() ? basename : prefix + "/" + basename;
+  if (basename.empty() || basename.size() > 128 || basename == "." || basename == ".." ||
+      basename.back() == '.' || basename.back() == ' ' || relative_path.size() > 1024 ||
+      std::any_of(basename.begin(), basename.end(), [](unsigned char byte) {
+        return byte < 0x20 || byte > 0x7e || byte == '/' || byte == '\\' || byte == ':';
+      })) {
+    return false;
+  }
+  if (entry.is_dir) {
+    for (const auto& child : entry.children) {
+      if (!collect_file_identities(child, relative_path, layout, next_hash_index, paths, files)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  auto collision_path = relative_path;
+  std::transform(collision_path.begin(), collision_path.end(), collision_path.begin(),
+                 [](unsigned char byte) { return static_cast<char>(std::tolower(byte)); });
+  if (*next_hash_index >= layout.hashes.size() || relative_path.empty() ||
+      !paths->emplace(std::move(collision_path)).second) {
+    return false;
+  }
+  files->push_back({relative_path, static_cast<std::uint64_t>(entry.size),
+                    layout.hashes[(*next_hash_index)++]});
+  return true;
+}
+
+std::optional<std::vector<checked_file_identity::Identity>> file_identities(
+    const IsoFile& layout) {
+  std::vector<checked_file_identity::Identity> files;
+  files.reserve(layout.hashes.size());
+  std::set<std::string> paths;
+  std::size_t next_hash_index = 0;
+  for (const auto& entry : layout.root.children) {
+    if (!collect_file_identities(entry, {}, layout, &next_hash_index, &paths, &files)) {
+      return std::nullopt;
+    }
+  }
+  if (next_hash_index != layout.hashes.size() || files.size() != layout.hashes.size()) {
+    return std::nullopt;
+  }
+  return files;
+}
+
 ValidationError with_cleanup(ValidationError error,
                              const std::filesystem::path& staging_directory) {
   std::error_code cleanup_error;
@@ -137,6 +192,24 @@ uint64_t aggregate_contents_hash(std::span<const uint64_t> file_hashes) {
     combined_hash ^= hash;
   }
   return XXH64(&combined_hash, sizeof(uint64_t), 0);
+}
+
+ValidationResult<std::vector<checked_file_identity::Identity>> validated_file_identities(
+    const IsoFile& layout) {
+  if (!layout.shouldHash || layout.files_extracted < 0 ||
+      static_cast<std::size_t>(layout.files_extracted) != layout.hashes.size()) {
+    return ValidationResult<std::vector<checked_file_identity::Identity>>::failure(
+        make_error(ValidationErrorCode::invalid_extraction_result,
+                   "The ISO reader did not return one hash for every extracted file."));
+  }
+  auto files = file_identities(layout);
+  if (!files || files->size() != layout.hashes.size()) {
+    return ValidationResult<std::vector<checked_file_identity::Identity>>::failure(
+        make_error(ValidationErrorCode::invalid_extraction_result,
+                   "The extracted-file identity mapping is incomplete, unsafe, or ambiguous."));
+  }
+  return ValidationResult<std::vector<checked_file_identity::Identity>>::success(
+      std::move(*files));
 }
 
 ValidationResult<RevisionMatch> match_supported_revision(const Fingerprint& fingerprint) {
@@ -294,6 +367,13 @@ ValidationResult<StagedExtraction> extract_and_validate(
         with_cleanup(matched.error(), new_staging_directory));
   }
   auto match = matched.take_value();
+  auto files = validated_file_identities(extracted.value());
+  if (!files || files.value().size() != match.fingerprint.file_count) {
+    return ValidationResult<StagedExtraction>::failure(with_cleanup(
+        make_error(ValidationErrorCode::invalid_extraction_result,
+                   "The ISO reader did not return an exact extracted-file identity manifest."),
+        new_staging_directory));
+  }
 
   if (options.should_cancel()) {
     const auto code =
@@ -309,7 +389,8 @@ ValidationResult<StagedExtraction> extract_and_validate(
         with_cleanup(checkpoint.error(), new_staging_directory));
   }
 
-  return ValidationResult<StagedExtraction>::success({std::move(match), new_staging_directory});
+  return ValidationResult<StagedExtraction>::success(
+      {std::move(match), new_staging_directory, files.take_value()});
 }
 
 const char* validation_error_code_name(ValidationErrorCode code) {

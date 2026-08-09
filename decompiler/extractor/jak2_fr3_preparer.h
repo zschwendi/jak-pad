@@ -24,6 +24,7 @@ inline constexpr std::uint32_t kNtscV2TrackedLevelCount = 147;
 inline constexpr std::uint32_t kNtscV2ExpectedLevelOutputCollisions = 1;
 inline constexpr std::uint32_t kNtscV2ExpectedFr3Files =
     kNtscV2TrackedLevelCount + 1 - kNtscV2ExpectedLevelOutputCollisions;
+inline constexpr std::uint32_t kNtscV2ExpectedExtractedFiles = 593;
 
 using Phase = jak1_fr3::Phase;
 using Progress = jak1_fr3::Progress;
@@ -46,6 +47,7 @@ struct Options : jak1_fr3::Options {
     max_total_expanded_archive_bytes = kNtscV2TotalExpandedArchiveBytes;
     max_output_bytes = kNtscV2MaxFr3WorkBytes;
     compressed_trailing_alignment_bytes = kNtscV2CompressedArchiveAlignmentBytes;
+    max_validated_file_identities = kNtscV2ExpectedExtractedFiles;
   }
 };
 
