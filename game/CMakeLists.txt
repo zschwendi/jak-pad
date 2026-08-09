@@ -493,6 +493,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         target_link_libraries(jak2-pc-rand-test jak2-kernel-core)
         add_test(NAME jak2-pc-rand-test COMMAND jak2-pc-rand-test)
 
+        add_executable(jak2-method-set-guard-test
+                kernel/jak2/method_set_guard_test.cpp)
+        add_test(NAME jak2-method-set-guard-test COMMAND jak2-method-set-guard-test)
+
         add_executable(jak2-runtime-metrics-reader-test
                 kernel/core/jak2_runtime_metrics_reader_test.cpp)
         add_test(NAME jak2-runtime-metrics-reader-test COMMAND jak2-runtime-metrics-reader-test)

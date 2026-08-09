@@ -10,8 +10,10 @@
 #include "common/symbols.h"
 #include "common/util/Assert.h"
 
+#include "game/kernel/common/kboot.h"
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kscheme.h"
+#include "game/kernel/core/aot_method_set_policy.h"
 #include "game/kernel/core/kernel_game.h"
 #include "game/runtime.h"
 
@@ -331,7 +333,8 @@ uint64_t goal_kernel_stack_top(void) {
 
 static goal_kernel_core_status run_top_level(const char* tag,
                                              uint64_t* out_result,
-                                             bool switch_to_kernel_stack) {
+                                             bool switch_to_kernel_stack,
+                                             AotMethodSetLinkPolicy method_set_policy) {
   if (!tag) {
     set_error("goal_aot_run_top_level: bad argument");
     return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
@@ -346,15 +349,17 @@ static goal_kernel_core_status run_top_level(const char* tag,
     return GOAL_KERNEL_CORE_NOT_FOUND;
   }
 
-  // A top-level's defmethod on a type whose subtypes already exist only reaches those subtypes
-  // while *enable-method-set* is raised (jak1::method_set). Upstream raises it around the kernel
-  // and engine DGO loads, which is the step this stands in for.
-  *EnableMethodSet = *EnableMethodSet + 1;
+  const u32 previous_fast_link = FastLink;
+  if (method_set_policy.force_fast_link) {
+    FastLink = 1;
+  }
+  *EnableMethodSet = *EnableMethodSet + method_set_policy.enable_method_set;
   const u64 result = switch_to_kernel_stack
                          ? call_goal_on_stack(Ptr<Function>(top_level), goal_kernel_stack_top(),
                                               s7.offset, g_ee_main_mem)
                          : goal_aot_call(top_level, 0, 0, 0);
-  *EnableMethodSet = *EnableMethodSet - 1;
+  *EnableMethodSet = *EnableMethodSet - method_set_policy.enable_method_set;
+  FastLink = previous_fast_link;
 
   if (out_result) {
     *out_result = result;
@@ -363,11 +368,25 @@ static goal_kernel_core_status run_top_level(const char* tag,
 }
 
 goal_kernel_core_status goal_aot_run_top_level(const char* tag, uint64_t* out_result) {
-  return run_top_level(tag, out_result, true);
+  return run_top_level(tag, out_result, true, {true, false});
 }
 
 goal_kernel_core_status goal_aot_run_top_level_here(const char* tag, uint64_t* out_result) {
-  return run_top_level(tag, out_result, false);
+  return run_top_level(tag, out_result, false, {true, false});
+}
+
+goal_kernel_core_status goal_aot_run_top_level_for_link(const char* tag,
+                                                        uint32_t link_flags,
+                                                        uint64_t* out_result) {
+  return run_top_level(tag, out_result, true,
+                       aot_method_set_link_policy(link_flags, MasterDebug, DiskBoot));
+}
+
+goal_kernel_core_status goal_aot_run_top_level_here_for_link(const char* tag,
+                                                             uint32_t link_flags,
+                                                             uint64_t* out_result) {
+  return run_top_level(tag, out_result, false,
+                       aot_method_set_link_policy(link_flags, MasterDebug, DiskBoot));
 }
 
 goal_kernel_core_status goal_aot_call_symbol(const char* name,

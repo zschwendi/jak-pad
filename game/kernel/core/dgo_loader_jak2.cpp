@@ -179,8 +179,9 @@ bool load_code_object(const char* object_name,
     g_rpc_stats.level_code_bytes += Ptr<kheapinfo>(heap)->current.offset - before;
   }
   if (link_flags & LINK_FLAG_EXECUTE) {
-    const auto status = on_goal_stack ? goal_aot_run_top_level_here(aot->tag, nullptr)
-                                      : goal_aot_run_top_level(aot->tag, nullptr);
+    const auto status = on_goal_stack
+                            ? goal_aot_run_top_level_here_for_link(aot->tag, link_flags, nullptr)
+                            : goal_aot_run_top_level_for_link(aot->tag, link_flags, nullptr);
     if (status != GOAL_KERNEL_CORE_OK) {
       set_error(fmt::format("the top-level of '{}' failed: {}", object_name,
                             goal_kernel_core_last_error()));
