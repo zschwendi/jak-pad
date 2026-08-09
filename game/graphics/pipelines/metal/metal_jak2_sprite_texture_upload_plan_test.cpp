@@ -158,6 +158,45 @@ Fixture make_descriptor_first_fixture(
   return fixture;
 }
 
+Fixture make_descriptor_prefix_legacy_fixture(u32 prefix_count, u32 legacy_count) {
+  const u32 upload_count = prefix_count + legacy_count;
+  check(prefix_count > 0 && legacy_count > 0 && upload_count <= kFixtureMaximumGroups,
+        "the mixed map fixture stays within its bounded upload storage");
+  Fixture fixture;
+  fixture.upload_count = upload_count;
+  for (u32 i = 0; i < upload_count; ++i) {
+    put_page_header(&fixture.live, page_offset(i), 0x301 + i, 4 + i);
+  }
+
+  const u32 bucket_offset =
+      kChainOffset + metal_renderer::kJak2MapTextureUploadBucket * 16;
+  fixture.group_boundary_offsets[0] = bucket_offset;
+  put_tag(&fixture.packet, bucket_offset, DmaTag::Kind::NEXT, 0, group_offset(0), 0, 0);
+  for (u32 i = 0; i < prefix_count; ++i) {
+    const u32 descriptor_offset = group_offset(i);
+    fixture.descriptor_tag_offsets[i] = descriptor_offset;
+    put_tag(&fixture.packet, descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+    put_u64(&fixture.packet, descriptor_offset + 16, page_offset(i));
+    put_u64(&fixture.packet, descriptor_offset + 24, static_cast<u64>(-1));
+    fixture.group_boundary_offsets[i + 1] = descriptor_offset + 32;
+    put_tag(&fixture.packet, descriptor_offset + 32, DmaTag::Kind::NEXT, 0,
+            group_offset(i + 1), 0, 0);
+  }
+  for (u32 i = prefix_count; i < upload_count; ++i) {
+    const u32 next_offset = i + 1 == upload_count ? kTailOffset : group_offset(i + 1);
+    put_upload_group(&fixture, group_offset(i), i, page_offset(i), next_offset);
+  }
+
+  fixture.tail_tag_offset = kTailOffset;
+  put_tag(&fixture.packet, kTailOffset, DmaTag::Kind::CNT, 10, 0, kFlushaVif,
+          kDirectVif | 10);
+  std::fill_n(fixture.packet.begin() + kTailOffset + 16, 160, 0x9a);
+  fixture.final_boundary_offset = kTailOffset + 176;
+  put_tag(&fixture.packet, fixture.final_boundary_offset, DmaTag::Kind::NEXT, 0,
+          bucket_offset + 16, 0, 0);
+  return fixture;
+}
+
 std::optional<metal_renderer::Jak2SpriteTextureUploadPlan> plan(const Fixture& fixture) {
   return metal_renderer::plan_jak2_sprite_texture_upload(fixture.packet.data(),
                                                          fixture.packet.size(), kChainOffset,
@@ -259,14 +298,34 @@ void test_map_descriptor_first_no_tail_grammar() {
   check(!plan_map(grouped_without_tail).has_value(),
         "the no-tail exception requires a source-produced descriptor-first map group");
 
-  auto descriptor_then_direct = make_descriptor_first_fixture(2);
-  std::fill_n(descriptor_then_direct.packet.begin() + group_offset(1), kGroupStride, 0);
-  put_upload_group(&descriptor_then_direct, group_offset(1), 1, page_offset(1), map_bucket_end);
+  for (const u32 prefix_count : {1u, 2u, 7u}) {
+    auto descriptor_prefix = make_descriptor_prefix_legacy_fixture(prefix_count, 1);
+    diagnostic = {};
+    const auto result = plan_map(descriptor_prefix, &diagnostic);
+    check(result.has_value() && result->present &&
+              result->upload_count == prefix_count + 1 &&
+              diagnostic.rejection_stage ==
+                  metal_renderer::Jak2MapTextureUploadRejectionStage::None,
+          "a descriptor prefix may transition once into the exact legacy grouped mode");
+    for (u32 i = 0; i < prefix_count + 1; ++i) {
+      check(result->uploads[i].page_offset == page_offset(i) &&
+                result->uploads[i].mode == -1,
+            "the one-way transition retains descriptor order across both modes");
+    }
+  }
+
+  const auto over_limit = make_descriptor_prefix_legacy_fixture(8, 1);
   diagnostic = {};
-  check(!plan_map(descriptor_then_direct, &diagnostic).has_value() &&
+  check(!plan_map(over_limit, &diagnostic).has_value() &&
             diagnostic.rejection_stage ==
-                metal_renderer::Jak2MapTextureUploadRejectionStage::GroupOrTail,
-        "descriptor-first mode rejects a later Direct-prefixed group");
+                metal_renderer::Jak2MapTextureUploadRejectionStage::GroupLimit,
+        "an eighth descriptor prefix cannot transition to a ninth total upload");
+
+  auto mixed_without_tail = make_descriptor_prefix_legacy_fixture(1, 1);
+  put_tag(&mixed_without_tail.packet, mixed_without_tail.group_boundary_offsets[2],
+          DmaTag::Kind::NEXT, 0, map_bucket_end, 0, 0);
+  check(!plan_map(mixed_without_tail).has_value(),
+        "a descriptor prefix does not make the legacy Direct tail optional");
 
   auto direct_then_descriptor = make_fixture(2, metal_renderer::kJak2MapTextureUploadBucket);
   std::fill_n(direct_then_descriptor.packet.begin() + group_offset(1), kGroupStride, 0);

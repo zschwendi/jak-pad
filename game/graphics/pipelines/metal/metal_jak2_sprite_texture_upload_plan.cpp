@@ -336,7 +336,7 @@ static std::optional<Jak2GroupedTextureUploadPlan> plan_grouped_texture_upload(
   }
 
   if (allow_map_descriptor_first_groups && is_ordinary_descriptor(tail_or_group)) {
-    while (true) {
+    while (is_ordinary_descriptor(tail_or_group)) {
       if (plan.upload_count == maximum_groups) {
         reject_transfer(diagnostic, Jak2MapTextureUploadRejectionStage::GroupLimit,
                         tail_or_group);
@@ -356,11 +356,11 @@ static std::optional<Jak2GroupedTextureUploadPlan> plan_grouped_texture_upload(
                          Jak2MapTextureUploadRejectionStage::GroupOrTail)) {
         return std::nullopt;
       }
-      if (!is_ordinary_descriptor(tail_or_group)) {
-        reject_transfer(diagnostic, Jak2MapTextureUploadRejectionStage::GroupOrTail,
-                        tail_or_group);
-        return std::nullopt;
-      }
+    }
+    if (!is_direct(tail_or_group, 0, 2)) {
+      reject_transfer(diagnostic, Jak2MapTextureUploadRejectionStage::GroupOrTail,
+                      tail_or_group);
+      return std::nullopt;
     }
   }
 
