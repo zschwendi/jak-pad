@@ -76,6 +76,20 @@ struct MetalRenderOptions {
   metal_camera_trace::RenderSnapshot expected_render_camera;
 };
 
+// Borrowed render attachments for one host-owned view. The submitted command buffer retains the
+// textures through GPU completion; ownership stays with the host.
+struct MetalExternalRenderTargetDescriptor {
+  u64 view_id = 0;
+  id<MTLTexture> color_texture = nil;
+  NSUInteger color_slice = 0;
+  id<MTLTexture> depth_texture = nil;
+  NSUInteger depth_slice = 0;
+  // Current pass-split support requires the full attachment: origin zero, attachment dimensions,
+  // and a 0...1 depth range.
+  MTLViewport viewport = {0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+  double clear_depth = 0.0;
+};
+
 class MetalRenderer {
  public:
   bool init(id<MTLDevice> device);
@@ -99,6 +113,14 @@ class MetalRenderer {
                           CAMetalLayer* layer,
                           const u8* chain_data,
                           u32 chain_offset);
+
+  // Renders one DMA-chain view directly into host-owned color/depth texture slices, without a
+  // CAMetalLayer or present pass. Invalid descriptors return before renderer state is mutated.
+  bool render_chain_frame_to_external_target(
+      const MetalRenderOptions& opts,
+      const MetalExternalRenderTargetDescriptor& target,
+      const u8* chain_data,
+      u32 chain_offset);
 
   // Waits for the most recently committed chain frame's completion handler, with a timeout.
   bool wait_for_last_chain_frame(double timeout_seconds);
@@ -151,6 +173,17 @@ class MetalRenderer {
                            const MetalRenderOptions& opts);
   void build_validation_scene();
   bool read_color_target(id<MTLTexture> tex, metal_renderer::FramePixels* out);
+  bool render_chain_frame_impl(const MetalRenderOptions& opts,
+                               CAMetalLayer* layer,
+                               id<MTLTexture> game_color,
+                               NSUInteger color_slice,
+                               id<MTLTexture> game_depth,
+                               NSUInteger depth_slice,
+                               const MTLViewport* viewport,
+                               double clear_depth,
+                               u64 view_id,
+                               const u8* chain_data,
+                               u32 chain_offset);
 
   id<MTLDevice> m_device;
   id<MTLCommandQueue> m_queue;

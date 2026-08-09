@@ -69,6 +69,15 @@ struct PresentTestOptions {
   int brightness_contrast_alpha = 128;
 };
 
+struct ExternalRenderTargetProofResult {
+  FramePixels rendered_slice;
+  u64 view_id = 0;
+  bool invalid_descriptors_rejected = false;
+  bool invalid_descriptors_preserved_stats = false;
+  bool color_slice_zero_preserved = false;
+  bool framebuffer_copy_used_selected_slice = false;
+};
+
 enum MercPaletteHealthIssue : u8 {
   MERC_PALETTE_HEALTH_NONFINITE = 1 << 0,
   MERC_PALETTE_HEALTH_DEGENERATE = 1 << 1,
@@ -273,6 +282,13 @@ ChainStats get_chain_stats();
 // Blocks until the last submitted frame finishes on the GPU, then reads back
 // the offscreen game render target. Returns false if no frame has been rendered.
 bool read_last_frame(FramePixels* out);
+
+// Metal-proof hook: renders the most recently copied DMA chain into slice 1 of host-owned
+// two-slice color/depth textures and reads that color slice back. Slice 0 is initialized with a
+// sentinel and checked after rendering.
+bool render_last_chain_to_external_target(int width,
+                                          int height,
+                                          ExternalRenderTargetProofResult* out);
 
 // Renders the present (letterbox) pass into an offscreen window-sized target
 // using the same encoder path the on-screen drawable gets, then reads it back.

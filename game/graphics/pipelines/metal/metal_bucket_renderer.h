@@ -106,7 +106,11 @@ struct MetalFrameContext {
   // contexts that never dispatch such buckets (the validation scene).
   id<MTLCommandBuffer> cmds;
   id<MTLTexture> game_color;
+  NSUInteger game_color_slice = 0;
   id<MTLTexture> game_depth;
+  NSUInteger game_depth_slice = 0;
+  // Full-target viewport for the selected attachments. Restored after a bucket splits the pass.
+  MTLViewport game_viewport = {0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
   // frame stats (mirror of the GL profiler counters the tests read)
   int draw_calls = 0;
   int triangles = 0;

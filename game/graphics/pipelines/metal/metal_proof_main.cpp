@@ -1368,6 +1368,27 @@ void test_dma_chain(const GfxRendererModule* mod,
   check(stats.skipped_bucket_bytes == 2 * 64, "chain: un-ported bucket content counted (64B x2)");
   check(stats.direct_unsupported_blends == 0, "chain: no unsupported blend modes hit");
 
+  metal_renderer::ExternalRenderTargetProofResult external;
+  const bool external_rendered = metal_renderer::render_last_chain_to_external_target(
+      frame.width, frame.height, &external);
+  check(external_rendered, "external target: rendered the same one-view DMA fixture to slice 1");
+  check(external.view_id == 0x4255494c44313336ull,
+        "external target: stable host view ID reached the renderer seam");
+  check(external.framebuffer_copy_used_selected_slice,
+        "external target: pass split copied and reopened the selected array slices");
+  check(external.invalid_descriptors_rejected,
+        "external target: invalid bounds, viewport, depth, and usages were rejected");
+  check(external.invalid_descriptors_preserved_stats,
+        "external target: rejected descriptors did not mutate chain or submission stats");
+  check(external.color_slice_zero_preserved,
+        "external target: rendering slice 1 preserved the slice 0 sentinel");
+  if (external_rendered) {
+    check(external.rendered_slice.width == frame.width &&
+              external.rendered_slice.height == frame.height &&
+              external.rendered_slice.rgba == frame.rgba,
+          "external target: slice 1 pixels exactly match the internal game target");
+  }
+
   g_ee_main_mem = nullptr;
 }
 

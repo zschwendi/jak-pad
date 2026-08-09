@@ -13,8 +13,10 @@
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
+#include <cstring>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 
 #include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
@@ -418,6 +420,207 @@ namespace metal_renderer {
 
 bool read_last_frame(FramePixels* out) {
   return g_renderer && g_renderer->read_game_frame(out);
+}
+
+bool render_last_chain_to_external_target(int width,
+                                          int height,
+                                          ExternalRenderTargetProofResult* out) {
+  if (!g_renderer || !g_chain.copier || !out || width <= 0 || height <= 0) {
+    return false;
+  }
+  *out = {};
+  const auto& chain = g_chain.copier->get_last_result();
+  if (chain.data.empty()) {
+    return false;
+  }
+
+  @autoreleasepool {
+    auto* color_desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                           width:width
+                                                          height:height
+                                                       mipmapped:NO];
+    color_desc.textureType = MTLTextureType2DArray;
+    color_desc.arrayLength = 2;
+    color_desc.usage = MTLTextureUsageRenderTarget;
+#if TARGET_OS_OSX
+    color_desc.storageMode = MTLStorageModeManaged;
+#else
+    color_desc.storageMode = MTLStorageModeShared;
+#endif
+    id<MTLTexture> color = [g_renderer->device() newTextureWithDescriptor:color_desc];
+
+    auto* depth_desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                                           width:width
+                                                          height:height
+                                                       mipmapped:NO];
+    depth_desc.textureType = MTLTextureType2DArray;
+    depth_desc.arrayLength = 2;
+    depth_desc.usage = MTLTextureUsageRenderTarget;
+    depth_desc.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> depth = [g_renderer->device() newTextureWithDescriptor:depth_desc];
+    if (!color || !depth) {
+      return false;
+    }
+
+    constexpr u8 kSentinelBgra[4] = {0x35, 0x6a, 0xa5, 0xff};
+    std::vector<u8> sentinel((size_t)width * height * 4);
+    for (size_t i = 0; i < sentinel.size(); i += 4) {
+      std::memcpy(sentinel.data() + i, kSentinelBgra, sizeof(kSentinelBgra));
+    }
+    [color replaceRegion:MTLRegionMake2D(0, 0, width, height)
+             mipmapLevel:0
+                   slice:0
+               withBytes:sentinel.data()
+             bytesPerRow:width * 4
+           bytesPerImage:sentinel.size()];
+
+    // Exercise the same pass split the sprite distorter uses. The first pass clears slice 1,
+    // resume_pass_with_framebuffer_copy must copy that slice and reopen the selected attachments.
+    auto* snapshot_desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                           width:width
+                                                          height:height
+                                                       mipmapped:NO];
+    snapshot_desc.usage = MTLTextureUsageShaderRead;
+#if TARGET_OS_OSX
+    snapshot_desc.storageMode = MTLStorageModeManaged;
+#else
+    snapshot_desc.storageMode = MTLStorageModeShared;
+#endif
+    id<MTLTexture> snapshot = [g_renderer->device() newTextureWithDescriptor:snapshot_desc];
+    id<MTLCommandBuffer> split_cmds = [g_renderer->queue() commandBuffer];
+    auto* split_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    split_pass.colorAttachments[0].texture = color;
+    split_pass.colorAttachments[0].slice = 1;
+    split_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    split_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    split_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.125, 0.25, 0.5, 1.0);
+    split_pass.depthAttachment.texture = depth;
+    split_pass.depthAttachment.slice = 1;
+    split_pass.depthAttachment.loadAction = MTLLoadActionClear;
+    split_pass.depthAttachment.storeAction = MTLStoreActionStore;
+    split_pass.depthAttachment.clearDepth = 0.0;
+    split_pass.stencilAttachment.texture = depth;
+    split_pass.stencilAttachment.slice = 1;
+    split_pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    split_pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> split_enc =
+        [split_cmds renderCommandEncoderWithDescriptor:split_pass];
+    MetalFrameContext split_ctx;
+    split_ctx.enc = split_enc;
+    split_ctx.cmds = split_cmds;
+    split_ctx.game_color = color;
+    split_ctx.game_color_slice = 1;
+    split_ctx.game_depth = depth;
+    split_ctx.game_depth_slice = 1;
+    split_ctx.game_viewport = {0.0, 0.0, (double)width, (double)height, 0.0, 1.0};
+    [split_enc setViewport:split_ctx.game_viewport];
+    split_ctx.resume_pass_with_framebuffer_copy(snapshot);
+    [split_ctx.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> split_sync = [split_cmds blitCommandEncoder];
+    [split_sync synchronizeResource:snapshot];
+    [split_sync endEncoding];
+#endif
+    [split_cmds commit];
+    [split_cmds waitUntilCompleted];
+    u8 split_pixel[4] = {};
+    [snapshot getBytes:split_pixel
+            bytesPerRow:sizeof(split_pixel)
+             fromRegion:MTLRegionMake2D(0, 0, 1, 1)
+            mipmapLevel:0];
+    out->framebuffer_copy_used_selected_slice =
+        split_cmds.status == MTLCommandBufferStatusCompleted && split_pixel[0] == 128 &&
+        split_pixel[1] == 64 && split_pixel[2] == 32 && split_pixel[3] == 255;
+
+    MetalRenderOptions opts;
+    opts.game_res_w = width;
+    opts.game_res_h = height;
+
+    MetalExternalRenderTargetDescriptor target;
+    target.view_id = 0x4255494c44313336ull;  // "BUILD136"
+    target.color_texture = color;
+    target.color_slice = 1;
+    target.depth_texture = depth;
+    target.depth_slice = 1;
+    target.viewport = {0.0, 0.0, (double)width, (double)height, 0.0, 1.0};
+
+    MTLTextureDescriptor* missing_color_usage_desc = [color_desc copy];
+    missing_color_usage_desc.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> missing_color_usage =
+        [g_renderer->device() newTextureWithDescriptor:missing_color_usage_desc];
+    MTLTextureDescriptor* missing_depth_usage_desc = [depth_desc copy];
+    missing_depth_usage_desc.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> missing_depth_usage =
+        [g_renderer->device() newTextureWithDescriptor:missing_depth_usage_desc];
+
+    const ChainStats before_invalid = g_renderer->chain_stats();
+    auto bad_bounds = target;
+    bad_bounds.color_slice = color.arrayLength;
+    auto bad_viewport = target;
+    bad_viewport.viewport.originX = 1.0;
+    auto bad_depth_clear = target;
+    bad_depth_clear.clear_depth = 1.0;
+    auto bad_color_usage = target;
+    bad_color_usage.color_texture = missing_color_usage;
+    auto bad_depth_usage = target;
+    bad_depth_usage.depth_texture = missing_depth_usage;
+    const bool rejected =
+        missing_color_usage && missing_depth_usage &&
+        !g_renderer->render_chain_frame_to_external_target(
+            opts, bad_bounds, chain.data.data(), chain.start_offset) &&
+        !g_renderer->render_chain_frame_to_external_target(
+            opts, bad_viewport, chain.data.data(), chain.start_offset) &&
+        !g_renderer->render_chain_frame_to_external_target(
+            opts, bad_depth_clear, chain.data.data(), chain.start_offset) &&
+        !g_renderer->render_chain_frame_to_external_target(
+            opts, bad_color_usage, chain.data.data(), chain.start_offset) &&
+        !g_renderer->render_chain_frame_to_external_target(
+            opts, bad_depth_usage, chain.data.data(), chain.start_offset);
+    const ChainStats after_invalid = g_renderer->chain_stats();
+    static_assert(std::is_trivially_copyable_v<ChainStats>);
+
+    out->invalid_descriptors_rejected = rejected;
+    out->invalid_descriptors_preserved_stats =
+        std::memcmp(&before_invalid, &after_invalid, sizeof(ChainStats)) == 0;
+    if (!out->framebuffer_copy_used_selected_slice || !rejected ||
+        !out->invalid_descriptors_preserved_stats ||
+        !g_renderer->render_chain_frame_to_external_target(
+            opts, target, chain.data.data(), chain.start_offset) ||
+        !g_renderer->wait_for_last_chain_frame(5.0)) {
+      return false;
+    }
+    out->view_id = target.view_id;
+
+    std::vector<u8> slice_zero(sentinel.size());
+    [color getBytes:slice_zero.data()
+         bytesPerRow:width * 4
+       bytesPerImage:slice_zero.size()
+          fromRegion:MTLRegionMake2D(0, 0, width, height)
+         mipmapLevel:0
+               slice:0];
+    out->color_slice_zero_preserved = slice_zero == sentinel;
+
+    std::vector<u8> bgra(sentinel.size());
+    [color getBytes:bgra.data()
+         bytesPerRow:width * 4
+       bytesPerImage:bgra.size()
+          fromRegion:MTLRegionMake2D(0, 0, width, height)
+         mipmapLevel:0
+               slice:1];
+    out->rendered_slice.width = width;
+    out->rendered_slice.height = height;
+    out->rendered_slice.rgba.resize(bgra.size());
+    for (size_t i = 0; i < bgra.size(); i += 4) {
+      out->rendered_slice.rgba[i + 0] = bgra[i + 2];
+      out->rendered_slice.rgba[i + 1] = bgra[i + 1];
+      out->rendered_slice.rgba[i + 2] = bgra[i + 0];
+      out->rendered_slice.rgba[i + 3] = bgra[i + 3];
+    }
+    return true;
+  }
 }
 
 bool read_present_frame(const PresentTestOptions& opts, FramePixels* out) {

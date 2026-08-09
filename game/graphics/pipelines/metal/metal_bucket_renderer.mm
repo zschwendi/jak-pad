@@ -33,7 +33,7 @@ void MetalFrameContext::resume_pass_with_framebuffer_copy(id<MTLTexture> snapsho
 
   id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
   [blit copyFromTexture:game_color
-            sourceSlice:0
+            sourceSlice:game_color_slice
             sourceLevel:0
            sourceOrigin:MTLOriginMake(0, 0, 0)
              sourceSize:MTLSizeMake(game_color.width, game_color.height, 1)
@@ -45,16 +45,20 @@ void MetalFrameContext::resume_pass_with_framebuffer_copy(id<MTLTexture> snapsho
 
   auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
   pass.colorAttachments[0].texture = game_color;
+  pass.colorAttachments[0].slice = game_color_slice;
   pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
   pass.colorAttachments[0].storeAction = MTLStoreActionStore;
   pass.depthAttachment.texture = game_depth;
+  pass.depthAttachment.slice = game_depth_slice;
   pass.depthAttachment.loadAction = MTLLoadActionLoad;
   pass.depthAttachment.storeAction = MTLStoreActionStore;
   pass.stencilAttachment.texture = game_depth;
+  pass.stencilAttachment.slice = game_depth_slice;
   pass.stencilAttachment.loadAction = MTLLoadActionLoad;
   pass.stencilAttachment.storeAction = MTLStoreActionStore;
   enc = [cmds renderCommandEncoderWithDescriptor:pass];
   [enc setCullMode:MTLCullModeNone];
+  [enc setViewport:game_viewport];
 }
 
 /*!

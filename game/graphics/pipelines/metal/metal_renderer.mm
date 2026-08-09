@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 
 #include "common/log/log.h"
@@ -101,6 +102,45 @@ id<MTLTexture> make_depth_target(id<MTLDevice> device, int w, int h) {
   desc.usage = MTLTextureUsageRenderTarget;
   desc.storageMode = MTLStorageModePrivate;
   return [device newTextureWithDescriptor:desc];
+}
+
+bool valid_external_slice(id<MTLTexture> texture, NSUInteger slice) {
+  switch (texture.textureType) {
+    case MTLTextureType2D:
+      return slice == 0;
+    case MTLTextureType2DArray:
+      return slice < texture.arrayLength;
+    default:
+      return false;
+  }
+}
+
+bool valid_external_target(id<MTLDevice> device,
+                           const MetalRenderOptions& opts,
+                           const MetalExternalRenderTargetDescriptor& target) {
+  id<MTLTexture> color = target.color_texture;
+  id<MTLTexture> depth = target.depth_texture;
+  if (!target.view_id || !color || !depth || color.device != device || depth.device != device ||
+      color.pixelFormat != kColorFormat || depth.pixelFormat != kDepthFormat ||
+      color.sampleCount != 1 || depth.sampleCount != 1 || !color.width || !color.height ||
+      color.width != depth.width || color.height != depth.height || color.framebufferOnly ||
+      !(color.usage & MTLTextureUsageRenderTarget) ||
+      !(depth.usage & MTLTextureUsageRenderTarget) ||
+      !valid_external_slice(color, target.color_slice) ||
+      !valid_external_slice(depth, target.depth_slice)) {
+    return false;
+  }
+
+  const auto& viewport = target.viewport;
+  return opts.game_res_w > 0 && opts.game_res_h > 0 &&
+         std::isfinite(viewport.originX) && std::isfinite(viewport.originY) &&
+         std::isfinite(viewport.width) && std::isfinite(viewport.height) &&
+         std::isfinite(viewport.znear) && std::isfinite(viewport.zfar) &&
+         std::isfinite(target.clear_depth) && viewport.originX == 0.0 &&
+         viewport.originY == 0.0 && viewport.width == color.width &&
+         viewport.height == color.height && viewport.width == opts.game_res_w &&
+         viewport.height == opts.game_res_h && viewport.znear == 0.0 && viewport.zfar == 1.0 &&
+         target.clear_depth == 0.0;
 }
 
 id<MTLTexture> make_checker_texture(id<MTLDevice> device) {
@@ -699,7 +739,36 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
                                        CAMetalLayer* layer,
                                        const u8* chain_data,
                                        u32 chain_offset) {
+  return render_chain_frame_impl(opts, layer, nil, 0, nil, 0, nullptr, 0.0, 0, chain_data,
+                                 chain_offset);
+}
+
+bool MetalRenderer::render_chain_frame_to_external_target(
+    const MetalRenderOptions& opts,
+    const MetalExternalRenderTargetDescriptor& target,
+    const u8* chain_data,
+    u32 chain_offset) {
+  if (!chain_data || !valid_external_target(m_device, opts, target)) {
+    return false;
+  }
+  return render_chain_frame_impl(opts, nil, target.color_texture, target.color_slice,
+                                 target.depth_texture, target.depth_slice, &target.viewport,
+                                 target.clear_depth, target.view_id, chain_data, chain_offset);
+}
+
+bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
+                                            CAMetalLayer* layer,
+                                            id<MTLTexture> game_color,
+                                            NSUInteger color_slice,
+                                            id<MTLTexture> game_depth,
+                                            NSUInteger depth_slice,
+                                            const MTLViewport* viewport,
+                                            double clear_depth,
+                                            u64 view_id,
+                                            const u8* chain_data,
+                                            u32 chain_offset) {
   bool drawable_acquired = false;
+  const bool external_target = view_id != 0;
   @autoreleasepool {
     ASSERT_MSG(!m_bucket_renderers.empty(), "init_bucket_renderers was not called");
     // the stream buffer pages are reused in place, so the previous frame's GPU
@@ -715,7 +784,11 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     }
     m_stream.reset();
 
-    setup_frame(opts);
+    if (!external_target) {
+      setup_frame(opts);
+      game_color = m_game_color;
+      game_depth = m_game_depth;
+    }
     // mirror of SharedRenderState::reset for the background state
     m_background.reset_frame();
     m_background.camera_trace.reset(opts.expected_camera_valid ? &opts.expected_camera : nullptr);
@@ -733,27 +806,39 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_shared_state.game_res_h = opts.game_res_h;
 
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
+    if (external_target) {
+      cmds.label = [NSString stringWithFormat:@"OpenGOAL external view %llu",
+                                              static_cast<unsigned long long>(view_id)];
+    }
 
     // one render pass over the game target for all buckets, cleared like
     // Jak 1's setup_frame (color 0, depth 0, PS2 reversed depth)
     auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = m_game_color;
+    pass.colorAttachments[0].texture = game_color;
+    pass.colorAttachments[0].slice = color_slice;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
-    pass.depthAttachment.texture = m_game_depth;
+    pass.depthAttachment.texture = game_depth;
+    pass.depthAttachment.slice = depth_slice;
     pass.depthAttachment.loadAction = MTLLoadActionClear;
     // stored, not discarded: the sprite distorter may split the pass and
     // reload depth/stencil (MetalFrameContext::resume_pass_with_framebuffer_copy)
     pass.depthAttachment.storeAction = MTLStoreActionStore;
-    pass.depthAttachment.clearDepth = 0.0;
-    pass.stencilAttachment.texture = m_game_depth;
+    pass.depthAttachment.clearDepth = clear_depth;
+    pass.stencilAttachment.texture = game_depth;
+    pass.stencilAttachment.slice = depth_slice;
     pass.stencilAttachment.loadAction = MTLLoadActionClear;
     pass.stencilAttachment.storeAction = MTLStoreActionStore;
     pass.stencilAttachment.clearStencil = 0;
 
     id<MTLRenderCommandEncoder> enc = [cmds renderCommandEncoderWithDescriptor:pass];
     [enc setCullMode:MTLCullModeNone];
+    const MTLViewport frame_viewport =
+        viewport ? *viewport
+                 : MTLViewport{0.0, 0.0, (double)game_color.width, (double)game_color.height, 0.0,
+                               1.0};
+    [enc setViewport:frame_viewport];
 
     MetalFrameContext ctx;
     ctx.enc = enc;
@@ -763,8 +848,11 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     ctx.color_format = kColorFormat;
     ctx.depth_format = kDepthFormat;
     ctx.cmds = cmds;
-    ctx.game_color = m_game_color;
-    ctx.game_depth = m_game_depth;
+    ctx.game_color = game_color;
+    ctx.game_color_slice = color_slice;
+    ctx.game_depth = game_depth;
+    ctx.game_depth_slice = depth_slice;
+    ctx.game_viewport = frame_viewport;
 
     m_chain_stats.last_buckets_dispatched = 0;
     switch (m_shared_state.version) {
@@ -921,7 +1009,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
 #if TARGET_OS_OSX
     {
       id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
-      [blit synchronizeResource:m_game_color];
+      [blit synchronizeResource:game_color];
       [blit endEncoding];
     }
 #endif
@@ -980,7 +1068,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
       m_chain_stats.drawable_misses++;
     }
 
-    if (layer) {
+    if (layer || external_target) {
       const auto completion_state = m_presentation_state;
       [cmds addCompletedHandler:^(id<MTLCommandBuffer> completed) {
         const MTLCommandBufferStatus status = completed.status;
@@ -1209,7 +1297,7 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
     m_chain_stats.cloud_blends = blend_stats.cloud_blends;
     m_chain_stats.skipped_tfrag_bytes = 0;
   }
-  return drawable_acquired;
+  return external_target || drawable_acquired;
 }
 
 bool MetalRenderer::wait_for_last_chain_frame(double timeout_seconds) {
