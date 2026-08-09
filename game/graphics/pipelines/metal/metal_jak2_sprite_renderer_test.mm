@@ -642,15 +642,16 @@ void test_multi_distorter_spatial_sampling_and_alpha() {
   stream.init(device);
 
   std::vector<MetalSpriteRenderer::SpriteDistortFrameData> distorters(2);
-  distorters[0].xyz = math::Vector3f(1888.f, 2048.f, 8388608.f);
+  distorters[0].xyz = math::Vector3f(1888.f, 1968.f, 8388608.f);
   distorters[0].num_255 = 255.f;
-  distorters[0].st = math::Vector2f(0.75f, 0.40625f);
+  distorters[0].st = math::Vector2f(0.75f, 0.25f);
   distorters[0].num_1 = 1.f;
   distorters[0].flag = 3;
   distorters[0].rgba = math::Vector4f(60.f, 0.f, 0.f, 0.f);
   distorters[1] = distorters[0];
   distorters[1].xyz.x() = 2208.f;
-  distorters[1].st.x() = 0.25f;
+  distorters[1].xyz.y() = 2128.f;
+  distorters[1].st = math::Vector2f(0.25f, 0.5625f);
 
   auto chain = make_normal_jak2_chain(false, false, false, nullptr, false, 1, &distorters);
   const u32 next_bucket = chain.finish();
@@ -682,12 +683,17 @@ void test_multi_distorter_spatial_sampling_and_alpha() {
     id<MTLTexture> depth = [device newTextureWithDescriptor:depth_desc];
     ASSERT(depth);
 
-    const Pixel left = {24, 72, 208, source_alpha};
-    const Pixel right = {216, 176, 32, source_alpha};
+    const Pixel top_left = {24, 72, 208, source_alpha};
+    const Pixel top_right = {216, 176, 32, source_alpha};
+    const Pixel bottom_left = {32, 200, 96, source_alpha};
+    const Pixel bottom_right = {176, 48, 200, source_alpha};
     std::vector<u8> initial(kDistortTargetWidth * kDistortTargetHeight * 4);
     for (int y = 0; y < kDistortTargetHeight; y++) {
       for (int x = 0; x < kDistortTargetWidth; x++) {
-        const Pixel pixel = x < kDistortTargetWidth / 2 ? left : right;
+        const bool left = x < kDistortTargetWidth / 2;
+        const bool top = y < kDistortTargetHeight / 2;
+        const Pixel pixel = top ? (left ? top_left : top_right)
+                                : (left ? bottom_left : bottom_right);
         const std::size_t offset =
             static_cast<std::size_t>(y * kDistortTargetWidth + x) * 4;
         initial[offset + 0] = pixel.b;
@@ -760,26 +766,30 @@ void test_multi_distorter_spatial_sampling_and_alpha() {
          fromRegion:MTLRegionMake2D(0, 0, kDistortTargetWidth, kDistortTargetHeight)
         mipmapLevel:0];
 
-    Pixel expected_left_sample = right;
+    Pixel expected_left_sample = top_right;
     expected_left_sample.a = 255;
-    Pixel expected_right_sample = left;
+    Pixel expected_right_sample = bottom_left;
     expected_right_sample.a = 255;
-    ASSERT(pixel_near(read_bgra_pixel(pixels, 24, 48), expected_left_sample));
-    ASSERT(pixel_near(read_bgra_pixel(pixels, 104, 48), expected_right_sample));
+    ASSERT(pixel_near(read_bgra_pixel(pixels, 24, 33), expected_left_sample));
+    ASSERT(pixel_near(read_bgra_pixel(pixels, 104, 63), expected_right_sample));
 
     // Checking every pixel outside the two conservative bounds catches an
     // out-of-range vertex or a failed primitive restart, not just one bridge.
     for (int y = 0; y < kDistortTargetHeight; y++) {
       for (int x = 0; x < kDistortTargetWidth; x++) {
-        const bool in_left_bounds = x >= 8 && x <= 40 && y >= 34 && y <= 62;
-        const bool in_right_bounds = x >= 88 && x <= 120 && y >= 34 && y <= 62;
+        const bool in_left_bounds = x >= 8 && x <= 40 && y >= 19 && y <= 47;
+        const bool in_right_bounds = x >= 88 && x <= 120 && y >= 49 && y <= 77;
         if (!in_left_bounds && !in_right_bounds) {
+          const bool left = x < kDistortTargetWidth / 2;
+          const bool top = y < kDistortTargetHeight / 2;
           ASSERT(pixel_near(read_bgra_pixel(pixels, x, y),
-                            x < kDistortTargetWidth / 2 ? left : right, 0));
+                            top ? (left ? top_left : top_right)
+                                : (left ? bottom_left : bottom_right),
+                            0));
         }
       }
     }
-    ASSERT(pixel_near(read_bgra_pixel(pixels, 64, 48), right, 0));
+    ASSERT(pixel_near(read_bgra_pixel(pixels, 64, 48), bottom_right, 0));
 
     if (source_alpha == 255) {
       std::puts("jak2-metal-sprite-renderer-test: fixed-index restart PASS");
