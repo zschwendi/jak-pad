@@ -66,6 +66,8 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
     int glow_sprites_accepted = 0;
     int glow_sprites_rejected = 0;
     int glow_invalid_records = 0;
+    // Legacy telemetry names retained for the host ABI. These counters now
+    // describe the visibility-tested final flare pass, not force-visible output.
     int glow_force_visible_submitted = 0;
     int glow_force_visible_drawn = 0;
     int glow_force_visible_draw_calls = 0;

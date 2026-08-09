@@ -392,8 +392,8 @@ void MetalSpriteRenderer::render_jak2(DmaFollower& dma,
   parse_jak2_glow_and_residual(dma, render_state);
 
   const auto& glow_outputs = pending_glow_outputs();
-  m_glow_renderer.draw_force_visible(glow_outputs.empty() ? nullptr : glow_outputs.data(),
-                                     glow_outputs.size(), render_state, ctx);
+  m_glow_renderer.draw(glow_outputs.empty() ? nullptr : glow_outputs.data(), glow_outputs.size(),
+                       render_state, ctx);
   const auto& glow_stats = m_glow_renderer.stats();
   m_stats.glow_invalid_records = glow_stats.invalid_records;
   m_stats.glow_force_visible_submitted = glow_stats.sprites_submitted;
@@ -404,8 +404,8 @@ void MetalSpriteRenderer::render_jak2(DmaFollower& dma,
   ASSERT(m_stats.glow_force_visible_drawn <= m_stats.glow_sprites_parsed);
   m_stats.glow_sprites_skipped =
       m_stats.glow_sprites_parsed - m_stats.glow_force_visible_drawn;
-  m_stats.draw_calls += glow_stats.draw_calls;
-  m_stats.triangles += glow_stats.triangles;
+  m_stats.draw_calls += glow_stats.draw_calls + glow_stats.visibility_draw_calls;
+  m_stats.triangles += glow_stats.triangles + glow_stats.visibility_triangles;
   m_stats.missing_textures += glow_stats.missing_textures;
 }
 

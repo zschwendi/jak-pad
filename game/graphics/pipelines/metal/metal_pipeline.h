@@ -230,6 +230,7 @@ struct ChainStats {
   int sprite_glow_accepted = 0;
   int sprite_glow_rejected = 0;
   int sprite_glow_invalid_records = 0;
+  // Legacy host-facing names: these are visibility-tested final flare counts.
   int sprite_glow_force_visible_submitted = 0;
   int sprite_glow_force_visible_drawn = 0;
   int sprite_glow_force_visible_draws = 0;

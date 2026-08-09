@@ -106,7 +106,7 @@ id<MTLTexture> make_depth_target(id<MTLDevice> device, int w, int h) {
                                                                   width:w
                                                                  height:h
                                                               mipmapped:NO];
-  desc.usage = MTLTextureUsageRenderTarget;
+  desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   desc.storageMode = MTLStorageModePrivate;
   return [device newTextureWithDescriptor:desc];
 }

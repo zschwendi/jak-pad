@@ -204,6 +204,7 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_sprite_glow_accepted;
   uint64_t last_sprite_glow_rejected;
   uint64_t last_sprite_glow_invalid_records;
+  // Legacy ABI names: these are visibility-tested final flare counts.
   uint64_t last_sprite_glow_force_visible_submitted;
   uint64_t last_sprite_glow_force_visible_drawn;
   uint64_t last_sprite_glow_force_visible_draws;

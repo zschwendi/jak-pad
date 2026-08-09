@@ -41,14 +41,17 @@ bool is_bgra(const std::vector<u8>& pixels,
          pixels[offset + 3] == alpha;
 }
 
-SpriteGlowOutput make_center_flare() {
+SpriteGlowOutput make_flare(float x0, float x1, float sample_x0, float sample_x1) {
   SpriteGlowOutput flare = {};
   constexpr float kZ = 16777215.f;
-  flare.flare_xyzw[0] = math::Vector4f{1984.f, 1996.f, kZ, 7.f};
-  flare.flare_xyzw[1] = math::Vector4f{2112.f, 1996.f, kZ, 8.f};
-  flare.flare_xyzw[2] = math::Vector4f{2112.f, 2100.f, kZ, 9.f};
-  flare.flare_xyzw[3] = math::Vector4f{1984.f, 2100.f, kZ, 10.f};
+  flare.flare_xyzw[0] = math::Vector4f{x0, 1996.f, kZ, 7.f};
+  flare.flare_xyzw[1] = math::Vector4f{x1, 1996.f, kZ, 8.f};
+  flare.flare_xyzw[2] = math::Vector4f{x1, 2100.f, kZ, 9.f};
+  flare.flare_xyzw[3] = math::Vector4f{x0, 2100.f, kZ, 10.f};
   flare.flare_draw_color = math::Vector4f{64.f, 0.f, 0.f, 128.f};
+  flare.offscreen_uv[0] = math::Vector2f{sample_x0, 0.f};
+  flare.offscreen_uv[1] = math::Vector2f{sample_x1, 416.f};
+  flare.second_clear_pos[0].z() = 8388608.f;
   flare.adgif.tex0_data = kFlareTbp | (1ull << 34);
   flare.adgif.tex0_addr = (u32)GsRegisterAddress::TEX0_1;
   flare.adgif.tex1_data = 1ull << 5;
@@ -60,6 +63,10 @@ SpriteGlowOutput make_center_flare() {
   return flare;
 }
 
+SpriteGlowOutput make_center_flare() {
+  return make_flare(1984.f, 2112.f, 0.f, 512.f);
+}
+
 void check_invalid_record(MetalGlowRenderer& renderer,
                           const SpriteGlowOutput& flare,
                           MetalSharedRenderState* state,
@@ -67,10 +74,12 @@ void check_invalid_record(MetalGlowRenderer& renderer,
                           const char* what) {
   const int draw_calls_before = context.draw_calls;
   const int triangles_before = context.triangles;
-  renderer.draw_force_visible(&flare, 1, state, context);
-  check(renderer.stats().sprites_submitted == 1 && renderer.stats().invalid_records == 1 &&
+  renderer.draw(&flare, 1, state, context);
+    check(renderer.stats().sprites_submitted == 1 && renderer.stats().invalid_records == 1 &&
             renderer.stats().sprites_drawn == 0 && renderer.stats().draw_calls == 0 &&
-            renderer.stats().triangles == 0 && renderer.stats().missing_textures == 0 &&
+            renderer.stats().triangles == 0 && renderer.stats().visibility_draw_calls == 0 &&
+            renderer.stats().visibility_triangles == 0 &&
+            renderer.stats().missing_textures == 0 &&
             context.draw_calls == draw_calls_before && context.triangles == triangles_before,
         what);
 }
@@ -144,7 +153,7 @@ int main() {
                                      width:kTargetSize
                                     height:kTargetSize
                                  mipmapped:NO];
-    depth_desc.usage = MTLTextureUsageRenderTarget;
+    depth_desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     depth_desc.storageMode = MTLStorageModePrivate;
     id<MTLTexture> depth = [device newTextureWithDescriptor:depth_desc];
     check(color != nil && depth != nil, "created offscreen color and depth targets");
@@ -157,11 +166,11 @@ int main() {
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     pass.depthAttachment.texture = depth;
     pass.depthAttachment.loadAction = MTLLoadActionClear;
-    pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+    pass.depthAttachment.storeAction = MTLStoreActionStore;
     pass.depthAttachment.clearDepth = 0.0;
     pass.stencilAttachment.texture = depth;
     pass.stencilAttachment.loadAction = MTLLoadActionClear;
-    pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+    pass.stencilAttachment.storeAction = MTLStoreActionStore;
     pass.stencilAttachment.clearStencil = 0;
 
     id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
@@ -179,6 +188,9 @@ int main() {
     context.stream = &stream;
     context.color_format = MTLPixelFormatBGRA8Unorm;
     context.depth_format = MTLPixelFormatDepth32Float_Stencil8;
+    context.cmds = commands;
+    context.game_color = color;
+    context.game_depth = depth;
 
     MetalSharedRenderState state;
     state.version = GameVersion::Jak2;
@@ -187,12 +199,14 @@ int main() {
     state.game_res_h = kTargetSize;
 
     MetalGlowRenderer renderer;
-    renderer.draw_force_visible(nullptr, 0, &state, context);
+    renderer.draw(nullptr, 0, &state, context);
     check(renderer.stats().sprites_submitted == 0 && renderer.stats().sprites_drawn == 0 &&
               renderer.stats().draw_calls == 0 && renderer.stats().triangles == 0 &&
+              renderer.stats().visibility_draw_calls == 0 &&
+              renderer.stats().visibility_triangles == 0 &&
               renderer.stats().missing_textures == 0 && renderer.stats().invalid_records == 0 &&
               context.draw_calls == 0 && context.triangles == 0,
-          "an empty force-visible batch encodes no draw and reports exact zero stats");
+          "an empty glow batch encodes no draw and reports exact zero stats");
 
     SpriteGlowOutput invalid = make_center_flare();
     invalid.adgif.tex0_addr = (u32)GsRegisterAddress::TEX0_2;
@@ -242,24 +256,28 @@ int main() {
     for (auto& position : missing.flare_xyzw) {
       position.x() += 1024.f;
     }
-    renderer.draw_force_visible(&missing, 1, &state, context);
+    renderer.draw(&missing, 1, &state, context);
     check(renderer.stats().sprites_submitted == 1 && renderer.stats().invalid_records == 0 &&
               renderer.stats().sprites_drawn == 1 && renderer.stats().draw_calls == 1 &&
-              renderer.stats().triangles == 2 && renderer.stats().missing_textures == 1 &&
-              context.draw_calls == 1 && context.triangles == 2 &&
-              pso_cache.pipeline_count() == 1 && sampler_cache.count() == 1,
-          "a valid missing TBP uses the placeholder and reports one missing texture draw");
+              renderer.stats().triangles == 2 && renderer.stats().visibility_draw_calls == 6 &&
+              renderer.stats().visibility_triangles == 12 &&
+              renderer.stats().missing_textures == 1 &&
+              context.draw_calls == 7 && context.triangles == 14 &&
+              pso_cache.pipeline_count() == 4 && sampler_cache.count() == 1,
+          "a valid missing TBP runs visibility, uses the placeholder, and reports one draw");
     context.draw_calls = 0;
     context.triangles = 0;
 
     const SpriteGlowOutput flare = make_center_flare();
-    renderer.draw_force_visible(&flare, 1, &state, context);
+    renderer.draw(&flare, 1, &state, context);
     check(renderer.stats().sprites_submitted == 1 && renderer.stats().sprites_drawn == 1 &&
               renderer.stats().draw_calls == 1 && renderer.stats().triangles == 2 &&
+              renderer.stats().visibility_draw_calls == 6 &&
+              renderer.stats().visibility_triangles == 12 &&
               renderer.stats().missing_textures == 0 && renderer.stats().invalid_records == 0 &&
-              context.draw_calls == 1 && context.triangles == 2,
-          "one force-visible flare encodes one two-triangle draw with an exact texture hit");
-    [encoder endEncoding];
+              context.draw_calls == 7 && context.triangles == 14,
+          "one visible flare encodes the probe chain and one exact-texture final draw");
+    [context.enc endEncoding];
 
 #if TARGET_OS_OSX
     id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
@@ -270,7 +288,7 @@ int main() {
     [commands commit];
     [commands waitUntilCompleted];
     check(commands.status == MTLCommandBufferStatusCompleted,
-          "the glow flare command buffer completed");
+          "the unoccluded glow command buffer completed");
     if (commands.status != MTLCommandBufferStatusCompleted && commands.error) {
       std::printf("Metal command-buffer error: %s\n",
                   commands.error.localizedDescription.UTF8String);
@@ -297,11 +315,70 @@ int main() {
       }
     }
     check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, 0, 0, 255, 255),
-          "readback contains the exact force-visible flare color at target center");
+          "an unoccluded opaque flare has the exact final color at target center");
     check(is_bgra(pixels, 2, 2, 0, 0, 0, 0),
           "readback retains the exact clear color outside the flare");
     check(red_pixels > 100 && clear_pixels > 100 && unexpected_pixels == 0,
-          "readback contains only the synthetic final flare and unchanged outside pixels");
+          "unoccluded readback contains only the flare and unchanged outside pixels");
+
+    stream.reset();
+    id<MTLCommandBuffer> occluded_commands = [queue commandBuffer];
+    auto* occluded_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    occluded_pass.colorAttachments[0].texture = color;
+    occluded_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    occluded_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    occluded_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    occluded_pass.depthAttachment.texture = depth;
+    occluded_pass.depthAttachment.loadAction = MTLLoadActionClear;
+    occluded_pass.depthAttachment.storeAction = MTLStoreActionStore;
+    occluded_pass.depthAttachment.clearDepth = 1.0;
+    occluded_pass.stencilAttachment.texture = depth;
+    occluded_pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    occluded_pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    occluded_pass.stencilAttachment.clearStencil = 0;
+    context.enc = [occluded_commands renderCommandEncoderWithDescriptor:occluded_pass];
+    context.cmds = occluded_commands;
+    context.draw_calls = 0;
+    context.triangles = 0;
+
+    renderer.draw(&flare, 1, &state, context);
+    check(renderer.stats().sprites_submitted == 1 && renderer.stats().sprites_drawn == 1 &&
+              renderer.stats().draw_calls == 1 && renderer.stats().triangles == 2 &&
+              renderer.stats().visibility_draw_calls == 6 &&
+              renderer.stats().visibility_triangles == 12 &&
+              renderer.stats().missing_textures == 0 && renderer.stats().invalid_records == 0 &&
+              context.draw_calls == 7 && context.triangles == 14,
+          "one occluded flare still encodes the source-exact visibility and final passes");
+    [context.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> occluded_blit = [occluded_commands blitCommandEncoder];
+    [occluded_blit synchronizeResource:color];
+    [occluded_blit endEncoding];
+#endif
+    [occluded_commands commit];
+    [occluded_commands waitUntilCompleted];
+    check(occluded_commands.status == MTLCommandBufferStatusCompleted,
+          "the occluded glow command buffer completed");
+    if (occluded_commands.status != MTLCommandBufferStatusCompleted && occluded_commands.error) {
+      std::printf("Metal command-buffer error: %s\n",
+                  occluded_commands.error.localizedDescription.UTF8String);
+    }
+
+    [color getBytes:pixels.data()
+        bytesPerRow:kTargetSize * 4
+         fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+        mipmapLevel:0];
+    int non_black_occluded_pixels = 0;
+    for (int y = 0; y < kTargetSize; y++) {
+      for (int x = 0; x < kTargetSize; x++) {
+        const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
+        if (pixels[offset] != 0 || pixels[offset + 1] != 0 || pixels[offset + 2] != 0) {
+          non_black_occluded_pixels++;
+        }
+      }
+    }
+    check(non_black_occluded_pixels == 0,
+          "a fully occluded opaque flare contributes no visible color to the final target");
 
     flare_texture.detach_pool();
     metal_texture_release(placeholder_handle);
@@ -310,8 +387,8 @@ int main() {
       std::printf("FAIL: %d Jak II final glow flare checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak II force-visible final glow flare submitted and read back from Metal "
-                "offscreen\n");
+    std::printf("PASS: Jak II Metal glow visibility rejects occluded flares and preserves visible "
+                "flares\n");
     return 0;
   }
 }

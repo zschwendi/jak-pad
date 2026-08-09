@@ -437,7 +437,7 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
   std::printf(
       "sprites: 2d=%llu 3d=%llu hud=%llu distort=%llu normal-submitted=%llu "
       "glow-marked=%llu glow=(parsed=%llu accepted=%llu rejected=%llu invalid=%llu "
-      "force-visible-drawn/submitted=%llu/%llu draws=%llu tris=%llu missing=%llu skipped=%llu) "
+      "visibility-final-drawn/submitted=%llu/%llu draws=%llu tris=%llu missing=%llu skipped=%llu) "
       "draws=%llu tris=%llu "
       "missing-textures=%llu unsupported-bytes=%llu; direct: sky=%llu/%llu "
       "screen-filter=%llu/%llu debug-no-zbuf2=%llu/%llu\n",
@@ -818,7 +818,7 @@ int main(int argc, char** argv) {
             bounded_sprite_upload = metal.last_sprite_texture_upload.pages[i] != 0 &&
                                     metal.last_sprite_texture_upload.modes[i] == -1;
           }
-          const bool exact_force_visible_glow_frame =
+          const bool exact_visibility_glow_frame =
               metal.last_sprites_2d == 64 && metal.last_sprites_3d == 0 &&
               metal.last_sprites_hud == 0 && metal.last_sprites_distort == 0 &&
               metal.last_sprite_normal_submitted == 60 && metal.last_sprite_glow_marked == 4 &&
@@ -830,8 +830,8 @@ int main(int argc, char** argv) {
               metal.last_sprite_glow_force_visible_draws == 4 &&
               metal.last_sprite_glow_force_visible_triangles == 8 &&
               metal.last_sprite_glow_force_visible_missing_textures == 0 &&
-              metal.last_sprite_glow_skipped == 0 && metal.last_sprite_draws == 6 &&
-              metal.last_sprite_triangles == 128 &&
+              metal.last_sprite_glow_skipped == 0 && metal.last_sprite_draws == 12 &&
+              metal.last_sprite_triangles == 176 &&
               metal.last_sprite_missing_textures == 0;
           const bool exact_draw_attribution =
               metal.draws == metal.last_sky_draw_draws + metal.last_screen_filter_draws +
@@ -840,7 +840,7 @@ int main(int argc, char** argv) {
                   metal.last_sky_draw_triangles + metal.last_screen_filter_triangles +
                       metal.last_debug_no_zbuf2_triangles + metal.last_sprite_triangles;
           saw_attributed_title_sprite_frame |=
-              exact_sky_frame && bounded_sprite_upload && exact_force_visible_glow_frame &&
+              exact_sky_frame && bounded_sprite_upload && exact_visibility_glow_frame &&
               exact_draw_attribution && frame.hash != baseline_hash &&
               frame.non_black_pixels > baseline_non_black_pixels;
         }

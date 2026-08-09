@@ -38,7 +38,10 @@ enum class MetalShaderId : u16 {
   SHADOW = 16,          // shadow volumes (shadow.{vert,frag})
   ETIE = 17,            // TIE envmap second draw (etie.{vert,frag})
   SPRITE_DISTORT = 18,  // sprite distorter heat shimmer (sprite_distort.{vert,frag})
-  SPRITE_GLOW_DRAW = 19,  // force-visible Jak 2 final glow flare (sprite_glow.metal)
+  SPRITE_GLOW_DEPTH_COPY = 19,
+  SPRITE_GLOW_PROBE = 20,
+  SPRITE_GLOW_DOWNSAMPLE = 21,
+  SPRITE_GLOW_DRAW = 22,
   COUNT,
 };
 
