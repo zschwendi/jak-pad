@@ -21,6 +21,8 @@
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_executor.h"
+#include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_executor.h"
+#include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
@@ -41,6 +43,7 @@ struct goal_jak2_metal_host {
   MetalRenderer renderer;
   std::unique_ptr<metal_renderer::Jak2Bucket4MixedExecutor> bucket4_mixed_executor;
   std::unique_ptr<metal_renderer::Jak2Opcode27SkullGemExecutor> skull_gem_executor;
+  std::unique_ptr<metal_renderer::Jak2RawImageUploadExecutor> raw_image_upload_executor;
   FixedChunkDmaCopier copier{EE_MAIN_MEM_SIZE};
   goal_gfx_host callbacks = {};
   goal_jak2_metal_host_metrics metrics = {};
@@ -222,6 +225,12 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_progress_textured_draws = stats.jak2_progress_textured_draws;
   host->metrics.last_progress_missing_texture_draws =
       stats.jak2_progress_missing_texture_draws;
+  host->metrics.last_debug_no_zbuf1_draws = stats.jak2_debug_no_zbuf1_draws;
+  host->metrics.last_debug_no_zbuf1_triangles = stats.jak2_debug_no_zbuf1_triangles;
+  host->metrics.last_debug_no_zbuf1_textured_draws =
+      stats.jak2_debug_no_zbuf1_textured_draws;
+  host->metrics.last_debug_no_zbuf1_missing_texture_draws =
+      stats.jak2_debug_no_zbuf1_missing_texture_draws;
   host->metrics.last_debug_no_zbuf2_draws = stats.jak2_debug_no_zbuf2_draws;
   host->metrics.last_debug_no_zbuf2_triangles = stats.jak2_debug_no_zbuf2_triangles;
   host->metrics.last_sprites_2d = stats.sprites_2d;
@@ -498,6 +507,7 @@ using Jak2ShrubTextureUploadPlans =
 
 struct Jak2TextureUploadDispatch {
   goal_jak2_metal_host* host = nullptr;
+  const metal_renderer::Jak2RawImageUploadPlan* raw_image_plan = nullptr;
   const Jak2TfragTextureUploadPlans* tfrag_plans = nullptr;
   const Jak2ShrubTextureUploadPlans* shrub_plans = nullptr;
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
@@ -509,6 +519,24 @@ struct Jak2TextureUploadDispatch {
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  if (bucket_id == metal_renderer::kJak2RawImageUploadBucket) {
+    if (!dispatch->raw_image_plan || !dispatch->raw_image_plan->present) {
+      return;
+    }
+    *dispatch->host_texture_mutated = true;
+    if (!dispatch->host->raw_image_upload_executor ||
+        !dispatch->host->raw_image_upload_executor->execute(*dispatch->raw_image_plan)) {
+      const char* detail = dispatch->host->raw_image_upload_executor
+                               ? dispatch->host->raw_image_upload_executor->last_error()
+                               : "executor is unavailable";
+      throw std::runtime_error(std::string("Jak 2 raw-image publication failed: ") + detail);
+    }
+    const auto& stats = dispatch->host->raw_image_upload_executor->stats();
+    dispatch->host->metrics.raw_image_publications = stats.publications;
+    dispatch->host->metrics.raw_image_texture = stats.texture_handle;
+    dispatch->host->metrics.raw_image_pixels = stats.pixel_count;
+    return;
+  }
   if (bucket_id == metal_renderer::kJak2MapTextureUploadBucket) {
     if (!dispatch->map_plan || !dispatch->map_plan->present) {
       return;
@@ -711,6 +739,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, error.c_str());
       return;
     }
+    const auto raw_image_plan = metal_renderer::plan_jak2_raw_image_upload(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+    if (!raw_image_plan) {
+      record_failure(host, "Jak 2 bucket 318 raw-image upload plan rejected malformed DMA");
+      return;
+    }
     Jak2TfragTextureUploadPlans tfrag_texture_plans;
     for (std::size_t i = 0; i < metal_renderer::kJak2NormalTfragTextureUploadBuckets.size();
          ++i) {
@@ -829,6 +864,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
 
     Jak2TextureUploadDispatch texture_dispatch{
         host,
+        &*raw_image_plan,
         &tfrag_texture_plans,
         &shrub_texture_plans,
         &*common_tfrag_texture_plan,
@@ -1048,6 +1084,9 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
       host->renderer.device(), host->renderer.queue(), &host->textures);
   host->skull_gem_executor =
       std::make_unique<metal_renderer::Jak2Opcode27SkullGemExecutor>(
+          host->renderer.device(), host->renderer.queue(), &host->textures);
+  host->raw_image_upload_executor =
+      std::make_unique<metal_renderer::Jak2RawImageUploadExecutor>(
           host->renderer.device(), host->renderer.queue(), &host->textures);
   host->callbacks.send_chain = send_chain;
   host->callbacks.vsync = vsync;
@@ -1277,6 +1316,9 @@ void goal_jak2_metal_host_destroy(goal_jak2_metal_host* host) {
   }
   if (host->skull_gem_executor) {
     host->skull_gem_executor->detach_pool();
+  }
+  if (host->raw_image_upload_executor) {
+    host->raw_image_upload_executor->detach_pool();
   }
   if (host->placeholder_handle) {
     metal_texture_release(host->placeholder_handle);

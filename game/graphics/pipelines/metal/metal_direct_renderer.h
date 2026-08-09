@@ -269,8 +269,8 @@ class MetalDirectRenderer : public MetalBucketRenderer {
 
 /*!
  * Jak II TextureUploadHandler counterpart for the source buckets constructed with add_direct.
- * The host callback performs the already-validated ordinary uploads at this bucket boundary;
- * exact PC_PORT descriptors are then omitted while Direct payloads retain their source order.
+ * The host callback performs the already-validated uploads at this bucket boundary; exact
+ * PC_PORT records are then omitted while Direct payloads retain their source order.
  */
 class MetalHostTextureUploadDirectRenderer : public MetalDirectRenderer {
  public:

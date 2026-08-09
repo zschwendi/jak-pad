@@ -78,8 +78,8 @@ void MetalHostTextureUploadDirectRenderer::render(DmaFollower& dma,
     if (!data.size_bytes) {
       continue;
     }
-    if (data.size_bytes == 16 && data.vifcode0().kind == VifCode::Kind::PC_PORT &&
-        data.vif1() == 3) {
+    if (data.vifcode0().kind == VifCode::Kind::PC_PORT) {
+      ASSERT(data.vifcode1().kind == VifCode::Kind::NOP);
       continue;
     }
     render_vif(data.vif0(), data.vif1(), data.data, data.size_bytes, render_state, ctx);

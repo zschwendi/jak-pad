@@ -416,6 +416,11 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_jak2_bucket_table_test.cpp)
     add_test(NAME jak2-metal-bucket-table-test COMMAND jak2-metal-bucket-table-test)
 
+    add_executable(jak2-raw-image-upload-plan-test
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_plan_test.cpp)
+    add_test(NAME jak2-raw-image-upload-plan-test COMMAND jak2-raw-image-upload-plan-test)
+
     add_executable(jak2-metal-opcode27-skull-gem-cpu-test
             graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_cpu.cpp
             graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_cpu_test.cpp)
@@ -1222,6 +1227,7 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
             graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp
             graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
@@ -1253,6 +1259,17 @@ if(APPLE)
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_link_libraries(jak2-metal-host-bridge-test goalpad-jak2-metal-host)
         add_test(NAME jak2-metal-host-bridge-test COMMAND jak2-metal-host-bridge-test)
+
+        add_executable(jak2-raw-image-upload-readback-test
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_readback_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_raw_image_upload_readback_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-raw-image-upload-readback-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-raw-image-upload-readback-test
+            COMMAND jak2-raw-image-upload-readback-test)
 
         add_executable(jak2-bucket4-texture-upload-capture-test
             graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp

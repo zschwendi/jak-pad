@@ -195,6 +195,10 @@ struct ChainStats {
   int jak2_progress_triangles = 0;
   int jak2_progress_textured_draws = 0;
   int jak2_progress_missing_texture_draws = 0;
+  int jak2_debug_no_zbuf1_draws = 0;
+  int jak2_debug_no_zbuf1_triangles = 0;
+  int jak2_debug_no_zbuf1_textured_draws = 0;
+  int jak2_debug_no_zbuf1_missing_texture_draws = 0;
   int jak2_debug_no_zbuf2_draws = 0;
   int jak2_debug_no_zbuf2_triangles = 0;
   int tex_uploads = 0;

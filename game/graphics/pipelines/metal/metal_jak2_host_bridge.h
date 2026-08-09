@@ -125,6 +125,9 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t bucket4_fog_texture;
   uint64_t sprite_texture_uploads;
   uint64_t map_texture_uploads;
+  uint64_t raw_image_publications;
+  uint64_t raw_image_texture;
+  uint64_t raw_image_pixels;
   uint64_t common_tfrag_ordinary_uploads;
   uint64_t common_tfrag_skull_gem_preparations;
   uint64_t common_tfrag_skull_gem_publications;
@@ -183,6 +186,10 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_progress_triangles;
   uint64_t last_progress_textured_draws;
   uint64_t last_progress_missing_texture_draws;
+  uint64_t last_debug_no_zbuf1_draws;
+  uint64_t last_debug_no_zbuf1_triangles;
+  uint64_t last_debug_no_zbuf1_textured_draws;
+  uint64_t last_debug_no_zbuf1_missing_texture_draws;
   uint64_t last_debug_no_zbuf2_draws;
   uint64_t last_debug_no_zbuf2_triangles;
   uint64_t last_sprites_2d;
