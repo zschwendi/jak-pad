@@ -66,15 +66,24 @@ std::vector<u8> make_blit_chain(metal_renderer::Jak2BlitDisplayCommand command) 
 
   constexpr u32 kPayloadOffset = 64;
   put_tag(&chain, 0, DmaTag::Kind::NEXT, 0, kPayloadOffset);
-  if (command == metal_renderer::Jak2BlitDisplayCommand::Snapshot) {
-    put_tag(&chain, kPayloadOffset, DmaTag::Kind::CNT, 1, 0, vif(VifCode::Kind::PC_PORT, 0x10),
+  u32 cursor = kPayloadOffset;
+  if (command == metal_renderer::Jak2BlitDisplayCommand::Snapshot ||
+      command == metal_renderer::Jak2BlitDisplayCommand::SnapshotThenCopyBack) {
+    put_tag(&chain, cursor, DmaTag::Kind::CNT, 1, 0, vif(VifCode::Kind::PC_PORT, 0x10),
             vif(VifCode::Kind::PC_PORT, metal_renderer::kJak2BlitDisplayTbp));
-    put_tag(&chain, kPayloadOffset + 32, DmaTag::Kind::NEXT, 0, 16);
-  } else {
-    put_tag(&chain, kPayloadOffset, DmaTag::Kind::CNT, 0, 0, vif(VifCode::Kind::PC_PORT, 0x11),
-            vif(VifCode::Kind::PC_PORT));
-    put_tag(&chain, kPayloadOffset + 16, DmaTag::Kind::NEXT, 0, 16);
+    cursor += 32;
+    if (command == metal_renderer::Jak2BlitDisplayCommand::SnapshotThenCopyBack) {
+      put_tag(&chain, cursor, DmaTag::Kind::NEXT, 0, cursor + 16);
+      cursor += 16;
+    }
   }
+  if (command == metal_renderer::Jak2BlitDisplayCommand::CopyBack ||
+      command == metal_renderer::Jak2BlitDisplayCommand::SnapshotThenCopyBack) {
+    put_tag(&chain, cursor, DmaTag::Kind::CNT, 0, 0, vif(VifCode::Kind::PC_PORT, 0x11),
+            vif(VifCode::Kind::PC_PORT));
+    cursor += 16;
+  }
+  put_tag(&chain, cursor, DmaTag::Kind::NEXT, 0, 16);
   put_tag(&chain, 16, DmaTag::Kind::END);
   return chain;
 }
@@ -190,8 +199,15 @@ std::vector<u8> make_renderer_chain(metal_renderer::Jak2BlitDisplayCommand comma
   constexpr std::size_t kBucketCount = static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS);
   constexpr std::size_t kBucketBytes = (kBucketCount + 1) * 16;
   const std::size_t blit_offset = kBucketBytes;
-  const std::size_t blit_bytes =
-      command == metal_renderer::Jak2BlitDisplayCommand::Snapshot ? 48 : 0;
+  const bool snapshot = command == metal_renderer::Jak2BlitDisplayCommand::Snapshot ||
+                        command == metal_renderer::Jak2BlitDisplayCommand::SnapshotThenCopyBack;
+  const bool copy_back = command == metal_renderer::Jak2BlitDisplayCommand::CopyBack ||
+                         command == metal_renderer::Jak2BlitDisplayCommand::SnapshotThenCopyBack;
+  const bool linked_commands = snapshot && copy_back;
+  const std::size_t blit_bytes = snapshot || copy_back
+                                     ? (snapshot ? 32 : 0) + (linked_commands ? 16 : 0) +
+                                           (copy_back ? 16 : 0) + 16
+                                     : 0;
   const std::size_t sky_offset = blit_offset + blit_bytes;
   std::vector<u8> chain(sky_offset + 16 + sky_payload.size() + 16, 0);
   for (std::size_t bucket = 0; bucket < kBucketCount; ++bucket) {
@@ -199,12 +215,26 @@ std::vector<u8> make_renderer_chain(metal_renderer::Jak2BlitDisplayCommand comma
   }
   put_tag(&chain, static_cast<u32>(kBucketCount * 16), DmaTag::Kind::END);
 
-  if (command == metal_renderer::Jak2BlitDisplayCommand::Snapshot) {
+  if (snapshot || copy_back) {
     put_tag(&chain, kBlitBucket * 16, DmaTag::Kind::NEXT, 0, static_cast<u32>(blit_offset));
-    put_tag(&chain, static_cast<u32>(blit_offset), DmaTag::Kind::CNT, 1, 0,
-            vif(VifCode::Kind::PC_PORT, 0x10),
-            vif(VifCode::Kind::PC_PORT, metal_renderer::kJak2BlitDisplayTbp));
-    put_tag(&chain, static_cast<u32>(blit_offset + 32), DmaTag::Kind::NEXT, 0,
+    std::size_t cursor = blit_offset;
+    if (snapshot) {
+      put_tag(&chain, static_cast<u32>(cursor), DmaTag::Kind::CNT, 1, 0,
+              vif(VifCode::Kind::PC_PORT, 0x10),
+              vif(VifCode::Kind::PC_PORT, metal_renderer::kJak2BlitDisplayTbp));
+      cursor += 32;
+      if (linked_commands) {
+        put_tag(&chain, static_cast<u32>(cursor), DmaTag::Kind::NEXT, 0,
+                static_cast<u32>(cursor + 16));
+        cursor += 16;
+      }
+    }
+    if (copy_back) {
+      put_tag(&chain, static_cast<u32>(cursor), DmaTag::Kind::CNT, 0, 0,
+              vif(VifCode::Kind::PC_PORT, 0x11), vif(VifCode::Kind::PC_PORT));
+      cursor += 16;
+    }
+    put_tag(&chain, static_cast<u32>(cursor), DmaTag::Kind::NEXT, 0,
             (kBlitBucket + 1) * 16);
   }
 
@@ -424,6 +454,23 @@ void test_renderer_fallback_lifecycle(id<MTLDevice> device) {
               stats.jak2_blit_display_texture_lookup_hit &&
               !stats.jak2_blit_display_used_placeholder,
           "TBP 0x3300 derives from frame A, never the intervening validation scene");
+
+    const auto first_menu_chain = make_renderer_chain(
+        metal_renderer::Jak2BlitDisplayCommand::SnapshotThenCopyBack, make_copy_back_decoy());
+    renderer.render_chain_frame(options, commit_layer, first_menu_chain.data(), 0,
+                                first_menu_chain.size());
+    check(renderer.wait_for_last_chain_frame(5.0),
+          "committed the source-ordered first-menu-frame command pair");
+    metal_renderer::FramePixels restored_menu_entry;
+    check(renderer.read_game_frame(&restored_menu_entry),
+          "read back the first-menu-frame copy-back result");
+    const auto first_menu_stats = renderer.chain_stats();
+    check(first_menu_stats.jak2_blit_display_plan_valid &&
+              first_menu_stats.jak2_blit_display_snapshot_requested &&
+              first_menu_stats.jak2_blit_display_copy_back_requested &&
+              first_menu_stats.jak2_blit_display_copy_back_performed &&
+              restored_menu_entry.rgba == frame_b.rgba,
+          "snapshot then copy-back restores the same-frame capture over later bucket draws");
   }
 
   metal_texture_release(placeholder);

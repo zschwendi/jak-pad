@@ -37,6 +37,24 @@ int main() {
   check(copy_back.plan() && copy_back.plan().command == Jak2BlitDisplayCommand::CopyBack,
         "the exact countdown PC_PORT pair plans bounded copy-back");
 
+  Jak2BlitDisplayPlanner first_menu_frame;
+  first_menu_frame.observe(vif(pc_port, 0x10), vif(pc_port, kJak2BlitDisplayTbp),
+                           zero_qword.data(), zero_qword.size());
+  first_menu_frame.observe(0, 0, nullptr, 0);
+  first_menu_frame.observe(vif(pc_port, 0x11), vif(pc_port), nullptr, 0);
+  check(first_menu_frame.plan() &&
+            first_menu_frame.plan().command == Jak2BlitDisplayCommand::SnapshotThenCopyBack &&
+            first_menu_frame.plan().transfer_count == 3,
+        "the first menu frame plans its linked snapshot then copy-back chains");
+
+  Jak2BlitDisplayPlanner reversed_menu_frame;
+  reversed_menu_frame.observe(vif(pc_port, 0x11), vif(pc_port), nullptr, 0);
+  reversed_menu_frame.observe(vif(pc_port, 0x10), vif(pc_port, kJak2BlitDisplayTbp),
+                              zero_qword.data(), zero_qword.size());
+  check(!reversed_menu_frame.plan() &&
+            reversed_menu_frame.plan().error == Jak2BlitDisplayPlanError::DuplicateCommand,
+        "copy-back then snapshot remains outside the source-emitted sequence");
+
   auto nonzero_qword = zero_qword;
   nonzero_qword[7] = 1;
   Jak2BlitDisplayPlanner nonzero_snapshot;
@@ -56,7 +74,7 @@ int main() {
   duplicate.observe(vif(pc_port, 0x11), vif(pc_port), nullptr, 0);
   duplicate.observe(vif(pc_port, 0x11), vif(pc_port), nullptr, 0);
   check(!duplicate.plan() && duplicate.plan().error == Jak2BlitDisplayPlanError::DuplicateCommand,
-        "one bucket cannot request multiple framebuffer operations");
+        "duplicate copy-back commands remain rejected");
 
   Jak2BlitDisplayPlanner unsupported;
   unsupported.observe(vif(pc_port, 0x13), 0, zero_qword.data(), zero_qword.size());

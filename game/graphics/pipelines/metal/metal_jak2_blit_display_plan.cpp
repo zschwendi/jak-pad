@@ -42,6 +42,13 @@ void Jak2BlitDisplayPlanner::observe(u32 vif0_raw,
     return;
   }
   if (m_plan.command != Jak2BlitDisplayCommand::None) {
+    // The first menu frame emits fx-copy-buf, sets count-down to 3, then
+    // appends the count-down copy-back command to this same bucket.
+    if (m_plan.command == Jak2BlitDisplayCommand::Snapshot && vif0.immediate == 0x11 &&
+        vif1.kind == VifCode::Kind::PC_PORT && vif1.immediate == 0 && payload_size == 0) {
+      m_plan.command = Jak2BlitDisplayCommand::SnapshotThenCopyBack;
+      return;
+    }
     reject(Jak2BlitDisplayPlanError::DuplicateCommand);
     return;
   }

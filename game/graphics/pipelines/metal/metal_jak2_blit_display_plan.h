@@ -14,6 +14,7 @@ enum class Jak2BlitDisplayCommand : u8 {
   None,
   Snapshot,
   CopyBack,
+  SnapshotThenCopyBack,
 };
 
 enum class Jak2BlitDisplayPlanError : u8 {

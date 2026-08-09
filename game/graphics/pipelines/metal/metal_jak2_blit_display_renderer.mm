@@ -156,9 +156,11 @@ bool Jak2BlitDisplayExecutor::execute(const Jak2BlitDisplayPlan& plan,
     return false;
   }
 
-  const bool snapshot = plan.command == Jak2BlitDisplayCommand::Snapshot;
+  const bool snapshot = plan.command == Jak2BlitDisplayCommand::Snapshot ||
+                        plan.command == Jak2BlitDisplayCommand::SnapshotThenCopyBack;
   m_stats.snapshot_requested = snapshot;
-  m_stats.copy_back_requested = plan.command == Jak2BlitDisplayCommand::CopyBack;
+  m_stats.copy_back_requested = plan.command == Jak2BlitDisplayCommand::CopyBack ||
+                                plan.command == Jak2BlitDisplayCommand::SnapshotThenCopyBack;
   if (snapshot && !ensure_snapshot(render_state, ctx)) {
     return false;
   }
