@@ -731,7 +731,9 @@ void test_multi_distorter_spatial_sampling_and_alpha() {
     ctx.depth_format = MTLPixelFormatDepth32Float_Stencil8;
     ctx.game_color = color;
     ctx.game_depth = depth;
+    ctx.game_viewport = {0.0, 0.0, kDistortTargetWidth, kDistortTargetHeight, 0.0, 1.0};
     [ctx.enc setCullMode:MTLCullModeNone];
+    [ctx.enc setViewport:ctx.game_viewport];
 
     MetalSharedRenderState state;
     state.version = GameVersion::Jak2;
