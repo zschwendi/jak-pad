@@ -150,6 +150,18 @@ void make_debug_no_zbuf2_chain() {
   make_direct_chain(kDebugNoZbuf2Bucket, kDebugNoZbuf2PayloadOffset);
 }
 
+void put_direct_texflush_payload(u32 offset, u16 qwc) {
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  const u64 gif_tag = static_cast<u64>(qwc - 1) | (1ull << 15) | (1ull << 60);
+  const u64 ad = static_cast<u64>(GifTag::RegisterDescriptor::AD);
+  std::memcpy(ee + offset, &gif_tag, sizeof(gif_tag));
+  std::memcpy(ee + offset + 8, &ad, sizeof(ad));
+  for (u16 i = 1; i < qwc; ++i) {
+    const u64 texflush = static_cast<u64>(GsRegisterAddress::TEXFLUSH);
+    std::memcpy(ee + offset + i * 16 + 8, &texflush, sizeof(texflush));
+  }
+}
+
 void make_sprite_texture_upload_chain(u32 upload_count = 1, s64 mode = -1) {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
@@ -199,8 +211,7 @@ void put_map_texture_upload(u32 upload_count = 1, s64 mode = -1) {
                                 ? kMapTextureUploadTailOffset
                                 : group_offset + 0x100;
     put_tag(group_offset, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
-    const u64 eop = 1ull << 15;
-    std::memcpy(ee + group_offset + 16, &eop, sizeof(eop));
+    put_direct_texflush_payload(group_offset + 16, 2);
     const u32 descriptor_offset = group_offset + 48;
     put_tag(descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
     const u64 page_offset = kTexturePageOffset + i * kTexturePageStride;
@@ -211,8 +222,7 @@ void put_map_texture_upload(u32 upload_count = 1, s64 mode = -1) {
 
   put_tag(kMapTextureUploadTailOffset, DmaTag::Kind::CNT, 10, 0, kFlusha,
           kDirect | 10);
-  const u64 eop = 1ull << 15;
-  std::memcpy(ee + kMapTextureUploadTailOffset + 16, &eop, sizeof(eop));
+  put_direct_texflush_payload(kMapTextureUploadTailOffset + 16, 10);
   put_tag(kMapTextureUploadTailOffset + 176, DmaTag::Kind::NEXT, 0,
           bucket_offset + 16);
 }
@@ -978,7 +988,12 @@ int main() {
             map_upload_metrics.last_map_texture_upload.valid == 0 &&
             map_upload_metrics.last_copied_bytes == map_copied_bytes && map_upload_error &&
             std::strstr(map_upload_error,
-                        "bucket 319 texture-upload plan rejected malformed DMA"),
+                        "bucket 319 texture-upload plan rejected malformed DMA") &&
+            std::strstr(map_upload_error, "stage=ordinary-contents") &&
+            std::strstr(map_upload_error, "transfers=3 rejected=2") &&
+            std::strstr(map_upload_error,
+                        "failed=CNT:q1:b16:v0=0x08000000:v1=0x00000003:spr0") &&
+            std::strstr(map_upload_error, "trace=0@"),
         "malformed bucket 319 fails before upload execution, copying, or dispatch");
 
   make_map_texture_upload_and_progress_chain();

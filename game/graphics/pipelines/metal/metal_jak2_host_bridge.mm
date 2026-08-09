@@ -31,6 +31,8 @@
 #include "game/graphics/texture/TexturePool.h"
 #include "game/runtime.h"
 
+#include "fmt/format.h"
+
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -338,6 +340,62 @@ void copy_map_texture_upload_metrics(
     out.pages[i] = plan->uploads[i].page_offset;
     out.modes[i] = plan->uploads[i].mode;
   }
+}
+
+const char* dma_tag_kind_name(u8 kind) {
+  switch (static_cast<DmaTag::Kind>(kind)) {
+    case DmaTag::Kind::REFE:
+      return "REFE";
+    case DmaTag::Kind::CNT:
+      return "CNT";
+    case DmaTag::Kind::NEXT:
+      return "NEXT";
+    case DmaTag::Kind::REF:
+      return "REF";
+    case DmaTag::Kind::REFS:
+      return "REFS";
+    case DmaTag::Kind::CALL:
+      return "CALL";
+    case DmaTag::Kind::RET:
+      return "RET";
+    case DmaTag::Kind::END:
+      return "END";
+  }
+  return "UNKNOWN";
+}
+
+std::string map_texture_upload_rejection_message(
+    const metal_renderer::Jak2MapTextureUploadDiagnostic& diagnostic) {
+  std::string message = fmt::format(
+      "Jak 2 bucket 319 texture-upload plan rejected malformed DMA "
+      "[stage={} offset=0x{:08x} transfers={} rejected=",
+      metal_renderer::jak2_map_texture_upload_rejection_stage_name(diagnostic.rejection_stage),
+      diagnostic.failure_offset, diagnostic.transfer_count);
+  if (diagnostic.rejected_transfer == metal_renderer::kJak2MapTextureUploadNoRejectedTransfer) {
+    message += "none";
+  } else {
+    message += std::to_string(diagnostic.rejected_transfer);
+  }
+  if (diagnostic.rejected_transfer < diagnostic.transfer_count) {
+    const auto& transfer = diagnostic.transfers[diagnostic.rejected_transfer];
+    message += fmt::format(" failed={}:q{}:b{}:v0=0x{:08x}:v1=0x{:08x}:spr{}",
+                           dma_tag_kind_name(transfer.tag_kind), transfer.qwc,
+                           transfer.payload_bytes, transfer.vif0, transfer.vif1,
+                           static_cast<u32>(transfer.spr));
+  }
+  message += " trace=";
+  for (std::size_t i = 0; i < diagnostic.transfer_count; ++i) {
+    const auto& transfer = diagnostic.transfers[i];
+    if (i) {
+      message += ",";
+    }
+    message += fmt::format("{}@{:08x}:{}:q{}:b{}:v0={:08x}:v1={:08x}:spr{}", i,
+                           transfer.tag_offset, dma_tag_kind_name(transfer.tag_kind), transfer.qwc,
+                           transfer.payload_bytes, transfer.vif0, transfer.vif1,
+                           static_cast<u32>(transfer.spr));
+  }
+  message += "]";
+  return message;
 }
 
 void record_texture_upload_metrics(
@@ -732,12 +790,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 bucket 312 texture-upload plan rejected malformed DMA");
       return;
     }
+    metal_renderer::Jak2MapTextureUploadDiagnostic map_texture_diagnostic;
     const auto map_texture_plan = metal_renderer::plan_jak2_map_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
-        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &map_texture_diagnostic);
     copy_map_texture_upload_metrics(host, map_texture_plan);
     if (!map_texture_plan) {
-      record_failure(host, "Jak 2 bucket 319 texture-upload plan rejected malformed DMA");
+      const std::string message = map_texture_upload_rejection_message(map_texture_diagnostic);
+      record_failure(host, message.c_str());
       return;
     }
     if (!execute_bucket4_plan(host, *bucket4_plan, static_cast<const u8*>(ee_base))) {

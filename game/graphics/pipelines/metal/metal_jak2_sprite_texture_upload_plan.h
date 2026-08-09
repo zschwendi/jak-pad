@@ -16,6 +16,9 @@ constexpr u32 kJak2MapTextureUploadBucket = 319;
 constexpr std::size_t kJak2MapTextureUploadMaximumGroups = 8;
 constexpr std::size_t kJak2GroupedTextureUploadMaximumGroups =
     kJak2MapTextureUploadMaximumGroups;
+constexpr std::size_t kJak2MapTextureUploadDiagnosticMaximumTransfers =
+    3 * kJak2GroupedTextureUploadMaximumGroups + 3;
+constexpr u32 kJak2MapTextureUploadNoRejectedTransfer = 0xffffffff;
 
 struct Jak2GroupedTextureUploadPlan {
   std::array<Jak2Bucket4OrdinaryUploadPlan, kJak2GroupedTextureUploadMaximumGroups> uploads = {};
@@ -25,6 +28,45 @@ struct Jak2GroupedTextureUploadPlan {
 
 using Jak2SpriteTextureUploadPlan = Jak2GroupedTextureUploadPlan;
 using Jak2MapTextureUploadPlan = Jak2GroupedTextureUploadPlan;
+
+enum class Jak2MapTextureUploadRejectionStage : u8 {
+  None,
+  BucketRange,
+  BucketEntry,
+  InitialBoundary,
+  GroupOrTail,
+  GroupLimit,
+  OrdinaryDescriptor,
+  OrdinaryContents,
+  GroupBoundary,
+  Tail,
+  FinalBoundary,
+  BucketEnd,
+};
+
+struct Jak2MapTextureUploadTransferDiagnostic {
+  u32 tag_offset = 0;
+  u32 payload_bytes = 0;
+  u32 vif0 = 0;
+  u32 vif1 = 0;
+  u16 qwc = 0;
+  u8 tag_kind = 0;
+  bool spr = false;
+};
+
+struct Jak2MapTextureUploadDiagnostic {
+  Jak2MapTextureUploadRejectionStage rejection_stage =
+      Jak2MapTextureUploadRejectionStage::None;
+  u32 failure_offset = 0;
+  u32 rejected_transfer = kJak2MapTextureUploadNoRejectedTransfer;
+  std::array<Jak2MapTextureUploadTransferDiagnostic,
+             kJak2MapTextureUploadDiagnosticMaximumTransfers>
+      transfers = {};
+  std::size_t transfer_count = 0;
+};
+
+const char* jak2_map_texture_upload_rejection_stage_name(
+    Jak2MapTextureUploadRejectionStage stage);
 
 /*!
  * Parse the exact live Jak II TEX_ALL_SPRITE DMA grammar. The Direct payloads are validated only
@@ -53,5 +95,14 @@ std::optional<Jak2MapTextureUploadPlan> plan_jak2_map_texture_upload(
     u32 chain_offset,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size);
+
+/*! Same fail-closed parser with a bounded, owning trace for rejected bucket-319 DMA. */
+std::optional<Jak2MapTextureUploadPlan> plan_jak2_map_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2MapTextureUploadDiagnostic* diagnostic);
 
 }  // namespace metal_renderer

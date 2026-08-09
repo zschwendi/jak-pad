@@ -135,10 +135,12 @@ std::optional<metal_renderer::Jak2SpriteTextureUploadPlan> plan(const Fixture& f
                                                          fixture.live.data(), fixture.live.size());
 }
 
-std::optional<metal_renderer::Jak2MapTextureUploadPlan> plan_map(const Fixture& fixture) {
+std::optional<metal_renderer::Jak2MapTextureUploadPlan> plan_map(
+    const Fixture& fixture,
+    metal_renderer::Jak2MapTextureUploadDiagnostic* diagnostic = nullptr) {
   return metal_renderer::plan_jak2_map_texture_upload(
       fixture.packet.data(), fixture.packet.size(), kChainOffset, fixture.live.data(),
-      fixture.live.size());
+      fixture.live.size(), diagnostic);
 }
 
 void test_source_bounded_upload_grammars() {
@@ -182,6 +184,46 @@ void test_map_source_bounded_upload_grammars() {
 
   const auto nine = make_fixture(9, metal_renderer::kJak2MapTextureUploadBucket);
   check(!plan_map(nine).has_value(), "a ninth map upload group is rejected");
+}
+
+void test_map_rejection_diagnostic() {
+  auto fixture = make_fixture(1, metal_renderer::kJak2MapTextureUploadBucket);
+  put_tag(&fixture.packet, fixture.direct_tag_offsets[0], DmaTag::Kind::CNT, 3, 0, 0,
+          kDirectVif | 3);
+  metal_renderer::Jak2MapTextureUploadDiagnostic diagnostic;
+  check(!plan_map(fixture, &diagnostic).has_value(),
+        "a non-group Direct transfer remains rejected without capture evidence");
+  check(diagnostic.rejection_stage ==
+                metal_renderer::Jak2MapTextureUploadRejectionStage::GroupOrTail &&
+            diagnostic.failure_offset == fixture.direct_tag_offsets[0] &&
+            diagnostic.transfer_count == 2 && diagnostic.rejected_transfer == 1,
+        "the rejection identifies the exact parser stage and failing transfer");
+  check(diagnostic.transfers[0].tag_offset == fixture.group_boundary_offsets[0] &&
+            diagnostic.transfers[0].tag_kind == static_cast<u8>(DmaTag::Kind::NEXT) &&
+            diagnostic.transfers[0].qwc == 0 && diagnostic.transfers[0].payload_bytes == 0 &&
+            diagnostic.transfers[0].vif0 == 0 && diagnostic.transfers[0].vif1 == 0 &&
+            !diagnostic.transfers[0].spr &&
+            diagnostic.transfers[1].tag_offset == fixture.direct_tag_offsets[0] &&
+            diagnostic.transfers[1].tag_kind == static_cast<u8>(DmaTag::Kind::CNT) &&
+            diagnostic.transfers[1].qwc == 3 && diagnostic.transfers[1].payload_bytes == 48 &&
+            diagnostic.transfers[1].vif0 == 0 &&
+            diagnostic.transfers[1].vif1 == (kDirectVif | 3) &&
+            !diagnostic.transfers[1].spr,
+        "the bounded trace owns tag kinds, QWC, byte counts, and raw VIF codes");
+  check(std::strcmp(metal_renderer::jak2_map_texture_upload_rejection_stage_name(
+                        diagnostic.rejection_stage),
+                    "group-or-tail") == 0,
+        "the rejection stage has a stable log spelling");
+
+  fixture = make_fixture(1, metal_renderer::kJak2MapTextureUploadBucket);
+  put_u64(&fixture.packet, fixture.descriptor_tag_offsets[0] + 24, static_cast<u64>(-2));
+  diagnostic = {};
+  check(!plan_map(fixture, &diagnostic).has_value() &&
+            diagnostic.rejection_stage ==
+                metal_renderer::Jak2MapTextureUploadRejectionStage::OrdinaryContents &&
+            diagnostic.failure_offset == fixture.descriptor_tag_offsets[0] &&
+            diagnostic.transfer_count == 3 && diagnostic.rejected_transfer == 2,
+        "a rejected descriptor records its later failure position deterministically");
 }
 
 void test_strict_empty_bucket_is_absent() {
@@ -346,6 +388,7 @@ void test_bad_dma_and_page_ranges_fail_closed() {
 int main() {
   test_source_bounded_upload_grammars();
   test_map_source_bounded_upload_grammars();
+  test_map_rejection_diagnostic();
   test_strict_empty_bucket_is_absent();
   test_direct_payloads_are_inert();
   test_packet_and_live_domains_are_separate();
