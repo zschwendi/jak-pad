@@ -1618,25 +1618,28 @@ class WorkOwnershipGuard {
 
   Options guarded_options() {
     Options guarded;
-    guarded.should_cancel = m_external_options.should_cancel;
-    if (m_external_options.on_progress) {
-      guarded.on_progress = [this](const Progress& progress) {
-        auto before = capture_work_manifest_at(m_work_directory);
-        if (!before) {
-          m_callback_failed = true;
-          throw std::runtime_error("Could not capture work ownership before a callback.");
-        }
-        m_owned = before.take_value();
+    if (m_external_options.should_cancel) {
+      guarded.should_cancel = [this] {
+        begin_callback();
         try {
-          m_external_options.on_progress(progress);
+          const auto should_cancel = m_external_options.should_cancel();
+          finish_callback();
+          return should_cancel;
         } catch (...) {
           m_callback_failed = true;
           throw;
         }
-        auto after = capture_work_manifest_at(m_work_directory);
-        if (!after || !same_work_manifest(after.value(), m_owned)) {
+      };
+    }
+    if (m_external_options.on_progress) {
+      guarded.on_progress = [this](const Progress& progress) {
+        begin_callback();
+        try {
+          m_external_options.on_progress(progress);
+          finish_callback();
+        } catch (...) {
           m_callback_failed = true;
-          throw std::runtime_error("A callback changed the import work ownership set.");
+          throw;
         }
       };
     }
@@ -1644,6 +1647,10 @@ class WorkOwnershipGuard {
   }
 
   std::optional<Error> accept_importer_changes() {
+    if (m_callback_failed) {
+      return make_error(ErrorCode::callback_failed,
+                        "A Jak II import callback failed or changed the owned work tree.");
+    }
     auto current = capture_work_manifest_at(m_work_directory);
     if (!current) {
       return current.error();
@@ -1656,6 +1663,23 @@ class WorkOwnershipGuard {
   bool callback_failed() const { return m_callback_failed; }
 
  private:
+  void begin_callback() {
+    auto before = capture_work_manifest_at(m_work_directory);
+    if (!before) {
+      m_callback_failed = true;
+      throw std::runtime_error("Could not capture work ownership before a callback.");
+    }
+    m_owned = before.take_value();
+  }
+
+  void finish_callback() {
+    auto after = capture_work_manifest_at(m_work_directory);
+    if (!after || !same_work_manifest(after.value(), m_owned)) {
+      m_callback_failed = true;
+      throw std::runtime_error("A callback changed the import work ownership set.");
+    }
+  }
+
   int m_work_directory = -1;
   const Options& m_external_options;
   WorkManifest m_owned;
@@ -2026,14 +2050,24 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
         return Result<Summary>::failure(
             preserve_error(callbacks.cancellation_or_callback_error({}), paths));
       }
-      const auto stage_error = stage.run_with_options
-                                   ? stage.run_with_options(paths, guarded_options)
-                                   : stage.run(paths);
+      std::optional<Error> stage_error;
+      try {
+        stage_error = stage.run_with_options ? stage.run_with_options(paths, guarded_options)
+                                             : stage.run(paths);
+      } catch (...) {
+        if (ownership.callback_failed()) {
+          return Result<Summary>::failure(preserve_error(
+              make_error(ErrorCode::callback_failed,
+                         "A Jak II import callback failed or changed the owned work tree."),
+              paths));
+        }
+        throw;
+      }
       if (stage_error) {
         return Result<Summary>::failure(preserve_error(
             ownership.callback_failed()
                 ? make_error(ErrorCode::callback_failed,
-                             "A Jak II import progress callback changed the owned work tree.")
+                             "A Jak II import callback failed or changed the owned work tree.")
                 : *stage_error,
             paths));
       }

@@ -536,6 +536,17 @@ bool cancellation_and_callback_failures_are_typed() {
   CHECK(result.error().code == composer::ErrorCode::cancelled);
   CHECK(result.error().preserved_candidate_root == cancelled_candidate);
 
+  composer::Options cancel_callback;
+  cancel_callback.should_cancel = []() -> bool {
+    throw std::runtime_error("synthetic cancellation callback failure");
+  };
+  const auto cancel_callback_candidate = temporary.root / "cancel-callback.candidate";
+  result = composer::internal::compose_in_fresh_candidate(
+      cancel_callback_candidate, cancel_callback, stages, &summary, &contract);
+  CHECK(!result);
+  CHECK(result.error().code == composer::ErrorCode::callback_failed);
+  CHECK(result.error().preserved_candidate_root == cancel_callback_candidate);
+
   composer::Options callback;
   callback.on_progress = [](const composer::Progress&) {
     throw std::runtime_error("synthetic callback failure");
@@ -546,6 +557,51 @@ bool cancellation_and_callback_failures_are_typed() {
   CHECK(!result);
   CHECK(result.error().code == composer::ErrorCode::callback_failed);
   CHECK(result.error().preserved_candidate_root == callback_candidate);
+  return true;
+}
+
+bool cancellation_callback_cannot_inject_owned_work() {
+  TemporaryRoot temporary;
+  const auto candidate = temporary.root / "cancel-injection.candidate";
+  const auto external = temporary.root / "external-directory";
+  fs::create_directory(external);
+  write_text(external / "sentinel", "external directory stays");
+  const auto contract = launch_contract();
+  std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
+  std::optional<composer::internal::FinalContract> produced_contract = contract;
+  std::size_t poll_count = 0;
+  bool injected = false;
+  composer::Options options;
+  options.should_cancel = [&] {
+    ++poll_count;
+    if (poll_count == 2) {
+      std::error_code error;
+      fs::rename(external, candidate / ".opengoal-import/injected", error);
+      injected = !error;
+    }
+    return false;
+  };
+  const std::array<composer::internal::StageAction, 1> stages = {{
+      {composer::Phase::materializing_output,
+       [&](const composer::internal::WorkPaths& paths,
+           const composer::Options& stage_options) -> std::optional<composer::Error> {
+         write_prepared_tree(paths, contract);
+         try {
+           (void)stage_options.should_cancel();
+         } catch (...) {
+         }
+         return {};
+       }},
+  }};
+
+  const auto result = composer::internal::compose_in_fresh_candidate(
+      candidate, options, stages, &summary, &produced_contract);
+  CHECK(injected);
+  CHECK(!result);
+  CHECK(result.error().code == composer::ErrorCode::callback_failed);
+  CHECK(result.error().preserved_candidate_root == candidate);
+  CHECK(read_text(candidate / ".opengoal-import/injected/sentinel") ==
+        "external directory stays");
   return true;
 }
 
@@ -769,6 +825,7 @@ int main() {
       descriptor_promotion_rejects_callback_races,
       failure_preserves_all_unregistered_work_files,
       cancellation_and_callback_failures_are_typed,
+      cancellation_callback_cannot_inject_owned_work,
       existing_candidate_and_input_containment_are_rejected,
       invalid_source_pack_fails_before_candidate_creation,
       checked_graph_contains_the_iso_launch_contract,
