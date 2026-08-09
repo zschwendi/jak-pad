@@ -511,28 +511,31 @@ void test_water_execution_plan() {
           "each water slot accepts the exact descriptor/standard-reset envelope");
   }
 
-  constexpr u32 bucket_id = metal_renderer::kJak2WaterTextureUploadBuckets[0];
-  packet = make_unobserved_direct_first_fixture(bucket_id);
+  constexpr u32 negative_bucket_id = metal_renderer::kJak2WaterTextureUploadBuckets[0];
+  packet = make_unobserved_direct_first_fixture(negative_bucket_id);
   check(!metal_renderer::plan_jak2_water_texture_upload(
-             packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size())
+             packet.data(), packet.size(), kChainOffset, negative_bucket_id, packet.data(),
+             packet.size())
              .has_value(),
         "a standard reset before the water descriptor is rejected");
 
-  packet = make_normal_ordinary_fixture(bucket_id);
+  packet = make_normal_ordinary_fixture(negative_bucket_id);
   put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 9, 0,
           static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 9);
   check(!metal_renderer::plan_jak2_water_texture_upload(
-             packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size())
+             packet.data(), packet.size(), kChainOffset, negative_bucket_id, packet.data(),
+             packet.size())
              .has_value(),
         "a water reset other than the exact qwc-10 Direct transfer is rejected");
 
-  packet = make_normal_ordinary_fixture(bucket_id);
+  packet = make_normal_ordinary_fixture(negative_bucket_id);
   put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0,
           kExtraTransferOffset, 0, 0);
   put_tag(&packet, kExtraTransferOffset, DmaTag::Kind::NEXT, 0,
-          bucket_offset(bucket_id) + 16, 0, 0);
+          bucket_offset(negative_bucket_id) + 16, 0, 0);
   check(!metal_renderer::plan_jak2_water_texture_upload(
-             packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size())
+             packet.data(), packet.size(), kChainOffset, negative_bucket_id, packet.data(),
+             packet.size())
              .has_value(),
         "an extra transfer after the water standard reset is rejected");
 
