@@ -377,7 +377,7 @@ void MetalTFragment::render_tree(int geom,
                  indexBufferOffset:run.first_index * sizeof(u32)];
         m_stats.runs++;
       }
-      m_stats.draws++;
+      draws_this_tree++;
     }
   }
 

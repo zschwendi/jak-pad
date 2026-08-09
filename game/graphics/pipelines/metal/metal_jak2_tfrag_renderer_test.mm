@@ -161,7 +161,7 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
   texture = {};
   texture.w = 2;
   texture.h = 2;
-  texture.data.assign(4, 0xff0000ff);
+  texture.data = {0xff0000ff, 0x400000ff, 0xff0000ff, 0x400000ff};
   texture.debug_name = "synthetic-red";
   texture.debug_tpage_name = "synthetic-alpha";
   level.textures.push_back(std::move(texture));
@@ -180,12 +180,16 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
 
     tfrag3::StripDraw draw = {};
     draw.mode.as_int() = 0;
-    draw.mode.set_depth_write_enable(!translucent);
+    draw.mode.set_depth_write_enable(true);
     draw.mode.set_zt(true);
     draw.mode.set_depth_test(GsTest::ZTest::GEQUAL);
-    draw.mode.set_at(false);
+    draw.mode.set_at(translucent);
+    draw.mode.set_alpha_test(DrawMode::AlphaTest::GEQUAL);
+    draw.mode.set_aref(translucent ? 0x7e : 0);
+    draw.mode.set_alpha_fail(translucent ? GsTest::AlphaFail::FB_ONLY
+                                         : GsTest::AlphaFail::KEEP);
     draw.mode.set_ab(translucent);
-    draw.mode.set_alpha_blend(translucent ? DrawMode::AlphaBlend::SRC_DST_FIX_DST
+    draw.mode.set_alpha_blend(translucent ? DrawMode::AlphaBlend::SRC_DST_SRC_DST
                                           : DrawMode::AlphaBlend::DISABLED);
     draw.mode.set_fog(false);
     draw.mode.set_decal(false);
@@ -465,13 +469,16 @@ int main() {
                                   {tfrag3::TFragmentTreeKind::TRANS}, 0, false);
     const auto alpha = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                                     &alpha_renderer, make_tfrag_chain(false));
-    int half_red_pixels = 0;
+    int opaque_red_pixels = 0;
+    int low_alpha_red_pixels = 0;
     int alpha_clear_pixels = 0;
     int alpha_unexpected_pixels = 0;
     for (int y = 0; y < kTargetSize; y++) {
       for (int x = 0; x < kTargetSize; x++) {
-        if (rgba_is(alpha.pixels, x, y, 128, 0, 0, 255)) {
-          half_red_pixels++;
+        if (rgba_is(alpha.pixels, x, y, 255, 0, 0, 255)) {
+          opaque_red_pixels++;
+        } else if (rgba_is(alpha.pixels, x, y, 64, 0, 0, 64)) {
+          low_alpha_red_pixels++;
         } else if (rgba_is(alpha.pixels, x, y, 0, 0, 0, 0)) {
           alpha_clear_pixels++;
         } else {
@@ -480,16 +487,18 @@ int main() {
       }
     }
     check(alpha.completed && alpha.finished_bucket && alpha.renderer.trees_rendered == 1 &&
-              alpha.renderer.draws == 1 && alpha.renderer.runs == 1 &&
-              alpha.renderer.triangles == 2 && alpha.draw_calls == 1 &&
-              alpha.triangles == 2 && alpha.background.unexpected_dma == 0 &&
+              alpha.renderer.draws == 2 && alpha.renderer.runs == 2 &&
+              alpha.renderer.triangles == 2 && alpha.draw_calls == 2 && alpha.triangles == 2 &&
+              alpha.background.tfrag_draws == 2 && alpha.background.tfrag_tris == 2 &&
+              alpha.background.unexpected_dma == 0 &&
               alpha.background.missing_levels == 0 && alpha.background.missing_textures == 0,
-          "the source-shaped translucent TFRAG packet selects one TRANS tree exactly");
-    check(half_red_pixels == 1024 && alpha_clear_pixels == 3072 &&
-              alpha_unexpected_pixels == 0,
-          "TRANS readback applies its FR3 half-blend draw mode to the exact centered mask");
-    check(alpha.depths[32 * kTargetSize + 32] == 0.f,
-          "the translucent FR3 draw mode preserves cleared depth under its visible mask");
+          "the extracted TRANS mode encodes its alpha-pass and FB_ONLY draws exactly once");
+    check(opaque_red_pixels == 512 && low_alpha_red_pixels == 512 &&
+              alpha_clear_pixels == 3072 && alpha_unexpected_pixels == 0,
+          "TRANS readback covers pixels above and below AREF across the exact centered mask");
+    check(alpha.depths[32 * kTargetSize + 24] == 0.f &&
+              alpha.depths[32 * kTargetSize + 40] > 0.f,
+          "TRANS writes depth above AREF and preserves cleared depth for its FB_ONLY draw");
 
     const auto malformed = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                                         &renderer, make_tfrag_chain(true));
