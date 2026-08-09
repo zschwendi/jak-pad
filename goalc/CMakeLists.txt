@@ -88,6 +88,7 @@ add_library(compiler
 target_link_libraries(compiler common Zydis tiny_gltf decomp)
 
 include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_output_recipe_core.cmake")
+include("${CMAKE_SOURCE_DIR}/common/custom_data/jak2_output_graph.cmake")
 include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_source_object_pack.cmake")
 include("${CMAKE_SOURCE_DIR}/common/custom_data/jak2_source_object_pack.cmake")
 
@@ -102,6 +103,12 @@ target_link_libraries(jak1-public-output-graph-generator
                       PRIVATE jak1-output-recipe-generator)
 target_compile_features(jak1-public-output-graph-generator PRIVATE cxx_std_20)
 
+add_executable(jak2-public-output-graph-generator
+               make/Jak2PublicOutputGraphGeneratorMain.cpp)
+target_link_libraries(jak2-public-output-graph-generator
+                      PRIVATE jak1-output-recipe-generator)
+target_compile_features(jak2-public-output-graph-generator PRIVATE cxx_std_20)
+
 if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
   add_executable(jak1-public-output-graph-exactness-test
                  "${CMAKE_SOURCE_DIR}/test/goalc/test_jak1_public_output_graph_exactness.cpp")
@@ -111,6 +118,16 @@ if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
   add_test(NAME jak1-public-output-graph-exactness
            COMMAND jak1-public-output-graph-exactness-test)
   set_tests_properties(jak1-public-output-graph-exactness
+                       PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+  add_executable(jak2-public-output-graph-exactness-test
+                 "${CMAKE_SOURCE_DIR}/test/goalc/test_jak2_public_output_graph_exactness.cpp")
+  target_link_libraries(jak2-public-output-graph-exactness-test
+                        PRIVATE jak1-output-recipe-generator jak2-output-graph)
+  target_compile_features(jak2-public-output-graph-exactness-test PRIVATE cxx_std_20)
+  add_test(NAME jak2-public-output-graph-exactness
+           COMMAND jak2-public-output-graph-exactness-test)
+  set_tests_properties(jak2-public-output-graph-exactness
                        PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
 

@@ -67,6 +67,12 @@ struct Limits {
   uint32_t max_name_bytes = 128;
 };
 
+struct PublicProvenanceInputs {
+  std::string game_name = "Jak 1";
+  std::string all_objects_path = "goal_src/jak1/build/all_objs.json";
+  std::string decompiler_inputs_path = "decompiler/config/jak1/ntsc_v1/inputs.jsonc";
+};
+
 struct Options {
   Limits limits;
   jak1_output_recipe::Limits recipe_limits;
@@ -74,6 +80,7 @@ struct Options {
   uint32_t expected_source_object_count = 518;
   std::string iso_target = "GROUP:iso";
   std::string source_target = "GROUP:all-code";
+  PublicProvenanceInputs public_provenance;
   CancelCallback should_cancel;
 };
 
