@@ -5,6 +5,55 @@
 
 namespace metal_renderer {
 
+enum class StereoSpace {
+  World,
+  Screen,
+};
+
+// The renderer receives a mixture of game-camera geometry and authored screen overlays. Keep the
+// split explicit so new two-view paths cannot accidentally give HUD/subtitle content parallax or
+// leave world geometry monoscopic.
+enum class StereoDrawPath {
+  Direct,
+  Sprite3d,
+  Sprite2d,
+  SpriteHud,
+  SpriteDistortion,
+  Sky,
+  Ocean,
+  GenericWorld,
+  GenericHud,
+  ShadowVolume,
+  ShadowOverlay,
+};
+
+constexpr StereoSpace stereo_space_for(StereoDrawPath path) {
+  switch (path) {
+    case StereoDrawPath::Sprite3d:
+    case StereoDrawPath::Sky:
+    case StereoDrawPath::Ocean:
+    case StereoDrawPath::GenericWorld:
+    case StereoDrawPath::ShadowVolume:
+      return StereoSpace::World;
+    case StereoDrawPath::Direct:
+    case StereoDrawPath::Sprite2d:
+    case StereoDrawPath::SpriteHud:
+    case StereoDrawPath::SpriteDistortion:
+    case StereoDrawPath::GenericHud:
+    case StereoDrawPath::ShadowOverlay:
+      return StereoSpace::Screen;
+  }
+  return StereoSpace::Screen;
+}
+
+constexpr bool receives_view_transform(StereoSpace space) {
+  return space == StereoSpace::World;
+}
+
+constexpr bool receives_view_transform(StereoDrawPath path) {
+  return receives_view_transform(stereo_space_for(path));
+}
+
 // Column-major transform from the game's final Metal homogeneous clip coordinates into one
 // host-owned view's homogeneous clip coordinates. Identity preserves the conventional one-view
 // clip coordinates. A visionOS host can supply projection(view) * inverse(game projection and
@@ -36,6 +85,12 @@ inline std::array<float, 4> apply(const ViewTransform& transform,
     }
   }
   return out;
+}
+
+inline std::array<float, 4> apply(const ViewTransform& transform,
+                                  StereoSpace space,
+                                  const std::array<float, 4>& clip) {
+  return receives_view_transform(space) ? apply(transform, clip) : clip;
 }
 
 }  // namespace metal_renderer

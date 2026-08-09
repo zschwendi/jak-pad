@@ -98,6 +98,7 @@ struct OceanCommonParams {
   float4 fog_color;
   int bucket;
   float scissor_adjust;  // SCISSOR_ADJUST * HEIGHT_SCALE
+  float4x4 view_clip_from_game_clip;
 };
 
 struct OceanCommonVSOut {
@@ -115,9 +116,11 @@ vertex OceanCommonVSOut ocean_common_vs(uint vid [[vertex_id]],
   float4 rgba_in = float4(v.rgba) / 255.0;
 
   OceanCommonVSOut out;
-  out.pos = float4((position_in.x - 0.5) * 16.0, -(position_in.y - 0.5) * 32.0, position_in.z, 1.0);
+  float4 game_clip =
+      float4((position_in.x - 0.5) * 16.0, -(position_in.y - 0.5) * 32.0, position_in.z, 1.0);
   // scissoring area adjust
-  out.pos.y *= p.scissor_adjust;
+  game_clip.y *= p.scissor_adjust;
+  out.pos = p.view_clip_from_game_clip * game_clip;
   out.fragment_color = float4(rgba_in.rgb, rgba_in.a * 2.0);
   out.tex_coord = float3(v.stq);
   out.fog = 255.0 - float(v.fog.x);

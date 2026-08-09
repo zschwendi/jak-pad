@@ -83,8 +83,10 @@ struct SpriteVsParams {
   float height_scale;
   float scissor_adjust;
   float pad[3];
+  float view_clip_from_game_clip[16];
 };
-static_assert(sizeof(SpriteVsParams) == 496);
+static_assert(sizeof(SpriteVsParams) == 560);
+static_assert(offsetof(SpriteVsParams, view_clip_from_game_clip) == 496);
 
 // Must match SpriteFsParams in shaders/sprite.metal.
 struct SpriteFsParams {
@@ -922,6 +924,9 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
   vs_params.inv_area = m_frame_data.inv_area;
   vs_params.height_scale = 1.f;  // Jak 1
   vs_params.scissor_adjust = 512.f / kGameHeightJak1;
+  memcpy(vs_params.view_clip_from_game_clip,
+         render_state->view_transform.clip_from_game_clip.data(),
+         sizeof(vs_params.view_clip_from_game_clip));
 
   id<MTLRenderCommandEncoder> enc = ctx.enc;
   [enc setVertexBuffer:vbuf offset:voffset atIndex:0];

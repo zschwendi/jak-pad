@@ -41,6 +41,7 @@ struct SpriteVsParams {
   float inv_area;
   float height_scale;    // 1.0 for Jak 1
   float scissor_adjust;  // 512/448 for Jak 1
+  float4x4 view_clip_from_game_clip;
 };
 
 struct SpriteFsParams {
@@ -182,7 +183,7 @@ vertex SpriteVSOut sprite3_vs(uint vid [[vertex_id]],
   transformed.y /= -128.0;
   transformed.xyz *= transformed.w;
   transformed.y *= p.scissor_adjust * p.height_scale;
-  out.pos = transformed;
+  out.pos = rendermode == 3 ? p.view_clip_from_game_clip * transformed : transformed;
 
   out.fragment_color *= 2.0;
   out.fragment_color.w *= 2.0;

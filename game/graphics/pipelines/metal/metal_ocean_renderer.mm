@@ -26,8 +26,10 @@ struct OceanCommonParams {
   int bucket;
   float scissor_adjust;
   float pad[2] = {0.f, 0.f};
+  float view_clip_from_game_clip[16];
 };
-static_assert(sizeof(OceanCommonParams) == 32);
+static_assert(sizeof(OceanCommonParams) == 96);
+static_assert(offsetof(OceanCommonParams, view_clip_from_game_clip) == 32);
 
 // Mirror of OceanMidAndFar.cpp's is_end_tag.
 bool mid_far_is_end_tag(const DmaTag& tag, const VifCode& v0, const VifCode& v1) {
@@ -719,6 +721,9 @@ void MetalCommonOceanRenderer::bind_bucket(MetalSharedRenderState* render_state,
   params.fog_color[3] = render_state->fog_intensity / 255.f;
   params.bucket = shader_bucket;
   params.scissor_adjust = 512.f / kGameHeightJak1;  // SCISSOR_ADJUST * HEIGHT_SCALE, Jak 1
+  memcpy(params.view_clip_from_game_clip,
+         render_state->view_transform.clip_from_game_clip.data(),
+         sizeof(params.view_clip_from_game_clip));
 
   [ctx.enc setFragmentTexture:tex atIndex:0];
   [ctx.enc setFragmentSamplerState:ctx.sampler_cache->get(sampler_key) atIndex:0];
@@ -1002,7 +1007,8 @@ MetalOceanMidAndFar::MetalOceanMidAndFar(const std::string& name,
                                          id<MTLDevice> device,
                                          id<MTLCommandQueue> queue)
     : MetalBucketRenderer(name, my_id),
-      m_direct(name, my_id, 4096),
+      m_direct(name, my_id, 4096,
+               metal_renderer::stereo_space_for(metal_renderer::StereoDrawPath::Ocean)),
       m_texture_renderer(true, device, queue) {}
 
 void MetalOceanMidAndFar::init_textures(TexturePool& pool, GameVersion version) {

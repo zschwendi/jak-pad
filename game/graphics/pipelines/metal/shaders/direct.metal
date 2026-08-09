@@ -32,6 +32,8 @@ struct DirectVsParams {
   float height_scale;    // 1.0 for Jak 1
   float scissor_adjust;  // 512/448 for Jak 1
   int offscreen_mode;
+  uint apply_view_transform;
+  float4x4 view_clip_from_game_clip;
 };
 
 struct DirectFsParams {
@@ -87,9 +89,12 @@ vertex DirectBasicVSOut direct_basic_vs(uint vid [[vertex_id]],
   DirectBasicVSOut out;
   // y is multiplied by 32 instead of 16 to undo the game's half-height (see
   // direct_basic.vert)
-  out.pos = float4((v.xyzf.x - 0.5) * 16.0,
-                   -(v.xyzf.y - 0.5) * 32.0 * params.height_scale * params.scissor_adjust,
-                   v.xyzf.z, 1.0);
+  float4 game_clip = float4((v.xyzf.x - 0.5) * 16.0,
+                            -(v.xyzf.y - 0.5) * 32.0 * params.height_scale *
+                                params.scissor_adjust,
+                            v.xyzf.z, 1.0);
+  out.pos = params.apply_view_transform != 0 ? params.view_clip_from_game_clip * game_clip
+                                            : game_clip;
   float4 rgba = float4(v.rgba) / 255.0;
   out.fragment_color = float4(rgba.xyz, rgba.w * 2.0);
   out.gs_scissor = v.scissor;
@@ -109,14 +114,18 @@ vertex DirectTexturedVSOut direct_textured_vs(uint vid [[vertex_id]],
                                               constant DirectVsParams& params [[buffer(1)]]) {
   DirectVertexIn v = verts[vid];
   DirectTexturedVSOut out;
+  float4 game_clip;
   if (params.offscreen_mode == 1) {
-    out.pos = float4((v.xyzf.x - 0.453125) * 64.0, (v.xyzf.y - 0.5 + (2.25 / 64.0)) * 64.0,
-                     v.xyzf.z, 1.0);
+    game_clip = float4((v.xyzf.x - 0.453125) * 64.0,
+                       (v.xyzf.y - 0.5 + (2.25 / 64.0)) * 64.0, v.xyzf.z, 1.0);
   } else {
-    out.pos = float4((v.xyzf.x - 0.5) * 16.0,
-                     -(v.xyzf.y - 0.5) * 32.0 * params.height_scale * params.scissor_adjust,
-                     v.xyzf.z, 1.0);
+    game_clip = float4((v.xyzf.x - 0.5) * 16.0,
+                       -(v.xyzf.y - 0.5) * 32.0 * params.height_scale *
+                           params.scissor_adjust,
+                       v.xyzf.z, 1.0);
   }
+  out.pos = params.apply_view_transform != 0 ? params.view_clip_from_game_clip * game_clip
+                                            : game_clip;
   float4 rgba = float4(v.rgba) / 255.0;
   out.fragment_color = float4(rgba.xyz, rgba.w * 2.0);
   out.tex_coord = float3(v.stq);

@@ -40,6 +40,11 @@ struct GenericVsParams {
   float height_scale;
   float scissor_adjust;
   float warp_off;  // 1 - SCISSOR_HEIGHT / 512
+  uint apply_view_transform;
+  float pad0;
+  float pad1;
+  float pad2;
+  float4x4 view_clip_from_game_clip;
 };
 
 // Must match GenericFsParams in metal_generic2.mm.
@@ -114,6 +119,9 @@ vertex GenericVSOut generic_vs(uint vid [[vertex_id]],
   out.pos = transformed;
   // scissoring area adjust
   out.pos.y *= p.scissor_adjust * p.height_scale;
+  if (p.apply_view_transform != 0) {
+    out.pos = p.view_clip_from_game_clip * out.pos;
+  }
 
   float4 rgba_in = float4(v.rgba) / 255.0;
   out.fragment_color = float4(rgba_in.rgb, rgba_in.a * 2.0);

@@ -127,9 +127,11 @@ class MetalRenderer {
   // Validates both views before mutation, then renders the same copied chain into both targets.
   // The primary owns frame-global uploads, callbacks, diagnostics, and aggregate frame stats; the
   // secondary replay only supplies the second view and cannot advance game simulation.
-  // Background geometry (TFRAG, TIE, ETIE, and shrub) plus Merc base/envmap consume each view's
-  // transform. Direct, sprite/HUD, sky, ocean, generic, and shadow remain game-projection
-  // monoscopic; texture uploads and eye composition are prepared once and reused by both views.
+  // World geometry consumes each view's transform: background, Merc, 3D sprites, sky, ocean,
+  // non-HUD generic draws, and shadow volumes. Authored screen content is deliberately duplicated
+  // without parallax: Direct debug/subtitles, 2D/HUD/distortion sprites, generic HUD, and the
+  // shadow fullscreen overlay. Texture uploads and eye/ocean/sky preparation run once and are
+  // reused by both views.
   bool render_chain_frame_to_external_stereo_targets(
       const MetalRenderOptions& opts,
       const MetalExternalRenderTargetDescriptor& left,

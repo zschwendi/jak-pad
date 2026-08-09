@@ -20,7 +20,11 @@ struct DirectVsParams {
   float height_scale;
   float scissor_adjust;
   s32 offscreen_mode;
+  u32 apply_view_transform;
+  float view_clip_from_game_clip[16];
 };
+static_assert(sizeof(DirectVsParams) == 80);
+static_assert(offsetof(DirectVsParams, view_clip_from_game_clip) == 16);
 
 // must match DirectFsParams in shaders/direct.metal (float4s are 16-aligned)
 struct DirectFsParams {
@@ -59,8 +63,13 @@ u32 get_direct_qwc_or_nop(const VifCode& code) {
 
 }  // namespace
 
-MetalDirectRenderer::MetalDirectRenderer(const std::string& name, int my_id, int batch_size)
-    : MetalBucketRenderer(name, my_id), m_prim_buffer(batch_size) {}
+MetalDirectRenderer::MetalDirectRenderer(const std::string& name,
+                                         int my_id,
+                                         int batch_size,
+                                         metal_renderer::StereoSpace stereo_space)
+    : MetalBucketRenderer(name, my_id),
+      m_prim_buffer(batch_size),
+      m_stereo_space(stereo_space) {}
 
 /*!
  * Render from a DMA bucket (same walk as the GL DirectRenderer::render).
@@ -292,10 +301,14 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
   void* dst = ctx.stream->alloc(bytes, &vbuf, &voffset);
   memcpy(dst, m_prim_buffer.vertices.data(), bytes);
 
-  DirectVsParams vs_params;
+  DirectVsParams vs_params = {};
   vs_params.height_scale = render_state->version == GameVersion::Jak1 ? 1.f : 0.5f;
   vs_params.scissor_adjust = 512.f / game_height[render_state->version];
   vs_params.offscreen_mode = 0;
+  vs_params.apply_view_transform = metal_renderer::receives_view_transform(m_stereo_space);
+  memcpy(vs_params.view_clip_from_game_clip,
+         render_state->view_transform.clip_from_game_clip.data(),
+         sizeof(vs_params.view_clip_from_game_clip));
 
   DirectFsParams fs_params = {};
   fs_params.fog_color[0] = render_state->fog_color[0] / 255.f;

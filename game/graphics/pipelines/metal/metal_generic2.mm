@@ -24,8 +24,12 @@ struct GenericVsParams {
   float height_scale;
   float scissor_adjust;
   float warp_off;
+  u32 apply_view_transform;
+  float pad[3];
+  float view_clip_from_game_clip[16];
 };
-static_assert(sizeof(GenericVsParams) == 144);
+static_assert(sizeof(GenericVsParams) == 224);
+static_assert(offsetof(GenericVsParams, view_clip_from_game_clip) == 160);
 
 // Must match GenericFsParams in shaders/generic.metal.
 struct GenericFsParams {
@@ -1144,6 +1148,10 @@ void MetalGeneric2::do_draws(MetalSharedRenderState* render_state, MetalFrameCon
   vs.height_scale = 1.f;  // Jak 1
   vs.scissor_adjust = 512.f / kGameHeightJak1;
   vs.warp_off = 0.f;
+  vs.apply_view_transform =
+      metal_renderer::receives_view_transform(metal_renderer::StereoDrawPath::GenericWorld);
+  memcpy(vs.view_clip_from_game_clip, render_state->view_transform.clip_from_game_clip.data(),
+         sizeof(vs.view_clip_from_game_clip));
   [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
 
   // The GL renderer draws in a fixed alpha-mode order so translucent content
@@ -1173,6 +1181,8 @@ void MetalGeneric2::do_draws(MetalSharedRenderState* render_state, MetalFrameCon
     vs.mat_23 = m_drawing_config.hud_mat_23;
     vs.mat_32 = m_drawing_config.hud_mat_32;
     vs.mat_33 = m_drawing_config.hud_mat_33;
+    vs.apply_view_transform =
+        metal_renderer::receives_view_transform(metal_renderer::StereoDrawPath::GenericHud);
     [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
 
     for (u32 i = 0; i < m_next_free_bucket; i++) {

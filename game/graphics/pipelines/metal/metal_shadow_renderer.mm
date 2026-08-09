@@ -14,9 +14,12 @@ std::atomic<bool> g_jak1_shadow_output_enabled{true};
 // Must match ShadowVsParams in shaders/shadow.metal.
 struct ShadowVsParams {
   float scissor_adjust;
-  float pad[3];
+  u32 apply_view_transform;
+  float pad[2];
+  float view_clip_from_game_clip[16];
 };
-static_assert(sizeof(ShadowVsParams) == 16);
+static_assert(sizeof(ShadowVsParams) == 80);
+static_assert(offsetof(ShadowVsParams, view_clip_from_game_clip) == 16);
 
 }  // namespace
 
@@ -246,6 +249,10 @@ void MetalShadowRenderer::draw(MetalSharedRenderState* render_state, MetalFrameC
   [enc setVertexBuffer:vertex_buffer offset:vertex_offset atIndex:0];
   ShadowVsParams vs = {};
   vs.scissor_adjust = 512.f / kGameHeightJak1;
+  vs.apply_view_transform =
+      metal_renderer::receives_view_transform(metal_renderer::StereoDrawPath::ShadowVolume);
+  memcpy(vs.view_clip_from_game_clip, render_state->view_transform.clip_from_game_clip.data(),
+         sizeof(vs.view_clip_from_game_clip));
   [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
 
   // shared state for the two stencil passes: depth GEQUAL, no depth writes, no
@@ -336,6 +343,9 @@ void MetalShadowRenderer::draw(MetalSharedRenderState* render_state, MetalFrameC
     [enc setRenderPipelineState:pso];
     [enc setDepthStencilState:ctx.pso_cache->get_depth_stencil(depth)];
     [enc setStencilReferenceValue:0];
+    vs.apply_view_transform =
+        metal_renderer::receives_view_transform(metal_renderer::StereoDrawPath::ShadowOverlay);
+    [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
     const float color[4] = {m_color.x(), m_color.y(), m_color.z(), m_color.w()};
     [enc setFragmentBytes:color length:sizeof(color) atIndex:0];
     [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangle
@@ -348,5 +358,4 @@ void MetalShadowRenderer::draw(MetalSharedRenderState* render_state, MetalFrameC
     m_stats.draw_calls++;
     m_stats.triangles += 2;
   }
-  (void)render_state;
 }

@@ -28,7 +28,12 @@
 
 class MetalDirectRenderer : public MetalBucketRenderer {
  public:
-  MetalDirectRenderer(const std::string& name, int my_id, int batch_size);
+  MetalDirectRenderer(
+      const std::string& name,
+      int my_id,
+      int batch_size,
+      metal_renderer::StereoSpace stereo_space = metal_renderer::stereo_space_for(
+          metal_renderer::StereoDrawPath::Direct));
 
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
@@ -240,4 +245,5 @@ class MetalDirectRenderer : public MetalBucketRenderer {
 
   Stats m_stats;
   bool m_warned_unsupported_blend = false;
+  metal_renderer::StereoSpace m_stereo_space;
 };

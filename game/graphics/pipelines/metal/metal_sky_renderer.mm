@@ -136,7 +136,9 @@ SkyBlendStats MetalSkyBlendCPU::do_sky_blends(DmaFollower& dma,
 }
 
 MetalSkyRenderer::MetalSkyRenderer(const std::string& name, int my_id)
-    : MetalBucketRenderer(name, my_id), m_direct_renderer("sky-direct", my_id, 100) {}
+    : MetalBucketRenderer(name, my_id),
+      m_direct_renderer("sky-direct", my_id, 100,
+                        metal_renderer::stereo_space_for(metal_renderer::StereoDrawPath::Sky)) {}
 
 /*!
  * Same DMA walk as SkyRenderer::render, drawing through the Metal

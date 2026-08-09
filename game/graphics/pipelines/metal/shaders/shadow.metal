@@ -20,7 +20,10 @@ struct ShadowVertexIn {
 // Must match ShadowVsParams in metal_shadow_renderer.mm.
 struct ShadowVsParams {
   float scissor_adjust;
-  float pad[3];
+  uint apply_view_transform;
+  float pad0;
+  float pad1;
+  float4x4 view_clip_from_game_clip;
 };
 
 struct ShadowVSOut {
@@ -34,9 +37,11 @@ vertex ShadowVSOut shadow_vs(uint vid [[vertex_id]],
   ShadowVSOut out;
   // note: position.y is multiplied by 32 instead of 16 to undo the half-height
   // for interlacing stuff.
-  out.pos = float4((position_in.x - 0.5) * 16.0, -(position_in.y - 0.5) * 32.0, position_in.z, 1.0);
+  float4 game_clip =
+      float4((position_in.x - 0.5) * 16.0, -(position_in.y - 0.5) * 32.0, position_in.z, 1.0);
   // scissoring area adjust
-  out.pos.y *= p.scissor_adjust;
+  game_clip.y *= p.scissor_adjust;
+  out.pos = p.apply_view_transform != 0 ? p.view_clip_from_game_clip * game_clip : game_clip;
   return out;
 }
 
