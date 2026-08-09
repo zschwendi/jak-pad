@@ -17,10 +17,10 @@ int failures = 0;
 std::vector<u8> make_deferred_inventory_chain() {
   using BucketId = jak2::BucketId;
   constexpr std::array<std::pair<BucketId, u16>, 5> kPayloads = {{
-      {BucketId::TEX_L0_WATER, 5},
-      {BucketId::TFRAG_W_L0_WATER, 4},
-      {BucketId::TIE_W_L0_WATER, 3},
-      {BucketId::ETIE_W_L0_WATER, 2},
+      {BucketId::MERC_L0_ALPHA, 5},
+      {BucketId::GMERC_L0_ALPHA, 4},
+      {BucketId::MERC_L0_WATER, 3},
+      {BucketId::GMERC_L0_WATER, 2},
       {BucketId::OCEAN_NEAR, 1},
   }};
 
@@ -122,16 +122,16 @@ int main() {
           "cumulative deferred bytes include all five synthetic inventory buckets");
     check(inventory.last_skipped_bucket_count == 4 &&
               inventory.last_skipped_bucket_ids[0] ==
-                  static_cast<u32>(jak2::BucketId::TEX_L0_WATER) &&
+                  static_cast<u32>(jak2::BucketId::MERC_L0_ALPHA) &&
               inventory.last_skipped_bucket_bytes[0] == 5 * 16 &&
               inventory.last_skipped_bucket_ids[1] ==
-                  static_cast<u32>(jak2::BucketId::TFRAG_W_L0_WATER) &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L0_ALPHA) &&
               inventory.last_skipped_bucket_bytes[1] == 4 * 16 &&
               inventory.last_skipped_bucket_ids[2] ==
-                  static_cast<u32>(jak2::BucketId::TIE_W_L0_WATER) &&
+                  static_cast<u32>(jak2::BucketId::MERC_L0_WATER) &&
               inventory.last_skipped_bucket_bytes[2] == 3 * 16 &&
               inventory.last_skipped_bucket_ids[3] ==
-                  static_cast<u32>(jak2::BucketId::ETIE_W_L0_WATER) &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L0_WATER) &&
               inventory.last_skipped_bucket_bytes[3] == 2 * 16,
           "the last-frame deferred inventory retains the four largest buckets in byte order");
 

@@ -14,6 +14,7 @@ constexpr u32 kJak2CommonTfragTextureUploadBucket = 187;
 constexpr std::array<u32, 6> kJak2NormalTfragTextureUploadBuckets = {7, 18, 29, 40, 51, 62};
 constexpr std::array<u32, 6> kJak2NormalShrubTextureUploadBuckets = {73, 82, 91, 100, 109, 118};
 constexpr std::array<u32, 6> kJak2AlphaTextureUploadBuckets = {127, 137, 147, 157, 167, 177};
+constexpr std::array<u32, 6> kJak2WaterTextureUploadBuckets = {252, 261, 270, 279, 288, 297};
 constexpr std::size_t kJak2CommonTfragTextureUploadMaximumTransfers = 64;
 constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
 
@@ -67,6 +68,8 @@ struct Jak2NormalTfragTextureUploadPlan {
   bool present = false;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
 };
+
+using Jak2WaterTextureUploadPlan = Jak2NormalTfragTextureUploadPlan;
 
 struct Jak2NormalShrubTextureUploadPlan {
   u32 bucket_id = 0;
@@ -130,6 +133,20 @@ Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
  * and retains no host pointers.
  */
 std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+/*!
+ * Plan the water page upload written by upload-vram-pages-pris-pc. The writer
+ * and mode are identical to normal TFRAG; *texture-page-translate* supplies
+ * only the water category and per-level destination bucket.
+ */
+std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     const u8* dma_packet_snapshot,
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,

@@ -227,7 +227,10 @@ bool is_audited_tfrag_texture_upload_bucket(u32 bucket_id) {
              kJak2NormalShrubTextureUploadBuckets.end() ||
          std::find(kJak2AlphaTextureUploadBuckets.begin(),
                    kJak2AlphaTextureUploadBuckets.end(), bucket_id) !=
-             kJak2AlphaTextureUploadBuckets.end();
+             kJak2AlphaTextureUploadBuckets.end() ||
+         std::find(kJak2WaterTextureUploadBuckets.begin(),
+                   kJak2WaterTextureUploadBuckets.end(), bucket_id) !=
+             kJak2WaterTextureUploadBuckets.end();
 }
 
 bool is_normal_tfrag_texture_upload_bucket(u32 bucket_id) {
@@ -246,6 +249,12 @@ bool is_alpha_texture_upload_bucket(u32 bucket_id) {
   return std::find(kJak2AlphaTextureUploadBuckets.begin(),
                    kJak2AlphaTextureUploadBuckets.end(), bucket_id) !=
          kJak2AlphaTextureUploadBuckets.end();
+}
+
+bool is_water_texture_upload_bucket(u32 bucket_id) {
+  return std::find(kJak2WaterTextureUploadBuckets.begin(),
+                   kJak2WaterTextureUploadBuckets.end(), bucket_id) !=
+         kJak2WaterTextureUploadBuckets.end();
 }
 
 bool metadata_is_inert_next(const Jak2CommonTfragTransferMetadata& transfer) {
@@ -587,6 +596,74 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
   }
   const u64 page_offset =
       read_unaligned<u64>(dma_packet_snapshot + descriptor_data_offset);
+  const s64 mode =
+      read_unaligned<s64>(dma_packet_snapshot + descriptor_data_offset + sizeof(u64));
+  if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
+    return std::nullopt;
+  }
+
+  plan.present = true;
+  plan.ordinary.page_offset = page_offset;
+  plan.ordinary.mode = mode;
+  std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
+              plan.ordinary.page_header.size());
+  return plan;
+}
+
+std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture) {
+  const auto capture = capture_jak2_tfrag_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, bucket_id);
+  if (out_capture) {
+    *out_capture = capture;
+  }
+
+  if (!is_water_texture_upload_bucket(bucket_id) || !capture.valid) {
+    return std::nullopt;
+  }
+
+  Jak2WaterTextureUploadPlan plan;
+  plan.bucket_id = bucket_id;
+  if (!capture.present) {
+    if (capture.classification != Jak2CommonTfragTextureUploadClass::Absent ||
+        capture.transfer_count != 1 || capture.total_payload_bytes != 0 ||
+        capture.inert_transfers != 1 || !metadata_is_strict_empty(capture.transfers[0])) {
+      return std::nullopt;
+    }
+    return plan;
+  }
+
+  const bool exact_counts =
+      capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryOnly &&
+      capture.transfer_count == 5 && capture.total_payload_bytes == 176 &&
+      capture.inert_transfers == 3 && capture.ordinary_descriptors == 1 &&
+      capture.direct_setup_transfers == 1 && capture.animator_arrays == 0 &&
+      capture.eye_markers == 0 && capture.other_transfers == 0 &&
+      capture.malformed_transfers == 0;
+  if (!exact_counts || !metadata_is_inert_next(capture.transfers[0]) ||
+      !metadata_is_inert_next(capture.transfers[2]) ||
+      !metadata_is_inert_next(capture.transfers[4]) ||
+      !metadata_is_ordinary_descriptor(capture.transfers[1]) ||
+      !metadata_is_direct_setup(capture.transfers[3])) {
+    return std::nullopt;
+  }
+
+  const auto& descriptor = capture.transfers[1];
+  const u64 descriptor_tag_offset = static_cast<u64>(chain_offset) + bucket_id * 16 +
+                                    descriptor.relative_tag_offset;
+  const u64 descriptor_data_offset = descriptor_tag_offset + 16;
+  const std::size_t checked_snapshot_size =
+      std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
+  if (!range_is_valid(descriptor_data_offset, 16, checked_snapshot_size)) {
+    return std::nullopt;
+  }
+  const u64 page_offset = read_unaligned<u64>(dma_packet_snapshot + descriptor_data_offset);
   const s64 mode =
       read_unaligned<s64>(dma_packet_snapshot + descriptor_data_offset + sizeof(u64));
   if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {

@@ -29,7 +29,8 @@ constexpr int kTargetSize = 64;
 constexpr char kLevelName[] = "tfrag-test";
 constexpr u32 kTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_L0_TFRAG);
 constexpr u32 kAlphaTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_T_L0_ALPHA);
-static_assert(kTfragBucket == 8 && kAlphaTfragBucket == 128);
+constexpr u32 kWaterTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_W_L0_WATER);
+static_assert(kTfragBucket == 8 && kAlphaTfragBucket == 128 && kWaterTfragBucket == 255);
 
 int failures = 0;
 
@@ -165,8 +166,18 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
   texture.debug_name = "synthetic-red";
   texture.debug_tpage_name = "synthetic-alpha";
   level.textures.push_back(std::move(texture));
+  texture = {};
+  texture.w = 2;
+  texture.h = 2;
+  texture.data.assign(4, 0xffff0000);
+  texture.debug_name = "synthetic-blue";
+  texture.debug_tpage_name = "synthetic-water";
+  level.textures.push_back(std::move(texture));
 
-  const auto make_tree = [](tfrag3::TFragmentTreeKind kind, int texture_id, bool translucent) {
+  const auto make_tree = [](tfrag3::TFragmentTreeKind kind,
+                            int texture_id,
+                            DrawMode::AlphaBlend blend) {
+    const bool translucent = blend != DrawMode::AlphaBlend::DISABLED;
     tfrag3::TfragTree tree = {};
     tree.kind = kind;
     tree.use_strips = false;
@@ -189,8 +200,7 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
     draw.mode.set_alpha_fail(translucent ? GsTest::AlphaFail::FB_ONLY
                                          : GsTest::AlphaFail::KEEP);
     draw.mode.set_ab(translucent);
-    draw.mode.set_alpha_blend(translucent ? DrawMode::AlphaBlend::SRC_DST_SRC_DST
-                                          : DrawMode::AlphaBlend::DISABLED);
+    draw.mode.set_alpha_blend(blend);
     draw.mode.set_fog(false);
     draw.mode.set_decal(false);
     draw.mode.set_filt_enable(false);
@@ -213,9 +223,11 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
     return tree;
   };
   level.tfrag_trees[0].push_back(
-      make_tree(tfrag3::TFragmentTreeKind::NORMAL, 0, false));
+      make_tree(tfrag3::TFragmentTreeKind::NORMAL, 0, DrawMode::AlphaBlend::DISABLED));
   level.tfrag_trees[0].push_back(
-      make_tree(tfrag3::TFragmentTreeKind::TRANS, 1, true));
+      make_tree(tfrag3::TFragmentTreeKind::TRANS, 1, DrawMode::AlphaBlend::SRC_DST_SRC_DST));
+  level.tfrag_trees[0].push_back(
+      make_tree(tfrag3::TFragmentTreeKind::WATER, 2, DrawMode::AlphaBlend::SRC_0_SRC_DST));
 
   Serializer serializer;
   level.serialize(serializer);
@@ -499,6 +511,36 @@ int main() {
     check(alpha.depths[32 * kTargetSize + 24] == 0.f &&
               alpha.depths[32 * kTargetSize + 40] > 0.f,
           "TRANS writes depth above AREF and preserves cleared depth for its FB_ONLY draw");
+
+    MetalTFragment water_renderer("tfrag-w-l0-water", static_cast<int>(kWaterTfragBucket),
+                                  {tfrag3::TFragmentTreeKind::WATER}, 0, false);
+    const auto water = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                    &water_renderer, make_tfrag_chain(false));
+    int blue_pixels = 0;
+    int water_clear_pixels = 0;
+    int water_unexpected_pixels = 0;
+    for (int y = 0; y < kTargetSize; y++) {
+      for (int x = 0; x < kTargetSize; x++) {
+        if (rgba_is(water.pixels, x, y, 0, 0, 255, 255)) {
+          blue_pixels++;
+        } else if (rgba_is(water.pixels, x, y, 0, 0, 0, 0)) {
+          water_clear_pixels++;
+        } else {
+          water_unexpected_pixels++;
+        }
+      }
+    }
+    check(water.completed && water.finished_bucket && water.renderer.trees_rendered == 1 &&
+              water.renderer.draws == 1 && water.renderer.runs == 1 &&
+              water.renderer.triangles == 2 && water.draw_calls == 1 && water.triangles == 2 &&
+              water.background.unexpected_dma == 0 && water.background.missing_levels == 0 &&
+              water.background.missing_textures == 0,
+          "the source-shaped water TFRAG packet selects one WATER tree exactly");
+    check(blue_pixels == 1024 && water_clear_pixels == 3072 &&
+              water_unexpected_pixels == 0,
+          "WATER readback applies its FR3 source-alpha additive mode to the exact mask");
+    check(water.depths[32 * kTargetSize + 32] == 0.f,
+          "the water FR3 draw mode preserves cleared depth under its visible mask");
 
     const auto malformed = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                                         &renderer, make_tfrag_chain(true));

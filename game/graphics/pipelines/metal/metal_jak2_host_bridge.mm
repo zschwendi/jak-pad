@@ -82,11 +82,14 @@ bool jak2_metal_host_policy_table_is_audited() {
         descriptor.behavior != Jak2MetalBucketBehavior::Sprite &&
         descriptor.behavior != Jak2MetalBucketBehavior::TFragment &&
         descriptor.behavior != Jak2MetalBucketBehavior::TFragmentTrans &&
+        descriptor.behavior != Jak2MetalBucketBehavior::TFragmentWater &&
         descriptor.behavior != Jak2MetalBucketBehavior::Shrub &&
         descriptor.behavior != Jak2MetalBucketBehavior::Tie &&
         descriptor.behavior != Jak2MetalBucketBehavior::TieEnvmap &&
         descriptor.behavior != Jak2MetalBucketBehavior::TieTrans &&
         descriptor.behavior != Jak2MetalBucketBehavior::TieTransEnvmap &&
+        descriptor.behavior != Jak2MetalBucketBehavior::TieWater &&
+        descriptor.behavior != Jak2MetalBucketBehavior::TieWaterEnvmap &&
         descriptor.behavior != Jak2MetalBucketBehavior::Merc &&
         descriptor.behavior != Jak2MetalBucketBehavior::BlitDisplay) {
       return false;
@@ -547,6 +550,9 @@ using Jak2ShrubTextureUploadPlans =
 using Jak2AlphaTextureUploadPlans =
     std::array<metal_renderer::Jak2AlphaTextureUploadPlan,
                metal_renderer::kJak2AlphaTextureUploadBuckets.size()>;
+using Jak2WaterTextureUploadPlans =
+    std::array<metal_renderer::Jak2WaterTextureUploadPlan,
+               metal_renderer::kJak2WaterTextureUploadBuckets.size()>;
 
 struct Jak2TextureUploadDispatch {
   goal_jak2_metal_host* host = nullptr;
@@ -554,6 +560,7 @@ struct Jak2TextureUploadDispatch {
   const Jak2TfragTextureUploadPlans* tfrag_plans = nullptr;
   const Jak2ShrubTextureUploadPlans* shrub_plans = nullptr;
   const Jak2AlphaTextureUploadPlans* alpha_plans = nullptr;
+  const Jak2WaterTextureUploadPlans* water_plans = nullptr;
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
   const metal_renderer::Jak2MapTextureUploadPlan* map_plan = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
@@ -673,19 +680,39 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
 
   const auto alpha = std::find(metal_renderer::kJak2AlphaTextureUploadBuckets.begin(),
                                metal_renderer::kJak2AlphaTextureUploadBuckets.end(), bucket_id);
-  if (alpha == metal_renderer::kJak2AlphaTextureUploadBuckets.end()) {
+  if (alpha != metal_renderer::kJak2AlphaTextureUploadBuckets.end()) {
+    const std::size_t index = static_cast<std::size_t>(
+        alpha - metal_renderer::kJak2AlphaTextureUploadBuckets.begin());
+    const auto& plan = (*dispatch->alpha_plans)[index];
+    if (!plan.present) {
+      return;
+    }
+    if (plan.bucket_id != bucket_id) {
+      throw std::runtime_error("Jak 2 alpha texture-setup dispatch order is inconsistent");
+    }
+    dispatch->host->metrics.alpha_texture_uploads[index].executions++;
+    return;
+  }
+
+  const auto water = std::find(metal_renderer::kJak2WaterTextureUploadBuckets.begin(),
+                               metal_renderer::kJak2WaterTextureUploadBuckets.end(), bucket_id);
+  if (water == metal_renderer::kJak2WaterTextureUploadBuckets.end()) {
     return;
   }
   const std::size_t index = static_cast<std::size_t>(
-      alpha - metal_renderer::kJak2AlphaTextureUploadBuckets.begin());
-  const auto& plan = (*dispatch->alpha_plans)[index];
+      water - metal_renderer::kJak2WaterTextureUploadBuckets.begin());
+  const auto& plan = (*dispatch->water_plans)[index];
   if (!plan.present) {
     return;
   }
   if (plan.bucket_id != bucket_id) {
-    throw std::runtime_error("Jak 2 alpha texture-setup dispatch order is inconsistent");
+    throw std::runtime_error("Jak 2 water texture-upload dispatch order is inconsistent");
   }
-  dispatch->host->metrics.alpha_texture_uploads[index].executions++;
+  const std::string label = "Jak 2 water texture upload bucket " + std::to_string(bucket_id);
+  execute_ordinary_texture_upload_or_throw(
+      dispatch->host, plan.ordinary, dispatch->live_ee_memory,
+      &dispatch->host->metrics.water_texture_uploads[index].executions, label.c_str(),
+      dispatch->host_texture_mutated);
 }
 
 bool execute_bucket4_plan(goal_jak2_metal_host* host,
@@ -866,6 +893,24 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       alpha_texture_plans[i] = *plan;
     }
+    Jak2WaterTextureUploadPlans water_texture_plans;
+    static_assert(GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT ==
+                  metal_renderer::kJak2WaterTextureUploadBuckets.size());
+    for (std::size_t i = 0; i < metal_renderer::kJak2WaterTextureUploadBuckets.size(); ++i) {
+      const u32 bucket_id = metal_renderer::kJak2WaterTextureUploadBuckets[i];
+      metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+      const auto plan = metal_renderer::plan_jak2_water_texture_upload(
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id,
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &capture);
+      record_texture_upload_metrics(&host->metrics.water_texture_uploads[i], bucket_id, capture);
+      if (!plan) {
+        const std::string error = "Jak 2 water texture-upload plan rejected bucket " +
+                                  std::to_string(bucket_id) + " DMA";
+        record_failure(host, error.c_str());
+        return;
+      }
+      water_texture_plans[i] = *plan;
+    }
     metal_renderer::Jak2CommonTfragTextureUploadCapture common_tfrag_texture_capture;
     const auto common_tfrag_texture_plan =
         metal_renderer::plan_jak2_common_tfrag_texture_upload(
@@ -964,6 +1009,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &tfrag_texture_plans,
         &shrub_texture_plans,
         &alpha_texture_plans,
+        &water_texture_plans,
         &*common_tfrag_texture_plan,
         &*map_texture_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,

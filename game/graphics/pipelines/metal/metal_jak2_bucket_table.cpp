@@ -47,6 +47,9 @@ constexpr Table make_table() {
   const auto tfragment_trans = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::TFragmentTrans;
   };
+  const auto tfragment_water = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::TFragmentWater;
+  };
   const auto shrub = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::Shrub;
   };
@@ -61,6 +64,12 @@ constexpr Table make_table() {
   };
   const auto tie_trans_envmap = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::TieTransEnvmap;
+  };
+  const auto tie_water = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::TieWater;
+  };
+  const auto tie_water_envmap = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::TieWaterEnvmap;
   };
   const auto merc = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::Merc;
@@ -104,12 +113,13 @@ constexpr Table make_table() {
     defer(level_bucket(BucketId::MERC_L0_PRIS2, BucketId::MERC_L1_PRIS2, level));
     defer(level_bucket(BucketId::GMERC_L0_PRIS2, BucketId::GMERC_L1_PRIS2, level));
 
-    defer(level_bucket(BucketId::TEX_L0_WATER, BucketId::TEX_L1_WATER, level));
+    host_texture_upload(level_bucket(BucketId::TEX_L0_WATER, BucketId::TEX_L1_WATER, level));
     defer(level_bucket(BucketId::MERC_L0_WATER, BucketId::MERC_L1_WATER, level));
     defer(level_bucket(BucketId::GMERC_L0_WATER, BucketId::GMERC_L1_WATER, level));
-    defer(level_bucket(BucketId::TFRAG_W_L0_WATER, BucketId::TFRAG_W_L1_WATER, level));
-    defer(level_bucket(BucketId::TIE_W_L0_WATER, BucketId::TIE_W_L1_WATER, level));
-    defer(level_bucket(BucketId::ETIE_W_L0_WATER, BucketId::ETIE_W_L1_WATER, level));
+    tfragment_water(level_bucket(BucketId::TFRAG_W_L0_WATER, BucketId::TFRAG_W_L1_WATER, level));
+    tie_water(level_bucket(BucketId::TIE_W_L0_WATER, BucketId::TIE_W_L1_WATER, level));
+    tie_water_envmap(
+        level_bucket(BucketId::ETIE_W_L0_WATER, BucketId::ETIE_W_L1_WATER, level));
   }
 
   host_texture_upload(BucketId::TEX_LCOM_TFRAG);
@@ -172,20 +182,23 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 122);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 98);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 21);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 27);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUploadDirect) == 2);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Visibility) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Sprite) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TFragment) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TFragmentTrans) == 6);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TFragmentWater) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Shrub) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Tie) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieEnvmap) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTrans) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTransEnvmap) == 6);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWater) == 6);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWaterEnvmap) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::BlitDisplay) == 1);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);

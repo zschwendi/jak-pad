@@ -36,9 +36,11 @@ constexpr u32 kTieBucket = static_cast<u32>(jak2::BucketId::TIE_L0_TFRAG);
 constexpr u32 kEtieBucket = static_cast<u32>(jak2::BucketId::ETIE_L0_TFRAG);
 constexpr u32 kAlphaTieBucket = static_cast<u32>(jak2::BucketId::TIE_T_L0_ALPHA);
 constexpr u32 kAlphaEtieBucket = static_cast<u32>(jak2::BucketId::ETIE_T_L0_ALPHA);
+constexpr u32 kWaterTieBucket = static_cast<u32>(jak2::BucketId::TIE_W_L0_WATER);
+constexpr u32 kWaterEtieBucket = static_cast<u32>(jak2::BucketId::ETIE_W_L0_WATER);
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 static_assert(kTieBucket == 9 && kEtieBucket == 10 && kAlphaTieBucket == 129 &&
-              kAlphaEtieBucket == 130);
+              kAlphaEtieBucket == 130 && kWaterTieBucket == 256 && kWaterEtieBucket == 257);
 
 int failures = 0;
 
@@ -325,31 +327,40 @@ tfrag3::TieTree make_named_tree() {
   std::vector<u32> env;
   std::vector<u32> trans;
   std::vector<u32> trans_env;
+  std::vector<u32> water;
+  std::vector<u32> water_env;
   add_quad(&tree, -64.f, -8.f, -32.f, 32.f, 0, 255, 255, 255, &left);
   add_quad(&tree, 8.f, 64.f, -32.f, 32.f, 1, 255, 255, 255, &right);
   add_quad(&tree, -16.f, 16.f, -16.f, 16.f, 2, 0, 255, 0, &env);
   add_quad(&tree, -6.f, 6.f, -28.f, 28.f, 3, 255, 255, 255, &trans);
   add_quad(&tree, -5.f, 5.f, -14.f, 14.f, 4, 255, 0, 0, &trans_env);
+  add_quad(&tree, -6.f, 6.f, -28.f, 28.f, 5, 255, 255, 255, &water);
+  add_quad(&tree, -5.f, 5.f, -14.f, 14.f, 6, 0, 0, 255, &water_env);
 
   std::vector<u32> normal = left;
   normal.insert(normal.end(), right.begin(), right.end());
   tree.static_draws.push_back(
       tie_draw(normal, {{6, 2, UINT16_MAX, 0}, {6, 2, UINT16_MAX, 1}}, false));
   tree.static_draws.push_back(tie_draw(trans, {{6, 2, UINT16_MAX, 1}}, false, true));
+  tree.static_draws.push_back(tie_draw(water, {{6, 2, UINT16_MAX, 1}}, false, true));
   tree.static_draws.push_back(tie_draw(env, {{6, 2, UINT16_MAX, 1}}, false));
   tree.static_draws.push_back(tie_draw(trans_env, {{6, 2, UINT16_MAX, 1}}, false, true));
+  tree.static_draws.push_back(tie_draw(water_env, {{6, 2, UINT16_MAX, 1}}, false, true));
   tree.static_draws.push_back(tie_draw(env, {{6, 2, UINT16_MAX, 1}}, true));
   tree.static_draws.push_back(tie_draw(trans_env, {{6, 2, UINT16_MAX, 1}}, true));
-  tree.category_draw_indices = {0, 1, 2, 2, 3, 4, 4, 5, 6, 6};
+  tree.static_draws.push_back(tie_draw(water_env, {{6, 2, UINT16_MAX, 1}}, true));
+  tree.category_draw_indices = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   tree.packed_vertices.matrix_groups.push_back(
       {-1, 0, static_cast<u32>(tree.packed_vertices.vertices.size()), true});
-  tree.colors.color_count = 5;
-  tree.colors.data.assign(128, 0);
+  tree.colors.color_count = 7;
+  tree.colors.data.assign(((tree.colors.color_count + 3) / 4) * 128, 0);
   set_tod_color(&tree.colors, 0, 128, 0, 0, 64);
   set_tod_color(&tree.colors, 1, 0, 0, 128, 64);
   set_tod_color(&tree.colors, 2, 0, 0, 0, 64);
   set_tod_color(&tree.colors, 3, 0, 128, 0, 64);
   set_tod_color(&tree.colors, 4, 0, 0, 0, 64);
+  set_tod_color(&tree.colors, 5, 0, 0, 128, 64);
+  set_tod_color(&tree.colors, 6, 0, 0, 0, 64);
   return tree;
 }
 
@@ -594,6 +605,11 @@ int main() {
     MetalTieCategory alpha_env_child("etie-t-l0-alpha",
                                      static_cast<int>(kAlphaEtieBucket), &parent,
                                      tfrag3::TieCategory::TRANS_ENVMAP);
+    MetalTieCategory water_child("tie-w-l0-water", static_cast<int>(kWaterTieBucket), &parent,
+                                 tfrag3::TieCategory::WATER);
+    MetalTieCategory water_env_child("etie-w-l0-water",
+                                     static_cast<int>(kWaterEtieBucket), &parent,
+                                     tfrag3::TieCategory::WATER_ENVMAP);
     const std::array<float, 4> half_red_tint = {64.f, 64.f, 64.f, 128.f};
     const auto empty_child = make_empty_bucket();
     const auto hidden_parent = make_parent_chain(proto_mask({kLeftProto}), half_red_tint);
@@ -675,6 +691,33 @@ int main() {
           "the alpha ETIE child emits its adjacent TRANS envmap base and second draws");
     check(count_non_black_rgb(alpha_env_after_normal.pixels) > 20,
           "the alpha ETIE base/shine pair produces deterministic non-black readback");
+
+    const auto water_after_normal = render_sequence(
+        device, queue, &pso_cache, &sampler_cache, &texture_pool, &parent, &water_child, nullptr,
+        &empty_child, 12);
+    check(water_after_normal.completed && water_after_normal.child_finished &&
+              water_after_normal.draw_calls == 1 && water_after_normal.triangles == 2 &&
+              water_after_normal.background.tie_draws == 1 &&
+              water_after_normal.background.tie_tris == 2 &&
+              water_after_normal.background.unexpected_dma == 0,
+          "the later empty water TIE child reuses the same-frame normal parent state once");
+    check(count_rgba(water_after_normal.pixels, 0, 0, 128, 255) > 20,
+          "the water TIE child applies its half-blend FR3 draw mode on readback");
+
+    const auto water_env_after_normal =
+        render_sequence(device, queue, &pso_cache, &sampler_cache, &texture_pool, &parent,
+                        &water_env_child, nullptr, &empty_child, 12);
+    check(water_env_after_normal.completed && water_env_after_normal.child_finished &&
+              water_env_after_normal.draw_calls == 2 &&
+              water_env_after_normal.triangles == 4 &&
+              water_env_after_normal.background.tie_draws == 2 &&
+              water_env_after_normal.background.tie_tris == 4 &&
+              water_env_after_normal.background.tie_envmap_second_draws == 1 &&
+              water_env_after_normal.background.tie_envmap_second_tris == 2 &&
+              water_env_after_normal.background.unexpected_dma == 0,
+          "the water ETIE child emits its adjacent WATER envmap base and second draws");
+    check(count_non_black_rgb(water_env_after_normal.pixels) > 20,
+          "the water ETIE base/shine pair produces deterministic non-black readback");
 
     const auto linked_parent =
         make_parent_chain(proto_mask({kLeftProto}), half_red_tint, proto_mask({kRightProto}));

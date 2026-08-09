@@ -33,11 +33,14 @@ int main() {
   std::size_t sprite = 0;
   std::size_t tfragment = 0;
   std::size_t tfragment_trans = 0;
+  std::size_t tfragment_water = 0;
   std::size_t shrub = 0;
   std::size_t tie = 0;
   std::size_t tie_envmap = 0;
   std::size_t tie_trans = 0;
   std::size_t tie_trans_envmap = 0;
+  std::size_t tie_water = 0;
+  std::size_t tie_water_envmap = 0;
   std::size_t merc = 0;
   std::size_t blit_display = 0;
   bool contiguous = true;
@@ -52,21 +55,24 @@ int main() {
     sprite += table[i].behavior == Behavior::Sprite;
     tfragment += table[i].behavior == Behavior::TFragment;
     tfragment_trans += table[i].behavior == Behavior::TFragmentTrans;
+    tfragment_water += table[i].behavior == Behavior::TFragmentWater;
     shrub += table[i].behavior == Behavior::Shrub;
     tie += table[i].behavior == Behavior::Tie;
     tie_envmap += table[i].behavior == Behavior::TieEnvmap;
     tie_trans += table[i].behavior == Behavior::TieTrans;
     tie_trans_envmap += table[i].behavior == Behavior::TieTransEnvmap;
+    tie_water += table[i].behavior == Behavior::TieWater;
+    tie_water_envmap += table[i].behavior == Behavior::TieWaterEnvmap;
     merc += table[i].behavior == Behavior::Merc;
     blit_display += table[i].behavior == Behavior::BlitDisplay;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 122, "122 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 98, "98 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
-  check(host_texture_upload == 21,
-        "twenty-one exact texture/setup buckets are handled synchronously by the host");
+  check(host_texture_upload == 27,
+        "twenty-seven exact texture/setup buckets are handled synchronously by the host");
   check(host_texture_upload_direct == 2,
         "two exact texture/setup buckets also retain their Direct payloads");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
@@ -74,6 +80,7 @@ int main() {
   check(tfragment == 6, "six normal per-level TFRAG buckets are implemented by Metal");
   check(tfragment_trans == 6,
         "six translucent per-level TFRAG buckets are implemented by Metal");
+  check(tfragment_water == 6, "six water per-level TFRAG buckets are implemented by Metal");
   check(shrub == 6, "six normal per-level SHRUB buckets are implemented by Metal");
   check(tie == 6, "six normal per-level TIE parent buckets are implemented by Metal");
   check(tie_envmap == 6,
@@ -81,6 +88,9 @@ int main() {
   check(tie_trans == 6, "six translucent per-level TIE child buckets are implemented by Metal");
   check(tie_trans_envmap == 6,
         "six translucent per-level ETIE child buckets are implemented by Metal");
+  check(tie_water == 6, "six water per-level TIE child buckets are implemented by Metal");
+  check(tie_water_envmap == 6,
+        "six water per-level ETIE child buckets are implemented by Metal");
   check(merc == 6, "six normal per-level Merc buckets are implemented by Metal");
   check(blit_display == 1, "one source-proven BlitDisplays bucket is implemented by Metal");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
@@ -106,8 +116,8 @@ int main() {
             has_behavior(jak2::BucketId::TEX_L5_TFRAG, Behavior::HostTextureUpload) &&
             has_behavior(jak2::BucketId::TFRAG_S_L0_TFRAG, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::TFRAG_T_L0_ALPHA, Behavior::TFragmentTrans) &&
-            has_behavior(jak2::BucketId::TFRAG_W_L0_WATER, Behavior::DeferredSkip),
-        "normal and translucent TFRAG are explicit while water remains unpromoted");
+            has_behavior(jak2::BucketId::TFRAG_W_L0_WATER, Behavior::TFragmentWater),
+        "normal, translucent, and water TFRAG families are explicit");
   check(has_behavior(jak2::BucketId::TIE_L0_TFRAG, Behavior::Tie) &&
             has_behavior(jak2::BucketId::TIE_L1_TFRAG, Behavior::Tie) &&
             has_behavior(jak2::BucketId::TIE_L2_TFRAG, Behavior::Tie) &&
@@ -140,9 +150,9 @@ int main() {
             has_behavior(jak2::BucketId::TIE_V_L0_TFRAG, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::TIE_T_L0_ALPHA, Behavior::TieTrans) &&
             has_behavior(jak2::BucketId::ETIE_T_L0_ALPHA, Behavior::TieTransEnvmap) &&
-            has_behavior(jak2::BucketId::TIE_W_L0_WATER, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::ETIE_W_L0_WATER, Behavior::DeferredSkip),
-        "TIE scissor/vanish stay unbound, translucent is explicit, and water remains deferred");
+            has_behavior(jak2::BucketId::TIE_W_L0_WATER, Behavior::TieWater) &&
+            has_behavior(jak2::BucketId::ETIE_W_L0_WATER, Behavior::TieWaterEnvmap),
+        "TIE scissor/vanish stay unbound while translucent and water are explicit");
   check(has_behavior(jak2::BucketId::MERC_L0_TFRAG, Behavior::Merc) &&
             has_behavior(jak2::BucketId::MERC_L1_TFRAG, Behavior::Merc) &&
             has_behavior(jak2::BucketId::MERC_L2_TFRAG, Behavior::Merc) &&
@@ -214,9 +224,9 @@ int main() {
         "DEBUG_NO_ZBUF1 and TEX_ALL_MAP preserve their reference upload-plus-Direct behavior");
   check(has_behavior(jak2::BucketId::SHADOW, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_PRIS2, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::ETIE_W_L5_WATER, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::GMERC_L5_WATER, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::DEBUG3, Behavior::DeferredSkip),
-        "common, prismatic, water, and tail bindings are deferred");
+        "common, prismatic, water-Merc, and tail bindings are deferred");
   check(has_behavior(jak2::BucketId::SKY_DRAW, Behavior::Direct) &&
             has_behavior(jak2::BucketId::PROGRESS, Behavior::Direct) &&
             has_behavior(jak2::BucketId::SCREEN_FILTER, Behavior::Direct) &&

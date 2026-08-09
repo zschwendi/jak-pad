@@ -293,6 +293,12 @@ void test_texture_bucket_allowlist() {
           "each source-identical alpha texture bucket accepts an exact empty chain");
   }
 
+  for (const u32 bucket_id : metal_renderer::kJak2WaterTextureUploadBuckets) {
+    const auto result = capture(make_empty_fixture(bucket_id), bucket_id);
+    check(result.valid && !result.present && result.classification == Classification::Absent,
+          "each source-identical water texture bucket accepts an exact empty chain");
+  }
+
   const auto packet = make_empty_fixture();
   check(!metal_renderer::capture_jak2_tfrag_texture_upload(
              packet.data(), packet.size(), kChainOffset, 8)
@@ -400,6 +406,30 @@ void test_alpha_execution_plan() {
              metal_renderer::kJak2AlphaTextureUploadBuckets[0])
              .has_value(),
         "an unobserved ordinary page descriptor is rejected for alpha setup");
+}
+
+void test_water_execution_plan() {
+  for (const u32 bucket_id : metal_renderer::kJak2WaterTextureUploadBuckets) {
+    auto packet = make_normal_ordinary_fixture(bucket_id);
+    metal_renderer::Jak2CommonTfragTextureUploadCapture result;
+    const auto plan = metal_renderer::plan_jak2_water_texture_upload(
+        packet.data(), packet.size(), kChainOffset, bucket_id, packet.data(), packet.size(),
+        &result);
+    check(plan.has_value() && plan->present && plan->bucket_id == bucket_id &&
+              plan->ordinary.page_offset == kTexturePageOffset && plan->ordinary.mode == -1 &&
+              result.valid && result.classification == Classification::OrdinaryOnly &&
+              result.transfer_count == 5 && result.inert_transfers == 3 &&
+              result.ordinary_descriptors == 1 && result.direct_setup_transfers == 1 &&
+              result.other_transfers == 0 && result.total_payload_bytes == 176,
+          "each water texture bucket produces one owned ordinary upload plan");
+  }
+
+  auto packet = make_normal_shrub_fixture(metal_renderer::kJak2WaterTextureUploadBuckets[0]);
+  check(!metal_renderer::plan_jak2_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset,
+             metal_renderer::kJak2WaterTextureUploadBuckets[0], packet.data(), packet.size())
+             .has_value(),
+        "the alpha-style Direct-only setup is rejected for water texture upload");
 }
 
 void test_common_opcode27_execution_plan() {
@@ -805,6 +835,7 @@ int main() {
   test_normal_tfrag_execution_plan();
   test_normal_shrub_execution_plan();
   test_alpha_execution_plan();
+  test_water_execution_plan();
   test_common_opcode27_execution_plan();
   test_empty_common_execution_plan();
   test_common_opcode27_shape_variants_fail_closed();
