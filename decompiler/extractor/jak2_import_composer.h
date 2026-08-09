@@ -12,12 +12,19 @@ namespace jak2_import_composer {
 struct Request {
   std::filesystem::path iso_path;
   std::filesystem::path source_object_pack_root;
+  std::filesystem::path project_resource_root;
   std::filesystem::path candidate_root;
 };
 
 enum class Phase {
   validating_source_pack,
+  validating_project_resources,
   extracting_iso,
+  generating_data,
+  preparing_fr3,
+  generating_recipe,
+  materializing_output,
+  finalizing_candidate,
 };
 
 struct Progress {
@@ -41,11 +48,20 @@ enum class ErrorCode {
   cancelled,
   callback_failed,
   source_pack_failed,
+  project_resources_failed,
   iso_open_failed,
   iso_validation_failed,
+  unsupported_revision,
+  graph_failed,
+  generated_data_failed,
+  fr3_failed,
+  recipe_failed,
   candidate_create_failed,
+  work_write_failed,
+  insufficient_storage,
+  materialization_failed,
+  candidate_finalize_failed,
   candidate_cleanup_failed,
-  prepared_output_unavailable,
   allocation_failed,
   unexpected_failure,
 };
@@ -90,10 +106,13 @@ struct Summary {
   std::uint64_t output_bytes = 0;
 };
 
-/// Stage and validate the currently implemented Jak II import inputs in a fresh private candidate.
-/// This API cannot return success until generated data, FR3 preparation, checked materialization,
-/// and final candidate validation are implemented. The current `prepared_output_unavailable`
-/// result preserves the verified extraction under `.opengoal-import/` for recovery.
+/// Synchronously compose the checked Jak II base-retail/full-gameplay profile in a fresh private
+/// candidate from a user-supplied ISO, the recorded source-object pack, and the checked public
+/// project-resource bundle. Optional community-localization outputs are outside this profile.
+/// The caller owns
+/// serialization and runs this function off its UI thread. `candidate_root` must not exist.
+/// Failures after candidate creation preserve its hidden work tree for recovery; successful
+/// candidates contain only the exact checked `iso/` and `fr3/` output sets.
 Result<Summary> compose(const Request& request, const Options& options = {});
 
 const char* error_code_name(ErrorCode code);

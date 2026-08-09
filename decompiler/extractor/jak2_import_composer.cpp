@@ -6,33 +6,130 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <new>
+#include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include "common/custom_data/Jak2OutputMaterializer.h"
+#include "common/custom_data/Jak2PublicGeneratedArtifacts.h"
+#include "common/custom_data/Jak2PublicOutputGraph.h"
 #include "common/custom_data/Jak2SourceObjectPack.h"
 
+#include "decompiler/extractor/jak2_extracted_generated_inputs.h"
+#include "decompiler/extractor/jak2_fr3_preparer.h"
 #include "decompiler/extractor/jak2_import_composer_internal.h"
 #include "decompiler/extractor/jak2_iso_validation.h"
-#include <sys/stat.h>
+#include "goalc/make/Jak2OutputRecipeGenerator.h"
+
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
 
 namespace jak2_import_composer {
 namespace {
 
+namespace artifacts = jak2_public_generated_artifacts;
 namespace fs = std::filesystem;
+namespace generator = jak2_output_recipe_generator;
+namespace materializer = jak2_output_materializer;
+namespace recipe = jak2_output_recipe;
 namespace source_pack = jak2_source_object_pack;
 
+constexpr std::uint64_t kMaxManifestBytes = 4ull * 1024 * 1024;
+constexpr std::size_t kIoChunkBytes = 256 * 1024;
+constexpr std::string_view kGraphIsoRoot = "iso_data/jak2";
 constexpr std::string_view kWorkDirectoryName = ".opengoal-import";
+constexpr std::string_view kPreparedDirectoryName = ".prepared";
+constexpr std::string_view kRecipeFileName = "jak2-output-recipe.bin";
+
+struct ProjectResource {
+  std::string_view relative_path;
+  std::uint64_t size;
+  std::uint64_t xxh64;
+};
+
+constexpr std::array<ProjectResource, 29> kProjectResources = {{
+    {"decompiler/config/jak2/all-types.gc", 2139642, 0xf1c9cc80ffeaacbeull},
+    {"decompiler/config/jak2/jak2_config.jsonc", 6990, 0xecc26e8aea74739bull},
+    {"decompiler/config/jak2/ntsc_v1/anonymous_function_types.jsonc", 74737,
+     0x095ac93fd8222a52ull},
+    {"decompiler/config/jak2/ntsc_v1/art-group-info.min.json", 159832,
+     0x7c6e03754b65d0dcull},
+    {"decompiler/config/jak2/ntsc_v1/art_info.jsonc", 2143, 0x71f626bb231c5126ull},
+    {"decompiler/config/jak2/ntsc_v1/hacks.jsonc", 23769, 0xf9c820bfa5de3b00ull},
+    {"decompiler/config/jak2/ntsc_v1/import_deps.jsonc", 3, 0x7d441b099c11d3baull},
+    {"decompiler/config/jak2/ntsc_v1/inputs.jsonc", 16798, 0x568e154420dbe74aull},
+    {"decompiler/config/jak2/ntsc_v1/joint-node-info.min.json", 196240,
+     0x9ba6ffbeb767fce7ull},
+    {"decompiler/config/jak2/ntsc_v1/label_types.jsonc", 51803, 0xf75baa979c51054full},
+    {"decompiler/config/jak2/ntsc_v1/part-groups.min.json", 45988,
+     0xdf195fead140ef13ull},
+    {"decompiler/config/jak2/ntsc_v1/process_stack_size_overrides.jsonc", 85,
+     0xe7272e44a2c46dcdull},
+    {"decompiler/config/jak2/ntsc_v1/stack_structures.jsonc", 66887,
+     0xf9b6f9fda9ecd31full},
+    {"decompiler/config/jak2/ntsc_v1/tex-info.min.json", 1192038,
+     0x6d2836f7d424886aull},
+    {"decompiler/config/jak2/ntsc_v1/type_casts.jsonc", 360255,
+     0x20f5980bc47c3aaeull},
+    {"decompiler/config/jak2/ntsc_v1/var_names.jsonc", 116280,
+     0x4ecfcd34d8a160d0ull},
+    {"game/assets/fonts/jak2_jak3_korean_db.json", 474061, 0xe505eaa129be8496ull},
+    {"game/assets/jak2/game_subtitle.gp", 7390, 0x3ce05a2fde3f4212ull},
+    {"game/assets/jak2/game_text.gp", 2780, 0xa2e69ffc238c08d1ull},
+    {"game/assets/jak2/subtitle/subtitle_lines_en-US.json", 167003,
+     0xe0b7de5b2a33de9aull},
+    {"game/assets/jak2/subtitle/subtitle_meta_en-US.json", 826192,
+     0xe2a3c587bd8643d7ull},
+    {"game/assets/jak2/text/game_custom_text_de-DE.json", 8105,
+     0x7a1da60b33528337ull},
+    {"game/assets/jak2/text/game_custom_text_en-GB.json", 7585,
+     0x281176307c82a0c4ull},
+    {"game/assets/jak2/text/game_custom_text_en-US.json", 7564,
+     0x6625036101477415ull},
+    {"game/assets/jak2/text/game_custom_text_es-ES.json", 8209,
+     0xee85aa0a46909cb4ull},
+    {"game/assets/jak2/text/game_custom_text_fr-FR.json", 8604,
+     0xcbc42e843c0b956dull},
+    {"game/assets/jak2/text/game_custom_text_it-IT.json", 8140,
+     0xfc2cdbf146f799fbull},
+    {"game/assets/jak2/text/game_custom_text_ja-JP.json", 9358,
+     0xd67c825c7fa7437dull},
+    {"game/assets/jak2/text/game_custom_text_ko-KR.json", 7564,
+     0x6625036101477415ull},
+}};
+
+constexpr std::array<std::string_view, 13> kRequiredIsoFiles = {
+    "KERNEL.CGO", "GAME.CGO",   "TITLE.DGO", "CWI.DGO",      "CTA.DGO",
+    "PRI.DGO",    "FEA.DGO",    "INTROCST.DGO", "LDJAKBRN.DGO", "DEMO1.SBK",
+    "CTYWIDE1.SBK", "FOREXIT1.SBK", "FOREXIT2.SBK",
+};
+
+constexpr std::array<std::string_view, 8> kRequiredFr3Files = {
+    "GAME.fr3",    "title.fr3",   "ctywide.fr3", "ctysluma.fr3",
+    "prison.fr3",  "forexita.fr3", "introcst.fr3", "ldjakbrn.fr3",
+};
 
 Error make_error(ErrorCode code, std::string message) {
   return {code, std::move(message), std::nullopt, std::nullopt};
 }
 
-Error make_filesystem_error(ErrorCode code, std::string message, const std::error_code& error) {
-  return make_error(code, std::move(message) + ": " + error.message());
+Error make_filesystem_error(ErrorCode fallback,
+                            std::string message,
+                            const std::error_code& error) {
+  const auto code = error == std::errc::no_space_on_device ? ErrorCode::insufficient_storage
+                                                            : fallback;
+  if (error) {
+    message += ": " + error.message();
+  }
+  return make_error(code, std::move(message));
 }
 
 bool direct_directory(const fs::path& path) {
@@ -50,6 +147,25 @@ bool missing_path(const fs::path& path) {
   const auto status = fs::symlink_status(path, error);
   return (!error || error == std::errc::no_such_file_or_directory) &&
          status.type() == fs::file_type::not_found;
+}
+
+bool safe_relative_path(const fs::path& path) {
+  if (path.empty() || path.is_absolute() || path.has_root_path() || path.lexically_normal() != path) {
+    return false;
+  }
+  return std::all_of(path.begin(), path.end(), [](const auto& part) {
+    return !part.empty() && part != "." && part != "..";
+  });
+}
+
+bool safe_basename(std::string_view name) {
+  if (name.empty() || name.size() > 128 || name == "." || name == "..") {
+    return false;
+  }
+  return std::all_of(name.begin(), name.end(), [](unsigned char byte) {
+    return (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+           (byte >= '0' && byte <= '9') || byte == '-' || byte == '_' || byte == '.';
+  });
 }
 
 class CallbackForwarder {
@@ -90,7 +206,7 @@ class CallbackForwarder {
   Error cancellation_or_callback_error(std::string cancellation_message) const {
     return m_callback_failed
                ? make_error(ErrorCode::callback_failed,
-                            "The Jak II import callback failed while staging the candidate.")
+                            "The Jak II import callback failed while composing the candidate.")
                : make_error(ErrorCode::cancelled, std::move(cancellation_message));
   }
 
@@ -100,6 +216,17 @@ class CallbackForwarder {
   const Options& m_options;
   bool m_callback_failed = false;
 };
+
+Error callback_aware_error(CallbackForwarder& callbacks,
+                           ErrorCode code,
+                           std::string message,
+                           bool underlying_cancelled) {
+  if (callbacks.callback_failed()) {
+    return callbacks.cancellation_or_callback_error({});
+  }
+  return underlying_cancelled ? callbacks.cancellation_or_callback_error(std::move(message))
+                              : make_error(code, std::move(message));
+}
 
 struct FileCloser {
   void operator()(FILE* file) const {
@@ -118,20 +245,13 @@ Result<OwnedFile> open_iso_file(const fs::path& path) {
         ErrorCode::iso_open_failed, "The selected ISO could not be opened safely",
         std::error_code(errno, std::generic_category())));
   }
-
-  struct stat status{};
-  if (::fstat(descriptor, &status) != 0) {
+  struct stat status {};
+  if (::fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode)) {
     const std::error_code error(errno, std::generic_category());
     ::close(descriptor);
     return Result<OwnedFile>::failure(make_filesystem_error(
-        ErrorCode::iso_open_failed, "The selected ISO could not be inspected", error));
+        ErrorCode::iso_open_failed, "The selected ISO is not a direct regular file", error));
   }
-  if (!S_ISREG(status.st_mode)) {
-    ::close(descriptor);
-    return Result<OwnedFile>::failure(
-        make_error(ErrorCode::iso_open_failed, "The selected ISO is not a direct regular file."));
-  }
-
   auto* stream = ::fdopen(descriptor, "rb");
   if (!stream) {
     const std::error_code error(errno, std::generic_category());
@@ -140,6 +260,61 @@ Result<OwnedFile> open_iso_file(const fs::path& path) {
         ErrorCode::iso_open_failed, "The selected ISO stream could not be opened", error));
   }
   return Result<OwnedFile>::success(OwnedFile(stream));
+}
+
+Result<std::vector<std::uint8_t>> read_direct_file(const fs::path& path,
+                                                   std::uint64_t expected_or_max_size,
+                                                   bool exact_size,
+                                                   ErrorCode error_code,
+                                                   std::string_view description,
+                                                   CallbackForwarder& callbacks) {
+  const auto descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0) {
+    return Result<std::vector<std::uint8_t>>::failure(make_filesystem_error(
+        error_code, std::string(description) + " could not be opened safely",
+        std::error_code(errno, std::generic_category())));
+  }
+  struct stat status {};
+  if (::fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) || status.st_size <= 0) {
+    const std::error_code error(errno, std::generic_category());
+    ::close(descriptor);
+    return Result<std::vector<std::uint8_t>>::failure(make_filesystem_error(
+        error_code, std::string(description) + " is not a nonempty direct regular file", error));
+  }
+  const auto file_size = static_cast<std::uint64_t>(status.st_size);
+  if ((exact_size && file_size != expected_or_max_size) ||
+      (!exact_size && file_size > expected_or_max_size) ||
+      file_size > std::numeric_limits<std::size_t>::max()) {
+    ::close(descriptor);
+    return Result<std::vector<std::uint8_t>>::failure(
+        make_error(error_code, std::string(description) + " has an unexpected size."));
+  }
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(file_size));
+  std::size_t offset = 0;
+  while (offset < bytes.size()) {
+    if (callbacks.poll_cancel()) {
+      ::close(descriptor);
+      return Result<std::vector<std::uint8_t>>::failure(callbacks.cancellation_or_callback_error(
+          "Jak II import was cancelled while reading " + std::string(description) + "."));
+    }
+    const auto count = std::min(kIoChunkBytes, bytes.size() - offset);
+    const auto read_count = ::read(descriptor, bytes.data() + offset, count);
+    if (read_count <= 0) {
+      const std::error_code error(errno, std::generic_category());
+      ::close(descriptor);
+      return Result<std::vector<std::uint8_t>>::failure(make_filesystem_error(
+          error_code, std::string(description) + " could not be read exactly", error));
+    }
+    offset += static_cast<std::size_t>(read_count);
+  }
+  std::uint8_t extra = 0;
+  const auto extra_count = ::read(descriptor, &extra, 1);
+  const auto close_result = ::close(descriptor);
+  if (extra_count != 0 || close_result != 0) {
+    return Result<std::vector<std::uint8_t>>::failure(
+        make_error(error_code, std::string(description) + " changed while it was read."));
+  }
+  return Result<std::vector<std::uint8_t>>::success(std::move(bytes));
 }
 
 bool directory_contains(const fs::path& root,
@@ -164,20 +339,22 @@ bool directory_contains(const fs::path& root,
 }
 
 Result<Request> validate_request(const Request& request) {
-  const std::array<const fs::path*, 3> paths = {
+  const std::array<const fs::path*, 4> paths = {
       &request.iso_path,
       &request.source_object_pack_root,
+      &request.project_resource_root,
       &request.candidate_root,
   };
   if (std::any_of(paths.begin(), paths.end(),
-                  [](const auto* path) { return !path->is_absolute() || path->empty(); }) ||
+                  [](const auto* path) { return path->empty() || !path->is_absolute(); }) ||
       request.candidate_root.filename().empty() || !direct_regular_file(request.iso_path) ||
       !direct_directory(request.source_object_pack_root) ||
+      !direct_directory(request.project_resource_root) ||
       !direct_directory(request.candidate_root.parent_path()) ||
       !missing_path(request.candidate_root)) {
-    return Result<Request>::failure(
-        make_error(ErrorCode::invalid_argument,
-                   "The ISO, verified source pack, or fresh candidate path is invalid."));
+    return Result<Request>::failure(make_error(
+        ErrorCode::invalid_argument,
+        "The ISO, source pack, project resources, or fresh candidate path is invalid."));
   }
 
   Request resolved = request;
@@ -192,6 +369,11 @@ Result<Request> validate_request(const Request& request) {
     return Result<Request>::failure(make_error(
         ErrorCode::invalid_argument, "The source-object-pack root could not be canonicalized."));
   }
+  resolved.project_resource_root = fs::canonical(request.project_resource_root, error);
+  if (error) {
+    return Result<Request>::failure(make_error(
+        ErrorCode::invalid_argument, "The project-resource root could not be canonicalized."));
+  }
   const auto candidate_parent = fs::canonical(request.candidate_root.parent_path(), error);
   if (error) {
     return Result<Request>::failure(make_error(
@@ -204,17 +386,641 @@ Result<Request> validate_request(const Request& request) {
   }
 
   std::error_code containment_error;
-  if (directory_contains(resolved.source_object_pack_root, candidate_parent, &containment_error)) {
-    return Result<Request>::failure(
-        make_error(ErrorCode::invalid_argument,
-                   "The import candidate cannot be created inside the source-object pack."));
-  }
+  const bool inside_source =
+      directory_contains(resolved.source_object_pack_root, candidate_parent, &containment_error);
   if (containment_error) {
-    return Result<Request>::failure(
-        make_error(ErrorCode::invalid_argument,
-                   "The import candidate containment check could not be completed."));
+    return Result<Request>::failure(make_error(
+        ErrorCode::invalid_argument, "The candidate containment check could not be completed."));
+  }
+  const bool inside_resources =
+      directory_contains(resolved.project_resource_root, candidate_parent, &containment_error);
+  if (containment_error) {
+    return Result<Request>::failure(make_error(
+        ErrorCode::invalid_argument, "The candidate containment check could not be completed."));
+  }
+  if (inside_source || inside_resources) {
+    return Result<Request>::failure(make_error(
+        ErrorCode::invalid_argument,
+        "The import candidate cannot be created inside an input resource directory."));
   }
   return Result<Request>::success(std::move(resolved));
+}
+
+std::optional<Error> validate_project_resources(const fs::path& root,
+                                                const Options& options) {
+  std::set<std::string> expected_files;
+  std::set<std::string> expected_directories;
+  for (const auto& resource : kProjectResources) {
+    expected_files.emplace(resource.relative_path);
+    fs::path parent = fs::path(resource.relative_path).parent_path();
+    while (!parent.empty()) {
+      expected_directories.emplace(parent.generic_string());
+      parent = parent.parent_path();
+    }
+  }
+
+  std::set<std::string> actual_files;
+  std::set<std::string> actual_directories;
+  std::error_code error;
+  fs::recursive_directory_iterator iterator(root, error);
+  const fs::recursive_directory_iterator end;
+  for (; !error && iterator != end; iterator.increment(error)) {
+    const auto status = iterator->symlink_status(error);
+    if (error) {
+      break;
+    }
+    const auto relative = iterator->path().lexically_relative(root).generic_string();
+    if (status.type() == fs::file_type::directory) {
+      actual_directories.emplace(relative);
+    } else if (status.type() == fs::file_type::regular) {
+      actual_files.emplace(relative);
+    } else {
+      return make_error(ErrorCode::project_resources_failed,
+                        "The project-resource bundle contains a link or unsupported entry.");
+    }
+  }
+  if (error || actual_files != expected_files || actual_directories != expected_directories) {
+    return make_error(ErrorCode::project_resources_failed,
+                      "The project-resource bundle does not match its exact 29-file closure.");
+  }
+
+  CallbackForwarder callbacks(options);
+  std::uint64_t bytes_hashed = 0;
+  for (std::size_t index = 0; index < kProjectResources.size(); ++index) {
+    const auto& resource = kProjectResources[index];
+    auto bytes = read_direct_file(root / resource.relative_path, resource.size, true,
+                                  ErrorCode::project_resources_failed,
+                                  "A checked project resource", callbacks);
+    if (!bytes) {
+      return bytes.error();
+    }
+    if (XXH64(bytes.value().data(), bytes.value().size(), 0) != resource.xxh64) {
+      return make_error(ErrorCode::project_resources_failed,
+                        "A checked project resource has drifted: " +
+                            std::string(resource.relative_path));
+    }
+    bytes_hashed += bytes.value().size();
+    if (!callbacks.report({Phase::validating_project_resources, index + 1,
+                           kProjectResources.size(), bytes_hashed,
+                           std::string(resource.relative_path)})) {
+      return callbacks.cancellation_or_callback_error({});
+    }
+  }
+  return {};
+}
+
+bool supported_revision(const jak2_iso::Revision& revision) {
+  const auto& expected = jak2_iso::import_revision();
+  return revision.serial == expected.serial && revision.elf_hash == expected.elf_hash &&
+         revision.contents_hash == expected.contents_hash &&
+         revision.file_count == expected.file_count &&
+         revision.decomp_config_version == expected.decomp_config_version &&
+         revision.territory == expected.territory;
+}
+
+struct PipelineState {
+  generator::Graph graph;
+  source_pack::Summary source_pack_summary;
+  OwnedFile iso_file;
+  std::optional<jak2_iso::StagedExtraction> extraction;
+  std::optional<artifacts::Build> generated_artifacts;
+  std::vector<materializer::GeneratedObjectArtifact> generated_objects;
+  std::vector<materializer::GeneratedFlatArtifact> generated_flat_files;
+  std::vector<std::string> verified_flat_paths;
+  std::vector<std::string> expected_fr3_basenames;
+  std::optional<recipe::Recipe> output_recipe;
+  std::optional<Summary> summary;
+  std::optional<internal::FinalContract> final_contract;
+};
+
+std::optional<Error> remove_partial_residue(const fs::path& work_root);
+Error preserve_error(Error error, const internal::WorkPaths& paths);
+std::optional<Error> promote_directory(const fs::path& source, const fs::path& destination);
+std::optional<Error> write_file_atomically(const fs::path& destination,
+                                           std::span<const std::uint8_t> bytes,
+                                           CallbackForwarder& callbacks);
+
+std::optional<Error> extract_iso_stage(const internal::WorkPaths& paths,
+                                       const Options& options,
+                                       PipelineState* state) {
+  CallbackForwarder callbacks(options);
+  iso_file::Options iso_options;
+  iso_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+  iso_options.on_progress = [&](const iso_file::Progress& progress) {
+    callbacks.report({Phase::extracting_iso, progress.files_completed, progress.files_total,
+                      progress.bytes_completed, progress.current_path});
+  };
+  auto extracted = jak2_iso::extract_and_validate(
+      state->iso_file.get(), paths.work_root / "extracted-iso", iso_options);
+  if (!extracted) {
+    const bool cancelled = extracted.error().code == jak2_iso::ValidationErrorCode::cancelled;
+    return callback_aware_error(
+        callbacks, ErrorCode::iso_validation_failed,
+        cancelled ? "Jak II ISO extraction was cancelled."
+                  : "The selected Jak II ISO was rejected: " + extracted.error().message,
+        cancelled);
+  }
+  if (callbacks.callback_failed()) {
+    return callbacks.cancellation_or_callback_error({});
+  }
+  auto extraction = extracted.take_value();
+  if (!supported_revision(extraction.match.revision)) {
+    return make_error(ErrorCode::unsupported_revision,
+                      "On-device preparation supports only SCUS-97265 NTSC-U v2.");
+  }
+  state->extraction.emplace(std::move(extraction));
+  return {};
+}
+
+std::optional<Error> generate_data_stage(const Request& request,
+                                         const Options& options,
+                                         PipelineState* state) {
+  if (!state->extraction) {
+    return make_error(ErrorCode::generated_data_failed,
+                      "The generated-data stage has no validated extraction.");
+  }
+  CallbackForwarder callbacks(options);
+  jak2_extracted_generated_inputs::Options input_options;
+  input_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+  input_options.on_progress = [&](const jak2_extracted_generated_inputs::Progress& progress) {
+    callbacks.report({Phase::generating_data, progress.units_completed, progress.units_total, 0,
+                      progress.source_relative_path});
+  };
+  auto inputs = jak2_extracted_generated_inputs::build(
+      {state->extraction->staging_directory, state->extraction->match.revision}, state->graph,
+      input_options);
+  if (!inputs) {
+    const bool cancelled =
+        inputs.error().code == jak2_extracted_generated_inputs::ErrorCode::cancelled;
+    return callback_aware_error(
+        callbacks, ErrorCode::generated_data_failed,
+        cancelled ? "Jak II generated-input loading was cancelled."
+                  : "Could not load checked Jak II generated inputs: " + inputs.error().message,
+        cancelled);
+  }
+
+  artifacts::Options artifact_options;
+  artifact_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+  artifact_options.on_progress = [&](const artifacts::Progress& progress) {
+    callbacks.report({Phase::generating_data, progress.units_completed, progress.units_total, 0,
+                      progress.relative_path});
+  };
+  auto built = artifacts::build(inputs.value(), state->graph, request.project_resource_root,
+                                artifact_options);
+  if (!built) {
+    const bool cancelled = built.error().code == artifacts::ErrorCode::cancelled;
+    return callback_aware_error(
+        callbacks, ErrorCode::generated_data_failed,
+        cancelled ? "Jak II generated-artifact building was cancelled."
+                  : "Could not build checked Jak II generated data: " + built.error().message,
+        cancelled);
+  }
+  if (callbacks.callback_failed()) {
+    return callbacks.cancellation_or_callback_error({});
+  }
+  if (built.value().artifacts.size() != 10) {
+    return make_error(ErrorCode::generated_data_failed,
+                      "The checked Jak II generator did not produce exactly ten artifacts.");
+  }
+  state->generated_artifacts.emplace(built.take_value());
+  return {};
+}
+
+std::optional<Error> prepare_fr3_stage(const Request& request,
+                                       const internal::WorkPaths& paths,
+                                       const Options& options,
+                                       PipelineState* state) {
+  if (!state->extraction || !supported_revision(state->extraction->match.revision)) {
+    return make_error(ErrorCode::fr3_failed,
+                      "The FR3 stage has no supported validated extraction.");
+  }
+  CallbackForwarder callbacks(options);
+  jak2_fr3::Options fr3_options;
+  fr3_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+  fr3_options.report_progress = [&](const jak2_fr3::Progress& progress) {
+    callbacks.report({Phase::preparing_fr3, progress.completed, progress.total, 0,
+                      progress.current_item});
+  };
+  const auto fr3_work = paths.work_root / "fr3-work";
+  auto prepared = jak2_fr3::prepare(request.project_resource_root,
+                                    state->extraction->staging_directory, fr3_work, fr3_options);
+  if (!prepared) {
+    const bool cancelled = prepared.error().code == jak2_fr3::ErrorCode::cancelled;
+    const bool insufficient = prepared.error().code == jak2_fr3::ErrorCode::output_limit_exceeded &&
+                              prepared.error().message.find("less free space") != std::string::npos;
+    return callback_aware_error(
+        callbacks, insufficient ? ErrorCode::insufficient_storage : ErrorCode::fr3_failed,
+        cancelled ? "Jak II FR3 preparation was cancelled."
+                  : "Jak II FR3 preparation failed: " + prepared.error().message,
+        cancelled);
+  }
+  if (callbacks.callback_failed()) {
+    return callbacks.cancellation_or_callback_error({});
+  }
+
+  const auto fr3_root = fr3_work / "fr3";
+  std::set<std::string> basenames;
+  std::error_code error;
+  for (fs::directory_iterator iterator(fr3_root, error), end; !error && iterator != end;
+       iterator.increment(error)) {
+    const auto status = iterator->symlink_status(error);
+    const auto basename = iterator->path().filename().string();
+    if (error || status.type() != fs::file_type::regular || !safe_basename(basename) ||
+        !basename.ends_with(".fr3") || !basenames.emplace(basename).second) {
+      return make_error(ErrorCode::fr3_failed,
+                        "FR3 preparation returned an unsafe or duplicate output file.");
+    }
+  }
+  if (error || basenames.empty() || basenames.size() != prepared.value().levels_written) {
+    return make_error(ErrorCode::fr3_failed,
+                      "FR3 preparation returned an incomplete output set.");
+  }
+  state->expected_fr3_basenames.assign(basenames.begin(), basenames.end());
+  return {};
+}
+
+std::optional<Error> adapt_flat_paths(PipelineState* state) {
+  if (!state->extraction) {
+    return make_error(ErrorCode::recipe_failed,
+                      "The output-recipe stage has no validated extraction.");
+  }
+  std::set<std::string> verified;
+  const fs::path graph_root(kGraphIsoRoot);
+  for (const auto& copy : state->graph.flat_file_copies) {
+    const auto source = fs::path(copy.source_path).lexically_normal();
+    const auto relative = source.lexically_relative(graph_root);
+    if (!safe_relative_path(relative) ||
+        !direct_regular_file(state->extraction->staging_directory / relative)) {
+      return make_error(ErrorCode::graph_failed,
+                        "A checked flat-file source is unsafe, missing, or linked.");
+    }
+    verified.emplace(relative.generic_string());
+  }
+  state->verified_flat_paths.assign(verified.begin(), verified.end());
+  return {};
+}
+
+class OwnedPartialFile {
+ public:
+  explicit OwnedPartialFile(fs::path path) : m_path(std::move(path)) {}
+  ~OwnedPartialFile() {
+    if (m_descriptor >= 0) {
+      ::close(m_descriptor);
+    }
+    if (m_exists) {
+      std::error_code ignored;
+      fs::remove(m_path, ignored);
+    }
+  }
+  void set_descriptor(int descriptor) { m_descriptor = descriptor; }
+  void mark_exists() { m_exists = true; }
+  void release() { m_exists = false; }
+  std::optional<std::string> close_checked() {
+    const auto descriptor = m_descriptor;
+    m_descriptor = -1;
+    if (descriptor >= 0 && ::close(descriptor) != 0) {
+      return "Could not close an import partial file: " +
+             std::error_code(errno, std::generic_category()).message();
+    }
+    return {};
+  }
+
+ private:
+  fs::path m_path;
+  int m_descriptor = -1;
+  bool m_exists = false;
+};
+
+std::optional<Error> write_file_atomically(const fs::path& destination,
+                                           std::span<const std::uint8_t> bytes,
+                                           CallbackForwarder& callbacks) {
+  if (bytes.empty() || !direct_directory(destination.parent_path()) ||
+      !missing_path(destination)) {
+    return make_error(ErrorCode::work_write_failed,
+                      "An import work-file destination is invalid or already exists.");
+  }
+  const auto partial = fs::path(destination.string() + ".partial");
+  OwnedPartialFile file(partial);
+  const auto descriptor = ::open(partial.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+  if (descriptor < 0) {
+    return make_filesystem_error(ErrorCode::work_write_failed,
+                                 "Could not create an exclusive import partial file",
+                                 std::error_code(errno, std::generic_category()));
+  }
+  file.set_descriptor(descriptor);
+  file.mark_exists();
+  std::size_t offset = 0;
+  while (offset < bytes.size()) {
+    if (callbacks.poll_cancel()) {
+      return callbacks.cancellation_or_callback_error(
+          "Jak II import was cancelled while writing generated data.");
+    }
+    const auto count = std::min(kIoChunkBytes, bytes.size() - offset);
+    const auto written = ::write(descriptor, bytes.data() + offset, count);
+    if (written <= 0) {
+      return make_filesystem_error(ErrorCode::work_write_failed,
+                                   "Could not write a complete import work file",
+                                   std::error_code(errno, std::generic_category()));
+    }
+    offset += static_cast<std::size_t>(written);
+  }
+  if (::fsync(descriptor) != 0) {
+    return make_filesystem_error(ErrorCode::work_write_failed,
+                                 "Could not synchronize an import work file",
+                                 std::error_code(errno, std::generic_category()));
+  }
+  if (const auto close_error = file.close_checked()) {
+    return make_error(ErrorCode::work_write_failed, *close_error);
+  }
+  std::error_code error;
+  fs::rename(partial, destination, error);
+  if (error) {
+    return make_filesystem_error(ErrorCode::work_write_failed,
+                                 "Could not install an import work file", error);
+  }
+  file.release();
+  return {};
+}
+
+std::optional<Error> persist_generated_artifacts(const artifacts::Build& build,
+                                                 const fs::path& root,
+                                                 PipelineState* state,
+                                                 CallbackForwarder& callbacks) {
+  std::error_code error;
+  if (!fs::create_directory(root, error) || error) {
+    return make_filesystem_error(ErrorCode::work_write_failed,
+                                 "Could not create the generated-artifact root", error);
+  }
+  for (const auto& artifact : build.artifacts) {
+    const fs::path relative(artifact.output_relative_path);
+    if (!safe_relative_path(relative) || relative.parent_path().empty()) {
+      return make_error(ErrorCode::generated_data_failed,
+                        "A generated artifact returned an unsafe relative path.");
+    }
+    const auto directory = root / relative.parent_path();
+    if (!fs::exists(directory, error)) {
+      if (!fs::create_directories(directory, error) || error) {
+        return make_filesystem_error(ErrorCode::work_write_failed,
+                                     "Could not create a generated-artifact directory", error);
+      }
+    } else if (error || !direct_directory(directory)) {
+      return make_error(ErrorCode::work_write_failed,
+                        "A generated-artifact directory is unsafe.");
+    }
+    if (const auto write_error = write_file_atomically(root / relative, artifact.bytes, callbacks)) {
+      return write_error;
+    }
+    if (artifact.kind == artifacts::ArtifactKind::directory_tpages) {
+      state->generated_objects.push_back({recipe::GeneratedDataKind::directory_tpages,
+                                          "dir-tpages", artifact.output_relative_path,
+                                          artifact.bytes.size(), artifact.xxh64});
+    } else {
+      const auto kind = artifact.kind == artifacts::ArtifactKind::game_text
+                            ? recipe::GeneratedFlatFileKind::game_text
+                            : recipe::GeneratedFlatFileKind::game_subtitle;
+      state->generated_flat_files.push_back({kind, artifact.destination_basename,
+                                             artifact.output_relative_path,
+                                             artifact.bytes.size(), artifact.xxh64});
+    }
+  }
+  if (state->generated_objects.size() != 1 || state->generated_flat_files.size() != 9) {
+    return make_error(ErrorCode::generated_data_failed,
+                      "The generated-artifact catalog is incomplete.");
+  }
+  return {};
+}
+
+Result<internal::FinalContract> make_final_contract(const recipe::Recipe& output) {
+  std::set<std::string> iso;
+  std::set<std::string> fr3;
+  const auto add_iso = [&](const std::string& name) {
+    return safe_basename(name) && iso.emplace(name).second;
+  };
+  for (const auto& archive : output.archives) {
+    if (!add_iso(archive.destination_basename)) {
+      return Result<internal::FinalContract>::failure(make_error(
+          ErrorCode::recipe_failed, "The output recipe contains an unsafe ISO destination."));
+    }
+  }
+  for (const auto& copy : output.flat_file_copies) {
+    if (!add_iso(copy.destination_basename)) {
+      return Result<internal::FinalContract>::failure(make_error(
+          ErrorCode::recipe_failed, "The output recipe contains a duplicate ISO destination."));
+    }
+  }
+  for (const auto& generated : output.generated_flat_files) {
+    if (!add_iso(generated.destination_basename)) {
+      return Result<internal::FinalContract>::failure(make_error(
+          ErrorCode::recipe_failed, "The output recipe contains a duplicate generated output."));
+    }
+  }
+  for (const auto& name : output.expected_fr3_basenames) {
+    if (!safe_basename(name) || !name.ends_with(".fr3") || !fr3.emplace(name).second) {
+      return Result<internal::FinalContract>::failure(make_error(
+          ErrorCode::recipe_failed, "The output recipe contains an unsafe FR3 destination."));
+    }
+  }
+  if (iso.size() != output.archives.size() + output.flat_file_copies.size() +
+                        output.generated_flat_files.size() ||
+      fr3.size() != output.expected_fr3_basenames.size()) {
+    return Result<internal::FinalContract>::failure(
+        make_error(ErrorCode::recipe_failed, "The output recipe destination set is incomplete."));
+  }
+  for (const auto name : kRequiredIsoFiles) {
+    if (!iso.contains(std::string(name))) {
+      return Result<internal::FinalContract>::failure(make_error(
+          ErrorCode::recipe_failed, "The output recipe omits a required Jak II launch file."));
+    }
+  }
+  for (const auto name : kRequiredFr3Files) {
+    if (!fr3.contains(std::string(name))) {
+      return Result<internal::FinalContract>::failure(make_error(
+          ErrorCode::recipe_failed, "The output recipe omits a required Jak II launch FR3."));
+    }
+  }
+  return Result<internal::FinalContract>::success(
+      {{iso.begin(), iso.end()}, {fr3.begin(), fr3.end()}});
+}
+
+std::optional<Error> generate_recipe_stage(const Request& request,
+                                           const internal::WorkPaths& paths,
+                                           const Options& options,
+                                           PipelineState* state) {
+  if (!state->extraction || !state->generated_artifacts ||
+      state->expected_fr3_basenames.empty()) {
+    return make_error(ErrorCode::recipe_failed,
+                      "The output-recipe stage is missing a checked input.");
+  }
+  CallbackForwarder callbacks(options);
+  auto manifest = read_direct_file(request.source_object_pack_root / source_pack::kManifestName,
+                                   kMaxManifestBytes, false, ErrorCode::source_pack_failed,
+                                   "The source-object-pack manifest", callbacks);
+  if (!manifest) {
+    return manifest.error();
+  }
+  if (const auto flat_error = adapt_flat_paths(state)) {
+    return flat_error;
+  }
+
+  generator::VerifiedInputs inputs;
+  inputs.extracted_iso_root = kGraphIsoRoot;
+  inputs.verified_extracted_iso_relative_paths = state->verified_flat_paths;
+  inputs.expected_fr3_basenames = state->expected_fr3_basenames;
+  generator::Options generator_options;
+  generator_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+  const std::string_view manifest_view(reinterpret_cast<const char*>(manifest.value().data()),
+                                       manifest.value().size());
+  auto output = generator::generate_from_graph(state->graph, manifest_view,
+                                                state->extraction->match.revision, inputs,
+                                                generator_options);
+  if (!output) {
+    const bool cancelled = output.error().code == generator::ErrorCode::cancelled;
+    return callback_aware_error(
+        callbacks, ErrorCode::recipe_failed,
+        cancelled ? "Jak II output-recipe generation was cancelled."
+                  : "Could not generate the checked Jak II recipe: " + output.error().message,
+        cancelled);
+  }
+  if (output.value().source_object_pack != state->source_pack_summary.identity) {
+    return make_error(ErrorCode::source_pack_failed,
+                      "The source-object-pack manifest changed after validation.");
+  }
+  recipe::Options recipe_options;
+  recipe_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+  auto wire = recipe::encode(output.value(), state->extraction->match.revision, recipe_options);
+  if (!wire) {
+    const bool cancelled = wire.error().code == recipe::ErrorCode::cancelled;
+    return callback_aware_error(
+        callbacks, ErrorCode::recipe_failed,
+        cancelled ? "Jak II output-recipe encoding was cancelled."
+                  : "Could not encode the checked Jak II recipe: " + wire.error().message,
+        cancelled);
+  }
+  if (const auto write_error =
+          write_file_atomically(paths.work_root / kRecipeFileName, wire.value(), callbacks)) {
+    return write_error;
+  }
+  if (const auto artifact_error = persist_generated_artifacts(
+          *state->generated_artifacts, paths.work_root / "generated", state, callbacks)) {
+    return artifact_error;
+  }
+  auto contract = make_final_contract(output.value());
+  if (!contract) {
+    return contract.error();
+  }
+  state->generated_artifacts.reset();
+  state->final_contract.emplace(contract.take_value());
+  state->output_recipe.emplace(output.take_value());
+  return {};
+}
+
+std::optional<Error> materialize_stage(const Request& request,
+                                       const internal::WorkPaths& paths,
+                                       const Options& options,
+                                       PipelineState* state) {
+  if (!state->extraction || !state->output_recipe || !state->final_contract) {
+    return make_error(ErrorCode::materialization_failed,
+                      "The materializer stage is missing checked inputs.");
+  }
+  materializer::Inputs inputs;
+  inputs.recipe_file = paths.work_root / kRecipeFileName;
+  inputs.source_object_pack_root = request.source_object_pack_root;
+  inputs.extracted_iso_root = state->extraction->staging_directory;
+  inputs.generated_artifact_root = paths.work_root / "generated";
+  inputs.prepared_fr3_root = paths.work_root / "fr3-work/fr3";
+  inputs.generated_objects = state->generated_objects;
+  inputs.generated_flat_files = state->generated_flat_files;
+
+  CallbackForwarder callbacks(options);
+  materializer::Options materializer_options;
+  materializer_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+  materializer_options.on_progress = [&](const materializer::Progress& progress) {
+    callbacks.report({Phase::materializing_output, progress.completed, progress.total,
+                      progress.bytes_written, progress.current_item});
+  };
+  auto materialized = materializer::materialize(
+      inputs, paths.prepared_root, state->extraction->match.revision, materializer_options);
+  if (!materialized) {
+    const bool cancelled = materialized.error().code == materializer::ErrorCode::cancelled;
+    const bool insufficient =
+        materialized.error().code == materializer::ErrorCode::output_limit_exceeded;
+    return callback_aware_error(
+        callbacks, insufficient ? ErrorCode::insufficient_storage
+                                : ErrorCode::materialization_failed,
+        cancelled ? "Jak II output materialization was cancelled."
+                  : "Could not materialize the checked Jak II output: " +
+                        materialized.error().message,
+        cancelled);
+  }
+  if (callbacks.callback_failed()) {
+    return callbacks.cancellation_or_callback_error({});
+  }
+  const auto& summary = materialized.value();
+  if (summary.archives_written + summary.flat_files_written !=
+          state->final_contract->iso_basenames.size() ||
+      summary.fr3_files_written != state->final_contract->fr3_basenames.size()) {
+    return make_error(ErrorCode::materialization_failed,
+                      "The materializer summary does not match the exact output contract.");
+  }
+  state->summary = Summary{summary.archives_written, summary.objects_written,
+                           summary.flat_files_written, summary.fr3_files_written,
+                           summary.output_bytes};
+  return {};
+}
+
+Result<std::set<std::string>> exact_regular_file_set(const fs::path& root,
+                                                     ErrorCode code,
+                                                     std::string_view description) {
+  if (!direct_directory(root)) {
+    return Result<std::set<std::string>>::failure(
+        make_error(code, std::string(description) + " is missing or linked."));
+  }
+  std::set<std::string> files;
+  std::error_code error;
+  for (fs::directory_iterator iterator(root, error), end; !error && iterator != end;
+       iterator.increment(error)) {
+    const auto status = iterator->symlink_status(error);
+    const auto name = iterator->path().filename().string();
+    if (error || status.type() != fs::file_type::regular || !safe_basename(name) ||
+        !files.emplace(name).second) {
+      return Result<std::set<std::string>>::failure(make_error(
+          code, std::string(description) + " contains an unsafe or duplicate entry."));
+    }
+  }
+  if (error) {
+    return Result<std::set<std::string>>::failure(
+        make_error(code, std::string(description) + " changed during inspection."));
+  }
+  return Result<std::set<std::string>>::success(std::move(files));
+}
+
+std::optional<Error> validate_output_tree(const fs::path& root,
+                                          const internal::FinalContract& contract,
+                                          ErrorCode code) {
+  const auto iso = exact_regular_file_set(root / "iso", code, "The candidate ISO directory");
+  if (!iso) {
+    return iso.error();
+  }
+  const auto fr3 = exact_regular_file_set(root / "fr3", code, "The candidate FR3 directory");
+  if (!fr3) {
+    return fr3.error();
+  }
+  if (iso.value() != std::set<std::string>(contract.iso_basenames.begin(),
+                                           contract.iso_basenames.end()) ||
+      fr3.value() != std::set<std::string>(contract.fr3_basenames.begin(),
+                                           contract.fr3_basenames.end())) {
+    return make_error(code, "The candidate does not exactly match its checked output contract.");
+  }
+  std::set<std::string> entries;
+  std::error_code error;
+  for (fs::directory_iterator iterator(root, error), end; !error && iterator != end;
+       iterator.increment(error)) {
+    entries.emplace(iterator->path().filename().string());
+  }
+  if (error || entries != std::set<std::string>{"fr3", "iso"}) {
+    return make_error(code, "The candidate contains unexpected top-level entries.");
+  }
+  return {};
 }
 
 std::optional<Error> remove_partial_residue(const fs::path& work_root) {
@@ -224,24 +1030,20 @@ std::optional<Error> remove_partial_residue(const fs::path& work_root) {
   std::error_code error;
   fs::recursive_directory_iterator iterator(work_root, error);
   const fs::recursive_directory_iterator end;
-  if (error) {
-    return make_error(ErrorCode::candidate_cleanup_failed,
-                      "Could not inspect the preserved candidate for partial files.");
-  }
-  for (; iterator != end; iterator.increment(error)) {
-    if (error) {
-      return make_error(ErrorCode::candidate_cleanup_failed,
-                        "The preserved candidate changed while partial files were removed.");
-    }
+  for (; !error && iterator != end; iterator.increment(error)) {
     if (!iterator->path().filename().string().ends_with(".partial")) {
       continue;
     }
     const auto status = iterator->symlink_status(error);
-    if (error || status.type() != fs::file_type::regular || !fs::remove(iterator->path(), error) ||
-        error) {
+    if (error || status.type() != fs::file_type::regular ||
+        !fs::remove(iterator->path(), error) || error) {
       return make_error(ErrorCode::candidate_cleanup_failed,
                         "Could not remove an import partial file from the preserved candidate.");
     }
+  }
+  if (error) {
+    return make_error(ErrorCode::candidate_cleanup_failed,
+                      "The preserved candidate changed during partial cleanup.");
   }
   return {};
 }
@@ -252,6 +1054,28 @@ Error preserve_error(Error error, const internal::WorkPaths& paths) {
     error.cleanup_error = cleanup->message;
   }
   return error;
+}
+
+std::optional<Error> promote_directory(const fs::path& source, const fs::path& destination) {
+  if (!direct_directory(source) || !missing_path(destination)) {
+    return make_error(ErrorCode::candidate_finalize_failed,
+                      "A prepared output is missing or its destination already exists.");
+  }
+#if defined(__APPLE__)
+  if (::renamex_np(source.c_str(), destination.c_str(), RENAME_EXCL) != 0) {
+    return make_filesystem_error(ErrorCode::candidate_finalize_failed,
+                                 "Could not exclusively promote a prepared output directory",
+                                 std::error_code(errno, std::generic_category()));
+  }
+#else
+  std::error_code error;
+  fs::rename(source, destination, error);
+  if (error) {
+    return make_filesystem_error(ErrorCode::candidate_finalize_failed,
+                                 "Could not promote a prepared output directory", error);
+  }
+#endif
+  return {};
 }
 
 Error map_source_pack_failure(const source_pack::Error& error, CallbackForwarder& callbacks) {
@@ -271,16 +1095,19 @@ namespace internal {
 
 Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
                                            const Options& options,
-                                           std::span<const StageAction> stages) {
-  WorkPaths paths{candidate_root, candidate_root / kWorkDirectoryName};
+                                           std::span<const StageAction> stages,
+                                           const std::optional<Summary>* produced_summary,
+                                           const std::optional<FinalContract>* produced_contract) {
+  WorkPaths paths{candidate_root, candidate_root / kWorkDirectoryName,
+                  candidate_root / kWorkDirectoryName / kPreparedDirectoryName};
   bool candidate_created = false;
   try {
     if (!candidate_root.is_absolute() || candidate_root.filename().empty() ||
         !direct_directory(candidate_root.parent_path()) || !missing_path(candidate_root) ||
-        stages.empty()) {
-      return Result<Summary>::failure(
-          make_error(ErrorCode::invalid_argument,
-                     "The composer requires a fresh absolute candidate under a direct directory."));
+        stages.empty() || !produced_summary || !produced_contract) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::invalid_argument,
+          "The composer requires a fresh absolute candidate under a direct directory."));
     }
     for (const auto& stage : stages) {
       if (!stage.run) {
@@ -288,12 +1115,11 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
             make_error(ErrorCode::invalid_argument, "The composer stage list is incomplete."));
       }
     }
-
     std::error_code error;
     if (!fs::create_directory(candidate_root, error) || error) {
-      return Result<Summary>::failure(
-          make_filesystem_error(ErrorCode::candidate_create_failed,
-                                "Could not exclusively create the import candidate", error));
+      return Result<Summary>::failure(make_filesystem_error(
+          ErrorCode::candidate_create_failed, "Could not exclusively create the import candidate",
+          error));
     }
     candidate_created = true;
     if (!fs::create_directory(paths.work_root, error) || error) {
@@ -306,10 +1132,10 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
     CallbackForwarder callbacks(options);
     for (const auto& stage : stages) {
       if (callbacks.poll_cancel()) {
-        return Result<Summary>::failure(
-            preserve_error(callbacks.cancellation_or_callback_error(
-                               "Jak II import was cancelled before the next staging phase."),
-                           paths));
+        return Result<Summary>::failure(preserve_error(
+            callbacks.cancellation_or_callback_error(
+                "Jak II import was cancelled before the next preparation stage."),
+            paths));
       }
       if (!callbacks.report({stage.phase, 0, 1, 0, {}})) {
         return Result<Summary>::failure(
@@ -324,25 +1150,90 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
       }
     }
 
-    return Result<Summary>::failure(preserve_error(
-        make_error(ErrorCode::prepared_output_unavailable,
-                   "Jak II ISO and source-pack validation completed, but generated data, FR3, "
-                   "checked materialization, and final candidate validation are not implemented."),
-        paths));
+    if (!produced_summary->has_value() || !produced_contract->has_value()) {
+      return Result<Summary>::failure(preserve_error(
+          make_error(ErrorCode::candidate_finalize_failed,
+                     "The composition stages did not produce a checked final contract."),
+          paths));
+    }
+    const auto& summary = produced_summary->value();
+    const auto& contract = produced_contract->value();
+    const std::set<std::string> contract_iso(contract.iso_basenames.begin(),
+                                             contract.iso_basenames.end());
+    const std::set<std::string> contract_fr3(contract.fr3_basenames.begin(),
+                                             contract.fr3_basenames.end());
+    if (contract_iso.empty() || contract_fr3.empty() ||
+        contract_iso.size() != contract.iso_basenames.size() ||
+        contract_fr3.size() != contract.fr3_basenames.size() ||
+        summary.archives_written + summary.flat_files_written != contract_iso.size() ||
+        summary.fr3_files_written != contract_fr3.size()) {
+      return Result<Summary>::failure(preserve_error(
+          make_error(ErrorCode::candidate_finalize_failed,
+                     "The composition summary does not match its exact final contract."),
+          paths));
+    }
+    if (const auto validation = validate_output_tree(
+            paths.prepared_root, contract, ErrorCode::candidate_finalize_failed)) {
+      return Result<Summary>::failure(preserve_error(*validation, paths));
+    }
+    if (callbacks.poll_cancel()) {
+      return Result<Summary>::failure(preserve_error(
+          callbacks.cancellation_or_callback_error(
+              "Jak II import was cancelled before candidate finalization."),
+          paths));
+    }
+    if (!callbacks.report({Phase::finalizing_candidate, 0, 2, 0, "iso"})) {
+      return Result<Summary>::failure(
+          preserve_error(callbacks.cancellation_or_callback_error({}), paths));
+    }
+    if (const auto promote = promote_directory(paths.prepared_root / "iso", candidate_root / "iso")) {
+      return Result<Summary>::failure(preserve_error(*promote, paths));
+    }
+    if (!callbacks.report({Phase::finalizing_candidate, 1, 2, 0, "fr3"})) {
+      return Result<Summary>::failure(
+          preserve_error(callbacks.cancellation_or_callback_error({}), paths));
+    }
+    if (const auto promote = promote_directory(paths.prepared_root / "fr3", candidate_root / "fr3")) {
+      return Result<Summary>::failure(preserve_error(*promote, paths));
+    }
+    if (!fs::remove(paths.prepared_root, error) || error) {
+      return Result<Summary>::failure(preserve_error(
+          make_error(ErrorCode::candidate_cleanup_failed,
+                     "Could not remove the empty prepared-output directory."),
+          paths));
+    }
+    fs::remove_all(paths.work_root, error);
+    if (error) {
+      return Result<Summary>::failure(preserve_error(
+          make_error(ErrorCode::candidate_cleanup_failed,
+                     "Could not remove the completed import work directory."),
+          paths));
+    }
+    if (const auto validation = validate_output_tree(
+            candidate_root, contract, ErrorCode::candidate_finalize_failed)) {
+      return Result<Summary>::failure(preserve_error(*validation, paths));
+    }
+    if (!callbacks.report({Phase::finalizing_candidate, 2, 2,
+                           summary.output_bytes, {}})) {
+      auto callback_error = callbacks.cancellation_or_callback_error({});
+      callback_error.preserved_candidate_root = candidate_root;
+      return Result<Summary>::failure(std::move(callback_error));
+    }
+    return Result<Summary>::success(summary);
   } catch (const std::bad_alloc&) {
-    auto error =
-        make_error(ErrorCode::allocation_failed, "Jak II import staging ran out of memory.");
+    auto error = make_error(ErrorCode::allocation_failed,
+                            "Jak II import composition ran out of memory.");
     return Result<Summary>::failure(candidate_created ? preserve_error(std::move(error), paths)
                                                       : std::move(error));
   } catch (const std::exception& exception) {
-    auto error =
-        make_error(ErrorCode::unexpected_failure,
-                   "Jak II import staging failed unexpectedly: " + std::string(exception.what()));
+    auto error = make_error(ErrorCode::unexpected_failure,
+                            "Jak II import composition failed unexpectedly: " +
+                                std::string(exception.what()));
     return Result<Summary>::failure(candidate_created ? preserve_error(std::move(error), paths)
                                                       : std::move(error));
   } catch (...) {
-    auto error =
-        make_error(ErrorCode::unexpected_failure, "Jak II import staging failed unexpectedly.");
+    auto error = make_error(ErrorCode::unexpected_failure,
+                            "Jak II import composition failed unexpectedly.");
     return Result<Summary>::failure(candidate_created ? preserve_error(std::move(error), paths)
                                                       : std::move(error));
   }
@@ -356,8 +1247,8 @@ Result<Summary> compose(const Request& request, const Options& options) {
     if (!validated_request) {
       return Result<Summary>::failure(validated_request.error());
     }
-    const auto resolved_request = validated_request.take_value();
-    auto iso = open_iso_file(resolved_request.iso_path);
+    const auto resolved = validated_request.take_value();
+    auto iso = open_iso_file(resolved.iso_path);
     if (!iso) {
       return Result<Summary>::failure(iso.error());
     }
@@ -373,93 +1264,112 @@ Result<Summary> compose(const Request& request, const Options& options) {
       callbacks.report({Phase::validating_source_pack, progress.completed, progress.total,
                         progress.bytes_hashed, progress.current_file});
     };
-    auto verified_pack =
-        source_pack::validate_recorded(resolved_request.source_object_pack_root, source_options);
+    auto verified_pack = source_pack::validate_recorded(resolved.source_object_pack_root,
+                                                        source_options);
     if (!verified_pack) {
       return Result<Summary>::failure(map_source_pack_failure(verified_pack.error(), callbacks));
     }
     if (callbacks.callback_failed()) {
       return Result<Summary>::failure(callbacks.cancellation_or_callback_error({}));
     }
+    if (!callbacks.report({Phase::validating_project_resources, 0, kProjectResources.size(), 0,
+                           {}})) {
+      return Result<Summary>::failure(callbacks.cancellation_or_callback_error({}));
+    }
+    if (const auto resource_error = validate_project_resources(
+            resolved.project_resource_root, options)) {
+      return Result<Summary>::failure(*resource_error);
+    }
 
-    OwnedFile iso_file = iso.take_value();
-    const std::array<internal::StageAction, 1> stages = {{
+    jak1_output_graph::Options graph_options = jak2_public_output_graph::default_options();
+    graph_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+    auto graph = jak2_public_output_graph::decode_base_retail(graph_options);
+    if (!graph) {
+      const bool cancelled = graph.error().code == jak1_output_graph::ErrorCode::cancelled;
+      return Result<Summary>::failure(callback_aware_error(
+          callbacks, ErrorCode::graph_failed,
+          cancelled ? "Jak II output-graph loading was cancelled."
+                    : "The embedded Jak II output graph was rejected: " + graph.error().message,
+          cancelled));
+    }
+
+    PipelineState state;
+    state.graph = graph.take_value();
+    state.source_pack_summary = verified_pack.take_value();
+    state.iso_file = iso.take_value();
+    const std::array<internal::StageAction, 5> stages = {{
         {Phase::extracting_iso,
-         [&](const internal::WorkPaths& paths) -> std::optional<Error> {
-           CallbackForwarder extraction_callbacks(options);
-           iso_file::Options iso_options;
-           iso_options.should_cancel = [&] { return extraction_callbacks.poll_cancel(); };
-           iso_options.on_progress = [&](const iso_file::Progress& progress) {
-             extraction_callbacks.report({Phase::extracting_iso, progress.files_completed,
-                                          progress.files_total, progress.bytes_completed,
-                                          progress.current_path});
-           };
-           auto extracted = jak2_iso::extract_and_validate(
-               iso_file.get(), paths.work_root / "extracted-iso", iso_options);
-           if (!extracted) {
-             if (extracted.error().code == jak2_iso::ValidationErrorCode::cancelled ||
-                 extraction_callbacks.callback_failed()) {
-               return extraction_callbacks.cancellation_or_callback_error(
-                   "Jak II ISO extraction was cancelled.");
-             }
-             return make_error(
-                 ErrorCode::iso_validation_failed,
-                 "The selected Jak II ISO was rejected: " + extracted.error().message);
-           }
-           if (extraction_callbacks.callback_failed()) {
-             return extraction_callbacks.cancellation_or_callback_error({});
-           }
-           return {};
+         [&](const internal::WorkPaths& paths) {
+           return extract_iso_stage(paths, options, &state);
+         }},
+        {Phase::generating_data,
+         [&](const internal::WorkPaths&) {
+           return generate_data_stage(resolved, options, &state);
+         }},
+        {Phase::preparing_fr3,
+         [&](const internal::WorkPaths& paths) {
+           return prepare_fr3_stage(resolved, paths, options, &state);
+         }},
+        {Phase::generating_recipe,
+         [&](const internal::WorkPaths& paths) {
+           return generate_recipe_stage(resolved, paths, options, &state);
+         }},
+        {Phase::materializing_output,
+         [&](const internal::WorkPaths& paths) {
+           return materialize_stage(resolved, paths, options, &state);
          }},
     }};
-    return internal::compose_in_fresh_candidate(resolved_request.candidate_root, options, stages);
+    return internal::compose_in_fresh_candidate(resolved.candidate_root, options, stages,
+                                                &state.summary, &state.final_contract);
   } catch (const std::bad_alloc&) {
     return Result<Summary>::failure(
-        make_error(ErrorCode::allocation_failed, "Jak II import staging ran out of memory."));
+        make_error(ErrorCode::allocation_failed, "Jak II import composition ran out of memory."));
   } catch (const std::exception& exception) {
-    return Result<Summary>::failure(
-        make_error(ErrorCode::unexpected_failure,
-                   "Jak II import staging failed unexpectedly: " + std::string(exception.what())));
+    return Result<Summary>::failure(make_error(
+        ErrorCode::unexpected_failure,
+        "Jak II import composition failed unexpectedly: " + std::string(exception.what())));
   } catch (...) {
-    return Result<Summary>::failure(
-        make_error(ErrorCode::unexpected_failure, "Jak II import staging failed unexpectedly."));
+    return Result<Summary>::failure(make_error(
+        ErrorCode::unexpected_failure, "Jak II import composition failed unexpectedly."));
   }
 }
 
 const char* error_code_name(ErrorCode code) {
   switch (code) {
-    case ErrorCode::invalid_argument:
-      return "invalid_argument";
-    case ErrorCode::cancelled:
-      return "cancelled";
-    case ErrorCode::callback_failed:
-      return "callback_failed";
-    case ErrorCode::source_pack_failed:
-      return "source_pack_failed";
-    case ErrorCode::iso_open_failed:
-      return "iso_open_failed";
-    case ErrorCode::iso_validation_failed:
-      return "iso_validation_failed";
-    case ErrorCode::candidate_create_failed:
-      return "candidate_create_failed";
-    case ErrorCode::candidate_cleanup_failed:
-      return "candidate_cleanup_failed";
-    case ErrorCode::prepared_output_unavailable:
-      return "prepared_output_unavailable";
-    case ErrorCode::allocation_failed:
-      return "allocation_failed";
-    case ErrorCode::unexpected_failure:
-      return "unexpected_failure";
+    case ErrorCode::invalid_argument: return "invalid_argument";
+    case ErrorCode::cancelled: return "cancelled";
+    case ErrorCode::callback_failed: return "callback_failed";
+    case ErrorCode::source_pack_failed: return "source_pack_failed";
+    case ErrorCode::project_resources_failed: return "project_resources_failed";
+    case ErrorCode::iso_open_failed: return "iso_open_failed";
+    case ErrorCode::iso_validation_failed: return "iso_validation_failed";
+    case ErrorCode::unsupported_revision: return "unsupported_revision";
+    case ErrorCode::graph_failed: return "graph_failed";
+    case ErrorCode::generated_data_failed: return "generated_data_failed";
+    case ErrorCode::fr3_failed: return "fr3_failed";
+    case ErrorCode::recipe_failed: return "recipe_failed";
+    case ErrorCode::candidate_create_failed: return "candidate_create_failed";
+    case ErrorCode::work_write_failed: return "work_write_failed";
+    case ErrorCode::insufficient_storage: return "insufficient_storage";
+    case ErrorCode::materialization_failed: return "materialization_failed";
+    case ErrorCode::candidate_finalize_failed: return "candidate_finalize_failed";
+    case ErrorCode::candidate_cleanup_failed: return "candidate_cleanup_failed";
+    case ErrorCode::allocation_failed: return "allocation_failed";
+    case ErrorCode::unexpected_failure: return "unexpected_failure";
   }
   return "unknown";
 }
 
 const char* phase_name(Phase phase) {
   switch (phase) {
-    case Phase::validating_source_pack:
-      return "validating_source_pack";
-    case Phase::extracting_iso:
-      return "extracting_iso";
+    case Phase::validating_source_pack: return "validating_source_pack";
+    case Phase::validating_project_resources: return "validating_project_resources";
+    case Phase::extracting_iso: return "extracting_iso";
+    case Phase::generating_data: return "generating_data";
+    case Phase::preparing_fr3: return "preparing_fr3";
+    case Phase::generating_recipe: return "generating_recipe";
+    case Phase::materializing_output: return "materializing_output";
+    case Phase::finalizing_candidate: return "finalizing_candidate";
   }
   return "unknown";
 }

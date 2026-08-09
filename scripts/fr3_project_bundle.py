@@ -41,6 +41,7 @@ class GameProfile:
     config_path: PurePosixPath
     allowed_prefixes: tuple[str, ...]
     allowed_exact_paths: frozenset[str]
+    additional_resource_paths: frozenset[str] = frozenset()
 
 
 PROFILES = {
@@ -63,7 +64,40 @@ PROFILES = {
         manifest_path=PurePosixPath("decompiler/config/jak2/fr3-project-resources.sha256"),
         config_path=PurePosixPath("decompiler/config/jak2/jak2_config.jsonc"),
         allowed_prefixes=("decompiler/config/jak2/",),
-        allowed_exact_paths=frozenset(),
+        allowed_exact_paths=frozenset(
+            {
+                "game/assets/fonts/jak2_jak3_korean_db.json",
+                "game/assets/jak2/game_subtitle.gp",
+                "game/assets/jak2/game_text.gp",
+                "game/assets/jak2/subtitle/subtitle_lines_en-US.json",
+                "game/assets/jak2/subtitle/subtitle_meta_en-US.json",
+                "game/assets/jak2/text/game_custom_text_de-DE.json",
+                "game/assets/jak2/text/game_custom_text_en-GB.json",
+                "game/assets/jak2/text/game_custom_text_en-US.json",
+                "game/assets/jak2/text/game_custom_text_es-ES.json",
+                "game/assets/jak2/text/game_custom_text_fr-FR.json",
+                "game/assets/jak2/text/game_custom_text_it-IT.json",
+                "game/assets/jak2/text/game_custom_text_ja-JP.json",
+                "game/assets/jak2/text/game_custom_text_ko-KR.json",
+            }
+        ),
+        additional_resource_paths=frozenset(
+            {
+                "game/assets/fonts/jak2_jak3_korean_db.json",
+                "game/assets/jak2/game_subtitle.gp",
+                "game/assets/jak2/game_text.gp",
+                "game/assets/jak2/subtitle/subtitle_lines_en-US.json",
+                "game/assets/jak2/subtitle/subtitle_meta_en-US.json",
+                "game/assets/jak2/text/game_custom_text_de-DE.json",
+                "game/assets/jak2/text/game_custom_text_en-GB.json",
+                "game/assets/jak2/text/game_custom_text_en-US.json",
+                "game/assets/jak2/text/game_custom_text_es-ES.json",
+                "game/assets/jak2/text/game_custom_text_fr-FR.json",
+                "game/assets/jak2/text/game_custom_text_it-IT.json",
+                "game/assets/jak2/text/game_custom_text_ja-JP.json",
+                "game/assets/jak2/text/game_custom_text_ko-KR.json",
+            }
+        ),
     ),
 }
 
@@ -290,11 +324,12 @@ def validate_resource_closure(
     derived = {profile.config_path}
     derived.update(referenced_config_paths(read_effective_config(root, profile)))
     derived.update(conventional_texture_merge_paths(root, profile))
+    derived.update(PurePosixPath(path) for path in profile.additional_resource_paths)
     if derived != expected:
         missing = sorted(path.as_posix() for path in derived - expected)
         extra = sorted(path.as_posix() for path in expected - derived)
         raise BundleError(
-            f"manifest differs from the {profile.display_name} FR3 resource closure; "
+            f"manifest differs from the {profile.display_name} import resource closure; "
             f"missing={missing}, extra={extra}"
         )
 
@@ -455,7 +490,7 @@ def build_bundle(
 def run_for_game(game: str, arguments: list[str] | None = None) -> int:
     profile = PROFILES[game]
     parser = argparse.ArgumentParser(
-        description=f"Build or verify the minimal public {profile.display_name} FR3 project-resource bundle."
+        description=f"Build or verify the minimal public {profile.display_name} import project-resource bundle."
     )
     parser.add_argument(
         "output", type=Path, help="new bundle directory, or existing bundle with --verify-only"

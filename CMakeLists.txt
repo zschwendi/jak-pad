@@ -46,7 +46,7 @@ option(OPENGOAL_BUILD_JAK2_EXTRACTED_GENERATED_INPUTS_ONLY
 option(OPENGOAL_BUILD_JAK1_IMPORT_COMPOSER_ONLY
        "Build only the portable Jak 1 raw-ISO import composer" OFF)
 option(OPENGOAL_BUILD_JAK2_IMPORT_COMPOSER_ONLY
-       "Build only the fail-closed Jak II raw-ISO importer foundation" OFF)
+       "Build only the portable Jak II raw-ISO import composer" OFF)
 set(OPENGOAL_JAK2_AOT_DIR "" CACHE PATH
     "Host-generated Jak 2 AOT C directory used by the iPhoneOS link proof")
 set(OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT "" CACHE PATH

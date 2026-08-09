@@ -2,13 +2,22 @@ include("${CMAKE_SOURCE_DIR}/common/util/safe_iso_reader.cmake")
 include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_source_object_pack.cmake")
 include("${CMAKE_SOURCE_DIR}/common/custom_data/jak2_source_object_pack.cmake")
 include("${CMAKE_SOURCE_DIR}/decompiler/extractor/jak2_iso_validation.cmake")
+set(OPENGOAL_FR3_PREPARER_GAME jak2)
+include("${CMAKE_SOURCE_DIR}/decompiler/extractor/jak1_fr3_preparer.cmake")
+include("${CMAKE_SOURCE_DIR}/common/custom_data/jak2_public_generated_artifacts.cmake")
+include("${CMAKE_SOURCE_DIR}/common/custom_data/jak2_output_materializer.cmake")
 
 add_library(jak2-import-composer STATIC
             "${CMAKE_SOURCE_DIR}/decompiler/extractor/jak2_import_composer.cpp")
 target_include_directories(jak2-import-composer PUBLIC "${CMAKE_SOURCE_DIR}")
 target_compile_features(jak2-import-composer PUBLIC cxx_std_20)
 target_link_libraries(jak2-import-composer
-                      PUBLIC jak2-iso-validation jak2-source-object-pack)
+                      PUBLIC jak2-iso-validation
+                             jak2-source-object-pack
+                             jak2-extracted-generated-inputs
+                             jak2-public-generated-artifacts
+                             jak2-output-materializer
+                             jak2-fr3-preparer)
 
 if(MSVC)
   target_compile_options(jak2-import-composer PRIVATE /W4 /WX)
@@ -35,8 +44,18 @@ if(APPLE)
       safe-iso-reader
       jak2-source-object-pack
       jak1-source-object-pack
+      jak2-output-recipe-core
       jak1-output-recipe-core
-      jak1-output-graph)
+      jak2-output-graph
+      jak1-output-graph
+      jak2-extracted-generated-inputs
+      jak1-extracted-generated-inputs
+      jak2-public-generated-artifacts
+      jak1-public-generated-artifacts
+      jak1-checked-dgo
+      jak2-output-materializer
+      jak1-output-materializer
+      jak2-fr3-preparer)
   set(JAK2_IMPORT_COMPOSER_APPLE_ARCHIVES)
   foreach(JAK2_IMPORT_COMPOSER_COMPONENT IN LISTS JAK2_IMPORT_COMPOSER_APPLE_COMPONENTS)
     if(NOT TARGET ${JAK2_IMPORT_COMPOSER_COMPONENT})
@@ -63,7 +82,7 @@ if(APPLE)
       DEPENDS ${JAK2_IMPORT_COMPOSER_APPLE_COMPONENTS}
       COMMAND_EXPAND_LISTS
       VERBATIM
-      COMMENT "Flattening the Apple Jak II importer foundation archive")
+      COMMENT "Flattening the Apple Jak II import composer archive")
   add_custom_target(jak2-import-composer-apple-archive
                     DEPENDS "${JAK2_IMPORT_COMPOSER_APPLE_OUTPUT}")
 
