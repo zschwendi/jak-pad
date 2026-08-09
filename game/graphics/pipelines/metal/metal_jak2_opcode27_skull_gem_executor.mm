@@ -24,15 +24,25 @@ constexpr std::array<std::string_view, 3> kSecurityDotSourceTextureNames = {
 constexpr std::array<float, 2> kSecurityEnvironmentEndTimes = {4800.f, 4800.f};
 constexpr std::array<float, 3> kSecurityDotEndTimes = {4800.f, 600.f, 600.f};
 
-const tfrag3::Texture* find_unique_texture(const tfrag3::Level& level,
-                                          std::string_view name) {
+bool has_valid_rgba_shape(const tfrag3::Texture& texture) {
+  return texture.w != 0 && texture.h != 0 &&
+         texture.data.size() ==
+             static_cast<std::size_t>(texture.w) * static_cast<std::size_t>(texture.h);
+}
+
+const tfrag3::Texture* find_consistent_texture(const tfrag3::Level& level,
+                                              std::string_view name) {
   const tfrag3::Texture* found = nullptr;
   for (const auto& candidate : level.textures) {
     if (candidate.debug_name == name) {
-      if (found) {
+      if (!has_valid_rgba_shape(candidate) ||
+          (found && (candidate.w != found->w || candidate.h != found->h ||
+                     candidate.data != found->data))) {
         return nullptr;
       }
-      found = &candidate;
+      if (!found) {
+        found = &candidate;
+      }
     }
   }
   return found;
@@ -56,7 +66,7 @@ bool load_sources(const tfrag3::Level& level,
                   const std::array<std::string_view, Size>& names,
                   std::array<Jak2Opcode27RgbaSource, Size>* out) {
   for (std::size_t i = 0; i < names.size(); ++i) {
-    if (!copy_rgba_source(find_unique_texture(level, names[i]), &(*out)[i])) {
+    if (!copy_rgba_source(find_consistent_texture(level, names[i]), &(*out)[i])) {
       return false;
     }
   }
@@ -69,7 +79,7 @@ bool load_sources(const std::array<const tfrag3::Level*, Size>& levels,
                   std::array<Jak2Opcode27RgbaSource, Size>* out) {
   for (std::size_t i = 0; i < names.size(); ++i) {
     if (!levels[i] ||
-        !copy_rgba_source(find_unique_texture(*levels[i], names[i]), &(*out)[i])) {
+        !copy_rgba_source(find_consistent_texture(*levels[i], names[i]), &(*out)[i])) {
       return false;
     }
   }
@@ -84,7 +94,7 @@ bool prepare_security_output(const Plan& plan,
                              const std::array<std::string_view, Size>& source_names,
                              const std::array<float, Size>& end_times,
                              Jak2Opcode27SkullGemExecutor::PreparedSecurityOutput* out) {
-  const auto* destination = find_unique_texture(destination_level, destination_name);
+  const auto* destination = find_consistent_texture(destination_level, destination_name);
   std::array<Jak2Opcode27RgbaSource, Size> sources;
   if (!destination || destination->w == 0 || destination->h == 0 ||
       destination->data.size() !=

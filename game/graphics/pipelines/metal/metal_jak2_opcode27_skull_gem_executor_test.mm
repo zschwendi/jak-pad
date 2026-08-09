@@ -83,7 +83,7 @@ int main() {
     tfrag3::Level duplicate_level = common_level;
     duplicate_level.textures.push_back(source_texture("skull-gem-alpha-00", 0xff101010));
     check(!executor.prepare(plan, duplicate_level, &prepared),
-          "duplicate named skull-gem sources fail before publication");
+          "conflicting duplicate skull-gem sources fail before publication");
     tfrag3::Level malformed_level = common_level;
     malformed_level.textures[1].data.pop_back();
     check(!executor.prepare(plan, malformed_level, &prepared),
@@ -123,24 +123,34 @@ int main() {
     check(!executor.prepare_security(security_plan, ctywide_level, common_level,
                                      &security_prepared),
           "security textures in the wrong level owners fail before publication");
-    tfrag3::Level duplicate_ctywide_level = ctywide_level;
-    duplicate_ctywide_level.textures.push_back(
+    tfrag3::Level conflicting_ctywide_level = ctywide_level;
+    conflicting_ctywide_level.textures.push_back(
         source_texture("security-env-dest", 0xff101010));
-    check(!executor.prepare_security(security_plan, common_level, duplicate_ctywide_level,
+    check(!executor.prepare_security(security_plan, common_level, conflicting_ctywide_level,
                                      &security_prepared),
-          "duplicate ctywide security destinations fail before publication");
+          "conflicting duplicate ctywide security destinations fail before publication");
     tfrag3::Level malformed_ctywide_level = ctywide_level;
     malformed_ctywide_level.textures[1].data.pop_back();
     check(!executor.prepare_security(security_plan, common_level, malformed_ctywide_level,
                                      &security_prepared),
           "malformed ctywide security sources fail before publication");
-    check(executor.prepare_security(security_plan, common_level, ctywide_level,
+    tfrag3::Level repeated_common_level = common_level;
+    repeated_common_level.textures.push_back(source_texture("common-white", 0xffffffff));
+    tfrag3::Level repeated_ctywide_level = ctywide_level;
+    for (int i = 0; i < 2; ++i) {
+      repeated_ctywide_level.textures.push_back(
+          source_texture("security-env-dest", 0xff000000));
+      repeated_ctywide_level.textures.push_back(
+          source_texture("security-dot-dest", 0xff000000));
+    }
+    check(executor.prepare_security(security_plan, repeated_common_level,
+                                    repeated_ctywide_level,
                                     &security_prepared) &&
               security_prepared.environment.width == 2 &&
               security_prepared.environment.height == 2 &&
               security_prepared.environment.destination_tbp == 130 &&
               security_prepared.dot.destination_tbp == 131,
-          "owned security preparation composes common and ctywide sources in GOAL order");
+          "identical repeated common and ctywide textures compose in GOAL order");
     check(executor.publish_security(security_prepared),
           "prepared security outputs publish to Metal and TexturePool");
     const u64 security_environment_handle = executor.animated_texture_slots().at(
