@@ -12,6 +12,7 @@
 
 #include "common/custom_data/Jak2PublicOutputGraph.h"
 
+#include "decompiler/extractor/jak2_fr3_preparer.h"
 #include "decompiler/extractor/jak2_import_composer_internal.h"
 
 namespace {
@@ -349,7 +350,7 @@ bool optional_real_import_oracle() {
   CHECK(result.value().archives_written == 150);
   CHECK(result.value().flat_files_written == 417);
   CHECK(result.value().objects_written > 0);
-  CHECK(result.value().fr3_files_written >= 8);
+  CHECK(result.value().fr3_files_written == jak2_fr3::kNtscV2ExpectedFr3Files);
   CHECK(result.value().output_bytes > 0);
   CHECK(!fs::exists(request.candidate_root / ".opengoal-import"));
   CHECK(direct_entries(request.candidate_root) == std::set<std::string>({"fr3", "iso"}));
