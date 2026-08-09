@@ -617,6 +617,9 @@ struct OwnedStagingDirectory::Impl {
     bool is_directory = false;
     posix_file::Identity identity;
     std::vector<Entry> children;
+    bool has_expected_contents = false;
+    uint64_t expected_size = 0;
+    uint64_t expected_hash = 0;
   };
 
   std::filesystem::path parent_path;
@@ -695,7 +698,7 @@ struct OwnedStagingDirectory::Impl {
         return make_error(ErrorCode::output_create_failed, entry->offset_in_file,
                           "Could not retain the exact created output directory: " + child_path);
       }
-      auto& owned = owned_entries->emplace_back(Entry{name, true, identity, {}});
+      auto& owned = owned_entries->emplace_back(Entry{name, true, identity, {}, false, 0, 0});
       for (auto& nested : entry->children) {
         if (auto error =
                 extract_entry(state, &nested, child.get(), &owned.children, child_path, layout)) {
@@ -715,12 +718,10 @@ struct OwnedStagingDirectory::Impl {
       return make_error(ErrorCode::output_create_failed, entry->offset_in_file,
                         "Could not exclusively create and retain output file: " + child_path);
     }
-    owned_entries->emplace_back(Entry{name, false, identity, {}});
+    auto& owned = owned_entries->emplace_back(Entry{name, false, identity, {}, false, 0, 0});
 
     XXH64_state_t hash_state;
-    if (state->options->hash_files) {
-      XXH64_reset(&hash_state, 0);
-    }
+    XXH64_reset(&hash_state, 0);
     std::vector<uint8_t> buffer(
         std::min<size_t>(state->options->read_chunk_bytes, std::max<size_t>(entry->size, 1)));
     uint64_t copied = 0;
@@ -748,9 +749,7 @@ struct OwnedStagingDirectory::Impl {
         }
         written += static_cast<size_t>(result);
       }
-      if (state->options->hash_files) {
-        XXH64_update(&hash_state, buffer.data(), static_cast<size_t>(amount));
-      }
+      XXH64_update(&hash_state, buffer.data(), static_cast<size_t>(amount));
       copied += amount;
       state->progress.bytes_completed += amount;
       if (state->options->on_progress) {
@@ -758,15 +757,109 @@ struct OwnedStagingDirectory::Impl {
       }
     }
 
+    const auto hash = XXH64_digest(&hash_state);
+    owned.has_expected_contents = true;
+    owned.expected_size = entry->size;
+    owned.expected_hash = hash;
     layout->files_extracted++;
     if (state->options->hash_files) {
-      layout->hashes.push_back(XXH64_digest(&hash_state));
+      layout->hashes.push_back(hash);
     }
     state->progress.files_completed++;
     if (state->options->on_progress) {
       state->options->on_progress(state->progress);
     }
     return {};
+  }
+
+  static bool verify_entry_contents(int parent_descriptor,
+                                    const Entry& entry,
+                                    std::vector<uint8_t>* buffer) {
+    struct stat path_status{};
+    if (!posix_file::entry_identity(parent_descriptor, entry.name, entry.identity, &path_status)) {
+      return false;
+    }
+    if (entry.is_directory) {
+      if (!S_ISDIR(path_status.st_mode) || entry.has_expected_contents) {
+        return false;
+      }
+      auto directory = posix_file::open_directory_at(parent_descriptor, entry.name);
+      if (!directory ||
+          !posix_file::entry_identity(parent_descriptor, entry.name, entry.identity)) {
+        return false;
+      }
+      for (const auto& child : entry.children) {
+        if (!verify_entry_contents(directory.get(), child, buffer)) {
+          return false;
+        }
+      }
+      return posix_file::entry_identity(parent_descriptor, entry.name, entry.identity);
+    }
+
+    if (!entry.has_expected_contents || !S_ISREG(path_status.st_mode) || path_status.st_size < 0 ||
+        static_cast<uint64_t>(path_status.st_size) != entry.expected_size) {
+      return false;
+    }
+    auto file = posix_file::open_file_at(parent_descriptor, entry.name, O_RDONLY);
+    posix_file::Identity descriptor_identity;
+    struct stat descriptor_status{};
+    if (!file ||
+        !posix_file::descriptor_identity(file.get(), &descriptor_identity, &descriptor_status) ||
+        descriptor_identity.device != entry.identity.device ||
+        descriptor_identity.inode != entry.identity.inode || !S_ISREG(descriptor_status.st_mode) ||
+        descriptor_status.st_size < 0 ||
+        static_cast<uint64_t>(descriptor_status.st_size) != entry.expected_size ||
+        !posix_file::entry_identity(parent_descriptor, entry.name, entry.identity)) {
+      return false;
+    }
+
+    XXH64_state_t hash_state;
+    XXH64_reset(&hash_state, 0);
+    uint64_t read_bytes = 0;
+    while (true) {
+      const auto remaining = entry.expected_size - read_bytes;
+      const auto amount =
+          static_cast<size_t>(std::min<uint64_t>(buffer->size(), remaining == 0 ? 1 : remaining));
+      const auto result = ::read(file.get(), buffer->data(), amount);
+      if (result < 0 && errno == EINTR) {
+        continue;
+      }
+      if (result < 0) {
+        return false;
+      }
+      if (result == 0) {
+        break;
+      }
+      const auto count = static_cast<size_t>(result);
+      if (count > remaining) {
+        return false;
+      }
+      XXH64_update(&hash_state, buffer->data(), count);
+      read_bytes += count;
+    }
+
+    struct stat final_status{};
+    return read_bytes == entry.expected_size && XXH64_digest(&hash_state) == entry.expected_hash &&
+           posix_file::descriptor_identity(file.get(), &descriptor_identity, &final_status) &&
+           descriptor_identity.device == entry.identity.device &&
+           descriptor_identity.inode == entry.identity.inode && S_ISREG(final_status.st_mode) &&
+           final_status.st_size >= 0 &&
+           static_cast<uint64_t>(final_status.st_size) == entry.expected_size &&
+           posix_file::entry_identity(parent_descriptor, entry.name, entry.identity);
+  }
+
+  bool verify_recorded_contents() const {
+    posix_file::Identity descriptor_identity;
+    if (!cleanup_pending || !root ||
+        !posix_file::descriptor_identity(root.get(), &descriptor_identity) ||
+        descriptor_identity.device != root_identity.device ||
+        descriptor_identity.inode != root_identity.inode) {
+      return false;
+    }
+    std::vector<uint8_t> buffer(256 * 1024);
+    return std::all_of(entries.begin(), entries.end(), [&](const Entry& entry) {
+      return verify_entry_contents(root.get(), entry, &buffer);
+    });
   }
 
   static std::optional<std::string> cleanup_entry(int parent_descriptor, Entry* entry) {
@@ -920,7 +1013,7 @@ struct OwnedStagingDirectory::Impl {
         !S_ISREG(status.st_mode) || !posix_file::entry_identity(root.get(), name, identity)) {
       return false;
     }
-    entries.emplace_back(Entry{std::string(name), false, identity, {}});
+    entries.emplace_back(Entry{std::string(name), false, identity, {}, false, 0, 0});
     return true;
   }
 
@@ -1293,6 +1386,15 @@ Result<IsoFile> extract_to_owned_staging(FILE* file,
       }
       return Result<IsoFile>::failure(std::move(*error));
     }
+  }
+  if (!owned_staging->m_impl->verify_recorded_contents()) {
+    auto error =
+        make_error(ErrorCode::output_write_failed, 0,
+                   "A reader-created staging file changed after the final extraction callback.");
+    if (auto cleanup_error = owned_staging->cleanup()) {
+      error.message += " The staging directory could not be removed safely: " + *cleanup_error;
+    }
+    return Result<IsoFile>::failure(std::move(error));
   }
   return Result<IsoFile>::success(std::move(layout));
 }

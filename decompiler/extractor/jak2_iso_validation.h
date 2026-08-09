@@ -97,6 +97,8 @@ ValidationResult<std::filesystem::path> write_buildinfo_checkpoint(
     const RevisionMatch& match,
     const std::filesystem::path& staging_directory);
 
+/// POSIX builds bind staging cleanup and validation to creation-owned descriptors. Windows keeps
+/// the portable path-based staging behavior and does not provide POSIX descriptor hardening.
 ValidationResult<StagedExtraction> extract_and_validate(
     FILE* image,
     const std::filesystem::path& new_staging_directory,

@@ -2,16 +2,22 @@
 
 #include <algorithm>
 #include <cctype>
+#ifndef _WIN32
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#endif
 #include <fstream>
 #include <set>
 #include <sstream>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <vector>
 
+#ifndef _WIN32
 #include "common/util/PosixFile.h"
+#endif
 
 #define XXH_PRIVATE_API
 #include "third-party/zstd/lib/common/xxhash.h"
@@ -133,6 +139,7 @@ std::optional<std::vector<checked_file_identity::Identity>> file_identities(cons
   return files;
 }
 
+#ifndef _WIN32
 ValidationError with_cleanup(ValidationError error,
                              iso_file::OwnedStagingDirectory* staging_directory) {
   if (auto cleanup_error = staging_directory->cleanup()) {
@@ -140,6 +147,17 @@ ValidationError with_cleanup(ValidationError error,
   }
   return error;
 }
+#else
+ValidationError with_cleanup(ValidationError error,
+                             const std::filesystem::path& staging_directory) {
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(staging_directory, cleanup_error);
+  if (cleanup_error) {
+    error.cleanup_error = cleanup_error.message();
+  }
+  return error;
+}
+#endif
 
 std::string checkpoint_contents(const RevisionMatch& match) {
   std::ostringstream contents;
@@ -190,6 +208,7 @@ std::optional<ValidationError> write_checkpoint_file(const RevisionMatch& match,
   return std::nullopt;
 }
 
+#ifndef _WIN32
 std::optional<ValidationError> write_checkpoint_file_at(
     const RevisionMatch& match,
     iso_file::OwnedStagingDirectory* staging_directory) {
@@ -229,6 +248,7 @@ std::optional<ValidationError> write_checkpoint_file_at(
   }
   return std::nullopt;
 }
+#endif
 
 }  // namespace
 
@@ -385,9 +405,13 @@ ValidationResult<StagedExtraction> extract_and_validate(
     }
   };
   options.hash_files = true;
+#ifndef _WIN32
   iso_file::OwnedStagingDirectory owned_staging;
   auto extracted =
       iso_file::extract_to_owned_staging(image, new_staging_directory, &owned_staging, options);
+#else
+  auto extracted = iso_file::extract_to_staging(image, new_staging_directory, options);
+#endif
   if (!extracted) {
     const auto code = callback_failed ? ValidationErrorCode::callback_failed
                       : extracted.error().code == iso_file::ErrorCode::cancelled
@@ -405,13 +429,21 @@ ValidationResult<StagedExtraction> extract_and_validate(
     return ValidationResult<StagedExtraction>::failure(
         with_cleanup(make_error(code, callback_failed ? "A disc-validation callback failed."
                                                       : "Disc validation was cancelled."),
+#ifndef _WIN32
                      &owned_staging));
+#else
+                     new_staging_directory));
+#endif
   }
 
   auto matched = validate_extracted_layout(extracted.value());
   if (!matched) {
     return ValidationResult<StagedExtraction>::failure(
+#ifndef _WIN32
         with_cleanup(matched.error(), &owned_staging));
+#else
+        with_cleanup(matched.error(), new_staging_directory));
+#endif
   }
   auto match = matched.take_value();
   auto files = validated_file_identities(extracted.value());
@@ -419,7 +451,11 @@ ValidationResult<StagedExtraction> extract_and_validate(
     return ValidationResult<StagedExtraction>::failure(with_cleanup(
         make_error(ValidationErrorCode::invalid_extraction_result,
                    "The ISO reader did not return an exact extracted-file identity manifest."),
+#ifndef _WIN32
         &owned_staging));
+#else
+        new_staging_directory));
+#endif
   }
 
   if (options.should_cancel()) {
@@ -428,8 +464,13 @@ ValidationResult<StagedExtraction> extract_and_validate(
     return ValidationResult<StagedExtraction>::failure(
         with_cleanup(make_error(code, callback_failed ? "A disc-validation callback failed."
                                                       : "Disc validation was cancelled."),
+#ifndef _WIN32
                      &owned_staging));
+#else
+                     new_staging_directory));
+#endif
   }
+#ifndef _WIN32
   if (auto checkpoint_error = write_checkpoint_file_at(match, &owned_staging)) {
     return ValidationResult<StagedExtraction>::failure(
         with_cleanup(std::move(*checkpoint_error), &owned_staging));
@@ -440,6 +481,13 @@ ValidationResult<StagedExtraction> extract_and_validate(
                                 "The exact validated staging directory changed before completion."),
                      &owned_staging));
   }
+#else
+  auto checkpoint = write_buildinfo_checkpoint(match, new_staging_directory);
+  if (!checkpoint) {
+    return ValidationResult<StagedExtraction>::failure(
+        with_cleanup(checkpoint.error(), new_staging_directory));
+  }
+#endif
 
   return ValidationResult<StagedExtraction>::success(
       {std::move(match), new_staging_directory, files.take_value()});

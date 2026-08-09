@@ -466,6 +466,7 @@ bool reader_failures_and_cancellation_leave_no_staging() {
   return true;
 }
 
+#ifndef _WIN32
 bool progress_path_replacement_preserves_external_directory() {
   TemporaryDirectory temp;
   const auto image_path = temp.path / "progress.iso";
@@ -509,6 +510,7 @@ bool progress_path_replacement_preserves_external_directory() {
   CHECK(fs::is_empty(moved_owned_stage));
   return true;
 }
+#endif
 
 bool optionally_matches_extracted_retail_oracle() {
   const auto* configured_root = std::getenv("OPENGOAL_JAK2_EXTRACTED_ISO_ROOT");
@@ -560,7 +562,9 @@ int main() {
       file_identity_mapping_matches_exact_extraction_order,
       buildinfo_checkpoint_is_atomic_and_desktop_compatible,
       reader_failures_and_cancellation_leave_no_staging,
+#ifndef _WIN32
       progress_path_replacement_preserves_external_directory,
+#endif
       optionally_matches_extracted_retail_oracle,
   };
   for (const auto test : tests) {

@@ -425,6 +425,7 @@ bool existing_staging_is_preserved() {
   return true;
 }
 
+#ifndef _WIN32
 bool owned_staging_rejects_and_preserves_unexpected_entries() {
   TemporaryDirectory temp;
   const auto fixture = make_synthetic_iso();
@@ -445,6 +446,51 @@ bool owned_staging_rejects_and_preserves_unexpected_entries() {
         std::vector<uint8_t>({'p', 'r', 'e', 's', 'e', 'r', 'v', 'e'}));
   CHECK(!std::filesystem::exists(staging / "SAFE.TXT"));
   CHECK(!std::filesystem::exists(staging / "NEST"));
+  return true;
+}
+
+bool owned_staging_rejects_in_place_progress_mutation() {
+  TemporaryDirectory temp;
+  const auto fixture = make_synthetic_iso();
+  const auto image = temp.path / "fixture.iso";
+  const auto staging = temp.path / "staging";
+  const auto sibling = temp.path / "sibling.txt";
+  CHECK(write_image(image, fixture.bytes));
+  std::ofstream(sibling) << "outside";
+
+  bool mutated = false;
+  bool mutation_failed = false;
+  iso_file::Options options;
+  options.read_chunk_bytes = 128;
+  options.hash_files = true;
+  options.on_progress = [&](const iso_file::Progress& progress) {
+    if (!mutated && progress.current_path == "SAFE.TXT" && progress.files_completed == 1) {
+      std::fstream current(staging / "SAFE.TXT", std::ios::binary | std::ios::in | std::ios::out);
+      current.seekp(0);
+      current.put('!');
+      current.close();
+      mutation_failed = !current;
+      if (!mutation_failed) {
+        std::ofstream(staging / "unexpected.txt") << "preserve";
+      }
+      mutated = !mutation_failed;
+    }
+  };
+
+  OpenFile input(image);
+  CHECK(input.file);
+  iso_file::OwnedStagingDirectory owned_staging;
+  const auto result =
+      iso_file::extract_to_owned_staging(input.file, staging, &owned_staging, options);
+  CHECK(mutated);
+  CHECK(!mutation_failed);
+  CHECK(!result);
+  CHECK(result.error().code == iso_file::ErrorCode::output_write_failed);
+  CHECK(!std::filesystem::exists(staging / "SAFE.TXT"));
+  CHECK(!std::filesystem::exists(staging / "NEST"));
+  CHECK(read_bytes(staging / "unexpected.txt") ==
+        std::vector<uint8_t>({'p', 'r', 'e', 's', 'e', 'r', 'v', 'e'}));
+  CHECK(read_bytes(sibling) == std::vector<uint8_t>({'o', 'u', 't', 's', 'i', 'd', 'e'}));
   return true;
 }
 
@@ -499,6 +545,7 @@ bool owned_staging_rejects_replaced_parent_path() {
   CHECK(std::filesystem::is_empty(moved_staging_parent));
   return true;
 }
+#endif
 
 bool desktop_adapter_preserves_behavior_and_throws_typed_errors() {
   TemporaryDirectory temp;
@@ -548,10 +595,13 @@ int main() {
       {"rejects_unsafe_path", rejects_unsafe_path},
       {"enforces_depth_entry_and_size_limits", enforces_depth_entry_and_size_limits},
       {"existing_staging_is_preserved", existing_staging_is_preserved},
+#ifndef _WIN32
       {"owned_staging_rejects_and_preserves_unexpected_entries",
        owned_staging_rejects_and_preserves_unexpected_entries},
-      {"owned_staging_rejects_replaced_parent_path",
-       owned_staging_rejects_replaced_parent_path},
+      {"owned_staging_rejects_in_place_progress_mutation",
+       owned_staging_rejects_in_place_progress_mutation},
+      {"owned_staging_rejects_replaced_parent_path", owned_staging_rejects_replaced_parent_path},
+#endif
       {"desktop_adapter_preserves_behavior_and_throws_typed_errors",
        desktop_adapter_preserves_behavior_and_throws_typed_errors},
   };
