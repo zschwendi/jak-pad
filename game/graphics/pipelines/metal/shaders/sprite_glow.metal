@@ -21,6 +21,10 @@ struct GlowVsParams {
   float scissor_adjust;
 };
 
+struct GlowFsParams {
+  float glow_boost;
+};
+
 struct GlowVSOut {
   float4 position [[position]];
   float4 color [[flat]];
@@ -127,11 +131,13 @@ fragment float4 sprite_glow_fs(GlowVSOut in [[stage_in]],
                                texture2d<float> texture [[texture(0)]],
                                texture2d<float> visibility_texture [[texture(1)]],
                                sampler texture_sampler [[sampler(0)]],
-                               sampler visibility_sampler [[sampler(1)]]) {
+                               sampler visibility_sampler [[sampler(1)]],
+                               constant GlowFsParams& params [[buffer(0)]]) {
   const float4 texture_color = texture.sample(texture_sampler, in.uv);
   const float visibility = visibility_texture.sample(visibility_sampler, in.probe_uv).a;
   float4 color;
-  color.rgb = texture_color.rgb * in.color.rgb * (2.0 / 128.0) * visibility;
+  color.rgb =
+      texture_color.rgb * in.color.rgb * (2.0 / 128.0) * visibility * params.glow_boost;
   color.a = in.color.a * texture_color.a;
   return color;
 }

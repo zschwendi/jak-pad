@@ -5,6 +5,7 @@
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_glow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_pool_texture.h"
+#include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
 
@@ -39,6 +40,54 @@ bool is_bgra(const std::vector<u8>& pixels,
   const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
   return pixels[offset] == blue && pixels[offset + 1] == green && pixels[offset + 2] == red &&
          pixels[offset + 3] == alpha;
+}
+
+bool is_black_rgb(const std::vector<u8>& pixels, int x, int y) {
+  const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
+  return pixels[offset] == 0 && pixels[offset + 1] == 0 && pixels[offset + 2] == 0;
+}
+
+bool is_half_red(const std::vector<u8>& pixels, int x, int y) {
+  const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
+  return pixels[offset] == 0 && pixels[offset + 1] == 0 &&
+         (pixels[offset + 2] == 127 || pixels[offset + 2] == 128) && pixels[offset + 3] == 255;
+}
+
+void encode_depth_rect(id<MTLRenderCommandEncoder> encoder,
+                       MetalPsoCache* pso_cache,
+                       id<MTLTexture> bound_texture,
+                       float u0,
+                       float u1,
+                       float depth) {
+  const float x0 = u0 * 2.f - 1.f;
+  const float x1 = u1 * 2.f - 1.f;
+  const auto vertex = [depth](float x, float y) {
+    ScaffoldVertex result = {};
+    result.pos[0] = x;
+    result.pos[1] = y;
+    result.pos[2] = depth;
+    return result;
+  };
+  const ScaffoldVertex vertices[6] = {
+      vertex(x0, 1.f),  vertex(x1, 1.f),  vertex(x1, -1.f),
+      vertex(x0, 1.f),  vertex(x1, -1.f), vertex(x0, -1.f),
+  };
+
+  MetalPsoKey pso_key;
+  pso_key.shader = MetalShaderId::SCAFFOLD;
+  pso_key.color_format = MTLPixelFormatBGRA8Unorm;
+  pso_key.depth_format = MTLPixelFormatDepth32Float_Stencil8;
+  pso_key.color_write_mask = MTLColorWriteMaskNone;
+  MetalDepthStencilKey depth_key;
+  depth_key.depth_test = true;
+  depth_key.compare = MTLCompareFunctionGreater;
+  depth_key.depth_write = true;
+  [encoder setRenderPipelineState:pso_cache->get_pipeline(pso_key)];
+  [encoder setDepthStencilState:pso_cache->get_depth_stencil(depth_key)];
+  [encoder setCullMode:MTLCullModeNone];
+  [encoder setVertexBytes:vertices length:sizeof(vertices) atIndex:0];
+  [encoder setFragmentTexture:bound_texture atIndex:0];
+  [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }
 
 SpriteGlowOutput make_flare(float x0, float x1, float sample_x0, float sample_x1) {
@@ -322,6 +371,126 @@ int main() {
           "unoccluded readback contains only the flare and unchanged outside pixels");
 
     stream.reset();
+    id<MTLCommandBuffer> boosted_commands = [queue commandBuffer];
+    auto* boosted_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    boosted_pass.colorAttachments[0].texture = color;
+    boosted_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    boosted_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    boosted_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    boosted_pass.depthAttachment.texture = depth;
+    boosted_pass.depthAttachment.loadAction = MTLLoadActionClear;
+    boosted_pass.depthAttachment.storeAction = MTLStoreActionStore;
+    boosted_pass.depthAttachment.clearDepth = 0.0;
+    boosted_pass.stencilAttachment.texture = depth;
+    boosted_pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    boosted_pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    boosted_pass.stencilAttachment.clearStencil = 0;
+    context.enc = [boosted_commands renderCommandEncoderWithDescriptor:boosted_pass];
+    context.cmds = boosted_commands;
+    context.draw_calls = 0;
+    context.triangles = 0;
+    state.target_fps = 120.f;
+
+    renderer.draw(&flare, 1, &state, context);
+    check(renderer.stats().sprites_submitted == 1 && renderer.stats().sprites_drawn == 1 &&
+              renderer.stats().draw_calls == 1 && renderer.stats().triangles == 2 &&
+              renderer.stats().visibility_draw_calls == 6 &&
+              renderer.stats().visibility_triangles == 12 &&
+              renderer.stats().missing_textures == 0 && renderer.stats().invalid_records == 0 &&
+              context.draw_calls == 7 && context.triangles == 14,
+          "one 120 Hz flare preserves the exact visibility and draw accounting");
+    [context.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> boosted_blit = [boosted_commands blitCommandEncoder];
+    [boosted_blit synchronizeResource:color];
+    [boosted_blit endEncoding];
+#endif
+    [boosted_commands commit];
+    [boosted_commands waitUntilCompleted];
+    check(boosted_commands.status == MTLCommandBufferStatusCompleted,
+          "the 120 Hz glow command buffer completed");
+    if (boosted_commands.status != MTLCommandBufferStatusCompleted && boosted_commands.error) {
+      std::printf("Metal command-buffer error: %s\n",
+                  boosted_commands.error.localizedDescription.UTF8String);
+    }
+    [color getBytes:pixels.data()
+        bytesPerRow:kTargetSize * 4
+         fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+        mipmapLevel:0];
+    check(is_half_red(pixels, kTargetSize / 2, kTargetSize / 2),
+          "a 120 Hz flare is half the 60 Hz RGB intensity within UNORM quantization");
+    check(is_bgra(pixels, 2, 2, 0, 0, 0, 0),
+          "120 Hz scaling leaves pixels outside the flare unchanged");
+    state.target_fps = 60.f;
+
+    stream.reset();
+    id<MTLCommandBuffer> cell_commands = [queue commandBuffer];
+    auto* cell_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    cell_pass.colorAttachments[0].texture = color;
+    cell_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    cell_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    cell_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    cell_pass.depthAttachment.texture = depth;
+    cell_pass.depthAttachment.loadAction = MTLLoadActionClear;
+    cell_pass.depthAttachment.storeAction = MTLStoreActionStore;
+    cell_pass.depthAttachment.clearDepth = 0.0;
+    cell_pass.stencilAttachment.texture = depth;
+    cell_pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    cell_pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    cell_pass.stencilAttachment.clearStencil = 0;
+    context.enc = [cell_commands renderCommandEncoderWithDescriptor:cell_pass];
+    context.cmds = cell_commands;
+    context.draw_calls = 0;
+    context.triangles = 0;
+
+    id<MTLTexture> flare_metal_texture = metal_texture_lookup(flare_texture.handle());
+    check(flare_metal_texture != nil, "resolved the synthetic flare texture for depth setup");
+    // Cell 0 samples clear depth, cell 1 samples the full first rectangle, and
+    // cell 2 straddles the second rectangle's right edge at exactly half width.
+    encode_depth_rect(context.enc, &pso_cache, flare_metal_texture, 0.375f, 0.625f, 0.75f);
+    encode_depth_rect(context.enc, &pso_cache, flare_metal_texture, 0.75f, 0.875f, 0.75f);
+
+    const std::array<SpriteGlowOutput, 3> cell_flares = {
+        make_flare(1824.f, 1936.f, 0.f, 128.f),
+        make_flare(1992.f, 2104.f, 192.f, 320.f),
+        make_flare(2160.f, 2272.f, 384.f, 512.f),
+    };
+    renderer.draw(cell_flares.data(), cell_flares.size(), &state, context);
+    check(renderer.stats().sprites_submitted == 3 && renderer.stats().sprites_drawn == 3 &&
+              renderer.stats().draw_calls == 3 && renderer.stats().triangles == 6 &&
+              renderer.stats().visibility_draw_calls == 6 &&
+              renderer.stats().visibility_triangles == 36 &&
+              renderer.stats().missing_textures == 0 && renderer.stats().invalid_records == 0 &&
+              context.draw_calls == 9 && context.triangles == 42,
+          "three visibility cells traverse all four downsamples and three final draws");
+    [context.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> cell_blit = [cell_commands blitCommandEncoder];
+    [cell_blit synchronizeResource:color];
+    [cell_blit endEncoding];
+#endif
+    [cell_commands commit];
+    [cell_commands waitUntilCompleted];
+    check(cell_commands.status == MTLCommandBufferStatusCompleted,
+          "the nonuniform multi-flare glow command buffer completed");
+    if (cell_commands.status != MTLCommandBufferStatusCompleted && cell_commands.error) {
+      std::printf("Metal command-buffer error: %s\n",
+                  cell_commands.error.localizedDescription.UTF8String);
+    }
+    [color getBytes:pixels.data()
+        bytesPerRow:kTargetSize * 4
+         fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+        mipmapLevel:0];
+    check(is_bgra(pixels, 11, kTargetSize / 2, 0, 0, 255, 255),
+          "the unoccluded cell remains fully visible beside an occluded cell");
+    check(is_black_rgb(pixels, 32, kTargetSize / 2),
+          "the occluded cell receives no RGB bleed from either visible neighbor");
+    check(is_half_red(pixels, 53, kTargetSize / 2),
+          "the half-occluded cell averages to half-intensity visibility");
+    check(is_bgra(pixels, 2, 2, 0, 0, 0, 0),
+          "the nonuniform visibility test leaves outside pixels unchanged");
+
+    stream.reset();
     id<MTLCommandBuffer> occluded_commands = [queue commandBuffer];
     auto* occluded_pass = [MTLRenderPassDescriptor renderPassDescriptor];
     occluded_pass.colorAttachments[0].texture = color;
@@ -387,8 +556,8 @@ int main() {
       std::printf("FAIL: %d Jak II final glow flare checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak II Metal glow visibility rejects occluded flares and preserves visible "
-                "flares\n");
+    std::printf("PASS: Jak II Metal glow matches 60/120 Hz intensity and isolates averaged "
+                "visibility cells\n");
     return 0;
   }
 }

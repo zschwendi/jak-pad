@@ -1158,6 +1158,7 @@ int goal_jak2_metal_host_set_present_pacing(goal_jak2_metal_host* host, double s
     return 0;
   }
   host->options.min_present_duration = seconds;
+  host->options.target_fps = seconds > 0.0 ? static_cast<float>(1.0 / seconds) : 60.f;
   return 1;
 }
 

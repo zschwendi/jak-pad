@@ -82,6 +82,7 @@ struct MetalRenderOptions {
   // Optional synchronous host work that must stay ordered with Jak II bucket dispatch.
   void* host_bucket_context = nullptr;
   MetalHostBucketCallback host_bucket_callback = nullptr;
+  float target_fps = 60.f;
 };
 
 class MetalRenderer {

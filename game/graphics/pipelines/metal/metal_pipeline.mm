@@ -373,6 +373,7 @@ void MetalDisplay::render() {
     opts.pmode_alp = g_chain.pmode_alp;
     opts.brightness_contrast_color = Gfx::g_global_settings.brightness_contrast_color;
     opts.brightness_contrast_alpha = Gfx::g_global_settings.brightness_contrast_alpha;
+    opts.target_fps = Gfx::g_global_settings.target_fps;
     opts.min_present_duration = g_present_min_duration;
 
     const auto& chain = g_chain.copier->get_last_result();

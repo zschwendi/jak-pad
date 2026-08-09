@@ -96,6 +96,7 @@ struct MetalSharedRenderState {
   std::size_t animated_texture_slot_count = 0;
   void* host_bucket_context = nullptr;
   MetalHostBucketCallback host_bucket_callback = nullptr;
+  float target_fps = 60.f;
 };
 
 /*!

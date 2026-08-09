@@ -1,5 +1,6 @@
 #include "game/graphics/pipelines/metal/metal_glow_renderer.h"
 
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -35,6 +36,12 @@ struct GlowVsParams {
   float scissor_adjust;
 };
 static_assert(sizeof(GlowVsParams) == 8);
+
+// Must match GlowFsParams in shaders/sprite_glow.metal.
+struct GlowFsParams {
+  float glow_boost;
+};
+static_assert(sizeof(GlowFsParams) == 4);
 
 struct GlowDrawRecord {
   u32 tbp = 0;
@@ -402,6 +409,10 @@ void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
       .height_scale = 0.5f,
       .scissor_adjust = 512.f / 416.f,
   };
+  const float target_fps = render_state->target_fps;
+  const GlowFsParams fragment_params = {
+      .glow_boost = std::isfinite(target_fps) && target_fps > 60.f ? 60.f / target_fps : 1.f,
+  };
 
   id<MTLRenderPipelineState> pipeline = ctx.pso_cache->get_pipeline(pso_key);
   ASSERT(pipeline);
@@ -410,6 +421,7 @@ void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
   [ctx.enc setCullMode:MTLCullModeNone];
   [ctx.enc setVertexBuffer:vertex_buffer offset:vertex_offset atIndex:0];
   [ctx.enc setVertexBytes:&kJak2Params length:sizeof(kJak2Params) atIndex:1];
+  [ctx.enc setFragmentBytes:&fragment_params length:sizeof(fragment_params) atIndex:0];
   [ctx.enc setFragmentTexture:m_probe_color[kDownsampleIterations - 1] atIndex:1];
   [ctx.enc setFragmentSamplerState:probe_sampler atIndex:1];
 
