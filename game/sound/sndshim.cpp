@@ -259,14 +259,14 @@ s32 snd_GetVoiceStatus(s32 voice) {
 }
 
 void snd_keyOnVoiceRaw(u32 core, u32 voice_id) {
-  if (voices[0]) {
-    voices[0]->KeyOn();
+  if (core < 2 && voice_id < kNVoices && voices[voice_id]) {
+    voices[voice_id]->KeyOn();
   }
 }
 
 void snd_keyOffVoiceRaw(u32 core, u32 voice_id) {
-  if (voices[0]) {
-    voices[0]->KeyOff();
+  if (core < 2 && voice_id < kNVoices && voices[voice_id]) {
+    voices[voice_id]->KeyOff();
   }
 }
 

@@ -409,6 +409,58 @@ std::vector<u8> playable_named_sfx_bank(
   return wrap_sfx_bank(bank, samples);
 }
 
+std::vector<u8> minimal_music_bank() {
+  constexpr u32 kOuterHeader = 32;
+  constexpr u32 kBankSize = 48 + 28;
+  constexpr u32 kSampleSize = 2;
+  constexpr u32 kMidiSize = 16 + 52;
+  constexpr u32 kBankOffset = kOuterHeader;
+  constexpr u32 kSampleOffset = kBankOffset + kBankSize;
+  constexpr u32 kMidiOffset = kSampleOffset + kSampleSize;
+  std::vector<u8> result(kMidiOffset + kMidiSize, 0);
+
+  write_value(&result, 0, u32(1));
+  write_value(&result, 4, u32(3));
+  write_value(&result, 8, kBankOffset);
+  write_value(&result, 12, kBankSize);
+  write_value(&result, 16, kSampleOffset);
+  write_value(&result, 20, kSampleSize);
+  write_value(&result, 24, kMidiOffset);
+  write_value(&result, 28, kMidiSize);
+
+  write_value(&result, kBankOffset, u32(0x32764253));  // SBv2
+  write_value(&result, kBankOffset + 4, u32(2));
+  write_value(&result, kBankOffset + 20, s16(1));
+  write_value(&result, kBankOffset + 22, s16(0));
+  write_value(&result, kBankOffset + 24, s16(0));
+  write_value(&result, kBankOffset + 26, s16(0));
+  write_value(&result, kBankOffset + 28, u32(48));
+  write_value(&result, kBankOffset + 32, u32(48 + 24));
+  write_value(&result, kBankOffset + 48, s32(4));
+  write_value(&result, kBankOffset + 48 + 12, s32(1));
+  write_value(&result, kBankOffset + 48 + 16, s16(127));
+  write_value(&result, kBankOffset + 48 + 18, s8(1));
+  write_value(&result, kBankOffset + 48 + 19, s8(1));
+
+  write_value(&result, kMidiOffset, u32(1));
+  write_value(&result, kMidiOffset + 4, u32(1));
+  write_value(&result, kMidiOffset + 8, u32(16));
+  write_value(&result, kMidiOffset + 12, u32(52));
+  const u32 midi = kMidiOffset + 16;
+  write_value(&result, midi, u32(0x2044494d));  // MID
+  write_value(&result, midi + 4, s16(1));
+  write_value(&result, midi + 8, u32(1));
+  write_value(&result, midi + 16, u32(1));
+  write_value(&result, midi + 24, u32(40));
+  write_value(&result, midi + 32, u32(500000));
+  write_value(&result, midi + 36, s32(480));
+  result[midi + 40] = 0;
+  result[midi + 41] = 0xff;
+  result[midi + 42] = 0x2f;
+  result[midi + 43] = 0;
+  return result;
+}
+
 std::vector<u8> shared_reference_budget_sfx_bank() {
   constexpr size_t kHeaderSize = 64;
   constexpr size_t kSoundSize = 12;
@@ -858,10 +910,10 @@ int main() {
   const auto state_before_rejection = player_state();
   set_player_master_volume(atomic, 0, 0x02, 333);
   set_player_play(atomic, 1, 0x7001, bank_name("test-tone"));
-  reset_player_command(atomic, 2, jak2::Jak2SoundCommand::pause_sound);
+  reset_player_command(atomic, 2, static_cast<jak2::Jak2SoundCommand>(0xfffe));
   rpc_call(0, 0, 1, atomic.data.offset, atomic.size, 0, 0, 0);
   check(same_player_state(player_state(), state_before_rejection),
-        "an unsupported command rejects state plus PLAY before mutation");
+        "an unknown command rejects state plus PLAY before mutation");
   goal_jak2_sound_rpc_stats_get(&stats);
   check_u32(stats.play_requests, 0, "atomic rejection starts no earlier PLAY command");
 
@@ -880,11 +932,11 @@ int main() {
         "zero FPS rejects the complete batch and preserves FPS");
 
   set_player_master_volume(atomic, 0, 0x02, 666);
-  set_player_midi(atomic, 1, 2, 1);
+  set_player_midi(atomic, 1, 17, 1);
   set_player_fps(atomic, 2, 50);
   rpc_call(0, 0, 1, atomic.data.offset, atomic.size, 0, 0, 0);
   check(same_player_state(player_state(), state_before_rejection),
-        "an unsupported MIDI register rejects the complete batch atomically");
+        "an out-of-range MIDI register rejects the complete batch atomically");
 
   set_player_master_volume(atomic, 0, 0x02, 777);
   auto* unsafe_curve =
@@ -988,18 +1040,52 @@ int main() {
   memcpy(sector_beyond_file_str.data(), &sector_beyond_file_header,
          sizeof(sector_beyond_file_header));
 
-  std::vector<u8> vag_directory(4 + 2 * 16, 0);
-  write_value(&vag_directory, 0, u32(2));
+  std::vector<u8> vag_directory(4 + 3 * 16, 0);
+  write_value(&vag_directory, 0, u32(3));
   memcpy(vag_directory.data() + 4, "AUDIOONE", 8);
   constexpr u32 kValidVagSector = 2;
   write_value(&vag_directory, 12, kValidVagSector);
-  memcpy(vag_directory.data() + 20, "BADRANGE", 8);
-  write_value(&vag_directory, 28, UINT32_MAX);
+  memcpy(vag_directory.data() + 20, "STEREOT ", 8);
+  constexpr u32 kStereoVagSector = 16;
+  write_value(&vag_directory, 28, kStereoVagSector);
+  write_value(&vag_directory, 32, u32(1));
+  memcpy(vag_directory.data() + 36, "BADRANGE", 8);
+  write_value(&vag_directory, 44, UINT32_MAX);
   constexpr size_t kValidVagOffset = kValidVagSector * SECTOR_SIZE;
-  std::vector<u8> vagwad(kValidVagOffset + 0x30 + 0x40, 0x55);
+  constexpr size_t kStereoVagOffset = kStereoVagSector * SECTOR_SIZE;
+  constexpr size_t kMonoVagBytes = 0x6000;
+  constexpr size_t kStereoVagBytes = 0x4000;
+  std::vector<u8> vagwad(kStereoVagOffset + kStereoVagBytes, 0);
   write_value(&vagwad, kValidVagOffset, u32(0x56414770));  // little-endian pGAV
-  write_value(&vagwad, kValidVagOffset + 12, u32(0x40));
+  write_value(&vagwad, kValidVagOffset + 12, u32(kMonoVagBytes - 0x30));
   write_value(&vagwad, kValidVagOffset + 16, u32(48000));
+  for (size_t block = kValidVagOffset + 0x30; block < kValidVagOffset + kMonoVagBytes;
+       block += 16) {
+    vagwad[block] = 0;
+    vagwad[block + 1] = 0;
+    std::fill(vagwad.begin() + block + 2, vagwad.begin() + block + 16, u8(0x11));
+  }
+  write_value(&vagwad, kStereoVagOffset, u32(0x56414770));
+  write_value(&vagwad, kStereoVagOffset + 12, u32(kStereoVagBytes - 0x30));
+  write_value(&vagwad, kStereoVagOffset + 16, u32(48000));
+  write_value(&vagwad, kStereoVagOffset + 0x2000, u32(0x56414770));
+  write_value(&vagwad, kStereoVagOffset + 0x2000 + 12,
+              u32(kStereoVagBytes - 0x30));
+  write_value(&vagwad, kStereoVagOffset + 0x2000 + 16, u32(48000));
+  for (size_t block = kStereoVagOffset + 0x30; block < kStereoVagOffset + 0x2000;
+       block += 16) {
+    vagwad[block] = 0;
+    vagwad[block + 1] = 0;
+    std::fill(vagwad.begin() + block + 2, vagwad.begin() + block + 16, u8(0x11));
+  }
+  for (size_t block = kStereoVagOffset + 0x2030;
+       block < kStereoVagOffset + kStereoVagBytes;
+       block += 16) {
+    vagwad[block] = 0;
+    vagwad[block + 1] = 0;
+    std::fill(vagwad.begin() + block + 2, vagwad.begin() + block + 16, u8(0xff));
+  }
+  auto valid_music = minimal_music_bank();
 
   constexpr const char* kFullWidthName = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
   check(!fixture_error && write_fixture(fixture_root / "iso" / "MIXED.TXT", fixture_bytes) &&
@@ -1014,6 +1100,7 @@ int main() {
             write_fixture(fixture_root / "iso" / "AG.STR", sector_beyond_file_str) &&
             write_fixture(fixture_root / "iso" / "VAGDIR.AYB", vag_directory) &&
             write_fixture(fixture_root / "iso" / "VAGWAD.UKE", vagwad) &&
+            write_fixture(fixture_root / "iso" / "VALID.MUS", valid_music) &&
             write_fixture(fixture_root / "iso" / "VALID.SBK", valid_bank) &&
             write_fixture(fixture_root / "iso" / "BUDGET.SBK", shared_reference_budget_bank) &&
             write_fixture(fixture_root / "iso" / "PLAY.SBK", playable_bank) &&
@@ -1076,7 +1163,48 @@ int main() {
             kStreamBuffered | kStreamPlaying | kStreamLoadingAudio | kStreamCurrentMovie,
             "play adds bit 4 without discarding buffered or GUI queue state");
   check_u32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : UINT32_MAX, 0,
-            "play does not fabricate an advancing audio clock");
+            "the stream clock remains zero before the mixer consumes ADPCM");
+
+  std::array<s16, 16384> streamed_audio{};
+  check_s32(goal_game_sound_pull_audio(streamed_audio.data(), streamed_audio.size() / 2),
+            streamed_audio.size() / 2,
+            "the game-neutral seam renders a full synthetic VAG buffer");
+  check(std::any_of(streamed_audio.begin(), streamed_audio.end(),
+                    [](s16 sample) { return sample != 0; }),
+        "a channel-5 PLAY reaches the raw voice mixer as nonzero audio");
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  audio_slot = find_stream(published_info, "audioone", 0x10002);
+  const s32 position_after_audio =
+      audio_slot >= 0 ? published_info.stream_position[audio_slot] : -1;
+  check(position_after_audio > 0,
+        "the published stream clock advances from the raw voice ADPCM cursor");
+
+  auto stream_control = guarded_buffer(kCommandSize, "jak2-stream-player-control");
+  auto* stream_control_command =
+      reset_player_command(stream_control, 0, jak2::Jak2SoundCommand::pause_sound);
+  stream_control_command->sound_id.sound_id = 0x10002;
+  rpc_call(0, 0, 1, stream_control.data.offset, stream_control.size, 0, 0, 0);
+  streamed_audio.fill(0);
+  goal_game_sound_pull_audio(streamed_audio.data(), streamed_audio.size() / 2);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  audio_slot = find_stream(published_info, "audioone", 0x10002);
+  check_s32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : -1,
+            position_after_audio, "a paused VAG retains its exact published clock");
+
+  stream_control_command =
+      reset_player_command(stream_control, 0, jak2::Jak2SoundCommand::continue_sound);
+  stream_control_command->sound_id.sound_id = 0x10002;
+  rpc_call(0, 0, 1, stream_control.data.offset, stream_control.size, 0, 0, 0);
+  goal_game_sound_pull_audio(streamed_audio.data(), streamed_audio.size() / 2);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  audio_slot = find_stream(published_info, "audioone", 0x10002);
+  check((audio_slot >= 0 ? published_info.stream_position[audio_slot] : -1) >
+            position_after_audio,
+        "CONTINUE resumes both VAG output and its published clock");
+  check_guards(stream_control, "ordinary VAG control commands preserve their canaries");
 
   reset_play_request(play, 2, 1u << 0 | 1u << 5);
   set_play_stream(play, 0, "art-no-audio", 0x10001);
@@ -1100,6 +1228,52 @@ int main() {
   check_u32(no_audio_slot >= 0 ? published_info.stream_status[no_audio_slot] : UINT32_MAX,
             kStreamQueuedWithoutAudio | kStreamArtLoad,
             "stop preserves unrelated queued stream state");
+
+  reset_play_request(play, 2, 1u << 0 | 1u << 1);
+  set_play_stream(play, 0, "stereot", 0x10005);
+  set_play_stream(play, 1, "stereot", 0x10006);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  reset_play_request(play, 0);
+  set_play_stream(play, 0, "stereot", 0x10005);
+  set_play_stream(play, 1, "stereot", 0x10006);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  streamed_audio.fill(0);
+  goal_game_sound_pull_audio(streamed_audio.data(), streamed_audio.size() / 2);
+  const bool stereo_left = [&]() {
+    for (size_t i = 0; i < streamed_audio.size(); i += 2) {
+      if (streamed_audio[i]) {
+        return true;
+      }
+    }
+    return false;
+  }();
+  const bool stereo_right = [&]() {
+    for (size_t i = 1; i < streamed_audio.size(); i += 2) {
+      if (streamed_audio[i]) {
+        return true;
+      }
+    }
+    return false;
+  }();
+  check(stereo_left && stereo_right,
+        "two stereo streams drive all four source-mapped left/right raw voices");
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  const int stereo_slot = find_stream(published_info, "stereot", 0x10005);
+  const int second_stereo_slot = find_stream(published_info, "stereot", 0x10006);
+  check((stereo_slot >= 0 ? published_info.stream_position[stereo_slot] : -1) > 0,
+        "a stereo pair publishes the primary raw voice clock");
+  check((second_stereo_slot >= 0 ? published_info.stream_position[second_stereo_slot] : -1) > 0,
+        "the second stereo pair publishes its independent primary clock");
+  reset_play_request(play, 1);
+  set_play_stream(play, 0, "stereot", 0x10005);
+  set_play_stream(play, 1, "stereot", 0x10006);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  check(find_stream(published_info, "stereot", 0x10005) < 0 &&
+            find_stream(published_info, "stereot", 0x10006) < 0,
+        "stopping both stereo streams releases all four raw voices");
 
   const auto state_before_rejected_play = published_info;
   reset_play_request(play, 0);
@@ -1153,11 +1327,11 @@ int main() {
   }
   check(cleared_streams, "an empty queue removes every retained stream slot");
   goal_jak2_sound_rpc_stats_get(&stats);
-  check_u32(stats.stream_batches, 5, "only valid PLAY batches are counted");
-  check_u32(stats.stream_commands, 6, "exact 0x100-multiple command counts are retained");
-  check_u32(stats.stream_queue_requests, 4, "valid queue commands are counted exactly");
-  check_u32(stats.stream_play_requests, 1, "the valid play transition is counted exactly");
-  check_u32(stats.stream_stop_requests, 1, "the valid stop transition is counted exactly");
+  check_u32(stats.stream_batches, 8, "only valid PLAY batches are counted");
+  check_u32(stats.stream_commands, 9, "exact 0x100-multiple command counts are retained");
+  check_u32(stats.stream_queue_requests, 5, "valid queue commands are counted exactly");
+  check_u32(stats.stream_play_requests, 2, "valid mono and stereo play transitions are counted");
+  check_u32(stats.stream_stop_requests, 2, "valid mono and stereo stops are counted exactly");
   check_u32(stats.stream_failures, 1, "the out-of-range VAG sector fails closed once");
 
   std::printf("\n== exact-buffer no-reply sound-bank loads ==\n");
@@ -1362,6 +1536,35 @@ int main() {
   check(std::any_of(audio.begin(), audio.end(), [](s16 sample) { return sample != 0; }),
         "PLAY produces nonzero samples through the game-neutral audio seam");
 
+  auto ordinary_controls =
+      guarded_buffer(3 * kCommandSize, "jak2-player-ordinary-control-batch");
+  auto* set_param =
+      reset_player_command(ordinary_controls, 0, jak2::Jak2SoundCommand::set_param);
+  set_param->param.sound_id = 0x7002;
+  set_param->param.parms.mask = 1;
+  set_param->param.parms.volume = 700;
+  set_param->param.parms.fo_min = -1;
+  set_param->param.parms.fo_max = -1;
+  set_param->param.parms.fo_curve = -1;
+  auto* pause_sound =
+      reset_player_command(ordinary_controls, 1, jak2::Jak2SoundCommand::pause_sound);
+  pause_sound->sound_id.sound_id = 0x7002;
+  auto* continue_sound =
+      reset_player_command(ordinary_controls, 2, jak2::Jak2SoundCommand::continue_sound);
+  continue_sound->sound_id.sound_id = 0x7002;
+  const auto ordinary_control_bytes = snapshot(ordinary_controls);
+  goal_jak2_sound_rpc_stats controls_before{};
+  goal_jak2_sound_rpc_stats_get(&controls_before);
+  rpc_call(0, 0, 1, ordinary_controls.data.offset, ordinary_controls.size, 0, 0, 0);
+  check(snapshot(ordinary_controls) == ordinary_control_bytes,
+        "a mixed SET_PARAM/PAUSE/CONTINUE batch remains read-only");
+  goal_jak2_sound_rpc_stats controls_after{};
+  goal_jak2_sound_rpc_stats_get(&controls_after);
+  check(controls_after.player_failures == controls_before.player_failures &&
+            controls_after.player_batches == controls_before.player_batches + 1,
+        "ordinary controls apply as one batch even after the synthetic one-shot ends");
+  check_guards(ordinary_controls, "ordinary control batch preserves its canaries");
+
   auto missing_play = guarded_buffer(kCommandSize, "jak2-player-missing");
   set_player_play(missing_play, 0, 0x7003, bank_name("not-there"));
   rpc_call(0, 0, 1, missing_play.data.offset, missing_play.size, 0, 0, 0);
@@ -1372,6 +1575,47 @@ int main() {
   check_u32(stats.sounds_missing, 1, "a missing loaded-bank name is surfaced in stats");
   check_guards(same_id, "same-ID player command canaries stay intact");
   check_guards(missing_play, "semantic-miss player command canaries stay intact");
+
+  std::printf("\n== retained music bank lifecycle and sequencer start ==\n");
+  reset_bank_command(send, bank_name("valid"), jak2::Jak2SoundCommand::load_music);
+  const auto music_load_send = snapshot(send);
+  check_u32((u32)rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0), 0,
+            "a structurally bounded MUS load is synchronous and reply-free");
+  check(snapshot(send) == music_load_send,
+        "a successful MUS load leaves its EE command untouched");
+  check(gMusic != nullptr, "a validated synthetic MUS remains loaded in 989snd");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.music_requests, 1, "the valid MUS request is counted");
+  check_u32(stats.music_loaded, 1, "the valid MUS bank reaches loaded state");
+  check_u32(stats.music_failures, 0, "the valid MUS request has no semantic failure");
+
+  auto music_tick = guarded_buffer(kCommandSize, "jak2-music-sequencer-tick");
+  set_player_midi(music_tick, 0, 2, 7);
+  rpc_call(0, 0, 1, music_tick.data.offset, music_tick.size, 0, 0, 0);
+  check(LookupSound(666) != nullptr,
+        "the next player batch starts the retained music sequencer as sound ID 666");
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.music_starts, 1, "the music sequencer start is surfaced exactly once");
+  check_guards(music_tick, "the music-triggering player command preserves its canaries");
+
+  reset_bank_command(send, bank_name("valid"), jak2::Jak2SoundCommand::unload_music);
+  const auto music_unload_send = snapshot(send);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+  check(snapshot(send) == music_unload_send,
+        "a successful MUS unload leaves its EE command untouched");
+  check(gMusic == nullptr && LookupSound(666) == nullptr,
+        "MUS unload releases both its bank and retained sequencer sound");
+
+  reset_bank_command(send, bank_name("missing"), jak2::Jak2SoundCommand::load_music);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+  reset_bank_command(send, bank_name("../unsafe"), jak2::Jak2SoundCommand::load_music);
+  rpc_call(1, 0, 1, send.command.offset, kCommandSize, 0, 0, 0);
+  goal_jak2_sound_rpc_stats_get(&stats);
+  check_u32(stats.music_requests, 3, "valid, missing, and unsafe MUS requests are counted");
+  check_u32(stats.music_loaded, 1, "failed MUS requests never enter loaded state");
+  check_u32(stats.music_failures, 2, "missing and path-like MUS names fail closed");
+  check_u32(stats.music_unloads, 1, "the loaded MUS bank is released exactly once");
+  check_guards(send, "MUS lifecycle commands preserve their send canaries");
 
   std::printf("\n== synchronous ordinary-file STR loads ==\n");
   auto str_send = guarded_buffer(kStrRequestSize, "jak2-str-send");

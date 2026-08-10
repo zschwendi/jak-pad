@@ -2,9 +2,9 @@
 
 /*!
  * @file sound_rpc_jak2.h
- * The first Jak 2 sound-RPC seams: command-aware startup state, checked sound-bank loading and
- * unloading, language selection, the IRX-version handshake, ordinary/chunked STR files, and the
- * channel-5 stream state consumed by GOAL's GUI loader.
+ * Jak 2's direct sound-RPC seam: checked sound/music-bank lifecycle, player controls, language
+ * selection, the IRX-version handshake, ordinary/chunked STR files, and the channel-5 stream state
+ * consumed by GOAL's GUI loader.
  */
 
 #include <stdint.h>
@@ -32,6 +32,11 @@ typedef struct goal_jak2_sound_rpc_stats {
   uint32_t banks_loaded;
   uint32_t bank_reuses;
   uint32_t bank_failures;
+  uint32_t music_requests;
+  uint32_t music_loaded;
+  uint32_t music_failures;
+  uint32_t music_starts;
+  uint32_t music_unloads;
   uint32_t str_requests;
   uint32_t str_reads;
   uint32_t str_failures;
@@ -63,14 +68,12 @@ typedef struct goal_jak2_sound_player_state {
 } goal_jak2_sound_player_state;
 
 /*!
- * Replace Jak 2's rpc-call/rpc-busy? machine stubs with the synchronous startup-state, loader and
- * STR responders. The kernel and machine-stub symbol table must already be initialized. This owns
- * one portable, output-backend-free 989snd instance until shutdown. Player commands 12, 22, 23,
- * 24 and 28 configure state, while command 7 starts or updates ordinary named sounds from checked
- * SFX banks. MIDI handling is limited to startup registers 3, 4, 14 and 16. Channel 5 retains the
- * four-name play/stop/queue state and reports it through the GOAL sound-info block; actual streamed
- * audio remains unsupported. No-reply RPC returns report synchronous transport completion, while
- * the stats report semantic failures.
+ * Replace Jak 2's rpc-call/rpc-busy? machine stubs with synchronous player, loader, STR and PLAY
+ * responders. The kernel and machine-stub symbol table must already be initialized. This owns one
+ * portable, output-backend-free 989snd instance until shutdown. Ordinary named SFX and sequenced
+ * music use 989snd; all upstream player controls are applied without an IOP. Channel 5 retains the
+ * four-name play/stop/queue state and reports it through the GOAL sound-info block. No-reply RPC
+ * returns report synchronous transport completion, while the stats report semantic failures.
  */
 goal_kernel_core_status goal_jak2_sound_rpc_install(void);
 
