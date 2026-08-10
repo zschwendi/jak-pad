@@ -37,9 +37,11 @@ class MetalGlowRenderer {
 
   bool ensure_probe_targets(id<MTLDevice> device);
   bool ensure_game_depth_snapshot(id<MTLTexture> source);
+  bool ensure_missing_texture_fallback(id<MTLDevice> device);
 
   id<MTLTexture> m_probe_color[kDownsampleIterations] = {};
   id<MTLTexture> m_probe_depth = nil;
   id<MTLTexture> m_game_depth_snapshot = nil;
+  id<MTLTexture> m_missing_texture_fallback = nil;
   Stats m_stats;
 };

@@ -461,24 +461,6 @@ int main() {
     check(pso_cache.pipeline_count() == 0 && sampler_cache.count() == 0,
           "all rejected records leave the Metal pipeline and sampler caches untouched");
 
-    SpriteGlowOutput missing = make_center_flare();
-    missing.adgif.tex0_data =
-        (missing.adgif.tex0_data & ~0x3fffull) | static_cast<u64>(kMissingFlareTbp);
-    for (auto& position : missing.flare_xyzw) {
-      position.x() += 1024.f;
-    }
-    renderer.draw(&missing, 1, &state, context);
-    check(renderer.stats().sprites_submitted == 1 && renderer.stats().invalid_records == 0 &&
-              renderer.stats().sprites_drawn == 1 && renderer.stats().draw_calls == 1 &&
-              renderer.stats().triangles == 2 && renderer.stats().visibility_draw_calls == 6 &&
-              renderer.stats().visibility_triangles == 12 &&
-              renderer.stats().missing_textures == 1 &&
-              context.draw_calls == 7 && context.triangles == 14 &&
-              pso_cache.pipeline_count() == 4 && sampler_cache.count() == 1,
-          "a valid missing TBP runs visibility, uses the placeholder, and reports one draw");
-    context.draw_calls = 0;
-    context.triangles = 0;
-
     const SpriteGlowOutput flare = make_center_flare();
     renderer.draw(&flare, 1, &state, context);
     check(renderer.stats().sprites_submitted == 1 && renderer.stats().sprites_drawn == 1 &&
@@ -535,6 +517,70 @@ int main() {
           "readback retains the exact clear color outside the flare");
     check(bright_red_pixels > 0 && falloff_red_pixels > 0 && clear_pixels > 100,
           "readback distinguishes a bright center, textured falloff, and unchanged outside pixels");
+
+    stream.reset();
+    id<MTLCommandBuffer> missing_commands = [queue commandBuffer];
+    auto* missing_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    missing_pass.colorAttachments[0].texture = color;
+    missing_pass.colorAttachments[0].slice = 1;
+    missing_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    missing_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    missing_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    missing_pass.depthAttachment.texture = depth;
+    missing_pass.depthAttachment.slice = 1;
+    missing_pass.depthAttachment.loadAction = MTLLoadActionClear;
+    missing_pass.depthAttachment.storeAction = MTLStoreActionStore;
+    missing_pass.depthAttachment.clearDepth = 0.0;
+    missing_pass.stencilAttachment.texture = depth;
+    missing_pass.stencilAttachment.slice = 1;
+    missing_pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    missing_pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    missing_pass.stencilAttachment.clearStencil = 0;
+    context.enc = [missing_commands renderCommandEncoderWithDescriptor:missing_pass];
+    context.cmds = missing_commands;
+    [context.enc setViewport:context.game_viewport];
+    context.draw_calls = 0;
+    context.triangles = 0;
+
+    SpriteGlowOutput missing = make_center_flare();
+    missing.adgif.tex0_data =
+        (missing.adgif.tex0_data & ~0x3fffull) | static_cast<u64>(kMissingFlareTbp);
+    renderer.draw(&missing, 1, &state, context);
+    check(renderer.stats().sprites_submitted == 1 && renderer.stats().invalid_records == 0 &&
+              renderer.stats().sprites_drawn == 1 && renderer.stats().draw_calls == 1 &&
+              renderer.stats().triangles == 2 && renderer.stats().visibility_draw_calls == 6 &&
+              renderer.stats().visibility_triangles == 12 &&
+              renderer.stats().missing_textures == 1 &&
+              context.draw_calls == 7 && context.triangles == 14 &&
+              pso_cache.pipeline_count() == 4 && sampler_cache.count() == 1,
+          "a valid missing TBP runs visibility, uses the fail-soft radial fallback, and reports "
+          "one draw");
+    [context.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> missing_blit = [missing_commands blitCommandEncoder];
+    [missing_blit synchronizeResource:color];
+    [missing_blit endEncoding];
+#endif
+    [missing_commands commit];
+    [missing_commands waitUntilCompleted];
+    check(missing_commands.status == MTLCommandBufferStatusCompleted,
+          "the unresolved-texture glow command buffer completed");
+    if (missing_commands.status != MTLCommandBufferStatusCompleted && missing_commands.error) {
+      std::printf("Metal command-buffer error: %s\n",
+                  missing_commands.error.localizedDescription.UTF8String);
+    }
+    [color getBytes:pixels.data()
+        bytesPerRow:kTargetSize * 4
+      bytesPerImage:pixels.size()
+         fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+        mipmapLevel:0
+              slice:1];
+    check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, 0, 0, 255, 255),
+          "the unresolved-texture fallback keeps the flare center bright");
+    check(red_at(pixels, 25, 25) < 16,
+          "the unresolved-texture fallback fades near the flare quad corner");
+    check(is_bgra(pixels, 2, 2, 0, 0, 0, 0),
+          "the unresolved-texture fallback leaves pixels outside the flare unchanged");
 
     stream.reset();
     id<MTLCommandBuffer> boosted_commands = [queue commandBuffer];

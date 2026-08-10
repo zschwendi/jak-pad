@@ -1,5 +1,7 @@
 #include "game/graphics/pipelines/metal/metal_glow_renderer.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -158,6 +160,48 @@ bool MetalGlowRenderer::ensure_game_depth_snapshot(id<MTLTexture> source) {
   descriptor.storageMode = MTLStorageModePrivate;
   m_game_depth_snapshot = [source.device newTextureWithDescriptor:descriptor];
   return m_game_depth_snapshot != nil;
+}
+
+bool MetalGlowRenderer::ensure_missing_texture_fallback(id<MTLDevice> device) {
+  if (m_missing_texture_fallback && m_missing_texture_fallback.device == device) {
+    return true;
+  }
+
+  constexpr int kSize = 16;
+  constexpr float kCenter = (kSize - 1) / 2.f;
+  std::array<u32, kSize * kSize> pixels = {};
+  for (int y = 0; y < kSize; y++) {
+    for (int x = 0; x < kSize; x++) {
+      const float dx = x - kCenter;
+      const float dy = y - kCenter;
+      const float radius = std::sqrt(dx * dx + dy * dy) / kCenter;
+      const u8 intensity =
+          static_cast<u8>(std::clamp((1.f - radius) * 384.f, 0.f, 255.f));
+      pixels[y * kSize + x] = static_cast<u32>(intensity) |
+                              (static_cast<u32>(intensity) << 8) |
+                              (static_cast<u32>(intensity) << 16) |
+                              (static_cast<u32>(intensity) << 24);
+    }
+  }
+
+  auto* descriptor =
+      [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                          width:kSize
+                                                         height:kSize
+                                                      mipmapped:NO];
+  descriptor.usage = MTLTextureUsageShaderRead;
+  descriptor.storageMode = MTLStorageModeShared;
+  id<MTLTexture> fallback = [device newTextureWithDescriptor:descriptor];
+  if (!fallback) {
+    return false;
+  }
+  [fallback replaceRegion:MTLRegionMake2D(0, 0, kSize, kSize)
+               mipmapLevel:0
+                 withBytes:pixels.data()
+               bytesPerRow:kSize * sizeof(u32)];
+  fallback.label = @"Unresolved final-glow fail-soft radial fallback";
+  m_missing_texture_fallback = fallback;
+  return true;
 }
 
 void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
@@ -461,8 +505,16 @@ void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
     id<MTLTexture> texture = handle ? metal_texture_lookup(*handle) : nil;
     if (!texture) {
       m_stats.missing_textures++;
-      lg::warn("Metal glow: failed to resolve texture at {}, using placeholder", record.tbp);
-      texture = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
+      lg::warn(
+          "Metal glow: failed to resolve texture at {}; using synthetic fail-soft radial "
+          "fallback (not source-faithful)",
+          record.tbp);
+      if (ensure_missing_texture_fallback(ctx.game_color.device)) {
+        texture = m_missing_texture_fallback;
+      } else {
+        lg::error("Metal glow: failed to allocate fail-soft radial texture; using placeholder");
+        texture = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
+      }
     }
     ASSERT(texture);
 
