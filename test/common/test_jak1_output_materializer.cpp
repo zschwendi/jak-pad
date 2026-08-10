@@ -10,6 +10,16 @@
 #include <string>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <fcntl.h>
+#include <membership.h>
+#include <sys/acl.h>
+#include <sys/clonefile.h>
+#include <sys/stat.h>
+#include <sys/xattr.h>
+#include <unistd.h>
+#endif
+
 #include "common/custom_data/Jak1OutputMaterializer.h"
 
 #include "decompiler/extractor/jak1_checked_dgo.h"
@@ -96,6 +106,81 @@ struct TempDirectory {
 
   fs::path path;
 };
+
+#if defined(__APPLE__)
+std::optional<bool> filesystem_supports_file_cloning(const fs::path& root) {
+  const auto source = root / "clone-probe-source";
+  const auto destination_directory = root / "clone-probe-destination";
+  const std::array<std::uint8_t, 4> bytes = {1, 2, 3, 4};
+  std::error_code error;
+  if (!write_bytes(source, bytes) || !fs::create_directory(destination_directory, error) || error) {
+    return std::nullopt;
+  }
+  const int source_descriptor = ::open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  const int destination_descriptor =
+      ::open(destination_directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (source_descriptor < 0 || destination_descriptor < 0) {
+    if (source_descriptor >= 0) {
+      ::close(source_descriptor);
+    }
+    if (destination_descriptor >= 0) {
+      ::close(destination_descriptor);
+    }
+    return std::nullopt;
+  }
+  errno = 0;
+  const int result =
+      ::fclonefileat(source_descriptor, destination_descriptor, "clone", CLONE_NOOWNERCOPY);
+  const int clone_error = errno;
+  ::close(destination_descriptor);
+  ::close(source_descriptor);
+  if (result == 0) {
+    return true;
+  }
+  if (clone_error == ENOTSUP || clone_error == EOPNOTSUPP || clone_error == EXDEV) {
+    return false;
+  }
+  return std::nullopt;
+}
+
+bool add_test_extended_acl(const fs::path& path) {
+  uuid_t user_uuid;
+  if (::mbr_uid_to_uuid(::geteuid(), user_uuid) != 0) {
+    return false;
+  }
+  acl_t acl = ::acl_init(1);
+  acl_entry_t entry = nullptr;
+  acl_permset_t permissions = nullptr;
+  acl_flagset_t flags = nullptr;
+  const bool configured =
+      acl && ::acl_create_entry(&acl, &entry) == 0 &&
+      ::acl_set_tag_type(entry, ACL_EXTENDED_ALLOW) == 0 &&
+      ::acl_set_qualifier(entry, user_uuid) == 0 &&
+      ::acl_get_permset(entry, &permissions) == 0 && ::acl_clear_perms(permissions) == 0 &&
+      ::acl_add_perm(permissions, ACL_READ_DATA) == 0 &&
+      ::acl_set_permset(entry, permissions) == 0 && ::acl_get_flagset_np(entry, &flags) == 0 &&
+      ::acl_clear_flags_np(flags) == 0 && ::acl_set_flagset_np(entry, flags) == 0 &&
+      ::acl_valid(acl) == 0 && ::acl_set_file(path.c_str(), ACL_TYPE_EXTENDED, acl) == 0;
+  if (acl) {
+    ::acl_free(acl);
+  }
+  return configured;
+}
+
+bool has_no_extended_acl(const fs::path& path) {
+  errno = 0;
+  acl_t acl = ::acl_get_file(path.c_str(), ACL_TYPE_EXTENDED);
+  if (!acl) {
+    return errno == ENOENT || errno == ENOATTR;
+  }
+  acl_entry_t entry = nullptr;
+  errno = 0;
+  const auto result = ::acl_get_entry(acl, ACL_FIRST_ENTRY, &entry);
+  const auto entry_error = errno;
+  ::acl_free(acl);
+  return result == -1 && entry_error == EINVAL;
+}
+#endif
 
 jak1_output_recipe::RevisionProvenance provenance_of(const jak1_iso::Revision& revision) {
   return {
@@ -237,6 +322,7 @@ bool materializes_checked_desktop_layout() {
   CHECK(result.value().objects_written == 3);
   CHECK(result.value().flat_files_written == 2);
   CHECK(result.value().fr3_files_written == 1);
+  CHECK(result.value().files_cloned == 0);
   CHECK(result.value().output_bytes > 0);
   CHECK(fixture.stage_absent());
   CHECK(read_bytes(fixture.destination / "iso/DATA.BIN") == fixture.flat);
@@ -256,6 +342,227 @@ bool materializes_checked_desktop_layout() {
   CHECK(!progress.empty());
   CHECK(progress.front().phase == Phase::validating);
   CHECK(progress.back().phase == Phase::installing);
+  return true;
+}
+
+bool clones_flat_files_when_the_filesystem_supports_it() {
+#if defined(__APPLE__)
+  Fixture fixture;
+  CHECK(fixture.setup());
+  fixture.bind_validated_identities();
+  const auto clone_support = filesystem_supports_file_cloning(fixture.temp.path);
+  CHECK(clone_support.has_value());
+  if (!*clone_support) {
+    std::cout << "clone success test skipped: filesystem does not support file cloning\n";
+    return true;
+  }
+  const auto source = fixture.iso_root / "DATA.BIN";
+  constexpr char xattr_value[] = "clone-metadata";
+  CHECK(::setxattr(source.c_str(), "com.goalpad.clone-test", xattr_value,
+                   sizeof(xattr_value), 0, 0) == 0);
+  CHECK(add_test_extended_acl(source));
+  CHECK(!has_no_extended_acl(source));
+  CHECK(::chflags(source.c_str(), UF_NODUMP) == 0);
+  const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+  CHECK(result);
+  CHECK(result.value().files_cloned == 3);
+  const auto output = fixture.destination / "iso/DATA.BIN";
+  CHECK(read_bytes(output) == fixture.flat);
+  CHECK(read_bytes(fixture.destination / "iso/0COMMON.TXT") == fixture.generated_flat);
+  CHECK(read_bytes(fixture.destination / "fr3/level.fr3") == fixture.fr3);
+  struct stat output_status {};
+  CHECK(::lstat(output.c_str(), &output_status) == 0);
+  CHECK(S_ISREG(output_status.st_mode));
+  CHECK(output_status.st_nlink == 1);
+  CHECK(output_status.st_uid == ::geteuid());
+  CHECK((output_status.st_mode & 07777) == 0600);
+  CHECK(output_status.st_flags == 0);
+  CHECK(::listxattr(output.c_str(), nullptr, 0, 0) == 0);
+  CHECK(has_no_extended_acl(output));
+  const auto original_output = read_bytes(output);
+  fixture.flat.front() ^= 1;
+  CHECK(write_bytes(source, fixture.flat));
+  CHECK(read_bytes(output) == original_output);
+#else
+  std::cout << "clone success test skipped: file cloning is Apple-only\n";
+#endif
+  return true;
+}
+
+bool cloned_copy_rejects_mutation_and_cancellation() {
+#if defined(__APPLE__)
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    fixture.bind_validated_identities();
+    const auto clone_support = filesystem_supports_file_cloning(fixture.temp.path);
+    CHECK(clone_support.has_value());
+    if (!*clone_support) {
+      std::cout << "clone mutation test skipped: filesystem does not support file cloning\n";
+      return true;
+    }
+    bool saw_initial = false;
+    bool mutated = false;
+    bool mutation_write_ok = true;
+    fixture.options.on_progress = [&](const Progress& update) {
+      if (update.phase != Phase::copying_flat_files || update.current_item != "DATA.BIN") {
+        return;
+      }
+      if (!saw_initial) {
+        saw_initial = true;
+      } else if (!mutated) {
+        fixture.flat.back() ^= 1;
+        mutation_write_ok = write_bytes(fixture.iso_root / "DATA.BIN", fixture.flat);
+        mutated = true;
+      }
+    };
+    const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+    CHECK(mutated);
+    CHECK(mutation_write_ok);
+    CHECK(!result);
+    CHECK(result.error().code == ErrorCode::input_identity_mismatch);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    fixture.bind_validated_identities();
+    const auto clone_support = filesystem_supports_file_cloning(fixture.temp.path);
+    CHECK(clone_support.has_value());
+    if (!*clone_support) {
+      std::cout << "clone cancellation test skipped: filesystem does not support file cloning\n";
+      return true;
+    }
+    bool saw_initial = false;
+    bool cancel = false;
+    fixture.options.on_progress = [&](const Progress& update) {
+      if (update.phase != Phase::copying_flat_files || update.current_item != "DATA.BIN") {
+        return;
+      }
+      if (!saw_initial) {
+        saw_initial = true;
+      } else {
+        cancel = true;
+      }
+    };
+    fixture.options.should_cancel = [&] { return cancel; };
+    const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+    CHECK(!result);
+    CHECK(result.error().code == ErrorCode::cancelled);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
+#else
+  std::cout << "clone mutation/cancellation test skipped: file cloning is Apple-only\n";
+#endif
+  return true;
+}
+
+bool forced_stream_copy_reports_throttled_byte_progress() {
+  Fixture fixture;
+  CHECK(fixture.setup());
+  fixture.options.attempt_file_clones = false;
+  fixture.options.limits.io_chunk_bytes = 1;
+  std::vector<Progress> progress;
+  fixture.options.on_progress = [&](const Progress& update) { progress.push_back(update); };
+  const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+  CHECK(result);
+  CHECK(result.value().files_cloned == 0);
+
+  std::vector<std::uint64_t> flat_bytes;
+  std::vector<std::uint64_t> installation_bytes;
+  for (const auto& update : progress) {
+    if (update.phase == Phase::copying_flat_files && update.current_item == "DATA.BIN") {
+      flat_bytes.push_back(update.bytes_written);
+    }
+    if (update.phase == Phase::installing) {
+      installation_bytes.push_back(update.bytes_written);
+    }
+  }
+  CHECK(flat_bytes.size() == 2);
+  CHECK(std::is_sorted(flat_bytes.begin(), flat_bytes.end()));
+  CHECK(flat_bytes.back() - flat_bytes.front() == fixture.flat.size());
+  CHECK(installation_bytes.size() == 1);
+  CHECK(installation_bytes.front() == result.value().output_bytes);
+  return true;
+}
+
+bool streamed_copy_rejects_progress_mutation() {
+  Fixture fixture;
+  CHECK(fixture.setup());
+  fixture.bind_validated_identities();
+  fixture.options.attempt_file_clones = false;
+  fixture.options.limits.io_chunk_bytes = 1;
+  bool saw_initial = false;
+  bool mutated = false;
+  bool mutation_write_ok = true;
+  fixture.options.on_progress = [&](const Progress& update) {
+    if (update.phase != Phase::copying_flat_files || update.current_item != "DATA.BIN") {
+      return;
+    }
+    if (!saw_initial) {
+      saw_initial = true;
+      return;
+    }
+    if (!mutated && update.bytes_written > 0) {
+      fixture.flat.back() ^= 1;
+      mutation_write_ok = write_bytes(fixture.iso_root / "DATA.BIN", fixture.flat);
+      mutated = true;
+    }
+  };
+  const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+  CHECK(mutated);
+  CHECK(mutation_write_ok);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::input_identity_mismatch);
+  CHECK(!fs::exists(fixture.destination));
+  CHECK(fixture.stage_absent());
+  return true;
+}
+
+bool byte_progress_cancellation_is_atomic() {
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    fixture.options.attempt_file_clones = false;
+    fixture.options.limits.io_chunk_bytes = fixture.flat.size();
+    bool saw_initial = false;
+    bool cancel = false;
+    fixture.options.on_progress = [&](const Progress& update) {
+      if (update.phase != Phase::copying_flat_files || update.current_item != "DATA.BIN") {
+        return;
+      }
+      if (!saw_initial) {
+        saw_initial = true;
+      } else {
+        cancel = true;
+      }
+    };
+    fixture.options.should_cancel = [&] { return cancel; };
+    const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+    CHECK(!result);
+    CHECK(result.error().code == ErrorCode::cancelled);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
+  {
+    Fixture fixture;
+    CHECK(fixture.setup());
+    bool cancel = false;
+    fixture.options.on_progress = [&](const Progress& update) {
+      if (update.phase == Phase::installing &&
+          update.current_item == fixture.destination.filename().string()) {
+        cancel = true;
+      }
+    };
+    fixture.options.should_cancel = [&] { return cancel; };
+    const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+    CHECK(!result);
+    CHECK(result.error().code == ErrorCode::cancelled);
+    CHECK(!fs::exists(fixture.destination));
+    CHECK(fixture.stage_absent());
+  }
   return true;
 }
 
@@ -303,10 +610,12 @@ bool validated_input_mutations_fail_without_promotion() {
     CHECK(fixture.setup());
     fixture.bind_validated_identities();
     bool callback_write_ok = true;
+    bool mutated = false;
     fixture.options.on_progress = [&](const Progress& progress) {
-      if (progress.phase == Phase::copying_flat_files) {
+      if (!mutated && progress.phase == Phase::copying_flat_files) {
         fixture.flat.front() ^= 1;
         callback_write_ok = write_bytes(fixture.iso_root / "DATA.BIN", fixture.flat);
+        mutated = true;
       }
     };
     const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
@@ -321,10 +630,12 @@ bool validated_input_mutations_fail_without_promotion() {
     CHECK(fixture.setup());
     fixture.bind_validated_identities();
     bool callback_write_ok = true;
+    bool mutated = false;
     fixture.options.on_progress = [&](const Progress& progress) {
-      if (progress.phase == Phase::copying_fr3) {
+      if (!mutated && progress.phase == Phase::copying_fr3) {
         fixture.fr3.front() ^= 1;
         callback_write_ok = write_bytes(fixture.fr3_root / "level.fr3", fixture.fr3);
+        mutated = true;
       }
     };
     const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
@@ -647,6 +958,11 @@ bool rejects_dangling_destination_symlink() {
 int main() {
   const std::array tests = {
       materializes_checked_desktop_layout,
+      clones_flat_files_when_the_filesystem_supports_it,
+      cloned_copy_rejects_mutation_and_cancellation,
+      forced_stream_copy_reports_throttled_byte_progress,
+      streamed_copy_rejects_progress_mutation,
+      byte_progress_cancellation_is_atomic,
       rejects_exact_recipe_mismatch_before_staging,
       validated_input_mutations_fail_without_promotion,
       descriptor_owned_outputs_reject_terminal_races,

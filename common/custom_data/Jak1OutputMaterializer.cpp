@@ -14,6 +14,12 @@
 #include <unordered_set>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+#include <sys/acl.h>
+#include <sys/clonefile.h>
+#include <sys/xattr.h>
+#endif
+
 #include "common/util/PosixFile.h"
 #include "common/versions/jak2_iso_revisions.h"
 #include "decompiler/extractor/jak1_checked_dgo.h"
@@ -28,6 +34,7 @@ namespace {
 
 namespace fs = std::filesystem;
 constexpr std::uint64_t kDgoHeaderBytes = 64;
+constexpr std::uint64_t kProgressIntervalBytes = 8 * 1024 * 1024;
 
 using OutputMap = std::unordered_map<std::string, checked_file_identity::Identity>;
 
@@ -623,14 +630,171 @@ std::optional<Error> reserve_output(std::uint64_t size,
   return {};
 }
 
+bool same_file_snapshot(const struct stat& before, const struct stat& after) {
+  if (before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+      before.st_mode != after.st_mode || before.st_nlink != after.st_nlink ||
+      before.st_size != after.st_size) {
+    return false;
+  }
+#if defined(__APPLE__)
+  return before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec &&
+         before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec &&
+         before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec &&
+         before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec;
+#else
+  return before.st_mtim.tv_sec == after.st_mtim.tv_sec &&
+         before.st_mtim.tv_nsec == after.st_mtim.tv_nsec &&
+         before.st_ctim.tv_sec == after.st_ctim.tv_sec &&
+         before.st_ctim.tv_nsec == after.st_ctim.tv_nsec;
+#endif
+}
+
+#if defined(__APPLE__)
+bool clone_fallback_error(int error) {
+  if (error == ENOTSUP || error == EXDEV) {
+    return true;
+  }
+#if defined(EOPNOTSUPP)
+  return error == EOPNOTSUPP;
+#else
+  return false;
+#endif
+}
+
+std::optional<Error> verify_clone_fallback_destination_absent(
+    int directory,
+    std::string_view name) {
+  const std::string owned_name(name);
+  struct stat status {};
+  if (::fstatat(directory, owned_name.c_str(), &status, AT_SYMLINK_NOFOLLOW) == 0 ||
+      errno != ENOENT) {
+    return make_error(ErrorCode::output_write_failed,
+                      "A failed file clone left an unsafe destination entry.");
+  }
+  return {};
+}
+
+bool descriptor_has_no_extended_acl(int descriptor) {
+  errno = 0;
+  acl_t output_acl = ::acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED);
+  if (!output_acl) {
+    return errno == ENOENT || errno == ENOATTR;
+  }
+  acl_entry_t entry = nullptr;
+  errno = 0;
+  const auto entry_result = ::acl_get_entry(output_acl, ACL_FIRST_ENTRY, &entry);
+  const auto entry_error = errno;
+  ::acl_free(output_acl);
+  return entry_result == -1 && entry_error == EINVAL;
+}
+
+bool descriptor_has_normalized_apple_metadata(int descriptor, const struct stat& status) {
+  return status.st_uid == ::geteuid() && (status.st_mode & 07777) == 0600 &&
+         status.st_flags == 0 && ::flistxattr(descriptor, nullptr, 0, 0) == 0 &&
+         descriptor_has_no_extended_acl(descriptor);
+}
+
+std::optional<Error> normalize_cloned_output(int descriptor) {
+  if (::fchflags(descriptor, 0) != 0 || ::fchmod(descriptor, 0600) != 0) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not normalize cloned output metadata.");
+  }
+
+  const auto list_size = ::flistxattr(descriptor, nullptr, 0, 0);
+  if (list_size < 0) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not inspect cloned output extended attributes.");
+  }
+  std::vector<char> names(static_cast<std::size_t>(list_size));
+  if (!names.empty()) {
+    const auto actual_size = ::flistxattr(descriptor, names.data(), names.size(), 0);
+    if (actual_size < 0 || actual_size > static_cast<ssize_t>(names.size())) {
+      return make_error(ErrorCode::output_write_failed,
+                        "Could not list cloned output extended attributes.");
+    }
+    std::size_t offset = 0;
+    while (offset < static_cast<std::size_t>(actual_size)) {
+      const auto end = std::find(names.begin() + static_cast<std::ptrdiff_t>(offset),
+                                 names.begin() + actual_size, '\0');
+      if (end == names.begin() + actual_size || end == names.begin() + offset ||
+          ::fremovexattr(descriptor,
+                         std::string(names.begin() + static_cast<std::ptrdiff_t>(offset), end)
+                             .c_str(),
+                         0) != 0) {
+        return make_error(ErrorCode::output_write_failed,
+                          "Could not remove cloned output extended attributes.");
+      }
+      offset = static_cast<std::size_t>(end - names.begin()) + 1;
+    }
+  }
+  if (::flistxattr(descriptor, nullptr, 0, 0) != 0) {
+    return make_error(ErrorCode::output_write_failed,
+                      "A cloned output retained extended attributes.");
+  }
+  acl_t empty_acl = ::acl_init(0);
+  if (!empty_acl) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not allocate empty cloned output ACL metadata.");
+  }
+  const auto set_acl_result = ::acl_set_fd_np(descriptor, empty_acl, ACL_TYPE_EXTENDED);
+  ::acl_free(empty_acl);
+  if (set_acl_result != 0) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not clear cloned output extended ACL metadata.");
+  }
+  if (!descriptor_has_no_extended_acl(descriptor)) {
+    return make_error(ErrorCode::output_write_failed,
+                      "A cloned output retained extended ACL metadata.");
+  }
+  return {};
+}
+#endif
+
+struct ByteProgress {
+  const Options& options;
+  Phase phase;
+  std::uint32_t completed;
+  std::uint32_t total;
+  std::uint64_t base_bytes;
+  std::uint64_t* shared_bytes;
+  std::string_view current_item;
+};
+
+std::optional<Error> report_byte_progress(const ByteProgress& progress,
+                                          std::uint64_t file_bytes,
+                                          std::uint64_t file_size) {
+  std::uint64_t bytes_written = 0;
+  if (!progress.shared_bytes ||
+      !checked_add(progress.base_bytes, *progress.shared_bytes, &bytes_written)) {
+    return make_error(ErrorCode::output_limit_exceeded,
+                      "Materializer byte progress overflowed.");
+  }
+  return report(progress.options, progress.phase,
+                progress.completed + static_cast<std::uint32_t>(file_bytes == file_size),
+                progress.total, bytes_written, std::string(progress.current_item));
+}
+
 std::optional<Error> hash_descriptor(int descriptor,
                                      std::uint64_t size,
-                                     std::uint64_t* result) {
+                                     std::uint64_t* result,
+                                     ErrorCode read_error_code,
+                                     std::string_view read_error_message,
+                                     const ByteProgress* progress = nullptr) {
   XXH64_state_t hash_state;
   XXH64_reset(&hash_state, 0);
-  std::vector<std::uint8_t> buffer(64 * 1024);
+  const auto chunk_bytes = progress
+                               ? std::min<std::size_t>(progress->options.limits.io_chunk_bytes,
+                                                       kProgressIntervalBytes)
+                               : 64 * 1024;
+  std::vector<std::uint8_t> buffer(chunk_bytes);
   std::uint64_t offset = 0;
+  std::uint64_t next_progress = kProgressIntervalBytes;
   while (offset < size) {
+    if (progress) {
+      if (const auto cancel_error = cancelled(progress->options)) {
+        return cancel_error;
+      }
+    }
     const auto chunk = static_cast<std::size_t>(
         std::min<std::uint64_t>(buffer.size(), size - offset));
     const auto count = ::pread(descriptor, buffer.data(), chunk, static_cast<off_t>(offset));
@@ -638,11 +802,25 @@ std::optional<Error> hash_descriptor(int descriptor,
       continue;
     }
     if (count != static_cast<ssize_t>(chunk)) {
-      return make_error(ErrorCode::output_write_failed,
-                        "Could not re-read an exact staged output.");
+      return make_error(read_error_code, std::string(read_error_message));
     }
     XXH64_update(&hash_state, buffer.data(), chunk);
     offset += chunk;
+    if (progress) {
+      *progress->shared_bytes += chunk;
+      if (offset == size || offset >= next_progress) {
+        if (const auto progress_error = report_byte_progress(*progress, offset, size)) {
+          return progress_error;
+        }
+        if (const auto cancel_error = cancelled(progress->options)) {
+          return cancel_error;
+        }
+        next_progress =
+            offset > std::numeric_limits<std::uint64_t>::max() - kProgressIntervalBytes
+                ? std::numeric_limits<std::uint64_t>::max()
+                : offset + kProgressIntervalBytes;
+      }
+    }
   }
   *result = XXH64_digest(&hash_state);
   return {};
@@ -689,14 +867,28 @@ std::optional<Error> copy_file_at(
     ErrorCode mismatch_code,
     std::uint64_t* total_output,
     const Options& options,
+    Phase progress_phase,
+    std::uint32_t progress_completed,
+    std::uint32_t progress_total,
     checked_file_identity::Identity* produced,
-    posix_file::Identity* produced_inode) {
-  std::error_code error;
-  const auto size = fs::file_size(source, error);
-  if (error || size == 0 || size > cap) {
-    return make_error(error ? ErrorCode::input_read_failed : ErrorCode::input_too_large,
-                      "A copied input is unreadable, empty, or too large: " + source.string());
+    posix_file::Identity* produced_inode,
+    bool* produced_clone) {
+  const int input_descriptor = ::open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  posix_file::OwnedFd input(input_descriptor);
+  struct stat input_before {};
+  if (!input || !posix_file::descriptor_identity(input.get(), nullptr, &input_before)) {
+    return make_error(ErrorCode::input_read_failed,
+                      "Could not open a materializer copy input.");
   }
+  if (!S_ISREG(input_before.st_mode)) {
+    return make_error(ErrorCode::input_not_regular,
+                      "A materializer copy input is not a regular file.");
+  }
+  if (input_before.st_size <= 0 || static_cast<std::uint64_t>(input_before.st_size) > cap) {
+    return make_error(ErrorCode::input_too_large,
+                      "A copied input is empty or too large: " + source.string());
+  }
+  const auto size = static_cast<std::uint64_t>(input_before.st_size);
   if (expected && expected->first != size) {
     return make_error(mismatch_code, "A copied artifact has the wrong size: " + source.string());
   }
@@ -704,80 +896,180 @@ std::optional<Error> copy_file_at(
   if (const auto budget = reserve_output(size, &next_total, options)) {
     return budget;
   }
-  const int input_descriptor = ::open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-  posix_file::OwnedFd input(input_descriptor);
-  if (!input) {
-    return make_error(ErrorCode::input_read_failed,
-                      "Could not open a materializer copy input.");
+  if (const auto error_result = cancelled(options)) {
+    return error_result;
   }
-  auto output = posix_file::open_file_at(
-      destination_directory, destination_name, O_RDWR | O_CREAT | O_EXCL, 0600);
+
+  bool cloned = false;
+  posix_file::Identity cloned_identity;
+#if defined(__APPLE__)
+  if (options.attempt_file_clones && options.require_validated_file_identities && expected) {
+    const std::string owned_destination_name(destination_name);
+    if (::fclonefileat(input.get(), destination_directory, owned_destination_name.c_str(),
+                       CLONE_NOOWNERCOPY) == 0) {
+      cloned = true;
+      struct stat cloned_status {};
+      if (::fstatat(destination_directory, owned_destination_name.c_str(), &cloned_status,
+                    AT_SYMLINK_NOFOLLOW) != 0) {
+        return make_error(ErrorCode::output_write_failed,
+                          "Could not retain the exact cloned staged output.");
+      }
+      cloned_identity = {cloned_status.st_dev, cloned_status.st_ino};
+      if (!S_ISREG(cloned_status.st_mode) || cloned_status.st_nlink != 1) {
+        return make_error(ErrorCode::output_write_failed,
+                          "The cloned staged output is not a private regular file.");
+      }
+    } else {
+      const auto clone_error = errno;
+      if (!clone_fallback_error(clone_error)) {
+        return make_error(ErrorCode::output_write_failed,
+                          "Could not safely clone a materializer copy input.");
+      }
+      if (const auto error = verify_clone_fallback_destination_absent(
+              destination_directory, destination_name)) {
+        return error;
+      }
+    }
+  }
+#else
+  (void)options.attempt_file_clones;
+#endif
+
+  auto output = cloned
+                    ? posix_file::open_file_at(destination_directory, destination_name, O_RDWR)
+                    : posix_file::open_file_at(
+                          destination_directory, destination_name, O_RDWR | O_CREAT | O_EXCL, 0600);
   if (!output) {
-    return make_error(ErrorCode::output_write_failed,
-                      "Could not exclusively create a materializer copy output.");
+    auto error = make_error(ErrorCode::output_write_failed,
+                            cloned ? "Could not open a cloned materializer copy output."
+                                   : "Could not exclusively create a materializer copy output.");
+    if (cloned) {
+      if (const auto cleanup =
+              remove_owned_file(destination_directory, destination_name, cloned_identity)) {
+        return cleanup;
+      }
+    }
+    return error;
   }
   posix_file::Identity output_identity;
   struct stat output_status {};
-  if (!posix_file::descriptor_identity(output.get(), &output_identity, &output_status) ||
-      !S_ISREG(output_status.st_mode) || output_status.st_nlink != 1) {
+  if (!posix_file::descriptor_identity(output.get(), &output_identity, &output_status)) {
     return make_error(ErrorCode::output_write_failed,
-                      "The copied output is not a private regular file.");
+                      "Could not retain a copied output descriptor identity.");
   }
   const auto fail_owned = [&](Error error) {
     const auto cleanup = remove_owned_file(destination_directory, destination_name, output_identity);
     return cleanup ? *cleanup : std::move(error);
   };
+  if (!S_ISREG(output_status.st_mode) || output_status.st_nlink != 1 ||
+      output_status.st_uid != ::geteuid()) {
+    return fail_owned(make_error(ErrorCode::output_write_failed,
+                                 "The copied output is not a private regular file."));
+  }
+  if (cloned && (output_identity.device != cloned_identity.device ||
+                 output_identity.inode != cloned_identity.inode)) {
+    return make_error(ErrorCode::output_write_failed,
+                      "The cloned staged output changed before it could be opened.");
+  }
+  if (const auto error_result = cancelled(options)) {
+    return fail_owned(*error_result);
+  }
   XXH64_state_t hash_state;
   XXH64_reset(&hash_state, 0);
-  std::vector<char> buffer(options.limits.io_chunk_bytes);
   std::uint64_t copied = 0;
-  while (copied < size) {
-    if (const auto error_result = cancelled(options)) {
-      return fail_owned(*error_result);
+  std::uint64_t copied_hash = 0;
+  if (cloned) {
+    if (const auto normalization = normalize_cloned_output(output.get())) {
+      return fail_owned(*normalization);
     }
-    const auto chunk =
-        static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - copied));
-    const auto read_count = ::read(input.get(), buffer.data(), chunk);
-    if (read_count < 0 && errno == EINTR) {
-      continue;
+    if (!posix_file::descriptor_identity(output.get(), nullptr, &output_status) ||
+        !S_ISREG(output_status.st_mode) || output_status.st_nlink != 1 ||
+        !descriptor_has_normalized_apple_metadata(output.get(), output_status) ||
+        !posix_file::entry_identity(destination_directory, destination_name, output_identity)) {
+      return fail_owned(make_error(ErrorCode::output_write_failed,
+                                   "A cloned output retained unsafe metadata."));
     }
-    if (read_count != static_cast<ssize_t>(chunk)) {
-      return fail_owned(make_error(ErrorCode::input_read_failed,
-                                   "Could not completely read a copied input: " +
-                                       source.string()));
+    ByteProgress clone_progress{options, progress_phase, progress_completed, progress_total,
+                                *total_output, &copied, destination_name};
+    if (const auto hash_error = hash_descriptor(
+            input.get(), size, &copied_hash, ErrorCode::input_read_failed,
+            "Could not completely verify a cloned input.", &clone_progress)) {
+      return fail_owned(*hash_error);
     }
-    std::size_t written = 0;
-    while (written < chunk) {
-      const auto write_count =
-          ::write(output.get(), buffer.data() + written, chunk - written);
-      if (write_count < 0 && errno == EINTR) {
+  } else {
+    const auto buffer_size = options.on_progress
+                                 ? std::min<std::size_t>(options.limits.io_chunk_bytes,
+                                                         kProgressIntervalBytes)
+                                 : options.limits.io_chunk_bytes;
+    std::vector<char> buffer(buffer_size);
+    std::uint64_t next_progress = kProgressIntervalBytes;
+    while (copied < size) {
+      if (const auto error_result = cancelled(options)) {
+        return fail_owned(*error_result);
+      }
+      const auto chunk =
+          static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - copied));
+      const auto read_count = ::read(input.get(), buffer.data(), chunk);
+      if (read_count < 0 && errno == EINTR) {
         continue;
       }
-      if (write_count <= 0) {
-        return fail_owned(make_error(ErrorCode::output_write_failed,
-                                     "Could not write a staged output."));
+      if (read_count != static_cast<ssize_t>(chunk)) {
+        return fail_owned(make_error(ErrorCode::input_read_failed,
+                                     "Could not completely read a copied input: " +
+                                         source.string()));
       }
-      written += static_cast<std::size_t>(write_count);
+      std::size_t written = 0;
+      while (written < chunk) {
+        const auto write_count =
+            ::write(output.get(), buffer.data() + written, chunk - written);
+        if (write_count < 0 && errno == EINTR) {
+          continue;
+        }
+        if (write_count <= 0) {
+          return fail_owned(make_error(ErrorCode::output_write_failed,
+                                       "Could not write a staged output."));
+        }
+        written += static_cast<std::size_t>(write_count);
+      }
+      XXH64_update(&hash_state, buffer.data(), chunk);
+      copied += chunk;
+      if (copied == size || copied >= next_progress) {
+        ByteProgress stream_progress{options, progress_phase, progress_completed, progress_total,
+                                     *total_output, &copied, destination_name};
+        if (const auto progress_error = report_byte_progress(stream_progress, copied, size)) {
+          return fail_owned(*progress_error);
+        }
+        if (const auto cancel_error = cancelled(options)) {
+          return fail_owned(*cancel_error);
+        }
+        next_progress =
+            copied > std::numeric_limits<std::uint64_t>::max() - kProgressIntervalBytes
+                ? std::numeric_limits<std::uint64_t>::max()
+                : copied + kProgressIntervalBytes;
+      }
     }
-    XXH64_update(&hash_state, buffer.data(), chunk);
-    copied += chunk;
+    copied_hash = XXH64_digest(&hash_state);
   }
   if (::fsync(output.get()) != 0) {
     return fail_owned(make_error(ErrorCode::output_write_failed,
                                  "Could not synchronize a staged output."));
   }
-  const auto copied_hash = XXH64_digest(&hash_state);
   if (expected && copied_hash != expected->second) {
     return fail_owned(
         make_error(mismatch_code, "A copied artifact has the wrong hash: " + source.string()));
   }
+  struct stat input_after {};
+  if (!posix_file::descriptor_identity(input.get(), nullptr, &input_after) ||
+      !same_file_snapshot(input_before, input_after)) {
+    return fail_owned(make_error(
+        mismatch_code, "A copied artifact changed while it was being verified: " + source.string()));
+  }
   struct stat final_status {};
-  std::uint64_t installed_hash = 0;
   if (!posix_file::descriptor_identity(output.get(), nullptr, &final_status) ||
       !posix_file::entry_identity(destination_directory, destination_name, output_identity) ||
       !S_ISREG(final_status.st_mode) || final_status.st_nlink != 1 ||
-      final_status.st_size != static_cast<off_t>(size) ||
-      hash_descriptor(output.get(), size, &installed_hash) || installed_hash != copied_hash) {
+      final_status.st_uid != ::geteuid() ||
+      final_status.st_size != static_cast<off_t>(size)) {
     const auto cleanup = remove_owned_file(destination_directory, destination_name, output_identity);
     return cleanup ? cleanup
                    : std::optional<Error>(make_error(
@@ -790,6 +1082,9 @@ std::optional<Error> copy_file_at(
   }
   if (produced_inode) {
     *produced_inode = output_identity;
+  }
+  if (produced_clone) {
+    *produced_clone = cloned;
   }
   return {};
 }
@@ -843,12 +1138,24 @@ std::optional<Error> validate_output_directory(int directory,
       return make_error(ErrorCode::output_write_failed,
                         "A staged output is not the expected private regular file.");
     }
+#if defined(__APPLE__)
+    if (!descriptor_has_normalized_apple_metadata(file.get(), before)) {
+      ::closedir(stream);
+      return make_error(ErrorCode::output_write_failed,
+                        "A staged output retained unsafe metadata.");
+    }
+#endif
     std::uint64_t hash = 0;
     struct stat after {};
-    if (hash_descriptor(file.get(), expected_entry->second.size, &hash) ||
-        hash != expected_entry->second.xxh64 ||
+    if (const auto hash_error = hash_descriptor(
+            file.get(), expected_entry->second.size, &hash, ErrorCode::output_write_failed,
+            "Could not re-read an exact staged output.")) {
+      ::closedir(stream);
+      return hash_error;
+    }
+    if (hash != expected_entry->second.xxh64 ||
         !posix_file::descriptor_identity(file.get(), nullptr, &after) ||
-        !posix_file::same_identity(after, identity) || before.st_size != after.st_size ||
+        !same_file_snapshot(before, after) ||
         !posix_file::entry_identity(directory, name, identity)) {
       ::closedir(stream);
       return make_error(ErrorCode::output_write_failed,
@@ -1313,7 +1620,7 @@ Result<Summary> materialize(const Inputs& inputs,
       if (!source) {
         return Result<Summary>::failure(*cleanup_failure(source.error(), stage));
       }
-      if (const auto error = report(options, Phase::copying_flat_files, flat_index++, flat_total,
+      if (const auto error = report(options, Phase::copying_flat_files, flat_index, flat_total,
                                     summary.output_bytes, copy.destination_basename)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
@@ -1323,10 +1630,12 @@ Result<Summary> materialize(const Inputs& inputs,
                                 : std::nullopt;
       checked_file_identity::Identity produced;
       posix_file::Identity produced_inode;
+      bool produced_clone = false;
       if (const auto error = copy_file_at(
               source.value(), stage.iso.get(), copy.destination_basename,
               options.limits.max_flat_file_bytes, expected, ErrorCode::input_identity_mismatch,
-              &summary.output_bytes, options, &produced, &produced_inode)) {
+              &summary.output_bytes, options, Phase::copying_flat_files, flat_index, flat_total,
+              &produced, &produced_inode, &produced_clone)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
       if (!stage.iso_outputs
@@ -1344,6 +1653,8 @@ Result<Summary> materialize(const Inputs& inputs,
                        "A staged flat destination collides with another output."),
             stage));
       }
+      summary.files_cloned += static_cast<std::uint32_t>(produced_clone);
+      ++flat_index;
       ++summary.flat_files_written;
     }
     std::unordered_set<std::string> used_generated_flats;
@@ -1362,18 +1673,20 @@ Result<Summary> materialize(const Inputs& inputs,
       if (!source) {
         return Result<Summary>::failure(*cleanup_failure(source.error(), stage));
       }
-      if (const auto error = report(options, Phase::copying_flat_files, flat_index++, flat_total,
+      if (const auto error = report(options, Phase::copying_flat_files, flat_index, flat_total,
                                     summary.output_bytes, generated.destination_basename)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
       checked_file_identity::Identity produced;
       posix_file::Identity produced_inode;
+      bool produced_clone = false;
       if (const auto error = copy_file_at(
               source.value(), stage.iso.get(), generated.destination_basename,
               options.limits.max_flat_file_bytes,
               std::pair<std::uint64_t, std::uint64_t>{artifact.size, artifact.xxh64},
               ErrorCode::generated_artifact_mismatch, &summary.output_bytes, options,
-              &produced, &produced_inode)) {
+              Phase::copying_flat_files, flat_index, flat_total, &produced, &produced_inode,
+              &produced_clone)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
       if (!stage.iso_outputs
@@ -1394,6 +1707,8 @@ Result<Summary> materialize(const Inputs& inputs,
             stage));
       }
       used_generated_flats.emplace(key);
+      summary.files_cloned += static_cast<std::uint32_t>(produced_clone);
+      ++flat_index;
       ++summary.flat_files_written;
     }
     if (used_generated_flats.size() != generated_flats.size()) {
@@ -1459,14 +1774,17 @@ Result<Summary> materialize(const Inputs& inputs,
       }
       checked_file_identity::Identity produced;
       posix_file::Identity produced_inode;
+      bool produced_clone = false;
       if (const auto error = copy_file_at(
               source.value(), stage.fr3.get(), name, options.limits.max_fr3_file_bytes,
               identity.value()
                   ? std::optional<std::pair<std::uint64_t, std::uint64_t>>(
                         std::pair{identity.value()->size, identity.value()->xxh64})
                   : std::nullopt,
-              ErrorCode::input_identity_mismatch, &summary.output_bytes, options, &produced,
-              &produced_inode)) {
+              ErrorCode::input_identity_mismatch, &summary.output_bytes, options,
+              Phase::copying_fr3, index,
+              static_cast<std::uint32_t>(recipe.expected_fr3_basenames.size()), &produced,
+              &produced_inode, &produced_clone)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
       if (!stage.fr3_outputs
@@ -1483,11 +1801,15 @@ Result<Summary> materialize(const Inputs& inputs,
                        "A staged FR3 destination collides with another output."),
             stage));
       }
+      summary.files_cloned += static_cast<std::uint32_t>(produced_clone);
       ++summary.fr3_files_written;
     }
 
     if (const auto error = report(options, Phase::installing, 0, 1, summary.output_bytes,
                                   destination_root.filename().string())) {
+      return Result<Summary>::failure(*cleanup_failure(*error, stage));
+    }
+    if (const auto error = cancelled(options)) {
       return Result<Summary>::failure(*cleanup_failure(*error, stage));
     }
     if (const auto validation = validate_stage(stage, iso_outputs, fr3_outputs, options)) {

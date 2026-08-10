@@ -94,6 +94,7 @@ struct Options {
   std::optional<std::size_t> expected_validated_fr3_file_count;
   CancelCallback should_cancel;
   ProgressCallback on_progress;
+  bool attempt_file_clones = true;
 };
 
 enum class ErrorCode {
@@ -166,6 +167,7 @@ struct Summary {
   std::uint32_t flat_files_written = 0;
   std::uint32_t fr3_files_written = 0;
   std::uint64_t output_bytes = 0;
+  std::uint32_t files_cloned = 0;
 };
 
 Result<Summary> materialize(const Inputs& inputs,
