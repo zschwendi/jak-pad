@@ -1,11 +1,16 @@
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <mutex>
 #include <vector>
+
+#include "common/dma/dma.h"
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
 #include "game/graphics/pipelines/metal/metal_glow_renderer.h"
-#include "game/graphics/pipelines/metal/metal_pool_texture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -21,6 +26,14 @@ namespace {
 constexpr int kTargetSize = 64;
 constexpr u32 kFlareTbp = 0x2a0;
 constexpr u32 kMissingFlareTbp = 0x2a1;
+constexpr u16 kFlareTexturePage = 11;
+constexpr u32 kChainOffset = 0x100;
+constexpr u32 kUploadGroupOffset = 0x2000;
+constexpr u32 kUploadTailOffset = 0x3000;
+constexpr u32 kTexturePageOffset = 0x6000;
+constexpr u32 kTextureObjectOffset = 0x6100;
+constexpr u32 kSyntheticS7 = 0x7f00;
+constexpr std::size_t kFixtureMemorySize = 0x10000;
 
 int failures = 0;
 
@@ -52,6 +65,74 @@ bool is_half_red(const std::vector<u8>& pixels, int x, int y) {
   const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
   return pixels[offset] == 0 && pixels[offset + 1] == 0 &&
          (pixels[offset + 2] == 127 || pixels[offset + 2] == 128) && pixels[offset + 3] == 255;
+}
+
+u8 red_at(const std::vector<u8>& pixels, int x, int y) {
+  const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
+  return pixels[offset + 2];
+}
+
+void put_u32(std::array<u8, kFixtureMemorySize>* memory, u32 offset, u32 value) {
+  std::memcpy(memory->data() + offset, &value, sizeof(value));
+}
+
+void put_u64(std::array<u8, kFixtureMemorySize>* memory, u32 offset, u64 value) {
+  std::memcpy(memory->data() + offset, &value, sizeof(value));
+}
+
+void put_tag(std::array<u8, kFixtureMemorySize>* memory,
+             u32 offset,
+             DmaTag::Kind kind,
+             u16 qwc,
+             u32 address,
+             u32 vif0,
+             u32 vif1) {
+  const u64 tag = static_cast<u64>(qwc) | (static_cast<u64>(kind) << 28) |
+                  (static_cast<u64>(address) << 32);
+  put_u64(memory, offset, tag);
+  put_u32(memory, offset + 8, vif0);
+  put_u32(memory, offset + 12, vif1);
+}
+
+struct SpriteTextureUploadFixture {
+  std::array<u8, kFixtureMemorySize> packet = {};
+  std::array<u8, kFixtureMemorySize> live = {};
+};
+
+SpriteTextureUploadFixture make_sprite_texture_upload_fixture() {
+  SpriteTextureUploadFixture fixture;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr s64 kMode = -1;
+  const u32 bucket_offset =
+      kChainOffset + metal_renderer::kJak2SpriteTextureUploadBucket * 16;
+
+  put_tag(&fixture.packet, bucket_offset, DmaTag::Kind::NEXT, 0, kUploadGroupOffset, 0, 0);
+  put_tag(&fixture.packet, kUploadGroupOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
+  const u32 descriptor_offset = kUploadGroupOffset + 48;
+  put_tag(&fixture.packet, descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  put_u64(&fixture.packet, descriptor_offset + 16, kTexturePageOffset);
+  put_u64(&fixture.packet, descriptor_offset + 24, static_cast<u64>(kMode));
+  put_tag(&fixture.packet, descriptor_offset + 32, DmaTag::Kind::NEXT, 0,
+          kUploadTailOffset, 0, 0);
+  put_tag(&fixture.packet, kUploadTailOffset, DmaTag::Kind::CNT, 10, 0, kFlusha,
+          kDirect | 10);
+  put_tag(&fixture.packet, kUploadTailOffset + 176, DmaTag::Kind::NEXT, 0,
+          bucket_offset + 16, 0, 0);
+
+  GoalTexturePage page = {};
+  page.id = kFlareTexturePage;
+  page.length = 1;
+  std::memcpy(fixture.live.data() + kTexturePageOffset, &page, sizeof(page));
+  put_u32(&fixture.live, kTexturePageOffset + sizeof(page), kTextureObjectOffset);
+  GoalTexture texture = {};
+  texture.w = 8;
+  texture.h = 8;
+  texture.num_mips = 1;
+  texture.dest[0] = kFlareTbp;
+  std::memcpy(fixture.live.data() + kTextureObjectOffset, &texture, sizeof(texture));
+  return fixture;
 }
 
 void encode_depth_rect(id<MTLRenderCommandEncoder> encoder,
@@ -171,17 +252,74 @@ int main() {
     check(metal_setup_placeholder(device, queue, texture_pool),
           "published the Metal placeholder texture");
     const u64 placeholder_handle = texture_pool.get_placeholder_texture();
-    constexpr std::array<u32, 4> kOpaqueWhite = {
-        0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu};
-    MetalPoolTexture flare_texture(device, queue, &texture_pool, 2, 2, kFlareTbp,
-                                   "synthetic-glow-final-flare");
-    check(flare_texture.publish(kOpaqueWhite.data(), kOpaqueWhite.size()),
-          "published a known opaque texture at the flare TBP");
-    check(texture_pool.lookup(kFlareTbp).value_or(0) == flare_texture.handle(),
-          "TexturePool resolves the exact flare TBP to the published texture");
-    if (failures) {
-      flare_texture.detach_pool();
+    constexpr int kFlareTextureSize = 8;
+    std::array<u32, kFlareTextureSize * kFlareTextureSize> soft_flare = {};
+    for (int y = 0; y < kFlareTextureSize; ++y) {
+      for (int x = 0; x < kFlareTextureSize; ++x) {
+        constexpr float kCenter = (kFlareTextureSize - 1) / 2.f;
+        const float dx = x - kCenter;
+        const float dy = y - kCenter;
+        const float radius = std::sqrt(dx * dx + dy * dy) / kCenter;
+        const u8 intensity =
+            static_cast<u8>(std::clamp((1.f - radius) * 384.f, 0.f, 255.f));
+        // RGBA8888 in host byte order: only red contributes to the final glow;
+        // alpha follows the same falloff so the readback also catches a solid
+        // placeholder in the additive alpha channel.
+        soft_flare[y * kFlareTextureSize + x] =
+            static_cast<u32>(intensity) | (static_cast<u32>(intensity) << 24);
+      }
+    }
+    const u64 flare_handle = metal_upload_texture_rgba8(
+        device, queue, reinterpret_cast<const u8*>(soft_flare.data()), kFlareTextureSize,
+        kFlareTextureSize);
+    const PcTextureId flare_id(kFlareTexturePage, 0);
+    bool flare_registered = false;
+    if (flare_handle) {
+      TextureInput input;
+      input.debug_page_name = "synthetic-sprite-page";
+      input.debug_name = "synthetic-glow-final-flare";
+      input.id = flare_id;
+      input.gpu_texture = flare_handle;
+      input.src_data = reinterpret_cast<const u8*>(soft_flare.data());
+      input.w = kFlareTextureSize;
+      input.h = kFlareTextureSize;
+      std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+      texture_pool.give_texture(input);
+      flare_registered = true;
+    }
+    check(flare_registered,
+          "registered a synthetic transparent-falloff source texture by page and index");
+
+    const auto upload_fixture = make_sprite_texture_upload_fixture();
+    const auto upload_plan = metal_renderer::plan_jak2_sprite_texture_upload(
+        upload_fixture.packet.data(), upload_fixture.packet.size(), kChainOffset,
+        upload_fixture.live.data(), upload_fixture.live.size());
+    check(upload_plan && upload_plan->present && upload_plan->upload_count == 1 &&
+              upload_plan->uploads[0].page_offset == kTexturePageOffset &&
+              upload_plan->uploads[0].mode == -1,
+          "planned one exact source-shaped TEX_ALL_SPRITE ordinary upload");
+    if (upload_plan) {
+      for (std::size_t i = 0; i < upload_plan->upload_count; ++i) {
+        texture_pool.handle_upload_now(
+            upload_fixture.live.data() + upload_plan->uploads[i].page_offset,
+            static_cast<int>(upload_plan->uploads[i].mode), upload_fixture.live.data(),
+            kSyntheticS7, false);
+      }
+    }
+    check(texture_pool.lookup(kFlareTbp).value_or(0) == flare_handle,
+          "bucket-312 upload publishes the transparent-falloff source at the glow TBP");
+    const auto release_textures = [&]() {
+      if (flare_registered) {
+        std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+        texture_pool.unload_texture(flare_id, flare_handle);
+      }
+      if (flare_handle) {
+        metal_texture_release(flare_handle);
+      }
       metal_texture_release(placeholder_handle);
+    };
+    if (failures) {
+      release_textures();
       return 1;
     }
 
@@ -246,8 +384,7 @@ int main() {
     id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
     check(commands != nil && encoder != nil, "created an offscreen Metal command buffer and pass");
     if (!commands || !encoder || !color || !depth) {
-      flare_texture.detach_pool();
-      metal_texture_release(placeholder_handle);
+      release_textures();
       return 1;
     }
 
@@ -376,26 +513,28 @@ int main() {
         mipmapLevel:0
               slice:1];
 
-    int red_pixels = 0;
+    int bright_red_pixels = 0;
+    int falloff_red_pixels = 0;
     int clear_pixels = 0;
-    int unexpected_pixels = 0;
     for (int y = 0; y < kTargetSize; y++) {
       for (int x = 0; x < kTargetSize; x++) {
         if (is_bgra(pixels, x, y, 0, 0, 255, 255)) {
-          red_pixels++;
+          bright_red_pixels++;
         } else if (is_bgra(pixels, x, y, 0, 0, 0, 0)) {
           clear_pixels++;
-        } else {
-          unexpected_pixels++;
+        } else if (red_at(pixels, x, y) > 0) {
+          falloff_red_pixels++;
         }
       }
     }
     check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, 0, 0, 255, 255),
           "an unoccluded opaque flare has the exact final color at target center");
+    check(red_at(pixels, 25, 25) < 16,
+          "a point inside the flare quad near its corner retains the texture's dark falloff");
     check(is_bgra(pixels, 2, 2, 0, 0, 0, 0),
           "readback retains the exact clear color outside the flare");
-    check(red_pixels > 100 && clear_pixels > 100 && unexpected_pixels == 0,
-          "unoccluded readback contains only the flare and unchanged outside pixels");
+    check(bright_red_pixels > 0 && falloff_red_pixels > 0 && clear_pixels > 100,
+          "readback distinguishes a bright center, textured falloff, and unchanged outside pixels");
 
     stream.reset();
     id<MTLCommandBuffer> boosted_commands = [queue commandBuffer];
@@ -480,7 +619,7 @@ int main() {
     context.draw_calls = 0;
     context.triangles = 0;
 
-    id<MTLTexture> flare_metal_texture = metal_texture_lookup(flare_texture.handle());
+    id<MTLTexture> flare_metal_texture = metal_texture_lookup(flare_handle);
     check(flare_metal_texture != nil, "resolved the synthetic flare texture for depth setup");
     // Cell 0 samples clear depth, cell 1 samples the full first rectangle, and
     // cell 2 straddles the second rectangle's right edge at exactly half width.
@@ -604,15 +743,14 @@ int main() {
     check(slice_zero == slice_zero_sentinel,
           "Glow depth snapshot and game-pass restarts preserve unselected slice 0");
 
-    flare_texture.detach_pool();
-    metal_texture_release(placeholder_handle);
+    release_textures();
 
     if (failures) {
       std::printf("FAIL: %d Jak II final glow flare checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak II Metal glow matches 60/120 Hz intensity and isolates averaged "
-                "visibility cells\n");
+    std::printf("PASS: Jak II bucket-312 publication preserves Metal glow texture falloff, "
+                "matches 60/120 Hz intensity, and isolates averaged visibility cells\n");
     return 0;
   }
 }

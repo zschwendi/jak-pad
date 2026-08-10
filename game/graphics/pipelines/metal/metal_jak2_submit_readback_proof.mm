@@ -36,7 +36,9 @@ void put_u64(std::array<u8, kGifBytes>& payload, std::size_t offset, u64 value) 
 }
 
 void put_rgbaq(std::array<u8, kGifBytes>& payload, std::size_t offset) {
-  constexpr std::array<u32, 4> kGreen = {0, 255, 0, 128};
+  // PS2 alpha 32 becomes 64/255 in the Direct vertex shader. This is low
+  // enough that a correct SCREEN_FILTER blend must retain the destination.
+  constexpr std::array<u32, 4> kGreen = {0, 255, 0, 32};
   std::memcpy(payload.data() + offset, kGreen.data(), 16);
 }
 
@@ -157,7 +159,11 @@ int main() {
     pass.colorAttachments[0].texture = color;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+    constexpr u8 kBackgroundRed = 51;
+    constexpr u8 kBackgroundGreen = 102;
+    constexpr u8 kBackgroundBlue = 153;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(
+        kBackgroundRed / 255.0, kBackgroundGreen / 255.0, kBackgroundBlue / 255.0, 1.0);
     pass.depthAttachment.texture = depth;
     pass.depthAttachment.loadAction = MTLLoadActionClear;
     pass.depthAttachment.storeAction = MTLStoreActionDontCare;
@@ -215,6 +221,13 @@ int main() {
     check(context.draw_calls == 1 && context.triangles == 1 && direct.stats().draw_calls == 1 &&
               direct.stats().triangles == 1 && direct.stats().unsupported_blends == 0,
           "one SCREEN_FILTER Direct payload encoded one supported triangle draw");
+    const auto& batch = direct.stats().last_batch;
+    check(batch.valid && batch.vertices == 3 && batch.blend_enabled &&
+              batch.blend_a == static_cast<u8>(GsAlpha::BlendMode::SOURCE) &&
+              batch.blend_b == static_cast<u8>(GsAlpha::BlendMode::DEST) &&
+              batch.blend_c == static_cast<u8>(GsAlpha::BlendMode::SOURCE) &&
+              batch.blend_d == static_cast<u8>(GsAlpha::BlendMode::DEST),
+          "SCREEN_FILTER retained the source-alpha GS blend equation used by draw-sprite2d-xy");
 
     [commands commit];
     [commands waitUntilCompleted];
@@ -231,33 +244,39 @@ int main() {
          fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
         mipmapLevel:0];
 
-    int green_pixels = 0;
-    int black_pixels = 0;
+    // Cs=(0,255,0), Cd=(51,102,153), As=64/255 after the source-faithful
+    // PS2 alpha doubling. UNORM blending rounds to this BGRA result.
+    constexpr std::array<u8, 4> kComposite = {115, 140, 38, 64};
+    constexpr std::array<u8, 4> kBackground = {153, 102, 51, 255};
+    int composite_pixels = 0;
+    int background_pixels = 0;
     int unexpected_pixels = 0;
     for (int y = 0; y < kTargetSize; y++) {
       for (int x = 0; x < kTargetSize; x++) {
-        if (is_bgra(pixels, x, y, 0, 255, 0, 255)) {
-          green_pixels++;
-        } else if (is_bgra(pixels, x, y, 0, 0, 0, 255)) {
-          black_pixels++;
+        if (is_bgra(pixels, x, y, kComposite[0], kComposite[1], kComposite[2], kComposite[3])) {
+          composite_pixels++;
+        } else if (is_bgra(pixels, x, y, kBackground[0], kBackground[1], kBackground[2],
+                           kBackground[3])) {
+          background_pixels++;
         } else {
           unexpected_pixels++;
         }
       }
     }
-    check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, 0, 255, 0, 255),
-          "readback contains the exact green triangle at target center");
-    check(is_bgra(pixels, 2, 2, 0, 0, 0, 255),
-          "readback retains the exact black clear color outside the triangle");
-    check(green_pixels > 100 && black_pixels > 100 && unexpected_pixels == 0,
-          "readback contains only the synthetic draw and clear colors");
+    check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, kComposite[0], kComposite[1],
+                  kComposite[2], kComposite[3]),
+          "SCREEN_FILTER readback composites source color over the retained destination");
+    check(is_bgra(pixels, 2, 2, kBackground[0], kBackground[1], kBackground[2], kBackground[3]),
+          "SCREEN_FILTER readback preserves the destination outside the overlay primitive");
+    check(composite_pixels > 100 && background_pixels > 100 && unexpected_pixels == 0,
+          "readback contains only the low-alpha composite and original background colors");
 
     if (failures) {
       std::printf("FAIL: %d Jak II offscreen submit/readback checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak II SCREEN_FILTER Direct GIF payload submitted and read back from Metal "
-                "offscreen\n");
+    std::printf("PASS: Jak II SCREEN_FILTER Direct GIF payload preserves and composites its "
+                "destination in Metal offscreen readback\n");
     return 0;
   }
 }
