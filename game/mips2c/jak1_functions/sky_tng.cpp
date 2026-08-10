@@ -22,6 +22,7 @@ struct Cache {
 
 u64 execute(void* ctxt) {
   auto* c = (ExecutionContext*)ctxt;
+  c->copy_vfs_from_other(&sky_regs_vfs);
   bool bc = false;
   bool cop1_bc = false;
   c->daddiu(sp, sp, -32);                           // daddiu sp, sp, -32
@@ -112,6 +113,7 @@ namespace Mips2C::jak1 {
 namespace set_tex_offset {
 u64 execute(void* ctxt) {
   auto* c = (ExecutionContext*)ctxt;
+  c->copy_vfs_from_other(&sky_regs_vfs);
   c->daddiu(sp, sp, -32);                           // daddiu sp, sp, -32
   c->sd(fp, 8, sp);                                 // sd fp, 8(sp)
   c->mov64(fp, t9);                                 // or fp, t9, r0
@@ -1117,6 +1119,7 @@ struct Cache {
 
 u64 execute(void* ctxt) {
   auto* c = (ExecutionContext*)ctxt;
+  c->copy_vfs_from_other(&sky_regs_vfs);
   c->daddiu(sp, sp, -16);                           // daddiu sp, sp, -16
   c->sd(fp, 8, sp);                                 // sd fp, 8(sp)
   c->mov64(fp, t9);                                 // or fp, t9, r0

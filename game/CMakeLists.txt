@@ -430,6 +430,14 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_test(NAME jak1-mips2c-joint-regression-test
                 COMMAND jak1-mips2c-joint-regression-test)
 
+        add_executable(jak1-mips2c-sky-register-state-test
+                kernel/core/jak1_mips2c_sky_register_state_test.cpp
+                mips2c/jak1_functions/sky_tng.cpp)
+        target_include_directories(jak1-mips2c-sky-register-state-test PRIVATE
+                "${CMAKE_SOURCE_DIR}/third-party/fmt/include")
+        add_test(NAME jak1-mips2c-sky-register-state-test
+                COMMAND jak1-mips2c-sky-register-state-test)
+
         add_executable(jak1-kernel-core-smoke-test kernel/core/host_smoke_test.cpp)
         target_link_libraries(jak1-kernel-core-smoke-test jak1-kernel-core)
         add_test(NAME jak1-kernel-core-smoke-test COMMAND jak1-kernel-core-smoke-test)
