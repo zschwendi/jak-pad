@@ -99,12 +99,12 @@ constexpr Table make_table() {
     tie(level_bucket(BucketId::TIE_L0_TFRAG, BucketId::TIE_L1_TFRAG, level));
     tie_envmap(level_bucket(BucketId::ETIE_L0_TFRAG, BucketId::ETIE_L1_TFRAG, level));
     merc(level_bucket(BucketId::MERC_L0_TFRAG, BucketId::MERC_L1_TFRAG, level));
-    defer(level_bucket(BucketId::GMERC_L0_TFRAG, BucketId::GMERC_L1_TFRAG, level));
+    generic2(level_bucket(BucketId::GMERC_L0_TFRAG, BucketId::GMERC_L1_TFRAG, level));
 
     host_texture_upload(level_bucket(BucketId::TEX_L0_SHRUB, BucketId::TEX_L1_SHRUB, level));
     shrub(level_bucket(BucketId::SHRUB_L0_SHRUB, BucketId::SHRUB_L1_SHRUB, level));
-    defer(level_bucket(BucketId::MERC_L0_SHRUB, BucketId::MERC_L1_SHRUB, level));
-    defer(level_bucket(BucketId::GMERC_L0_SHRUB, BucketId::GMERC_L1_SHRUB, level));
+    merc(level_bucket(BucketId::MERC_L0_SHRUB, BucketId::MERC_L1_SHRUB, level));
+    generic2(level_bucket(BucketId::GMERC_L0_SHRUB, BucketId::GMERC_L1_SHRUB, level));
 
     host_texture_upload(level_bucket(BucketId::TEX_L0_ALPHA, BucketId::TEX_L1_ALPHA, level));
     tfragment_trans(level_bucket(BucketId::TFRAG_T_L0_ALPHA, BucketId::TFRAG_T_L1_ALPHA, level));
@@ -131,14 +131,14 @@ constexpr Table make_table() {
   }
 
   host_texture_upload(BucketId::TEX_LCOM_TFRAG);
-  defer(BucketId::MERC_LCOM_TFRAG);
+  merc(BucketId::MERC_LCOM_TFRAG);
   host_texture_upload(BucketId::TEX_LCOM_SHRUB);
   merc(BucketId::MERC_LCOM_SHRUB);
-  defer(BucketId::GMERC_LCOM_TFRAG);
+  generic2(BucketId::GMERC_LCOM_TFRAG);
   defer(BucketId::SHADOW);
-  defer(BucketId::TEX_LCOM_PRIS);
-  defer(BucketId::MERC_LCOM_PRIS);
-  defer(BucketId::GMERC_LCOM_PRIS);
+  host_texture_upload(BucketId::TEX_LCOM_PRIS);
+  merc(BucketId::MERC_LCOM_PRIS);
+  generic2(BucketId::GMERC_LCOM_PRIS);
   defer(BucketId::TEX_LCOM_WATER);
   merc_water(BucketId::MERC_LCOM_WATER);
   defer(BucketId::TEX_LCOM_SKY_POST);
@@ -190,10 +190,10 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 71);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 48);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 28);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 29);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUploadDirect) == 2);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Visibility) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Sprite) == 1);
@@ -207,11 +207,11 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTrans) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTransEnvmap) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWater) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWaterEnvmap) == 6);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 7);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 15);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::BlitDisplay) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercAlpha) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercWater) == 7);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Generic2) == 12);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Generic2) == 26);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanMidFar) == 0);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanNear) == 0);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);

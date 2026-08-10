@@ -805,6 +805,8 @@ int main() {
         "the host records all six empty source-identical water texture upload buckets");
   check(texture_capture_is_empty(metrics.common_tfrag_texture_upload, 187),
         "the host accepts an exact empty host-owned common TFRAG texture bucket");
+  check(texture_capture_is_empty(metrics.common_pris_texture_upload, 220),
+        "the host accepts an exact empty host-owned common PRIS texture bucket");
   check(metrics.common_tfrag_ordinary_uploads == 0 &&
             metrics.common_tfrag_skull_gem_preparations == 0 &&
             metrics.common_tfrag_skull_gem_publications == 0 &&
@@ -833,6 +835,9 @@ int main() {
             metrics.last_merc_nonfinite_bone_matrices == 0 &&
             metrics.last_merc_degenerate_bone_matrices == 0 &&
             metrics.last_merc_incoherent_bone_sources == 0 &&
+            metrics.last_generic_draw_buckets == 0 && metrics.last_generic_draws == 0 &&
+            metrics.last_generic_triangles == 0 && metrics.last_generic_missing_textures == 0 &&
+            metrics.last_generic_unexpected_dma == 0 &&
             metrics.presentations == 0 && metrics.presentation_drops == 0 &&
             metrics.presentation_order_mismatches == 0 && metrics.unsupported_blends == 0,
         "nil-layer lifecycle dispatches without committing, drawing, or presenting");

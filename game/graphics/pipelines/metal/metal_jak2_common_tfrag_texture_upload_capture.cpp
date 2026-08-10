@@ -220,6 +220,7 @@ Jak2CommonTfragTextureUploadClass classify(
 
 bool is_audited_tfrag_texture_upload_bucket(u32 bucket_id) {
   return bucket_id == kJak2CommonTfragTextureUploadBucket ||
+         bucket_id == kJak2CommonPrisTextureUploadBucket ||
          std::find(kJak2NormalTfragTextureUploadBuckets.begin(),
                    kJak2NormalTfragTextureUploadBuckets.end(), bucket_id) !=
              kJak2NormalTfragTextureUploadBuckets.end() ||
@@ -777,6 +778,75 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     }
     plan.has_security_animator = true;
   }
+  return plan;
+}
+
+std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture) {
+  const auto capture = capture_jak2_tfrag_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+      kJak2CommonPrisTextureUploadBucket);
+  if (out_capture) {
+    *out_capture = capture;
+  }
+  if (!capture.valid) {
+    return std::nullopt;
+  }
+
+  Jak2CommonPrisTextureUploadPlan plan;
+  if (!capture.present) {
+    if (capture.classification != Jak2CommonTfragTextureUploadClass::Absent ||
+        capture.transfer_count != 1 || capture.total_payload_bytes != 0 ||
+        capture.inert_transfers != 1 || !metadata_is_strict_empty(capture.transfers[0])) {
+      return std::nullopt;
+    }
+    return plan;
+  }
+
+  const bool exact_envelope =
+      capture.classification == Jak2CommonTfragTextureUploadClass::EyeOrOther &&
+      capture.transfer_count == 7 && capture.total_payload_bytes == 208 &&
+      capture.inert_transfers == 4 && capture.ordinary_descriptors == 1 &&
+      capture.gs_setup_transfers == 1 && capture.direct_setup_transfers == 1 &&
+      capture.animator_arrays == 0 && capture.eye_markers == 0 && capture.other_transfers == 0 &&
+      capture.malformed_transfers == 0 && metadata_is_inert_next(capture.transfers[0]) &&
+      metadata_is_ordinary_descriptor(capture.transfers[1]) &&
+      metadata_is_inert_next(capture.transfers[2]) &&
+      metadata_is_gs_setup(capture.transfers[3]) &&
+      metadata_is_inert_next(capture.transfers[4]) &&
+      metadata_is_direct_setup(capture.transfers[5]) &&
+      metadata_is_inert_next(capture.transfers[6]);
+  if (!exact_envelope) {
+    return std::nullopt;
+  }
+
+  const auto& descriptor = capture.transfers[1];
+  const u64 descriptor_tag_offset =
+      static_cast<u64>(chain_offset) + kJak2CommonPrisTextureUploadBucket * 16 +
+      descriptor.relative_tag_offset;
+  const u64 descriptor_data_offset = descriptor_tag_offset + 16;
+  const std::size_t checked_snapshot_size =
+      std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
+  if (!range_is_valid(descriptor_data_offset, 16, checked_snapshot_size)) {
+    return std::nullopt;
+  }
+  const u64 page_offset = read_unaligned<u64>(dma_packet_snapshot + descriptor_data_offset);
+  const s64 mode =
+      read_unaligned<s64>(dma_packet_snapshot + descriptor_data_offset + sizeof(u64));
+  if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
+    return std::nullopt;
+  }
+
+  plan.present = true;
+  plan.ordinary.page_offset = page_offset;
+  plan.ordinary.mode = mode;
+  std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
+              plan.ordinary.page_header.size());
   return plan;
 }
 

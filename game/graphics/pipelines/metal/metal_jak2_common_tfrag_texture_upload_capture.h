@@ -11,6 +11,7 @@
 namespace metal_renderer {
 
 constexpr u32 kJak2CommonTfragTextureUploadBucket = 187;
+constexpr u32 kJak2CommonPrisTextureUploadBucket = 220;
 constexpr std::array<u32, 6> kJak2NormalTfragTextureUploadBuckets = {7, 18, 29, 40, 51, 62};
 constexpr std::array<u32, 7> kJak2NormalShrubTextureUploadBuckets = {
     73, 82, 91, 100, 109, 118, 191};
@@ -66,6 +67,11 @@ struct Jak2CommonTfragTextureUploadCapture {
 
 struct Jak2NormalTfragTextureUploadPlan {
   u32 bucket_id = 0;
+  bool present = false;
+  Jak2Bucket4OrdinaryUploadPlan ordinary;
+};
+
+struct Jak2CommonPrisTextureUploadPlan {
   bool present = false;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
 };
@@ -174,6 +180,19 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
     u32 bucket_id,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+/*!
+ * Plan the exact common PRIS texture envelope: one ordinary page descriptor, the fixed qwc-2 GS
+ * setup, and the terminal qwc-10 Direct reset. The GL TextureUploadHandler consumes the descriptor
+ * and treats both Direct payloads as inert. The plan owns its validated page header.
+ */
+std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);

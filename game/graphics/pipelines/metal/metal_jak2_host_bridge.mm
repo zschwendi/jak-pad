@@ -247,6 +247,11 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_merc_nonfinite_bone_matrices = stats.merc_nonfinite_bone_matrices;
   host->metrics.last_merc_degenerate_bone_matrices = stats.merc_degenerate_bone_matrices;
   host->metrics.last_merc_incoherent_bone_sources = stats.merc_incoherent_bone_sources;
+  host->metrics.last_generic_draw_buckets = stats.generic_draw_buckets;
+  host->metrics.last_generic_draws = stats.generic_draws;
+  host->metrics.last_generic_triangles = stats.generic_triangles;
+  host->metrics.last_generic_missing_textures = stats.generic_missing_textures;
+  host->metrics.last_generic_unexpected_dma = stats.generic_unexpected_dma;
   host->metrics.last_sky_draw_draws = stats.jak2_sky_draw_draws;
   host->metrics.last_sky_draw_triangles = stats.jak2_sky_draw_triangles;
   const auto& sky_batch = stats.jak2_sky_draw_last_batch;
@@ -575,6 +580,7 @@ struct Jak2TextureUploadDispatch {
   const Jak2AlphaTextureUploadPlans* alpha_plans = nullptr;
   const Jak2WaterTextureUploadPlans* water_plans = nullptr;
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
+  const metal_renderer::Jak2CommonPrisTextureUploadPlan* common_pris_plan = nullptr;
   const metal_renderer::Jak2MapTextureUploadPlan* map_plan = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity* security_prepared =
@@ -651,6 +657,16 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
     dispatch->host->metrics.common_tfrag_skull_gem_destination_tbp = stats.destination_tbp;
     dispatch->host->metrics.common_tfrag_skull_gem_anim_slot =
         metal_renderer::kJak2SkullGemAnimatedTextureSlot;
+    return;
+  }
+  if (bucket_id == metal_renderer::kJak2CommonPrisTextureUploadBucket) {
+    if (!dispatch->common_pris_plan || !dispatch->common_pris_plan->present) {
+      return;
+    }
+    execute_ordinary_texture_upload_or_throw(
+        dispatch->host, dispatch->common_pris_plan->ordinary, dispatch->live_ee_memory,
+        &dispatch->host->metrics.common_pris_texture_upload.executions,
+        "Jak 2 common PRIS ordinary texture upload", dispatch->host_texture_mutated);
     return;
   }
 
@@ -950,6 +966,18 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 common TFRAG texture plan rejected bucket 187 DMA");
       return;
     }
+    metal_renderer::Jak2CommonTfragTextureUploadCapture common_pris_texture_capture;
+    const auto common_pris_texture_plan =
+        metal_renderer::plan_jak2_common_pris_texture_upload(
+            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &common_pris_texture_capture);
+    record_texture_upload_metrics(&host->metrics.common_pris_texture_upload,
+                                  metal_renderer::kJak2CommonPrisTextureUploadBucket,
+                                  common_pris_texture_capture);
+    if (!common_pris_texture_plan) {
+      record_failure(host, "Jak 2 common PRIS texture plan rejected bucket 220 DMA");
+      return;
+    }
     metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared skull_gem_prepared;
     metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity security_prepared;
     const metal_renderer::Jak2WaterTextureUploadPlan* security_plan = nullptr;
@@ -1068,6 +1096,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &alpha_texture_plans,
         &water_texture_plans,
         &*common_tfrag_texture_plan,
+        &*common_pris_texture_plan,
         &*map_texture_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         security_plan ? &security_prepared : nullptr,

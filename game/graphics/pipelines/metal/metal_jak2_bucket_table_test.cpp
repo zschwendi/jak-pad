@@ -2,6 +2,8 @@
 
 #include <cstdio>
 
+#include "common/goal_constants.h"
+
 namespace {
 
 int failures = 0;
@@ -16,6 +18,12 @@ void check(bool condition, const char* what) {
 bool has_behavior(jak2::BucketId id, metal_renderer::Jak2MetalBucketBehavior behavior) {
   return metal_renderer::jak2_metal_bucket_table()[static_cast<std::size_t>(id)].behavior ==
          behavior;
+}
+
+jak2::BucketId level_bucket(jak2::BucketId level_0, jak2::BucketId level_1, int level) {
+  return static_cast<jak2::BucketId>(static_cast<int>(level_0) +
+                                     (static_cast<int>(level_1) - static_cast<int>(level_0)) *
+                                         level);
 }
 
 }  // namespace
@@ -78,11 +86,11 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 71, "71 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 48, "48 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
-  check(host_texture_upload == 28,
-        "twenty-eight exact texture/setup buckets are handled synchronously by the host");
+  check(host_texture_upload == 29,
+        "twenty-nine exact texture/setup buckets are handled synchronously by the host");
   check(host_texture_upload_direct == 2,
         "two exact texture/setup buckets also retain their Direct payloads");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
@@ -101,13 +109,14 @@ int main() {
   check(tie_water == 6, "six water per-level TIE child buckets are implemented by Metal");
   check(tie_water_envmap == 6,
         "six water per-level ETIE child buckets are implemented by Metal");
-  check(merc == 7, "six per-level and one common normal Merc buckets are implemented by Metal");
+  check(merc == 15,
+        "15 normal, shrub, and common PRIS Merc buckets are implemented by Metal");
   check(blit_display == 1, "one source-proven BlitDisplays bucket is implemented by Metal");
   check(merc_alpha == 6, "six per-level alpha Merc buckets are implemented by Metal");
   check(merc_water == 7,
         "six per-level and one common water Merc buckets are implemented by Metal");
-  check(generic2 == 12,
-        "six alpha and six per-level water Generic2 buckets are implemented by Metal");
+  check(generic2 == 26,
+        "26 source-proven normal GMerc buckets are implemented by Metal Generic2");
   check(ocean_mid_far == 0 && ocean_near == 0,
         "both experimental OCEAN renderer policies remain deferred");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
@@ -199,19 +208,19 @@ int main() {
             has_behavior(jak2::BucketId::MERC_L5_WATER, Behavior::MercWater) &&
             has_behavior(jak2::BucketId::MERC_LCOM_WATER, Behavior::MercWater),
         "all seven OpenGL-bound water Merc buckets use the source-matched Metal Merc variant");
-  check(has_behavior(jak2::BucketId::GMERC_L0_TFRAG, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::GMERC_L1_TFRAG, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::GMERC_L2_TFRAG, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::GMERC_L3_TFRAG, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::GMERC_L4_TFRAG, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::GMERC_L5_TFRAG, Behavior::DeferredSkip) &&
+  check(has_behavior(jak2::BucketId::GMERC_L0_TFRAG, Behavior::Generic2) &&
+            has_behavior(jak2::BucketId::GMERC_L1_TFRAG, Behavior::Generic2) &&
+            has_behavior(jak2::BucketId::GMERC_L2_TFRAG, Behavior::Generic2) &&
+            has_behavior(jak2::BucketId::GMERC_L3_TFRAG, Behavior::Generic2) &&
+            has_behavior(jak2::BucketId::GMERC_L4_TFRAG, Behavior::Generic2) &&
+            has_behavior(jak2::BucketId::GMERC_L5_TFRAG, Behavior::Generic2) &&
             static_cast<std::size_t>(jak2::BucketId::GMERC_L0_TFRAG) == 16 &&
             static_cast<std::size_t>(jak2::BucketId::GMERC_L1_TFRAG) == 27 &&
             static_cast<std::size_t>(jak2::BucketId::GMERC_L2_TFRAG) == 38 &&
             static_cast<std::size_t>(jak2::BucketId::GMERC_L3_TFRAG) == 49 &&
             static_cast<std::size_t>(jak2::BucketId::GMERC_L4_TFRAG) == 60 &&
             static_cast<std::size_t>(jak2::BucketId::GMERC_L5_TFRAG) == 71,
-        "all six audited GMerc neighbors remain deferred");
+        "all six audited TFRAG GMerc neighbors use the normal Metal Generic2 path");
   check(has_behavior(jak2::BucketId::GMERC_L0_ALPHA, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::GMERC_L1_ALPHA, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::GMERC_L2_ALPHA, Behavior::Generic2) &&
@@ -227,6 +236,52 @@ int main() {
             has_behavior(jak2::BucketId::GMERC_L5_WATER, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_WATER, Behavior::StrictEmpty),
         "per-level water GMerc uses Generic2 while its unbound common neighbor stays strict-empty");
+  bool source_proven_foreground_families = true;
+  bool untyped_prismatic_families_deferred = true;
+  for (int level = 0; level < jak2::LEVEL_MAX; ++level) {
+    source_proven_foreground_families &=
+        has_behavior(level_bucket(jak2::BucketId::MERC_L0_TFRAG,
+                                  jak2::BucketId::MERC_L1_TFRAG, level),
+                     Behavior::Merc) &&
+        has_behavior(level_bucket(jak2::BucketId::GMERC_L0_TFRAG,
+                                  jak2::BucketId::GMERC_L1_TFRAG, level),
+                     Behavior::Generic2) &&
+        has_behavior(level_bucket(jak2::BucketId::MERC_L0_SHRUB,
+                                  jak2::BucketId::MERC_L1_SHRUB, level),
+                     Behavior::Merc) &&
+        has_behavior(level_bucket(jak2::BucketId::GMERC_L0_SHRUB,
+                                  jak2::BucketId::GMERC_L1_SHRUB, level),
+                     Behavior::Generic2);
+    untyped_prismatic_families_deferred &=
+        has_behavior(level_bucket(jak2::BucketId::TEX_L0_PRIS,
+                                  jak2::BucketId::TEX_L1_PRIS, level),
+                     Behavior::DeferredSkip) &&
+        has_behavior(level_bucket(jak2::BucketId::MERC_L0_PRIS,
+                                  jak2::BucketId::MERC_L1_PRIS, level),
+                     Behavior::DeferredSkip) &&
+        has_behavior(level_bucket(jak2::BucketId::GMERC_L0_PRIS,
+                                  jak2::BucketId::GMERC_L1_PRIS, level),
+                     Behavior::DeferredSkip) &&
+        has_behavior(level_bucket(jak2::BucketId::TEX_L0_PRIS2,
+                                  jak2::BucketId::TEX_L1_PRIS2, level),
+                     Behavior::DeferredSkip) &&
+        has_behavior(level_bucket(jak2::BucketId::MERC_L0_PRIS2,
+                                  jak2::BucketId::MERC_L1_PRIS2, level),
+                     Behavior::DeferredSkip) &&
+        has_behavior(level_bucket(jak2::BucketId::GMERC_L0_PRIS2,
+                                  jak2::BucketId::GMERC_L1_PRIS2, level),
+                     Behavior::DeferredSkip);
+  }
+  check(source_proven_foreground_families,
+        "all per-level TFRAG and SHRUB Merc/normal-GMerc families are routed");
+  check(untyped_prismatic_families_deferred,
+        "all per-level PRIS and PRIS2 texture/draw triples remain deferred together");
+  check(has_behavior(jak2::BucketId::MERC_LCOM_TFRAG, Behavior::Merc) &&
+            has_behavior(jak2::BucketId::GMERC_LCOM_TFRAG, Behavior::Generic2) &&
+            has_behavior(jak2::BucketId::TEX_LCOM_PRIS, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::MERC_LCOM_PRIS, Behavior::Merc) &&
+            has_behavior(jak2::BucketId::GMERC_LCOM_PRIS, Behavior::Generic2),
+        "common TFRAG and typed common PRIS foreground paths are routed end to end");
   check(has_behavior(jak2::BucketId::SHRUB_L0_SHRUB, Behavior::Shrub) &&
             has_behavior(jak2::BucketId::SHRUB_L1_SHRUB, Behavior::Shrub) &&
             has_behavior(jak2::BucketId::SHRUB_L2_SHRUB, Behavior::Shrub) &&
@@ -251,15 +306,14 @@ int main() {
             has_behavior(jak2::BucketId::BILLBOARD_L0_SHRUB, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::SHRUB_V_L0_SHRUB, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::SHRUB_NT_L0_SHRUB, Behavior::StrictEmpty) &&
-            has_behavior(jak2::BucketId::MERC_L0_SHRUB, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::DeferredSkip),
-        "SHRUB Direct-only setup is host-owned while neighboring families remain deferred");
+            has_behavior(jak2::BucketId::MERC_L0_SHRUB, Behavior::Merc) &&
+            has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::Generic2),
+        "SHRUB setup stays host-owned while its Merc and normal GMerc draws are implemented");
   check(has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::DeferredSkip) &&
-             has_behavior(jak2::BucketId::OCEAN_NEAR, Behavior::DeferredSkip) &&
-             has_behavior(jak2::BucketId::GMERC_L5_TFRAG, Behavior::DeferredSkip) &&
-             has_behavior(jak2::BucketId::GMERC_L5_SHRUB, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::GMERC_L5_PRIS2, Behavior::DeferredSkip),
-        "the paired OCEAN and representative unported Generic2-backed families remain deferred");
+            has_behavior(jak2::BucketId::OCEAN_NEAR, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TEX_L5_PRIS, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TEX_L5_PRIS2, Behavior::DeferredSkip),
+        "the paired OCEAN and untyped prismatic texture uploads remain deferred");
   check(has_behavior(jak2::BucketId::TEX_LCOM_SKY_PRE, Behavior::HostTextureUpload),
         "TEX_LCOM_SKY_PRE is the explicit host texture-upload bucket");
   check(has_behavior(jak2::BucketId::TEX_LCOM_TFRAG, Behavior::HostTextureUpload),
@@ -280,7 +334,7 @@ int main() {
             has_behavior(jak2::BucketId::GMERC_L5_WATER, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_WATER, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::DEBUG3, Behavior::DeferredSkip),
-        "prismatic, Generic2 water, strict common-water, and tail bindings stay explicit");
+        "deferred PRIS2, Generic2 water, strict common-water, and tail bindings stay explicit");
   check(has_behavior(jak2::BucketId::SKY_DRAW, Behavior::Direct) &&
             has_behavior(jak2::BucketId::PROGRESS, Behavior::Direct) &&
             has_behavior(jak2::BucketId::SCREEN_FILTER, Behavior::Direct) &&

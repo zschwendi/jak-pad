@@ -243,6 +243,12 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t ocean_command_buffers_completed;
   uint64_t ocean_command_buffer_errors;
   int32_t ocean_last_command_buffer_status;
+  uint64_t last_generic_draw_buckets;
+  uint64_t last_generic_draws;
+  uint64_t last_generic_triangles;
+  uint64_t last_generic_missing_textures;
+  uint64_t last_generic_unexpected_dma;
+  goal_jak2_tfrag_texture_upload_metrics common_pris_texture_upload;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

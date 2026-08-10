@@ -6,10 +6,13 @@
 #include <mutex>
 #include <vector>
 
+#include "fmt/format.h"
+
 #include "common/util/Assert.h"
 
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_generic2.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
 
@@ -571,6 +574,14 @@ int main() {
         "gmerc-l0-alpha", static_cast<int>(jak2::BucketId::GMERC_L0_ALPHA), shared);
     MetalGeneric2BucketRenderer water_renderer(
         "gmerc-l0-water", static_cast<int>(jak2::BucketId::GMERC_L0_WATER), shared);
+    MetalGeneric2BucketRenderer tfrag_renderer(
+        "gmerc-l0-tfrag", static_cast<int>(jak2::BucketId::GMERC_L0_TFRAG), shared);
+    MetalGeneric2BucketRenderer shrub_renderer(
+        "gmerc-l0-shrub", static_cast<int>(jak2::BucketId::GMERC_L0_SHRUB), shared);
+    MetalGeneric2BucketRenderer common_tfrag_renderer(
+        "gmerc-lcom-tfrag", static_cast<int>(jak2::BucketId::GMERC_LCOM_TFRAG), shared);
+    MetalGeneric2BucketRenderer common_pris_renderer(
+        "gmerc-lcom-pris", static_cast<int>(jak2::BucketId::GMERC_LCOM_PRIS), shared);
     MetalGeneric2BucketRenderer jak1_renderer(
         "generic-pris-l0", static_cast<int>(jak1::BucketId::GENERIC_PRIS_LEVEL0), shared);
 
@@ -605,6 +616,37 @@ int main() {
               count_written_depth(nearest.depths) == jak2_bounds.count &&
               count_written_depth(water.depths) == 0,
           "alpha writes covered depth while source-masked water preserves cleared depth");
+
+    const auto& policy = metal_renderer::jak2_metal_bucket_table();
+    const auto routed_generic2 = [&policy](jak2::BucketId bucket_id) {
+      return policy.at(static_cast<std::size_t>(bucket_id)).behavior ==
+             metal_renderer::Jak2MetalBucketBehavior::Generic2;
+    };
+    check(routed_generic2(jak2::BucketId::GMERC_L0_TFRAG) &&
+              routed_generic2(jak2::BucketId::GMERC_L0_SHRUB) &&
+              routed_generic2(jak2::BucketId::GMERC_LCOM_TFRAG) &&
+              routed_generic2(jak2::BucketId::GMERC_LCOM_PRIS),
+          "the GPU fixtures select every newly routed normal-GMerc family");
+    struct RoutedGenericFixture {
+      const char* category;
+      MetalGeneric2BucketRenderer* renderer;
+    };
+    const std::array<RoutedGenericFixture, 4> routed_fixtures = {{
+        {"per-level TFRAG", &tfrag_renderer},
+        {"per-level SHRUB", &shrub_renderer},
+        {"common TFRAG", &common_tfrag_renderer},
+        {"common PRIS", &common_pris_renderer},
+    }};
+    for (const auto& fixture : routed_fixtures) {
+      auto chain = make_jak2_chain(false, false, true);
+      const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 fixture.renderer, &chain, GameVersion::Jak2);
+      check(is_one_quad(result) && result.final_offset == chain.next_bucket &&
+                changed_pixel_bounds(result.pixels) == jak2_bounds,
+            fmt::format("the routed {} normal-GMerc policy produces GPU pixels",
+                        fixture.category)
+                .c_str());
+    }
 
     auto empty_chain = make_empty_jak2_chain();
     const auto empty = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
@@ -650,7 +692,9 @@ int main() {
       std::printf("FAIL: %d Jak 2 Generic2 renderer checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak 2 alpha/water Generic2 rendered asset-free source-shaped DMA\n");
+    std::printf(
+        "PASS: Jak 2 routed TFRAG/SHRUB/common-PRIS and alpha/water Generic2 rendered "
+        "asset-free source-shaped DMA\n");
     return 0;
   }
 }

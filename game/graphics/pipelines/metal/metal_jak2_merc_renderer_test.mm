@@ -11,6 +11,7 @@
 #include "common/dma/dma.h"
 
 #include "game/graphics/opengl_renderer/buckets.h"
+#include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -34,6 +35,9 @@ constexpr u32 kMercAlphaBucket = static_cast<u32>(jak2::BucketId::MERC_L0_ALPHA)
 constexpr u32 kMercWaterBucket = static_cast<u32>(jak2::BucketId::MERC_L0_WATER);
 constexpr u32 kMercCommonWaterBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_WATER);
 constexpr u32 kMercCommonShrubBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_SHRUB);
+constexpr u32 kMercShrubBucket = static_cast<u32>(jak2::BucketId::MERC_L0_SHRUB);
+constexpr u32 kMercCommonTfragBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_TFRAG);
+constexpr u32 kMercCommonPrisBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_PRIS);
 constexpr u32 kOpening = 0x100;
 constexpr u32 kBoundary = 0x200;
 constexpr u32 kSetup = 0x400;
@@ -484,6 +488,12 @@ int main() {
         "merc-lcom-water", static_cast<int>(kMercCommonWaterBucket), shared);
     MetalMercBucketRenderer common_shrub_renderer(
         "merc-lcom-shrub", static_cast<int>(kMercCommonShrubBucket), shared);
+    MetalMercBucketRenderer shrub_renderer("merc-l0-shrub", static_cast<int>(kMercShrubBucket),
+                                           shared);
+    MetalMercBucketRenderer common_tfrag_renderer(
+        "merc-lcom-tfrag", static_cast<int>(kMercCommonTfragBucket), shared);
+    MetalMercBucketRenderer common_pris_renderer(
+        "merc-lcom-pris", static_cast<int>(kMercCommonPrisBucket), shared);
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
@@ -552,6 +562,38 @@ int main() {
               common_shrub.stats.missing_bone_slots == 0 &&
               count_non_black(common_shrub.pixels) > 0,
           "the common shrub Merc bucket draws its source-shaped model to non-black GPU pixels");
+
+    const auto& policy = metal_renderer::jak2_metal_bucket_table();
+    const auto routed_merc = [&policy](u32 bucket_id) {
+      return policy.at(bucket_id).behavior == metal_renderer::Jak2MetalBucketBehavior::Merc;
+    };
+    check(routed_merc(kMercShrubBucket) && routed_merc(kMercCommonTfragBucket) &&
+              routed_merc(kMercCommonPrisBucket),
+          "the GPU fixtures select the routed SHRUB, common TFRAG, and common PRIS policies");
+    struct RoutedMercFixture {
+      const char* category;
+      MetalMercBucketRenderer* renderer;
+    };
+    const std::array<RoutedMercFixture, 3> routed_fixtures = {{
+        {"per-level SHRUB", &shrub_renderer},
+        {"common TFRAG", &common_tfrag_renderer},
+        {"common PRIS", &common_pris_renderer},
+    }};
+    u64 routed_frame = 8;
+    for (const auto& fixture : routed_fixtures) {
+      auto memory = make_source_chain(kNormalModelName);
+      const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 fixture.renderer, &memory, routed_frame++);
+      const bool rendered = result.completed && result.final_offset == kBoundary &&
+                            result.stats.models == 1 && result.stats.draws == 1 &&
+                            result.stats.triangles == 2 && result.draw_calls == 1 &&
+                            result.triangles == 2 && result.stats.malformed_dma == 0 &&
+                            result.stats.missing_models == 0 &&
+                            count_non_black(result.pixels) > 0;
+      check(rendered,
+            fmt::format("the routed {} Merc policy produces GPU pixels", fixture.category)
+                .c_str());
+    }
 
     auto filtered_memory = make_source_chain(kFilteredModelName);
     const auto filtered = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
@@ -635,8 +677,8 @@ int main() {
       return 1;
     }
     std::printf(
-        "PASS: Jak 2 normal, common shrub, alpha, and water Merc buckets rendered asset-free "
-        "fixtures\n");
+        "PASS: Jak 2 routed TFRAG/SHRUB/common-PRIS, alpha, and water Merc buckets rendered "
+        "asset-free fixtures\n");
     return 0;
   }
 }

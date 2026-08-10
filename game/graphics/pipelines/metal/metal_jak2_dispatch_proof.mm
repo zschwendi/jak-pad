@@ -16,9 +16,16 @@ int failures = 0;
 
 std::vector<u8> make_policy_inventory_chain() {
   using BucketId = jak2::BucketId;
-  constexpr std::array<std::pair<BucketId, u16>, 5> kPayloads = {{
+  constexpr std::array<std::pair<BucketId, u16>, 12> kPayloads = {{
       {BucketId::GMERC_L0_ALPHA, 5},
       {BucketId::GMERC_L0_WATER, 4},
+      {BucketId::GMERC_L0_TFRAG, 5},
+      {BucketId::GMERC_L0_SHRUB, 5},
+      {BucketId::GMERC_LCOM_TFRAG, 5},
+      {BucketId::GMERC_LCOM_PRIS, 5},
+      {BucketId::MERC_L0_SHRUB, 2},
+      {BucketId::MERC_LCOM_TFRAG, 2},
+      {BucketId::MERC_LCOM_PRIS, 2},
       {BucketId::SHADOW, 3},
       {BucketId::GMERC_L5_PRIS2, 2},
       {BucketId::DEBUG3, 1},
@@ -135,9 +142,12 @@ int main() {
                   static_cast<u32>(jak2::BucketId::DEBUG3) &&
               inventory.last_skipped_bucket_bytes[2] == 1 * 16,
           "the last-frame deferred inventory excludes the implemented Generic2 buckets");
-    check(inventory.generic_unexpected_dma == 2 && inventory.generic_draws == 0 &&
+    check(inventory.generic_unexpected_dma == 6 && inventory.generic_draws == 0 &&
               inventory.generic_triangles == 0,
-          "both malformed synthetic Generic2 payloads fail closed without drawing");
+          "every routed normal-GMerc family rejects malformed DMA without drawing");
+    check(inventory.merc_malformed_dma == 3 && inventory.merc_draws == 0 &&
+              inventory.merc_triangles == 0,
+          "every newly routed Merc family rejects malformed DMA without drawing");
 
     if (failures) {
       std::printf("FAIL: %d Jak 2 nil-layer Metal dispatcher checks failed\n", failures);

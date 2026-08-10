@@ -147,6 +147,26 @@ std::vector<u8> make_normal_shrub_fixture(u32 bucket_id) {
   return packet;
 }
 
+std::vector<u8> make_common_pris_fixture(s64 mode = -1) {
+  constexpr u32 bucket_id = metal_renderer::kJak2CommonPrisTextureUploadBucket;
+  std::vector<u8> packet(kMemorySize);
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
+  put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(mode));
+  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+  put_tag(&packet, kAnimatorOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirectVif | 2);
+  std::fill_n(packet.begin() + kAnimatorOffset + 16, 32, 0x41);
+  put_tag(&packet, kAnimatorOffset + 48, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  packet[kTexturePageOffset + 8] = 0x44;
+  return packet;
+}
+
 void put_animator_array(std::vector<u8>* packet,
                         u32 offset,
                         u16 opcode,
@@ -351,11 +371,50 @@ void test_texture_bucket_allowlist() {
           "each source-identical water texture bucket accepts an exact empty chain");
   }
 
+  auto common_pris = capture(make_empty_fixture(metal_renderer::kJak2CommonPrisTextureUploadBucket),
+                             metal_renderer::kJak2CommonPrisTextureUploadBucket);
+  check(common_pris.valid && !common_pris.present &&
+            common_pris.classification == Classification::Absent,
+        "the audited common PRIS texture bucket accepts an exact empty chain");
+
   const auto packet = make_empty_fixture();
   check(!metal_renderer::capture_jak2_tfrag_texture_upload(
              packet.data(), packet.size(), kChainOffset, 8)
              .valid,
         "an unaudited bucket cannot enter the TFRAG texture classifier");
+}
+
+void test_common_pris_execution_plan() {
+  auto packet = make_common_pris_fixture();
+  metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+  const auto plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+      packet.data(), packet.size(), kChainOffset, packet.data(), packet.size(), &capture);
+  check(plan.has_value() && plan->present &&
+            plan->ordinary.page_offset == kTexturePageOffset && plan->ordinary.mode == -1 &&
+            capture.valid && capture.transfer_count == 7 &&
+            capture.total_payload_bytes == 208 && capture.inert_transfers == 4 &&
+            capture.ordinary_descriptors == 1 && capture.gs_setup_transfers == 1 &&
+            capture.direct_setup_transfers == 1 && capture.other_transfers == 0,
+        "common PRIS owns the exact observed descriptor/GS/reset envelope");
+
+  packet = make_empty_fixture(metal_renderer::kJak2CommonPrisTextureUploadBucket);
+  const auto absent = metal_renderer::plan_jak2_common_pris_texture_upload(
+      packet.data(), packet.size(), kChainOffset, packet.data(), packet.size());
+  check(absent.has_value() && !absent->present,
+        "common PRIS preserves the exact absent plan");
+
+  packet = make_common_pris_fixture(0);
+  check(!metal_renderer::plan_jak2_common_pris_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "common PRIS rejects an unobserved upload mode");
+
+  packet = make_common_pris_fixture();
+  put_u32(&packet, kAnimatorOffset + 12, kDirectVif | 3);
+  check(!metal_renderer::plan_jak2_common_pris_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "common PRIS rejects a non-source GS setup length");
 }
 
 void test_normal_tfrag_execution_plan() {
@@ -1025,6 +1084,7 @@ int main() {
   test_exact_empty_and_ordinary_metadata();
   test_texture_bucket_allowlist();
   test_normal_tfrag_execution_plan();
+  test_common_pris_execution_plan();
   test_normal_shrub_execution_plan();
   test_alpha_execution_plan();
   test_water_execution_plan();
@@ -1043,6 +1103,6 @@ int main() {
   test_animator_structure_fails_closed();
   test_follower_range_alignment_cycle_and_kind_bounds();
   test_transfer_limit_is_enforced();
-  std::puts("PASS: Jak II common-tfrag texture-upload metadata capture");
+  std::puts("PASS: Jak II foreground texture-upload metadata capture");
   return 0;
 }
