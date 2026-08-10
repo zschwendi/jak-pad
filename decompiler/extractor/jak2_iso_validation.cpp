@@ -432,7 +432,12 @@ ValidationResult<StagedExtraction> extract_and_validate(
     return ValidationResult<StagedExtraction>::failure(std::move(error));
   }
 
-  if (options.should_cancel()) {
+#ifndef _WIN32
+  const bool needs_post_reader_cancel_poll = !owned_staging.is_linked();
+#else
+  constexpr bool needs_post_reader_cancel_poll = true;
+#endif
+  if (needs_post_reader_cancel_poll && options.should_cancel()) {
     const auto code =
         callback_failed ? ValidationErrorCode::callback_failed : ValidationErrorCode::cancelled;
     return ValidationResult<StagedExtraction>::failure(

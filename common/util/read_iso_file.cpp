@@ -1315,6 +1315,10 @@ Result<IsoFile> extract_layout(FILE* file,
       return Result<IsoFile>::failure(std::move(*error));
     }
   }
+  if (options.should_cancel && options.should_cancel()) {
+    return Result<IsoFile>::failure(
+        make_error(ErrorCode::cancelled, bytes, "ISO extraction was cancelled."));
+  }
   return Result<IsoFile>::success(std::move(layout));
 }
 
@@ -1443,6 +1447,13 @@ Result<IsoFile> extract_to_owned_staging(FILE* file,
       }
       return Result<IsoFile>::failure(std::move(*error));
     }
+  }
+  if (owned_staging->m_impl->is_linked() && options.should_cancel && options.should_cancel()) {
+    auto error = make_error(ErrorCode::cancelled, bytes, "ISO extraction was cancelled.");
+    if (auto cleanup_error = owned_staging->cleanup()) {
+      error.message += " The staging directory could not be removed safely: " + *cleanup_error;
+    }
+    return Result<IsoFile>::failure(std::move(error));
   }
   if (!owned_staging->m_impl->verify_recorded_contents()) {
     auto error =
