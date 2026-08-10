@@ -85,6 +85,7 @@ enum class ErrorCode {
   cancelled,
   callback_failed,
   allocation_failed,
+  invalid_checked_archive,
   invalid_source_archive_path,
   duplicate_source_archive_path,
   archive_limit_exceeded,
@@ -143,6 +144,9 @@ class Catalog {
 
  private:
   friend Result<Catalog> build(std::span<const ArchiveSource>, const Options&);
+  friend Result<Catalog> build_checked_archive(const std::string&,
+                                               const jak1_checked_dgo::Archive&,
+                                               const Options&);
   std::vector<Entry> m_entries;
   std::size_t m_skipped_code_objects = 0;
   std::size_t m_expanded_archive_bytes = 0;
@@ -150,6 +154,12 @@ class Catalog {
 };
 
 Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& options = {});
+
+// The archive must have been produced by jak1_checked_dgo with the same game and compressed-input
+// policy. Catalog-specific limits, cancellation, progress, and object hashes are still enforced.
+Result<Catalog> build_checked_archive(const std::string& source_archive_relative_path,
+                                      const jak1_checked_dgo::Archive& archive,
+                                      const Options& options = {});
 
 const char* error_code_name(ErrorCode code);
 

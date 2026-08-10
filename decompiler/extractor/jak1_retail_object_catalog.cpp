@@ -325,6 +325,155 @@ std::optional<Error> validate_options(const Options& options) {
   return {};
 }
 
+struct CatalogBuildState {
+  std::vector<Entry> entries;
+  std::size_t skipped_code_objects = 0;
+  std::size_t expanded_archive_bytes = 0;
+  std::size_t all_object_payload_bytes = 0;
+  std::size_t indexed_object_bytes = 0;
+  std::size_t total_archive_input_bytes = 0;
+};
+
+std::optional<Error> index_checked_archive(CatalogBuildState* state,
+                                           const jak1_checked_dgo::Archive& archive,
+                                           const std::string& source_path,
+                                           std::size_t archive_index,
+                                           std::size_t archives_total,
+                                           const Options& options) {
+  if (archive.internal_name != archive_basename(source_path) || archive.input_size == 0 ||
+      archive.expanded_size == 0) {
+    return make_error(ErrorCode::invalid_checked_archive,
+                      "The checked archive metadata does not match its catalog source path.",
+                      source_path);
+  }
+
+  std::size_t input_total = 0;
+  if (archive.input_size > options.max_archive_input_bytes ||
+      (archive.was_compressed && archive.input_size > options.max_archive_compressed_bytes) ||
+      !checked_add(state->total_archive_input_bytes, archive.input_size, &input_total) ||
+      input_total > options.max_total_archive_input_bytes) {
+    return make_error(ErrorCode::archive_limit_exceeded,
+                      "The checked archive exceeds the configured catalog input-byte limit.",
+                      source_path);
+  }
+
+  std::size_t expanded_total = 0;
+  if (archive.expanded_size > options.max_archive_expanded_bytes ||
+      !checked_add(state->expanded_archive_bytes, archive.expanded_size, &expanded_total) ||
+      expanded_total > options.max_total_expanded_archive_bytes) {
+    return make_error(ErrorCode::expanded_byte_limit_exceeded,
+                      "The checked archive exceeds the configured catalog expanded-byte limit.",
+                      source_path);
+  }
+  if (archive.was_compressed) {
+    const auto quotient = archive.expanded_size / archive.input_size;
+    const auto remainder = archive.expanded_size % archive.input_size;
+    if (quotient > options.max_archive_expansion_ratio ||
+        (quotient == options.max_archive_expansion_ratio && remainder != 0)) {
+      return make_error(ErrorCode::expanded_byte_limit_exceeded,
+                        "The checked archive exceeds the configured catalog expansion-ratio limit.",
+                        source_path);
+    }
+  }
+  if (archive.internal_name.size() > options.max_internal_name_bytes ||
+      archive.objects.size() > jak1_checked_dgo::Options{}.max_objects) {
+    return make_error(ErrorCode::invalid_checked_archive,
+                      "The checked archive metadata exceeds the catalog's bounded DGO shape.",
+                      source_path);
+  }
+
+  std::size_t archive_object_bytes = 0;
+  for (std::size_t object_index = 0; object_index < archive.objects.size(); ++object_index) {
+    const auto& object = archive.objects[object_index];
+    if (object.data.empty() || object.data.size() > options.max_object_bytes ||
+        object.internal_name.empty() ||
+        object.internal_name.size() > options.max_internal_name_bytes) {
+      return make_error(ErrorCode::invalid_checked_archive,
+                        "A checked archive object exceeds the catalog's bounded DGO shape.",
+                        source_path, static_cast<std::uint32_t>(object_index));
+    }
+    if (!checked_add(archive_object_bytes, object.data.size(), &archive_object_bytes)) {
+      return make_error(ErrorCode::total_byte_limit_exceeded,
+                        "Retail object payload accounting overflowed.", source_path,
+                        static_cast<std::uint32_t>(object_index));
+    }
+  }
+  std::size_t all_object_total = 0;
+  if (!checked_add(state->all_object_payload_bytes, archive_object_bytes, &all_object_total) ||
+      all_object_total > options.max_total_object_bytes) {
+    return make_error(ErrorCode::total_byte_limit_exceeded,
+                      "Retail object payloads exceed the configured aggregate byte limit.",
+                      source_path);
+  }
+
+  state->total_archive_input_bytes = input_total;
+  state->expanded_archive_bytes = expanded_total;
+  state->all_object_payload_bytes = all_object_total;
+  for (std::size_t object_index = 0; object_index < archive.objects.size(); ++object_index) {
+    const auto& object = archive.objects[object_index];
+    auto object_version = inspect_object_header(
+        object.data, source_path, static_cast<std::uint32_t>(object_index), object.internal_name);
+    if (!object_version) {
+      return object_version.error();
+    }
+    if (!object_version.value()) {
+      ++state->skipped_code_objects;
+      const Progress progress{ProgressStage::skipped_code_object,
+                              archives_total,
+                              archive_index,
+                              state->entries.size(),
+                              state->indexed_object_bytes,
+                              state->skipped_code_objects,
+                              source_path,
+                              static_cast<std::uint32_t>(object_index)};
+      if (auto error = emit_progress(options, progress)) {
+        return error;
+      }
+      continue;
+    }
+    if (state->entries.size() >= options.max_entries) {
+      return make_error(ErrorCode::entry_limit_exceeded,
+                        "The retail data-object count exceeds the configured catalog limit.",
+                        source_path, static_cast<std::uint32_t>(object_index));
+    }
+    std::size_t new_indexed_total = 0;
+    if (!checked_add(state->indexed_object_bytes, object.data.size(), &new_indexed_total)) {
+      return make_error(ErrorCode::total_byte_limit_exceeded,
+                        "Retail indexed-object payload accounting overflowed.", source_path,
+                        static_cast<std::uint32_t>(object_index));
+    }
+    auto hash =
+        hash_object(object.data, source_path, static_cast<std::uint32_t>(object_index), options);
+    if (!hash) {
+      return hash.error();
+    }
+
+    Entry entry;
+    entry.provenance.source_archive_relative_path = source_path;
+    entry.provenance.archive_object_index = static_cast<std::uint32_t>(object_index);
+    entry.provenance.internal_name = object.internal_name;
+    entry.provenance.unique_name = object.unique_name;
+    entry.provenance.byte_size = object.data.size();
+    entry.provenance.xxh64 = hash.value();
+    entry.provenance.object_version = *object_version.value();
+    state->entries.push_back(std::move(entry));
+    state->indexed_object_bytes = new_indexed_total;
+
+    const Progress progress{ProgressStage::indexed_object,
+                            archives_total,
+                            archive_index,
+                            state->entries.size(),
+                            state->indexed_object_bytes,
+                            state->skipped_code_objects,
+                            source_path,
+                            static_cast<std::uint32_t>(object_index)};
+    if (auto error = emit_progress(options, progress)) {
+      return error;
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 Result<const Entry*> Catalog::lookup(const Provenance& expected) const {
@@ -387,10 +536,8 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
       }
     }
 
-    Catalog catalog;
-    catalog.m_entries.reserve(std::min(options.max_entries, sources.size() * std::size_t{64}));
-    std::size_t indexed_object_bytes = 0;
-    std::size_t total_archive_input_bytes = 0;
+    CatalogBuildState state;
+    state.entries.reserve(std::min(options.max_entries, sources.size() * std::size_t{64}));
 
     for (std::size_t archive_index = 0; archive_index < ordered_sources.size(); ++archive_index) {
       const auto& source = *ordered_sources[archive_index];
@@ -406,9 +553,9 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
       Progress progress{ProgressStage::starting_archive,
                         ordered_sources.size(),
                         archive_index,
-                        catalog.m_entries.size(),
-                        indexed_object_bytes,
-                        catalog.m_skipped_code_objects,
+                        state.entries.size(),
+                        state.indexed_object_bytes,
+                        state.skipped_code_objects,
                         source.source_archive_relative_path,
                         {}};
       if (auto error = emit_progress(options, progress)) {
@@ -416,24 +563,24 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
       }
 
       bool cancellation_callback_failed = false;
-      if (total_archive_input_bytes >= options.max_total_archive_input_bytes ||
+      if (state.total_archive_input_bytes >= options.max_total_archive_input_bytes ||
           source.bytes.size() > options.max_archive_input_bytes ||
           source.bytes.size() >
-              options.max_total_archive_input_bytes - total_archive_input_bytes) {
+              options.max_total_archive_input_bytes - state.total_archive_input_bytes) {
         return Result<Catalog>::failure(make_error(
             ErrorCode::archive_limit_exceeded,
             "Retail archives exceed the configured aggregate input-byte limit.",
             source.source_archive_relative_path));
       }
       const auto remaining_archive_input_bytes =
-          options.max_total_archive_input_bytes - total_archive_input_bytes;
-      if (catalog.m_expanded_archive_bytes >= options.max_total_expanded_archive_bytes) {
+          options.max_total_archive_input_bytes - state.total_archive_input_bytes;
+      if (state.expanded_archive_bytes >= options.max_total_expanded_archive_bytes) {
         return Result<Catalog>::failure(make_error(
             ErrorCode::expanded_byte_limit_exceeded,
             "Retail archives exceed the configured aggregate expanded-byte limit.",
             source.source_archive_relative_path));
       }
-      if (catalog.m_all_object_payload_bytes >= options.max_total_object_bytes) {
+      if (state.all_object_payload_bytes >= options.max_total_object_bytes) {
         return Result<Catalog>::failure(make_error(
             ErrorCode::total_byte_limit_exceeded,
             "Retail object payloads exceed the configured aggregate byte limit.",
@@ -446,10 +593,10 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
       dgo_options.max_compressed_bytes = options.max_archive_compressed_bytes;
       dgo_options.max_expanded_bytes =
           std::min(options.max_archive_expanded_bytes,
-                   options.max_total_expanded_archive_bytes - catalog.m_expanded_archive_bytes);
+                   options.max_total_expanded_archive_bytes - state.expanded_archive_bytes);
       dgo_options.max_object_bytes = options.max_object_bytes;
       dgo_options.max_total_object_bytes =
-          options.max_total_object_bytes - catalog.m_all_object_payload_bytes;
+          options.max_total_object_bytes - state.all_object_payload_bytes;
       dgo_options.max_name_bytes = options.max_internal_name_bytes;
       dgo_options.max_expansion_ratio = options.max_archive_expansion_ratio;
       dgo_options.compressed_trailing_alignment_bytes =
@@ -497,117 +644,85 @@ Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& opt
         error.checked_dgo_error = archive.error();
         return Result<Catalog>::failure(std::move(error));
       }
-      total_archive_input_bytes += source.bytes.size();
-
-      std::size_t expanded_total = 0;
-      if (!checked_add(catalog.m_expanded_archive_bytes, archive.value().expanded_size,
-                       &expanded_total) ||
-          expanded_total > options.max_total_expanded_archive_bytes) {
-        return Result<Catalog>::failure(make_error(
-            ErrorCode::expanded_byte_limit_exceeded,
-            "Retail archives exceed the configured aggregate expanded-byte limit.",
-            source.source_archive_relative_path));
-      }
-      std::size_t archive_object_bytes = 0;
-      for (const auto& object : archive.value().objects) {
-        if (!checked_add(archive_object_bytes, object.data.size(), &archive_object_bytes)) {
-          return Result<Catalog>::failure(make_error(
-              ErrorCode::total_byte_limit_exceeded,
-              "Retail object payload accounting overflowed.",
-              source.source_archive_relative_path));
-        }
-      }
-      std::size_t all_object_total = 0;
-      if (!checked_add(catalog.m_all_object_payload_bytes, archive_object_bytes,
-                       &all_object_total) ||
-          all_object_total > options.max_total_object_bytes) {
-        return Result<Catalog>::failure(make_error(
-            ErrorCode::total_byte_limit_exceeded,
-            "Retail object payloads exceed the configured aggregate byte limit.",
-            source.source_archive_relative_path));
-      }
-      catalog.m_expanded_archive_bytes = expanded_total;
-      catalog.m_all_object_payload_bytes = all_object_total;
-
-      for (std::size_t object_index = 0; object_index < archive.value().objects.size();
-           ++object_index) {
-        const auto& object = archive.value().objects[object_index];
-        auto object_version =
-            inspect_object_header(object.data, source.source_archive_relative_path,
-                                  static_cast<std::uint32_t>(object_index), object.internal_name);
-        if (!object_version) {
-          return Result<Catalog>::failure(object_version.error());
-        }
-        if (!object_version.value()) {
-          ++catalog.m_skipped_code_objects;
-          progress = {ProgressStage::skipped_code_object,
-                      ordered_sources.size(),
-                      archive_index,
-                      catalog.m_entries.size(),
-                      indexed_object_bytes,
-                      catalog.m_skipped_code_objects,
-                      source.source_archive_relative_path,
-                      static_cast<std::uint32_t>(object_index)};
-          if (auto error = emit_progress(options, progress)) {
-            return Result<Catalog>::failure(std::move(*error));
-          }
-          continue;
-        }
-        if (catalog.m_entries.size() >= options.max_entries) {
-          return Result<Catalog>::failure(make_error(
-              ErrorCode::entry_limit_exceeded,
-              "The retail data-object count exceeds the configured catalog limit.",
-              source.source_archive_relative_path, static_cast<std::uint32_t>(object_index)));
-        }
-        std::size_t new_indexed_total = 0;
-        if (!checked_add(indexed_object_bytes, object.data.size(), &new_indexed_total)) {
-          return Result<Catalog>::failure(make_error(
-              ErrorCode::total_byte_limit_exceeded,
-              "Retail indexed-object payload accounting overflowed.",
-              source.source_archive_relative_path, static_cast<std::uint32_t>(object_index)));
-        }
-        auto hash = hash_object(object.data, source.source_archive_relative_path,
-                                static_cast<std::uint32_t>(object_index), options);
-        if (!hash) {
-          return Result<Catalog>::failure(hash.error());
-        }
-
-        Entry entry;
-        entry.provenance.source_archive_relative_path = source.source_archive_relative_path;
-        entry.provenance.archive_object_index = static_cast<std::uint32_t>(object_index);
-        entry.provenance.internal_name = object.internal_name;
-        entry.provenance.unique_name = object.unique_name;
-        entry.provenance.byte_size = object.data.size();
-        entry.provenance.xxh64 = hash.value();
-        entry.provenance.object_version = *object_version.value();
-        catalog.m_entries.push_back(std::move(entry));
-        indexed_object_bytes = new_indexed_total;
-
-        progress = {ProgressStage::indexed_object,
-                    ordered_sources.size(),
-                    archive_index,
-                    catalog.m_entries.size(),
-                    indexed_object_bytes,
-                    catalog.m_skipped_code_objects,
-                    source.source_archive_relative_path,
-                    static_cast<std::uint32_t>(object_index)};
-        if (auto error = emit_progress(options, progress)) {
-          return Result<Catalog>::failure(std::move(*error));
-        }
+      if (auto error =
+              index_checked_archive(&state, archive.value(), source.source_archive_relative_path,
+                                    archive_index, ordered_sources.size(), options)) {
+        return Result<Catalog>::failure(std::move(*error));
       }
     }
 
     const Progress complete{ProgressStage::complete,
                             ordered_sources.size(),
                             ordered_sources.size(),
-                            catalog.m_entries.size(),
-                            indexed_object_bytes,
-                            catalog.m_skipped_code_objects,
+                            state.entries.size(),
+                            state.indexed_object_bytes,
+                            state.skipped_code_objects,
                             {},
                             {}};
     if (auto error = emit_progress(options, complete)) {
       return Result<Catalog>::failure(std::move(*error));
     }
+    Catalog catalog;
+    catalog.m_entries = std::move(state.entries);
+    catalog.m_skipped_code_objects = state.skipped_code_objects;
+    catalog.m_expanded_archive_bytes = state.expanded_archive_bytes;
+    catalog.m_all_object_payload_bytes = state.all_object_payload_bytes;
+    return Result<Catalog>::success(std::move(catalog));
+  } catch (const std::bad_alloc&) {
+    return Result<Catalog>::failure(
+        make_error(ErrorCode::allocation_failed, "Could not allocate the retail object catalog."));
+  } catch (const std::length_error&) {
+    return Result<Catalog>::failure(make_error(
+        ErrorCode::allocation_failed, "A retail object catalog allocation exceeded its limit."));
+  }
+}
+
+Result<Catalog> build_checked_archive(const std::string& source_archive_relative_path,
+                                      const jak1_checked_dgo::Archive& archive,
+                                      const Options& options) {
+  try {
+    if (auto error = validate_options(options)) {
+      return Result<Catalog>::failure(std::move(*error));
+    }
+    if (auto path_error = validate_source_path(source_archive_relative_path, options)) {
+      return Result<Catalog>::failure(make_error(ErrorCode::invalid_source_archive_path,
+                                                 std::move(*path_error),
+                                                 source_archive_relative_path));
+    }
+
+    const auto cancel_state = poll_cancel(options);
+    if (cancel_state != CancelState::continue_work) {
+      return Result<Catalog>::failure(make_error(
+          cancel_state == CancelState::cancelled ? ErrorCode::cancelled
+                                                 : ErrorCode::callback_failed,
+          cancel_state == CancelState::cancelled ? "Retail object cataloging was cancelled."
+                                                 : "The cancellation callback failed.",
+          source_archive_relative_path));
+    }
+
+    CatalogBuildState state;
+    state.entries.reserve(std::min(options.max_entries, archive.objects.size()));
+    const Progress progress{ProgressStage::starting_archive, 1, 0, 0, 0, 0,
+                            source_archive_relative_path,    {}};
+    if (auto error = emit_progress(options, progress)) {
+      return Result<Catalog>::failure(std::move(*error));
+    }
+    if (auto error =
+            index_checked_archive(&state, archive, source_archive_relative_path, 0, 1, options)) {
+      return Result<Catalog>::failure(std::move(*error));
+    }
+
+    const Progress complete{
+        ProgressStage::complete,    1,  1, state.entries.size(), state.indexed_object_bytes,
+        state.skipped_code_objects, {}, {}};
+    if (auto error = emit_progress(options, complete)) {
+      return Result<Catalog>::failure(std::move(*error));
+    }
+    Catalog catalog;
+    catalog.m_entries = std::move(state.entries);
+    catalog.m_skipped_code_objects = state.skipped_code_objects;
+    catalog.m_expanded_archive_bytes = state.expanded_archive_bytes;
+    catalog.m_all_object_payload_bytes = state.all_object_payload_bytes;
     return Result<Catalog>::success(std::move(catalog));
   } catch (const std::bad_alloc&) {
     return Result<Catalog>::failure(
@@ -628,6 +743,8 @@ const char* error_code_name(ErrorCode code) {
       return "callback_failed";
     case ErrorCode::allocation_failed:
       return "allocation_failed";
+    case ErrorCode::invalid_checked_archive:
+      return "invalid_checked_archive";
     case ErrorCode::invalid_source_archive_path:
       return "invalid_source_archive_path";
     case ErrorCode::duplicate_source_archive_path:

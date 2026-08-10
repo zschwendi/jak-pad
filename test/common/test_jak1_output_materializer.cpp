@@ -651,6 +651,33 @@ bool validated_input_mutations_fail_without_promotion() {
   return true;
 }
 
+bool validated_archive_hash_is_checked_by_the_single_decode() {
+  Fixture fixture;
+  CHECK(fixture.setup());
+  fixture.bind_validated_identities();
+  fixture.extracted_identities.front().xxh64 ^= 1;
+  const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::input_identity_mismatch);
+  CHECK(result.error().message.find("The checked DGO reader rejected") != std::string::npos);
+  CHECK(!fs::exists(fixture.destination));
+  CHECK(fixture.stage_absent());
+  return true;
+}
+
+bool malformed_retail_archive_preserves_catalog_failure() {
+  Fixture fixture;
+  CHECK(fixture.setup());
+  const std::array<std::uint8_t, 64> malformed{};
+  CHECK(write_bytes(fixture.iso_root / "DGO/RETAIL.DGO", malformed));
+  const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::retail_catalog_failed);
+  CHECK(!fs::exists(fixture.destination));
+  CHECK(fixture.stage_absent());
+  return true;
+}
+
 bool descriptor_owned_outputs_reject_terminal_races() {
   {
     Fixture fixture;
@@ -968,6 +995,8 @@ int main() {
       byte_progress_cancellation_is_atomic,
       rejects_exact_recipe_mismatch_before_staging,
       validated_input_mutations_fail_without_promotion,
+      validated_archive_hash_is_checked_by_the_single_decode,
+      malformed_retail_archive_preserves_catalog_failure,
       descriptor_owned_outputs_reject_terminal_races,
       rejects_mismatched_checked_inputs_and_cleans_stage,
       preserves_typed_recipe_identity_failures,

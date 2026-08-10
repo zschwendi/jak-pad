@@ -1232,7 +1232,6 @@ std::optional<Error> cleanup_failure(Error error, OutputStage& stage) {
 }
 
 struct LoadedRetailArchive {
-  std::vector<std::uint8_t> raw;
   jak1_checked_dgo::Archive archive;
   jak1_retail_object_catalog::Catalog catalog;
 };
@@ -1249,38 +1248,12 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
   if (!raw) {
     return Result<LoadedRetailArchive>::failure(raw.error());
   }
-  if (identity &&
-      (raw.value().size() != identity->size ||
-       XXH64(raw.value().data(), raw.value().size(), 0) != identity->xxh64)) {
+  if (identity && raw.value().size() != identity->size) {
     return Result<LoadedRetailArchive>::failure(make_error(
-        ErrorCode::input_identity_mismatch,
-        "A retail archive does not match its validated size and hash."));
+        ErrorCode::input_identity_mismatch, "A retail archive does not match its validated size."));
   }
 
   const std::string source_path(relative);
-  const jak1_retail_object_catalog::ArchiveSource catalog_source{source_path, raw.value()};
-  jak1_retail_object_catalog::Options catalog_options;
-  catalog_options.game_version = options.wire_game == jak1_output_recipe::WireGame::jak1
-                                     ? GameVersion::Jak1
-                                     : GameVersion::Jak2;
-  catalog_options.max_archive_input_bytes = options.limits.max_retail_archive_bytes;
-  catalog_options.max_archive_compressed_bytes = options.limits.max_retail_archive_bytes;
-  catalog_options.compressed_trailing_alignment_bytes =
-      options.compressed_trailing_alignment_bytes;
-  catalog_options.should_cancel = options.should_cancel;
-  auto catalog = jak1_retail_object_catalog::build(
-      std::span<const jak1_retail_object_catalog::ArchiveSource>(&catalog_source, 1),
-      catalog_options);
-  if (!catalog) {
-    return Result<LoadedRetailArchive>::failure(make_error(
-        catalog.error().code == jak1_retail_object_catalog::ErrorCode::cancelled
-            ? ErrorCode::cancelled
-        : catalog.error().code == jak1_retail_object_catalog::ErrorCode::callback_failed
-            ? ErrorCode::callback_failed
-            : ErrorCode::retail_catalog_failed,
-        "The checked retail catalog rejected " + source_path + ": " + catalog.error().message));
-  }
-
   jak1_checked_dgo::Options dgo_options;
   dgo_options.game_version = options.wire_game == jak1_output_recipe::WireGame::jak1
                                  ? GameVersion::Jak1
@@ -1297,17 +1270,33 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
   auto archive = jak1_checked_dgo::read(raw.value(), archive_name, dgo_options);
   if (!archive) {
     return Result<LoadedRetailArchive>::failure(make_error(
-        archive.error().code == jak1_checked_dgo::ErrorCode::cancelled
-            ? ErrorCode::cancelled
+        archive.error().code == jak1_checked_dgo::ErrorCode::cancelled ? ErrorCode::cancelled
         : archive.error().code == jak1_checked_dgo::ErrorCode::callback_failed
             ? ErrorCode::callback_failed
         : archive.error().code == jak1_checked_dgo::ErrorCode::input_identity_mismatch
             ? ErrorCode::input_identity_mismatch
-            : ErrorCode::retail_archive_failed,
+            : ErrorCode::retail_catalog_failed,
         "The checked DGO reader rejected " + source_path + ": " + archive.error().message));
   }
-  return Result<LoadedRetailArchive>::success(
-      {raw.take_value(), archive.take_value(), catalog.take_value()});
+
+  jak1_retail_object_catalog::Options catalog_options;
+  catalog_options.game_version = dgo_options.game_version;
+  catalog_options.max_archive_input_bytes = options.limits.max_retail_archive_bytes;
+  catalog_options.max_archive_compressed_bytes = options.limits.max_retail_archive_bytes;
+  catalog_options.compressed_trailing_alignment_bytes = options.compressed_trailing_alignment_bytes;
+  catalog_options.should_cancel = options.should_cancel;
+  auto catalog = jak1_retail_object_catalog::build_checked_archive(source_path, archive.value(),
+                                                                   catalog_options);
+  if (!catalog) {
+    return Result<LoadedRetailArchive>::failure(make_error(
+        catalog.error().code == jak1_retail_object_catalog::ErrorCode::cancelled
+            ? ErrorCode::cancelled
+        : catalog.error().code == jak1_retail_object_catalog::ErrorCode::callback_failed
+            ? ErrorCode::callback_failed
+            : ErrorCode::retail_catalog_failed,
+        "The checked retail catalog rejected " + source_path + ": " + catalog.error().message));
+  }
+  return Result<LoadedRetailArchive>::success({archive.take_value(), catalog.take_value()});
 }
 
 }  // namespace
