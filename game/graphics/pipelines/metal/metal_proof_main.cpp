@@ -1792,8 +1792,13 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
   constexpr float kOneMeterMetalDepth = kZ / kMetalDepthScale;
   constexpr float kProductDepthDisparitySlope = 0.05f;
   constexpr float kProductConvergenceDepth = 0.05f;
-  constexpr float kExpectedOneMeterPixelsAt640 =
+  constexpr float kExpectedOneMeterTransformPixelsAt640 =
       kProductDepthDisparitySlope * (kOneMeterMetalDepth - kProductConvergenceDepth) * 640.f * 0.5f;
+  static_assert(kExpectedOneMeterTransformPixelsAt640 > 3.19f &&
+                kExpectedOneMeterTransformPixelsAt640 < 3.20f);
+  // The solid-edged fixture quantizes each eye's 1.598-pixel shift outward to two covered pixels.
+  // The transform test above retains the exact 3.196-pixel mathematical oracle.
+  constexpr float kExpectedOneMeterRasterizedPixelsAt640 = 4.f;
   constexpr float kUserShift = -64;  // hud_hvdf_user[0] x offset
 
   constexpr float kHalfPxX = kHalf * 640.f / 512.f;  // GS x unit -> pixels
@@ -2017,7 +2022,7 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
                                         "stereo pixels: Sprite3d moved between eyes");
       check_color_centroid_disparity(stereo.stereo_transformed_left_slice,
                                      stereo.stereo_transformed_right_slice, 100, 50, 25,
-                                     kExpectedOneMeterPixelsAt640,
+                                     kExpectedOneMeterRasterizedPixelsAt640,
                                      "stereo pixels: product candidate at Jak one-meter depth");
     }
   }
