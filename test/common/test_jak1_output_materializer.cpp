@@ -362,7 +362,8 @@ bool clones_flat_files_when_the_filesystem_supports_it() {
                    sizeof(xattr_value), 0, 0) == 0);
   CHECK(add_test_extended_acl(source));
   CHECK(!has_no_extended_acl(source));
-  CHECK(::chflags(source.c_str(), UF_NODUMP) == 0);
+  CHECK(::chmod(source.c_str(), 0400) == 0);
+  CHECK(::chflags(source.c_str(), UF_IMMUTABLE) == 0);
   const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
   CHECK(result);
   CHECK(result.value().files_cloned == 3);
@@ -380,6 +381,8 @@ bool clones_flat_files_when_the_filesystem_supports_it() {
   CHECK(::listxattr(output.c_str(), nullptr, 0, 0) == 0);
   CHECK(has_no_extended_acl(output));
   const auto original_output = read_bytes(output);
+  CHECK(::chflags(source.c_str(), 0) == 0);
+  CHECK(::chmod(source.c_str(), 0600) == 0);
   fixture.flat.front() ^= 1;
   CHECK(write_bytes(source, fixture.flat));
   CHECK(read_bytes(output) == original_output);

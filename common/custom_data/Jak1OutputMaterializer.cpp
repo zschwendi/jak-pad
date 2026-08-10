@@ -916,8 +916,11 @@ std::optional<Error> copy_file_at(
       }
       cloned_identity = {cloned_status.st_dev, cloned_status.st_ino};
       if (!S_ISREG(cloned_status.st_mode) || cloned_status.st_nlink != 1) {
-        return make_error(ErrorCode::output_write_failed,
-                          "The cloned staged output is not a private regular file.");
+        auto error = make_error(ErrorCode::output_write_failed,
+                                "The cloned staged output is not a private regular file.");
+        const auto cleanup =
+            remove_owned_file(destination_directory, destination_name, cloned_identity);
+        return cleanup ? *cleanup : std::move(error);
       }
     } else {
       const auto clone_error = errno;
@@ -936,7 +939,7 @@ std::optional<Error> copy_file_at(
 #endif
 
   auto output = cloned
-                    ? posix_file::open_file_at(destination_directory, destination_name, O_RDWR)
+                    ? posix_file::open_file_at(destination_directory, destination_name, O_RDONLY)
                     : posix_file::open_file_at(
                           destination_directory, destination_name, O_RDWR | O_CREAT | O_EXCL, 0600);
   if (!output) {
@@ -989,6 +992,21 @@ std::optional<Error> copy_file_at(
       return fail_owned(make_error(ErrorCode::output_write_failed,
                                    "A cloned output retained unsafe metadata."));
     }
+    auto writable_output =
+        posix_file::open_file_at(destination_directory, destination_name, O_RDWR);
+    posix_file::Identity writable_identity;
+    struct stat writable_status {};
+    if (!writable_output ||
+        !posix_file::descriptor_identity(writable_output.get(), &writable_identity,
+                                         &writable_status) ||
+        writable_identity.device != output_identity.device ||
+        writable_identity.inode != output_identity.inode ||
+        !S_ISREG(writable_status.st_mode) || writable_status.st_nlink != 1 ||
+        !posix_file::entry_identity(destination_directory, destination_name, output_identity)) {
+      return fail_owned(make_error(ErrorCode::output_write_failed,
+                                   "Could not reopen the exact normalized clone for writing."));
+    }
+    output = std::move(writable_output);
     ByteProgress clone_progress{options, progress_phase, progress_completed, progress_total,
                                 *total_output, &copied, destination_name};
     if (const auto hash_error = hash_descriptor(
@@ -1138,13 +1156,6 @@ std::optional<Error> validate_output_directory(int directory,
       return make_error(ErrorCode::output_write_failed,
                         "A staged output is not the expected private regular file.");
     }
-#if defined(__APPLE__)
-    if (!descriptor_has_normalized_apple_metadata(file.get(), before)) {
-      ::closedir(stream);
-      return make_error(ErrorCode::output_write_failed,
-                        "A staged output retained unsafe metadata.");
-    }
-#endif
     std::uint64_t hash = 0;
     struct stat after {};
     if (const auto hash_error = hash_descriptor(
