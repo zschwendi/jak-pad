@@ -29,7 +29,8 @@ namespace {
 constexpr uint64_t kSectorSize = 0x800;
 constexpr uint32_t kFirstDescriptorSector = 16;
 constexpr uint32_t kMaxDescriptorSectors = 64;
-constexpr size_t kMaxReadChunkBytes = 1024 * 1024;
+constexpr size_t kMaxReadChunkBytes = 8 * 1024 * 1024;
+constexpr uint64_t kProgressIntervalBytes = 8ull * 1024 * 1024;
 
 using iso_file::Error;
 using iso_file::ErrorCode;
@@ -86,6 +87,39 @@ std::optional<Error> read_exact(FILE* file,
     return make_error(ErrorCode::read_failed, offset, "Could not read the requested ISO bytes.");
   }
   return std::nullopt;
+}
+
+std::optional<Error> read_extent_chunk(FILE* file,
+                                       uint64_t image_bytes,
+                                       uint64_t offset,
+                                       void* destination,
+                                       size_t size) {
+  if (offset > image_bytes || size > image_bytes - offset) {
+    return make_error(ErrorCode::extent_out_of_bounds, offset,
+                      "A read extends beyond the ISO image.");
+  }
+#ifdef _WIN32
+  return read_exact(file, image_bytes, offset, destination, size);
+#else
+  const auto descriptor = fileno(file);
+  if (descriptor < 0) {
+    return make_error(ErrorCode::read_failed, offset, "Could not read the requested ISO bytes.");
+  }
+  size_t completed = 0;
+  while (completed < size) {
+    const auto result = ::pread(descriptor, static_cast<uint8_t*>(destination) + completed,
+                                size - completed, static_cast<off_t>(offset + completed));
+    if (result < 0 && errno == EINTR) {
+      continue;
+    }
+    if (result <= 0) {
+      return make_error(ErrorCode::read_failed, offset + completed,
+                        "Could not read the requested ISO bytes.");
+    }
+    completed += static_cast<size_t>(result);
+  }
+  return std::nullopt;
+#endif
 }
 
 uint16_t read_le16(const uint8_t* bytes) {
@@ -499,7 +533,32 @@ struct ExtractState {
   uint64_t image_bytes = 0;
   const iso_file::Options* options = nullptr;
   iso_file::Progress progress;
+  uint64_t next_progress_bytes = kProgressIntervalBytes;
 };
+
+size_t next_read_amount(const ExtractState& state, size_t buffer_size, uint64_t remaining) {
+  auto amount = std::min<uint64_t>(buffer_size, remaining);
+  if (state.options->on_progress && state.progress.bytes_completed < state.next_progress_bytes) {
+    amount = std::min(amount, state.next_progress_bytes - state.progress.bytes_completed);
+  }
+  return static_cast<size_t>(amount);
+}
+
+void schedule_next_progress(ExtractState* state) {
+  state->next_progress_bytes =
+      state->progress.bytes_completed <=
+              std::numeric_limits<uint64_t>::max() - kProgressIntervalBytes
+          ? state->progress.bytes_completed + kProgressIntervalBytes
+          : std::numeric_limits<uint64_t>::max();
+}
+
+void report_progress(ExtractState* state) {
+  if (!state->options->on_progress) {
+    return;
+  }
+  state->options->on_progress(state->progress);
+  schedule_next_progress(state);
+}
 
 std::optional<Error> extract_entry(ExtractState* state,
                                    IsoFile::Entry* entry,
@@ -544,10 +603,9 @@ std::optional<Error> extract_entry(ExtractState* state,
       return make_error(ErrorCode::cancelled, entry->offset_in_file + copied,
                         "ISO extraction was cancelled.");
     }
-    const auto amount =
-        std::min<uint64_t>(buffer.size(), static_cast<uint64_t>(entry->size) - copied);
-    if (auto error = read_exact(state->file, state->image_bytes, entry->offset_in_file + copied,
-                                buffer.data(), static_cast<size_t>(amount))) {
+    const auto amount = next_read_amount(*state, buffer.size(), entry->size - copied);
+    if (auto error = read_extent_chunk(state->file, state->image_bytes,
+                                       entry->offset_in_file + copied, buffer.data(), amount)) {
       return error;
     }
     stream.write(reinterpret_cast<const char*>(buffer.data()),
@@ -557,12 +615,12 @@ std::optional<Error> extract_entry(ExtractState* state,
                         "Could not write output file: " + output.string());
     }
     if (state->options->hash_files) {
-      XXH64_update(&hash_state, buffer.data(), static_cast<size_t>(amount));
+      XXH64_update(&hash_state, buffer.data(), amount);
     }
     copied += amount;
     state->progress.bytes_completed += amount;
-    if (state->options->on_progress) {
-      state->options->on_progress(state->progress);
+    if (copied < entry->size && state->progress.bytes_completed >= state->next_progress_bytes) {
+      report_progress(state);
     }
   }
   stream.close();
@@ -576,9 +634,7 @@ std::optional<Error> extract_entry(ExtractState* state,
     layout->hashes.push_back(XXH64_digest(&hash_state));
   }
   state->progress.files_completed++;
-  if (state->options->on_progress) {
-    state->options->on_progress(state->progress);
-  }
+  report_progress(state);
   return std::nullopt;
 }
 
@@ -731,10 +787,9 @@ struct OwnedStagingDirectory::Impl {
         return make_error(ErrorCode::cancelled, entry->offset_in_file + copied,
                           "ISO extraction was cancelled.");
       }
-      const auto amount =
-          std::min<uint64_t>(buffer.size(), static_cast<uint64_t>(entry->size) - copied);
-      if (auto error = read_exact(state->file, state->image_bytes, entry->offset_in_file + copied,
-                                  buffer.data(), static_cast<size_t>(amount))) {
+      const auto amount = next_read_amount(*state, buffer.size(), entry->size - copied);
+      if (auto error = read_extent_chunk(state->file, state->image_bytes,
+                                         entry->offset_in_file + copied, buffer.data(), amount)) {
         return error;
       }
       size_t written = 0;
@@ -749,11 +804,11 @@ struct OwnedStagingDirectory::Impl {
         }
         written += static_cast<size_t>(result);
       }
-      XXH64_update(&hash_state, buffer.data(), static_cast<size_t>(amount));
+      XXH64_update(&hash_state, buffer.data(), amount);
       copied += amount;
       state->progress.bytes_completed += amount;
-      if (state->options->on_progress) {
-        state->options->on_progress(state->progress);
+      if (copied < entry->size && state->progress.bytes_completed >= state->next_progress_bytes) {
+        report_progress(state);
       }
     }
 
@@ -766,9 +821,7 @@ struct OwnedStagingDirectory::Impl {
       layout->hashes.push_back(hash);
     }
     state->progress.files_completed++;
-    if (state->options->on_progress) {
-      state->options->on_progress(state->progress);
-    }
+    report_progress(state);
     return {};
   }
 
@@ -1251,7 +1304,7 @@ Result<IsoFile> extract_layout(FILE* file,
   layout.files_extracted = 0;
   layout.shouldHash = options.hash_files;
   layout.hashes.clear();
-  ExtractState state{file, bytes, &options, {}};
+  ExtractState state{file, bytes, &options, {}, kProgressIntervalBytes};
   state.progress.bytes_total = stats.total_bytes;
   state.progress.files_total = stats.file_count;
   if (options.on_progress) {
@@ -1375,7 +1428,7 @@ Result<IsoFile> extract_to_owned_staging(FILE* file,
   layout.files_extracted = 0;
   layout.shouldHash = options.hash_files;
   layout.hashes.clear();
-  ExtractState state{file, bytes, &options, {}};
+  ExtractState state{file, bytes, &options, {}, kProgressIntervalBytes};
   state.progress.bytes_total = stats.total_bytes;
   state.progress.files_total = stats.file_count;
   if (options.on_progress) {

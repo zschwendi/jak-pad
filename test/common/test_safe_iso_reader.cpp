@@ -218,7 +218,7 @@ bool extract_in_bounded_chunks_with_progress_and_hashes() {
   const auto result = iso_file::extract_to_staging(input.file, staging, options);
   CHECK(result);
   CHECK(monotonic);
-  CHECK(progress_calls > 10);
+  CHECK(progress_calls == 3);
   CHECK(final_progress.bytes_completed == 3005);
   CHECK(final_progress.bytes_total == 3005);
   CHECK(final_progress.files_completed == 2);
@@ -230,6 +230,77 @@ bool extract_in_bounded_chunks_with_progress_and_hashes() {
   CHECK(read_bytes(staging / "SAFE.TXT").size() == 3000);
   CHECK(read_bytes(staging / "NEST" / "TINY.BIN") ==
         std::vector<uint8_t>({'h', 'e', 'l', 'l', 'o'}));
+  return true;
+}
+
+bool multi_file_reads_are_sequential_progress_is_throttled_and_cancellation_is_byte_bounded() {
+  constexpr size_t kMiB = 1024 * 1024;
+  constexpr size_t kFirstFileBytes = 6 * kMiB;
+  constexpr size_t kSecondFileBytes = 10 * kMiB;
+  constexpr size_t kTotalBytes = kFirstFileBytes + kSecondFileBytes;
+  TemporaryDirectory temp;
+  std::vector<uint8_t> source(kTotalBytes);
+  for (size_t index = 0; index < source.size(); ++index) {
+    source[index] = static_cast<uint8_t>((index * 37) % 251);
+  }
+  const auto image = temp.path / "large.iso";
+  CHECK(write_image(image, source));
+
+  IsoFile layout;
+  layout.root.children.push_back({false, "FIRST.BIN", 0, kFirstFileBytes, {}});
+  layout.root.children.push_back(
+      {false, "SECOND.BIN", kFirstFileBytes, kSecondFileBytes, {}});
+  iso_file::Options options;
+  CHECK(options.read_chunk_bytes == 4 * kMiB);
+  options.hash_files = true;
+  std::vector<iso_file::Progress> reports;
+  bool callback_seek_failed = false;
+  OpenFile input(image);
+  CHECK(input.file);
+  options.on_progress = [&](const iso_file::Progress& progress) {
+    reports.push_back(progress);
+    if (progress.bytes_completed > 0 && progress.files_completed < 2) {
+      callback_seek_failed |= fseek(input.file, 0, SEEK_SET) != 0;
+    }
+  };
+
+  const auto extracted =
+      iso_file::extract_layout(input.file, layout, temp.path / "complete", options);
+  CHECK(extracted);
+  CHECK(reports.size() == 4);
+  CHECK(reports[0].bytes_completed == 0);
+  CHECK(reports[1].bytes_completed == kFirstFileBytes);
+  CHECK(reports[1].files_completed == 1);
+  CHECK(reports[2].bytes_completed == 14 * kMiB);
+  CHECK(reports[2].files_completed == 1);
+  CHECK(reports[3].bytes_completed == kTotalBytes);
+  CHECK(reports[3].files_completed == 2);
+  CHECK(!callback_seek_failed);
+  CHECK(extracted.value().hashes.size() == 2);
+  CHECK(read_bytes(temp.path / "complete" / "FIRST.BIN") ==
+        std::vector<uint8_t>(source.begin(), source.begin() + kFirstFileBytes));
+  CHECK(read_bytes(temp.path / "complete" / "SECOND.BIN") ==
+        std::vector<uint8_t>(source.begin() + kFirstFileBytes, source.end()));
+
+  OpenFile cancelled_input(image);
+  CHECK(cancelled_input.file);
+  bool extraction_started = false;
+  uint32_t cancellation_polls = 0;
+  options.hash_files = false;
+  options.on_progress = [&](const iso_file::Progress& progress) {
+    extraction_started = progress.bytes_total == kTotalBytes && progress.bytes_completed == 0;
+  };
+  options.should_cancel = [&] {
+    return extraction_started && ++cancellation_polls == 3;
+  };
+  const auto cancelled =
+      iso_file::extract_layout(cancelled_input.file, layout, temp.path / "cancelled", options);
+  CHECK(!cancelled);
+  CHECK(cancelled.error().code == iso_file::ErrorCode::cancelled);
+  CHECK(cancelled.error().image_offset == 4 * kMiB);
+  CHECK(cancellation_polls == 3);
+  CHECK(std::filesystem::file_size(temp.path / "cancelled" / "FIRST.BIN") == 4 * kMiB);
+  CHECK(!std::filesystem::exists(temp.path / "cancelled" / "SECOND.BIN"));
   return true;
 }
 
@@ -400,7 +471,7 @@ bool enforces_depth_entry_and_size_limits() {
   {
     OpenFile input(image);
     iso_file::Options options;
-    options.read_chunk_bytes = 1024 * 1024 + 1;
+    options.read_chunk_bytes = 8 * 1024 * 1024 + 1;
     const auto result = iso_file::inspect(input.file, options);
     CHECK(!result);
     CHECK(result.error().code == iso_file::ErrorCode::invalid_argument);
@@ -587,6 +658,8 @@ int main() {
       {"inspect_valid_image", inspect_valid_image},
       {"extract_in_bounded_chunks_with_progress_and_hashes",
        extract_in_bounded_chunks_with_progress_and_hashes},
+      {"multi_file_reads_are_sequential_progress_is_throttled_and_cancellation_is_byte_bounded",
+       multi_file_reads_are_sequential_progress_is_throttled_and_cancellation_is_byte_bounded},
       {"water_animation_name_is_patched", water_animation_name_is_patched},
       {"cancellation_removes_staging", cancellation_removes_staging},
       {"rejects_invalid_descriptor", rejects_invalid_descriptor},

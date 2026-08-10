@@ -102,6 +102,8 @@ struct Progress {
 };
 
 using CancelCallback = std::function<bool()>;
+/// Extraction reports its initial state, each completed file, and 8 MiB byte intervals between
+/// file completions.
 using ProgressCallback = std::function<void(const Progress&)>;
 
 struct Options {
@@ -113,7 +115,7 @@ struct Options {
   uint32_t max_depth = 32;
   uint32_t max_name_bytes = 128;
   uint32_t max_path_bytes = 1024;
-  size_t read_chunk_bytes = 256 * 1024;
+  size_t read_chunk_bytes = 4 * 1024 * 1024;
   bool hash_files = false;
   CancelCallback should_cancel;
   ProgressCallback on_progress;
