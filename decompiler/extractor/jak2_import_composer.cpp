@@ -723,6 +723,11 @@ std::optional<Error> catalog_retail_stage(const Options& options, PipelineState*
           "Jak II retail cataloging was cancelled.");
     }
     const auto& relative_path = archive_paths[index];
+    const auto completed_archive_bytes = total_archive_bytes;
+    if (!callbacks.report({Phase::cataloging_retail, index, archive_paths.size(),
+                           completed_archive_bytes, relative_path})) {
+      return callbacks.cancellation_or_callback_error({});
+    }
     const auto archive_path = state->extraction->staging_directory / relative_path;
     if (!direct_directory(archive_path.parent_path()) || !direct_regular_file(archive_path)) {
       return make_error(ErrorCode::retail_catalog_failed,
@@ -779,6 +784,26 @@ std::optional<Error> catalog_retail_stage(const Options& options, PipelineState*
         jak2_fr3::kNtscV2CompressedArchiveAlignmentBytes;
     catalog_options.game_version = GameVersion::Jak2;
     catalog_options.should_cancel = [&] { return callbacks.poll_cancel(); };
+    catalog_options.on_progress = [&](const retail_catalog::Progress& progress) {
+      if ((progress.stage != retail_catalog::ProgressStage::indexed_object &&
+           progress.stage != retail_catalog::ProgressStage::skipped_code_object) ||
+          !progress.archive_object_index) {
+        return;
+      }
+      auto milestone = static_cast<std::uint64_t>(*progress.archive_object_index) + 1;
+      while (milestone > 1 && milestone % 16 == 0) {
+        milestone /= 16;
+      }
+      if (milestone != 1) {
+        return;
+      }
+      const auto current_item = relative_path + " (object " +
+                                std::to_string(*progress.archive_object_index) + ")";
+      if (!callbacks.report({Phase::cataloging_retail, index, archive_paths.size(),
+                             completed_archive_bytes, current_item})) {
+        throw std::runtime_error("Jak II retail progress callback failed.");
+      }
+    };
     auto catalog = retail_catalog::build(
         std::span<const retail_catalog::ArchiveSource>(&source, 1), catalog_options);
     if (!catalog) {
@@ -1620,11 +1645,8 @@ class WorkOwnershipGuard {
     Options guarded;
     if (m_external_options.should_cancel) {
       guarded.should_cancel = [this] {
-        begin_callback();
         try {
-          const auto should_cancel = m_external_options.should_cancel();
-          finish_callback();
-          return should_cancel;
+          return m_external_options.should_cancel();
         } catch (...) {
           m_callback_failed = true;
           throw;
@@ -1633,10 +1655,8 @@ class WorkOwnershipGuard {
     }
     if (m_external_options.on_progress) {
       guarded.on_progress = [this](const Progress& progress) {
-        begin_callback();
         try {
           m_external_options.on_progress(progress);
-          finish_callback();
         } catch (...) {
           m_callback_failed = true;
           throw;
@@ -1663,23 +1683,6 @@ class WorkOwnershipGuard {
   bool callback_failed() const { return m_callback_failed; }
 
  private:
-  void begin_callback() {
-    auto before = capture_work_manifest_at(m_work_directory);
-    if (!before) {
-      m_callback_failed = true;
-      throw std::runtime_error("Could not capture work ownership before a callback.");
-    }
-    m_owned = before.take_value();
-  }
-
-  void finish_callback() {
-    auto after = capture_work_manifest_at(m_work_directory);
-    if (!after || !same_work_manifest(after.value(), m_owned)) {
-      m_callback_failed = true;
-      throw std::runtime_error("A callback changed the import work ownership set.");
-    }
-  }
-
   int m_work_directory = -1;
   const Options& m_external_options;
   WorkManifest m_owned;

@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -48,6 +50,58 @@ class TemporaryRoot {
 void write_text(const fs::path& path, const std::string& text = "synthetic") {
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   output << text;
+}
+
+void write_u32(std::vector<std::uint8_t>* bytes, std::size_t offset, std::uint32_t value) {
+  (*bytes)[offset] = value & 0xff;
+  (*bytes)[offset + 1] = (value >> 8) & 0xff;
+  (*bytes)[offset + 2] = (value >> 16) & 0xff;
+  (*bytes)[offset + 3] = value >> 24;
+}
+
+void append_u32(std::vector<std::uint8_t>* bytes, std::uint32_t value) {
+  const auto offset = bytes->size();
+  bytes->resize(offset + 4);
+  write_u32(bytes, offset, value);
+}
+
+void append_fixed_name(std::vector<std::uint8_t>* bytes, const std::string& name) {
+  const auto offset = bytes->size();
+  bytes->resize(offset + 60);
+  std::fill(bytes->begin() + offset, bytes->end(), 0);
+  std::copy(name.begin(), name.end(), bytes->begin() + offset);
+}
+
+std::vector<std::uint8_t> make_catalog_object(std::uint8_t seed) {
+  std::vector<std::uint8_t> bytes(144);
+  write_u32(&bytes, 0, 0xffffffff);
+  write_u32(&bytes, 4, 64);
+  write_u32(&bytes, 8, 4);
+  write_u32(&bytes, 12, 64);
+  for (std::size_t index = 16; index < 80; ++index) {
+    bytes[index] = static_cast<std::uint8_t>(seed + index);
+  }
+  write_u32(&bytes, 80, 0xffffffff);
+  write_u32(&bytes, 84, 64);
+  write_u32(&bytes, 88, 2);
+  return bytes;
+}
+
+std::vector<std::uint8_t> make_catalog_archive(const std::string& archive_name,
+                                               std::size_t object_count) {
+  std::vector<std::uint8_t> bytes;
+  append_u32(&bytes, static_cast<std::uint32_t>(object_count));
+  append_fixed_name(&bytes, archive_name);
+  for (std::size_t index = 0; index < object_count; ++index) {
+    const auto object = make_catalog_object(static_cast<std::uint8_t>(index));
+    append_u32(&bytes, static_cast<std::uint32_t>(object.size()));
+    append_fixed_name(&bytes, "synthetic-" + std::to_string(index));
+    bytes.insert(bytes.end(), object.begin(), object.end());
+    while (bytes.size() % 16) {
+      bytes.push_back(0);
+    }
+  }
+  return bytes;
 }
 
 std::string read_text(const fs::path& path) {
@@ -297,7 +351,7 @@ bool descriptor_promotion_rejects_callback_races() {
         candidate, options, stages, &summary, &produced_contract);
     CHECK(injected);
     CHECK(!result);
-    CHECK(result.error().code == composer::ErrorCode::callback_failed);
+    CHECK(result.error().code == composer::ErrorCode::candidate_finalize_failed);
     CHECK(read_text(candidate / ".opengoal-import/injected/sentinel") ==
           "external directory stays");
   }
@@ -334,7 +388,7 @@ bool descriptor_promotion_rejects_callback_races() {
         candidate, options, stages, &summary, &produced_contract);
     CHECK(swapped);
     CHECK(!result);
-    CHECK(result.error().code == composer::ErrorCode::callback_failed);
+    CHECK(result.error().code == composer::ErrorCode::candidate_finalize_failed);
     CHECK(read_text(outside / "sentinel") == "outside stays");
     CHECK(!fs::exists(candidate / "iso"));
   }
@@ -434,7 +488,7 @@ bool descriptor_promotion_rejects_callback_races() {
         candidate, options, stages, &summary, &produced_contract);
     CHECK(expanded);
     CHECK(!result);
-    CHECK(result.error().code == composer::ErrorCode::callback_failed);
+    CHECK(result.error().code == composer::ErrorCode::candidate_cleanup_failed);
     CHECK(!result.error().cleanup_error.has_value());
   }
   {
@@ -560,48 +614,77 @@ bool cancellation_and_callback_failures_are_typed() {
   return true;
 }
 
-bool cancellation_callback_cannot_inject_owned_work() {
-  TemporaryRoot temporary;
-  const auto candidate = temporary.root / "cancel-injection.candidate";
-  const auto external = temporary.root / "external-directory";
-  fs::create_directory(external);
-  write_text(external / "sentinel", "external directory stays");
+bool callbacks_remain_typed_with_stage_boundary_ownership() {
   const auto contract = launch_contract();
-  std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
-  std::optional<composer::internal::FinalContract> produced_contract = contract;
-  std::size_t poll_count = 0;
-  bool injected = false;
-  composer::Options options;
-  options.should_cancel = [&] {
-    ++poll_count;
-    if (poll_count == 2) {
-      std::error_code error;
-      fs::rename(external, candidate / ".opengoal-import/injected", error);
-      injected = !error;
-    }
-    return false;
-  };
-  const std::array<composer::internal::StageAction, 1> stages = {{
-      {composer::Phase::materializing_output,
-       [&](const composer::internal::WorkPaths& paths,
-           const composer::Options& stage_options) -> std::optional<composer::Error> {
-         write_prepared_tree(paths, contract);
-         try {
-           (void)stage_options.should_cancel();
-         } catch (...) {
-         }
-         return {};
-       }},
-  }};
-
-  const auto result = composer::internal::compose_in_fresh_candidate(
-      candidate, options, stages, &summary, &produced_contract);
-  CHECK(injected);
-  CHECK(!result);
-  CHECK(result.error().code == composer::ErrorCode::callback_failed);
-  CHECK(result.error().preserved_candidate_root == candidate);
-  CHECK(read_text(candidate / ".opengoal-import/injected/sentinel") ==
-        "external directory stays");
+  {
+    TemporaryRoot temporary;
+    const auto candidate = temporary.root / "repeated-callbacks.candidate";
+    std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
+    std::optional<composer::internal::FinalContract> produced_contract = contract;
+    std::size_t cancel_polls = 0;
+    std::size_t progress_reports = 0;
+    composer::Options options;
+    options.should_cancel = [&] {
+      ++cancel_polls;
+      return false;
+    };
+    options.on_progress = [&](const composer::Progress&) { ++progress_reports; };
+    const std::array<composer::internal::StageAction, 1> stages = {{
+        {composer::Phase::materializing_output,
+         [&](const composer::internal::WorkPaths& paths,
+             const composer::Options& stage_options) -> std::optional<composer::Error> {
+           write_prepared_tree(paths, contract);
+           for (std::size_t index = 0; index < 1000; ++index) {
+             if (stage_options.should_cancel()) {
+               return composer::Error{composer::ErrorCode::cancelled,
+                                      "synthetic cancellation", std::nullopt, std::nullopt};
+             }
+             stage_options.on_progress(
+                 {composer::Phase::materializing_output, index, 1000, 0, "synthetic"});
+           }
+           return {};
+         }},
+    }};
+    const auto result = composer::internal::compose_in_fresh_candidate(
+        candidate, options, stages, &summary, &produced_contract);
+    CHECK(result);
+    CHECK(cancel_polls >= 1000);
+    CHECK(progress_reports >= 1000);
+  }
+  {
+    TemporaryRoot temporary;
+    const auto candidate = temporary.root / "unsafe-callback-work.candidate";
+    const auto outside = temporary.root / "outside";
+    write_text(outside, "outside stays");
+    std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
+    std::optional<composer::internal::FinalContract> produced_contract = contract;
+    bool injected = false;
+    composer::Options options;
+    options.on_progress = [&](const composer::Progress& progress) {
+      if (!injected && progress.current_item == "inject-unsafe-link") {
+        std::error_code error;
+        fs::create_symlink(outside, candidate / ".opengoal-import/unsafe-link", error);
+        injected = !error;
+      }
+    };
+    const std::array<composer::internal::StageAction, 1> stages = {{
+        {composer::Phase::materializing_output,
+         [&](const composer::internal::WorkPaths& paths,
+             const composer::Options& stage_options) -> std::optional<composer::Error> {
+           write_prepared_tree(paths, contract);
+           stage_options.on_progress(
+               {composer::Phase::materializing_output, 1, 2, 0, "inject-unsafe-link"});
+           return {};
+         }},
+    }};
+    const auto result = composer::internal::compose_in_fresh_candidate(
+        candidate, options, stages, &summary, &produced_contract);
+    CHECK(injected);
+    CHECK(!result);
+    CHECK(result.error().code == composer::ErrorCode::candidate_cleanup_failed);
+    CHECK(result.error().preserved_candidate_root == candidate);
+    CHECK(read_text(outside) == "outside stays");
+  }
   return true;
 }
 
@@ -693,6 +776,101 @@ bool checked_graph_contains_the_iso_launch_contract() {
   for (const auto& required : contract.iso_basenames) {
     CHECK(destinations.contains(required));
   }
+  return true;
+}
+
+bool retail_catalog_progress_is_truthful_and_bounded() {
+  const auto graph = jak2_public_output_graph::decode_base_retail();
+  CHECK(graph);
+  const auto requirements = composer::internal::derive_retail_requirements(graph.value());
+  CHECK(requirements);
+  const auto& archive_paths = requirements.value().source_archive_relative_paths;
+  CHECK(archive_paths.size() == composer::internal::kNtscV2RetailArchiveCount);
+  CHECK(archive_paths.size() >= 2);
+
+  std::vector<composer::Progress> updates;
+  std::uint64_t completed_archive_bytes = 0;
+  const std::array object_counts = {std::size_t{260}, std::size_t{2}};
+  for (std::size_t archive_index = 0; archive_index < object_counts.size(); ++archive_index) {
+    const auto& relative_path = archive_paths[archive_index];
+    updates.push_back({composer::Phase::cataloging_retail, archive_index, archive_paths.size(),
+                       completed_archive_bytes, relative_path});
+
+    const auto bytes = make_catalog_archive(fs::path(relative_path).filename().string(),
+                                            object_counts[archive_index]);
+    const retail_catalog::ArchiveSource source{relative_path, bytes};
+    retail_catalog::Options options;
+    options.game_version = GameVersion::Jak2;
+    options.on_progress = [&](const retail_catalog::Progress& progress) {
+      if ((progress.stage != retail_catalog::ProgressStage::indexed_object &&
+           progress.stage != retail_catalog::ProgressStage::skipped_code_object) ||
+          !progress.archive_object_index) {
+        return;
+      }
+      auto milestone = static_cast<std::uint64_t>(*progress.archive_object_index) + 1;
+      while (milestone > 1 && milestone % 16 == 0) {
+        milestone /= 16;
+      }
+      if (milestone == 1) {
+        updates.push_back(
+            {composer::Phase::cataloging_retail, archive_index, archive_paths.size(),
+             completed_archive_bytes,
+             relative_path + " (object " +
+                 std::to_string(*progress.archive_object_index) + ")"});
+      }
+    };
+    const auto catalog = retail_catalog::build(
+        std::span<const retail_catalog::ArchiveSource>(&source, 1), options);
+    CHECK(catalog);
+    completed_archive_bytes += bytes.size();
+    updates.push_back({composer::Phase::cataloging_retail, archive_index + 1,
+                       archive_paths.size(), completed_archive_bytes, relative_path});
+  }
+
+  CHECK(updates.size() == 8);
+  CHECK(updates[0].completed == 0);
+  CHECK(updates[0].total == composer::internal::kNtscV2RetailArchiveCount);
+  CHECK(updates[0].bytes_completed == 0);
+  CHECK(updates[0].current_item == archive_paths[0]);
+  CHECK(updates[1].current_item == archive_paths[0] + " (object 0)");
+  CHECK(updates[2].current_item == archive_paths[0] + " (object 15)");
+  CHECK(updates[3].current_item == archive_paths[0] + " (object 255)");
+  CHECK(updates[4].completed == 1);
+  CHECK(updates[4].current_item == archive_paths[0]);
+  CHECK(updates[5].completed == 1);
+  CHECK(updates[5].bytes_completed == updates[4].bytes_completed);
+  CHECK(updates[5].current_item == archive_paths[1]);
+  CHECK(updates[6].current_item == archive_paths[1] + " (object 0)");
+  CHECK(updates[7].completed == 2);
+  CHECK(updates[7].current_item == archive_paths[1]);
+  for (std::size_t index = 1; index < updates.size(); ++index) {
+    CHECK(updates[index].completed >= updates[index - 1].completed);
+    CHECK(updates[index].bytes_completed >= updates[index - 1].bytes_completed);
+    CHECK(updates[index].total == composer::internal::kNtscV2RetailArchiveCount);
+  }
+
+  const auto callback_archive =
+      make_catalog_archive(fs::path(archive_paths[0]).filename().string(), 2);
+  const retail_catalog::ArchiveSource callback_source{archive_paths[0], callback_archive};
+  retail_catalog::Options callback_failure;
+  callback_failure.game_version = GameVersion::Jak2;
+  callback_failure.on_progress = [](const retail_catalog::Progress& progress) {
+    if (progress.stage == retail_catalog::ProgressStage::indexed_object) {
+      throw std::runtime_error("synthetic progress callback failure");
+    }
+  };
+  auto callback_result = retail_catalog::build(
+      std::span<const retail_catalog::ArchiveSource>(&callback_source, 1), callback_failure);
+  CHECK(!callback_result);
+  CHECK(callback_result.error().code == retail_catalog::ErrorCode::callback_failed);
+
+  retail_catalog::Options cancellation;
+  cancellation.game_version = GameVersion::Jak2;
+  cancellation.should_cancel = [] { return true; };
+  callback_result = retail_catalog::build(
+      std::span<const retail_catalog::ArchiveSource>(&callback_source, 1), cancellation);
+  CHECK(!callback_result);
+  CHECK(callback_result.error().code == retail_catalog::ErrorCode::cancelled);
   return true;
 }
 
@@ -825,10 +1003,11 @@ int main() {
       descriptor_promotion_rejects_callback_races,
       failure_preserves_all_unregistered_work_files,
       cancellation_and_callback_failures_are_typed,
-      cancellation_callback_cannot_inject_owned_work,
+      callbacks_remain_typed_with_stage_boundary_ownership,
       existing_candidate_and_input_containment_are_rejected,
       invalid_source_pack_fails_before_candidate_creation,
       checked_graph_contains_the_iso_launch_contract,
+      retail_catalog_progress_is_truthful_and_bounded,
       retail_catalog_selection_is_exact_and_cancellable,
       optional_real_import_oracle,
   };
