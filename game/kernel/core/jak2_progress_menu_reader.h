@@ -92,6 +92,7 @@ struct Inputs {
   uint32_t progress_pointer = 0;
   uint32_t progress_state = 0;
   uint32_t title_pc_options = 0;
+  uint32_t load_save_options = 0;
   uint32_t save_options_title = 0;
   uint32_t insufficient_space_options = 0;
   uint32_t create_game_options = 0;
@@ -108,11 +109,15 @@ struct Inputs {
   uint32_t title_symbol = 0;
   uint32_t none_symbol = 0;
   uint32_t idle_symbol = 0;
+  uint32_t select_load_symbol = 0;
+  uint32_t select_save_symbol = 0;
   uint32_t select_save_title_symbol = 0;
+  uint32_t select_save_title_hero_symbol = 0;
   uint32_t no_memory_card_symbol = 0;
   uint32_t create_game_symbol = 0;
   uint32_t already_exists_symbol = 0;
   uint32_t icon_info_symbol = 0;
+  uint32_t loading_symbol = 0;
   uint32_t creating_symbol = 0;
   uint32_t saving_symbol = 0;
   uint32_t true_object = 0;
@@ -139,6 +144,9 @@ enum class SemanticPhase : int32_t {
   saving = 5,
   already_exists = 6,
   icon_info = 7,
+  select_load = 8,
+  select_save = 9,
+  loading = 10,
 };
 
 enum SemanticAction : uint32_t {
@@ -148,6 +156,9 @@ enum SemanticAction : uint32_t {
   action_left = 1u << 2,
   action_right = 1u << 3,
   action_confirm = 1u << 4,
+  // Jak II's progress responder uses Triangle for both the stable pop-state action and for
+  // cancelling a selected option.  Selected/transitional states remain deliberately unpublished.
+  action_back = 1u << 5,
 };
 
 struct SemanticSnapshot {
@@ -378,12 +389,14 @@ inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& in
   SemanticSnapshot out;
   const std::array state_symbols = {
       inputs.progress_symbol, inputs.title_symbol, inputs.none_symbol, inputs.idle_symbol,
-      inputs.select_save_title_symbol, inputs.no_memory_card_symbol,
+      inputs.select_load_symbol, inputs.select_save_symbol, inputs.select_save_title_symbol,
+      inputs.select_save_title_hero_symbol, inputs.no_memory_card_symbol,
       inputs.create_game_symbol, inputs.already_exists_symbol, inputs.creating_symbol,
-      inputs.saving_symbol, inputs.icon_info_symbol,
+      inputs.saving_symbol, inputs.loading_symbol, inputs.icon_info_symbol,
   };
   const std::array option_lists = {
-      inputs.title_pc_options, inputs.save_options_title, inputs.insufficient_space_options,
+      inputs.title_pc_options, inputs.load_save_options, inputs.save_options_title,
+      inputs.insufficient_space_options,
       inputs.create_game_options, inputs.already_exists_options, inputs.loading_options,
       inputs.icon_info_options,
   };
@@ -399,11 +412,22 @@ inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& in
   }
 
   const bool title_origin = fields.starting_state == inputs.title_symbol;
-  if (title_origin && fields.current == inputs.select_save_title_symbol &&
+  if (((title_origin && fields.current == inputs.select_save_title_symbol) ||
+       fields.current == inputs.select_save_title_hero_symbol) &&
       fields.current_options == inputs.save_options_title &&
       fields.option_index >= 0 && fields.option_index <= 4) {
     out.phase = SemanticPhase::select_save_title;
-    out.action_mask = action_up | action_down | action_confirm;
+    out.action_mask = action_up | action_down | action_confirm | action_back;
+  } else if (fields.current == inputs.select_load_symbol &&
+             fields.current_options == inputs.load_save_options &&
+             fields.option_index >= 0 && fields.option_index <= 3) {
+    out.phase = SemanticPhase::select_load;
+    out.action_mask = action_up | action_down | action_confirm | action_back;
+  } else if (fields.current == inputs.select_save_symbol &&
+             fields.current_options == inputs.load_save_options &&
+             fields.option_index >= 0 && fields.option_index <= 3) {
+    out.phase = SemanticPhase::select_save;
+    out.action_mask = action_up | action_down | action_confirm | action_back;
   } else if (title_origin && fields.current == inputs.no_memory_card_symbol &&
              fields.current_options == inputs.insufficient_space_options &&
              fields.option_index == 0) {
@@ -413,12 +437,12 @@ inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& in
              fields.current_options == inputs.create_game_options &&
              fields.option_index == 0) {
     out.phase = SemanticPhase::create_game;
-    out.action_mask = action_left | action_right | action_confirm;
+    out.action_mask = action_left | action_right | action_confirm | action_back;
   } else if (title_origin && fields.current == inputs.already_exists_symbol &&
              fields.current_options == inputs.already_exists_options &&
              fields.option_index == 0) {
     out.phase = SemanticPhase::already_exists;
-    out.action_mask = action_left | action_right | action_confirm;
+    out.action_mask = action_left | action_right | action_confirm | action_back;
   } else if (fields.starting_state == inputs.icon_info_symbol &&
              fields.current == inputs.icon_info_symbol &&
              fields.current_options == inputs.icon_info_options && fields.option_index == 0) {
@@ -430,6 +454,9 @@ inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& in
   } else if (title_origin && fields.current == inputs.saving_symbol &&
              fields.current_options == inputs.loading_options && fields.option_index == 0) {
     out.phase = SemanticPhase::saving;
+  } else if (fields.current == inputs.loading_symbol &&
+             fields.current_options == inputs.loading_options && fields.option_index == 0) {
+    out.phase = SemanticPhase::loading;
   } else {
     return out;
   }

@@ -18,13 +18,17 @@ constexpr uint32_t kStateSymbol = 0x2c;
 constexpr uint32_t kTitleSymbol = 0x30;
 constexpr uint32_t kNoneSymbol = 0x34;
 constexpr uint32_t kIdleSymbol = 0x38;
-constexpr uint32_t kSelectSaveTitleSymbol = 0x3c;
-constexpr uint32_t kNoMemoryCardSymbol = 0x40;
-constexpr uint32_t kCreateGameSymbol = 0x44;
-constexpr uint32_t kCreatingSymbol = 0x48;
-constexpr uint32_t kSavingSymbol = 0x4c;
-constexpr uint32_t kAlreadyExistsSymbol = 0x50;
-constexpr uint32_t kIconInfoSymbol = 0x54;
+constexpr uint32_t kSelectLoadSymbol = 0x3c;
+constexpr uint32_t kSelectSaveSymbol = 0x40;
+constexpr uint32_t kSelectSaveTitleSymbol = 0x44;
+constexpr uint32_t kSelectSaveTitleHeroSymbol = 0x48;
+constexpr uint32_t kNoMemoryCardSymbol = 0x4c;
+constexpr uint32_t kCreateGameSymbol = 0x50;
+constexpr uint32_t kLoadingSymbol = 0x54;
+constexpr uint32_t kCreatingSymbol = 0x58;
+constexpr uint32_t kSavingSymbol = 0x5c;
+constexpr uint32_t kAlreadyExistsSymbol = 0x60;
+constexpr uint32_t kIconInfoSymbol = 0x64;
 constexpr uint32_t kProgressType = 0x200;
 constexpr uint32_t kProgressGlobalStateType = 0x240;
 constexpr uint32_t kMenuOptionListType = 0x280;
@@ -34,11 +38,12 @@ constexpr uint32_t kProgress = 0x804;
 constexpr uint32_t kProgressState = 0x1004;
 constexpr uint32_t kTitlePCOptions = 0x1204;
 constexpr uint32_t kConsoleTitleOptions = 0x1304;
-constexpr uint32_t kSaveOptionsTitle = 0x1404;
-constexpr uint32_t kInsufficientSpaceOptions = 0x1504;
-constexpr uint32_t kCreateGameOptions = 0x1604;
-constexpr uint32_t kLoadingOptions = 0x1704;
-constexpr uint32_t kIdleState = 0x1804;
+constexpr uint32_t kLoadSaveOptions = 0x1404;
+constexpr uint32_t kSaveOptionsTitle = 0x1504;
+constexpr uint32_t kInsufficientSpaceOptions = 0x1604;
+constexpr uint32_t kCreateGameOptions = 0x1704;
+constexpr uint32_t kLoadingOptions = 0x1804;
+constexpr uint32_t kIdleState = 0x1904;
 constexpr uint32_t kAlreadyExistsOptions = 0x1a04;
 constexpr uint32_t kIconInfoOptions = 0x1b04;
 
@@ -65,6 +70,7 @@ struct Fixture {
     inputs.progress_pointer = kProgressPointer;
     inputs.progress_state = kProgressState;
     inputs.title_pc_options = kTitlePCOptions;
+    inputs.load_save_options = kLoadSaveOptions;
     inputs.save_options_title = kSaveOptionsTitle;
     inputs.insufficient_space_options = kInsufficientSpaceOptions;
     inputs.create_game_options = kCreateGameOptions;
@@ -84,11 +90,15 @@ struct Fixture {
     inputs.title_symbol = kTitleSymbol;
     inputs.none_symbol = kNoneSymbol;
     inputs.idle_symbol = kIdleSymbol;
+    inputs.select_load_symbol = kSelectLoadSymbol;
+    inputs.select_save_symbol = kSelectSaveSymbol;
     inputs.select_save_title_symbol = kSelectSaveTitleSymbol;
+    inputs.select_save_title_hero_symbol = kSelectSaveTitleHeroSymbol;
     inputs.no_memory_card_symbol = kNoMemoryCardSymbol;
     inputs.create_game_symbol = kCreateGameSymbol;
     inputs.already_exists_symbol = kAlreadyExistsSymbol;
     inputs.icon_info_symbol = kIconInfoSymbol;
+    inputs.loading_symbol = kLoadingSymbol;
     inputs.creating_symbol = kCreatingSymbol;
     inputs.saving_symbol = kSavingSymbol;
     inputs.true_object = kTrue;
@@ -104,6 +114,7 @@ struct Fixture {
     write(bytes, kProgressState - BASIC_OFFSET, kProgressGlobalStateType);
     write(bytes, kTitlePCOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kConsoleTitleOptions - BASIC_OFFSET, kMenuOptionListType);
+    write(bytes, kLoadSaveOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kSaveOptionsTitle - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kInsufficientSpaceOptions - BASIC_OFFSET, kMenuOptionListType);
     write(bytes, kCreateGameOptions - BASIC_OFFSET, kMenuOptionListType);
@@ -274,12 +285,34 @@ void reads_source_proven_save_flow_semantics() {
     const auto snapshot = fixture.read_semantic_snapshot();
     expect(snapshot.available && snapshot.phase == SemanticPhase::select_save_title &&
                snapshot.option_index == option &&
-               snapshot.action_mask == (action_up | action_down | action_confirm),
-           "all five title save rows expose only Up, Down, and Confirm");
+               snapshot.action_mask == (action_up | action_down | action_confirm | action_back),
+           "all five title save rows expose Up, Down, Confirm, and Triangle back");
   }
 
-  fixture.set_semantic_state(kNoMemoryCardSymbol, kInsufficientSpaceOptions);
+  for (int option = 0; option <= 3; ++option) {
+    fixture.set_semantic_state(kSelectLoadSymbol, kLoadSaveOptions, option);
+    auto snapshot = fixture.read_semantic_snapshot();
+    expect(snapshot.available && snapshot.phase == SemanticPhase::select_load &&
+               snapshot.option_index == option &&
+               snapshot.action_mask == (action_up | action_down | action_confirm | action_back),
+           "all four load slots expose Up, Down, Confirm, and Triangle back");
+
+    fixture.set_semantic_state(kSelectSaveSymbol, kLoadSaveOptions, option);
+    snapshot = fixture.read_semantic_snapshot();
+    expect(snapshot.available && snapshot.phase == SemanticPhase::select_save &&
+               snapshot.option_index == option &&
+               snapshot.action_mask == (action_up | action_down | action_confirm | action_back),
+           "all four existing-save slots expose Up, Down, Confirm, and Triangle back");
+  }
+
+  fixture.set_semantic_state(kSelectSaveTitleHeroSymbol, kSaveOptionsTitle, 0);
   auto snapshot = fixture.read_semantic_snapshot();
+  expect(snapshot.available && snapshot.phase == SemanticPhase::select_save_title &&
+             snapshot.action_mask == (action_up | action_down | action_confirm | action_back),
+         "hero title save selection shares the title-save semantic actions");
+
+  fixture.set_semantic_state(kNoMemoryCardSymbol, kInsufficientSpaceOptions);
+  snapshot = fixture.read_semantic_snapshot();
   expect(snapshot.available && snapshot.phase == SemanticPhase::no_memory_card &&
              snapshot.option_index == 0 && snapshot.action_mask == action_confirm,
          "title-origin no-memory-card exposes only Confirm");
@@ -288,15 +321,15 @@ void reads_source_proven_save_flow_semantics() {
   snapshot = fixture.read_semantic_snapshot();
   expect(snapshot.available && snapshot.phase == SemanticPhase::create_game &&
              snapshot.option_index == 0 &&
-             snapshot.action_mask == (action_left | action_right | action_confirm),
-         "create-game exposes its source responder's Left, Right, and Confirm");
+             snapshot.action_mask == (action_left | action_right | action_confirm | action_back),
+         "create-game exposes its responder's Left, Right, Confirm, and Triangle back");
 
   fixture.set_semantic_state(kAlreadyExistsSymbol, kAlreadyExistsOptions);
   snapshot = fixture.read_semantic_snapshot();
   expect(snapshot.available && snapshot.phase == SemanticPhase::already_exists &&
              snapshot.option_index == 0 &&
-             snapshot.action_mask == (action_left | action_right | action_confirm),
-         "already-exists exposes its source responder's Left, Right, and Confirm");
+             snapshot.action_mask == (action_left | action_right | action_confirm | action_back),
+         "already-exists exposes its responder's Left, Right, Confirm, and Triangle back");
 
   fixture.set_semantic_state(kIconInfoSymbol, kIconInfoOptions);
   write(fixture.bytes, kProgressState + layout::kProgressStartingState, kIconInfoSymbol);
@@ -317,6 +350,12 @@ void reads_source_proven_save_flow_semantics() {
   expect(snapshot.available && snapshot.phase == SemanticPhase::saving &&
              snapshot.option_index == 0 && snapshot.action_mask == action_none,
          "saving is observable but exposes no touch action");
+
+  fixture.set_semantic_state(kLoadingSymbol, kLoadingOptions);
+  snapshot = fixture.read_semantic_snapshot();
+  expect(snapshot.available && snapshot.phase == SemanticPhase::loading &&
+             snapshot.option_index == 0 && snapshot.action_mask == action_none,
+         "loading is observable but exposes no touch action");
 }
 
 void semantic_identity_and_stability_fail_closed() {
@@ -426,6 +465,11 @@ void semantic_option_bounds_are_exact() {
   save_high.set_semantic_state(kSelectSaveTitleSymbol, kSaveOptionsTitle, 5);
   expect(!save_high.read_semantic_snapshot().available,
          "a sixth title-save option is rejected");
+
+  Fixture load_high;
+  load_high.set_semantic_state(kSelectLoadSymbol, kLoadSaveOptions, 4);
+  expect(!load_high.read_semantic_snapshot().available,
+         "a fifth load slot is rejected");
 
   Fixture singleton;
   singleton.set_semantic_state(kNoMemoryCardSymbol, kInsufficientSpaceOptions, 1);

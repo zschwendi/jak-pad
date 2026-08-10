@@ -483,6 +483,7 @@ jak2_progress_menu_reader::Inputs progress_menu_inputs() {
   inputs.progress_pointer = symbol_value_if_present("*progress-process*");
   inputs.progress_state = symbol_value_if_present("*progress-state*");
   inputs.title_pc_options = symbol_value_if_present("*title-pc*");
+  inputs.load_save_options = symbol_value_if_present("*load-save-options*");
   inputs.save_options_title = symbol_value_if_present("*save-options-title*");
   inputs.insufficient_space_options = symbol_value_if_present("*insufficient-space-options*");
   inputs.create_game_options = symbol_value_if_present("*create-game-options*");
@@ -500,11 +501,16 @@ jak2_progress_menu_reader::Inputs progress_menu_inputs() {
   inputs.title_symbol = goal_game_find_symbol("title", nullptr);
   inputs.none_symbol = goal_game_find_symbol("none", nullptr);
   inputs.idle_symbol = goal_game_find_symbol("idle", nullptr);
+  inputs.select_load_symbol = goal_game_find_symbol("select-load", nullptr);
+  inputs.select_save_symbol = goal_game_find_symbol("select-save", nullptr);
   inputs.select_save_title_symbol = goal_game_find_symbol("select-save-title", nullptr);
+  inputs.select_save_title_hero_symbol =
+      goal_game_find_symbol("select-save-title-hero", nullptr);
   inputs.no_memory_card_symbol = goal_game_find_symbol("no-memory-card", nullptr);
   inputs.create_game_symbol = goal_game_find_symbol("create-game", nullptr);
   inputs.already_exists_symbol = goal_game_find_symbol("already-exists", nullptr);
   inputs.icon_info_symbol = goal_game_find_symbol("icon-info", nullptr);
+  inputs.loading_symbol = goal_game_find_symbol("loading", nullptr);
   inputs.creating_symbol = goal_game_find_symbol("creating", nullptr);
   inputs.saving_symbol = goal_game_find_symbol("saving", nullptr);
   inputs.true_object = goal_game_true_offset();
@@ -862,12 +868,19 @@ goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_semantic_snapshot(
                 GOAL_JAK2_PROGRESS_MENU_PHASE_ALREADY_EXISTS);
   static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::icon_info) ==
                 GOAL_JAK2_PROGRESS_MENU_PHASE_ICON_INFO);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::select_load) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_SELECT_LOAD);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::select_save) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_SELECT_SAVE);
+  static_assert(static_cast<int32_t>(jak2_progress_menu_reader::SemanticPhase::loading) ==
+                GOAL_JAK2_PROGRESS_MENU_PHASE_LOADING);
   static_assert(jak2_progress_menu_reader::action_up == GOAL_JAK2_PROGRESS_MENU_ACTION_UP);
   static_assert(jak2_progress_menu_reader::action_down == GOAL_JAK2_PROGRESS_MENU_ACTION_DOWN);
   static_assert(jak2_progress_menu_reader::action_left == GOAL_JAK2_PROGRESS_MENU_ACTION_LEFT);
   static_assert(jak2_progress_menu_reader::action_right == GOAL_JAK2_PROGRESS_MENU_ACTION_RIGHT);
   static_assert(jak2_progress_menu_reader::action_confirm ==
                 GOAL_JAK2_PROGRESS_MENU_ACTION_CONFIRM);
+  static_assert(jak2_progress_menu_reader::action_back == GOAL_JAK2_PROGRESS_MENU_ACTION_BACK);
   if (!out) {
     g_error = "goal_jak2_runtime_get_progress_menu_semantic_snapshot: out is null";
     return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;

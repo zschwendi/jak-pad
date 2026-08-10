@@ -72,6 +72,9 @@ typedef enum goal_jak2_progress_menu_semantic_phase {
   GOAL_JAK2_PROGRESS_MENU_PHASE_SAVING = 5,
   GOAL_JAK2_PROGRESS_MENU_PHASE_ALREADY_EXISTS = 6,
   GOAL_JAK2_PROGRESS_MENU_PHASE_ICON_INFO = 7,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_SELECT_LOAD = 8,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_SELECT_SAVE = 9,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_LOADING = 10,
 } goal_jak2_progress_menu_semantic_phase;
 
 typedef enum goal_jak2_progress_menu_semantic_action {
@@ -81,6 +84,7 @@ typedef enum goal_jak2_progress_menu_semantic_action {
   GOAL_JAK2_PROGRESS_MENU_ACTION_LEFT = 1u << 2,
   GOAL_JAK2_PROGRESS_MENU_ACTION_RIGHT = 1u << 3,
   GOAL_JAK2_PROGRESS_MENU_ACTION_CONFIRM = 1u << 4,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_BACK = 1u << 5,
 } goal_jak2_progress_menu_semantic_action;
 
 /*! Fixed-width additive ABI for source-proven Jak II menu meanings, independent of Jak 1 IDs. */
