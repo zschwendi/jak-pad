@@ -143,8 +143,9 @@ fragment float4 present_fs(PresentVSOut in [[stage_in]],
       color = saturate(color + (color - neighborhood) * 0.14);
     }
     if ((effects & kModernSoftHighlights) != 0u) {
-      float highlight = smoothstep(0.62, 0.92, present_luminance(neighborhood));
-      color = saturate(color + max(neighborhood - 0.62, 0.0) * highlight * 0.10);
+      float highlight = smoothstep(0.35, 0.85, present_luminance(neighborhood));
+      float3 screened = 1.0 - (1.0 - neighborhood) * (1.0 - neighborhood);
+      color = saturate(color + max(screened - color, 0.0) * highlight * 0.08);
     }
   }
 
