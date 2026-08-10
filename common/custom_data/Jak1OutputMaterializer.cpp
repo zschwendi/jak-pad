@@ -1,4 +1,5 @@
 #include "Jak1OutputMaterializer.h"
+#include "Jak1OutputMaterializerTestHooks.h"
 
 #include <algorithm>
 #include <array>
@@ -674,18 +675,49 @@ std::optional<Error> verify_clone_fallback_destination_absent(
   return {};
 }
 
-bool descriptor_has_no_extended_acl(int descriptor) {
+enum class ExtendedAclState {
+  absent,
+  present,
+  inspection_failed,
+};
+
+bool no_extended_acl_error(int error) {
+  return error == ENOENT || error == ENOATTR || error == EOPNOTSUPP;
+}
+
+ExtendedAclState inspect_extended_acl(int descriptor) {
   errno = 0;
   acl_t output_acl = ::acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED);
   if (!output_acl) {
-    return errno == ENOENT || errno == ENOATTR;
+    return no_extended_acl_error(errno) ? ExtendedAclState::absent
+                                        : ExtendedAclState::inspection_failed;
   }
   acl_entry_t entry = nullptr;
   errno = 0;
   const auto entry_result = ::acl_get_entry(output_acl, ACL_FIRST_ENTRY, &entry);
   const auto entry_error = errno;
   ::acl_free(output_acl);
-  return entry_result == -1 && entry_error == EINVAL;
+  if (entry_result == 0) {
+    return ExtendedAclState::present;
+  }
+  return entry_error == EINVAL ? ExtendedAclState::absent
+                               : ExtendedAclState::inspection_failed;
+}
+
+#if defined(JAK1_OUTPUT_MATERIALIZER_ENABLE_TEST_HOOKS)
+testing::ExtendedAclSetter g_extended_acl_setter = ::acl_set_fd_np;
+
+int set_extended_acl(int descriptor, acl_t acl) {
+  return g_extended_acl_setter(descriptor, acl, ACL_TYPE_EXTENDED);
+}
+#else
+int set_extended_acl(int descriptor, acl_t acl) {
+  return ::acl_set_fd_np(descriptor, acl, ACL_TYPE_EXTENDED);
+}
+#endif
+
+bool descriptor_has_no_extended_acl(int descriptor) {
+  return inspect_extended_acl(descriptor) == ExtendedAclState::absent;
 }
 
 bool descriptor_has_normalized_apple_metadata(int descriptor, const struct stat& status) {
@@ -731,18 +763,30 @@ std::optional<Error> normalize_cloned_output(int descriptor) {
     return make_error(ErrorCode::output_write_failed,
                       "A cloned output retained extended attributes.");
   }
-  acl_t empty_acl = ::acl_init(0);
-  if (!empty_acl) {
+  const auto initial_acl_state = inspect_extended_acl(descriptor);
+  if (initial_acl_state == ExtendedAclState::inspection_failed) {
     return make_error(ErrorCode::output_write_failed,
-                      "Could not allocate empty cloned output ACL metadata.");
+                      "Could not inspect cloned output extended ACL metadata.");
   }
-  const auto set_acl_result = ::acl_set_fd_np(descriptor, empty_acl, ACL_TYPE_EXTENDED);
-  ::acl_free(empty_acl);
-  if (set_acl_result != 0) {
+  if (initial_acl_state == ExtendedAclState::present) {
+    acl_t empty_acl = ::acl_init(0);
+    if (!empty_acl) {
+      return make_error(ErrorCode::output_write_failed,
+                        "Could not allocate empty cloned output ACL metadata.");
+    }
+    const auto set_acl_result = set_extended_acl(descriptor, empty_acl);
+    ::acl_free(empty_acl);
+    if (set_acl_result != 0) {
+      return make_error(ErrorCode::output_write_failed,
+                        "Could not clear cloned output extended ACL metadata.");
+    }
+  }
+  const auto final_acl_state = inspect_extended_acl(descriptor);
+  if (final_acl_state == ExtendedAclState::inspection_failed) {
     return make_error(ErrorCode::output_write_failed,
-                      "Could not clear cloned output extended ACL metadata.");
+                      "Could not verify cloned output extended ACL metadata.");
   }
-  if (!descriptor_has_no_extended_acl(descriptor)) {
+  if (final_acl_state != ExtendedAclState::absent) {
     return make_error(ErrorCode::output_write_failed,
                       "A cloned output retained extended ACL metadata.");
   }
@@ -1300,6 +1344,22 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
 }
 
 }  // namespace
+
+#if defined(__APPLE__) && defined(JAK1_OUTPUT_MATERIALIZER_ENABLE_TEST_HOOKS)
+namespace testing {
+
+ExtendedAclSetter replace_extended_acl_setter(ExtendedAclSetter setter) {
+  const auto previous = g_extended_acl_setter;
+  g_extended_acl_setter = setter ? setter : ::acl_set_fd_np;
+  return previous;
+}
+
+bool normalize_cloned_output(int descriptor) {
+  return !jak1_output_materializer::normalize_cloned_output(descriptor).has_value();
+}
+
+}  // namespace testing
+#endif
 
 Result<Summary> materialize(const Inputs& inputs,
                             const fs::path& destination_root,

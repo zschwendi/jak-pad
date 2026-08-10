@@ -21,6 +21,7 @@
 #endif
 
 #include "common/custom_data/Jak1OutputMaterializer.h"
+#include "common/custom_data/Jak1OutputMaterializerTestHooks.h"
 
 #include "decompiler/extractor/jak1_checked_dgo.h"
 #include "decompiler/extractor/jak1_checked_dgo_writer.h"
@@ -180,6 +181,41 @@ bool has_no_extended_acl(const fs::path& path) {
   ::acl_free(acl);
   return result == -1 && entry_error == EINVAL;
 }
+
+std::size_t extended_acl_setter_calls = 0;
+
+int reject_extended_acl_set(int, acl_t, acl_type_t) {
+  ++extended_acl_setter_calls;
+  errno = EPERM;
+  return -1;
+}
+
+int count_extended_acl_set(int descriptor, acl_t acl, acl_type_t type) {
+  ++extended_acl_setter_calls;
+  return ::acl_set_fd_np(descriptor, acl, type);
+}
+
+struct ScopedExtendedAclSetter {
+  explicit ScopedExtendedAclSetter(testing::ExtendedAclSetter setter)
+      : previous(testing::replace_extended_acl_setter(setter)) {
+    extended_acl_setter_calls = 0;
+  }
+
+  ~ScopedExtendedAclSetter() { testing::replace_extended_acl_setter(previous); }
+
+  testing::ExtendedAclSetter previous;
+};
+
+struct ScopedTestDescriptor {
+  explicit ScopedTestDescriptor(int descriptor) : value(descriptor) {}
+  ~ScopedTestDescriptor() {
+    if (value >= 0) {
+      ::close(value);
+    }
+  }
+
+  int value;
+};
 #endif
 
 jak1_output_recipe::RevisionProvenance provenance_of(const jak1_iso::Revision& revision) {
@@ -345,7 +381,7 @@ bool materializes_checked_desktop_layout() {
   return true;
 }
 
-bool clones_flat_files_when_the_filesystem_supports_it() {
+bool clones_flat_files_without_mutating_absent_acls() {
 #if defined(__APPLE__)
   Fixture fixture;
   CHECK(fixture.setup());
@@ -356,23 +392,47 @@ bool clones_flat_files_when_the_filesystem_supports_it() {
     std::cout << "clone success test skipped: filesystem does not support file cloning\n";
     return true;
   }
-  const auto source = fixture.iso_root / "DATA.BIN";
-  constexpr char xattr_value[] = "clone-metadata";
-  CHECK(::setxattr(source.c_str(), "com.goalpad.clone-test", xattr_value,
-                   sizeof(xattr_value), 0, 0) == 0);
-  CHECK(add_test_extended_acl(source));
-  CHECK(!has_no_extended_acl(source));
-  CHECK(::chmod(source.c_str(), 0400) == 0);
-  CHECK(::chflags(source.c_str(), UF_IMMUTABLE) == 0);
+  CHECK(has_no_extended_acl(fixture.iso_root / "DATA.BIN"));
+  CHECK(has_no_extended_acl(fixture.generated_root / "flat/0COMMON.TXT"));
+  CHECK(has_no_extended_acl(fixture.fr3_root / "level.fr3"));
+  ScopedExtendedAclSetter setter(reject_extended_acl_set);
   const auto result = materialize(fixture.inputs, fixture.destination, fixture.options);
   CHECK(result);
   CHECK(result.value().files_cloned == 3);
+  CHECK(extended_acl_setter_calls == 0);
   const auto output = fixture.destination / "iso/DATA.BIN";
   CHECK(read_bytes(output) == fixture.flat);
-  CHECK(read_bytes(fixture.destination / "iso/0COMMON.TXT") == fixture.generated_flat);
-  CHECK(read_bytes(fixture.destination / "fr3/level.fr3") == fixture.fr3);
+  CHECK(has_no_extended_acl(output));
+  const auto original_output = read_bytes(output);
+  fixture.flat.front() ^= 1;
+  CHECK(write_bytes(fixture.iso_root / "DATA.BIN", fixture.flat));
+  CHECK(read_bytes(output) == original_output);
+#else
+  std::cout << "no-ACL clone test skipped: file cloning is Apple-only\n";
+#endif
+  return true;
+}
+
+bool normalization_clears_present_acl_and_metadata() {
+#if defined(__APPLE__)
+  TempDirectory temp;
+  const auto output = temp.path / "cloned-output";
+  const std::array<std::uint8_t, 4> bytes = {1, 2, 3, 4};
+  CHECK(write_bytes(output, bytes));
+  constexpr char xattr_value[] = "clone-metadata";
+  CHECK(::setxattr(output.c_str(), "com.goalpad.clone-test", xattr_value,
+                   sizeof(xattr_value), 0, 0) == 0);
+  CHECK(add_test_extended_acl(output));
+  CHECK(!has_no_extended_acl(output));
+  ScopedTestDescriptor descriptor(::open(output.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC));
+  CHECK(descriptor.value >= 0);
+  CHECK(::fchmod(descriptor.value, 0400) == 0);
+  CHECK(::fchflags(descriptor.value, UF_IMMUTABLE) == 0);
+  ScopedExtendedAclSetter setter(count_extended_acl_set);
+  CHECK(testing::normalize_cloned_output(descriptor.value));
+  CHECK(extended_acl_setter_calls == 1);
   struct stat output_status {};
-  CHECK(::lstat(output.c_str(), &output_status) == 0);
+  CHECK(::fstat(descriptor.value, &output_status) == 0);
   CHECK(S_ISREG(output_status.st_mode));
   CHECK(output_status.st_nlink == 1);
   CHECK(output_status.st_uid == ::geteuid());
@@ -380,14 +440,8 @@ bool clones_flat_files_when_the_filesystem_supports_it() {
   CHECK(output_status.st_flags == 0);
   CHECK(::listxattr(output.c_str(), nullptr, 0, 0) == 0);
   CHECK(has_no_extended_acl(output));
-  const auto original_output = read_bytes(output);
-  CHECK(::chflags(source.c_str(), 0) == 0);
-  CHECK(::chmod(source.c_str(), 0600) == 0);
-  fixture.flat.front() ^= 1;
-  CHECK(write_bytes(source, fixture.flat));
-  CHECK(read_bytes(output) == original_output);
 #else
-  std::cout << "clone success test skipped: file cloning is Apple-only\n";
+  std::cout << "clone ACL clear test skipped: file cloning is Apple-only\n";
 #endif
   return true;
 }
@@ -988,7 +1042,8 @@ bool rejects_dangling_destination_symlink() {
 int main() {
   const std::array tests = {
       materializes_checked_desktop_layout,
-      clones_flat_files_when_the_filesystem_supports_it,
+      clones_flat_files_without_mutating_absent_acls,
+      normalization_clears_present_acl_and_metadata,
       cloned_copy_rejects_mutation_and_cancellation,
       forced_stream_copy_reports_throttled_byte_progress,
       streamed_copy_rejects_progress_mutation,

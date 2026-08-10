@@ -21,10 +21,18 @@ if(NOT TARGET jak1-output-materializer)
 
   if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
     if(NOT APPLE OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+      if(APPLE)
+        target_compile_definitions(jak1-output-materializer
+                                   PRIVATE JAK1_OUTPUT_MATERIALIZER_ENABLE_TEST_HOOKS)
+      endif()
       add_executable(jak1-output-materializer-test
                      "${CMAKE_SOURCE_DIR}/test/common/test_jak1_output_materializer.cpp")
       target_link_libraries(jak1-output-materializer-test PRIVATE jak1-output-materializer)
       target_compile_features(jak1-output-materializer-test PRIVATE cxx_std_20)
+      if(APPLE)
+        target_compile_definitions(jak1-output-materializer-test
+                                   PRIVATE JAK1_OUTPUT_MATERIALIZER_ENABLE_TEST_HOOKS)
+      endif()
       if(MSVC)
         target_compile_options(jak1-output-materializer-test PRIVATE /W4 /WX)
       else()
