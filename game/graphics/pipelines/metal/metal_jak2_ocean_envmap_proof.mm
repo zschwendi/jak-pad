@@ -770,10 +770,10 @@ int main() {
 
       const auto& bucket_table = metal_renderer::jak2_metal_bucket_table();
       check(bucket_table[static_cast<std::size_t>(jak2::BucketId::OCEAN_MID_FAR)].behavior ==
-                    metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
+                    metal_renderer::Jak2MetalBucketBehavior::OceanMidFar &&
                 bucket_table[static_cast<std::size_t>(jak2::BucketId::OCEAN_NEAR)].behavior ==
-                    metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
-            "kept both source-coupled Jak II OCEAN buckets deferred together pending source-shaped mesh draws");
+                    metal_renderer::Jak2MetalBucketBehavior::OceanNear,
+            "the source-shaped mid and near mesh draws clear both Jak II OCEAN routes together");
 
       const u64 envmap_slot_before_failure =
           texture_pool.lookup(MetalOceanEnvmap::kVramSlot).value_or(0);

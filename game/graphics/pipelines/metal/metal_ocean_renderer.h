@@ -23,8 +23,9 @@
  * generated texture is always complete before anything samples it - the same
  * ordering the immediate-mode GL renderer gets for free.
  *
- * Jak II status: experimental. The paired OCEAN buckets remain DeferredSkip in
- * the public host policy until source-shaped mid and near mesh draws are proven.
+ * Jak II status: experimental. The paired OCEAN buckets route through the public
+ * host policy after source-shaped mid and near mesh draws were proven. Actual game
+ * VU inputs remain the visual discriminator.
  */
 
 #include <string>

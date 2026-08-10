@@ -101,10 +101,14 @@ int main() {
     check(stats.command_buffers_committed == 0 && stats.command_buffers_completed == 0 &&
               stats.command_buffer_errors == 0,
           "nil-layer dispatch commits and completes no Metal command buffer");
+    // The synthetic chain deliberately leaves both OCEAN slots as zero-count sentinels.  This
+    // proves structural consumption only; actual game VU inputs remain the visual discriminator.
     check(stats.ocean_command_buffers_committed == 0 &&
               stats.ocean_command_buffers_completed == 0 &&
-              stats.ocean_command_buffer_errors == 0,
-          "deferred OCEAN buckets report no hidden private command buffers");
+              stats.ocean_command_buffer_errors == 0 && stats.ocean_draws == 0 &&
+              stats.ocean_triangles == 0 && stats.ocean_missing_textures == 0,
+          "empty sentinel OCEAN slots consume structurally without invented draws or private "
+          "GPU work");
     check(stats.drawables_acquired == 0 && stats.drawable_misses == 0,
           "nil-layer dispatch performs no drawable acquisition attempt");
     check(stats.submissions == 0 && stats.presentations_completed == 0 &&

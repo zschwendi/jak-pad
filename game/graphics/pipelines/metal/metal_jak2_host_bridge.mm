@@ -223,6 +223,9 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.command_buffers_committed = stats.command_buffers_committed;
   host->metrics.command_buffers_completed = stats.command_buffers_completed;
   host->metrics.command_buffer_errors = stats.command_buffer_errors;
+  host->metrics.ocean_draws = stats.ocean_draws;
+  host->metrics.ocean_triangles = stats.ocean_triangles;
+  host->metrics.ocean_missing_textures = stats.ocean_missing_textures;
   host->metrics.ocean_command_buffers_committed = stats.ocean_command_buffers_committed;
   host->metrics.ocean_command_buffers_completed = stats.ocean_command_buffers_completed;
   host->metrics.ocean_command_buffer_errors = stats.ocean_command_buffer_errors;

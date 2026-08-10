@@ -239,6 +239,9 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_tfrag_texture_upload_metrics
       water_texture_uploads[GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT];
   goal_jak2_tfrag_texture_upload_metrics common_tfrag_texture_upload;
+  uint64_t ocean_draws;
+  uint64_t ocean_triangles;
+  uint64_t ocean_missing_textures;
   uint64_t ocean_command_buffers_committed;
   uint64_t ocean_command_buffers_completed;
   uint64_t ocean_command_buffer_errors;
