@@ -74,6 +74,13 @@ struct GifBuilder {
 
   void uv(u32 u, u32 v) { qword(static_cast<u64>(u) | (static_cast<u64>(v) << 32), 0); }
 
+  void st(float s, float t) {
+    const std::array<float, 4> value = {s, t, 1.f, 0.f};
+    const std::size_t offset = data.size();
+    data.resize(offset + sizeof(value));
+    std::memcpy(data.data() + offset, value.data(), sizeof(value));
+  }
+
   void xyzf2(u32 x, u32 y, u32 z = 0xffffff) {
     qword(static_cast<u64>(x) | (static_cast<u64>(y) << 32), static_cast<u64>(z) << 4);
   }
@@ -241,6 +248,31 @@ GifBuilder make_debug_triangle() {
   gif.xyzf2(0x7800, 0x8800);
   gif.rgbaq(0, 255, 0, 128);
   gif.xyzf2(0x8800, 0x8800);
+  return gif;
+}
+
+GifBuilder make_common_ocean_xgkick(bool mid) {
+  GifBuilder gif;
+  if (mid) {
+    gif.tag(5, false, {GifTag::RegisterDescriptor::AD});
+    gif.ad(GsRegisterAddress::TEX0_1, tex0(MetalOceanTexture::vram_slot(GameVersion::Jak2)));
+    gif.ad(GsRegisterAddress::TEX1_1, 1ull << 5);
+    gif.ad(GsRegisterAddress::MIPTBP1_1, 0);
+    gif.ad(GsRegisterAddress::CLAMP_1, 0b101);
+    gif.ad(GsRegisterAddress::ALPHA_1, 0);
+  }
+  gif.tag(4, true, {GifTag::RegisterDescriptor::ST, GifTag::RegisterDescriptor::RGBAQ,
+                     GifTag::RegisterDescriptor::XYZF2}, true,
+          prim(GsPrim::Kind::TRI_STRIP, true, false, false));
+  constexpr std::array<std::array<u32, 2>, 4> pos =
+      {{{29400, 31800}, {31400, 31800}, {29400, 33800}, {31400, 33800}}};
+  constexpr std::array<std::array<float, 2>, 4> st =
+      {{{0.f, 0.f}, {1.f, 0.f}, {0.f, 1.f}, {1.f, 1.f}}};
+  for (std::size_t i = 0; i < pos.size(); ++i) {
+    gif.st(st[i][0], st[i][1]);
+    gif.rgbaq(128, 128, 128, 128);
+    gif.xyzf2(pos[i][0], pos[i][1], 0x7fffff);
+  }
   return gif;
 }
 
@@ -905,6 +937,73 @@ int main() {
       check(active_pixels.size() == 128 * 128 * 4 && active_nonzero,
             "read back non-clear pixels from the generated 128x128 Jak II ocean texture");
 
+      PcTextureId xgkick_texture_id;
+      {
+        std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+        TextureInput input;
+        input.debug_page_name = "SYNTHETIC";
+        input.debug_name = "ocean-xgkick-source";
+        input.id = texture_pool.allocate_pc_port_texture(GameVersion::Jak2);
+        input.gpu_texture = source_handle;
+        input.w = 4;
+        input.h = 4;
+        xgkick_texture_id = input.id;
+        texture_pool.give_texture_and_load_to_vram(input, MetalOceanTexture::vram_slot(GameVersion::Jak2));
+      }
+      auto* mesh_color_desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:kFarTargetSize height:kFarTargetSize mipmapped:NO];
+      mesh_color_desc.usage = MTLTextureUsageRenderTarget;
+      mesh_color_desc.storageMode = MTLStorageModePrivate;
+      id<MTLTexture> mesh_color = [device newTextureWithDescriptor:mesh_color_desc];
+      auto* mesh_depth_desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8 width:kFarTargetSize height:kFarTargetSize mipmapped:NO];
+      mesh_depth_desc.usage = MTLTextureUsageRenderTarget;
+      mesh_depth_desc.storageMode = MTLStorageModePrivate;
+      id<MTLTexture> mesh_depth = [device newTextureWithDescriptor:mesh_depth_desc];
+      id<MTLCommandBuffer> mesh_commands = [queue commandBuffer];
+      auto* mesh_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+      mesh_pass.colorAttachments[0].texture = mesh_color;
+      mesh_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+      mesh_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+      mesh_pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+      mesh_pass.depthAttachment.texture = mesh_depth;
+      mesh_pass.depthAttachment.loadAction = MTLLoadActionClear;
+      mesh_pass.depthAttachment.clearDepth = 0;
+      mesh_pass.stencilAttachment.texture = mesh_depth;
+      mesh_pass.stencilAttachment.loadAction = MTLLoadActionClear;
+      id<MTLRenderCommandEncoder> mesh_encoder = [mesh_commands renderCommandEncoderWithDescriptor:mesh_pass];
+      check(mesh_color && mesh_depth && mesh_commands && mesh_encoder,
+            "created a dedicated bounded target for source-shaped XGKICK mesh draws");
+      if (!mesh_color || !mesh_depth || !mesh_commands || !mesh_encoder) return 1;
+      [mesh_encoder setViewport:MTLViewport{0, 0, (double)kFarTargetSize, (double)kFarTargetSize, 0, 1}];
+      [mesh_encoder setScissorRect:MTLScissorRect{0, 0, kFarTargetSize, kFarTargetSize}];
+      [mesh_encoder setCullMode:MTLCullModeNone];
+      MetalFrameContext mesh_ctx = ctx;
+      mesh_ctx.enc = mesh_encoder;
+      mesh_ctx.cmds = mesh_commands;
+      mesh_ctx.game_color = mesh_color;
+      mesh_ctx.game_depth = mesh_depth;
+      state.fog_color = {64, 128, 192, 0};
+      state.fog_intensity = 1.f;
+      MetalCommonOceanRenderer xgkick_mid, xgkick_near;
+      const auto mid_packet = make_common_ocean_xgkick(true);
+      const auto near_packet = make_common_ocean_xgkick(false);
+      stream.reset();
+      xgkick_mid.init_for_mid();
+      xgkick_mid.kick_from_mid(mid_packet.data.data());
+      xgkick_mid.flush_mid(&state, mesh_ctx);
+      xgkick_near.init_for_near();
+      xgkick_near.kick_from_near(near_packet.data.data());
+      xgkick_near.flush_near(&state, mesh_ctx);
+      [mesh_encoder endEncoding];
+      [mesh_commands commit];
+      [mesh_commands waitUntilCompleted];
+      const auto mesh_pixels = read_rgba8(queue, mesh_color, kFarTargetSize, kFarTargetSize);
+      const bool mesh_non_clear = std::any_of(mesh_pixels.begin(), mesh_pixels.end(), [i = std::size_t{0}](u8 x) mutable { return x != (i++ % 4 == 3 ? 255 : 0); });
+      check(mesh_commands.status == MTLCommandBufferStatusCompleted &&
+                xgkick_mid.stats().vertices == 4 && xgkick_mid.stats().draw_calls == 1 && xgkick_mid.stats().missing_textures == 0 &&
+                xgkick_near.stats().vertices == 4 && xgkick_near.stats().draw_calls == 1 && xgkick_near.stats().missing_textures == 0 &&
+                mesh_non_clear,
+            "source-shaped mid and near XGKICK packets each produced one textured GPU draw and non-clear readback");
+
       const auto inactive = make_mid_far_fixture(false, kSourceTbp, false, false, false);
       state.next_bucket = inactive.next_bucket;
       DmaFollower inactive_dma(inactive.chain.data(), 0, inactive.chain.size());
@@ -1003,6 +1102,10 @@ int main() {
                 std::abs(MetalCommonOceanRenderer::effective_scissor_adjust(GameVersion::Jak2) -
                          (0.5f * 512.f / 416.f)) < 0.00001f,
             "preserved Jak 1 slot/scissor semantics while selecting Jak II slot 672 and half-height projection");
+      {
+        std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+        texture_pool.unload_texture(xgkick_texture_id, source_handle);
+      }
     }
 
     {
