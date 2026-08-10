@@ -710,13 +710,20 @@ bool render_last_chain_to_external_target(int width,
         stereo_completed && out->rendered_slice.rgba == internal_before.rgba &&
         out->stereo_right_slice.rgba == internal_before.rgba;
 
-    // The identity batch above protects Comfort. Now use the same synthetic chain and targets for
-    // a deterministic stereo pixel oracle: opposing homogeneous clip translations must move only
-    // paths classified as world-space. Screen-space/HUD stability is asserted by metal-proof at
-    // known fixture pixels after these slices are read back.
-    constexpr float kOpposingClipTranslation = 0.125f;
-    stereo_left.view_transform.clip_from_game_clip[12] = -kOpposingClipTranslation;
-    stereo_right.view_transform.clip_from_game_clip[12] = kOpposingClipTranslation;
+    // The identity batch above protects Comfort. Now use the unchanged product defaults for a
+    // deterministic diagnostic oracle. The post-clip transform is
+    // x' = x + eye_slope * (z - convergence_depth * w), with reversed-Z depth zero converged.
+    // This proves the shipped math reaches world pixels; it does not calibrate physical strength.
+    constexpr float kProductDepthDisparitySlope = 0.025f;
+    constexpr float kProductConvergenceDepth = 0.f;
+    constexpr float kLeftEyeSlope = -kProductDepthDisparitySlope * 0.5f;
+    constexpr float kRightEyeSlope = kProductDepthDisparitySlope * 0.5f;
+    stereo_left.view_transform.clip_from_game_clip[2 * 4 + 0] = kLeftEyeSlope;
+    stereo_left.view_transform.clip_from_game_clip[3 * 4 + 0] =
+        -kLeftEyeSlope * kProductConvergenceDepth;
+    stereo_right.view_transform.clip_from_game_clip[2 * 4 + 0] = kRightEyeSlope;
+    stereo_right.view_transform.clip_from_game_clip[3 * 4 + 0] =
+        -kRightEyeSlope * kProductConvergenceDepth;
     const ChainStats before_nonidentity_stereo = g_renderer->chain_stats();
     const bool nonidentity_stereo_rendered =
         g_renderer->render_chain_frame_to_external_stereo_targets(

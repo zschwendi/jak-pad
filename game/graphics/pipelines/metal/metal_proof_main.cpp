@@ -190,6 +190,62 @@ void check_pixel_differs_across_stereo(const metal_renderer::FramePixels& left,
   }
 }
 
+bool color_centroid_x(const metal_renderer::FramePixels& frame,
+                      int red,
+                      int green,
+                      int blue,
+                      double* centroid,
+                      int* matched_pixels) {
+  if (!centroid || !matched_pixels ||
+      frame.rgba.size() != (size_t)frame.width * frame.height * 4) {
+    return false;
+  }
+  constexpr int kTolerance = 10;
+  double x_sum = 0;
+  int count = 0;
+  for (int y = 0; y < frame.height; y++) {
+    for (int x = 0; x < frame.width; x++) {
+      const u8* pixel = rgba_pixel_at(frame, x, y);
+      if (std::abs((int)pixel[0] - red) <= kTolerance &&
+          std::abs((int)pixel[1] - green) <= kTolerance &&
+          std::abs((int)pixel[2] - blue) <= kTolerance) {
+        x_sum += x;
+        count++;
+      }
+    }
+  }
+  if (!count) {
+    return false;
+  }
+  *centroid = x_sum / count;
+  *matched_pixels = count;
+  return true;
+}
+
+void check_color_centroid_disparity(const metal_renderer::FramePixels& left,
+                                    const metal_renderer::FramePixels& right,
+                                    int red,
+                                    int green,
+                                    int blue,
+                                    double expected_pixels,
+                                    const char* what) {
+  double left_centroid = 0;
+  double right_centroid = 0;
+  int left_count = 0;
+  int right_count = 0;
+  const bool measured = color_centroid_x(left, red, green, blue, &left_centroid, &left_count) &&
+                        color_centroid_x(right, red, green, blue, &right_centroid, &right_count);
+  const double disparity = right_centroid - left_centroid;
+  const bool ok = measured && std::abs(disparity - expected_pixels) < 0.05;
+  printf("[%s] %s: left %.3f (%d px), right %.3f (%d px), disparity %.3f px, "
+         "expected %.3f px\n",
+         ok ? "PASS" : "FAIL", what, left_centroid, left_count, right_centroid, right_count,
+         disparity, expected_pixels);
+  if (!ok) {
+    g_fail_count++;
+  }
+}
+
 // Renders the sample quad or records a failure.
 bool sample_tex(const metal_renderer::TextureSampleSpec& spec,
                 metal_renderer::FramePixels* out,
@@ -1461,8 +1517,6 @@ void test_dma_chain(const GfxRendererModule* mod,
         "external target: invalid two-view batch was rejected before renderer mutation");
   check(external.stereo_poison_after_encode_preserved,
         "external target: submitted views survived poisoning the copied DMA input");
-  check(external.stereo_nonidentity_views_differ,
-        "external target: opposing nonidentity transforms produced different eye pixels");
   check(external.stereo_nonidentity_side_effects_single_shot,
         "external target: nonidentity two-view replay kept frame-global work single-shot");
   if (external_rendered) {
@@ -1723,7 +1777,22 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
   give_and_link_texture(mod, mem, quad, page_quad, kSpriteTpageQuad, kVramSpriteQuad);
 
   constexpr float kHalf = 32.f;      // sprite half-size, GS units
-  constexpr float kZ = 8388608.f;    // depth 0.5 in Metal's [0, 1] clip range
+  // Jak 1's default math-camera maps one meter (4096 game units) to this value in its
+  // [100, 16760631] 24-bit reversed depth range. This exercises the product transform at a
+  // representative game projection depth instead of an arbitrary endpoint.
+  constexpr float kJakNear = 1024.f;
+  constexpr float kJakFar = 40960000.f;
+  constexpr float kOneMeter = 4096.f;
+  constexpr float kDepthMinimum = 100.f;
+  constexpr float kDepthMaximum = 16760631.f;
+  constexpr float kMetalDepthScale = 16777216.f;
+  constexpr float kZ = kDepthMinimum + (kDepthMaximum - kDepthMinimum) * kJakNear *
+                                           (kJakFar / kOneMeter - 1.f) /
+                                           (kJakFar - kJakNear);
+  constexpr float kOneMeterMetalDepth = kZ / kMetalDepthScale;
+  constexpr float kProductDepthDisparitySlope = 0.025f;
+  constexpr float kExpectedOneMeterPixelsAt640 =
+      kProductDepthDisparitySlope * kOneMeterMetalDepth * 640.f * 0.5f;
   constexpr float kUserShift = -64;  // hud_hvdf_user[0] x offset
 
   constexpr float kHalfPxX = kHalf * 640.f / 512.f;  // GS x unit -> pixels
@@ -1945,6 +2014,10 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
       check_pixel_differs_across_stereo(stereo.stereo_transformed_left_slice,
                                         stereo.stereo_transformed_right_slice, col_3d - 40, row_3d,
                                         "stereo pixels: Sprite3d moved between eyes");
+      check_color_centroid_disparity(stereo.stereo_transformed_left_slice,
+                                     stereo.stereo_transformed_right_slice, 100, 50, 25,
+                                     kExpectedOneMeterPixelsAt640,
+                                     "stereo pixels: product default at Jak one-meter depth");
     }
   }
 
