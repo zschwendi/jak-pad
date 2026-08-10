@@ -637,13 +637,23 @@ bool render_last_chain_to_external_target(int width,
     aliased_right.color_slice = stereo_left.color_slice;
     aliased_right.depth_slice = stereo_left.depth_slice;
     const ChainStats before_invalid_batch = g_renderer->chain_stats();
-    const bool aliased_batch_rejected = !g_renderer->render_chain_frame_to_external_stereo_targets(
-        opts, stereo_left, aliased_right, chain.data.data(), chain.start_offset);
+    const auto reject_stereo_batch = [&](const MetalExternalRenderTargetDescriptor& right) {
+      if (g_renderer->reserve_external_stereo_frame() !=
+          MetalExternalFrameReservation::reserved) {
+        return false;
+      }
+      id<MTLCommandBuffer> command_buffer = [g_renderer->queue() commandBuffer];
+      const bool rejected = command_buffer &&
+                            !g_renderer->render_chain_frame_to_external_stereo_targets(
+                                opts, stereo_left, right, command_buffer, chain.data.data(),
+                                chain.start_offset);
+      g_renderer->cancel_external_stereo_frame();
+      return rejected;
+    };
+    const bool aliased_batch_rejected = reject_stereo_batch(aliased_right);
     auto nonfinite_right = stereo_right;
     nonfinite_right.view_transform.clip_from_game_clip[0] = std::numeric_limits<float>::quiet_NaN();
-    const bool nonfinite_batch_rejected =
-        !g_renderer->render_chain_frame_to_external_stereo_targets(
-            opts, stereo_left, nonfinite_right, chain.data.data(), chain.start_offset);
+    const bool nonfinite_batch_rejected = reject_stereo_batch(nonfinite_right);
     const ChainStats after_invalid_batch = g_renderer->chain_stats();
     out->stereo_invalid_batch_rejected =
         aliased_batch_rejected && nonfinite_batch_rejected &&
@@ -651,8 +661,23 @@ bool render_last_chain_to_external_target(int width,
 
     std::vector<u8> stereo_chain = chain.data;
     const ChainStats before_stereo = g_renderer->chain_stats();
-    const bool stereo_rendered = g_renderer->render_chain_frame_to_external_stereo_targets(
-        opts, stereo_left, stereo_right, stereo_chain.data(), chain.start_offset);
+    const auto render_stereo_batch = [&](const std::vector<u8>& batch) {
+      if (g_renderer->reserve_external_stereo_frame() !=
+          MetalExternalFrameReservation::reserved) {
+        return false;
+      }
+      id<MTLCommandBuffer> command_buffer = [g_renderer->queue() commandBuffer];
+      const bool rendered = command_buffer &&
+                            g_renderer->render_chain_frame_to_external_stereo_targets(
+                                opts, stereo_left, stereo_right, command_buffer, batch.data(),
+                                chain.start_offset);
+      if (!rendered || !g_renderer->submit_external_stereo_frame(command_buffer)) {
+        g_renderer->cancel_external_stereo_frame();
+        return false;
+      }
+      return true;
+    };
+    const bool stereo_rendered = render_stereo_batch(stereo_chain);
     const ChainStats after_stereo = g_renderer->chain_stats();
     std::fill(stereo_chain.begin(), stereo_chain.end(), 0xa5);
     const bool stereo_completed = stereo_rendered && g_renderer->wait_for_last_chain_frame(5.0);
@@ -725,9 +750,7 @@ bool render_last_chain_to_external_target(int width,
     stereo_right.view_transform.clip_from_game_clip[3 * 4 + 0] =
         -kRightEyeSlope * kProductConvergenceDepth;
     const ChainStats before_nonidentity_stereo = g_renderer->chain_stats();
-    const bool nonidentity_stereo_rendered =
-        g_renderer->render_chain_frame_to_external_stereo_targets(
-            opts, stereo_left, stereo_right, chain.data.data(), chain.start_offset);
+    const bool nonidentity_stereo_rendered = render_stereo_batch(chain.data);
     const ChainStats after_nonidentity_stereo = g_renderer->chain_stats();
     const bool nonidentity_stereo_completed =
         nonidentity_stereo_rendered && g_renderer->wait_for_last_chain_frame(5.0);

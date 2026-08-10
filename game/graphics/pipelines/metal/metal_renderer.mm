@@ -43,6 +43,7 @@ struct MetalPresentationState {
   u64 last_stream_submission_completed = 0;
   int last_command_buffer_status = 0;
   s64 last_command_buffer_error_code = 0;
+  metal_renderer::ExternalSubmissionGate external_submission_gate;
   bool mismatch_reported = false;
   bool command_buffer_error_reported = false;
   bool producer_alternation_reported = false;
@@ -769,8 +770,8 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
                                        CAMetalLayer* layer,
                                        const u8* chain_data,
                                        u32 chain_offset) {
-  return render_chain_frame_impl(opts, layer, nil, 0, nil, 0, nullptr, 0.0, 0, {}, true, chain_data,
-                                 chain_offset);
+  return render_chain_frame_impl(opts, layer, nil, 0, nil, 0, nullptr, 0.0, 0, {}, true, nil,
+                                 chain_data, chain_offset);
 }
 
 bool MetalRenderer::render_chain_frame_to_external_target(
@@ -784,16 +785,59 @@ bool MetalRenderer::render_chain_frame_to_external_target(
   return render_chain_frame_impl(opts, nil, target.color_texture, target.color_slice,
                                  target.depth_texture, target.depth_slice, &target.viewport,
                                  target.clear_depth, target.view_id, target.view_transform, true,
-                                 chain_data, chain_offset);
+                                 nil, chain_data, chain_offset);
+}
+
+MetalExternalFrameReservation MetalRenderer::reserve_external_stereo_frame() {
+  if (!m_presentation_state) {
+    return MetalExternalFrameReservation::failed;
+  }
+
+  u64 last_stream_submission;
+  {
+    std::lock_guard<std::mutex> lock(m_frame_mutex);
+    if (m_external_stereo_disabled) {
+      return MetalExternalFrameReservation::failed;
+    }
+    last_stream_submission = m_last_stream_submission;
+  }
+  bool prior_stream_busy;
+  {
+    std::lock_guard<std::mutex> lock(m_presentation_state->mutex);
+    prior_stream_busy = last_stream_submission &&
+                        m_presentation_state->last_stream_submission_completed <
+                            last_stream_submission;
+  }
+  switch (m_presentation_state->external_submission_gate.reserve(prior_stream_busy)) {
+    case metal_renderer::ExternalSubmissionReservation::busy:
+      return MetalExternalFrameReservation::busy;
+    case metal_renderer::ExternalSubmissionReservation::failed:
+      return MetalExternalFrameReservation::failed;
+    case metal_renderer::ExternalSubmissionReservation::reserved:
+      break;
+  }
+  m_stream.reset();
+  return MetalExternalFrameReservation::reserved;
+}
+
+void MetalRenderer::cancel_external_stereo_frame() {
+  if (m_presentation_state) {
+    m_presentation_state->external_submission_gate.cancel();
+  }
 }
 
 bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
     const MetalRenderOptions& opts,
     const MetalExternalRenderTargetDescriptor& left,
     const MetalExternalRenderTargetDescriptor& right,
+    id<MTLCommandBuffer> command_buffer,
     const u8* chain_data,
     u32 chain_offset) {
-  if (!chain_data || !valid_external_target(m_device, opts, left) ||
+  const bool reserved = m_presentation_state &&
+                        m_presentation_state->external_submission_gate.is_reserved();
+  if (!reserved || command_buffer == nil || command_buffer.device != m_device ||
+      command_buffer.status != MTLCommandBufferStatusNotEnqueued || !chain_data ||
+      !valid_external_target(m_device, opts, left) ||
       !valid_external_target(m_device, opts, right) ||
       !external_targets_are_distinct(left, right)) {
     return false;
@@ -802,13 +846,13 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
   const bool left_rendered =
       render_chain_frame_impl(opts, nil, left.color_texture, left.color_slice, left.depth_texture,
                               left.depth_slice, &left.viewport, left.clear_depth, left.view_id,
-                              left.view_transform, true, chain_data, chain_offset);
+                              left.view_transform, true, command_buffer, chain_data, chain_offset);
   const metal_renderer::ChainStats primary_stats = m_chain_stats;
   const bool right_rendered =
       left_rendered && render_chain_frame_impl(
                            opts, nil, right.color_texture, right.color_slice, right.depth_texture,
                            right.depth_slice, &right.viewport, right.clear_depth, right.view_id,
-                           right.view_transform, false, chain_data, chain_offset);
+                           right.view_transform, false, command_buffer, chain_data, chain_offset);
   if (left_rendered) {
     // Keep the primary's frame diagnostics while retaining the actual number of GPU submissions.
     const u64 command_buffers_committed = m_chain_stats.command_buffers_committed;
@@ -819,6 +863,76 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
     m_chain_stats.last_views_rendered = 2;
   }
   return right_rendered;
+}
+
+bool MetalRenderer::submit_external_stereo_frame(id<MTLCommandBuffer> command_buffer) {
+  if (command_buffer == nil || command_buffer.device != m_device ||
+      command_buffer.status != MTLCommandBufferStatusNotEnqueued || !m_presentation_state) {
+    cancel_external_stereo_frame();
+    return false;
+  }
+
+  u64 command_submission_id;
+  {
+    std::lock_guard<std::mutex> lock(m_frame_mutex);
+    command_submission_id = m_command_submission_count + 1;
+    if (!m_presentation_state->external_submission_gate.submit(command_submission_id)) {
+      cancel_external_stereo_frame();
+      return false;
+    }
+    m_command_submission_count = command_submission_id;
+    m_last_stream_submission = command_submission_id;
+    m_last_external_stream_submission = command_submission_id;
+  }
+
+  const auto completion_state = m_presentation_state;
+  [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+    const MTLCommandBufferStatus status = completed.status;
+    const s64 error_code = completed.error ? completed.error.code : 0;
+    bool report_error = false;
+    {
+      std::lock_guard<std::mutex> lock(completion_state->mutex);
+      completion_state->last_command_buffer_status = static_cast<int>(status);
+      completion_state->last_command_buffer_error_code = error_code;
+      if (status == MTLCommandBufferStatusCompleted) {
+        completion_state->command_buffers_completed++;
+      } else {
+        completion_state->command_buffer_errors++;
+        if (!completion_state->command_buffer_error_reported) {
+          completion_state->command_buffer_error_reported = true;
+          report_error = true;
+        }
+      }
+      completion_state->last_stream_submission_completed =
+          std::max(completion_state->last_stream_submission_completed, command_submission_id);
+    }
+    completion_state->external_submission_gate.complete(
+        command_submission_id, status == MTLCommandBufferStatusCompleted);
+    if (report_error) {
+      lg::error("Metal stereo command buffer failed with status {} and error code {}",
+                static_cast<int>(status), error_code);
+    }
+    completion_state->command_buffer_cv.notify_all();
+  }];
+  [command_buffer commit];
+  m_chain_stats.command_buffers_committed++;
+  return true;
+}
+
+void MetalRenderer::prepare_external_stereo_fallback() {
+  if (!m_presentation_state) {
+    return;
+  }
+
+  std::scoped_lock lock(m_frame_mutex, m_presentation_state->mutex);
+  const u64 external_submission = m_last_external_stream_submission;
+  if (!external_submission || m_last_stream_submission != external_submission ||
+      m_presentation_state->last_stream_submission_completed >= external_submission) {
+    return;
+  }
+  m_stream.quarantine_in_flight_pages();
+  m_last_stream_submission = 0;
+  m_external_stereo_disabled = true;
 }
 
 bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
@@ -832,31 +946,33 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
                                             u64 view_id,
                                             const metal_renderer::ViewTransform& view_transform,
                                             bool frame_global_side_effects,
+                                            id<MTLCommandBuffer> borrowed_command_buffer,
                                             const u8* chain_data,
                                             u32 chain_offset) {
   bool drawable_acquired = false;
   const bool external_target = view_id != 0;
   @autoreleasepool {
     ASSERT_MSG(!m_bucket_renderers.empty(), "init_bucket_renderers was not called");
-    // the stream buffer pages are reused in place, so the previous frame's GPU
-    // work must be done with them (correctness first; pipelining is a later,
-    // measured change)
-    u64 previous_stream_submission;
-    {
-      std::lock_guard<std::mutex> lock(m_frame_mutex);
-      previous_stream_submission = m_last_stream_submission;
+    if (borrowed_command_buffer == nil) {
+      // The ordinary renderer preserves its existing correctness-first wait. External stereo
+      // reserves this allocator before the game tick and returns busy instead of entering here.
+      u64 previous_stream_submission;
+      {
+        std::lock_guard<std::mutex> lock(m_frame_mutex);
+        previous_stream_submission = m_last_stream_submission;
+      }
+      if (previous_stream_submission) {
+        std::unique_lock<std::mutex> lock(m_presentation_state->mutex);
+        m_presentation_state->command_buffer_cv.wait(lock, [&] {
+          return m_presentation_state->last_stream_submission_completed >=
+                 previous_stream_submission;
+        });
+        lock.unlock();
+        std::lock_guard<std::mutex> frame_lock(m_frame_mutex);
+        m_stream_reuse_wait_count++;
+      }
+      m_stream.reset();
     }
-    if (previous_stream_submission) {
-      std::unique_lock<std::mutex> lock(m_presentation_state->mutex);
-      m_presentation_state->command_buffer_cv.wait(lock, [&] {
-        return m_presentation_state->last_stream_submission_completed >=
-               previous_stream_submission;
-      });
-      lock.unlock();
-      std::lock_guard<std::mutex> frame_lock(m_frame_mutex);
-      m_stream_reuse_wait_count++;
-    }
-    m_stream.reset();
 
     if (!external_target) {
       setup_frame(opts);
@@ -888,8 +1004,11 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.view_transform = view_transform;
     m_shared_state.secondary_view = !frame_global_side_effects;
 
-    id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
-    if (external_target) {
+    id<MTLCommandBuffer> cmds = borrowed_command_buffer ?: [m_queue commandBuffer];
+    if (cmds == nil) {
+      return false;
+    }
+    if (external_target && borrowed_command_buffer == nil) {
       cmds.label = [NSString stringWithFormat:@"OpenGOAL external view %llu",
                                               static_cast<unsigned long long>(view_id)];
     }
@@ -1147,7 +1266,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       m_chain_stats.drawable_misses++;
     }
 
-    if (layer || external_target) {
+    if ((layer || external_target) && borrowed_command_buffer == nil) {
       u64 command_submission_id;
       {
         std::lock_guard<std::mutex> lock(m_frame_mutex);

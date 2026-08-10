@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
+#include "game/graphics/pipelines/metal/metal_external_submission_gate.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
@@ -92,6 +93,12 @@ struct MetalExternalRenderTargetDescriptor {
   metal_renderer::ViewTransform view_transform;
 };
 
+enum class MetalExternalFrameReservation {
+  reserved,
+  busy,
+  failed,
+};
+
 class MetalRenderer {
  public:
   bool init(id<MTLDevice> device);
@@ -136,8 +143,18 @@ class MetalRenderer {
       const MetalRenderOptions& opts,
       const MetalExternalRenderTargetDescriptor& left,
       const MetalExternalRenderTargetDescriptor& right,
+      id<MTLCommandBuffer> command_buffer,
       const u8* chain_data,
       u32 chain_offset);
+
+  // Reserves the existing stream allocator without waiting. The caller must reserve before
+  // acquiring its external textures, then either submit the borrowed command buffer or cancel.
+  MetalExternalFrameReservation reserve_external_stereo_frame();
+  void cancel_external_stereo_frame();
+  bool submit_external_stereo_frame(id<MTLCommandBuffer> command_buffer);
+  // Detach a still-in-flight external frame from the stream allocator before falling back to the
+  // ordinary presentation path. The submitted command buffer retains its old stream pages.
+  void prepare_external_stereo_fallback();
 
   // Waits for the most recently committed chain frame's completion handler, with a timeout.
   bool wait_for_last_chain_frame(double timeout_seconds);
@@ -201,6 +218,7 @@ class MetalRenderer {
                                u64 view_id,
                                const metal_renderer::ViewTransform& view_transform,
                                bool frame_global_side_effects,
+                               id<MTLCommandBuffer> borrowed_command_buffer,
                                const u8* chain_data,
                                u32 chain_offset);
 
@@ -224,6 +242,8 @@ class MetalRenderer {
   u64 m_command_submission_count = 0;
   u64 m_last_internal_frame_submission = 0;
   u64 m_last_stream_submission = 0;
+  u64 m_last_external_stream_submission = 0;
+  bool m_external_stereo_disabled = false;
   u64 m_stream_reuse_wait_count = 0;
 
   // --- DMA chain path (stage 4) ---------------------------------------------

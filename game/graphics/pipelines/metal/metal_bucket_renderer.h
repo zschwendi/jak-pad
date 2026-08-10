@@ -53,6 +53,17 @@ class MetalStreamBuffer {
     m_offset = 0;
   }
 
+  // If an external presentation submission stops completing, permanently retain its pages while
+  // detaching them from this allocator. The ordinary renderer then allocates a fresh page set
+  // without reusing storage that the stalled command buffer may still reference.
+  void quarantine_in_flight_pages() {
+    if (!m_pages.empty()) {
+      m_quarantined_page_sets.emplace_back(std::move(m_pages));
+    }
+    m_pages.clear();
+    reset();
+  }
+
   // Returns a CPU-writable pointer of `size` bytes and the buffer/offset to
   // bind. Alignment is 16 bytes.
   void* alloc(u32 size, id<MTLBuffer>* out_buffer, u32* out_offset);
@@ -60,6 +71,7 @@ class MetalStreamBuffer {
  private:
   id<MTLDevice> m_device;
   std::vector<id<MTLBuffer>> m_pages;
+  std::vector<std::vector<id<MTLBuffer>>> m_quarantined_page_sets;
   size_t m_page = 0;
   u32 m_offset = 0;
 };
