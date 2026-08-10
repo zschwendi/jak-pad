@@ -808,6 +808,8 @@ bool read_present_frame(const PresentTestOptions& opts, FramePixels* out) {
   render_opts.pmode_alp = opts.pmode_alp;
   render_opts.brightness_contrast_color = opts.brightness_contrast_color;
   render_opts.brightness_contrast_alpha = opts.brightness_contrast_alpha;
+  render_opts.modern_effects = opts.modern_effects;
+  render_opts.engine_frame_id = opts.engine_frame_id;
   return g_renderer->read_present_frame(opts.window_w, opts.window_h, render_opts, out);
 }
 

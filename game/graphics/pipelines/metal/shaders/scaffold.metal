@@ -69,7 +69,28 @@ struct PresentVSOut {
 struct PresentParams {
   float4 color_mult;
   float4 color_add;
+  float2 inverse_source_size;
+  uint modern_effects;
+  uint grain_seed;
 };
+
+constant uint kModernFilmicColor = 1u << 0;
+constant uint kModernEdgeSmoothing = 1u << 1;
+constant uint kModernClarity = 1u << 2;
+constant uint kModernSoftHighlights = 1u << 3;
+constant uint kModernVignette = 1u << 4;
+constant uint kModernFilmGrain = 1u << 5;
+constant uint kModernAllEffects = (1u << 6) - 1u;
+
+float present_luminance(float3 color) {
+  return dot(color, float3(0.2126, 0.7152, 0.0722));
+}
+
+float present_grain(uint2 pixel, uint seed) {
+  uint value = pixel.x * 1973u + pixel.y * 9277u + seed * 26699u + 0x68bc21ebu;
+  value = (value ^ (value >> 13u)) * 1274126177u;
+  return float(value & 1023u) / 1023.0 - 0.5;
+}
 
 vertex PresentVSOut present_vs(uint vid [[vertex_id]]) {
   float2 p = float2((vid & 1) ? 1.0 : -1.0, (vid & 2) ? 1.0 : -1.0);
@@ -85,6 +106,62 @@ fragment float4 present_fs(PresentVSOut in [[stage_in]],
                            texture2d<float> tex [[texture(0)]],
                            constant PresentParams& params [[buffer(0)]]) {
   constexpr sampler s(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
-  return float4(tex.sample(s, in.uv).rgb * params.color_mult.rgb * params.color_mult.a, 1.0) +
-         params.color_add;
+  float4 classic =
+      float4(tex.sample(s, in.uv).rgb * params.color_mult.rgb * params.color_mult.a, 1.0) +
+      params.color_add;
+  uint effects = params.modern_effects & kModernAllEffects;
+  if (effects == 0u) {
+    return classic;
+  }
+
+  float3 color = saturate(classic.rgb);
+  uint neighborhood_effects =
+      kModernEdgeSmoothing | kModernClarity | kModernSoftHighlights;
+  if ((effects & neighborhood_effects) != 0u) {
+    float2 texel = params.inverse_source_size;
+    float3 present_mult = params.color_mult.rgb * params.color_mult.a;
+    float3 present_add = params.color_add.rgb;
+    float3 north = saturate(tex.sample(s, in.uv + float2(0.0, -texel.y)).rgb * present_mult +
+                            present_add);
+    float3 south = saturate(tex.sample(s, in.uv + float2(0.0, texel.y)).rgb * present_mult +
+                            present_add);
+    float3 west = saturate(tex.sample(s, in.uv + float2(-texel.x, 0.0)).rgb * present_mult +
+                           present_add);
+    float3 east = saturate(tex.sample(s, in.uv + float2(texel.x, 0.0)).rgb * present_mult +
+                           present_add);
+    float3 neighborhood = (north + south + west + east) * 0.25;
+
+    if ((effects & kModernEdgeSmoothing) != 0u) {
+      float center_luma = present_luminance(color);
+      float luma_delta = max(max(abs(present_luminance(north) - center_luma),
+                                 abs(present_luminance(south) - center_luma)),
+                             max(abs(present_luminance(west) - center_luma),
+                                 abs(present_luminance(east) - center_luma)));
+      color = mix(color, neighborhood, smoothstep(0.06, 0.28, luma_delta) * 0.18);
+    }
+    if ((effects & kModernClarity) != 0u) {
+      color = saturate(color + (color - neighborhood) * 0.14);
+    }
+    if ((effects & kModernSoftHighlights) != 0u) {
+      float highlight = smoothstep(0.62, 0.92, present_luminance(neighborhood));
+      color = saturate(color + max(neighborhood - 0.62, 0.0) * highlight * 0.10);
+    }
+  }
+
+  if ((effects & kModernFilmicColor) != 0u) {
+    float luma = present_luminance(color);
+    color = saturate(mix(float3(luma), color, 1.04));
+    color = color * (0.92 + 0.08 * color);
+  }
+  if ((effects & kModernVignette) != 0u) {
+    float2 centered = in.uv * 2.0 - 1.0;
+    float radius = dot(centered * centered, float2(0.72, 1.0));
+    color *= 1.0 - smoothstep(0.32, 1.38, radius) * 0.10;
+  }
+  if ((effects & kModernFilmGrain) != 0u) {
+    float grain = present_grain(uint2(in.pos.xy), params.grain_seed);
+    float shadow_weight = mix(1.0, 0.55, present_luminance(color));
+    color = saturate(color + grain * shadow_weight * (3.0 / 255.0));
+  }
+  return float4(color, 1.0);
 }

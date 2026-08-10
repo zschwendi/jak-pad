@@ -227,13 +227,21 @@ id<MTLTexture> make_checker_texture(id<MTLDevice> device) {
 struct PresentParams {
   float color_mult[4];
   float color_add[4];
+  float inverse_source_size[2];
+  u32 modern_effects;
+  u32 grain_seed;
 };
+static_assert(sizeof(PresentParams) == 48);
 
 // Same math as OpenGLRenderer::do_pcrtc_effects.
 PresentParams make_present_params(int brightness_contrast_color, int brightness_contrast_alpha) {
   float color = (float)brightness_contrast_color / 128.0f;
   float alpha = (float)brightness_contrast_alpha / 128.0f;
-  PresentParams params{{1.f, 1.f, 1.f, alpha}, {0.f, 0.f, 0.f, 0.f}};
+  PresentParams params{{1.f, 1.f, 1.f, alpha},
+                       {0.f, 0.f, 0.f, 0.f},
+                       {0.f, 0.f},
+                       0,
+                       0};
   if (brightness_contrast_color < 0) {
     // subtractive blend - note that color is already negative
     float color_neg = color * alpha;
@@ -685,6 +693,10 @@ void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
   [enc setRenderPipelineState:m_pso_cache.get_pipeline(present_key)];
   PresentParams params =
       make_present_params(opts.brightness_contrast_color, opts.brightness_contrast_alpha);
+  params.inverse_source_size[0] = 1.f / (float)m_game_color.width;
+  params.inverse_source_size[1] = 1.f / (float)m_game_color.height;
+  params.modern_effects = opts.modern_effects & metal_renderer::kModernEffectAll;
+  params.grain_seed = (u32)opts.engine_frame_id;
   [enc setFragmentBytes:&params length:sizeof(params) atIndex:0];
   [enc setFragmentTexture:m_game_color atIndex:0];
   [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];

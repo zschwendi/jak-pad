@@ -44,6 +44,7 @@
 #include <functional>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/dma/dma_chain_read.h"
@@ -143,6 +144,18 @@ bool pixels_match_at(const metal_renderer::FramePixels& a,
   const u8* b_pixel = rgba_pixel_at(b, x, y);
   return a.width == b.width && a.height == b.height && a_pixel && b_pixel &&
          std::memcmp(a_pixel, b_pixel, 4) == 0;
+}
+
+size_t different_pixel_count(const metal_renderer::FramePixels& a,
+                             const metal_renderer::FramePixels& b) {
+  if (a.width != b.width || a.height != b.height || a.rgba.size() != b.rgba.size()) {
+    return 0;
+  }
+  size_t count = 0;
+  for (size_t offset = 0; offset < a.rgba.size(); offset += 4) {
+    count += std::memcmp(a.rgba.data() + offset, b.rgba.data() + offset, 4) != 0;
+  }
+  return count;
 }
 
 void check_pixel_stable_across_stereo(const metal_renderer::FramePixels& reference,
@@ -5302,6 +5315,43 @@ int main(int argc, char** argv) {
   check_pixel(present, 161, 300, 128, 128, 128, "game content at 1:1 (gray base)");
   check_pixel(present, 400, 300, 255, 128, 128, "game center at 1:1 (masked quad)");
   check_pixel(present, 528, 204, 191, 64, 64, "game content at 1:1 (alpha quad)");
+
+  // ---- Modern V1 present effects: exact Classic bypass and independent bits ----
+  const auto classic_present = present;
+  popts.engine_frame_id = 0x12345678;
+  metal_renderer::FramePixels classic_repeat;
+  if (metal_renderer::read_present_frame(popts, &classic_repeat)) {
+    check(classic_repeat.rgba == classic_present.rgba,
+          "Modern V1: zero effect bits preserve exact Classic output");
+  } else {
+    check(false, "Modern V1: read back exact Classic bypass frame");
+  }
+
+  constexpr std::array<std::pair<u32, const char*>, 6> kModernEffects = {{
+      {metal_renderer::kModernEffectFilmicColor, "filmic color"},
+      {metal_renderer::kModernEffectEdgeSmoothing, "edge smoothing"},
+      {metal_renderer::kModernEffectClarity, "clarity"},
+      {metal_renderer::kModernEffectSoftHighlights, "soft highlights"},
+      {metal_renderer::kModernEffectVignette, "vignette"},
+      {metal_renderer::kModernEffectFilmGrain, "film grain"},
+  }};
+  for (const auto& [effect, name] : kModernEffects) {
+    popts.modern_effects = effect;
+    metal_renderer::FramePixels modern_present;
+    const bool read = metal_renderer::read_present_frame(popts, &modern_present);
+    std::string label = std::string("Modern V1: independently observable ") + name;
+    if (read) {
+      const size_t changed = different_pixel_count(classic_present, modern_present);
+      printf("Modern V1 %s changed %zu pixels\n", name, changed);
+      check(changed > 0, label.c_str());
+      check_pixel(modern_present, 40, 300, 0, 0, 0,
+                  "Modern V1 effect preserves letterbox bars");
+    } else {
+      check(false, label.c_str());
+    }
+  }
+  popts.modern_effects = 0;
+  popts.engine_frame_id = 0;
 
   // ---- present pass: scaled letterbox (1.5x, pillarboxed 1280x720) ----
   popts.window_w = 1280;
