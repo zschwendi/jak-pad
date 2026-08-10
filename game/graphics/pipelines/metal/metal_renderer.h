@@ -26,6 +26,7 @@
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
+#include "game/graphics/pipelines/metal/metal_stereo_eye_marker.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 
 #import <Metal/Metal.h>
@@ -221,6 +222,12 @@ class MetalRenderer {
                                id<MTLCommandBuffer> borrowed_command_buffer,
                                const u8* chain_data,
                                u32 chain_offset);
+#if GOALPAD_VISION_STEREO_EYE_MARKERS
+  void encode_stereo_eye_markers(
+      id<MTLCommandBuffer> command_buffer,
+      const MetalExternalRenderTargetDescriptor& left,
+      const MetalExternalRenderTargetDescriptor& right);
+#endif
 
   id<MTLDevice> m_device;
   id<MTLCommandQueue> m_queue;
@@ -235,6 +242,10 @@ class MetalRenderer {
   id<MTLBuffer> m_scene_vertices;
   id<MTLTexture> m_checker_texture;
   std::vector<SceneDraw> m_scene_draws;
+#if GOALPAD_VISION_STEREO_EYE_MARKERS
+  id<MTLBuffer> m_left_eye_marker;
+  id<MTLBuffer> m_right_eye_marker;
+#endif
 
   id<MTLCommandBuffer> m_last_internal_frame_cmds;
   std::mutex m_frame_mutex;

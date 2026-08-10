@@ -95,13 +95,14 @@ int main() {
     return 1;
   }
 
-  constexpr float kProductSlope = 0.025f;
-  const auto product_left = post_clip_eye(-kProductSlope * 0.5f, 0.f);
-  const auto product_right = post_clip_eye(kProductSlope * 0.5f, 0.f);
+  constexpr float kProductSlope = 0.05f;
+  constexpr float kProductConvergenceDepth = 0.05f;
+  const auto product_left = post_clip_eye(-kProductSlope * 0.5f, kProductConvergenceDepth);
+  const auto product_right = post_clip_eye(kProductSlope * 0.5f, kProductConvergenceDepth);
   const float one_meter_depth = jak1_default_metal_depth(4096.f);
   const float one_meter_pixels_at_640 =
       ndc_disparity(product_left, product_right, one_meter_depth) * 640.f * 0.5f;
-  if (!close(one_meter_depth, 0.2497386f) || !close(one_meter_pixels_at_640, 1.9979088f)) {
+  if (!close(one_meter_depth, 0.2497386f) || !close(one_meter_pixels_at_640, 3.1958177f)) {
     return 1;
   }
 

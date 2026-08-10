@@ -735,12 +735,12 @@ bool render_last_chain_to_external_target(int width,
         stereo_completed && out->rendered_slice.rgba == internal_before.rgba &&
         out->stereo_right_slice.rgba == internal_before.rgba;
 
-    // The identity batch above protects Comfort. Now use the unchanged product defaults for a
+    // The identity batch above protects Comfort. Now use the physical product candidate for a
     // deterministic diagnostic oracle. The post-clip transform is
-    // x' = x + eye_slope * (z - convergence_depth * w), with reversed-Z depth zero converged.
-    // This proves the shipped math reaches world pixels; it does not calibrate physical strength.
-    constexpr float kProductDepthDisparitySlope = 0.025f;
-    constexpr float kProductConvergenceDepth = 0.f;
+    // x' = x + eye_slope * (z - convergence_depth * w), with c = 0.05 converged.
+    // This proves the candidate math reaches world pixels; it does not establish physical comfort.
+    constexpr float kProductDepthDisparitySlope = 0.05f;
+    constexpr float kProductConvergenceDepth = 0.05f;
     constexpr float kLeftEyeSlope = -kProductDepthDisparitySlope * 0.5f;
     constexpr float kRightEyeSlope = kProductDepthDisparitySlope * 0.5f;
     stereo_left.view_transform.clip_from_game_clip[2 * 4 + 0] = kLeftEyeSlope;

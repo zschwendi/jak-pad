@@ -398,6 +398,10 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_view_transform_test.cpp)
     add_test(NAME metal-view-transform-test COMMAND metal-view-transform-test)
 
+    add_executable(metal-stereo-eye-marker-test
+            graphics/pipelines/metal/metal_stereo_eye_marker_test.cpp)
+    add_test(NAME metal-stereo-eye-marker-test COMMAND metal-stereo-eye-marker-test)
+
     add_executable(metal-bucket-chain-semantics-test
             graphics/pipelines/metal/metal_bucket_chain_semantics_test.cpp)
     add_test(NAME metal-bucket-chain-semantics-test COMMAND metal-bucket-chain-semantics-test)

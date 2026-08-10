@@ -1790,9 +1790,10 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
                                            (kJakFar / kOneMeter - 1.f) /
                                            (kJakFar - kJakNear);
   constexpr float kOneMeterMetalDepth = kZ / kMetalDepthScale;
-  constexpr float kProductDepthDisparitySlope = 0.025f;
+  constexpr float kProductDepthDisparitySlope = 0.05f;
+  constexpr float kProductConvergenceDepth = 0.05f;
   constexpr float kExpectedOneMeterPixelsAt640 =
-      kProductDepthDisparitySlope * kOneMeterMetalDepth * 640.f * 0.5f;
+      kProductDepthDisparitySlope * (kOneMeterMetalDepth - kProductConvergenceDepth) * 640.f * 0.5f;
   constexpr float kUserShift = -64;  // hud_hvdf_user[0] x offset
 
   constexpr float kHalfPxX = kHalf * 640.f / 512.f;  // GS x unit -> pixels
@@ -2017,7 +2018,7 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
       check_color_centroid_disparity(stereo.stereo_transformed_left_slice,
                                      stereo.stereo_transformed_right_slice, 100, 50, 25,
                                      kExpectedOneMeterPixelsAt640,
-                                     "stereo pixels: product default at Jak one-meter depth");
+                                     "stereo pixels: product candidate at Jak one-meter depth");
     }
   }
 

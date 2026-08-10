@@ -1,6 +1,7 @@
 #include "metal_renderer.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -67,6 +68,50 @@ namespace {
 
 constexpr MTLPixelFormat kColorFormat = MTLPixelFormatBGRA8Unorm;
 constexpr MTLPixelFormat kDepthFormat = MTLPixelFormatDepth32Float_Stencil8;
+
+#if GOALPAD_VISION_STEREO_EYE_MARKERS
+constexpr NSUInteger kStereoEyeMarkerBytesPerRow = 256;
+
+id<MTLBuffer> make_stereo_eye_marker_buffer(id<MTLDevice> device,
+                                            metal_renderer::StereoEyeMarkerEye eye) {
+  constexpr NSUInteger kRows = metal_renderer::kStereoEyeMarkerLength;
+  std::array<u8, kStereoEyeMarkerBytesPerRow * kRows> pixels = {};
+  const auto width = eye == metal_renderer::StereoEyeMarkerEye::left
+                         ? metal_renderer::kStereoEyeMarkerThickness
+                         : metal_renderer::kStereoEyeMarkerLength;
+  const auto height = eye == metal_renderer::StereoEyeMarkerEye::left
+                          ? metal_renderer::kStereoEyeMarkerLength
+                          : metal_renderer::kStereoEyeMarkerThickness;
+  const std::array<u8, 4> bgra = eye == metal_renderer::StereoEyeMarkerEye::left
+                                     ? std::array<u8, 4>{255, 0, 255, 255}
+                                     : std::array<u8, 4>{255, 255, 0, 255};
+  for (std::uint32_t y = 0; y < height; y++) {
+    for (std::uint32_t x = 0; x < width; x++) {
+      std::copy(bgra.begin(), bgra.end(), pixels.begin() + y * kStereoEyeMarkerBytesPerRow + x * 4);
+    }
+  }
+  return [device newBufferWithBytes:pixels.data()
+                             length:pixels.size()
+                            options:MTLResourceStorageModeShared];
+}
+
+bool can_blit_stereo_eye_marker(id<MTLTexture> texture,
+                                NSUInteger slice,
+                                const metal_renderer::StereoEyeMarkerPlan& plan) {
+  if (!texture) {
+    return false;
+  }
+  const bool supported_format = texture.pixelFormat == MTLPixelFormatBGRA8Unorm ||
+                                texture.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB;
+  const bool valid_slice = texture.textureType == MTLTextureType2D
+                               ? slice == 0
+                               : texture.textureType == MTLTextureType2DArray &&
+                                     slice < texture.arrayLength;
+  return plan.valid() && supported_format && texture.sampleCount == 1 &&
+         texture.storageMode != MTLStorageModeMemoryless && !texture.framebufferOnly && valid_slice &&
+         plan.x + plan.width <= texture.width && plan.y + plan.height <= texture.height;
+}
+#endif
 
 void schedule_present(id<MTLCommandBuffer> cmds,
                       id<CAMetalDrawable> drawable,
@@ -472,6 +517,15 @@ bool MetalRenderer::init(id<MTLDevice> device) {
   m_sampler_cache.init(device);
 
   m_checker_texture = make_checker_texture(device);
+#if GOALPAD_VISION_STEREO_EYE_MARKERS
+  m_left_eye_marker =
+      make_stereo_eye_marker_buffer(device, metal_renderer::StereoEyeMarkerEye::left);
+  m_right_eye_marker =
+      make_stereo_eye_marker_buffer(device, metal_renderer::StereoEyeMarkerEye::right);
+  if (!m_left_eye_marker || !m_right_eye_marker) {
+    lg::warn("Metal: could not allocate the diagnostic stereo eye marker buffers");
+  }
+#endif
   build_validation_scene();
   return true;
 }
@@ -861,9 +915,63 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
   }
   if (right_rendered) {
     m_chain_stats.last_views_rendered = 2;
+#if GOALPAD_VISION_STEREO_EYE_MARKERS
+    encode_stereo_eye_markers(command_buffer, left, right);
+#endif
   }
   return right_rendered;
 }
+
+#if GOALPAD_VISION_STEREO_EYE_MARKERS
+void MetalRenderer::encode_stereo_eye_markers(
+    id<MTLCommandBuffer> command_buffer,
+    const MetalExternalRenderTargetDescriptor& left,
+    const MetalExternalRenderTargetDescriptor& right) {
+  const auto left_plan = metal_renderer::stereo_eye_marker_plan(
+      static_cast<std::uint32_t>(left.color_texture.width),
+      static_cast<std::uint32_t>(left.color_texture.height),
+      metal_renderer::StereoEyeMarkerEye::left);
+  const auto right_plan = metal_renderer::stereo_eye_marker_plan(
+      static_cast<std::uint32_t>(right.color_texture.width),
+      static_cast<std::uint32_t>(right.color_texture.height),
+      metal_renderer::StereoEyeMarkerEye::right);
+  const bool mark_left = m_left_eye_marker &&
+                         can_blit_stereo_eye_marker(left.color_texture, left.color_slice, left_plan);
+  const bool mark_right = m_right_eye_marker && can_blit_stereo_eye_marker(
+                                                     right.color_texture, right.color_slice,
+                                                     right_plan);
+  if (!mark_left && !mark_right) {
+    return;
+  }
+
+  id<MTLBlitCommandEncoder> encoder = [command_buffer blitCommandEncoder];
+  if (!encoder) {
+    return;
+  }
+  encoder.label = @"Eco diagnostic stereo eye markers";
+  const auto encode = [&](id<MTLBuffer> source,
+                          id<MTLTexture> destination,
+                          NSUInteger slice,
+                          const metal_renderer::StereoEyeMarkerPlan& plan) {
+    [encoder copyFromBuffer:source
+               sourceOffset:0
+          sourceBytesPerRow:kStereoEyeMarkerBytesPerRow
+        sourceBytesPerImage:kStereoEyeMarkerBytesPerRow * plan.height
+                 sourceSize:MTLSizeMake(plan.width, plan.height, 1)
+                  toTexture:destination
+           destinationSlice:slice
+           destinationLevel:0
+          destinationOrigin:MTLOriginMake(plan.x, plan.y, 0)];
+  };
+  if (mark_left) {
+    encode(m_left_eye_marker, left.color_texture, left.color_slice, left_plan);
+  }
+  if (mark_right) {
+    encode(m_right_eye_marker, right.color_texture, right.color_slice, right_plan);
+  }
+  [encoder endEncoding];
+}
+#endif
 
 bool MetalRenderer::submit_external_stereo_frame(id<MTLCommandBuffer> command_buffer) {
   if (command_buffer == nil || command_buffer.device != m_device ||
