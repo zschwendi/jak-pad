@@ -127,6 +127,69 @@ void check_pixel_alpha(const metal_renderer::FramePixels& frame,
   }
 }
 
+const u8* rgba_pixel_at(const metal_renderer::FramePixels& frame, int x, int y) {
+  if (x < 0 || y < 0 || x >= frame.width || y >= frame.height ||
+      frame.rgba.size() != (size_t)frame.width * frame.height * 4) {
+    return nullptr;
+  }
+  return frame.rgba.data() + (size_t)(y * frame.width + x) * 4;
+}
+
+bool pixels_match_at(const metal_renderer::FramePixels& a,
+                     const metal_renderer::FramePixels& b,
+                     int x,
+                     int y) {
+  const u8* a_pixel = rgba_pixel_at(a, x, y);
+  const u8* b_pixel = rgba_pixel_at(b, x, y);
+  return a.width == b.width && a.height == b.height && a_pixel && b_pixel &&
+         std::memcmp(a_pixel, b_pixel, 4) == 0;
+}
+
+void check_pixel_stable_across_stereo(const metal_renderer::FramePixels& reference,
+                                      const metal_renderer::FramePixels& left,
+                                      const metal_renderer::FramePixels& right,
+                                      int x,
+                                      int y,
+                                      const char* what) {
+  const u8* reference_pixel = rgba_pixel_at(reference, x, y);
+  const u8* left_pixel = rgba_pixel_at(left, x, y);
+  const u8* right_pixel = rgba_pixel_at(right, x, y);
+  const bool ok = pixels_match_at(reference, left, x, y) && pixels_match_at(reference, right, x, y);
+  if (reference_pixel && left_pixel && right_pixel) {
+    printf("[%s] %s at (%d,%d): reference (%u,%u,%u,%u), left (%u,%u,%u,%u), "
+           "right (%u,%u,%u,%u)\n",
+           ok ? "PASS" : "FAIL", what, x, y, reference_pixel[0], reference_pixel[1],
+           reference_pixel[2], reference_pixel[3], left_pixel[0], left_pixel[1], left_pixel[2],
+           left_pixel[3], right_pixel[0], right_pixel[1], right_pixel[2], right_pixel[3]);
+  } else {
+    printf("[FAIL] %s at (%d,%d): invalid readback bounds\n", what, x, y);
+  }
+  if (!ok) {
+    g_fail_count++;
+  }
+}
+
+void check_pixel_differs_across_stereo(const metal_renderer::FramePixels& left,
+                                       const metal_renderer::FramePixels& right,
+                                       int x,
+                                       int y,
+                                       const char* what) {
+  const u8* left_pixel = rgba_pixel_at(left, x, y);
+  const u8* right_pixel = rgba_pixel_at(right, x, y);
+  const bool ok = left.width == right.width && left.height == right.height && left_pixel &&
+                  right_pixel && std::memcmp(left_pixel, right_pixel, 4) != 0;
+  if (left_pixel && right_pixel) {
+    printf("[%s] %s at (%d,%d): left (%u,%u,%u,%u), right (%u,%u,%u,%u)\n",
+           ok ? "PASS" : "FAIL", what, x, y, left_pixel[0], left_pixel[1], left_pixel[2],
+           left_pixel[3], right_pixel[0], right_pixel[1], right_pixel[2], right_pixel[3]);
+  } else {
+    printf("[FAIL] %s at (%d,%d): invalid readback bounds\n", what, x, y);
+  }
+  if (!ok) {
+    g_fail_count++;
+  }
+}
+
 // Renders the sample quad or records a failure.
 bool sample_tex(const metal_renderer::TextureSampleSpec& spec,
                 metal_renderer::FramePixels* out,
@@ -1398,11 +1461,21 @@ void test_dma_chain(const GfxRendererModule* mod,
         "external target: invalid two-view batch was rejected before renderer mutation");
   check(external.stereo_poison_after_encode_preserved,
         "external target: submitted views survived poisoning the copied DMA input");
+  check(external.stereo_nonidentity_views_differ,
+        "external target: opposing nonidentity transforms produced different eye pixels");
+  check(external.stereo_nonidentity_side_effects_single_shot,
+        "external target: nonidentity two-view replay kept frame-global work single-shot");
   if (external_rendered) {
     check(external.rendered_slice.width == frame.width &&
               external.rendered_slice.height == frame.height &&
               external.rendered_slice.rgba == frame.rgba,
           "external target: slice 1 pixels exactly match the internal game target");
+    check_pixel_stable_across_stereo(frame, external.stereo_transformed_left_slice,
+                                     external.stereo_transformed_right_slice, 200, 240,
+                                     "external target: screen-space opaque quad stayed stable");
+    check_pixel_stable_across_stereo(frame, external.stereo_transformed_left_slice,
+                                     external.stereo_transformed_right_slice, 510, 30,
+                                     "external target: screen-space textured sprite stayed stable");
   }
 
   g_ee_main_mem = nullptr;
@@ -1806,6 +1879,29 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
                 "sprite: HUD user-hvdf quad BR texel");
     check_pixel(frame, gs_to_col(2176), row_h0, 0, 0, 0,
                 "sprite: nothing left where the user-hvdf quad would have been");
+
+    metal_renderer::ExternalRenderTargetProofResult stereo;
+    const bool stereo_rendered = metal_renderer::render_last_chain_to_external_target(
+        frame.width, frame.height, &stereo);
+    check(stereo_rendered, "stereo pixels: replayed the synthetic screen/HUD sprite chain");
+    check(!stereo.stereo_nonidentity_views_differ,
+          "stereo pixels: screen-space Sprite2d and HUD eye frames stayed identical");
+    check(stereo.stereo_nonidentity_side_effects_single_shot,
+          "stereo pixels: transformed two-view sprite replay kept frame-global work single-shot");
+    if (stereo_rendered) {
+      check_pixel_stable_across_stereo(frame, stereo.stereo_transformed_left_slice,
+                                       stereo.stereo_transformed_right_slice, col_h0 - 20,
+                                       row_h0 - 34,
+                                       "stereo pixels: HUD red texel stayed screen-locked");
+      check_pixel_stable_across_stereo(frame, stereo.stereo_transformed_left_slice,
+                                       stereo.stereo_transformed_right_slice, col_h0 + 20,
+                                       row_h0 + 34,
+                                       "stereo pixels: HUD white texel stayed screen-locked");
+      check_pixel_stable_across_stereo(frame, stereo.stereo_transformed_left_slice,
+                                       stereo.stereo_transformed_right_slice, col_h1 - 20,
+                                       row_h0 - 34,
+                                       "stereo pixels: user-offset HUD texel stayed screen-locked");
+    }
   }
 
   // ---- frame 2: 3D sprites ------------------------------------------------
@@ -1836,6 +1932,20 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
     check_pixel(frame, col_3d - 45, row_3d, 0, 0, 0, "sprite: 3D quad left edge outside");
     check_pixel(frame, gs_to_col(1920), gs_to_row(2104), 0, 0, 0,
                 "sprite: the 3D frame drew no HUD sprite");
+
+    metal_renderer::ExternalRenderTargetProofResult stereo;
+    const bool stereo_rendered = metal_renderer::render_last_chain_to_external_target(
+        frame.width, frame.height, &stereo);
+    check(stereo_rendered, "stereo pixels: replayed the synthetic Sprite3d world chain");
+    check(stereo.stereo_nonidentity_views_differ,
+          "stereo pixels: opposing nonidentity transforms produced different Sprite3d eye frames");
+    check(stereo.stereo_nonidentity_side_effects_single_shot,
+          "stereo pixels: transformed Sprite3d replay kept frame-global work single-shot");
+    if (stereo_rendered) {
+      check_pixel_differs_across_stereo(stereo.stereo_transformed_left_slice,
+                                        stereo.stereo_transformed_right_slice, col_3d - 40, row_3d,
+                                        "stereo pixels: Sprite3d moved between eyes");
+    }
   }
 
   g_ee_main_mem = nullptr;
@@ -4932,6 +5042,7 @@ int main(int argc, char** argv) {
   bool show_window = false;
   bool tie_envmap_isolation_only = false;
   bool background_depth_parity_only = false;
+  bool stereo_pixels_only = false;
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     if (arg == "--replay" && i + 1 < argc) {
@@ -4950,6 +5061,8 @@ int main(int argc, char** argv) {
       tie_envmap_isolation_only = true;
     } else if (arg == "--background-depth-parity-only") {
       background_depth_parity_only = true;
+    } else if (arg == "--stereo-pixels-only") {
+      stereo_pixels_only = true;
     } else if (arg == "--fr3" && i + 1 < argc) {
       fr3_path = argv[++i];
     } else if (!arg.empty() && arg[0] != '-' && fr3_path.empty()) {
@@ -4962,6 +5075,7 @@ int main(int argc, char** argv) {
           "                    [--replay-fr3 <level.fr3>]...]\n"
           "                   [--tie-envmap-isolation-only]\n"
           "                   [--background-depth-parity-only]\n"
+          "                   [--stereo-pixels-only]\n"
           "                   [--show-window]\n");
       return 1;
     }
@@ -4998,6 +5112,19 @@ int main(int argc, char** argv) {
     return 1;
   }
   printf("[PASS] Metal display created\n");
+
+  if (stereo_pixels_only) {
+    test_dma_chain(mod, display, nullptr);
+    test_sprite_chain(mod, display);
+    display.reset();
+    mod->exit();
+    if (g_fail_count == 0) {
+      printf("METAL STEREO PIXEL PROOF PASSED\n");
+      return 0;
+    }
+    printf("METAL STEREO PIXEL PROOF FAILED: %d check(s) failed\n", g_fail_count);
+    return 1;
+  }
 
   if (tie_envmap_isolation_only) {
     test_jak1_shadow_output_gate();

@@ -74,6 +74,8 @@ struct PresentTestOptions {
 struct ExternalRenderTargetProofResult {
   FramePixels rendered_slice;
   FramePixels stereo_right_slice;
+  FramePixels stereo_transformed_left_slice;
+  FramePixels stereo_transformed_right_slice;
   u64 view_id = 0;
   bool internal_readback_identity_preserved = false;
   bool internal_readback_pixels_preserved = false;
@@ -87,6 +89,8 @@ struct ExternalRenderTargetProofResult {
   bool stereo_side_effects_single_shot = false;
   bool stereo_invalid_batch_rejected = false;
   bool stereo_poison_after_encode_preserved = false;
+  bool stereo_nonidentity_views_differ = false;
+  bool stereo_nonidentity_side_effects_single_shot = false;
 };
 
 enum MercPaletteHealthIssue : u8 {

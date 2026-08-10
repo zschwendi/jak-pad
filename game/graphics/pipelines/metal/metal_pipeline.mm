@@ -709,6 +709,61 @@ bool render_last_chain_to_external_target(int width,
     out->stereo_poison_after_encode_preserved =
         stereo_completed && out->rendered_slice.rgba == internal_before.rgba &&
         out->stereo_right_slice.rgba == internal_before.rgba;
+
+    // The identity batch above protects Comfort. Now use the same synthetic chain and targets for
+    // a deterministic stereo pixel oracle: opposing homogeneous clip translations must move only
+    // paths classified as world-space. Screen-space/HUD stability is asserted by metal-proof at
+    // known fixture pixels after these slices are read back.
+    constexpr float kOpposingClipTranslation = 0.125f;
+    stereo_left.view_transform.clip_from_game_clip[12] = -kOpposingClipTranslation;
+    stereo_right.view_transform.clip_from_game_clip[12] = kOpposingClipTranslation;
+    const ChainStats before_nonidentity_stereo = g_renderer->chain_stats();
+    const bool nonidentity_stereo_rendered =
+        g_renderer->render_chain_frame_to_external_stereo_targets(
+            opts, stereo_left, stereo_right, chain.data.data(), chain.start_offset);
+    const ChainStats after_nonidentity_stereo = g_renderer->chain_stats();
+    const bool nonidentity_stereo_completed =
+        nonidentity_stereo_rendered && g_renderer->wait_for_last_chain_frame(5.0);
+    out->stereo_nonidentity_side_effects_single_shot =
+        nonidentity_stereo_rendered &&
+        after_nonidentity_stereo.chains_rendered == before_nonidentity_stereo.chains_rendered + 1 &&
+        after_nonidentity_stereo.last_views_rendered == 2 &&
+        static_cast<u64>(after_nonidentity_stereo.last_frame_global_callbacks) ==
+            after_nonidentity_stereo.last_buckets_dispatched;
+
+    std::vector<u8> transformed_left_bgra(sentinel.size());
+    [color getBytes:transformed_left_bgra.data()
+          bytesPerRow:width * 4
+        bytesPerImage:transformed_left_bgra.size()
+           fromRegion:MTLRegionMake2D(0, 0, width, height)
+          mipmapLevel:0
+                slice:1];
+    std::vector<u8> transformed_right_bgra(sentinel.size());
+    [color getBytes:transformed_right_bgra.data()
+          bytesPerRow:width * 4
+        bytesPerImage:transformed_right_bgra.size()
+           fromRegion:MTLRegionMake2D(0, 0, width, height)
+          mipmapLevel:0
+                slice:2];
+    out->stereo_transformed_left_slice.width = width;
+    out->stereo_transformed_left_slice.height = height;
+    out->stereo_transformed_left_slice.rgba.resize(transformed_left_bgra.size());
+    out->stereo_transformed_right_slice.width = width;
+    out->stereo_transformed_right_slice.height = height;
+    out->stereo_transformed_right_slice.rgba.resize(transformed_right_bgra.size());
+    for (size_t i = 0; i < transformed_left_bgra.size(); i += 4) {
+      out->stereo_transformed_left_slice.rgba[i + 0] = transformed_left_bgra[i + 2];
+      out->stereo_transformed_left_slice.rgba[i + 1] = transformed_left_bgra[i + 1];
+      out->stereo_transformed_left_slice.rgba[i + 2] = transformed_left_bgra[i + 0];
+      out->stereo_transformed_left_slice.rgba[i + 3] = transformed_left_bgra[i + 3];
+      out->stereo_transformed_right_slice.rgba[i + 0] = transformed_right_bgra[i + 2];
+      out->stereo_transformed_right_slice.rgba[i + 1] = transformed_right_bgra[i + 1];
+      out->stereo_transformed_right_slice.rgba[i + 2] = transformed_right_bgra[i + 0];
+      out->stereo_transformed_right_slice.rgba[i + 3] = transformed_right_bgra[i + 3];
+    }
+    out->stereo_nonidentity_views_differ =
+        nonidentity_stereo_completed &&
+        out->stereo_transformed_left_slice.rgba != out->stereo_transformed_right_slice.rgba;
     return true;
   }
 }
