@@ -115,6 +115,7 @@ fragment float4 present_fs(PresentVSOut in [[stage_in]],
   }
 
   float3 color = saturate(classic.rgb);
+  float3 source_color = color;
   uint neighborhood_effects =
       kModernEdgeSmoothing | kModernClarity | kModernSoftHighlights;
   if ((effects & neighborhood_effects) != 0u) {
@@ -133,36 +134,50 @@ fragment float4 present_fs(PresentVSOut in [[stage_in]],
 
     if ((effects & kModernEdgeSmoothing) != 0u) {
       float center_luma = present_luminance(color);
-      float luma_delta = max(max(abs(present_luminance(north) - center_luma),
-                                 abs(present_luminance(south) - center_luma)),
-                             max(abs(present_luminance(west) - center_luma),
-                                 abs(present_luminance(east) - center_luma)));
-      color = mix(color, neighborhood, smoothstep(0.06, 0.28, luma_delta) * 0.18);
+      float north_luma = present_luminance(north);
+      float south_luma = present_luminance(south);
+      float west_luma = present_luminance(west);
+      float east_luma = present_luminance(east);
+      float luma_delta = max(max(abs(north_luma - center_luma),
+                                 abs(south_luma - center_luma)),
+                             max(abs(west_luma - center_luma),
+                                 abs(east_luma - center_luma)));
+      float horizontal_gradient = abs(west_luma - east_luma);
+      float vertical_gradient = abs(north_luma - south_luma);
+      float3 along_edge = vertical_gradient > horizontal_gradient
+                              ? (west + east) * 0.5
+                              : (north + south) * 0.5;
+      color = mix(color, along_edge, smoothstep(0.035, 0.20, luma_delta) * 0.38);
     }
     if ((effects & kModernClarity) != 0u) {
-      color = saturate(color + (color - neighborhood) * 0.14);
+      float3 detail = source_color - neighborhood;
+      float detail_luma = abs(present_luminance(source_color) -
+                              present_luminance(neighborhood));
+      float detail_weight = smoothstep(0.008, 0.16, detail_luma);
+      color = saturate(color + detail * detail_weight * 0.30);
     }
     if ((effects & kModernSoftHighlights) != 0u) {
-      float highlight = smoothstep(0.35, 0.85, present_luminance(neighborhood));
+      float highlight = smoothstep(0.45, 0.82, present_luminance(neighborhood));
       float3 screened = 1.0 - (1.0 - neighborhood) * (1.0 - neighborhood);
-      color = saturate(color + max(screened - color, 0.0) * highlight * 0.08);
+      color = saturate(color + max(screened - color, 0.0) * highlight * 0.32);
     }
   }
 
   if ((effects & kModernFilmicColor) != 0u) {
     float luma = present_luminance(color);
-    color = saturate(mix(float3(luma), color, 1.04));
-    color = color * (0.92 + 0.08 * color);
+    float toned_luma = saturate(luma +
+                                0.42 * luma * (1.0 - luma) * (2.0 * luma - 1.0));
+    color = saturate(float3(toned_luma) + (color - float3(luma)) * 1.16);
   }
   if ((effects & kModernVignette) != 0u) {
     float2 centered = in.uv * 2.0 - 1.0;
     float radius = dot(centered * centered, float2(0.72, 1.0));
-    color *= 1.0 - smoothstep(0.32, 1.38, radius) * 0.10;
+    color *= 1.0 - smoothstep(0.22, 1.20, radius) * 0.16;
   }
   if ((effects & kModernFilmGrain) != 0u) {
     float grain = present_grain(uint2(in.pos.xy), params.grain_seed);
-    float shadow_weight = mix(1.0, 0.55, present_luminance(color));
-    color = saturate(color + grain * shadow_weight * (3.0 / 255.0));
+    float shadow_weight = mix(1.0, 0.65, present_luminance(color));
+    color = saturate(color + grain * shadow_weight * (6.0 / 255.0));
   }
   return float4(color, 1.0);
 }
