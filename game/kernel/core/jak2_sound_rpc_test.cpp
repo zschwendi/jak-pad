@@ -7,11 +7,14 @@
 #include <algorithm>
 #include <array>
 #include <cinttypes>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "common/goal_constants.h"
@@ -28,6 +31,7 @@
 #include "game/overlord/jak2/srpc.h"
 #include "game/runtime.h"
 #include "game/sound/989snd/ame_handler.h"
+#include "game/sound/sdshim.h"
 #include "game/sound/sndshim.h"
 
 namespace {
@@ -719,6 +723,57 @@ int main() {
         "sound installation starts from the English language default");
   check(goal_jak2_sound_rpc_install() == GOAL_KERNEL_CORE_ALREADY_INITIALIZED,
         "a duplicate install preserves the owned 989snd instance");
+
+  std::printf("\n== shared 989snd raw-state lock ==\n");
+  check_s32(snd_LockVoiceAllocator(true), 0,
+            "the Jak 1 block=true allocator lock keeps its success result");
+  check_s32(snd_ExternVoiceAlloc(2, 0x7f), 0,
+            "the Jak 1 allocator sequence keeps its shared-shim result");
+  sceSdSetParam(SD_VOICE(0, 0) | SD_VP_VOLL, 0);
+  snd_UnlockVoiceAllocator();
+  check(true, "raw register mutation nests inside the recursive allocator lock");
+
+  std::mutex contention_mutex;
+  std::condition_variable contention_changed;
+  std::array<int, 4> contention_order = {};
+  size_t contention_count = 0;
+  bool owner_locked = false;
+  bool contender_ready = false;
+  std::array<s16, 2> contention_audio = {};
+  s32 contention_pull = 0;
+  std::thread owner([&]() {
+    snd_LockVoiceAllocator(true);
+    sceSdSetParam(SD_VOICE(0, 0) | SD_VP_VOLR, 0);
+    {
+      std::unique_lock lock(contention_mutex);
+      contention_order[contention_count++] = 1;
+      owner_locked = true;
+      contention_changed.notify_all();
+      contention_changed.wait(lock, [&]() { return contender_ready; });
+      contention_order[contention_count++] = 3;
+    }
+    snd_UnlockVoiceAllocator();
+  });
+  std::thread contender([&]() {
+    {
+      std::unique_lock lock(contention_mutex);
+      contention_changed.wait(lock, [&]() { return owner_locked; });
+      contention_order[contention_count++] = 2;
+      contender_ready = true;
+      contention_changed.notify_all();
+    }
+    contention_pull = goal_game_sound_pull_audio(contention_audio.data(), 1);
+    {
+      std::scoped_lock lock(contention_mutex);
+      contention_order[contention_count++] = 4;
+    }
+  });
+  owner.join();
+  contender.join();
+  check(contention_count == contention_order.size() &&
+            contention_order == std::array<int, 4>{1, 2, 3, 4},
+        "Player::Tick completes after the raw-state lock owner releases");
+  check_s32(contention_pull, 1, "the contending mixer pull renders its requested frame");
 
   u32 installed_call = 0;
   u32 installed_busy = 0;

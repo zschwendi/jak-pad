@@ -90,6 +90,23 @@ constexpr u32 kMidi = u32('M') | (u32('I') << 8) | (u32('D') << 16) | (u32(' ') 
 constexpr u32 kMultiMidi =
     u32('M') | (u32('M') << 8) | (u32('I') << 16) | (u32('D') << 24);
 
+class AudioStateLock {
+ public:
+  explicit AudioStateLock(bool lock) : m_locked(lock) {
+    if (m_locked) {
+      snd_LockVoiceAllocator(true);
+    }
+  }
+  ~AudioStateLock() {
+    if (m_locked) {
+      snd_UnlockVoiceAllocator();
+    }
+  }
+
+ private:
+  bool m_locked;
+};
+
 static_assert(sizeof(snd::Grain) == 48,
               "Review the SBlk decoded-grain budget when the Grain layout changes");
 
@@ -1066,6 +1083,7 @@ void apply_vag_voice_state(VagPlayback* playback) {
   if (pitch) {
     vag_volumes(*playback, &left, &right);
   }
+  AudioStateLock lock(playback->secondary_voice >= 0);
   sceSdSetParam(vag_voice_reg(playback->primary_voice, SD_VP_PITCH), pitch);
   sceSdSetParam(vag_voice_reg(playback->primary_voice, SD_VP_VOLL), left);
   sceSdSetParam(vag_voice_reg(playback->primary_voice, SD_VP_VOLR),
@@ -1081,19 +1099,22 @@ void stop_vag_playback(VagPlayback* playback) {
   if (!playback || !playback->id) {
     return;
   }
-  if (playback->primary_voice >= 0) {
-    sceSdSetParam(vag_voice_reg(playback->primary_voice, SD_VP_VOLL), 0);
-    sceSdSetParam(vag_voice_reg(playback->primary_voice, SD_VP_VOLR), 0);
-    sceSdSetParam(vag_voice_reg(playback->primary_voice, SD_VP_PITCH), 0);
-    snd_keyOffVoiceRaw(0, playback->primary_voice);
-    g_vag_voices_used[playback->primary_voice] = false;
-  }
-  if (playback->secondary_voice >= 0) {
-    sceSdSetParam(vag_voice_reg(playback->secondary_voice, SD_VP_VOLL), 0);
-    sceSdSetParam(vag_voice_reg(playback->secondary_voice, SD_VP_VOLR), 0);
-    sceSdSetParam(vag_voice_reg(playback->secondary_voice, SD_VP_PITCH), 0);
-    snd_keyOffVoiceRaw(0, playback->secondary_voice);
-    g_vag_voices_used[playback->secondary_voice] = false;
+  {
+    AudioStateLock lock(playback->secondary_voice >= 0);
+    if (playback->primary_voice >= 0) {
+      sceSdSetParam(vag_voice_reg(playback->primary_voice, SD_VP_VOLL), 0);
+      sceSdSetParam(vag_voice_reg(playback->primary_voice, SD_VP_VOLR), 0);
+      sceSdSetParam(vag_voice_reg(playback->primary_voice, SD_VP_PITCH), 0);
+      snd_keyOffVoiceRaw(0, playback->primary_voice);
+      g_vag_voices_used[playback->primary_voice] = false;
+    }
+    if (playback->secondary_voice >= 0) {
+      sceSdSetParam(vag_voice_reg(playback->secondary_voice, SD_VP_VOLL), 0);
+      sceSdSetParam(vag_voice_reg(playback->secondary_voice, SD_VP_VOLR), 0);
+      sceSdSetParam(vag_voice_reg(playback->secondary_voice, SD_VP_PITCH), 0);
+      snd_keyOffVoiceRaw(0, playback->secondary_voice);
+      g_vag_voices_used[playback->secondary_voice] = false;
+    }
   }
   if (playback->file) {
     std::fclose(playback->file);
@@ -1167,21 +1188,25 @@ bool load_vag_chunk(VagPlayback* playback) {
   const u32 destination_half = playback->chunks_loaded & 1 ? kVagChannelChunkSize : 0;
   const size_t left_valid = std::min<size_t>(to_read, kVagChannelChunkSize);
   mark_vag_chunk(g_vag_chunk.data(), left_valid, first, final && !stereo);
-  sceSdVoiceTrans(0, 0, g_vag_chunk.data(), kVagSram[playback->primary_voice] + destination_half,
-                  kVagChannelChunkSize);
-  if (stereo) {
-    const size_t right_valid =
-        to_read > kVagChannelChunkSize ? to_read - kVagChannelChunkSize : 0;
-    mark_vag_chunk(g_vag_chunk.data() + kVagChannelChunkSize, right_valid, first, final);
-    if (final) {
-      mark_vag_chunk(g_vag_chunk.data(), left_valid, first, true);
-      sceSdVoiceTrans(0, 0, g_vag_chunk.data(),
-                      kVagSram[playback->primary_voice] + destination_half,
+  {
+    AudioStateLock lock(stereo);
+    sceSdVoiceTrans(0, 0, g_vag_chunk.data(),
+                    kVagSram[playback->primary_voice] + destination_half,
+                    kVagChannelChunkSize);
+    if (stereo) {
+      const size_t right_valid =
+          to_read > kVagChannelChunkSize ? to_read - kVagChannelChunkSize : 0;
+      mark_vag_chunk(g_vag_chunk.data() + kVagChannelChunkSize, right_valid, first, final);
+      if (final) {
+        mark_vag_chunk(g_vag_chunk.data(), left_valid, first, true);
+        sceSdVoiceTrans(0, 0, g_vag_chunk.data(),
+                        kVagSram[playback->primary_voice] + destination_half,
+                        kVagChannelChunkSize);
+      }
+      sceSdVoiceTrans(0, 0, g_vag_chunk.data() + kVagChannelChunkSize,
+                      kVagSram[playback->secondary_voice] + destination_half,
                       kVagChannelChunkSize);
     }
-    sceSdVoiceTrans(0, 0, g_vag_chunk.data() + kVagChannelChunkSize,
-                    kVagSram[playback->secondary_voice] + destination_half,
-                    kVagChannelChunkSize);
   }
   playback->bytes_read += to_read;
   playback->chunks_loaded++;
@@ -1250,19 +1275,22 @@ bool open_vag_playback(VagPlayback* playback,
     stop_vag_playback(playback);
     return false;
   }
-  for (s32 voice : voices) {
-    if (voice < 0) {
-      continue;
+  {
+    AudioStateLock lock(playback->secondary_voice >= 0);
+    for (s32 voice : voices) {
+      if (voice < 0) {
+        continue;
+      }
+      sceSdSetParam(vag_voice_reg(voice, SD_VP_VOLL), 0);
+      sceSdSetParam(vag_voice_reg(voice, SD_VP_VOLR), 0);
+      sceSdSetParam(vag_voice_reg(voice, SD_VP_PITCH), 0);
+      sceSdSetParam(vag_voice_reg(voice, SD_VP_ADSR1), 0xf);
+      sceSdSetParam(vag_voice_reg(voice, SD_VP_ADSR2), 0x1fc0);
+      sceSdSetAddr(vag_voice_reg(voice, SD_VA_SSA), kVagSram[voice] + 0x30);
+      sceSdSetAddr(vag_voice_reg(voice, SD_VA_LSAX),
+                   playback->chunks_loaded > 1 ? kVagSram[voice] + kVagChannelChunkSize
+                                               : kVagTrapSram[voice]);
     }
-    sceSdSetParam(vag_voice_reg(voice, SD_VP_VOLL), 0);
-    sceSdSetParam(vag_voice_reg(voice, SD_VP_VOLR), 0);
-    sceSdSetParam(vag_voice_reg(voice, SD_VP_PITCH), 0);
-    sceSdSetParam(vag_voice_reg(voice, SD_VP_ADSR1), 0xf);
-    sceSdSetParam(vag_voice_reg(voice, SD_VP_ADSR2), 0x1fc0);
-    sceSdSetAddr(vag_voice_reg(voice, SD_VA_SSA), kVagSram[voice] + 0x30);
-    sceSdSetAddr(vag_voice_reg(voice, SD_VA_LSAX),
-                 playback->chunks_loaded > 1 ? kVagSram[voice] + kVagChannelChunkSize
-                                             : kVagTrapSram[voice]);
   }
   return true;
 }
@@ -1306,6 +1334,7 @@ void sync_vag_queue() {
 
 void play_vag(const std::array<char, 48>& name, s32 id) {
   if (VagPlayback* playback = find_vag_playback(name, id)) {
+    AudioStateLock lock(playback->secondary_voice >= 0);
     if (!playback->playing) {
       playback->last_nax = kVagSram[playback->primary_voice] + 0x30;
       playback->current_half = false;
@@ -1373,11 +1402,14 @@ void frame_vag_playbacks() {
         playback.finished = true;
       }
       const u32 next_half = current_half ? 0 : kVagChannelChunkSize;
-      sceSdSetAddr(vag_voice_reg(playback.primary_voice, SD_VA_LSAX),
-                   kVagSram[playback.primary_voice] + next_half);
-      if (playback.secondary_voice >= 0) {
-        sceSdSetAddr(vag_voice_reg(playback.secondary_voice, SD_VA_LSAX),
-                     kVagSram[playback.secondary_voice] + next_half);
+      {
+        AudioStateLock lock(playback.secondary_voice >= 0);
+        sceSdSetAddr(vag_voice_reg(playback.primary_voice, SD_VA_LSAX),
+                     kVagSram[playback.primary_voice] + next_half);
+        if (playback.secondary_voice >= 0) {
+          sceSdSetAddr(vag_voice_reg(playback.secondary_voice, SD_VA_LSAX),
+                       kVagSram[playback.secondary_voice] + next_half);
+        }
       }
     }
 
@@ -1388,6 +1420,7 @@ void frame_vag_playbacks() {
     if (playback.played_bytes >= playable_bytes) {
       playback.finished = true;
       playback.paused = true;
+      AudioStateLock lock(playback.secondary_voice >= 0);
       apply_vag_voice_state(&playback);
       snd_keyOffVoiceRaw(0, playback.primary_voice);
       if (playback.secondary_voice >= 0) {
