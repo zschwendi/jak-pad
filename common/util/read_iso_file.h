@@ -122,6 +122,13 @@ struct Options {
 };
 
 #ifndef _WIN32
+enum class OwnedStagingFinalizationResult {
+  success,
+  unavailable,
+  callback_failed,
+  staging_changed,
+};
+
 /// Retains the exact POSIX directory created by extract_to_owned_staging across caller callbacks.
 /// Destruction removes only entries whose identities were recorded when the reader created them.
 class OwnedStagingDirectory {
@@ -138,8 +145,14 @@ class OwnedStagingDirectory {
   std::optional<std::string> cleanup();
 
   /// Leave the successfully validated staging directory in place and relinquish its descriptors.
-  /// Returns false and retains ownership when its caller-visible path or recorded tree changed.
+  /// Returns false and retains ownership when finalization is required, its caller-visible path or
+  /// recorded tree changed.
   bool keep();
+
+  /// One-shot finalization for an extraction created by
+  /// extract_to_owned_staging_for_finalization. Invokes the checkpoint callback, verifies the exact
+  /// descriptor-owned tree and identities, then keeps it.
+  OwnedStagingFinalizationResult finalize_and_keep(const std::function<bool()>& checkpoint);
 
   /// Confirm that the retained directory is still linked and contains exactly the recorded tree.
   bool is_linked() const;
@@ -157,6 +170,7 @@ class OwnedStagingDirectory {
   struct Impl;
   std::unique_ptr<Impl> m_impl;
 
+  friend struct OwnedStagingDirectoryAccess;
   friend Result<IsoFile> extract_to_owned_staging(FILE*,
                                                   const std::filesystem::path&,
                                                   OwnedStagingDirectory*,
@@ -191,6 +205,14 @@ Result<IsoFile> extract_to_owned_staging(FILE* file,
                                          const std::filesystem::path& staging_directory,
                                          OwnedStagingDirectory* owned_staging,
                                          const Options& options = {});
+
+/// Extract without the reader's immediate content-verification pass. The returned owned handle
+/// cannot be kept directly and must be consumed by finalize_and_keep after validation succeeds.
+Result<IsoFile> extract_to_owned_staging_for_finalization(
+    FILE* file,
+    const std::filesystem::path& staging_directory,
+    OwnedStagingDirectory* owned_staging,
+    const Options& options = {});
 #endif
 
 const char* error_code_name(ErrorCode code);

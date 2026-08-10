@@ -520,6 +520,56 @@ bool owned_staging_rejects_and_preserves_unexpected_entries() {
   return true;
 }
 
+bool owned_staging_deferred_extraction_requires_finalization() {
+  TemporaryDirectory temp;
+  const auto fixture = make_synthetic_iso();
+  const auto image = temp.path / "fixture.iso";
+  const auto staging = temp.path / "staging";
+  CHECK(write_image(image, fixture.bytes));
+  OpenFile input(image);
+  CHECK(input.file);
+
+  iso_file::OwnedStagingDirectory owned_staging;
+  const auto result =
+      iso_file::extract_to_owned_staging_for_finalization(input.file, staging, &owned_staging);
+  CHECK(result);
+  CHECK(!owned_staging.keep());
+  CHECK(owned_staging.finalize_and_keep([] { return true; }) ==
+        iso_file::OwnedStagingFinalizationResult::success);
+  CHECK(owned_staging.finalize_and_keep([] { return true; }) ==
+        iso_file::OwnedStagingFinalizationResult::unavailable);
+  CHECK(std::filesystem::is_regular_file(staging / "SAFE.TXT"));
+  CHECK(std::filesystem::is_regular_file(staging / "NEST" / "TINY.BIN"));
+  return true;
+}
+
+bool owned_staging_finalization_rejects_unexpected_entry() {
+  TemporaryDirectory temp;
+  const auto fixture = make_synthetic_iso();
+  const auto image = temp.path / "fixture.iso";
+  const auto staging = temp.path / "staging";
+  CHECK(write_image(image, fixture.bytes));
+  OpenFile input(image);
+  CHECK(input.file);
+
+  iso_file::OwnedStagingDirectory owned_staging;
+  const auto result =
+      iso_file::extract_to_owned_staging_for_finalization(input.file, staging, &owned_staging);
+  CHECK(result);
+  const auto finalization = owned_staging.finalize_and_keep([&] {
+    std::ofstream(staging / "unexpected.txt") << "preserve";
+    return true;
+  });
+  CHECK(finalization == iso_file::OwnedStagingFinalizationResult::staging_changed);
+  CHECK(!owned_staging.keep());
+  CHECK(owned_staging.cleanup());
+  CHECK(!std::filesystem::exists(staging / "SAFE.TXT"));
+  CHECK(!std::filesystem::exists(staging / "NEST"));
+  CHECK(read_bytes(staging / "unexpected.txt") ==
+        std::vector<uint8_t>({'p', 'r', 'e', 's', 'e', 'r', 'v', 'e'}));
+  return true;
+}
+
 bool owned_staging_rejects_in_place_progress_mutation() {
   TemporaryDirectory temp;
   const auto fixture = make_synthetic_iso();
@@ -671,6 +721,10 @@ int main() {
 #ifndef _WIN32
       {"owned_staging_rejects_and_preserves_unexpected_entries",
        owned_staging_rejects_and_preserves_unexpected_entries},
+      {"owned_staging_deferred_extraction_requires_finalization",
+       owned_staging_deferred_extraction_requires_finalization},
+      {"owned_staging_finalization_rejects_unexpected_entry",
+       owned_staging_finalization_rejects_unexpected_entry},
       {"owned_staging_rejects_in_place_progress_mutation",
        owned_staging_rejects_in_place_progress_mutation},
       {"owned_staging_rejects_replaced_parent_path", owned_staging_rejects_replaced_parent_path},

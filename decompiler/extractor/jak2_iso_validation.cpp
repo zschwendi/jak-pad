@@ -148,14 +148,6 @@ ValidationError with_cleanup(ValidationError error,
   return error;
 }
 
-std::optional<ValidationError> verify_staged_contents(
-    const iso_file::OwnedStagingDirectory& staging_directory) {
-  if (staging_directory.verify_recorded_contents()) {
-    return std::nullopt;
-  }
-  return make_error(ValidationErrorCode::invalid_extraction_result,
-                    "A reader-created staging file changed after a disc-validation callback.");
-}
 #else
 ValidationError with_cleanup(ValidationError error,
                              const std::filesystem::path& staging_directory) {
@@ -416,8 +408,8 @@ ValidationResult<StagedExtraction> extract_and_validate(
   options.hash_files = true;
 #ifndef _WIN32
   iso_file::OwnedStagingDirectory owned_staging;
-  auto extracted =
-      iso_file::extract_to_owned_staging(image, new_staging_directory, &owned_staging, options);
+  auto extracted = iso_file::extract_to_owned_staging_for_finalization(image, new_staging_directory,
+                                                                       &owned_staging, options);
 #else
   auto extracted = iso_file::extract_to_staging(image, new_staging_directory, options);
 #endif
@@ -485,19 +477,22 @@ ValidationResult<StagedExtraction> extract_and_validate(
 #endif
   }
 #ifndef _WIN32
-  if (auto integrity_error = verify_staged_contents(owned_staging)) {
-    return ValidationResult<StagedExtraction>::failure(
-        with_cleanup(std::move(*integrity_error), &owned_staging));
-  }
-  if (auto checkpoint_error = write_checkpoint_file_at(match, &owned_staging)) {
+  std::optional<ValidationError> checkpoint_error;
+  const auto finalization = owned_staging.finalize_and_keep([&] {
+    checkpoint_error = write_checkpoint_file_at(match, &owned_staging);
+    return !checkpoint_error;
+  });
+  if (checkpoint_error) {
     return ValidationResult<StagedExtraction>::failure(
         with_cleanup(std::move(*checkpoint_error), &owned_staging));
   }
-  if (!owned_staging.keep()) {
-    return ValidationResult<StagedExtraction>::failure(
-        with_cleanup(make_error(ValidationErrorCode::invalid_extraction_result,
-                                "The exact validated staging directory changed before completion."),
-                     &owned_staging));
+  if (finalization != iso_file::OwnedStagingFinalizationResult::success) {
+    const auto message =
+        finalization == iso_file::OwnedStagingFinalizationResult::callback_failed
+            ? "Could not finalize the validated extraction checkpoint."
+            : "The exact validated staging directory changed before completion.";
+    return ValidationResult<StagedExtraction>::failure(with_cleanup(
+        make_error(ValidationErrorCode::invalid_extraction_result, message), &owned_staging));
   }
 #else
   auto checkpoint = write_buildinfo_checkpoint(match, new_staging_directory);

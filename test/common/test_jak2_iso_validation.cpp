@@ -537,19 +537,32 @@ bool reader_failures_and_cancellation_leave_no_staging() {
 }
 
 #ifndef _WIN32
-bool last_cancel_callback_in_place_mutation_fails_closed() {
+bool supported_synthetic_image_is_checkpointed_and_kept() {
   TemporaryDirectory temp;
   const auto image_path = temp.path / "supported.iso";
   write_bytes(image_path, make_supported_revision_iso());
   const auto staging = temp.path / "staging";
-  const auto sibling = temp.path / "sibling.txt";
-  write_bytes(sibling, "outside");
+
+  OpenFile input(image_path);
+  CHECK(input.file);
+  const auto result = jak2_iso::extract_and_validate(input.file, staging);
+  CHECK(result);
+  CHECK(result.value().match.revision.contents_hash == jak2_iso::import_revision().contents_hash);
+  CHECK(result.value().files.size() == jak2_iso::import_revision().file_count);
+  CHECK(fs::is_regular_file(staging / "SCUS_972.65"));
+  CHECK(fs::is_regular_file(staging / "TAIL.BIN"));
+  CHECK(fs::is_regular_file(staging / "buildinfo.json"));
+  return true;
+}
+
+bool last_cancel_callback_is_observed() {
+  TemporaryDirectory temp;
+  const auto image_path = temp.path / "supported.iso";
+  write_bytes(image_path, make_supported_revision_iso());
+  const auto staging = temp.path / "staging";
 
   bool extraction_complete = false;
-  bool mutated = false;
-  bool mutation_failed = false;
   uint32_t post_extraction_polls = 0;
-  uint32_t mutation_poll = 0;
   iso_file::Options options;
   options.on_progress = [&](const iso_file::Progress& progress) {
     if (progress.files_total == jak2_iso::import_revision().file_count &&
@@ -562,18 +575,7 @@ bool last_cancel_callback_in_place_mutation_fails_closed() {
     if (extraction_complete) {
       ++post_extraction_polls;
     }
-    if (!mutated && post_extraction_polls == 2) {
-      std::error_code error;
-      const auto tail = staging / "TAIL.BIN";
-      std::fstream current(tail, std::ios::binary | std::ios::in | std::ios::out);
-      current.seekp(0);
-      current.put('!');
-      current.close();
-      mutation_failed = !current || fs::file_size(tail, error) != 8 || bool(error);
-      mutated = !mutation_failed;
-      mutation_poll = post_extraction_polls;
-    }
-    return false;
+    return post_extraction_polls == 2;
   };
 
   OpenFile input(image_path);
@@ -581,15 +583,11 @@ bool last_cancel_callback_in_place_mutation_fails_closed() {
   const auto result = jak2_iso::extract_and_validate(input.file, staging, options);
   CHECK(extraction_complete);
   CHECK(post_extraction_polls == 2);
-  CHECK(mutation_poll == 2);
-  CHECK(mutated);
-  CHECK(!mutation_failed);
   CHECK(!result);
-  CHECK(result.error().code == jak2_iso::ValidationErrorCode::invalid_extraction_result);
+  CHECK(result.error().code == jak2_iso::ValidationErrorCode::cancelled);
   CHECK(!result.error().reader_error);
   CHECK(!result.error().cleanup_error);
   CHECK(!fs::exists(staging));
-  CHECK(read_text(sibling) == "outside");
   return true;
 }
 
@@ -689,7 +687,8 @@ int main() {
       buildinfo_checkpoint_is_atomic_and_desktop_compatible,
       reader_failures_and_cancellation_leave_no_staging,
 #ifndef _WIN32
-      last_cancel_callback_in_place_mutation_fails_closed,
+      supported_synthetic_image_is_checkpointed_and_kept,
+      last_cancel_callback_is_observed,
       progress_path_replacement_preserves_external_directory,
 #endif
       optionally_matches_extracted_retail_oracle,

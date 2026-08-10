@@ -668,6 +668,14 @@ namespace iso_file {
 
 #ifndef _WIN32
 struct OwnedStagingDirectory::Impl {
+  enum class State {
+    extracting,
+    verified,
+    finalization_required,
+    finalizing,
+    failed,
+  };
+
   struct Entry {
     std::string name;
     bool is_directory = false;
@@ -686,6 +694,7 @@ struct OwnedStagingDirectory::Impl {
   posix_file::Identity root_identity;
   std::vector<Entry> entries;
   bool cleanup_pending = false;
+  State state = State::extracting;
 
   static std::string system_error(std::string_view message) {
     return std::string(message) + ": " + std::strerror(errno);
@@ -1116,12 +1125,39 @@ std::optional<std::string> OwnedStagingDirectory::cleanup() {
 }
 
 bool OwnedStagingDirectory::keep() {
-  if (!m_impl || !m_impl->is_linked()) {
+  if (!m_impl || m_impl->state != Impl::State::verified || !m_impl->is_linked()) {
     return false;
   }
   m_impl->cleanup_pending = false;
   m_impl.reset();
   return true;
+}
+
+OwnedStagingFinalizationResult OwnedStagingDirectory::finalize_and_keep(
+    const std::function<bool()>& checkpoint) {
+  if (!m_impl || m_impl->state != Impl::State::finalization_required || !checkpoint) {
+    return OwnedStagingFinalizationResult::unavailable;
+  }
+  m_impl->state = Impl::State::finalizing;
+  bool callback_succeeded = false;
+  try {
+    callback_succeeded = checkpoint();
+  } catch (...) {
+    m_impl->state = Impl::State::failed;
+    return OwnedStagingFinalizationResult::callback_failed;
+  }
+  if (!callback_succeeded) {
+    m_impl->state = Impl::State::failed;
+    return OwnedStagingFinalizationResult::callback_failed;
+  }
+  if (!m_impl->is_linked()) {
+    m_impl->state = Impl::State::failed;
+    return OwnedStagingFinalizationResult::staging_changed;
+  }
+
+  m_impl->cleanup_pending = false;
+  m_impl.reset();
+  return OwnedStagingFinalizationResult::success;
 }
 
 bool OwnedStagingDirectory::is_linked() const {
@@ -1368,10 +1404,19 @@ Result<IsoFile> extract_to_staging(FILE* file,
 }
 
 #ifndef _WIN32
-Result<IsoFile> extract_to_owned_staging(FILE* file,
-                                         const std::filesystem::path& staging_directory,
-                                         OwnedStagingDirectory* owned_staging,
-                                         const Options& options) {
+struct OwnedStagingDirectoryAccess {
+  static Result<IsoFile> extract(FILE* file,
+                                 const std::filesystem::path& staging_directory,
+                                 OwnedStagingDirectory* owned_staging,
+                                 const Options& options,
+                                 bool finalization_required);
+};
+
+Result<IsoFile> OwnedStagingDirectoryAccess::extract(FILE* file,
+                                                     const std::filesystem::path& staging_directory,
+                                                     OwnedStagingDirectory* owned_staging,
+                                                     const Options& options,
+                                                     bool finalization_required) {
   if (staging_directory.empty()) {
     return Result<IsoFile>::failure(
         make_error(ErrorCode::invalid_argument, 0, "The staging directory is empty."));
@@ -1455,6 +1500,10 @@ Result<IsoFile> extract_to_owned_staging(FILE* file,
     }
     return Result<IsoFile>::failure(std::move(error));
   }
+  if (finalization_required) {
+    owned_staging->m_impl->state = OwnedStagingDirectory::Impl::State::finalization_required;
+    return Result<IsoFile>::success(std::move(layout));
+  }
   if (!owned_staging->m_impl->verify_recorded_contents()) {
     auto error =
         make_error(ErrorCode::output_write_failed, 0,
@@ -1464,7 +1513,25 @@ Result<IsoFile> extract_to_owned_staging(FILE* file,
     }
     return Result<IsoFile>::failure(std::move(error));
   }
+  owned_staging->m_impl->state = OwnedStagingDirectory::Impl::State::verified;
   return Result<IsoFile>::success(std::move(layout));
+}
+
+Result<IsoFile> extract_to_owned_staging(FILE* file,
+                                         const std::filesystem::path& staging_directory,
+                                         OwnedStagingDirectory* owned_staging,
+                                         const Options& options) {
+  return OwnedStagingDirectoryAccess::extract(file, staging_directory, owned_staging, options,
+                                              false);
+}
+
+Result<IsoFile> extract_to_owned_staging_for_finalization(
+    FILE* file,
+    const std::filesystem::path& staging_directory,
+    OwnedStagingDirectory* owned_staging,
+    const Options& options) {
+  return OwnedStagingDirectoryAccess::extract(file, staging_directory, owned_staging, options,
+                                              true);
 }
 #endif
 
