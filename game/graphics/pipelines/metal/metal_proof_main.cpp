@@ -44,7 +44,6 @@
 #include <functional>
 #include <memory>
 #include <unordered_map>
-#include <utility>
 
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/dma/dma_chain_read.h"
@@ -144,49 +143,6 @@ bool pixels_match_at(const metal_renderer::FramePixels& a,
   const u8* b_pixel = rgba_pixel_at(b, x, y);
   return a.width == b.width && a.height == b.height && a_pixel && b_pixel &&
          std::memcmp(a_pixel, b_pixel, 4) == 0;
-}
-
-struct PixelDifferenceStats {
-  size_t changed_pixels = 0;
-  size_t compared_pixels = 0;
-  u64 absolute_rgb_delta = 0;
-  int max_channel_delta = 0;
-
-  double mean_delta_per_changed_channel() const {
-    return changed_pixels ? double(absolute_rgb_delta) / double(changed_pixels * 3) : 0.0;
-  }
-};
-
-PixelDifferenceStats pixel_difference_stats(const metal_renderer::FramePixels& a,
-                                            const metal_renderer::FramePixels& b,
-                                            int x0,
-                                            int y0,
-                                            int x1,
-                                            int y1) {
-  PixelDifferenceStats stats;
-  if (a.width != b.width || a.height != b.height || a.rgba.size() != b.rgba.size()) {
-    return stats;
-  }
-  x0 = std::clamp(x0, 0, a.width);
-  y0 = std::clamp(y0, 0, a.height);
-  x1 = std::clamp(x1, x0, a.width);
-  y1 = std::clamp(y1, y0, a.height);
-  for (int y = y0; y < y1; y++) {
-    for (int x = x0; x < x1; x++) {
-      const u8* a_pixel = rgba_pixel_at(a, x, y);
-      const u8* b_pixel = rgba_pixel_at(b, x, y);
-      bool changed = false;
-      for (int channel = 0; channel < 3; channel++) {
-        const int delta = std::abs(int(a_pixel[channel]) - int(b_pixel[channel]));
-        stats.absolute_rgb_delta += delta;
-        stats.max_channel_delta = std::max(stats.max_channel_delta, delta);
-        changed |= delta != 0;
-      }
-      stats.changed_pixels += changed;
-      stats.compared_pixels++;
-    }
-  }
-  return stats;
 }
 
 void check_pixel_stable_across_stereo(const metal_renderer::FramePixels& reference,
@@ -5347,65 +5303,6 @@ int main(int argc, char** argv) {
   check_pixel(present, 400, 300, 255, 128, 128, "game center at 1:1 (masked quad)");
   check_pixel(present, 528, 204, 191, 64, 64, "game content at 1:1 (alpha quad)");
 
-  // ---- Modern V1 present effects: exact Classic bypass and independent bits ----
-  const auto classic_present = present;
-  popts.engine_frame_id = 0x12345678;
-  metal_renderer::FramePixels classic_repeat;
-  if (metal_renderer::read_present_frame(popts, &classic_repeat)) {
-    check(classic_repeat.rgba == classic_present.rgba,
-          "Modern V1: zero effect bits preserve exact Classic output");
-  } else {
-    check(false, "Modern V1: read back exact Classic bypass frame");
-  }
-
-  struct ModernEffectExpectation {
-    u32 effect;
-    const char* name;
-    size_t minimum_changed_pixels;
-    double minimum_mean_changed_delta;
-    int minimum_max_channel_delta;
-  };
-  constexpr std::array<ModernEffectExpectation, 6> kModernEffects = {{
-      {metal_renderer::kModernEffectFilmicColor, "filmic color", 30000, 4.0, 8},
-      {metal_renderer::kModernEffectEdgeSmoothing, "edge smoothing", 200, 12.0, 24},
-      {metal_renderer::kModernEffectClarity, "clarity", 2500, 4.0, 12},
-      {metal_renderer::kModernEffectSoftHighlights, "soft highlights", 100000, 1.0, 16},
-      {metal_renderer::kModernEffectVignette, "vignette", 30000, 3.0, 12},
-      {metal_renderer::kModernEffectFilmGrain, "film grain", 100000, 0.7, 2},
-  }};
-  for (const auto& expectation : kModernEffects) {
-    popts.modern_effects = expectation.effect;
-    metal_renderer::FramePixels modern_present;
-    const bool read = metal_renderer::read_present_frame(popts, &modern_present);
-    std::string label = std::string("Modern V1: minimum quantized separation ") +
-                        expectation.name;
-    if (read) {
-      const auto stats = pixel_difference_stats(classic_present, modern_present, 80, 60, 720, 540);
-      printf("Modern V1 %s changed %zu/%zu content pixels, mean changed-channel delta %.2f, "
-             "max channel delta %d\n",
-             expectation.name, stats.changed_pixels, stats.compared_pixels,
-             stats.mean_delta_per_changed_channel(), stats.max_channel_delta);
-      check(stats.changed_pixels >= expectation.minimum_changed_pixels &&
-                stats.mean_delta_per_changed_channel() >= expectation.minimum_mean_changed_delta &&
-                stats.max_channel_delta >= expectation.minimum_max_channel_delta,
-            label.c_str());
-      if (expectation.effect == metal_renderer::kModernEffectFilmicColor) {
-        const u8* classic_mid = rgba_pixel_at(classic_present, 161, 300);
-        const u8* modern_mid = rgba_pixel_at(modern_present, 161, 300);
-        check(classic_mid && modern_mid && std::abs(int(classic_mid[0]) - int(modern_mid[0])) <= 1 &&
-                  std::abs(int(classic_mid[1]) - int(modern_mid[1])) <= 1 &&
-                  std::abs(int(classic_mid[2]) - int(modern_mid[2])) <= 1,
-              "Modern V1: filmic color preserves neutral midtone brightness");
-      }
-      check_pixel(modern_present, 40, 300, 0, 0, 0,
-                  "Modern V1 effect preserves letterbox bars");
-    } else {
-      check(false, label.c_str());
-    }
-  }
-  popts.modern_effects = 0;
-  popts.engine_frame_id = 0;
-
   // ---- present pass: scaled letterbox (1.5x, pillarboxed 1280x720) ----
   popts.window_w = 1280;
   popts.window_h = 720;
@@ -5420,27 +5317,6 @@ int main(int argc, char** argv) {
   } else {
     check(false, "read back 1.5x present frame");
   }
-  const auto classic_scaled_present = present;
-  popts.modern_effects = metal_renderer::kModernEffectAll;
-  popts.engine_frame_id = 0x12345678;
-  metal_renderer::FramePixels modern_scaled_present;
-  if (metal_renderer::read_present_frame(popts, &modern_scaled_present)) {
-    const auto stats =
-        pixel_difference_stats(classic_scaled_present, modern_scaled_present, 160, 0, 1120, 720);
-    printf("Modern V1 combined at 1.5x changed %zu/%zu content pixels, mean changed-channel "
-           "delta %.2f, max channel delta %d\n",
-           stats.changed_pixels, stats.compared_pixels, stats.mean_delta_per_changed_channel(),
-           stats.max_channel_delta);
-    check(stats.changed_pixels >= 300000 && stats.mean_delta_per_changed_channel() >= 4.0 &&
-              stats.max_channel_delta >= 16,
-          "Modern V1: combined defaults retain material separation at 1.5x");
-    check_pixel(modern_scaled_present, 80, 360, 0, 0, 0,
-                "Modern V1 combined preserves scaled letterbox bars");
-  } else {
-    check(false, "Modern V1: read back combined defaults at 1.5x");
-  }
-  popts.modern_effects = 0;
-  popts.engine_frame_id = 0;
 
   // ---- present pass: pmode-alp blackout ----
   popts.window_w = 800;

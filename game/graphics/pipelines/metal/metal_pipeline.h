@@ -39,16 +39,6 @@ struct Level;
 
 namespace metal_renderer {
 
-enum MetalModernEffect : u32 {
-  kModernEffectFilmicColor = 1u << 0,
-  kModernEffectEdgeSmoothing = 1u << 1,
-  kModernEffectClarity = 1u << 2,
-  kModernEffectSoftHighlights = 1u << 3,
-  kModernEffectVignette = 1u << 4,
-  kModernEffectFilmGrain = 1u << 5,
-  kModernEffectAll = (1u << 6) - 1,
-};
-
 // RGBA8 copy of a rendered frame, used by tests to verify that rendering
 // actually happened. Origin is the top-left corner.
 struct FramePixels {
@@ -79,8 +69,6 @@ struct PresentTestOptions {
   float pmode_alp = 1.f;
   int brightness_contrast_color = 0;
   int brightness_contrast_alpha = 128;
-  u32 modern_effects = 0;
-  u64 engine_frame_id = 0;
 };
 
 struct ExternalRenderTargetProofResult {
