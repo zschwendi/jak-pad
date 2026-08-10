@@ -132,8 +132,8 @@ constexpr Table make_table() {
 
   host_texture_upload(BucketId::TEX_LCOM_TFRAG);
   defer(BucketId::MERC_LCOM_TFRAG);
-  defer(BucketId::TEX_LCOM_SHRUB);
-  defer(BucketId::MERC_LCOM_SHRUB);
+  host_texture_upload(BucketId::TEX_LCOM_SHRUB);
+  merc(BucketId::MERC_LCOM_SHRUB);
   defer(BucketId::GMERC_LCOM_TFRAG);
   defer(BucketId::SHADOW);
   defer(BucketId::TEX_LCOM_PRIS);
@@ -190,10 +190,10 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 73);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 71);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 27);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 28);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUploadDirect) == 2);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Visibility) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Sprite) == 1);
@@ -207,7 +207,7 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTrans) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTransEnvmap) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWater) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWaterEnvmap) == 6);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 6);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 7);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::BlitDisplay) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercAlpha) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercWater) == 7);

@@ -687,7 +687,8 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
       return;
     }
     if (plan.bucket_id != bucket_id) {
-      throw std::runtime_error("Jak 2 normal SHRUB texture-setup dispatch order is inconsistent");
+      throw std::runtime_error(
+          "Jak 2 normal/common SHRUB texture-setup dispatch order is inconsistent");
     }
     dispatch->host->metrics.shrub_texture_uploads[index].executions++;
     return;
@@ -894,7 +895,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id, &capture);
       record_texture_upload_metrics(&host->metrics.shrub_texture_uploads[i], bucket_id, capture);
       if (!plan) {
-        const std::string error = "Jak 2 SHRUB texture-setup plan rejected bucket " +
+        const std::string error = "Jak 2 normal/common SHRUB texture-setup plan rejected bucket " +
                                   std::to_string(bucket_id) + " DMA";
         record_failure(host, error.c_str());
         return;

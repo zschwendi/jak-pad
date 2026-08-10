@@ -561,11 +561,17 @@ void MetalRenderer::init_bucket_renderers_jak2() {
           tfrag3::TieCategory::WATER_ENVMAP);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Merc) {
       ASSERT(batch_size == 0);
-      ASSERT(bucket_id >= first_merc && (bucket_id - first_merc) % merc_stride == 0);
-      const int level_id = static_cast<int>((bucket_id - first_merc) / merc_stride);
-      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      std::string name;
+      if (bucket_id == static_cast<std::size_t>(jak2::BucketId::MERC_LCOM_SHRUB)) {
+        name = "merc-lcom-shrub";
+      } else {
+        ASSERT(bucket_id >= first_merc && (bucket_id - first_merc) % merc_stride == 0);
+        const int level_id = static_cast<int>((bucket_id - first_merc) / merc_stride);
+        ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+        name = fmt::format("merc-l{}-tfrag", level_id);
+      }
       m_bucket_renderers[bucket_id] = std::make_unique<MetalMercBucketRenderer>(
-          fmt::format("merc-l{}-tfrag", level_id), descriptor.id, merc);
+          name, descriptor.id, merc);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::MercAlpha) {
       ASSERT(batch_size == 0);
       ASSERT(bucket_id >= first_merc_alpha &&

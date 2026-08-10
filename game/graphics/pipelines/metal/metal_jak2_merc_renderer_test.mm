@@ -33,6 +33,7 @@ constexpr u32 kMercBucket = static_cast<u32>(jak2::BucketId::MERC_L0_TFRAG);
 constexpr u32 kMercAlphaBucket = static_cast<u32>(jak2::BucketId::MERC_L0_ALPHA);
 constexpr u32 kMercWaterBucket = static_cast<u32>(jak2::BucketId::MERC_L0_WATER);
 constexpr u32 kMercCommonWaterBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_WATER);
+constexpr u32 kMercCommonShrubBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_SHRUB);
 constexpr u32 kOpening = 0x100;
 constexpr u32 kBoundary = 0x200;
 constexpr u32 kSetup = 0x400;
@@ -46,6 +47,7 @@ constexpr std::size_t kMemorySize = 0x4000;
 constexpr float kMercZ = 8388608.f;
 
 static_assert(kMercBucket == 14);
+static_assert(kMercCommonShrubBucket == 192);
 
 int failures = 0;
 
@@ -480,6 +482,8 @@ int main() {
                                            shared);
     MetalMercBucketRenderer common_water_renderer(
         "merc-lcom-water", static_cast<int>(kMercCommonWaterBucket), shared);
+    MetalMercBucketRenderer common_shrub_renderer(
+        "merc-lcom-shrub", static_cast<int>(kMercCommonShrubBucket), shared);
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
@@ -537,9 +541,21 @@ int main() {
     check(count_non_black(positive.pixels) > 0,
           "the source-shaped Jak 2 Merc model produces non-black GPU pixels");
 
+    auto common_shrub_memory = make_source_chain(kNormalModelName);
+    const auto common_shrub = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                     &common_shrub_renderer, &common_shrub_memory, 2);
+    check(common_shrub.completed && common_shrub.final_offset == kBoundary &&
+              common_shrub.stats.models == 1 && common_shrub.stats.draws == 1 &&
+              common_shrub.stats.triangles == 2 && common_shrub.draw_calls == 1 &&
+              common_shrub.triangles == 2 && common_shrub.stats.malformed_dma == 0 &&
+              common_shrub.stats.missing_models == 0 &&
+              common_shrub.stats.missing_bone_slots == 0 &&
+              count_non_black(common_shrub.pixels) > 0,
+          "the common shrub Merc bucket draws its source-shaped model to non-black GPU pixels");
+
     auto filtered_memory = make_source_chain(kFilteredModelName);
     const auto filtered = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                 &normal_renderer, &filtered_memory, 2);
+                                 &normal_renderer, &filtered_memory, 3);
 
     struct VariantResult {
       const char* name;
@@ -550,11 +566,11 @@ int main() {
     auto common_water_memory = make_source_chain(kWaterModelName);
     std::array<VariantResult, 3> variants = {{
         {"alpha", render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                         &alpha_renderer, &alpha_memory, 3)},
+                         &alpha_renderer, &alpha_memory, 4)},
         {"per-level water", render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                   &water_renderer, &water_memory, 4)},
+                                   &water_renderer, &water_memory, 5)},
         {"common water", render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                &common_water_renderer, &common_water_memory, 5)},
+                                &common_water_renderer, &common_water_memory, 6)},
     }};
     for (const auto& [name, result] : variants) {
       const bool rendered = result.completed && result.final_offset == kBoundary &&
@@ -584,9 +600,13 @@ int main() {
           "alpha and water variants retain identical filtered color output");
 
     const int filtered_depth = count_written_depth(filtered.depths);
+    const int common_shrub_depth = count_written_depth(common_shrub.depths);
     const int alpha_depth = count_written_depth(variants[0].result.depths);
     const int water_depth = count_written_depth(variants[1].result.depths);
     const int common_water_depth = count_written_depth(variants[2].result.depths);
+    check(common_shrub_depth == filtered_depth &&
+              center_pixel(common_shrub.pixels) == nearest_pixel,
+          "common shrub Merc preserves the normal color and depth contract");
     check(filtered_depth > 0 && alpha_depth == filtered_depth,
           "alpha Merc writes depth across the same covered pixels as opaque Merc");
     check(water_depth == 0 && common_water_depth == 0,
@@ -596,7 +616,7 @@ int main() {
     put_tag(&malformed_memory, kModel, DmaTag::Kind::CNT, 0xffff, 0, 0,
             static_cast<u32>(VifCode::Kind::PC_PORT) << 24);
     const auto malformed = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                  &alpha_renderer, &malformed_memory, 6);
+                                  &alpha_renderer, &malformed_memory, 7);
     check(malformed.completed && malformed.final_offset == kBoundary &&
               malformed.stats.malformed_dma == 1 && malformed.stats.models == 0 &&
               malformed.stats.draws == 0 && malformed.stats.triangles == 0 &&
@@ -614,7 +634,9 @@ int main() {
       std::printf("FAIL: %d Jak 2 Merc category renderer checks failed\n", failures);
       return 1;
     }
-    std::printf("PASS: Jak 2 normal, alpha, and water Merc buckets rendered asset-free fixtures\n");
+    std::printf(
+        "PASS: Jak 2 normal, common shrub, alpha, and water Merc buckets rendered asset-free "
+        "fixtures\n");
     return 0;
   }
 }

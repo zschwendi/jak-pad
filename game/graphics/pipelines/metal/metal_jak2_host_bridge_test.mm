@@ -373,9 +373,10 @@ bool sky_batch_is_zero(const goal_jak2_metal_host_metrics& metrics) {
          metrics.last_sky_draw_batch_alpha_afail == 0;
 }
 
+template <std::size_t BucketCount>
 bool texture_captures_are_empty(
     const goal_jak2_tfrag_texture_upload_metrics* uploads,
-    const std::array<u32, GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT>& kBuckets) {
+    const std::array<u32, BucketCount>& kBuckets) {
   for (std::size_t i = 0; i < kBuckets.size(); ++i) {
     const auto& upload = uploads[i];
     if (upload.bucket_id != kBuckets[i] || upload.captures != 1 ||
@@ -789,7 +790,7 @@ int main() {
   constexpr std::array<u32, GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT> kTfragBuckets = {
       7, 18, 29, 40, 51, 62};
   constexpr std::array<u32, GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT> kShrubBuckets = {
-      73, 82, 91, 100, 109, 118};
+      73, 82, 91, 100, 109, 118, 191};
   constexpr std::array<u32, GOAL_JAK2_ALPHA_TEXTURE_UPLOAD_BUCKET_COUNT> kAlphaBuckets = {
       127, 137, 147, 157, 167, 177};
   constexpr std::array<u32, GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT> kWaterBuckets = {
@@ -797,7 +798,7 @@ int main() {
   check(texture_captures_are_empty(metrics.tfrag_texture_uploads, kTfragBuckets),
         "the host records all six empty normal TFRAG texture setup buckets");
   check(texture_captures_are_empty(metrics.shrub_texture_uploads, kShrubBuckets),
-        "the host records all six empty normal SHRUB texture setup buckets");
+        "the host records all seven empty normal/common SHRUB texture setup buckets");
   check(texture_captures_are_empty(metrics.alpha_texture_uploads, kAlphaBuckets),
         "the host records all six empty source-identical alpha texture setup buckets");
   check(texture_captures_are_empty(metrics.water_texture_uploads, kWaterBuckets),

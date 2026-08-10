@@ -336,7 +336,7 @@ void test_texture_bucket_allowlist() {
   for (const u32 bucket_id : metal_renderer::kJak2NormalShrubTextureUploadBuckets) {
     const auto result = capture(make_empty_fixture(bucket_id), bucket_id);
     check(result.valid && !result.present && result.classification == Classification::Absent,
-          "each audited normal SHRUB texture bucket accepts an exact empty chain");
+          "each audited normal/common SHRUB texture bucket accepts an exact empty chain");
   }
 
   for (const u32 bucket_id : metal_renderer::kJak2AlphaTextureUploadBuckets) {
@@ -420,7 +420,7 @@ void test_normal_shrub_execution_plan() {
               result.inert_transfers == 3 && result.gs_setup_transfers == 1 &&
               result.direct_setup_transfers == 1 && result.ordinary_descriptors == 0 &&
               result.other_transfers == 0,
-          "each normal SHRUB texture bucket produces one exact Direct-only no-op plan");
+          "each normal/common SHRUB texture bucket produces one exact Direct-only no-op plan");
   }
 
   auto packet = make_normal_shrub_fixture(73);

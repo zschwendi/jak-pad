@@ -12,7 +12,8 @@ namespace metal_renderer {
 
 constexpr u32 kJak2CommonTfragTextureUploadBucket = 187;
 constexpr std::array<u32, 6> kJak2NormalTfragTextureUploadBuckets = {7, 18, 29, 40, 51, 62};
-constexpr std::array<u32, 6> kJak2NormalShrubTextureUploadBuckets = {73, 82, 91, 100, 109, 118};
+constexpr std::array<u32, 7> kJak2NormalShrubTextureUploadBuckets = {
+    73, 82, 91, 100, 109, 118, 191};
 constexpr std::array<u32, 6> kJak2AlphaTextureUploadBuckets = {127, 137, 147, 157, 167, 177};
 constexpr std::array<u32, 6> kJak2WaterTextureUploadBuckets = {252, 261, 270, 279, 288, 297};
 constexpr std::size_t kJak2CommonTfragTextureUploadMaximumTransfers = 64;
@@ -194,9 +195,9 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*!
- * Plan the exact Direct-only normal SHRUB setup written by Jak II. Both GS payloads are inert for
- * the matching GL TextureUploadHandler, which is constructed without add_direct; no page pointer
- * is read and no texture-pool mutation is planned.
+ * Plan the exact Direct-only normal/common SHRUB setup written by Jak II. Both GS payloads are
+ * inert for the matching GL TextureUploadHandler, which is constructed without add_direct; no
+ * page pointer is read and no texture-pool mutation is planned.
  */
 std::optional<Jak2NormalShrubTextureUploadPlan> plan_jak2_normal_shrub_texture_upload(
     const u8* dma_packet_snapshot,
