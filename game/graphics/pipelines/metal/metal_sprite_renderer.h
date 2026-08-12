@@ -77,6 +77,11 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
     int triangles = 0;
     int distort_sprites = 0;
     int missing_textures = 0;
+    int placeholder_batches = 0;
+    int placeholder_sprites = 0;
+    bool first_placeholder_valid = false;
+    u32 first_placeholder_tbp = 0;
+    u32 first_placeholder_draw_mode = 0;
     int glow_transfers_skipped = 0;
     u64 glow_bytes_skipped = 0;
     int post_glow_residual_transfers = 0;

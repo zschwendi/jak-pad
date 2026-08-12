@@ -315,6 +315,12 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_sprite_draws = stats.sprite_draws;
   host->metrics.last_sprite_triangles = stats.sprite_triangles;
   host->metrics.last_sprite_missing_textures = stats.sprite_missing_textures;
+  host->metrics.last_sprite_placeholder_batches = stats.sprite_placeholder_batches;
+  host->metrics.last_sprite_placeholder_sprites = stats.sprite_placeholder_sprites;
+  host->metrics.last_sprite_first_placeholder_valid = stats.sprite_first_placeholder_valid;
+  host->metrics.last_sprite_first_placeholder_tbp = stats.sprite_first_placeholder_tbp;
+  host->metrics.last_sprite_first_placeholder_draw_mode =
+      stats.sprite_first_placeholder_draw_mode;
   host->metrics.last_sprite_unsupported_bytes = stats.sprite_unsupported_bytes;
   host->metrics.submissions = stats.submissions;
   host->metrics.presentations = stats.presentations_completed;

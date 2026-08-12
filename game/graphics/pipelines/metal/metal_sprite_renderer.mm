@@ -1277,11 +1277,23 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
       lg::warn("Metal sprite {}: failed to find texture at {}, using placeholder", m_name, tbp);
       tex = render_state->texture_pool->get_placeholder_texture();
     }
+    const u64 placeholder = render_state->texture_pool->get_placeholder_texture();
+    bool used_placeholder = *tex == placeholder;
     id<MTLTexture> mtl_tex = metal_texture_lookup(*tex);
     if (!mtl_tex) {
-      mtl_tex = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
+      mtl_tex = metal_texture_lookup(placeholder);
+      used_placeholder = true;
     }
     ASSERT(mtl_tex);
+    if (used_placeholder) {
+      m_stats.placeholder_batches++;
+      m_stats.placeholder_sprites += static_cast<int>(bucket->ids.size() / 5);
+      if (!m_stats.first_placeholder_valid) {
+        m_stats.first_placeholder_valid = true;
+        m_stats.first_placeholder_tbp = tbp;
+        m_stats.first_placeholder_draw_mode = mode.as_int();
+      }
+    }
 
     id<MTLRenderPipelineState> pso = ctx.pso_cache->get_pipeline(settings.pso);
     ASSERT(pso);

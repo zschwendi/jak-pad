@@ -1747,6 +1747,11 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         m_chain_stats.sprite_draws = ss.draw_calls;
         m_chain_stats.sprite_triangles = ss.triangles;
         m_chain_stats.sprite_missing_textures = ss.missing_textures;
+        m_chain_stats.sprite_placeholder_batches = ss.placeholder_batches;
+        m_chain_stats.sprite_placeholder_sprites = ss.placeholder_sprites;
+        m_chain_stats.sprite_first_placeholder_valid = ss.first_placeholder_valid;
+        m_chain_stats.sprite_first_placeholder_tbp = ss.first_placeholder_tbp;
+        m_chain_stats.sprite_first_placeholder_draw_mode = ss.first_placeholder_draw_mode;
         m_chain_stats.sprite_unsupported_bytes = ss.unsupported_bytes;
         skipped += sp->unsupported_bytes_total();
       } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {

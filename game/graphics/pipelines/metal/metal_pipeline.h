@@ -254,6 +254,11 @@ struct ChainStats {
   int sprite_draws = 0;
   int sprite_triangles = 0;
   int sprite_missing_textures = 0;
+  int sprite_placeholder_batches = 0;
+  int sprite_placeholder_sprites = 0;
+  bool sprite_first_placeholder_valid = false;
+  u32 sprite_first_placeholder_tbp = 0;
+  u32 sprite_first_placeholder_draw_mode = 0;
   u64 sprite_unsupported_bytes = 0;
   // ocean buckets, from the last chain frame
   int ocean_draws = 0;

@@ -216,6 +216,11 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_sprite_draws;
   uint64_t last_sprite_triangles;
   uint64_t last_sprite_missing_textures;
+  uint64_t last_sprite_placeholder_batches;
+  uint64_t last_sprite_placeholder_sprites;
+  uint32_t last_sprite_first_placeholder_valid;
+  uint32_t last_sprite_first_placeholder_tbp;
+  uint32_t last_sprite_first_placeholder_draw_mode;
   uint64_t last_sprite_unsupported_bytes;
   uint64_t submissions;
   uint64_t presentations;
