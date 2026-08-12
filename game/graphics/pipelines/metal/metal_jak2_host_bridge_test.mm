@@ -55,6 +55,10 @@ constexpr u32 kWaterSecurityDirectOffset = kChainOffset + 0x15800;
 constexpr u32 kPrisOrdinaryBucket = 200;
 constexpr u32 kPrisOrdinaryDescriptorOffset = kChainOffset + 0x16000;
 constexpr u32 kPrisOrdinaryDirectOffset = kChainOffset + 0x16100;
+constexpr u32 kPrisonClutBucket = 204;
+constexpr u32 kPrisonClutDescriptorOffset = kChainOffset + 0x16200;
+constexpr u32 kPrisonClutAnimatorOffset = kChainOffset + 0x16300;
+constexpr u32 kPrisonClutDirectOffset = kChainOffset + 0x16400;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -169,6 +173,40 @@ void make_pris_ordinary_only_chain() {
   put_tag(kPrisOrdinaryDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   std::memset(ee + kPrisOrdinaryDirectOffset + 16, 0x52, 160);
   put_tag(kPrisOrdinaryDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_prison_clut_chain(float morph) {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  constexpr s64 kMode = -1;
+  constexpr u64 kPageOffset = kTexturePageOffset;
+  constexpr std::array<u32, 7> kDestinationTbps = {
+      0x1000, 0x1010, 0x1020, 0x1030, 0x1040, 0x1050, 0x1060};
+  const u32 bucket_offset = kChainOffset + kPrisonClutBucket * 16;
+
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kPrisonClutDescriptorOffset);
+  put_tag(kPrisonClutDescriptorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  std::memcpy(ee + kPrisonClutDescriptorOffset + 16, &kPageOffset, sizeof(kPageOffset));
+  std::memcpy(ee + kPrisonClutDescriptorOffset + 24, &kMode, sizeof(kMode));
+  put_tag(kPrisonClutDescriptorOffset + 32, DmaTag::Kind::NEXT, 0,
+          kPrisonClutAnimatorOffset);
+
+  put_tag(kPrisonClutAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
+  const u32 body_tag = kPrisonClutAnimatorOffset + 16;
+  put_tag(body_tag, DmaTag::Kind::CNT, 3, 0, kPcPort | 23, 0);
+  std::memset(ee + body_tag + 16, 0, 48);
+  std::memcpy(ee + body_tag + 16, &morph, sizeof(morph));
+  std::memcpy(ee + body_tag + 32, kDestinationTbps.data(), sizeof(kDestinationTbps));
+  const u32 finish_tag = body_tag + 16 + 48;
+  put_tag(finish_tag, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, 0);
+  put_tag(finish_tag + 16, DmaTag::Kind::NEXT, 0, kPrisonClutDirectOffset);
+
+  put_tag(kPrisonClutDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  std::memset(ee + kPrisonClutDirectOffset + 16, 0x53, 160);
+  put_tag(kPrisonClutDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
 void put_u64(std::array<u8, kGifBytes>& payload, std::size_t offset, u64 value) {
@@ -465,6 +503,56 @@ tfrag3::Texture synthetic_source_texture(const char* name, u32 color) {
   return texture;
 }
 
+tfrag3::IndexTexture synthetic_prison_index_texture(std::string name, u8 bias) {
+  tfrag3::IndexTexture texture;
+  texture.w = 2;
+  texture.h = 2;
+  texture.index_data = {0, 1, 2, 3};
+  texture.level_names = {"LDJAKBRN.DGO"};
+  texture.name = std::move(name);
+  texture.tpage_name = "synthetic-prison-clut";
+  for (std::size_t entry = 0; entry < texture.color_table.size(); ++entry) {
+    texture.color_table[entry][0] = static_cast<u8>(entry + bias);
+    texture.color_table[entry][1] = static_cast<u8>(entry + bias + 1);
+    texture.color_table[entry][2] = static_cast<u8>(entry + bias + 2);
+    texture.color_table[entry][3] = static_cast<u8>(255 - entry);
+  }
+  return texture;
+}
+
+bool write_prison_clut_fr3(const std::filesystem::path& path) {
+  constexpr std::array<std::array<const char*, 3>, 6> kNames = {{
+      {"jak-orig-arm-formorph", "jak-orig-arm-formorph-start",
+       "jak-orig-arm-formorph-end"},
+      {"jak-orig-eyebrow-formorph", "jak-orig-eyebrow-formorph-start",
+       "jak-orig-eyebrow-formorph-end"},
+      {"jak-orig-finger-formorph", "jak-orig-finger-formorph-start",
+       "jak-orig-finger-formorph-end"},
+      {"jakb-facelft", "jakb-facelft-norm", "jakb-facelft-dark"},
+      {"jakb-facert", "jakb-facert-norm", "jakb-facert-dark"},
+      {"jakb-hairtrans", "jakb-hairtrans-norm", "jakb-hairtrans-dark"},
+  }};
+  tfrag3::Level level;
+  level.level_name = "prison-clut-common";
+  for (std::size_t slot = 0; slot < kNames.size(); ++slot) {
+    level.index_textures.push_back(synthetic_prison_index_texture(kNames[slot][0], 0));
+    level.index_textures.push_back(
+        synthetic_prison_index_texture(kNames[slot][1], static_cast<u8>(slot * 8 + 4)));
+    level.index_textures.push_back(
+        synthetic_prison_index_texture(kNames[slot][2], static_cast<u8>(slot * 8 + 20)));
+  }
+
+  Serializer serializer;
+  level.serialize(serializer);
+  const auto serialized = serializer.get_save_result();
+  const auto compressed = compression::compress_zstd(serialized.first, serialized.second);
+  if (compressed.empty()) {
+    return false;
+  }
+  file_util::write_binary_file(path, compressed.data(), compressed.size());
+  return std::filesystem::exists(path);
+}
+
 bool write_security_fr3(const std::filesystem::path& path,
                         const std::string& level_name,
                         bool common) {
@@ -690,12 +778,14 @@ int main() {
   std::filesystem::create_directories(fixture_root / "fr3", fixture_error);
   std::filesystem::create_directories(fixture_root / "wrong", fixture_error);
   std::filesystem::create_directories(fixture_root / "security", fixture_error);
+  std::filesystem::create_directories(fixture_root / "prison", fixture_error);
   check(!fixture_error &&
             write_synthetic_fr3(fixture_root / "fr3/GAME.fr3", "synthetic-common-key", true) &&
             write_synthetic_fr3(fixture_root / "fr3/arena.fr3", "synthetic-arena-key", false) &&
             write_synthetic_fr3(fixture_root / "wrong/arena.fr3", "wrong-directory-key", false) &&
             write_security_fr3(fixture_root / "security/GAME.fr3", "security-common", true) &&
-            write_security_fr3(fixture_root / "security/ctywide.fr3", "ctywide", false),
+            write_security_fr3(fixture_root / "security/ctywide.fr3", "ctywide", false) &&
+            write_prison_clut_fr3(fixture_root / "prison/GAME.fr3"),
         "created public synthetic FR3 level-art fixtures");
   if (failures) {
     goal_kernel_core_shutdown();
@@ -1227,6 +1317,95 @@ int main() {
             pris_upload_metrics.skipped_bucket_bytes == 0,
         "all six PRIS callbacks run, the ordinary upload runs once, and zero eye chunks execute");
   goal_jak2_metal_host_destroy(pris_upload_host);
+
+  goal_jak2_metal_host* missing_prison_host = goal_jak2_metal_host_create();
+  goal_gfx_host missing_prison_callbacks = {};
+  check(missing_prison_host &&
+            goal_jak2_metal_host_copy_gfx_host(missing_prison_host,
+                                               &missing_prison_callbacks),
+        "created a host without common prison CLUT inputs");
+  write_empty_texture_page(kTexturePageOffset, kTexturePageId);
+  make_prison_clut_chain(0.5f);
+  missing_prison_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  goal_jak2_metal_host_metrics missing_prison_metrics = {};
+  const char* missing_prison_error =
+      goal_jak2_metal_host_last_error(missing_prison_host);
+  check(goal_jak2_metal_host_get_metrics(missing_prison_host,
+                                         &missing_prison_metrics) &&
+            missing_prison_metrics.chains == 1 &&
+            missing_prison_metrics.completed_chains == 0 &&
+            missing_prison_metrics.failed_chains == 1 &&
+            missing_prison_metrics.pris_texture_uploads[2].executions == 0 &&
+            missing_prison_metrics.prison_clut_preparations == 0 &&
+            missing_prison_metrics.prison_clut_publications == 0 &&
+            missing_prison_error &&
+            std::strstr(missing_prison_error, "common level art is unavailable"),
+        "prison CLUT preparation fails before the ordinary upload or registry mutation");
+  goal_jak2_metal_host_destroy(missing_prison_host);
+
+  goal_jak2_metal_host* prison_host = goal_jak2_metal_host_create();
+  goal_gfx_host prison_callbacks = {};
+  const std::string prison_directory = (fixture_root / "prison").string();
+  check(prison_host &&
+            goal_jak2_metal_host_configure_level_art(prison_host,
+                                                     prison_directory.c_str()) &&
+            goal_jak2_metal_host_copy_gfx_host(prison_host, &prison_callbacks),
+        "created a host with synthetic GAME.fr3 prison CLUT IndexTextures");
+  make_prison_clut_chain(0.5f);
+  prison_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  goal_jak2_metal_host_metrics prison_metrics = {};
+  check(goal_jak2_metal_host_get_metrics(prison_host, &prison_metrics),
+        "copied metrics after the prison CLUT PRIS chain");
+  constexpr std::array<u64, 6> kExpectedTbps = {0x1000, 0x1010, 0x1030,
+                                                0x1040, 0x1050, 0x1060};
+  constexpr std::array<u32, 6> kExpectedSlots = {4, 5, 7, 8, 9, 10};
+  std::array<u64, 6> first_prison_handles = {};
+  bool exact_prison_outputs = true;
+  for (std::size_t i = 0; i < first_prison_handles.size(); ++i) {
+    first_prison_handles[i] = prison_metrics.prison_clut_textures[i];
+    exact_prison_outputs = exact_prison_outputs && first_prison_handles[i] != 0 &&
+                           prison_metrics.prison_clut_destination_tbps[i] ==
+                               kExpectedTbps[i] &&
+                           prison_metrics.prison_clut_anim_slots[i] == kExpectedSlots[i];
+  }
+  check(prison_metrics.chains == 1 && prison_metrics.completed_chains == 1 &&
+            prison_metrics.failed_chains == 0 &&
+            prison_metrics.last_pris_eye_dispatches ==
+                GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT &&
+            prison_metrics.last_pris_eye_present_dispatches == 1 &&
+            prison_metrics.pris_texture_uploads[2].bucket_id == kPrisonClutBucket &&
+            prison_metrics.pris_texture_uploads[2].transfers == 9 &&
+            prison_metrics.pris_texture_uploads[2].payload_bytes == 224 &&
+            prison_metrics.pris_texture_uploads[2].ordinary_descriptors == 1 &&
+            prison_metrics.pris_texture_uploads[2].animator_arrays == 1 &&
+            prison_metrics.pris_texture_uploads[2].opcode_counts[23] == 1 &&
+            prison_metrics.pris_texture_uploads[2].executions == 1 &&
+            prison_metrics.prison_clut_preparations == 1 &&
+            prison_metrics.prison_clut_publications == 1 && exact_prison_outputs,
+        "bucket 204 runs one ordinary upload then publishes six exact CLUT outputs");
+
+  make_prison_clut_chain(0.25f);
+  prison_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(prison_host, &prison_metrics),
+        "copied metrics after the repeated prison CLUT PRIS chain");
+  bool stable_prison_handles = true;
+  for (std::size_t i = 0; i < first_prison_handles.size(); ++i) {
+    stable_prison_handles = stable_prison_handles &&
+                            prison_metrics.prison_clut_textures[i] ==
+                                first_prison_handles[i];
+  }
+  check(prison_metrics.chains == 2 && prison_metrics.completed_chains == 2 &&
+            prison_metrics.failed_chains == 0 &&
+            prison_metrics.pris_texture_uploads[2].executions == 2 &&
+            prison_metrics.prison_clut_preparations == 2 &&
+            prison_metrics.prison_clut_publications == 2 && stable_prison_handles,
+        "a later morph reuses all six stable host-owned registry handles");
+  goal_jak2_metal_host_destroy(prison_host);
+  check(metal_level_data::level_count() == initial_level_count &&
+            metal_merc_models().level_count() == initial_merc_level_count &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
+            metal_texture_live_count() == initial_texture_count,
+        "prison CLUT host teardown releases GAME.fr3 and all six publications");
 
   goal_jak2_metal_host* sprite_upload_host = goal_jak2_metal_host_create();
   goal_gfx_host sprite_upload_callbacks = {};

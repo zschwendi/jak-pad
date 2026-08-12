@@ -80,6 +80,7 @@ enum {
   GOAL_JAK2_SHRUB_TEXTURE_UPLOAD_BUCKET_COUNT = 7,
   GOAL_JAK2_ALPHA_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
   GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
+  GOAL_JAK2_PRISON_CLUT_OUTPUT_COUNT = 6,
   GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
   GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT = 7,
   GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT = 4,
@@ -141,6 +142,11 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_pris_eye_dispatches;
   uint64_t last_pris_eye_present_dispatches;
   uint64_t last_pris_eye_chunks;
+  uint64_t prison_clut_preparations;
+  uint64_t prison_clut_publications;
+  uint64_t prison_clut_textures[GOAL_JAK2_PRISON_CLUT_OUTPUT_COUNT];
+  uint32_t prison_clut_destination_tbps[GOAL_JAK2_PRISON_CLUT_OUTPUT_COUNT];
+  uint32_t prison_clut_anim_slots[GOAL_JAK2_PRISON_CLUT_OUTPUT_COUNT];
   uint64_t last_eye_composed;
   uint64_t last_eye_draws;
   uint64_t last_eye_triangles;
