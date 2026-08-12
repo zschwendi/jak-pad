@@ -28,6 +28,12 @@ constexpr u32 kEyeOrdinaryOffset = 0x8000;
 constexpr u32 kEyeFirstOffset = 0x9000;
 constexpr u32 kEyeSecondOffset = 0xa000;
 constexpr u32 kEyeDirectOffset = 0xb000;
+constexpr u32 kPrisAnimatorOffset = 0x8800;
+constexpr u32 kPrisAnimatorBodyTagOffset = kPrisAnimatorOffset + 16;
+constexpr u32 kPrisAnimatorBodyOffset = kPrisAnimatorBodyTagOffset + 16;
+constexpr u32 kPrisAnimatorFinishOffset =
+    kPrisAnimatorBodyOffset + metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes;
+constexpr u32 kPrisAnimatorLinkerOffset = kPrisAnimatorFinishOffset + 16;
 constexpr u32 kEyePageOffset = 0x18000;
 constexpr std::size_t kMemorySize = 0x20000;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
@@ -410,9 +416,39 @@ u32 put_different_eyes_chunk(std::vector<u8>* packet,
   return put_gs_set(packet, cursor, GsRegisterAddress::ALPHA_1, 0x44);
 }
 
+void put_pris_prison_jak_animator(std::vector<u8>* packet, u32 dma_relocation,
+                                  u32 next_offset) {
+  constexpr std::array<u32, metal_renderer::kJak2PrisPrisonJakAnimatorTbpCount> kTbps = {
+      0x1000, metal_renderer::kJak2PrisPrisonJakAnimatorMissingTbp, 0x1020, 0x1030,
+      0x1040, 0x1050, 0x1060};
+  const u32 animator_offset = kPrisAnimatorOffset + dma_relocation;
+  const u32 body_tag_offset = kPrisAnimatorBodyTagOffset + dma_relocation;
+  const u32 body_offset = kPrisAnimatorBodyOffset + dma_relocation;
+  const u32 finish_offset = kPrisAnimatorFinishOffset + dma_relocation;
+  const u32 linker_offset = kPrisAnimatorLinkerOffset + dma_relocation;
+  put_tag(packet, animator_offset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 12, 0);
+  put_tag(packet, body_tag_offset, DmaTag::Kind::CNT,
+          metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes / 16, 0,
+          kPcPortVif | metal_renderer::kJak2PrisPrisonJakAnimatorOpcode, 0);
+  put_float(packet, body_offset, 0.5f);
+  for (std::size_t i = 0; i < kTbps.size(); ++i) {
+    put_u32(packet, body_offset + 16 + static_cast<u32>(i) * sizeof(u32), kTbps[i]);
+  }
+  // pc-clut-blender leaves morph.yzw and the final four bytes unspecified.
+  for (u32 i = 0; i < 12; ++i) {
+    (*packet)[body_offset + 4 + i] = static_cast<u8>(0xc0 + i);
+  }
+  for (u32 i = 0; i < 4; ++i) {
+    (*packet)[body_offset + 44 + i] = static_cast<u8>(0xd0 + i);
+  }
+  put_tag(packet, finish_offset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 13, 0);
+  put_tag(packet, linker_offset, DmaTag::Kind::NEXT, 0, next_offset, 0, 0);
+}
+
 PrisEyeFixture make_pris_eye_fixture(u32 bucket_id,
                                      const std::vector<EyeChunkSpec>& chunks,
-                                     u32 dma_relocation = 0) {
+                                     u32 dma_relocation = 0,
+                                     bool prison_jak_animator = false) {
   PrisEyeFixture fixture{std::vector<u8>(kMemorySize), kEyeFirstOffset + dma_relocation};
   const u32 ordinary_offset = kEyeOrdinaryOffset + dma_relocation;
   const u32 first_offset = kEyeFirstOffset + dma_relocation;
@@ -425,15 +461,25 @@ PrisEyeFixture make_pris_eye_fixture(u32 bucket_id,
   put_tag(&fixture.packet, ordinary_offset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
   put_u64(&fixture.packet, ordinary_offset + 16, kEyePageOffset);
   put_u64(&fixture.packet, ordinary_offset + 24, static_cast<u64>(-1));
+  const u32 first_chain_offset = prison_jak_animator
+                                     ? kPrisAnimatorOffset + dma_relocation
+                                     : chunks.empty() ? direct_offset : first_offset;
   put_tag(&fixture.packet, ordinary_offset + 32, DmaTag::Kind::NEXT, 0,
-          first_offset, 0, 0);
-
-  u32 linker_offset = put_different_eyes_chunk(&fixture.packet, first_offset, chunks.at(0));
-  if (chunks.size() == 2) {
-    put_tag(&fixture.packet, linker_offset, DmaTag::Kind::NEXT, 0, second_offset, 0, 0);
-    linker_offset = put_different_eyes_chunk(&fixture.packet, second_offset, chunks.at(1));
+          first_chain_offset, 0, 0);
+  if (prison_jak_animator) {
+    put_pris_prison_jak_animator(&fixture.packet, dma_relocation,
+                                 chunks.empty() ? direct_offset : first_offset);
   }
-  put_tag(&fixture.packet, linker_offset, DmaTag::Kind::NEXT, 0, direct_offset, 0, 0);
+
+  u32 linker_offset = 0;
+  if (!chunks.empty()) {
+    linker_offset = put_different_eyes_chunk(&fixture.packet, first_offset, chunks.at(0));
+    if (chunks.size() == 2) {
+      put_tag(&fixture.packet, linker_offset, DmaTag::Kind::NEXT, 0, second_offset, 0, 0);
+      linker_offset = put_different_eyes_chunk(&fixture.packet, second_offset, chunks.at(1));
+    }
+    put_tag(&fixture.packet, linker_offset, DmaTag::Kind::NEXT, 0, direct_offset, 0, 0);
+  }
   put_tag(&fixture.packet, direct_offset, DmaTag::Kind::CNT, 10, 0,
           static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
   std::fill_n(fixture.packet.begin() + direct_offset + 16, 160, 0x52);
@@ -793,6 +839,140 @@ void test_pris_eye_live_copy_semantics() {
             !metal_renderer::jak2_pris_eye_texture_upload_plans_match(*live_plan,
                                                                        *copied_plan),
         "a semantic payload mutation between live capture and copied execution is rejected");
+}
+
+void test_pris_prison_jak_animator_variants() {
+  for (const u32 bucket_id : metal_renderer::kJak2PrisTextureUploadBuckets) {
+    auto animator_only = make_pris_eye_fixture(bucket_id, {}, 0, true);
+    Capture capture;
+    const auto plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+        animator_only.packet.data(), animator_only.packet.size(), kChainOffset, bucket_id,
+        animator_only.packet.data(), animator_only.packet.size(), &capture);
+    check(plan.has_value() && plan->present && plan->has_prison_jak_animator &&
+              plan->prison_jak_animator.start_transfer_index == 3 &&
+              plan->prison_jak_animator.body_transfer_index == 4 &&
+              plan->prison_jak_animator.finish_transfer_index == 5 &&
+              plan->prison_jak_animator.linker_transfer_index == 6 &&
+              plan->prison_jak_animator.morph == 0.5f &&
+              plan->prison_jak_animator.destination_tbps[1] ==
+                  metal_renderer::kJak2PrisPrisonJakAnimatorMissingTbp &&
+              plan->prison_jak_animator.source_padding[0] == 0xc0 &&
+              plan->prison_jak_animator.source_padding[15] == 0xd3 &&
+              plan->chunk_count == 0 && plan->direct_reset_transfer_index == 7 &&
+              plan->terminal_transfer_index == 8 && plan->semantic_fingerprint != 0 &&
+              capture.valid &&
+              capture.classification == Classification::OrdinaryAndAnimator &&
+              capture.transfer_count == 9 && capture.total_payload_bytes == 224 &&
+              capture.inert_transfers == 4 && capture.animator_arrays == 1 &&
+              capture.animator_body_transfers == 1 && capture.animator_payload_bytes == 48 &&
+              capture.opcode_counts[metal_renderer::kJak2PrisPrisonJakAnimatorOpcode] == 1 &&
+              capture.eye_markers == 0 && capture.other_transfers == 0,
+          "all six per-level PRIS buckets accept the exact animator-only prison-Jak composite");
+  }
+
+  auto one = make_pris_eye_fixture(204, {{false, 2}}, 0, true);
+  Capture one_capture;
+  const auto one_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      one.packet.data(), one.packet.size(), kChainOffset, 204, one.packet.data(),
+      one.packet.size(), &one_capture);
+  check(one_plan.has_value() && one_plan->has_prison_jak_animator && one_plan->chunk_count == 1 &&
+            one_plan->prison_jak_animator.linker_transfer_index == 6 &&
+            one_plan->chunks[0].start_transfer_index == 7 &&
+            one_plan->chunks[0].linker_transfer_index == 33 &&
+            one_plan->direct_reset_transfer_index == 34 &&
+            one_plan->terminal_transfer_index == 35 && one_capture.transfer_count == 36 &&
+            one_capture.total_payload_bytes == 2080 && one_capture.inert_transfers == 5 &&
+            one_capture.eye_markers == 2 && one_capture.other_transfers == 13,
+        "the prison-Jak animator can precede one existing eye chunk without changing eye parsing");
+
+  auto two = make_pris_eye_fixture(196, {{false, 0}, {false, 1}}, 0, true);
+  Capture two_capture;
+  const auto two_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      two.packet.data(), two.packet.size(), kChainOffset, 196, two.packet.data(),
+      two.packet.size(), &two_capture);
+  check(two_plan.has_value() && two_plan->has_prison_jak_animator && two_plan->chunk_count == 2 &&
+            two_plan->chunks[0].start_transfer_index == 7 &&
+            two_plan->chunks[0].linker_transfer_index == 33 &&
+            two_plan->chunks[1].start_transfer_index == 34 &&
+            two_plan->chunks[1].linker_transfer_index == 60 &&
+            two_plan->direct_reset_transfer_index == 61 &&
+            two_plan->terminal_transfer_index == 62 && two_capture.transfer_count == 63 &&
+            two_capture.total_payload_bytes == 3936 && two_capture.inert_transfers == 6 &&
+            two_capture.eye_markers == 4 && two_capture.other_transfers == 26,
+        "the prison-Jak animator can precede two existing eye chunks at the transfer bound");
+
+  auto live = make_pris_eye_fixture(200, {{false, 0}}, 0, true);
+  auto copied = make_pris_eye_fixture(200, {{false, 0}}, 0x4000, true);
+  const auto live_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      live.packet.data(), live.packet.size(), kChainOffset, 200, live.packet.data(),
+      live.packet.size());
+  auto copied_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      copied.packet.data(), copied.packet.size(), kChainOffset, 200, copied.packet.data(),
+      copied.packet.size());
+  check(live_plan.has_value() && copied_plan.has_value() &&
+            live_plan->prison_jak_animator.start_relative_tag_offset !=
+                copied_plan->prison_jak_animator.start_relative_tag_offset &&
+            metal_renderer::jak2_pris_eye_texture_upload_plans_match(*live_plan, *copied_plan),
+        "relocated prison-Jak live and copied plans match by owned animator semantics");
+
+  put_u32(&copied.packet, kPrisAnimatorBodyOffset + 0x4000 + 4, 0xee);
+  copied_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      copied.packet.data(), copied.packet.size(), kChainOffset, 200, copied.packet.data(),
+      copied.packet.size());
+  check(copied_plan.has_value() &&
+            !metal_renderer::jak2_pris_eye_texture_upload_plans_match(*live_plan, *copied_plan),
+        "opaque prison-Jak source bytes remain covered by the copied-plan fingerprint");
+
+  auto bad_qwc = make_pris_eye_fixture(200, {}, 0, true);
+  put_u64(&bad_qwc.packet, kPrisAnimatorBodyTagOffset,
+          2ull | (static_cast<u64>(DmaTag::Kind::CNT) << 28));
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_qwc.packet.data(), bad_qwc.packet.size(), kChainOffset, 200,
+             bad_qwc.packet.data(), bad_qwc.packet.size())
+             .has_value(),
+        "a prison-Jak body with the wrong qwc is rejected");
+
+  auto bad_opcode = make_pris_eye_fixture(200, {}, 0, true);
+  put_u32(&bad_opcode.packet, kPrisAnimatorBodyTagOffset + 8, kPcPortVif | 22);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_opcode.packet.data(), bad_opcode.packet.size(), kChainOffset, 200,
+             bad_opcode.packet.data(), bad_opcode.packet.size())
+             .has_value(),
+        "a dark-Jak opcode in the prison-Jak body position is rejected");
+
+  auto bad_order = make_pris_eye_fixture(200, {}, 0, true);
+  put_u32(&bad_order.packet, kPrisAnimatorOffset + 8,
+          kPcPortVif | metal_renderer::kJak2PrisPrisonJakAnimatorOpcode);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_order.packet.data(), bad_order.packet.size(), kChainOffset, 200,
+             bad_order.packet.data(), bad_order.packet.size())
+             .has_value(),
+        "a prison-Jak body before its start marker is rejected");
+
+  auto bad_tbp = make_pris_eye_fixture(200, {}, 0, true);
+  put_u32(&bad_tbp.packet, kPrisAnimatorBodyOffset + 16,
+          metal_renderer::kJak2PrisPrisonJakAnimatorTbpUpperBound);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_tbp.packet.data(), bad_tbp.packet.size(), kChainOffset, 200,
+             bad_tbp.packet.data(), bad_tbp.packet.size())
+             .has_value(),
+        "a prison-Jak TBP outside PS2 VRAM is rejected while UINT32_MAX remains valid");
+
+  auto bad_morph = make_pris_eye_fixture(200, {}, 0, true);
+  put_float(&bad_morph.packet, kPrisAnimatorBodyOffset, 2.f);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_morph.packet.data(), bad_morph.packet.size(), kChainOffset, 200,
+             bad_morph.packet.data(), bad_morph.packet.size())
+             .has_value(),
+        "a prison-Jak morph outside the source [0,1] range is rejected");
+
+  auto nonfinite_morph = make_pris_eye_fixture(200, {}, 0, true);
+  put_u32(&nonfinite_morph.packet, kPrisAnimatorBodyOffset, 0x7fc00000);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             nonfinite_morph.packet.data(), nonfinite_morph.packet.size(), kChainOffset, 200,
+             nonfinite_morph.packet.data(), nonfinite_morph.packet.size())
+             .has_value(),
+        "a non-finite prison-Jak morph is rejected");
 }
 
 void test_pris_ordinary_live_copy_semantics() {
@@ -1662,6 +1842,7 @@ int main() {
   test_texture_bucket_allowlist();
   test_pris_eye_execution_plan();
   test_pris_eye_live_copy_semantics();
+  test_pris_prison_jak_animator_variants();
   test_pris_ordinary_live_copy_semantics();
   test_pris_eye_shape_fails_closed();
   test_normal_tfrag_execution_plan();

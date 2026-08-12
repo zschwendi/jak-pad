@@ -23,6 +23,7 @@ constexpr u64 kEyeHash = 0x123456789abcdef0ull;
 constexpr u32 kPrisBucket = 200;
 constexpr u32 kPrisBucketOffset = kPrisBucket * 16;
 constexpr u32 kPrisOrdinaryOffset = 0x4000;
+constexpr u32 kPrisAnimatorOffset = 0x4800;
 constexpr u32 kPrisChunkOffset = 0x5000;
 
 int failures = 0;
@@ -175,7 +176,7 @@ struct PrisFixture {
   metal_renderer::Jak2PrisEyeTextureUploadPlan plan;
 };
 
-PrisFixture make_pris_fixture(std::size_t chunk_count) {
+PrisFixture make_pris_fixture(std::size_t chunk_count, bool prison_jak_animator = false) {
   constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
   constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
   constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
@@ -188,6 +189,7 @@ PrisFixture make_pris_fixture(std::size_t chunk_count) {
   fixture.plan.ordinary.page_offset = kPageOffset;
   fixture.plan.ordinary.mode = kMode;
   fixture.plan.chunk_count = chunk_count;
+  fixture.plan.has_prison_jak_animator = prison_jak_animator;
 
   put_tag(&fixture.data, kPrisBucketOffset, DmaTag::Kind::NEXT, 0,
           kPrisOrdinaryOffset, 0, 0);
@@ -198,8 +200,51 @@ PrisFixture make_pris_fixture(std::size_t chunk_count) {
   std::memcpy(fixture.data.data() + kPrisOrdinaryOffset + 24, &kMode, sizeof(kMode));
 
   u32 chunk_offset = kPrisChunkOffset;
-  put_tag(&fixture.data, kPrisOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0,
-          chunk_offset, 0, 0);
+  if (prison_jak_animator) {
+    constexpr std::array<u32, metal_renderer::kJak2PrisPrisonJakAnimatorTbpCount> kTbps = {
+        0x1000, metal_renderer::kJak2PrisPrisonJakAnimatorMissingTbp, 0x1020, 0x1030,
+        0x1040, 0x1050, 0x1060};
+    auto& animator = fixture.plan.prison_jak_animator;
+    animator.morph = 0.5f;
+    animator.destination_tbps = kTbps;
+    for (std::size_t i = 0; i < animator.source_padding.size(); ++i) {
+      animator.source_padding[i] = static_cast<u8>(0xc0 + i);
+    }
+    animator.semantic_fingerprint = 1;
+    animator.start_transfer_index = 3;
+    animator.start_relative_tag_offset = kPrisAnimatorOffset - kPrisBucketOffset;
+    animator.body_transfer_index = 4;
+    animator.body_relative_tag_offset = animator.start_relative_tag_offset + 16;
+    animator.finish_transfer_index = 5;
+    animator.finish_relative_tag_offset = animator.body_relative_tag_offset + 16 +
+                                          metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes;
+    animator.linker_transfer_index = 6;
+    animator.linker_relative_tag_offset = animator.finish_relative_tag_offset + 16;
+    put_tag(&fixture.data, kPrisOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0,
+            kPrisAnimatorOffset, 0, 0);
+    put_tag(&fixture.data, kPrisAnimatorOffset, DmaTag::Kind::CNT, 0, 0,
+            kPcPort | metal_renderer::kJak2PrisPrisonJakAnimatorStartOpcode, 0);
+    put_tag(&fixture.data, kPrisAnimatorOffset + 16, DmaTag::Kind::CNT,
+            metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes / 16, 0,
+            kPcPort | metal_renderer::kJak2PrisPrisonJakAnimatorOpcode, 0);
+    const u32 body_offset = kPrisAnimatorOffset + 32;
+    std::memcpy(fixture.data.data() + body_offset, &animator.morph, sizeof(animator.morph));
+    for (std::size_t i = 0; i < kTbps.size(); ++i) {
+      std::memcpy(fixture.data.data() + body_offset + 16 + i * sizeof(u32), &kTbps[i],
+                  sizeof(kTbps[i]));
+    }
+    std::memcpy(fixture.data.data() + body_offset + 4, animator.source_padding.data(), 12);
+    std::memcpy(fixture.data.data() + body_offset + 44, animator.source_padding.data() + 12, 4);
+    const u32 finish_offset = kPrisAnimatorOffset + 32 +
+                              metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes;
+    put_tag(&fixture.data, finish_offset, DmaTag::Kind::CNT, 0, 0,
+            kPcPort | metal_renderer::kJak2PrisPrisonJakAnimatorFinishOpcode, 0);
+    put_tag(&fixture.data, finish_offset + 16, DmaTag::Kind::NEXT, 0, kPrisChunkOffset, 0, 0);
+  } else {
+    put_tag(&fixture.data, kPrisOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0,
+            chunk_offset, 0, 0);
+  }
+
   for (std::size_t i = 0; i < chunk_count; ++i) {
     const auto chunk_data = make_eye_chain(static_cast<u32>(i));
     std::memcpy(fixture.data.data() + chunk_offset, chunk_data.data(), chunk_data.size());
@@ -209,7 +254,7 @@ PrisFixture make_pris_fixture(std::size_t chunk_count) {
     auto& chunk = fixture.plan.chunks[i];
     chunk.resolution = metal_renderer::Jak2PrisEyeResolution::Eye32;
     chunk.pair_index = static_cast<u32>(i);
-    chunk.start_transfer_index = 3 + static_cast<u32>(i) * 27;
+    chunk.start_transfer_index = (prison_jak_animator ? 7 : 3) + static_cast<u32>(i) * 27;
     chunk.start_relative_tag_offset = chunk_offset - kPrisBucketOffset;
     chunk.linker_transfer_index = chunk.start_transfer_index +
                                   metal_renderer::kJak2PrisEyeChunkTransferCount;
@@ -221,7 +266,8 @@ PrisFixture make_pris_fixture(std::size_t chunk_count) {
     chunk_offset = linker_offset + 16;
   }
 
-  fixture.plan.direct_reset_transfer_index = 3 + static_cast<u32>(chunk_count) * 27;
+  fixture.plan.direct_reset_transfer_index = (prison_jak_animator ? 7 : 3) +
+                                             static_cast<u32>(chunk_count) * 27;
   fixture.plan.direct_reset_relative_tag_offset = chunk_offset - kPrisBucketOffset;
   put_tag(&fixture.data, chunk_offset, DmaTag::Kind::CNT, 10, 0, kFlusha,
           kDirect | 10);
@@ -385,6 +431,58 @@ int main() {
                 two_chunk_stats.command_buffers_completed == 2 &&
                 two_chunk_stats.command_buffer_errors == 0,
             "the PRIS renderer follows both planned chunks and consumes every terminal shape");
+
+      auto animator_one_chunk = make_pris_fixture(1, true);
+      host_counter = {};
+      state.jak2_pris_eye_plans = &animator_one_chunk.plan;
+      renderer.start_frame();
+      DmaFollower animator_one_dma(animator_one_chunk.data.data(), kPrisBucketOffset,
+                                   animator_one_chunk.data.size());
+      pris_renderer.render(animator_one_dma, &state, context);
+      const auto animator_one_stats = renderer.stats();
+      check(host_counter.calls == 1 && animator_one_dma.current_tag_offset() == state.next_bucket &&
+                animator_one_stats.eyes == 2 && animator_one_stats.draw_calls == 8 &&
+                animator_one_stats.triangles == 16 && animator_one_stats.missing_textures == 0 &&
+                animator_one_stats.unexpected_dma == 0 &&
+                animator_one_stats.duplicate_slot_writes == 0 &&
+                animator_one_stats.command_buffers_committed == 1 &&
+                animator_one_stats.command_buffers_completed == 1 &&
+                animator_one_stats.command_buffer_errors == 0,
+            "the PRIS renderer validates and consumes a prison-Jak animator before one eye chunk");
+
+      auto animator_two_chunks = make_pris_fixture(2, true);
+      host_counter = {};
+      state.jak2_pris_eye_plans = &animator_two_chunks.plan;
+      renderer.start_frame();
+      DmaFollower animator_two_dma(animator_two_chunks.data.data(), kPrisBucketOffset,
+                                   animator_two_chunks.data.size());
+      pris_renderer.render(animator_two_dma, &state, context);
+      const auto animator_two_stats = renderer.stats();
+      check(host_counter.calls == 1 && animator_two_dma.current_tag_offset() == state.next_bucket &&
+                animator_two_stats.eyes == 4 && animator_two_stats.draw_calls == 16 &&
+                animator_two_stats.triangles == 32 && animator_two_stats.missing_textures == 0 &&
+                animator_two_stats.unexpected_dma == 0 &&
+                animator_two_stats.duplicate_slot_writes == 0 &&
+                animator_two_stats.command_buffers_committed == 2 &&
+                animator_two_stats.command_buffers_completed == 2 &&
+                animator_two_stats.command_buffer_errors == 0,
+            "the PRIS renderer keeps both eye chunks executing after the prison-Jak no-op");
+
+      auto animator_only = make_pris_fixture(0, true);
+      host_counter = {};
+      state.jak2_pris_eye_plans = &animator_only.plan;
+      renderer.start_frame();
+      DmaFollower animator_only_dma(animator_only.data.data(), kPrisBucketOffset,
+                                    animator_only.data.size());
+      pris_renderer.render(animator_only_dma, &state, context);
+      const auto animator_only_stats = renderer.stats();
+      check(host_counter.calls == 1 && animator_only_dma.current_tag_offset() == state.next_bucket &&
+                animator_only_stats.eyes == 0 && animator_only_stats.draw_calls == 0 &&
+                animator_only_stats.triangles == 0 && animator_only_stats.unexpected_dma == 0 &&
+                animator_only_stats.command_buffers_committed == 0 &&
+                animator_only_stats.command_buffers_completed == 0 &&
+                animator_only_stats.command_buffer_errors == 0,
+            "the PRIS renderer consumes an animator-only plan through its terminal reset");
     }
 
     bool detached_all_eye_slots = true;

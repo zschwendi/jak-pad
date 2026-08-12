@@ -23,6 +23,14 @@ constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
 constexpr std::size_t kJak2PrisEyeMaximumChunks = 2;
 constexpr u32 kJak2PrisEyeChunkTransferCount = 26;
 constexpr u32 kJak2PrisEyeChunkPayloadBytes = 1856;
+constexpr u16 kJak2PrisPrisonJakAnimatorOpcode = 23;
+constexpr u16 kJak2PrisPrisonJakAnimatorStartOpcode = 12;
+constexpr u16 kJak2PrisPrisonJakAnimatorFinishOpcode = 13;
+constexpr u32 kJak2PrisPrisonJakAnimatorBodyBytes = 48;
+constexpr std::size_t kJak2PrisPrisonJakAnimatorTbpCount = 7;
+constexpr std::size_t kJak2PrisPrisonJakAnimatorSourcePaddingBytes = 16;
+constexpr u32 kJak2PrisPrisonJakAnimatorTbpUpperBound = 0x40000;
+constexpr u32 kJak2PrisPrisonJakAnimatorMissingTbp = 0xffffffff;
 
 enum class Jak2CommonTfragTextureUploadClass : u8 {
   Malformed,
@@ -137,10 +145,29 @@ struct Jak2PrisEyeChunkPlan {
   u64 semantic_fingerprint = 0;
 };
 
+struct Jak2PrisPrisonJakAnimatorPlan {
+  float morph = 0.f;
+  std::array<u32, kJak2PrisPrisonJakAnimatorTbpCount> destination_tbps = {};
+  // The source writes only morph.x and the seven TBPs. Keep the unspecified
+  // vector tail/final four bytes opaque, but include them in semantic matching.
+  std::array<u8, kJak2PrisPrisonJakAnimatorSourcePaddingBytes> source_padding = {};
+  u32 start_transfer_index = 0;
+  u32 start_relative_tag_offset = 0;
+  u32 body_transfer_index = 0;
+  u32 body_relative_tag_offset = 0;
+  u32 finish_transfer_index = 0;
+  u32 finish_relative_tag_offset = 0;
+  u32 linker_transfer_index = 0;
+  u32 linker_relative_tag_offset = 0;
+  u64 semantic_fingerprint = 0;
+};
+
 struct Jak2PrisEyeTextureUploadPlan {
   u32 bucket_id = 0;
   bool present = false;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
+  bool has_prison_jak_animator = false;
+  Jak2PrisPrisonJakAnimatorPlan prison_jak_animator;
   std::array<Jak2PrisEyeChunkPlan, kJak2PrisEyeMaximumChunks> chunks = {};
   std::size_t chunk_count = 0;
   u32 direct_reset_transfer_index = 0;
@@ -274,11 +301,13 @@ std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upl
 
 /*!
  * Preflight the exact source-written per-level PRIS envelopes observed in Jak II: one ordinary
- * upload, zero to two complete different-eyes chunks, and the standard inert Direct reset. Each
- * eye chunk covers its qwc-8 display setup through its trailing qwc-2 ALPHA setup; the following
- * zero-qwc NEXT linker is identified separately. Relative offsets locate a separately validated
- * snapshot, while semantic matching deliberately ignores relocation of those offsets. No
- * texture-pool or renderer mutation occurs.
+ * upload, an optional prison-Jak clut-blender animator, zero to two complete different-eyes
+ * chunks, and the standard inert Direct reset. The animator accepts only its qwc-3 opcode-23
+ * body; its finite morph, seven source TBPs, and opaque source padding are owned by the plan.
+ * Each eye chunk covers its qwc-8 display setup through its trailing qwc-2 ALPHA setup; the
+ * following zero-qwc NEXT linker is identified separately. Relative offsets locate a separately
+ * validated snapshot, while semantic matching deliberately ignores relocation of those offsets.
+ * No texture-pool or renderer mutation occurs.
  */
 std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
     const u8* dma_packet_snapshot,
