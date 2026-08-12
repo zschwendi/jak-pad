@@ -30,6 +30,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.h"
@@ -670,6 +671,42 @@ void record_warp_texture_upload_metrics(
   }
 }
 
+void record_shadow_bucket195_metrics(
+    goal_jak2_shadow_bucket195_metrics* out,
+    const metal_renderer::Jak2ShadowBucket195Capture& capture) {
+  ++out->observations;
+  out->last_transfer_count = capture.transfer_count;
+  out->last_v4_32_transfer_count = capture.v4_32_transfer_count;
+  out->last_v4_8_transfer_count = capture.v4_8_transfer_count;
+  out->last_v4_32_unpack_count = capture.v4_32_unpack_count;
+  out->last_v4_8_unpack_count = capture.v4_8_unpack_count;
+  out->last_direct_transfer_count = capture.direct_transfer_count;
+  out->last_total_payload_bytes = capture.total_payload_bytes;
+  out->last_direct_payload_bytes = capture.direct_payload_bytes;
+  out->last_flusha_direct_payload_bytes = capture.flusha_direct_payload_bytes;
+  out->last_semantic_fingerprint = capture.semantic_fingerprint;
+  out->last_terminal_qwc = capture.terminal_qwc;
+  out->last_terminal_tag_kind = capture.terminal_tag_kind;
+  out->last_terminal_vif0_kind = capture.terminal_vif0_kind;
+  out->last_terminal_vif1_kind = capture.terminal_vif1_kind;
+  out->last_status = static_cast<uint8_t>(capture.status);
+  out->last_reached_boundary = capture.reached_boundary ? 1 : 0;
+  switch (capture.status) {
+    case metal_renderer::Jak2ShadowBucket195CaptureStatus::Absent:
+      ++out->absent;
+      break;
+    case metal_renderer::Jak2ShadowBucket195CaptureStatus::Observed:
+      ++out->observed;
+      break;
+    case metal_renderer::Jak2ShadowBucket195CaptureStatus::Malformed:
+      ++out->malformed;
+      break;
+    case metal_renderer::Jak2ShadowBucket195CaptureStatus::LimitExceeded:
+      ++out->limit_exceeded;
+      break;
+  }
+}
+
 void execute_ordinary_texture_upload_or_throw(
     goal_jak2_metal_host* host,
     const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
@@ -1168,6 +1205,10 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         metal_renderer::kJak2SubtitleBucket);
     record_texture_upload_metrics(&host->metrics.subtitle_capture,
                                   metal_renderer::kJak2SubtitleBucket, subtitle_capture);
+    const auto shadow_bucket195_capture = metal_renderer::capture_jak2_shadow_bucket195(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        metal_renderer::kJak2ShadowBucket195);
+    record_shadow_bucket195_metrics(&host->metrics.shadow_bucket195, shadow_bucket195_capture);
     if (!update_draw_region(host)) {
       record_failure(host, "Jak 2 CAMetalLayer has no finite drawable size");
       return;

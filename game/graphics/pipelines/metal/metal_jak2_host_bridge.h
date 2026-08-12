@@ -143,6 +143,30 @@ typedef struct goal_jak2_warp_texture_upload_metrics {
   uint64_t last_semantic_fingerprint;
 } goal_jak2_warp_texture_upload_metrics;
 
+typedef struct goal_jak2_shadow_bucket195_metrics {
+  uint64_t observations;
+  uint64_t absent;
+  uint64_t observed;
+  uint64_t malformed;
+  uint64_t limit_exceeded;
+  uint32_t last_transfer_count;
+  uint32_t last_v4_32_transfer_count;
+  uint32_t last_v4_8_transfer_count;
+  uint32_t last_v4_32_unpack_count;
+  uint32_t last_v4_8_unpack_count;
+  uint32_t last_direct_transfer_count;
+  uint64_t last_total_payload_bytes;
+  uint64_t last_direct_payload_bytes;
+  uint64_t last_flusha_direct_payload_bytes;
+  uint64_t last_semantic_fingerprint;
+  uint16_t last_terminal_qwc;
+  uint8_t last_terminal_tag_kind;
+  uint8_t last_terminal_vif0_kind;
+  uint8_t last_terminal_vif1_kind;
+  uint8_t last_status;
+  uint8_t last_reached_boundary;
+} goal_jak2_shadow_bucket195_metrics;
+
 typedef struct goal_jak2_metal_host_metrics {
   uint64_t chains;
   uint64_t completed_chains;
@@ -334,6 +358,8 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_tfrag_texture_upload_metrics common_water_texture_upload;
   // Append-only passive metadata. Bucket 322 remains DeferredSkip with no execution route.
   goal_jak2_tfrag_texture_upload_metrics subtitle_capture;
+  // Append-only passive metadata. Bucket 195 remains DeferredSkip with no execution route.
+  goal_jak2_shadow_bucket195_metrics shadow_bucket195;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

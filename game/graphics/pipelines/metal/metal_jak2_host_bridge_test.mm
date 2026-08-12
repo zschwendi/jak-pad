@@ -22,6 +22,7 @@
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_fixture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
@@ -35,8 +36,8 @@
 
 namespace {
 
-static_assert(offsetof(goal_jak2_metal_host_metrics, subtitle_capture) +
-                  sizeof(goal_jak2_tfrag_texture_upload_metrics) ==
+static_assert(offsetof(goal_jak2_metal_host_metrics, shadow_bucket195) +
+                  sizeof(goal_jak2_shadow_bucket195_metrics) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -98,6 +99,9 @@ constexpr u32 kSubtitleBucket = metal_renderer::kJak2SubtitleBucket;
 static_assert(kSubtitleBucket == static_cast<u32>(jak2::BucketId::SUBTITLE));
 constexpr u32 kSubtitleCaptureOffset = kChainOffset + 0x18200;
 constexpr u32 kSubtitleMalformedOffset = kChainOffset + 0x18400;
+constexpr u32 kShadowBucket = metal_renderer::kJak2ShadowBucket195;
+static_assert(kShadowBucket == static_cast<u32>(jak2::BucketId::SHADOW));
+constexpr u32 kShadowCaptureOffset = kChainOffset + 0x18600;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -176,6 +180,44 @@ void make_effects_lightning_chain() {
   cursor += 16;
   put_tag(cursor, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   cursor += 176;
+  put_tag(cursor, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_shadow_top_only_capture_chain() {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kStcycl = static_cast<u32>(VifCode::Kind::STCYCL) << 24;
+  constexpr u32 kUnpackV432 = static_cast<u32>(VifCode::Kind::UNPACK_V4_32) << 24;
+  constexpr u32 kUnpackV48 = static_cast<u32>(VifCode::Kind::UNPACK_V4_8) << 24;
+  constexpr u32 kMscalf = static_cast<u32>(VifCode::Kind::MSCALF) << 24;
+  constexpr u32 kFlushe = static_cast<u32>(VifCode::Kind::FLUSHE) << 24;
+  constexpr u32 kFlush = static_cast<u32>(VifCode::Kind::FLUSH) << 24;
+  const u32 bucket_offset = kChainOffset + kShadowBucket * 16;
+  std::memset(ee + kShadowCaptureOffset, 0, 0x400);
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kShadowCaptureOffset);
+  u32 cursor = kShadowCaptureOffset;
+  put_tag(cursor, DmaTag::Kind::CNT, 13, 0, kStcycl | 0x404,
+          kUnpackV432 | (13 << 16) | 0x370);
+  cursor += 224;
+  put_tag(cursor, DmaTag::Kind::CNT, 4, 0, kStcycl | 0x404,
+          kUnpackV432 | (4 << 16) | 0x3ac);
+  cursor += 80;
+  put_tag(cursor, DmaTag::Kind::CNT, 4, 0, kStcycl | 0x404,
+          kUnpackV432 | (4 << 16));
+  cursor += 80;
+  put_tag(cursor, DmaTag::Kind::CNT, 0, 0, kMscalf | 10, kFlushe);
+  cursor += 16;
+  put_tag(cursor, DmaTag::Kind::CNT);
+  cursor += 16;
+  put_tag(cursor, DmaTag::Kind::CNT, 3, 0, kFlush,
+          kUnpackV432 | (3 << 16) | 4);
+  cursor += 64;
+  put_tag(cursor, DmaTag::Kind::CNT, 2, 0, kFlush,
+          kUnpackV48 | (4 << 16) | (1 << 14) | 344);
+  const u32 trailing_mscalf6 = kMscalf | 6;
+  std::memcpy(ee + cursor + 16 + 4 * 4 + 12, &trailing_mscalf6,
+              sizeof(trailing_mscalf6));
+  cursor += 48;
   put_tag(cursor, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
@@ -1437,6 +1479,53 @@ int main() {
                 static_cast<uint8_t>(metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning),
         "bucket 315 is captured from live DMA before copy without execution or promotion");
   goal_jak2_metal_host_destroy(effects_host);
+
+  goal_jak2_metal_host* shadow_host = goal_jak2_metal_host_create();
+  goal_gfx_host shadow_callbacks = {};
+  const std::size_t shadow_initial_live_count = metal_texture_live_count();
+  check(shadow_host && goal_jak2_metal_host_copy_gfx_host(shadow_host, &shadow_callbacks) &&
+            metal_renderer::jak2_metal_bucket_table()[kShadowBucket].behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
+        "created a host while shadow bucket 195 remains deferred");
+  goal_jak2_metal_host_metrics shadow_metrics = {};
+  make_empty_chain();
+  shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(shadow_host, &shadow_metrics) &&
+            shadow_metrics.chains == 1 && shadow_metrics.completed_chains == 1 &&
+            shadow_metrics.failed_chains == 0 &&
+            shadow_metrics.shadow_bucket195.observations == 1 &&
+            shadow_metrics.shadow_bucket195.absent == 1 &&
+            shadow_metrics.shadow_bucket195.observed == 0 &&
+            shadow_metrics.shadow_bucket195.last_transfer_count == 1 &&
+            shadow_metrics.shadow_bucket195.last_total_payload_bytes == 0 &&
+            shadow_metrics.shadow_bucket195.last_reached_boundary == 1,
+        "bucket 195 observes its exact empty form before copy without execution");
+
+  make_shadow_top_only_capture_chain();
+  shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(shadow_host, &shadow_metrics) &&
+            shadow_metrics.chains == 2 && shadow_metrics.completed_chains == 2 &&
+            shadow_metrics.failed_chains == 0 &&
+            shadow_metrics.shadow_bucket195.observations == 2 &&
+            shadow_metrics.shadow_bucket195.absent == 1 &&
+            shadow_metrics.shadow_bucket195.observed == 1 &&
+            shadow_metrics.shadow_bucket195.malformed == 0 &&
+            shadow_metrics.shadow_bucket195.limit_exceeded == 0 &&
+            shadow_metrics.shadow_bucket195.last_transfer_count == 9 &&
+            shadow_metrics.shadow_bucket195.last_v4_32_transfer_count == 4 &&
+            shadow_metrics.shadow_bucket195.last_v4_8_transfer_count == 1 &&
+            shadow_metrics.shadow_bucket195.last_v4_32_unpack_count == 24 &&
+            shadow_metrics.shadow_bucket195.last_v4_8_unpack_count == 4 &&
+            shadow_metrics.shadow_bucket195.last_direct_transfer_count == 0 &&
+            shadow_metrics.shadow_bucket195.last_total_payload_bytes == 416 &&
+            shadow_metrics.shadow_bucket195.last_semantic_fingerprint != 0 &&
+            shadow_metrics.shadow_bucket195.last_terminal_qwc == 0 &&
+            shadow_metrics.shadow_bucket195.last_terminal_tag_kind ==
+                static_cast<uint8_t>(DmaTag::Kind::NEXT) &&
+            shadow_metrics.shadow_bucket195.last_reached_boundary == 1 &&
+            metal_texture_live_count() == shadow_initial_live_count,
+        "top-only MSCALF6 shadow metadata remains passive and never mutates textures");
+  goal_jak2_metal_host_destroy(shadow_host);
 
   goal_jak2_metal_host* warp_texture_host = goal_jak2_metal_host_create();
   goal_gfx_host warp_texture_callbacks = {};
