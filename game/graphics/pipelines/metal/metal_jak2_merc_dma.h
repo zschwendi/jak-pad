@@ -420,6 +420,22 @@ inline bool validate_bucket(const u8* copy_base,
       continue;
     }
 
+    const bool default_end = out->model_count > 0 && model.kind == DmaTag::Kind::CNT &&
+                             model.qwc == 10 && model.address == 0 &&
+                             model.vif0 == vif(VifCode::Kind::FLUSHA) &&
+                             model.vif1 == vif(VifCode::Kind::DIRECT, 10);
+    if (default_end) {
+      TagView tail_next;
+      if (!read_tag(copy_base, copy_size, model.inline_end, &tail_next, error)) {
+        return false;
+      }
+      if (!is_zero_next(tail_next) || tail_next.address != next_bucket) {
+        return fail(error, "an exact NEXT to the bucket boundary after the default-end tail");
+      }
+      set_reason(PreflightRejectReason::None);
+      return true;
+    }
+
     if (model.kind != DmaTag::Kind::CNT || model.address != 0 || model.vif0 != 0 ||
         model.vif1 != kPcPortVif) {
       return fail(error, "an exact CNT zero/PC_PORT model tag");

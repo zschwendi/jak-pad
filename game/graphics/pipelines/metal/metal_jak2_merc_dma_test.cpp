@@ -16,7 +16,10 @@ constexpr u32 kSetupPatch = kGsSetup + 16 + 3 * 16;
 constexpr u32 kInterChainPadding = 0x700;
 constexpr u32 kModel0 = 0x800;
 constexpr u32 kModel1 = 0x1200;
+constexpr u32 kFinalLogicalPadding = 0x1700;
 constexpr u32 kTerminal = 0x1800;
+constexpr u32 kDefaultEnd = 0x1900;
+constexpr u32 kDefaultEndNext = kDefaultEnd + 16 + 10 * 16;
 constexpr u32 kBone0 = 0x3000;
 constexpr u32 kBone1 = 0x3080;
 constexpr u32 kEffect0 = 0x3200;
@@ -236,6 +239,12 @@ void test_intermediate_padding_links() {
   put_tag(&fixture.memory, fixture.model0_patch, DmaTag::Kind::NEXT, 0,
           kInterChainPadding, 0, 0);
   put_tag(&fixture.memory, kInterChainPadding, DmaTag::Kind::NEXT, 0, kModel1, 0, 0);
+  put_tag(&fixture.memory, fixture.model1_patch, DmaTag::Kind::NEXT, 0,
+          kFinalLogicalPadding, 0, 0);
+  put_tag(&fixture.memory, kFinalLogicalPadding, DmaTag::Kind::NEXT, 0, kDefaultEnd, 0, 0);
+  put_tag(&fixture.memory, kDefaultEnd, DmaTag::Kind::CNT, 10, 0,
+          vif(VifCode::Kind::FLUSHA), vif(VifCode::Kind::DIRECT, 10));
+  put_tag(&fixture.memory, kDefaultEndNext, DmaTag::Kind::NEXT, 0, kBoundary, 0, 0);
 
   metal_jak2_merc_dma::Bucket bucket;
   std::string error;
@@ -260,6 +269,19 @@ void test_intermediate_padding_links() {
                                      metal_jak2_merc_dma::PreflightRejectReason::None &&
             dma.current_tag_offset() == kOpening,
         "padding-link preflight remains renderable without recovery or malformed telemetry");
+
+  {
+    Fixture wrong_direct = fixture;
+    put_tag(&wrong_direct.memory, kDefaultEnd, DmaTag::Kind::CNT, 10, 0,
+            vif(VifCode::Kind::FLUSHA), vif(VifCode::Kind::DIRECT, 9));
+    check_rejected(wrong_direct, "a default-end tail with DIRECT-9 is rejected");
+  }
+  {
+    Fixture wrong_boundary = fixture;
+    put_tag(&wrong_boundary.memory, kDefaultEndNext, DmaTag::Kind::NEXT, 0, kModel0, 0, 0);
+    check_rejected(wrong_boundary,
+                   "a default-end tail whose NEXT misses the bucket boundary is rejected");
+  }
 }
 
 void test_empty_bucket() {

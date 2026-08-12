@@ -47,6 +47,7 @@ constexpr u32 kSetupPatch = kGsSetup + 16 + 3 * 16;
 constexpr u32 kModel = 0x800;
 constexpr u32 kInterChainPadding = 0xc00;
 constexpr u32 kSecondModel = 0x1000;
+constexpr u32 kFinalLogicalPadding = 0x1400;
 constexpr u32 kTerminal = 0x1800;
 constexpr u32 kBone0 = 0x3000;
 constexpr u32 kBone1 = 0x3080;
@@ -206,9 +207,14 @@ std::vector<u8> make_source_chain(const char* model_name, bool add_second_logica
             static_cast<u32>(VifCode::Kind::PC_PORT) << 24);
     std::memcpy(memory.data() + kSecondModel + 16, packet.data(), packet.size());
     const u32 second_model_patch = kSecondModel + 16 + static_cast<u32>(packet.size());
-    put_tag(&memory, second_model_patch, DmaTag::Kind::NEXT, 0, kTerminal, 0, 0);
+    put_tag(&memory, second_model_patch, DmaTag::Kind::NEXT, 0, kFinalLogicalPadding, 0, 0);
+    put_tag(&memory, kFinalLogicalPadding, DmaTag::Kind::NEXT, 0, kTerminal, 0, 0);
+    put_tag(&memory, kTerminal, DmaTag::Kind::CNT, 10, 0, vif(VifCode::Kind::FLUSHA),
+            vif(VifCode::Kind::DIRECT, 10));
+    put_tag(&memory, kTerminal + 16 + 10 * 16, DmaTag::Kind::NEXT, 0, kBoundary, 0, 0);
+  } else {
+    put_tag(&memory, kTerminal, DmaTag::Kind::NEXT, 0, kBoundary, 0, 0);
   }
-  put_tag(&memory, kTerminal, DmaTag::Kind::NEXT, 0, kBoundary, 0, 0);
 
   write_bone(&memory, kBone0, 2048.f, 2048.f);
   write_bone(&memory, kBone1, 2048.f, 2048.f);
