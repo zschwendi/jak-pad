@@ -657,11 +657,11 @@ bool validate_eye_adgif(const u8* payload,
   const auto adgif = read_unaligned<AdGifData>(payload + 16);
   const GsTex0 tex0(adgif.tex0_data);
   const u32 cld = (adgif.tex0_data >> 61) & 7;
-  if (adgif.tex0_addr != static_cast<u64>(GsRegisterAddress::TEX0_1) ||
-      adgif.tex1_addr != static_cast<u64>(GsRegisterAddress::TEX1_1) ||
-      adgif.mip_addr != static_cast<u64>(GsRegisterAddress::MIPTBP1_1) ||
-      adgif.clamp_addr != static_cast<u64>(GsRegisterAddress::CLAMP_1) ||
-      adgif.alpha_addr != static_cast<u64>(GsRegisterAddress::ALPHA_1) ||
+  if (static_cast<u8>(adgif.tex0_addr) != static_cast<u8>(GsRegisterAddress::TEX0_1) ||
+      static_cast<u8>(adgif.tex1_addr) != static_cast<u8>(GsRegisterAddress::TEX1_1) ||
+      static_cast<u8>(adgif.mip_addr) != static_cast<u8>(GsRegisterAddress::MIPTBP1_1) ||
+      static_cast<u8>(adgif.clamp_addr) != static_cast<u8>(GsRegisterAddress::CLAMP_1) ||
+      static_cast<u8>(adgif.alpha_addr) != static_cast<u8>(GsRegisterAddress::ALPHA_1) ||
       adgif.clamp_data != expected_clamp || adgif.alpha_data != alpha ||
       tex0.tbw() == 0 || tex0.tw() > 11 || tex0.th() > 11 || tex0.tcc() != 1 ||
       cld != 1 || !is_valid_eye_texture_psm(tex0.psm())) {

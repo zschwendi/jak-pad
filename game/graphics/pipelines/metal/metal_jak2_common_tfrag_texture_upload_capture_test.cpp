@@ -180,12 +180,15 @@ u32 put_eye_adgif(std::vector<u8>* packet,
   const u64 tex0 = (texture_seed & 0x3fff) | (1ull << 14) |
                    (static_cast<u64>(GsTex0::PSM::PSMT8) << 20) | (5ull << 26) |
                    (5ull << 30) | (1ull << 34) | (1ull << 61);
+  const u64 tex0_addr = static_cast<u64>(GsRegisterAddress::TEX0_1);
+  const u64 tex1_addr = static_cast<u64>(GsRegisterAddress::TEX1_1) | 0x70c00700ull;
+  const u64 mip_addr = static_cast<u64>(GsRegisterAddress::MIPTBP1_1) | 0x123400ull;
   const std::array<u64, 10> adgif = {
-      tex0,          static_cast<u64>(GsRegisterAddress::TEX0_1),
-      0x101,        static_cast<u64>(GsRegisterAddress::TEX1_1),
-      0x202,        static_cast<u64>(GsRegisterAddress::MIPTBP1_1),
-      clamp,        static_cast<u64>(GsRegisterAddress::CLAMP_1),
-      alpha,        static_cast<u64>(GsRegisterAddress::ALPHA_1)};
+      tex0,   tex0_addr,
+      0x101,  tex1_addr,
+      0x202,  mip_addr,
+      clamp,  static_cast<u64>(GsRegisterAddress::CLAMP_1),
+      alpha,  static_cast<u64>(GsRegisterAddress::ALPHA_1)};
   for (std::size_t i = 0; i < adgif.size(); ++i) {
     put_u64(packet, payload_offset + 16 + static_cast<u32>(i) * 8, adgif[i]);
   }
@@ -882,6 +885,22 @@ void test_pris_eye_shape_fails_closed() {
              bad_tex0.packet.data(), bad_tex0.packet.size())
              .has_value(),
         "an eye source TEX0 without texture alpha is rejected");
+
+  auto bad_adgif_address = make_pris_eye_fixture(200, {{false, 2}});
+  const u32 tex1_address_offset = bad_adgif_address.first_eye_offset + 248;
+  const u64 tex1_address = get_u64(bad_adgif_address.packet, tex1_address_offset);
+  put_u64(&bad_adgif_address.packet, tex1_address_offset,
+          (tex1_address & ~0xffull) | static_cast<u8>(GsRegisterAddress::TEX1_2));
+  rejection = {};
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_adgif_address.packet.data(), bad_adgif_address.packet.size(), kChainOffset,
+             200, bad_adgif_address.packet.data(), bad_adgif_address.packet.size(), nullptr,
+             &rejection)
+             .has_value() &&
+            rejection.reason ==
+                metal_renderer::Jak2PrisEyeTextureUploadRejectReason::BodyAdgif &&
+            rejection.chunk_index == 0 && rejection.body_index == 0,
+        "an eye adgif with source metadata but the wrong low-byte GS address is rejected");
 
   auto duplicate = make_pris_eye_fixture(196, {{false, 1}, {false, 1}});
   check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
