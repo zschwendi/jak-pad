@@ -132,6 +132,17 @@ typedef struct goal_jak2_effects_bucket315_metrics {
   uint8_t last_classification;
 } goal_jak2_effects_bucket315_metrics;
 
+typedef struct goal_jak2_warp_texture_upload_metrics {
+  uint64_t observations;
+  uint64_t absent;
+  uint64_t ordinary;
+  uint64_t unclassified;
+  uint32_t last_upload_count;
+  uint32_t last_transfer_count;
+  uint64_t last_payload_bytes;
+  uint64_t last_semantic_fingerprint;
+} goal_jak2_warp_texture_upload_metrics;
+
 typedef struct goal_jak2_metal_host_metrics {
   uint64_t chains;
   uint64_t completed_chains;
@@ -317,6 +328,8 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_effects_bucket315_metrics effects_bucket315;
   // Append-only execution telemetry for exact typed bucket 309 sky-post uploads.
   uint64_t sky_post_texture_upload_executions;
+  // Append-only passive telemetry. Bucket 316 remains deferred and has no execution counter.
+  goal_jak2_warp_texture_upload_metrics warp_texture_upload;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

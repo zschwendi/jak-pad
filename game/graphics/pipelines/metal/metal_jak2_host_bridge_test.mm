@@ -23,6 +23,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_fixture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
@@ -34,9 +35,8 @@
 
 namespace {
 
-static_assert(offsetof(goal_jak2_metal_host_metrics,
-                       sky_post_texture_upload_executions) +
-                  sizeof(uint64_t) ==
+static_assert(offsetof(goal_jak2_metal_host_metrics, warp_texture_upload) +
+                  sizeof(goal_jak2_warp_texture_upload_metrics) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -84,6 +84,11 @@ constexpr u32 kEffectsLightningPayloadOffset = kChainOffset + 0x17000;
 constexpr u32 kSkyPostBucket = metal_renderer::kJak2SkyPostTextureUploadBucket;
 constexpr u32 kSkyPostGroupOffset = kChainOffset + 0x17400;
 constexpr u32 kSkyPostDirectOffset = kChainOffset + 0x17500;
+constexpr u32 kWarpTextureUploadBucket = metal_renderer::kJak2WarpTextureUploadBucket;
+constexpr u32 kWarpTextureUploadGroupOffset = kChainOffset + 0x17800;
+constexpr u32 kWarpTextureUploadGroupStride = 0x100;
+constexpr u32 kWarpTextureUploadTailOffset = kChainOffset + 0x18000;
+constexpr u32 kWarpTextureUploadAnimatorOffset = kChainOffset + 0x18100;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -280,6 +285,43 @@ void make_sky_post_texture_upload_chain(s64 mode = -1) {
   put_tag(kSkyPostDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   std::memset(ee + kSkyPostDirectOffset + 16, 0, 160);
   put_tag(kSkyPostDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_warp_texture_upload_chain(u32 upload_count) {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  constexpr s64 kMode = -1;
+  const u32 bucket_offset = kChainOffset + kWarpTextureUploadBucket * 16;
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kWarpTextureUploadGroupOffset);
+  for (u32 i = 0; i < upload_count; ++i) {
+    const u32 group = kWarpTextureUploadGroupOffset + i * kWarpTextureUploadGroupStride;
+    const u32 next = i + 1 == upload_count ? kWarpTextureUploadTailOffset
+                                           : group + kWarpTextureUploadGroupStride;
+    put_tag(group, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
+    std::memset(ee + group + 16, static_cast<int>(0x20 + i), 32);
+    const u32 descriptor = group + 48;
+    const u64 page_offset = kTexturePageOffset + i * kTexturePageStride;
+    put_tag(descriptor, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+    std::memcpy(ee + descriptor + 16, &page_offset, sizeof(page_offset));
+    std::memcpy(ee + descriptor + 24, &kMode, sizeof(kMode));
+    put_tag(group + 80, DmaTag::Kind::NEXT, 0, next);
+    std::memset(ee + page_offset, 0, metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes);
+  }
+  put_tag(kWarpTextureUploadTailOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  std::memset(ee + kWarpTextureUploadTailOffset + 16, 0x9a, 160);
+  put_tag(kWarpTextureUploadTailOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_warp_texture_animator_chain() {
+  make_empty_chain();
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  const u32 bucket_offset = kChainOffset + kWarpTextureUploadBucket * 16;
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kWarpTextureUploadAnimatorOffset);
+  put_tag(kWarpTextureUploadAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
+  put_tag(kWarpTextureUploadAnimatorOffset + 16, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
 void make_common_pris_opcode22_capture_chain() {
@@ -1314,6 +1356,60 @@ int main() {
                 static_cast<uint8_t>(metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning),
         "bucket 315 is captured from live DMA before copy without execution or promotion");
   goal_jak2_metal_host_destroy(effects_host);
+
+  goal_jak2_metal_host* warp_texture_host = goal_jak2_metal_host_create();
+  goal_gfx_host warp_texture_callbacks = {};
+  const std::size_t warp_texture_initial_live_count = metal_texture_live_count();
+  check(warp_texture_host &&
+            goal_jak2_metal_host_copy_gfx_host(warp_texture_host, &warp_texture_callbacks) &&
+            metal_renderer::jak2_metal_bucket_table()[kWarpTextureUploadBucket].behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
+        "created a host while bucket 316 remains deferred");
+  goal_jak2_metal_host_metrics warp_texture_metrics = {};
+  make_empty_chain();
+  warp_texture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(warp_texture_host, &warp_texture_metrics) &&
+            warp_texture_metrics.chains == 1 && warp_texture_metrics.completed_chains == 1 &&
+            warp_texture_metrics.failed_chains == 0 &&
+            warp_texture_metrics.warp_texture_upload.observations == 1 &&
+            warp_texture_metrics.warp_texture_upload.absent == 1 &&
+            warp_texture_metrics.warp_texture_upload.ordinary == 0 &&
+            warp_texture_metrics.warp_texture_upload.unclassified == 0 &&
+            warp_texture_metrics.warp_texture_upload.last_transfer_count == 1 &&
+            warp_texture_metrics.warp_texture_upload.last_upload_count == 0 &&
+            warp_texture_metrics.warp_texture_upload.last_payload_bytes == 0,
+        "bucket 316 observes its canonical empty form without execution");
+
+  make_warp_texture_upload_chain(1);
+  warp_texture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  make_warp_texture_upload_chain(7);
+  warp_texture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(warp_texture_host, &warp_texture_metrics) &&
+            warp_texture_metrics.chains == 3 && warp_texture_metrics.completed_chains == 3 &&
+            warp_texture_metrics.failed_chains == 0 &&
+            warp_texture_metrics.warp_texture_upload.observations == 3 &&
+            warp_texture_metrics.warp_texture_upload.absent == 1 &&
+            warp_texture_metrics.warp_texture_upload.ordinary == 2 &&
+            warp_texture_metrics.warp_texture_upload.unclassified == 0 &&
+            warp_texture_metrics.warp_texture_upload.last_upload_count == 7 &&
+            warp_texture_metrics.warp_texture_upload.last_transfer_count == 24 &&
+            warp_texture_metrics.warp_texture_upload.last_payload_bytes == 496 &&
+            warp_texture_metrics.warp_texture_upload.last_semantic_fingerprint != 0 &&
+            warp_texture_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == warp_texture_initial_live_count,
+        "bucket 316 passively observes one and seven groups without texture mutation");
+
+  make_warp_texture_animator_chain();
+  warp_texture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(warp_texture_host, &warp_texture_metrics) &&
+            warp_texture_metrics.chains == 4 && warp_texture_metrics.completed_chains == 4 &&
+            warp_texture_metrics.failed_chains == 0 &&
+            warp_texture_metrics.warp_texture_upload.observations == 4 &&
+            warp_texture_metrics.warp_texture_upload.unclassified == 1 &&
+            warp_texture_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == warp_texture_initial_live_count,
+        "an unsupported bucket-316 animator stays deferred and does not fail the chain");
+  goal_jak2_metal_host_destroy(warp_texture_host);
 
   goal_jak2_metal_host* security_host = goal_jak2_metal_host_create();
   goal_gfx_host security_callbacks = {};

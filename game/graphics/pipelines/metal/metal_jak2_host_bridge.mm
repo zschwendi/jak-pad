@@ -32,6 +32,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
@@ -650,6 +651,25 @@ void record_effects_bucket315_metrics(
   }
 }
 
+void record_warp_texture_upload_metrics(
+    goal_jak2_warp_texture_upload_metrics* out,
+    const std::optional<metal_renderer::Jak2WarpTextureUploadPlan>& plan) {
+  ++out->observations;
+  if (!plan) {
+    ++out->unclassified;
+    return;
+  }
+  out->last_upload_count = static_cast<uint32_t>(plan->upload_count);
+  out->last_transfer_count = static_cast<uint32_t>(plan->transfer_count);
+  out->last_payload_bytes = plan->total_payload_bytes;
+  out->last_semantic_fingerprint = plan->semantic_fingerprint;
+  if (plan->variant == metal_renderer::Jak2WarpTextureUploadVariant::Absent) {
+    ++out->absent;
+  } else {
+    ++out->ordinary;
+  }
+}
+
 void execute_ordinary_texture_upload_or_throw(
     goal_jak2_metal_host* host,
     const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
@@ -1131,6 +1151,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2EffectsBucket);
     record_effects_bucket315_metrics(&host->metrics.effects_bucket315, effects_bucket315_capture);
+    const auto warp_texture_upload_plan = metal_renderer::plan_jak2_warp_texture_upload(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        metal_renderer::kJak2WarpTextureUploadBucket, static_cast<const u8*>(ee_base),
+        EE_MAIN_MEM_SIZE);
+    record_warp_texture_upload_metrics(&host->metrics.warp_texture_upload,
+                                       warp_texture_upload_plan);
     if (!update_draw_region(host)) {
       record_failure(host, "Jak 2 CAMetalLayer has no finite drawable size");
       return;

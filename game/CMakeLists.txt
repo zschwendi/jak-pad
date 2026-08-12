@@ -1298,7 +1298,8 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.cpp
-            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp)
+            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.cpp)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
