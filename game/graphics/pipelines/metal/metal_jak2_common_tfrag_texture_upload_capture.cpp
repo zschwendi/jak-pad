@@ -683,7 +683,6 @@ bool validate_eye_sprite(const u8* payload,
                          u32 uv1_v,
                          u32 sprite_index,
                          u32 eye_width,
-                         u32 target_y0,
                          bool exact_background,
                          u32 background_x0,
                          u32 background_y0,
@@ -731,17 +730,8 @@ bool validate_eye_sprite(const u8* payload,
       read_unaligned<u32>(payload + 68) != uv1_v || y0 > y1) {
     return false;
   }
-  const bool right_eye = sprite_index == 2 || sprite_index == 4 || sprite_index == 6;
   const bool mirrored_lid = sprite_index == 6;
   if ((!mirrored_lid && x0 > x1) || (mirrored_lid && x0 < x1)) {
-    return false;
-  }
-  const u32 target_x0 = (1 + static_cast<u32>(right_eye)) * eye_width * 16;
-  const u32 target_x1 = target_x0 + eye_width * 16;
-  const u32 target_raw_y0 = (target_y0 + eye_width) * 16;
-  const u32 target_raw_y1 = target_raw_y0 + eye_width * 16;
-  if (std::max(x0, x1) < target_x0 || std::min(x0, x1) > target_x1 || y1 < target_raw_y0 ||
-      y0 > target_raw_y1) {
     return false;
   }
   if (sprite_index == 5 && (x0 != eye_width * 16 || x1 != eye_width * 2 * 16)) {
@@ -892,7 +882,7 @@ bool parse_pris_eye_chunk(const u8* snapshot,
         const u32 background_y0 = (group * eye_width + eye_width) * 16;
         if (!validate_eye_sprite(payload, kSpriteBlend[sprite_index],
                                  kSpriteAlpha[sprite_index], current_uv1_u, current_uv1_v,
-                                 sprite_index, eye_width, y0, background, background_x0,
+                                 sprite_index, eye_width, background, background_x0,
                                  background_y0, (eye_width + full_width) * 16,
                                  background_y0 + eye_width * 16)) {
           set_pris_eye_rejection(rejection,

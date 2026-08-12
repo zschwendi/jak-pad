@@ -868,14 +868,51 @@ void test_pris_eye_shape_fails_closed() {
              .has_value(),
         "a sprite UV extent that disagrees with its TEX0 width is rejected");
 
-  auto bad_xyz = make_pris_eye_fixture(200, {{false, 2}});
-  put_u32(&bad_xyz.packet, bad_xyz.first_eye_offset + 576, 0);
-  put_u32(&bad_xyz.packet, bad_xyz.first_eye_offset + 608, 16);
+  auto clipped_dynamic = make_pris_eye_fixture(200, {{false, 2}});
+  put_u32(&clipped_dynamic.packet, clipped_dynamic.first_eye_offset + 576, 0);
+  put_u32(&clipped_dynamic.packet, clipped_dynamic.first_eye_offset + 608, 16);
+  put_u32(&clipped_dynamic.packet, clipped_dynamic.first_eye_offset + 1440, 0);
+  put_u32(&clipped_dynamic.packet, clipped_dynamic.first_eye_offset + 1472, 16);
+  put_u32(&clipped_dynamic.packet, clipped_dynamic.first_eye_offset + 1764, 0);
+  put_u32(&clipped_dynamic.packet, clipped_dynamic.first_eye_offset + 1796, 16);
+  check(metal_renderer::plan_jak2_pris_eye_texture_upload(
+            clipped_dynamic.packet.data(), clipped_dynamic.packet.size(), kChainOffset, 200,
+            clipped_dynamic.packet.data(), clipped_dynamic.packet.size())
+            .has_value(),
+        "source-valid clipped iris, pupil, and lid rectangles remain executable");
+
+  auto bad_lid_x = make_pris_eye_fixture(200, {{false, 2}});
+  put_u32(&bad_lid_x.packet, bad_lid_x.first_eye_offset + 1760, 0);
   check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
-             bad_xyz.packet.data(), bad_xyz.packet.size(), kChainOffset, 200,
-             bad_xyz.packet.data(), bad_xyz.packet.size())
+             bad_lid_x.packet.data(), bad_lid_x.packet.size(), kChainOffset, 200,
+             bad_lid_x.packet.data(), bad_lid_x.packet.size())
              .has_value(),
-        "a destination rectangle that cannot intersect its eye target is rejected");
+        "a lid rectangle with the wrong source-fixed X coordinate is rejected");
+
+  auto reversed_dynamic = make_pris_eye_fixture(200, {{false, 2}});
+  put_u32(&reversed_dynamic.packet, reversed_dynamic.first_eye_offset + 576, 20);
+  put_u32(&reversed_dynamic.packet, reversed_dynamic.first_eye_offset + 608, 10);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             reversed_dynamic.packet.data(), reversed_dynamic.packet.size(), kChainOffset,
+             200, reversed_dynamic.packet.data(), reversed_dynamic.packet.size())
+             .has_value(),
+        "a non-lid dynamic rectangle with reversed X order is rejected");
+
+  auto invalid_raw_xyz = make_pris_eye_fixture(200, {{false, 2}});
+  put_u32(&invalid_raw_xyz.packet, invalid_raw_xyz.first_eye_offset + 576, 0x10000);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             invalid_raw_xyz.packet.data(), invalid_raw_xyz.packet.size(), kChainOffset, 200,
+             invalid_raw_xyz.packet.data(), invalid_raw_xyz.packet.size())
+             .has_value(),
+        "a dynamic rectangle coordinate outside the source u16 range is rejected");
+
+  auto bad_background = make_pris_eye_fixture(200, {{false, 2}});
+  put_u32(&bad_background.packet, bad_background.first_eye_offset + 416, 511);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_background.packet.data(), bad_background.packet.size(), kChainOffset, 200,
+             bad_background.packet.data(), bad_background.packet.size())
+             .has_value(),
+        "the non-dynamic background rectangle remains exact");
 
   auto bad_tex0 = make_pris_eye_fixture(200, {{false, 2}});
   const u64 tex0 = get_u64(bad_tex0.packet, bad_tex0.first_eye_offset + 224);
