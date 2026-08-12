@@ -30,6 +30,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
+#include "game/graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
@@ -707,6 +708,43 @@ void record_shadow_bucket195_metrics(
   }
 }
 
+void record_gmerc_warp_bucket317_metrics(
+    goal_jak2_gmerc_warp_bucket317_metrics* out,
+    const std::optional<metal_renderer::Jak2GmercWarpBucket317Plan>& plan) {
+  ++out->observations;
+  if (!plan) {
+    ++out->malformed;
+    out->last_transfer_count = 0;
+    out->last_fragment_count = 0;
+    out->last_continued_fragment_count = 0;
+    out->last_vertex_count = 0;
+    out->last_adgif_count = 0;
+    out->last_payload_bytes = 0;
+    out->last_semantic_fingerprint = 0;
+    out->last_variant = 3;
+    return;
+  }
+  out->last_transfer_count = plan->transfer_count;
+  out->last_fragment_count = plan->fragment_count;
+  out->last_continued_fragment_count = plan->continued_fragment_count;
+  out->last_vertex_count = plan->vertex_count;
+  out->last_adgif_count = plan->adgif_count;
+  out->last_payload_bytes = plan->payload_bytes;
+  out->last_semantic_fingerprint = plan->semantic_fingerprint;
+  out->last_variant = static_cast<uint8_t>(plan->variant);
+  switch (plan->variant) {
+    case metal_renderer::Jak2GmercWarpBucket317Variant::Absent:
+      ++out->absent;
+      break;
+    case metal_renderer::Jak2GmercWarpBucket317Variant::SetupOnly:
+      ++out->setup_only;
+      break;
+    case metal_renderer::Jak2GmercWarpBucket317Variant::Fragments:
+      ++out->fragments;
+      break;
+  }
+}
+
 void execute_ordinary_texture_upload_or_throw(
     goal_jak2_metal_host* host,
     const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
@@ -1209,6 +1247,11 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2ShadowBucket195);
     record_shadow_bucket195_metrics(&host->metrics.shadow_bucket195, shadow_bucket195_capture);
+    const auto gmerc_warp_bucket317_plan = metal_renderer::plan_jak2_gmerc_warp_bucket317(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        metal_renderer::kJak2GmercWarpBucket);
+    record_gmerc_warp_bucket317_metrics(&host->metrics.gmerc_warp_bucket317,
+                                        gmerc_warp_bucket317_plan);
     if (!update_draw_region(host)) {
       record_failure(host, "Jak 2 CAMetalLayer has no finite drawable size");
       return;
