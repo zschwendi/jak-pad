@@ -156,6 +156,9 @@ struct MetalLevelData {
   // Pool handles for level->textures, parallel and same order. Mirror of
   // LevelData::textures.
   std::vector<u64> textures;
+  // Immutable resolved objects for drawing. The handles remain authoritative for pool ownership
+  // and unload, while this parallel array avoids a registry lock and hash lookup per draw.
+  std::vector<id<MTLTexture>> texture_objects;
   u64 load_id = 0;
 
   // One tree's static GPU data. `indices` holds the full unpacked index list

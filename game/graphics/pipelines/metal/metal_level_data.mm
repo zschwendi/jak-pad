@@ -104,6 +104,7 @@ void release_level_textures(TexturePool& pool, MetalLevelData& data) {
     metal_texture_release(handle);
   }
   data.textures.clear();
+  data.texture_objects.clear();
 }
 
 }  // namespace
@@ -215,6 +216,16 @@ MetalLevelData* load_fr3(id<MTLDevice> device,
   // textures: same order and same rule as the GL TextureLoaderStage.
   if (!metal_add_textures(device, queue, pool, level.textures, is_common, &data->textures, error)) {
     return nullptr;
+  }
+  data->texture_objects.reserve(data->textures.size());
+  for (u64 handle : data->textures) {
+    id<MTLTexture> texture = metal_texture_lookup(handle);
+    if (!texture) {
+      *error = "a registered level texture could not be resolved";
+      release_level_textures(pool, *data);
+      return nullptr;
+    }
+    data->texture_objects.push_back(texture);
   }
 
   // geometry. The unpack step (packed -> GPU vertices and the full index list)
@@ -782,10 +793,10 @@ id<MTLTexture> metal_background_texture(const MetalLevelData& level,
                                         s32 tree_tex_id,
                                         MetalSharedRenderState* render_state,
                                         MetalBackgroundState* bg) {
-  u64 handle = 0;
+  id<MTLTexture> tex = nil;
   if (tree_tex_id >= 0) {
-    if ((size_t)tree_tex_id < level.textures.size()) {
-      handle = level.textures[tree_tex_id];
+    if ((size_t)tree_tex_id < level.texture_objects.size()) {
+      tex = level.texture_objects[tree_tex_id];
     }
   } else {
     // negative = texture-animator slot. The animator is a Jak 2/3 renderer; a
@@ -794,7 +805,6 @@ id<MTLTexture> metal_background_texture(const MetalLevelData& level,
     bg->anim_slot_draws++;
   }
 
-  id<MTLTexture> tex = handle ? metal_texture_lookup(handle) : nil;
   if (!tex) {
     bg->missing_textures++;
     tex = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
