@@ -1149,6 +1149,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     ctx.color_format = kColorFormat;
     ctx.depth_format = kDepthFormat;
     ctx.cmds = cmds;
+    ctx.auxiliary_submissions_share_frame_queue =
+        borrowed_command_buffer == nil && (layer || external_target);
     ctx.game_color = game_color;
     ctx.game_color_slice = color_slice;
     ctx.game_depth = game_depth;

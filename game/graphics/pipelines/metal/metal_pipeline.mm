@@ -465,6 +465,75 @@ bool render_last_chain_to_external_target(int width,
       return false;
     }
 
+    // Renderer-owned frames create their main command buffer before eye composition, but commit
+    // it after the eye command buffers. Prove that two distinct stream ranges survive those
+    // asynchronous auxiliary submissions and are visible to the later main submission without an
+    // intermediate CPU wait.
+    MetalStreamBuffer ordering_stream;
+    ordering_stream.init(g_renderer->device());
+    id<MTLBuffer> first_stream_buffer = nil;
+    id<MTLBuffer> second_stream_buffer = nil;
+    u32 first_stream_offset = 0;
+    u32 second_stream_offset = 0;
+    constexpr u32 kFirstValue = 0x12345678;
+    constexpr u32 kSecondValue = 0x89abcdef;
+    auto* first_stream_value = static_cast<u32*>(
+        ordering_stream.alloc(sizeof(u32), &first_stream_buffer, &first_stream_offset));
+    auto* second_stream_value = static_cast<u32*>(
+        ordering_stream.alloc(sizeof(u32), &second_stream_buffer, &second_stream_offset));
+    *first_stream_value = kFirstValue;
+    *second_stream_value = kSecondValue;
+
+    id<MTLBuffer> ordering_result = [g_renderer->device()
+        newBufferWithLength:2 * sizeof(u32)
+                    options:MTLResourceStorageModePrivate];
+    id<MTLBuffer> ordering_readback = [g_renderer->device()
+        newBufferWithLength:2 * sizeof(u32)
+                    options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> ordering_main = [g_renderer->queue() commandBuffer];
+    id<MTLCommandBuffer> first_aux = [g_renderer->queue() commandBuffer];
+    id<MTLCommandBuffer> second_aux = [g_renderer->queue() commandBuffer];
+    const bool distinct_ranges = first_stream_buffer != second_stream_buffer ||
+                                 first_stream_offset != second_stream_offset;
+    if (ordering_result && ordering_readback && ordering_main && first_aux && second_aux &&
+        distinct_ranges) {
+      id<MTLBlitCommandEncoder> first_blit = [first_aux blitCommandEncoder];
+      [first_blit copyFromBuffer:first_stream_buffer
+                    sourceOffset:first_stream_offset
+                        toBuffer:ordering_result
+               destinationOffset:0
+                            size:sizeof(u32)];
+      [first_blit endEncoding];
+      [first_aux commit];
+
+      id<MTLBlitCommandEncoder> second_blit = [second_aux blitCommandEncoder];
+      [second_blit copyFromBuffer:second_stream_buffer
+                     sourceOffset:second_stream_offset
+                         toBuffer:ordering_result
+                destinationOffset:sizeof(u32)
+                             size:sizeof(u32)];
+      [second_blit endEncoding];
+      [second_aux commit];
+
+      id<MTLBlitCommandEncoder> main_blit = [ordering_main blitCommandEncoder];
+      [main_blit copyFromBuffer:ordering_result
+                  sourceOffset:0
+                      toBuffer:ordering_readback
+             destinationOffset:0
+                          size:2 * sizeof(u32)];
+      [main_blit endEncoding];
+      [ordering_main commit];
+      [ordering_main waitUntilCompleted];
+
+      u32 ordering_values[2] = {};
+      memcpy(ordering_values, ordering_readback.contents, sizeof(ordering_values));
+      out->auxiliary_stream_ordering_preserved =
+          first_aux.status == MTLCommandBufferStatusCompleted &&
+          second_aux.status == MTLCommandBufferStatusCompleted &&
+          ordering_main.status == MTLCommandBufferStatusCompleted &&
+          ordering_values[0] == kFirstValue && ordering_values[1] == kSecondValue;
+    }
+
     constexpr u8 kSentinelBgra[4] = {0x35, 0x6a, 0xa5, 0xff};
     std::vector<u8> sentinel((size_t)width * height * 4);
     for (size_t i = 0; i < sentinel.size(); i += 4) {
@@ -597,7 +666,8 @@ bool render_last_chain_to_external_target(int width,
         first_external && g_renderer->render_chain_frame_to_external_target(
                               opts, target, chain.data.data(), chain.start_offset);
     const ScaffoldStats after_second_external = g_renderer->stats();
-    if (!out->framebuffer_copy_used_selected_slice || !rejected ||
+    if (!out->auxiliary_stream_ordering_preserved ||
+        !out->framebuffer_copy_used_selected_slice || !rejected ||
         !out->invalid_descriptors_preserved_stats || !second_external ||
         !g_renderer->wait_for_last_chain_frame(5.0)) {
       return false;

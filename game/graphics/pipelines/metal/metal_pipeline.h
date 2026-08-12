@@ -85,6 +85,7 @@ struct ExternalRenderTargetProofResult {
   bool invalid_descriptors_preserved_stats = false;
   bool color_slice_zero_preserved = false;
   bool framebuffer_copy_used_selected_slice = false;
+  bool auxiliary_stream_ordering_preserved = false;
   bool stereo_identity_preserved = false;
   bool stereo_side_effects_single_shot = false;
   bool stereo_invalid_batch_rejected = false;

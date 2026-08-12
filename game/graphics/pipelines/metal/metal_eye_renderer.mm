@@ -46,8 +46,6 @@ MetalEyeRenderer::MetalEyeRenderer(const std::string& name,
     tex.texture = make_eye_target(device);
     tex.handle = metal_texture_register(tex.texture);
   }
-  m_vertex_buffer = [device newBufferWithLength:VTX_BUFFER_FLOATS * sizeof(float)
-                                        options:MTLResourceStorageModeShared];
 }
 
 /*!
@@ -582,7 +580,11 @@ void MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
       return;
     }
   }
-  memcpy(m_vertex_buffer.contents, m_cpu_vertex_buffer, buffer_idx * sizeof(float));
+  id<MTLBuffer> vertex_buffer = nil;
+  u32 vertex_buffer_offset = 0;
+  const u32 vertex_buffer_size = (u32)buffer_idx * sizeof(float);
+  void* vertex_data = ctx.stream->alloc(vertex_buffer_size, &vertex_buffer, &vertex_buffer_offset);
+  memcpy(vertex_data, m_cpu_vertex_buffer, vertex_buffer_size);
 
   MetalPsoKey opaque_key;
   opaque_key.shader = MetalShaderId::EYE;
@@ -617,7 +619,7 @@ void MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
     pass.colorAttachments[0].clearColor = MTLClearColorMake(1.0, 0.0, 0.0, 0.0);
     id<MTLRenderCommandEncoder> enc = [cmds renderCommandEncoderWithDescriptor:pass];
     [enc setCullMode:MTLCullModeNone];
-    [enc setVertexBuffer:m_vertex_buffer offset:0 atIndex:0];
+    [enc setVertexBuffer:vertex_buffer offset:vertex_buffer_offset atIndex:0];
     [enc setFragmentSamplerState:sampler atIndex:0];
 
     auto quad = [&](id<MTLRenderPipelineState> pso, u64 handle) {
@@ -654,10 +656,12 @@ void MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
   }
 
   [cmds commit];
-  // the frame's command buffer is committed later; this wait keeps the shared
-  // vertex buffer safe to overwrite and matches the immediate ordering the GL
-  // renderer gets for free.
-  [cmds waitUntilCompleted];
+  if (!ctx.auxiliary_submissions_share_frame_queue) {
+    // Borrowed frame command buffers may be submitted to another queue. Preserve immediate
+    // ordering there; renderer-owned frames are ordered by the serial queue and the tracked main
+    // submission keeps this stream allocation alive until the eye work has completed.
+    [cmds waitUntilCompleted];
+  }
 }
 
 std::optional<u64> MetalEyeRenderer::lookup_eye_texture(u8 eye_id) {

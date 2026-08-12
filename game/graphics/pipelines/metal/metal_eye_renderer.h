@@ -14,8 +14,9 @@
  *  - GL's FramebufferTexturePair becomes an MTLTexture per eye with one render
  *    pass per eye. The pass's clear replaces GL's glClearBufferfv.
  *  - Those passes must be encoded while the frame's game-target encoder is
- *    open, so - exactly like the generated ocean texture - they run on their
- *    own command buffer, which is committed and waited on before the frame's.
+ *    open, so they run on their own command buffer. Renderer-owned frames rely
+ *    on serial queue ordering; borrowed command buffers retain a conservative
+ *    completion wait because they may come from another queue.
  */
 
 #include <optional>
@@ -137,7 +138,6 @@ class MetalEyeRenderer : public MetalBucketRenderer {
   // xyst per vertex, 4 vertices per square, 4 draws per eye, all eyes.
   static constexpr int VTX_BUFFER_FLOATS = 4 * 4 * 4 * METAL_NUM_EYE_PAIRS * 2;
   float m_cpu_vertex_buffer[VTX_BUFFER_FLOATS];
-  id<MTLBuffer> m_vertex_buffer = nil;
 
   Stats m_stats;
   bool m_warned_dma = false;

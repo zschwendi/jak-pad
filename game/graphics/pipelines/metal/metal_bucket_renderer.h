@@ -124,6 +124,10 @@ struct MetalFrameContext {
   // split the game pass (sprite distort's framebuffer snapshot). nil in
   // contexts that never dispatch such buckets (the validation scene).
   id<MTLCommandBuffer> cmds;
+  // Renderer-owned frames commit auxiliary work and the tracked frame submission to the same
+  // serial queue. Borrowed command buffers may come from another queue and retain conservative
+  // completion waits.
+  bool auxiliary_submissions_share_frame_queue = false;
   id<MTLTexture> game_color;
   NSUInteger game_color_slice = 0;
   id<MTLTexture> game_depth;

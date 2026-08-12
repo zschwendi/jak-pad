@@ -1520,6 +1520,8 @@ void test_dma_chain(const GfxRendererModule* mod,
         "external target: the following submission synchronized stream reuse");
   check(external.framebuffer_copy_used_selected_slice,
         "external target: pass split copied and reopened the selected array slices");
+  check(external.auxiliary_stream_ordering_preserved,
+        "external target: serial auxiliary submissions preserved distinct stream ranges");
   check(external.invalid_descriptors_rejected,
         "external target: invalid bounds, viewport, depth, and usages were rejected");
   check(external.invalid_descriptors_preserved_stats,
