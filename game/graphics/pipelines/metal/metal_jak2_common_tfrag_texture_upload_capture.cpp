@@ -1816,20 +1816,22 @@ std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upl
     return plan;
   }
 
-  const bool combined = capture.transfer_count == 63;
-  const std::size_t chunk_count = combined ? 2 : 0;
+  const bool one_eye = capture.transfer_count == 36;
+  const bool two_eye = capture.transfer_count == 63;
+  const bool eyes = one_eye || two_eye;
+  const std::size_t chunk_count = one_eye ? 1 : two_eye ? 2 : 0;
   const bool exact_counts =
-      (capture.transfer_count == 9 || combined) &&
-      capture.classification == (combined ? Jak2CommonTfragTextureUploadClass::EyeOrOther
-                                          : Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator) &&
-      capture.total_payload_bytes == (combined ? 3920 : 208) &&
-      capture.inert_transfers == (combined ? 6 : 4) &&
+      (capture.transfer_count == 9 || eyes) &&
+      capture.classification == (eyes ? Jak2CommonTfragTextureUploadClass::EyeOrOther
+                                      : Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator) &&
+      capture.total_payload_bytes == 208 + chunk_count * 1856 &&
+      capture.inert_transfers == 4 + chunk_count &&
       capture.ordinary_descriptors == 1 && capture.direct_setup_transfers == 1 &&
-      capture.gs_setup_transfers == (combined ? 22 : 0) &&
+      capture.gs_setup_transfers == chunk_count * 11 &&
       capture.animator_arrays == 1 && capture.animator_body_transfers == 1 &&
       capture.animator_payload_bytes == kJak2CommonPrisDarkJakAnimatorBodyBytes &&
-      has_exact_dark_jak_counts(capture) && capture.eye_markers == (combined ? 4 : 0) &&
-      capture.other_transfers == (combined ? 26 : 0) && capture.malformed_transfers == 0;
+      has_exact_dark_jak_counts(capture) && capture.eye_markers == chunk_count * 2 &&
+      capture.other_transfers == chunk_count * 13 && capture.malformed_transfers == 0;
   if (!exact_counts || !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size,
                                             chain_offset, kJak2CommonPrisTextureUploadBucket,
                                             capture.transfers[0]) ||

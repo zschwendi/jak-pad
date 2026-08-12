@@ -594,6 +594,26 @@ int main() {
                 common_form_a_stats.command_buffer_errors == 0,
             "common PRIS Form A calls the host once and consumes the Dark Jak/reset envelope");
 
+      auto common_one_eye = make_common_pris_fixture(1);
+      host_counter = {};
+      state.jak2_common_pris_plan = &common_one_eye.plan;
+      renderer.start_frame();
+      DmaFollower common_one_eye_dma(common_one_eye.data.data(), kCommonPrisBucketOffset,
+                                     common_one_eye.data.size());
+      common_pris_renderer.render(common_one_eye_dma, &state, context);
+      const auto common_one_eye_stats = renderer.stats();
+      check(host_counter.calls == 1 && host_counter.bucket_id == kCommonPrisBucket &&
+                common_one_eye_dma.current_tag_offset() == state.next_bucket &&
+                common_one_eye_stats.eyes == 2 && common_one_eye_stats.draw_calls == 8 &&
+                common_one_eye_stats.triangles == 16 &&
+                common_one_eye_stats.missing_textures == 0 &&
+                common_one_eye_stats.unexpected_dma == 0 &&
+                common_one_eye_stats.duplicate_slot_writes == 0 &&
+                common_one_eye_stats.command_buffers_committed == 1 &&
+                common_one_eye_stats.command_buffers_completed == 1 &&
+                common_one_eye_stats.command_buffer_errors == 0,
+            "common PRIS one-eye form calls the host once and completes its exact boundary");
+
       auto common_form_b = make_common_pris_fixture(2);
       host_counter = {};
       state.jak2_common_pris_plan = &common_form_b.plan;

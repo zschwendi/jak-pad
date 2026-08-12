@@ -319,10 +319,10 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*!
- * Preflight common PRIS bucket 220. Apart from the exact empty form, only the two live source
- * forms are accepted: ordinary/Dark-Jak/reset and ordinary/Dark-Jak/two-eye-chunks/reset. The
- * returned plan owns the ordinary header and opcode-22 scalars and fingerprints every eye chunk.
- * No texture-pool or renderer mutation occurs.
+ * Preflight common PRIS bucket 220. Apart from the exact empty form, only the observed source
+ * forms are accepted: ordinary/Dark-Jak/reset with zero, one, or two eye chunks. The returned plan
+ * owns the ordinary header and opcode-22 scalars and fingerprints every eye chunk. No texture-pool
+ * or renderer mutation occurs.
  */
 std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upload(
     const u8* dma_packet_snapshot,

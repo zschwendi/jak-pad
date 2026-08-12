@@ -548,6 +548,18 @@ std::vector<u8> make_common_pris_combined_fixture() {
   return packet;
 }
 
+std::vector<u8> make_common_pris_one_eye_fixture() {
+  auto packet = make_common_pris_fixture();
+  constexpr u32 bucket_id = metal_renderer::kJak2CommonPrisTextureUploadBucket;
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, kCommonPrisAnimatorOffset + 80, DmaTag::Kind::NEXT, 0,
+          kEyeFirstOffset, 0, 0);
+  const u32 linker = put_different_eyes_chunk(&packet, kEyeFirstOffset, {false, 0});
+  put_tag(&packet, linker, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  return packet;
+}
+
 void put_animator_array(std::vector<u8>* packet,
                         u32 offset,
                         u16 opcode,
@@ -1307,6 +1319,28 @@ void test_common_pris_execution_plan() {
             !metal_renderer::jak2_common_pris_texture_upload_plans_match(
                 *plan, *changed_reset_plan),
         "a copied dynamic 160-byte reset mutation fails the semantic equality barrier");
+
+  packet = make_common_pris_one_eye_fixture();
+  const auto one_eye = metal_renderer::plan_jak2_common_pris_texture_upload(
+      packet.data(), packet.size(), kChainOffset, packet.data(), packet.size(), &capture);
+  auto copied_one_eye_packet = make_common_pris_one_eye_fixture();
+  const auto copied_one_eye = metal_renderer::plan_jak2_common_pris_texture_upload(
+      copied_one_eye_packet.data(), copied_one_eye_packet.size(), kChainOffset,
+      copied_one_eye_packet.data(), copied_one_eye_packet.size());
+  check(one_eye.has_value() && one_eye->present && one_eye->chunk_count == 1 &&
+            one_eye->eye_slot_mask != 0 && capture.classification == Classification::EyeOrOther &&
+            capture.transfer_count == 36 &&
+            capture.total_payload_bytes == 2064 && capture.inert_transfers == 5 &&
+            capture.ordinary_descriptors == 1 && capture.direct_setup_transfers == 1 &&
+            capture.gs_setup_transfers == 11 && capture.animator_arrays == 1 &&
+            capture.animator_body_transfers == 1 && capture.animator_payload_bytes == 32 &&
+            capture.opcode_counts[12] == 1 && capture.opcode_counts[22] == 1 &&
+            capture.opcode_counts[13] == 1 && capture.eye_markers == 2 &&
+            capture.other_transfers == 13 && capture.malformed_transfers == 0 &&
+            copied_one_eye.has_value() &&
+            metal_renderer::jak2_common_pris_texture_upload_plans_match(*one_eye,
+                                                                         *copied_one_eye),
+        "common PRIS owns and semantically matches the exact 36-transfer one-eye form");
 
   packet = make_common_pris_combined_fixture();
   const auto combined = metal_renderer::plan_jak2_common_pris_texture_upload(
