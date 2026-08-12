@@ -21,6 +21,9 @@
 
 ;; for some reason, the display also tracks some timing stuff.
 
+(#when PC_PORT
+  (define-extern *host-display-time-ratio* float))
+
 (defun get-current-time ()
   "Get the in game time.  This advances when the game is unpaused.
    This increases at the same rate for PAL/NTSC and if the game is lagging."
@@ -35,9 +38,15 @@
 (defmethod set-time-ratios ((this display) (slowdown float))
   "Set the time ratios for the current game speed. For example, set slowdown = 1.0 if the game
    is running at full speed or slowdown = 2.0 if the game is running at half speed."
-  ;; don't allow slowdowns of more than 4x. This prevents the dt's in the physics
-  ;; calculations from getting huge.
-  (let ((ratio (fmin 4.0 slowdown)))
+  ;; Preserve the established 4x slowdown cap. The host-managed 120 Hz path additionally accepts
+  ;; 5x because a 24 Hz ProMotion callback is still only 1/24 second of wall time.
+  (let ((ratio (fmin (#if PC_PORT
+                       (if (and (= (-> *pc-settings* target-fps) 120)
+                                (> *host-display-time-ratio* 0.0))
+                         5.0
+                         4.0)
+                       4.0)
+                     slowdown)))
     (set! (-> this time-ratio) ratio)
     (case (get-video-mode)
       (('pal)
@@ -63,8 +72,6 @@
 
 ;; new constant for use in high FPS scenarios
 (defconstant DISPLAY_FPS_RATIO (/ (-> *display* time-factor) 5.0))
-(#when PC_PORT
-  (define-extern *host-display-time-ratio* float))
 (defconstant DISPLAY_CALLBACK_RATIO
   (#if PC_PORT
     (if (> *host-display-time-ratio* 0.0)

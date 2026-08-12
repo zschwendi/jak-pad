@@ -1151,8 +1151,13 @@
   (set-draw-env-offset (-> disp frames new-frame-idx draw) 2048 2048 odd-even)
   ;; read controllers
   (service-cpads (#if PC_PORT
-                   (max 1 (min 4 (the int (- (-> disp real-integral-frame-counter)
-                                               (-> disp old-real-integral-frame-counter)))))
+                   (max 1
+                        (min (if (and (= (-> *pc-settings* target-fps) 120)
+                                      (> *host-display-time-ratio* 0.0))
+                               5
+                               4)
+                             (the int (- (-> disp real-integral-frame-counter)
+                                         (-> disp old-real-integral-frame-counter)))))
                    1))
   ;; now we are ready to run a frame!
   (none))

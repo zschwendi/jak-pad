@@ -305,7 +305,7 @@
            (set! (-> pad button0-rel 2) (-> pad button0-rel 1))
            (set! (-> pad button0-rel 1) (-> pad button0-rel 0))
            ;; og:preserve-this high fps fix. The host-managed 120 Hz path ages history by the
-           ;; integral virtual-frame delta, so a 60/40/30 Hz ProMotion fallback keeps the same
+           ;; integral virtual-frame delta, so a 60/40/30/24 Hz ProMotion fallback keeps the same
            ;; 50 ms recent-press window. Skipped absolute samples hold their previous value, while
            ;; a relative edge is inserted only once.
            (cond
