@@ -1916,10 +1916,14 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
       // matrix 0 -> hud_hvdf_offset, at GS (1920, 2104)
       push_vec_data(vecs, 1920, 2104, kZ, kHalf, 0, 0, 0, kHalf, 127, 127, 127, 64);
       push_adgif(adgifs, kVramSpriteQuad, true, false);
+      // A different texture between two matching keys exercises non-consecutive
+      // bucket reuse without changing the first-use draw order.
+      push_vec_data(vecs, 2048, 2048, kZ, kHalf, 0, 0, 0, kHalf, 127, 127, 127, 64);
+      push_adgif(adgifs, kVramSpriteSolid, true, false);
       // matrix 1 -> hud_hvdf_user[0], which shifts it left by 64 GS units
       push_vec_data(vecs, 2176, 2104, kZ, kHalf, 0, 1, 0, kHalf, 127, 127, 127, 64);
       push_adgif(adgifs, kVramSpriteQuad, true, false);
-      push_chunk(2, SpriteProgMem::Sprites2dHud_Jak1, vecs, adgifs);
+      push_chunk(3, SpriteProgMem::Sprites2dHud_Jak1, vecs, adgifs);
     }
     return sprite;
   };
@@ -1943,9 +1947,9 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
            stats.sprites_2d, stats.sprites_3d, stats.sprites_hud, stats.sprite_draws,
            stats.sprite_missing_textures);
     check(stats.sprites_2d == 1, "sprite: one world-space 2D sprite");
-    check(stats.sprites_hud == 2, "sprite: two HUD sprites");
+    check(stats.sprites_hud == 3, "sprite: three HUD sprites");
     check(stats.sprite_missing_textures == 0, "sprite: every bucket found its texture");
-    check(stats.sprite_draws == 2, "sprite: one draw per (texture, mode) bucket");
+    check(stats.sprite_draws == 3, "sprite: one draw per (texture, mode) bucket");
 
     // The shader doubles the vertex color (and doubles alpha again), so a
     // vertex rgba of 64 is 0.502 with alpha 1.004 (opaque). The solid texture
@@ -1973,6 +1977,8 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
                 "sprite: HUD user-hvdf quad BR texel");
     check_pixel(frame, gs_to_col(2176), row_h0, 0, 0, 0,
                 "sprite: nothing left where the user-hvdf quad would have been");
+    check_pixel(frame, gs_to_col(2048), gs_to_row(2048), 199, 100, 50,
+                "sprite: interleaved texture bucket kept its sprite");
 
     metal_renderer::ExternalRenderTargetProofResult stereo;
     const bool stereo_rendered = metal_renderer::render_last_chain_to_external_target(

@@ -16,6 +16,8 @@ namespace {
 // behaviourally identical - the GL renderer already flushes mid-block at its
 // own limit (Sprite3::do_block_common).
 constexpr int kMaxSpritesPerFlush = 8192;
+constexpr int kSpriteBucketLookupCapacity = kMaxSpritesPerFlush * 2;
+static_assert((kSpriteBucketLookupCapacity & (kSpriteBucketLookupCapacity - 1)) == 0);
 
 constexpr float kGameHeightJak1 = 448.f;
 
@@ -241,6 +243,11 @@ MetalSpriteRenderer::MetalSpriteRenderer(const std::string& name, int my_id)
     : MetalBucketRenderer(name, my_id), m_direct(name, my_id, 1024) {
   m_vertices_3d.resize(kMaxSpritesPerFlush * 4);
   m_index_buffer_data.resize(kMaxSpritesPerFlush * 5);
+  m_sprite_buckets.resize(kMaxSpritesPerFlush);
+  m_next_sprite.resize(kMaxSpritesPerFlush);
+  m_bucket_lookup.resize(kSpriteBucketLookupCapacity);
+  m_bucket_lookup_mask = kSpriteBucketLookupCapacity - 1;
+  reset_sprite_batch();
   m_distort_frame_data.resize(kMaxDistortSprites);
 
   m_default_mode.disable_depth_write();
@@ -253,6 +260,63 @@ MetalSpriteRenderer::MetalSpriteRenderer(const std::string& name, int my_id)
   m_default_mode.set_zt(true);
   m_default_mode.set_ab(true);
   m_current_mode = m_default_mode;
+}
+
+namespace {
+
+std::size_t sprite_bucket_hash(u64 key) {
+  key ^= key >> 33;
+  key *= 0xff51afd7ed558ccdull;
+  key ^= key >> 33;
+  key *= 0xc4ceb9fe1a85ec53ull;
+  key ^= key >> 33;
+  return static_cast<std::size_t>(key);
+}
+
+}  // namespace
+
+bool MetalSpriteRenderer::find_sprite_bucket(u64 key, u32* bucket) const {
+  std::size_t slot = sprite_bucket_hash(key) & m_bucket_lookup_mask;
+  for (std::size_t probe = 0; probe < m_bucket_lookup.size(); probe++) {
+    const auto& entry = m_bucket_lookup[slot];
+    if (entry.generation != m_bucket_lookup_generation) {
+      return false;
+    }
+    if (entry.key == key) {
+      *bucket = entry.bucket;
+      return true;
+    }
+    slot = (slot + 1) & m_bucket_lookup_mask;
+  }
+  return false;
+}
+
+bool MetalSpriteRenderer::store_sprite_bucket(u64 key, u32 bucket) {
+  std::size_t slot = sprite_bucket_hash(key) & m_bucket_lookup_mask;
+  for (std::size_t probe = 0; probe < m_bucket_lookup.size(); probe++) {
+    auto& entry = m_bucket_lookup[slot];
+    if (entry.generation != m_bucket_lookup_generation || entry.key == key) {
+      entry = {key, bucket, m_bucket_lookup_generation};
+      return true;
+    }
+    slot = (slot + 1) & m_bucket_lookup_mask;
+  }
+  return false;
+}
+
+void MetalSpriteRenderer::reset_sprite_batch() {
+  m_active_bucket_count = 0;
+  m_last_bucket_key = UINT64_MAX;
+  m_last_bucket = nullptr;
+  m_sprite_idx = 0;
+
+  m_bucket_lookup_generation++;
+  if (m_bucket_lookup_generation == 0) {
+    for (auto& entry : m_bucket_lookup) {
+      entry.generation = 0;
+    }
+    m_bucket_lookup_generation = 1;
+  }
 }
 
 /*!
@@ -819,27 +883,35 @@ void MetalSpriteRenderer::do_block_common(SpriteMode mode,
     if (key == m_last_bucket_key) {
       bucket = m_last_bucket;
     } else {
-      auto it = m_sprite_buckets.find(key);
-      if (it == m_sprite_buckets.end()) {
-        bucket = &m_sprite_buckets[key];
+      u32 bucket_idx;
+      if (!find_sprite_bucket(key, &bucket_idx)) {
+        bucket_idx = m_active_bucket_count++;
+        bucket = &m_sprite_buckets.at(bucket_idx);
         bucket->key = key;
-        m_bucket_list.push_back(bucket);
+        bucket->first_sprite = UINT32_MAX;
+        bucket->last_sprite = UINT32_MAX;
+        bucket->sprite_count = 0;
+        const bool stored = store_sprite_bucket(key, bucket_idx);
+        ASSERT(stored);
+        (void)stored;
       } else {
-        bucket = &it->second;
+        bucket = &m_sprite_buckets[bucket_idx];
       }
-      // the GL renderer leaves this fast path dead (it never records the key);
-      // recording it here finds the same bucket, since std::map keeps pointers
-      // stable across inserts
       m_last_bucket_key = key;
       m_last_bucket = bucket;
     }
 
-    u32 start_vtx_id = m_sprite_idx * 4;
-    bucket->ids.push_back(start_vtx_id);
-    bucket->ids.push_back(start_vtx_id + 1);
-    bucket->ids.push_back(start_vtx_id + 2);
-    bucket->ids.push_back(start_vtx_id + 3);
-    bucket->ids.push_back(UINT32_MAX);
+    const u32 sprite_id = m_sprite_idx;
+    m_next_sprite[sprite_id] = UINT32_MAX;
+    if (bucket->sprite_count == 0) {
+      bucket->first_sprite = sprite_id;
+    } else {
+      m_next_sprite[bucket->last_sprite] = sprite_id;
+    }
+    bucket->last_sprite = sprite_id;
+    bucket->sprite_count++;
+
+    u32 start_vtx_id = sprite_id * 4;
 
     auto& vert1 = m_vertices_3d.at(start_vtx_id + 0);
     vert1.xyz_sx = m_vec_data_2d[sprite_idx].xyz_sx;
@@ -877,12 +949,8 @@ void MetalSpriteRenderer::do_block_common(SpriteMode mode,
 void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
                                         MetalFrameContext& ctx,
                                         bool double_draw) {
-  if (m_sprite_idx == 0 || m_bucket_list.empty()) {
-    m_sprite_buckets.clear();
-    m_bucket_list.clear();
-    m_last_bucket_key = UINT64_MAX;
-    m_last_bucket = nullptr;
-    m_sprite_idx = 0;
+  if (m_sprite_idx == 0 || m_active_bucket_count == 0) {
+    reset_sprite_batch();
     return;
   }
 
@@ -894,10 +962,20 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
 
   // indices, packed bucket by bucket
   u32 idx_offset = 0;
-  for (auto* bucket : m_bucket_list) {
-    memcpy(&m_index_buffer_data[idx_offset], bucket->ids.data(), bucket->ids.size() * sizeof(u32));
+  for (u32 i = 0; i < m_active_bucket_count; i++) {
+    auto* bucket = &m_sprite_buckets[i];
     bucket->offset_in_idx_buffer = idx_offset;
-    idx_offset += bucket->ids.size();
+    u32 sprite_id = bucket->first_sprite;
+    for (u32 sprite = 0; sprite < bucket->sprite_count; sprite++) {
+      const u32 start_vtx_id = sprite_id * 4;
+      m_index_buffer_data[idx_offset++] = start_vtx_id;
+      m_index_buffer_data[idx_offset++] = start_vtx_id + 1;
+      m_index_buffer_data[idx_offset++] = start_vtx_id + 2;
+      m_index_buffer_data[idx_offset++] = start_vtx_id + 3;
+      m_index_buffer_data[idx_offset++] = UINT32_MAX;
+      sprite_id = m_next_sprite[sprite_id];
+    }
+    ASSERT(sprite_id == UINT32_MAX);
   }
   id<MTLBuffer> ibuf;
   u32 ioffset;
@@ -937,7 +1015,8 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
 
   int draw_count = 0;
   int tri_count = 0;
-  for (auto* bucket : m_bucket_list) {
+  for (u32 i = 0; i < m_active_bucket_count; i++) {
+    auto* bucket = &m_sprite_buckets[i];
     u32 tbp = bucket->key >> 32;
     DrawMode mode;
     mode.as_int() = bucket->key & 0xffffffff;
@@ -971,7 +1050,7 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
     [enc setFragmentBytes:&fs_params length:sizeof(fs_params) atIndex:0];
     [enc setDepthStencilState:ctx.pso_cache->get_depth_stencil(settings.depth)];
 
-    const u32 index_count = (u32)bucket->ids.size();
+    const u32 index_count = bucket->sprite_count * 5;
     [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
                     indexCount:index_count
                      indexType:MTLIndexTypeUInt32
@@ -1003,9 +1082,5 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
   m_stats.draw_calls += draw_count;
   m_stats.triangles += tri_count;
 
-  m_sprite_buckets.clear();
-  m_bucket_list.clear();
-  m_last_bucket_key = UINT64_MAX;
-  m_last_bucket = nullptr;
-  m_sprite_idx = 0;
+  reset_sprite_batch();
 }

@@ -26,7 +26,6 @@
  * only, matching the rest of the Metal bucket table.
  */
 
-#include <map>
 #include <string>
 #include <vector>
 
@@ -132,6 +131,9 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
   void flush_sprites(MetalSharedRenderState* render_state,
                      MetalFrameContext& ctx,
                      bool double_draw);
+  void reset_sprite_batch();
+  bool find_sprite_bucket(u64 key, u32* bucket) const;
+  bool store_sprite_bucket(u64 key, u32 bucket);
 
   MetalDirectRenderer m_direct;
 
@@ -150,12 +152,27 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
   u32 m_current_tbp = 0;
 
   struct Bucket {
-    std::vector<u32> ids;
+    u32 first_sprite = UINT32_MAX;
+    u32 last_sprite = UINT32_MAX;
+    u32 sprite_count = 0;
     u32 offset_in_idx_buffer = 0;
     u64 key = -1;
   };
-  std::map<u64, Bucket> m_sprite_buckets;
-  std::vector<Bucket*> m_bucket_list;
+
+  struct BucketLookupEntry {
+    u64 key = 0;
+    u32 bucket = 0;
+    u32 generation = 0;
+  };
+
+  // Active buckets occupy first-use order in this fixed pool. The linked sprite
+  // indices retain encounter order within each bucket without per-bucket heaps.
+  std::vector<Bucket> m_sprite_buckets;
+  std::vector<u32> m_next_sprite;
+  std::vector<BucketLookupEntry> m_bucket_lookup;
+  std::size_t m_bucket_lookup_mask = 0;
+  u32 m_bucket_lookup_generation = 0;
+  u32 m_active_bucket_count = 0;
   u64 m_last_bucket_key = UINT64_MAX;
   Bucket* m_last_bucket = nullptr;
   u64 m_sprite_idx = 0;
