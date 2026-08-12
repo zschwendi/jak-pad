@@ -224,7 +224,7 @@ baby-spider-default-event-handler
 
 (defmethod nav-enemy-method-52 ((this baby-spider) (arg0 vector))
   ;; og:preserve-this changed for high fps
-  (+! (-> this wiggle-angle) (* DISPLAY_FPS_RATIO (-> this delta-wiggle-angle)))
+  (+! (-> this wiggle-angle) (* DISPLAY_CALLBACK_RATIO (-> this delta-wiggle-angle)))
   (if (< 65536.0 (-> this wiggle-angle)) (+! (-> this wiggle-angle) -65536.0))
   (let* ((v1-3 (-> this collide-info trans))
          (a1-2 (vector-! (new 'stack-no-clear 'vector) v1-3 arg0))

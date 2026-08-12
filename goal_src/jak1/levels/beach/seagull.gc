@@ -264,7 +264,7 @@
     (let ((f0-28 (+ (* (-> s5-0 x) (-> s5-0 x)) (* (-> s5-0 z) (-> s5-0 z)))))
       (set! (-> this angletan) (/ (- (-> s5-0 y)) (sqrtf f0-28)))
       ;; og:preserve-this changed for high fps
-      (set! (-> this target-dist) (* DISPLAY_FPS_RATIO (sqrtf (+ f0-28 (* (-> s5-0 y) (-> s5-0 y))))))))
+      (set! (-> this target-dist) (* DISPLAY_CALLBACK_RATIO (sqrtf (+ f0-28 (* (-> s5-0 y) (-> s5-0 y))))))))
   0
   (none))
 
@@ -365,7 +365,7 @@
             (arg0 (if (< f0-0 (-> this flock 0 max-lift)) (set! f0-0 (+ 12288.0 f0-0))) f0-0)
             (else (+ -4096.0 f0-0))))
     ;; og:preserve-this changed for high fps
-    (set! (-> this root transv y) (* DISPLAY_FPS_RATIO f0-0)))
+    (set! (-> this root transv y) (* DISPLAY_CALLBACK_RATIO f0-0)))
   0
   (none))
 
@@ -390,8 +390,8 @@
   (let ((f30-1 (* arg0 (sin (-> this heading))))
         (f0-4 (* arg0 (cos (-> this heading)))))
     ;; og:preserve-this changed for high fps
-    (set! (-> this root transv x) (* DISPLAY_FPS_RATIO (+ (* 0.8 (-> this root transv x)) (* 0.2 f30-1))))
-    (set! (-> this root transv z) (* DISPLAY_FPS_RATIO (+ (* 0.8 (-> this root transv z)) (* 0.2 f0-4)))))
+    (set! (-> this root transv x) (* DISPLAY_CALLBACK_RATIO (+ (* 0.8 (-> this root transv x)) (* 0.2 f30-1))))
+    (set! (-> this root transv z) (* DISPLAY_CALLBACK_RATIO (+ (* 0.8 (-> this root transv z)) (* 0.2 f0-4)))))
   0
   (none))
 
@@ -399,8 +399,8 @@
   (let ((f30-1 (* arg0 (sin (-> this heading))))
         (f0-4 (* arg0 (cos (-> this heading)))))
     ;; og:preserve-this changed for high fps
-    (set! (-> this root transv x) (* DISPLAY_FPS_RATIO f30-1))
-    (set! (-> this root transv z) (* DISPLAY_FPS_RATIO f0-4)))
+    (set! (-> this root transv x) (* DISPLAY_CALLBACK_RATIO f30-1))
+    (set! (-> this root transv z) (* DISPLAY_CALLBACK_RATIO f0-4)))
   0
   (none))
 
@@ -452,15 +452,15 @@
                     (a0-7 (if (< f0-5 (-> v1-13 flock 0 max-lift)) (set! f0-5 (+ 12288.0 f0-5))) f0-5)
                     (else (+ -4096.0 f0-5))))
             ;; og:preserve-this changed for high fps
-            (set! (-> v1-13 root transv y) (* DISPLAY_FPS_RATIO f0-5)))
+            (set! (-> v1-13 root transv y) (* DISPLAY_CALLBACK_RATIO f0-5)))
           0
           (let* ((gp-1 self)
                  (f28-0 (-> self thrust))
                  (f30-2 (* f28-0 (sin (-> gp-1 heading))))
                  (f0-10 (* f28-0 (cos (-> gp-1 heading)))))
             ;; og:preserve-this changed for high fps
-            (set! (-> gp-1 root transv x) (* DISPLAY_FPS_RATIO (+ (* 0.8 (-> gp-1 root transv x)) (* 0.2 f30-2))))
-            (set! (-> gp-1 root transv z) (* DISPLAY_FPS_RATIO (+ (* 0.8 (-> gp-1 root transv z)) (* 0.2 f0-10)))))
+            (set! (-> gp-1 root transv x) (* DISPLAY_CALLBACK_RATIO (+ (* 0.8 (-> gp-1 root transv x)) (* 0.2 f30-2))))
+            (set! (-> gp-1 root transv z) (* DISPLAY_CALLBACK_RATIO (+ (* 0.8 (-> gp-1 root transv z)) (* 0.2 f0-10)))))
           0)
         (seagull-method-27 self)
         (suspend)
@@ -530,7 +530,7 @@
               (let ((f0-33 (+ (* (-> s4-0 x) (-> s4-0 x)) (* (-> s4-0 z) (-> s4-0 z)))))
                 (set! (-> s5-0 angletan) (/ (- (-> s4-0 y)) (sqrtf f0-33)))
                 ;; og:preserve-this changed for high fps
-                (set! (-> s5-0 target-dist) (* DISPLAY_FPS_RATIO (sqrtf (+ f0-33 (* (-> s4-0 y) (-> s4-0 y))))))))
+                (set! (-> s5-0 target-dist) (* DISPLAY_CALLBACK_RATIO (sqrtf (+ f0-33 (* (-> s4-0 y) (-> s4-0 y))))))))
             0
             (let ((v1-42 (>= (ja-frame-num 0) (ja-aframe 3.0 0))))
               (cond
@@ -543,7 +543,7 @@
                            (a0-49 (if (< f0-38 (-> v1-44 flock 0 max-lift)) (set! f0-38 (+ 12288.0 f0-38))) f0-38)
                            (else (+ -4096.0 f0-38))))
                    ;; og:preserve-this changed for high fps
-                   (set! (-> v1-44 root transv y) (* DISPLAY_FPS_RATIO f0-38)))
+                   (set! (-> v1-44 root transv y) (* DISPLAY_CALLBACK_RATIO f0-38)))
                  0)
                 (else
                  (let* ((v1-48 self)
@@ -554,7 +554,7 @@
                            (a0-55 (if (< f0-39 (-> v1-48 flock 0 max-lift)) (set! f0-39 (+ 12288.0 f0-39))) f0-39)
                            (else (+ -4096.0 f0-39))))
                    ;; og:preserve-this changed for high fps
-                   (set! (-> v1-48 root transv y) (* DISPLAY_FPS_RATIO f0-39)))
+                   (set! (-> v1-48 root transv y) (* DISPLAY_CALLBACK_RATIO f0-39)))
                  0)))
             (let* ((s5-1 self)
                    (f28-0 (-> self thrust))
@@ -637,7 +637,7 @@
             (let ((f0-33 (+ (* (-> s5-0 x) (-> s5-0 x)) (* (-> s5-0 z) (-> s5-0 z)))))
               (set! (-> gp-0 angletan) (/ (- (-> s5-0 y)) (sqrtf f0-33)))
               ;; og:preserve-this changed for high fps
-              (set! (-> gp-0 target-dist) (* DISPLAY_FPS_RATIO (sqrtf (+ f0-33 (* (-> s5-0 y) (-> s5-0 y))))))))
+              (set! (-> gp-0 target-dist) (* DISPLAY_CALLBACK_RATIO (sqrtf (+ f0-33 (* (-> s5-0 y) (-> s5-0 y))))))))
           0
           (let ((v1-44 self)) (set! (-> v1-44 root transv y) -8192.0))
           0
@@ -646,8 +646,8 @@
                  (f30-0 (* f28-0 (sin (-> gp-1 heading))))
                  (f0-41 (* f28-0 (cos (-> gp-1 heading)))))
             ;; og:preserve-this changed for high fps
-            (set! (-> gp-1 root transv x) (* DISPLAY_FPS_RATIO (+ (* 0.8 (-> gp-1 root transv x)) (* 0.2 f30-0))))
-            (set! (-> gp-1 root transv z) (* DISPLAY_FPS_RATIO (+ (* 0.8 (-> gp-1 root transv z)) (* 0.2 f0-41)))))
+            (set! (-> gp-1 root transv x) (* DISPLAY_CALLBACK_RATIO (+ (* 0.8 (-> gp-1 root transv x)) (* 0.2 f30-0))))
+            (set! (-> gp-1 root transv z) (* DISPLAY_CALLBACK_RATIO (+ (* 0.8 (-> gp-1 root transv z)) (* 0.2 f0-41)))))
           0
           (seagull-method-27 self)
           (when (< (-> self angletan) 0.2)

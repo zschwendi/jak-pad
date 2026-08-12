@@ -692,7 +692,16 @@
                    (the-as uint 60))))
                (set! (-> s5-3 blink) 0.0))
               (else
-               (+! (-> s5-3 random-time) -1)
+               (set! (-> s5-3 random-time)
+                     (the-as uint
+                       (max 0
+                            (+ (the int (-> s5-3 random-time))
+                               (#if PC_PORT
+                                 (if (> *host-display-time-ratio* 0.0)
+                                   (- (-> *display* old-real-integral-frame-counter)
+                                      (-> *display* real-integral-frame-counter))
+                                   -1)
+                                 -1)))))
                (let ((v1-54 (the int (* DISPLAY_FPS_RATIO (-> s5-3 random-time))))) ;; og:preserve-this changed for high fps
                  (when (< v1-54 (the-as uint 10))
                    (set! (-> s5-3 blink) (-> *eye-work* blink-table v1-54))

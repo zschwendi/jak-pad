@@ -198,8 +198,8 @@
                       (not (-> self racer stick-lock))
                       (not (-> self racer stick-off)))
                ;; og:preserve-this changed for high fps
-               (* (- 1.0 (* 0.0125 DISPLAY_FPS_RATIO)) f0-13)
-               (* (- 0.5 (* 0.00625 DISPLAY_FPS_RATIO)) (+ 1.0 f0-13))))
+               (* (- 1.0 (* 0.0125 DISPLAY_CALLBACK_RATIO)) f0-13)
+               (* (- 0.5 (* 0.00625 DISPLAY_CALLBACK_RATIO)) (+ 1.0 f0-13))))
             (else
              (cond
                ((and (cpad-hold? (-> self control cpad number) x) (not (-> self racer stick-lock)) (not (-> self racer stick-off))))
@@ -639,7 +639,7 @@
     (ja :chan 1 :num! (chan 0) :frame-interp (+ 0.5 (/ (-> self racer tail-anim-frame) 40)))
     (let ((gp-2 (-> self skel root-channel 2)))
       ;; og:preserve-this changed for high fps
-      (let ((f0-82 (lerp (-> self racer slide-interp) f30-2 (* DISPLAY_FPS_RATIO 0.125))))
+      (let ((f0-82 (lerp (-> self racer slide-interp) f30-2 (* DISPLAY_CALLBACK_RATIO 0.125))))
         (set! (-> self racer slide-interp) f0-82)
         (set! (-> gp-2 frame-interp) f0-82))
       (set! (-> gp-2 param 0) 0.0)

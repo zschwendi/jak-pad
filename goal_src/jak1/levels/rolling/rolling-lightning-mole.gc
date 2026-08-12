@@ -114,7 +114,7 @@
     ;; the further the camera moved since last frame decides how close the chosen value is to the
     ;; max distance. Since this is called more often above 60 FPS, the distance is skewed to the
     ;; lower end. This scales the distance back up based on the FPS ratio.
-    (set! f30-0 (/ f30-0 DISPLAY_FPS_RATIO))
+    (set! f30-0 (/ f30-0 DISPLAY_CALLBACK_RATIO))
     (set! (-> self nav-info notice-distance)
           (lerp-clamp (-> self flee-info min-notice-dist)
                       (-> self flee-info max-notice-dist)

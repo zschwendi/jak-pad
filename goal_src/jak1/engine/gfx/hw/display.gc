@@ -63,6 +63,14 @@
 
 ;; new constant for use in high FPS scenarios
 (defconstant DISPLAY_FPS_RATIO (/ (-> *display* time-factor) 5.0))
+(#when PC_PORT
+  (define-extern *host-display-time-ratio* float))
+(defconstant DISPLAY_CALLBACK_RATIO
+  (#if PC_PORT
+    (if (> *host-display-time-ratio* 0.0)
+      (* DISPLAY_FPS_RATIO *host-display-time-ratio*)
+      DISPLAY_FPS_RATIO)
+    DISPLAY_FPS_RATIO))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; DISPLAY ENV and DRAW ENV

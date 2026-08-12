@@ -1643,7 +1643,7 @@
                           (lambda ((arg0 target))
                             (let ((f0-3 (seek (-> arg0 control root-prim local-sphere w)
                                               (the-as float 28672.0)
-                                              (* 286720.0 DISPLAY_FPS_RATIO 0.016666668) ;; og:preserve-this changed for high fps
+                                              (* 286720.0 DISPLAY_CALLBACK_RATIO 0.016666668) ;; og:preserve-this changed for high fps
                                               )))
                               (set! (-> arg0 control root-prim local-sphere w) f0-3)
                               f0-3)))))

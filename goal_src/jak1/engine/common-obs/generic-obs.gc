@@ -1115,7 +1115,7 @@
              (f1-1 (* -546.13336 f0-0))
              (f0-2 (fmin 546.13336 (fmax -546.13336 f1-1))))
         ;; og:preserve-this changed for high fps
-        (matrix-axis-angle! gp-0 (-> *camera* local-down) (* DISPLAY_FPS_RATIO f0-2)))
+        (matrix-axis-angle! gp-0 (-> *camera* local-down) (* DISPLAY_CALLBACK_RATIO f0-2)))
       (vector-matrix*! (-> self view-flat) (-> self view-flat) gp-0))
     (vector-normalize! (-> self view-flat) 4096.0)))
 

@@ -933,7 +933,25 @@
 (#when PC_PORT
   ;; A host with an external display clock can supply the interval at the frame-start boundary.
   ;; Zero preserves the normal timer-derived PC behavior.
-  (define *host-display-time-ratio* 0.0))
+  (define *host-display-time-ratio* 0.0)
+  (define *host-game-scaled-time-remainder* 0.0)
+  (define *host-non-movie-scaled-time-remainder* 0.0)
+  (define *host-real-scaled-time-remainder* 0.0)
+  (define *host-game-integral-time-remainder* 0.0)
+  (define *host-real-integral-time-remainder* 0.0)
+
+  (defun goalpad-set-target-frame-rate ((requested-rate int))
+    "Select the host-managed 60 or 120 Hz clock without exposing the PC menu setting."
+    (let ((rate (if (= requested-rate 120) 120 60)))
+      (set! *host-game-scaled-time-remainder* 0.0)
+      (set! *host-non-movie-scaled-time-remainder* 0.0)
+      (set! *host-real-scaled-time-remainder* 0.0)
+      (set! *host-game-integral-time-remainder* 0.0)
+      (set! *host-real-integral-time-remainder* 0.0)
+      (set-frame-rate! *pc-settings* rate #t)
+      (set-video-mode (-> *setting-control* default video-mode))
+      rate))
+  )
 
 (defun debug-init-buffer ((arg0 bucket-id) (arg1 gs-zbuf) (arg2 gs-test))
   "Initialize a bucket for debug draw with the given zbuf and test settings"
@@ -1013,24 +1031,68 @@
     (set! (-> disp old-actual-frame-counter) (-> disp actual-frame-counter))
     (set! (-> disp old-real-actual-frame-counter) (-> disp real-actual-frame-counter))
     ;; get the increment in seconds unit.
-    (let ((scaled-seconds (* (the int time-ratio) (the int (-> disp time-factor)))))
-      ;; tell the sparticle system
-      (set-particle-frame-time (min (seconds 0.04) scaled-seconds))
-      ;; the "not real" frame counters only count when unpaused
-      (when (not (paused?))
-        ;; these count by scaled time
-        (+! (-> disp base-frame-counter) scaled-seconds)
-        (+! (-> disp part-frame-counter) scaled-seconds)
-        ;; this counts actual frames, not seconds. Will count 2 frames if we lag
-        (+! (-> disp integral-frame-counter) (the int time-ratio))
-        ;; this counts actual frames, not doubling for lag. Will count 1 per frame drawn
-        (+! (-> disp actual-frame-counter) 1)
-        ;; game counter will count seconds that we're not in a movie
-        (if (not (movie?)) (+! (-> disp game-frame-counter) scaled-seconds)))
-      ;; real counts like base, but increments when paused
-      (+! (-> disp real-frame-counter) scaled-seconds))
-    ;; actual frames, lag counts as 2x
-    (+! (-> disp real-integral-frame-counter) (the int time-ratio)))
+    (#if PC_PORT
+      (if (> *host-display-time-ratio* 0.0)
+       (let* ((real-scaled-value (+ (* time-ratio (-> disp time-factor)) *host-real-scaled-time-remainder*))
+             (real-scaled-seconds (the int real-scaled-value))
+             (real-integral-value (+ time-ratio *host-real-integral-time-remainder*))
+             (real-integral-frames (the int real-integral-value)))
+        (set! *host-real-scaled-time-remainder* (- real-scaled-value (the float real-scaled-seconds)))
+        (set! *host-real-integral-time-remainder* (- real-integral-value (the float real-integral-frames)))
+        ;; tell the sparticle system
+        (set-particle-frame-time (min (seconds 0.04) real-scaled-seconds))
+        ;; the "not real" frame counters only count when unpaused. Their fractional carry is
+        ;; separate so time spent paused cannot leak into the game clock after resuming.
+        (when (not (paused?))
+          (let* ((game-scaled-value (+ (* time-ratio (-> disp time-factor)) *host-game-scaled-time-remainder*))
+                 (game-scaled-seconds (the int game-scaled-value))
+                 (game-integral-value (+ time-ratio *host-game-integral-time-remainder*))
+                 (game-integral-frames (the int game-integral-value)))
+            (set! *host-game-scaled-time-remainder* (- game-scaled-value (the float game-scaled-seconds)))
+            (set! *host-game-integral-time-remainder* (- game-integral-value (the float game-integral-frames)))
+            (+! (-> disp base-frame-counter) game-scaled-seconds)
+            (+! (-> disp part-frame-counter) game-scaled-seconds)
+            (+! (-> disp integral-frame-counter) game-integral-frames)
+            (+! (-> disp actual-frame-counter) 1)
+            (when (not (movie?))
+              (let* ((non-movie-value (+ (* time-ratio (-> disp time-factor))
+                                         *host-non-movie-scaled-time-remainder*))
+                     (non-movie-seconds (the int non-movie-value)))
+                (set! *host-non-movie-scaled-time-remainder*
+                      (- non-movie-value (the float non-movie-seconds)))
+                (+! (-> disp game-frame-counter) non-movie-seconds)))))
+        ;; real counts like base, but increments when paused
+        (+! (-> disp real-frame-counter) real-scaled-seconds)
+        ;; actual frames, lag counts as the target-frame ratio
+        (+! (-> disp real-integral-frame-counter) real-integral-frames))
+       (let ((scaled-seconds (* (the int time-ratio) (the int (-> disp time-factor)))))
+        (set-particle-frame-time (min (seconds 0.04) scaled-seconds))
+        (when (not (paused?))
+          (+! (-> disp base-frame-counter) scaled-seconds)
+          (+! (-> disp part-frame-counter) scaled-seconds)
+          (+! (-> disp integral-frame-counter) (the int time-ratio))
+          (+! (-> disp actual-frame-counter) 1)
+          (if (not (movie?)) (+! (-> disp game-frame-counter) scaled-seconds)))
+        (+! (-> disp real-frame-counter) scaled-seconds)
+        (+! (-> disp real-integral-frame-counter) (the int time-ratio))))
+      (let ((scaled-seconds (* (the int time-ratio) (the int (-> disp time-factor)))))
+        ;; tell the sparticle system
+        (set-particle-frame-time (min (seconds 0.04) scaled-seconds))
+        ;; the "not real" frame counters only count when unpaused
+        (when (not (paused?))
+          ;; these count by scaled time
+          (+! (-> disp base-frame-counter) scaled-seconds)
+          (+! (-> disp part-frame-counter) scaled-seconds)
+          ;; this counts actual frames, not seconds. Will count 2 frames if we lag
+          (+! (-> disp integral-frame-counter) (the int time-ratio))
+          ;; this counts actual frames, not doubling for lag. Will count 1 per frame drawn
+          (+! (-> disp actual-frame-counter) 1)
+          ;; game counter will count seconds that we're not in a movie
+          (if (not (movie?)) (+! (-> disp game-frame-counter) scaled-seconds)))
+        ;; real counts like base, but increments when paused
+        (+! (-> disp real-frame-counter) scaled-seconds)
+        ;; actual frames, lag counts as 2x
+        (+! (-> disp real-integral-frame-counter) (the int time-ratio)))))
   ;; actual real frames (for real)
   (+! (-> disp real-actual-frame-counter) 1)
   ;; reset the timer.
@@ -1088,7 +1150,10 @@
   ;; setup our drawing offset for even/odd offset
   (set-draw-env-offset (-> disp frames new-frame-idx draw) 2048 2048 odd-even)
   ;; read controllers
-  (service-cpads)
+  (service-cpads (#if PC_PORT
+                   (max 1 (min 4 (the int (- (-> disp real-integral-frame-counter)
+                                               (-> disp old-real-integral-frame-counter)))))
+                   1))
   ;; now we are ready to run a frame!
   (none))
 
@@ -1164,7 +1229,7 @@
     (logclear! (-> *cpad-list* cpads 0 button0-rel 0) (pad-buttons start r2))
     (while (and (= *master-mode* 'pause) (not (cpad-pressed? 0 start r2)))
       (sync-path 0 0)
-      (service-cpads))
+      (service-cpads 0))
     (toggle-pause))
   (when (or (not *progress-process*) (can-go-back? (-> *progress-process* 0)))
     (if (or (cpad-pressed? 0 select r3 start) ;; push pause
