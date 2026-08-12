@@ -56,6 +56,7 @@ constexpr u32 kPrisOrdinaryBucket = 200;
 constexpr u32 kPrisOrdinaryDescriptorOffset = kChainOffset + 0x16000;
 constexpr u32 kPrisOrdinaryDirectOffset = kChainOffset + 0x16100;
 constexpr u32 kPrisonClutBucket = 204;
+constexpr u32 kOtherPrisAnimatorBucket = 208;
 constexpr u32 kPrisonClutDescriptorOffset = kChainOffset + 0x16200;
 constexpr u32 kPrisonClutAnimatorOffset = kChainOffset + 0x16300;
 constexpr u32 kPrisonClutDirectOffset = kChainOffset + 0x16400;
@@ -175,7 +176,7 @@ void make_pris_ordinary_only_chain() {
   put_tag(kPrisOrdinaryDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
-void make_prison_clut_chain(float morph) {
+void make_prison_clut_chain(float morph, u32 bucket_id = kPrisonClutBucket) {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
   constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
@@ -185,7 +186,7 @@ void make_prison_clut_chain(float morph) {
   constexpr u64 kPageOffset = kTexturePageOffset;
   constexpr std::array<u32, 7> kDestinationTbps = {
       0x1000, 0x1010, 0x1020, 0x1030, 0x1040, 0x1050, 0x1060};
-  const u32 bucket_offset = kChainOffset + kPrisonClutBucket * 16;
+  const u32 bucket_offset = kChainOffset + bucket_id * 16;
 
   put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kPrisonClutDescriptorOffset);
   put_tag(kPrisonClutDescriptorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
@@ -1400,6 +1401,25 @@ int main() {
             prison_metrics.prison_clut_preparations == 2 &&
             prison_metrics.prison_clut_publications == 2 && stable_prison_handles,
         "a later morph reuses all six stable host-owned registry handles");
+
+  make_prison_clut_chain(0.75f, kOtherPrisAnimatorBucket);
+  prison_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(prison_host, &prison_metrics),
+        "copied metrics after a source-valid animator in bucket 208");
+  bool unchanged_prison_handles = true;
+  for (std::size_t i = 0; i < first_prison_handles.size(); ++i) {
+    unchanged_prison_handles = unchanged_prison_handles &&
+                               prison_metrics.prison_clut_textures[i] ==
+                                   first_prison_handles[i];
+  }
+  check(prison_metrics.chains == 3 && prison_metrics.completed_chains == 3 &&
+            prison_metrics.failed_chains == 0 &&
+            prison_metrics.pris_texture_uploads[3].bucket_id == kOtherPrisAnimatorBucket &&
+            prison_metrics.pris_texture_uploads[3].animator_arrays == 1 &&
+            prison_metrics.pris_texture_uploads[3].executions == 1 &&
+            prison_metrics.prison_clut_preparations == 2 &&
+            prison_metrics.prison_clut_publications == 2 && unchanged_prison_handles,
+        "bucket 208's validated animator remains a renderer-consumed no-op for prison CLUT");
   goal_jak2_metal_host_destroy(prison_host);
   check(metal_level_data::level_count() == initial_level_count &&
             metal_merc_models().level_count() == initial_merc_level_count &&
