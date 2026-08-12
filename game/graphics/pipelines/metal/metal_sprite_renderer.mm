@@ -31,24 +31,56 @@ bool diagnostic_flag(const char* name) {
   return value && value[0] == '1' && value[1] == '\0';
 }
 
-struct SpriteTextureAlphaSummary {
-  u64 count = 0;
-  u64 sum = 0;
-  u8 minimum = 255;
-  u8 maximum = 0;
-
-  void add(u8 alpha) {
-    count++;
-    sum += alpha;
-    minimum = std::min(minimum, alpha);
-    maximum = std::max(maximum, alpha);
+bool diagnostic_combo_id(const char* name, bool* has_filter, u32* combo_id) {
+  const char* value = std::getenv(name);
+  if (!value) {
+    *has_filter = false;
+    *combo_id = 0;
+    return true;
   }
 
-  u32 min() const { return count ? minimum : 0; }
-  u32 max() const { return count ? maximum : 0; }
-  u64 average_x100() const { return count ? (sum * 100 + count / 2) / count : 0; }
+  *has_filter = true;
+  if (!value[0]) {
+    return false;
+  }
 
-  bool operator==(const SpriteTextureAlphaSummary& other) const {
+  u32 parsed = 0;
+  for (const char* cursor = value; *cursor; cursor++) {
+    if (*cursor < '0' || *cursor > '9') {
+      return false;
+    }
+    const u32 digit = *cursor - '0';
+    if (parsed > (std::numeric_limits<u32>::max() - digit) / 10) {
+      return false;
+    }
+    parsed = parsed * 10 + digit;
+  }
+  *combo_id = parsed;
+  return true;
+}
+
+struct SpriteTextureRegionSummary {
+  u64 count = 0;
+  std::array<u64, 4> sum = {};
+  std::array<u8, 4> minimum = {255, 255, 255, 255};
+  std::array<u8, 4> maximum = {};
+
+  void add(const u8* rgba) {
+    count++;
+    for (std::size_t channel = 0; channel < sum.size(); channel++) {
+      sum[channel] += rgba[channel];
+      minimum[channel] = std::min(minimum[channel], rgba[channel]);
+      maximum[channel] = std::max(maximum[channel], rgba[channel]);
+    }
+  }
+
+  u32 min(std::size_t channel) const { return count ? minimum[channel] : 0; }
+  u32 max(std::size_t channel) const { return count ? maximum[channel] : 0; }
+  u64 average_x100(std::size_t channel) const {
+    return count ? (sum[channel] * 100 + count / 2) / count : 0;
+  }
+
+  bool operator==(const SpriteTextureRegionSummary& other) const {
     return count == other.count && sum == other.sum && minimum == other.minimum &&
            maximum == other.maximum;
   }
@@ -66,9 +98,9 @@ struct SpriteTextureDiagnosticState {
   u32 source = 0;
   u32 placeholder = 0;
   u64 rgba_hash = 0;
-  SpriteTextureAlphaSummary all;
-  SpriteTextureAlphaSummary center;
-  SpriteTextureAlphaSummary edge;
+  SpriteTextureRegionSummary all;
+  SpriteTextureRegionSummary center;
+  SpriteTextureRegionSummary edge;
 
   bool operator==(const SpriteTextureDiagnosticState& other) const {
     return tbp == other.tbp && mode == other.mode && tcc == other.tcc && handle == other.handle &&
@@ -95,6 +127,13 @@ void log_sprite_texture_diagnostic(u32 tbp,
                                    u64 handle,
                                    bool used_placeholder,
                                    TexturePool* texture_pool) {
+  bool has_combo_filter = false;
+  u32 combo_filter = 0;
+  if (!diagnostic_combo_id("GOALPAD_JAK2_DEBUG_SPRITE_TEXTURE_COMBO_ID", &has_combo_filter,
+                           &combo_filter)) {
+    return;
+  }
+
   SpriteTextureDiagnosticState state;
   state.tbp = tbp;
   state.mode = mode.as_int();
@@ -108,6 +147,12 @@ void log_sprite_texture_diagnostic(u32 tbp,
     if (gpu_texture) {
       state.page = gpu_texture->tex_id.page;
       state.tex = gpu_texture->tex_id.tex;
+    }
+    if (has_combo_filter &&
+        (!gpu_texture || !(gpu_texture->tex_id == PcTextureId::from_combo_id(combo_filter)))) {
+      return;
+    }
+    if (gpu_texture) {
       state.width = gpu_texture->w;
       state.height = gpu_texture->h;
       state.placeholder = gpu_texture->is_placeholder ? 1 : 0;
@@ -129,11 +174,10 @@ void log_sprite_texture_diagnostic(u32 tbp,
       for (u32 y = 0; y < state.height; y++) {
         for (u32 x = 0; x < state.width; x++) {
           const std::size_t offset = (static_cast<std::size_t>(y) * state.width + x) * 4;
-          const u8 alpha = source[offset + 3];
           const bool is_center =
               x >= center_x_begin && x < center_x_end && y >= center_y_begin && y < center_y_end;
-          state.all.add(alpha);
-          (is_center ? state.center : state.edge).add(alpha);
+          state.all.add(source + offset);
+          (is_center ? state.center : state.edge).add(source + offset);
         }
       }
     }
@@ -158,13 +202,26 @@ void log_sprite_texture_diagnostic(u32 tbp,
   lg::info(
       "GOALPAD_JAK2_SPRITE_TEXTURE_STATE index={} tbp={} mode={} tcc={} handle={} page={} tex={} "
       "width={} height={} source={} placeholder={} rgba_fnv={} alpha_min={} alpha_max={} "
-      "alpha_avg_x100={} center_count={} center_min={} center_max={} center_avg_x100={} "
-      "edge_count={} edge_min={} edge_max={} edge_avg_x100={}",
+      "alpha_avg_x100={} r_min={} r_max={} r_avg_x100={} g_min={} g_max={} g_avg_x100={} "
+      "b_min={} b_max={} b_avg_x100={} center_count={} center_min={} center_max={} "
+      "center_avg_x100={} center_r_min={} center_r_max={} center_r_avg_x100={} center_g_min={} "
+      "center_g_max={} center_g_avg_x100={} center_b_min={} center_b_max={} center_b_avg_x100={} "
+      "edge_count={} edge_min={} edge_max={} edge_avg_x100={} edge_r_min={} edge_r_max={} "
+      "edge_r_avg_x100={} edge_g_min={} edge_g_max={} edge_g_avg_x100={} edge_b_min={} "
+      "edge_b_max={} edge_b_avg_x100={}",
       index, state.tbp, state.mode, state.tcc, state.handle, state.page, state.tex, state.width,
-      state.height, state.source, state.placeholder, state.rgba_hash, state.all.min(),
-      state.all.max(), state.all.average_x100(), state.center.count, state.center.min(),
-      state.center.max(), state.center.average_x100(), state.edge.count, state.edge.min(),
-      state.edge.max(), state.edge.average_x100());
+      state.height, state.source, state.placeholder, state.rgba_hash, state.all.min(3),
+      state.all.max(3), state.all.average_x100(3), state.all.min(0), state.all.max(0),
+      state.all.average_x100(0), state.all.min(1), state.all.max(1), state.all.average_x100(1),
+      state.all.min(2), state.all.max(2), state.all.average_x100(2), state.center.count,
+      state.center.min(3), state.center.max(3), state.center.average_x100(3), state.center.min(0),
+      state.center.max(0), state.center.average_x100(0), state.center.min(1), state.center.max(1),
+      state.center.average_x100(1), state.center.min(2), state.center.max(2),
+      state.center.average_x100(2), state.edge.count, state.edge.min(3), state.edge.max(3),
+      state.edge.average_x100(3), state.edge.min(0), state.edge.max(0),
+      state.edge.average_x100(0), state.edge.min(1), state.edge.max(1),
+      state.edge.average_x100(1), state.edge.min(2), state.edge.max(2),
+      state.edge.average_x100(2));
 }
 
 constexpr PerGameVersion<u32> kNormalZbp(448, 304, 304, 304);
