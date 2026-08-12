@@ -167,6 +167,22 @@ typedef struct goal_jak2_shadow_bucket195_metrics {
   uint8_t last_reached_boundary;
 } goal_jak2_shadow_bucket195_metrics;
 
+typedef struct goal_jak2_gmerc_warp_bucket317_metrics {
+  uint64_t observations;
+  uint64_t absent;
+  uint64_t setup_only;
+  uint64_t fragments;
+  uint64_t malformed;
+  uint32_t last_transfer_count;
+  uint32_t last_fragment_count;
+  uint32_t last_continued_fragment_count;
+  uint32_t last_vertex_count;
+  uint32_t last_adgif_count;
+  uint64_t last_payload_bytes;
+  uint64_t last_semantic_fingerprint;
+  uint8_t last_variant;
+} goal_jak2_gmerc_warp_bucket317_metrics;
+
 typedef struct goal_jak2_metal_host_metrics {
   uint64_t chains;
   uint64_t completed_chains;
@@ -360,6 +376,8 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_tfrag_texture_upload_metrics subtitle_capture;
   // Append-only passive metadata. Bucket 195 remains DeferredSkip with no execution route.
   goal_jak2_shadow_bucket195_metrics shadow_bucket195;
+  // Append-only passive metadata. Bucket 317 remains DeferredSkip with no execution route.
+  goal_jak2_gmerc_warp_bucket317_metrics gmerc_warp_bucket317;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {
