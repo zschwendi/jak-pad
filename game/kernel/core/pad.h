@@ -94,6 +94,9 @@ goal_kernel_core_status goal_pad_install(void);
  */
 goal_kernel_core_status goal_pad_set_state(int port, const goal_pad_state* state);
 
+/*! Make the host's rumble preference authoritative for GOAL's per-pad vibration gate. */
+goal_kernel_core_status goal_pad_set_rumble_enabled(int port, int enabled);
+
 /*!
  * What GOAL last asked the vibration motors of `port` to do: `large` is the on/off motor and
  * `small` is the analog one, both 0 when nothing is buzzing. GOAL writes these into the pad's

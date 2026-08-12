@@ -41,6 +41,7 @@ struct HostPad {
   goal_pad_state state;
   uint8_t rumble_large = 0;
   uint8_t rumble_small = 0;
+  bool rumble_enabled = true;
   int reads = 0;
 };
 
@@ -207,6 +208,10 @@ u64 CPadOpen(u64 cpad_info, s32 pad_number) {
 u64 CPadGetData(u64 cpad_info) {
   using namespace ee;
   auto cpad = Ptr<CPadInfo>(cpad_info).c();
+  if (valid_port(cpad->number)) {
+    cpad->buzz = g_pads[cpad->number].rumble_enabled ? goal_game_true_offset()
+                                                     : goal_game_false_offset();
+  }
   auto pad_state = scePadGetState(cpad->number, 0);
   if (pad_state == scePadStateDiscon) {
     cpad->state = 0;
@@ -347,6 +352,18 @@ goal_kernel_core_status goal_pad_set_state(int port, const goal_pad_state* state
     return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
   }
   g_pads[port].state = *state;
+  return GOAL_KERNEL_CORE_OK;
+}
+
+goal_kernel_core_status goal_pad_set_rumble_enabled(int port, int enabled) {
+  if (!valid_port(port)) {
+    return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
+  }
+  g_pads[port].rumble_enabled = enabled != 0;
+  if (!enabled) {
+    g_pads[port].rumble_large = 0;
+    g_pads[port].rumble_small = 0;
+  }
   return GOAL_KERNEL_CORE_OK;
 }
 
