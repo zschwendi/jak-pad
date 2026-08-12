@@ -821,6 +821,37 @@
             :param3 (game-option-menu quit-title))
        (new 'static 'game-option :option-type (game-option-type button) :name (text-id back) :scale #t)))
 
+(define *title-managed-display*
+  (new 'static
+       'boxed-array
+       :type
+       game-option
+       (new 'static
+            'game-option
+            :option-type (game-option-type menu)
+            :name (text-id new-game)
+            :scale #t
+            :param3 (game-option-menu save-game-title))
+       (new 'static
+            'game-option
+            :option-type (game-option-type menu)
+            :name (text-id load-game)
+            :scale #t
+            :param3 (game-option-menu load-game))
+       (new 'static
+            'game-option
+            :option-type (game-option-type menu)
+            :name (text-id options)
+            :scale #t
+            :param3 (game-option-menu settings-title))
+       (new 'static
+            'game-option
+            :option-type (game-option-type menu)
+            :name (text-id quit-game)
+            :scale #t
+            :param3 (game-option-menu quit-title))
+       (new 'static 'game-option :option-type (game-option-type button) :name (text-id back) :scale #t)))
+
 (define *speedrun-options*
   (new 'static
        'boxed-array
@@ -2092,7 +2123,9 @@
                (pc-cheats invinc eco-blue eco-red eco-green eco-yellow huge-head mirror no-tex))))
   ;; set up options for each screen
   (set! (-> *options-remap* (progress-screen settings))
-        (if (or *cheat-mode* (nonzero? (-> *pc-settings* cheats-known))) *main-options-secrets* *main-options-pc*))
+        (if (pc-host-manages-display?)
+          *main-options*
+          (if (or *cheat-mode* (nonzero? (-> *pc-settings* cheats-known))) *main-options-secrets* *main-options-pc*)))
   (set! (-> *options-remap* (progress-screen game-settings)) *game-options-pc*)
   (set! (-> *options-remap* (progress-screen graphic-settings))
         (if (pc-host-manages-display?) *graphic-options-managed-display* *graphic-options-pc*))
@@ -2117,7 +2150,8 @@
   (set! (-> *options-remap* (progress-screen memcard-auto-save-error)) *ok-options*)
   (set! (-> *options-remap* (progress-screen memcard-removed)) *ok-options*)
   (set! (-> *options-remap* (progress-screen memcard-no-data)) *yes-no-options*)
-  (set! (-> *options-remap* (progress-screen title)) *title-pc*)
+  (set! (-> *options-remap* (progress-screen title))
+        (if (pc-host-manages-display?) *title-managed-display* *title-pc*))
   (set! (-> *options-remap* (progress-screen settings-title)) *options*)
   (set! (-> *options-remap* (progress-screen auto-save)) *ok-options*)
   (set! (-> *options-remap* (progress-screen pal-change-to-60hz)) *yes-no-options*)
