@@ -705,7 +705,7 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
           dispatch->host, plan.ordinary, dispatch->live_ee_memory,
           &dispatch->host->metrics.pris_texture_uploads[index].executions,
           "Jak 2 PRIS eye ordinary texture upload", dispatch->host_texture_mutated);
-      if (bucket_id == 204 && plan.has_prison_jak_animator) {
+      if (plan.has_prison_jak_animator) {
         if (!dispatch->prison_clut_prepared ||
             !(*dispatch->prison_clut_prepared)[index].has_value() ||
             !dispatch->host->prison_clut_executor) {
@@ -1193,11 +1193,21 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     std::array<std::optional<metal_renderer::Jak2PrisonClutExecutor::Prepared>,
                metal_renderer::kJak2PrisTextureUploadBuckets.size()>
         prison_clut_prepared;
+    std::optional<std::size_t> prison_clut_plan_index;
     for (std::size_t i = 0; i < copied_pris_eye_plans.size(); ++i) {
       const auto& plan = copied_pris_eye_plans[i];
-      if (plan.bucket_id != 204 || !plan.has_prison_jak_animator) {
+      if (!plan.has_prison_jak_animator) {
         continue;
       }
+      if (prison_clut_plan_index) {
+        record_failure(host, "Jak 2 prison CLUT animator appeared in multiple PRIS buckets");
+        return;
+      }
+      prison_clut_plan_index = i;
+    }
+    if (prison_clut_plan_index) {
+      const std::size_t i = *prison_clut_plan_index;
+      const auto& plan = copied_pris_eye_plans[i];
       metal_renderer::Jak2PrisonClutExecutor::Prepared prepared;
       if (!host->common_level || !host->common_level->level || !host->prison_clut_executor ||
           !host->prison_clut_executor->prepare(plan.prison_jak_animator,

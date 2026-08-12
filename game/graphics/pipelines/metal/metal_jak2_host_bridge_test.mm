@@ -60,6 +60,9 @@ constexpr u32 kOtherPrisAnimatorBucket = 208;
 constexpr u32 kPrisonClutDescriptorOffset = kChainOffset + 0x16200;
 constexpr u32 kPrisonClutAnimatorOffset = kChainOffset + 0x16300;
 constexpr u32 kPrisonClutDirectOffset = kChainOffset + 0x16400;
+constexpr u32 kDuplicatePrisonClutDescriptorOffset = kChainOffset + 0x16500;
+constexpr u32 kDuplicatePrisonClutAnimatorOffset = kChainOffset + 0x16600;
+constexpr u32 kDuplicatePrisonClutDirectOffset = kChainOffset + 0x16700;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -78,6 +81,18 @@ void check(bool condition, const char* message) {
   if (!condition) {
     failures++;
   }
+}
+
+std::array<u8, 4> first_pixel(u64 handle) {
+  std::array<u8, 4> pixel = {};
+  id<MTLTexture> texture = metal_texture_lookup(handle);
+  if (texture) {
+    [texture getBytes:pixel.data()
+          bytesPerRow:4
+           fromRegion:MTLRegionMake2D(0, 0, 1, 1)
+          mipmapLevel:0];
+  }
+  return pixel;
 }
 
 void put_tag(u32 offset,
@@ -176,38 +191,63 @@ void make_pris_ordinary_only_chain() {
   put_tag(kPrisOrdinaryDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
-void make_prison_clut_chain(float morph, u32 bucket_id = kPrisonClutBucket) {
-  make_empty_chain();
+void write_prison_clut_bucket(float morph,
+                              u32 bucket_id,
+                              u32 descriptor_offset,
+                              u32 animator_offset,
+                              u32 direct_offset,
+                              u32 destination_tbp_bias) {
   auto* ee = static_cast<u8*>(g_ee_main_mem);
   constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
   constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
   constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
   constexpr s64 kMode = -1;
   constexpr u64 kPageOffset = kTexturePageOffset;
-  constexpr std::array<u32, 7> kDestinationTbps = {
-      0x1000, 0x1010, 0x1020, 0x1030, 0x1040, 0x1050, 0x1060};
+  const std::array<u32, 7> destination_tbps = {
+      0x1000 + destination_tbp_bias, 0x1010 + destination_tbp_bias,
+      0x1020 + destination_tbp_bias, 0x1030 + destination_tbp_bias,
+      0x1040 + destination_tbp_bias, 0x1050 + destination_tbp_bias,
+      0x1060 + destination_tbp_bias};
   const u32 bucket_offset = kChainOffset + bucket_id * 16;
 
-  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kPrisonClutDescriptorOffset);
-  put_tag(kPrisonClutDescriptorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
-  std::memcpy(ee + kPrisonClutDescriptorOffset + 16, &kPageOffset, sizeof(kPageOffset));
-  std::memcpy(ee + kPrisonClutDescriptorOffset + 24, &kMode, sizeof(kMode));
-  put_tag(kPrisonClutDescriptorOffset + 32, DmaTag::Kind::NEXT, 0,
-          kPrisonClutAnimatorOffset);
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, descriptor_offset);
+  put_tag(descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  std::memcpy(ee + descriptor_offset + 16, &kPageOffset, sizeof(kPageOffset));
+  std::memcpy(ee + descriptor_offset + 24, &kMode, sizeof(kMode));
+  put_tag(descriptor_offset + 32, DmaTag::Kind::NEXT, 0, animator_offset);
 
-  put_tag(kPrisonClutAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
-  const u32 body_tag = kPrisonClutAnimatorOffset + 16;
+  put_tag(animator_offset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
+  const u32 body_tag = animator_offset + 16;
   put_tag(body_tag, DmaTag::Kind::CNT, 3, 0, kPcPort | 23, 0);
   std::memset(ee + body_tag + 16, 0, 48);
   std::memcpy(ee + body_tag + 16, &morph, sizeof(morph));
-  std::memcpy(ee + body_tag + 32, kDestinationTbps.data(), sizeof(kDestinationTbps));
+  std::memcpy(ee + body_tag + 32, destination_tbps.data(), sizeof(destination_tbps));
   const u32 finish_tag = body_tag + 16 + 48;
   put_tag(finish_tag, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, 0);
-  put_tag(finish_tag + 16, DmaTag::Kind::NEXT, 0, kPrisonClutDirectOffset);
+  put_tag(finish_tag + 16, DmaTag::Kind::NEXT, 0, direct_offset);
 
-  put_tag(kPrisonClutDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
-  std::memset(ee + kPrisonClutDirectOffset + 16, 0x53, 160);
-  put_tag(kPrisonClutDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+  put_tag(direct_offset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  std::memset(ee + direct_offset + 16, 0x53, 160);
+  put_tag(direct_offset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_prison_clut_chain(float morph,
+                            u32 bucket_id = kPrisonClutBucket,
+                            u32 destination_tbp_bias = 0) {
+  make_empty_chain();
+  write_prison_clut_bucket(morph, bucket_id, kPrisonClutDescriptorOffset,
+                           kPrisonClutAnimatorOffset, kPrisonClutDirectOffset,
+                           destination_tbp_bias);
+}
+
+void make_duplicate_prison_clut_chain() {
+  make_empty_chain();
+  write_prison_clut_bucket(0.5f, kPrisonClutBucket, kPrisonClutDescriptorOffset,
+                           kPrisonClutAnimatorOffset, kPrisonClutDirectOffset, 0);
+  write_prison_clut_bucket(0.75f, kOtherPrisAnimatorBucket,
+                           kDuplicatePrisonClutDescriptorOffset,
+                           kDuplicatePrisonClutAnimatorOffset,
+                           kDuplicatePrisonClutDirectOffset, 0x100);
 }
 
 void put_u64(std::array<u8, kGifBytes>& payload, std::size_t offset, u64 value) {
@@ -1402,24 +1442,48 @@ int main() {
             prison_metrics.prison_clut_publications == 2 && stable_prison_handles,
         "a later morph reuses all six stable host-owned registry handles");
 
-  make_prison_clut_chain(0.75f, kOtherPrisAnimatorBucket);
+  make_prison_clut_chain(0.75f, kOtherPrisAnimatorBucket, 0x100);
   prison_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(prison_host, &prison_metrics),
         "copied metrics after a source-valid animator in bucket 208");
-  bool unchanged_prison_handles = true;
+  constexpr std::array<u32, 6> kExpectedMovedTbps = {0x1100, 0x1110, 0x1130,
+                                                     0x1140, 0x1150, 0x1160};
+  bool stable_moved_prison_outputs = true;
   for (std::size_t i = 0; i < first_prison_handles.size(); ++i) {
-    unchanged_prison_handles = unchanged_prison_handles &&
-                               prison_metrics.prison_clut_textures[i] ==
-                                   first_prison_handles[i];
+    stable_moved_prison_outputs = stable_moved_prison_outputs &&
+                                  prison_metrics.prison_clut_textures[i] ==
+                                      first_prison_handles[i] &&
+                                  prison_metrics.prison_clut_destination_tbps[i] ==
+                                      kExpectedMovedTbps[i];
   }
   check(prison_metrics.chains == 3 && prison_metrics.completed_chains == 3 &&
             prison_metrics.failed_chains == 0 &&
             prison_metrics.pris_texture_uploads[3].bucket_id == kOtherPrisAnimatorBucket &&
             prison_metrics.pris_texture_uploads[3].animator_arrays == 1 &&
             prison_metrics.pris_texture_uploads[3].executions == 1 &&
-            prison_metrics.prison_clut_preparations == 2 &&
-            prison_metrics.prison_clut_publications == 2 && unchanged_prison_handles,
-        "bucket 208's validated animator remains a renderer-consumed no-op for prison CLUT");
+            prison_metrics.prison_clut_preparations == 3 &&
+            prison_metrics.prison_clut_publications == 3 && stable_moved_prison_outputs &&
+            first_pixel(first_prison_handles[0]) == std::array<u8, 4>{16, 17, 18, 255},
+        "the moved bucket 208 animator updates data and TBP telemetry through stable handles");
+
+  const std::size_t live_textures_before_duplicate = metal_texture_live_count();
+  const auto first_pixel_before_duplicate = first_pixel(first_prison_handles[0]);
+  make_duplicate_prison_clut_chain();
+  prison_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  const char* duplicate_prison_error = goal_jak2_metal_host_last_error(prison_host);
+  check(goal_jak2_metal_host_get_metrics(prison_host, &prison_metrics),
+        "copied metrics after duplicate prison animators");
+  check(prison_metrics.chains == 4 && prison_metrics.completed_chains == 3 &&
+            prison_metrics.failed_chains == 1 &&
+            prison_metrics.prison_clut_preparations == 3 &&
+            prison_metrics.prison_clut_publications == 3 &&
+            prison_metrics.pris_texture_uploads[2].executions == 2 &&
+            prison_metrics.pris_texture_uploads[3].executions == 1 &&
+            metal_texture_live_count() == live_textures_before_duplicate &&
+            first_pixel(first_prison_handles[0]) == first_pixel_before_duplicate &&
+            duplicate_prison_error &&
+            std::strstr(duplicate_prison_error, "multiple PRIS buckets"),
+        "duplicate prison animators fail before preparation, render, or texture mutation");
   goal_jak2_metal_host_destroy(prison_host);
   check(metal_level_data::level_count() == initial_level_count &&
             metal_merc_models().level_count() == initial_merc_level_count &&
