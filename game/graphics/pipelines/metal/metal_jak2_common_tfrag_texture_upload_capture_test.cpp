@@ -253,18 +253,22 @@ std::vector<u8> make_ordinary_fixture(
   return packet;
 }
 
-std::vector<u8> make_normal_ordinary_fixture(u32 bucket_id, s64 mode = -1) {
+std::vector<u8> make_normal_ordinary_fixture(u32 bucket_id,
+                                             s64 mode = -1,
+                                             u32 dma_relocation = 0) {
   std::vector<u8> packet(kMemorySize);
+  const u32 ordinary_offset = kOrdinaryOffset + dma_relocation;
+  const u32 direct_setup_offset = kDirectSetupOffset + dma_relocation;
   const u32 end_offset = bucket_offset(bucket_id) + 16;
-  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
-  put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
-  put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
-  put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(mode));
-  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
-  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, ordinary_offset, 0, 0);
+  put_tag(&packet, ordinary_offset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&packet, ordinary_offset + 16, kTexturePageOffset);
+  put_u64(&packet, ordinary_offset + 24, static_cast<u64>(mode));
+  put_tag(&packet, ordinary_offset + 32, DmaTag::Kind::NEXT, 0, direct_setup_offset, 0, 0);
+  put_tag(&packet, direct_setup_offset, DmaTag::Kind::CNT, 10, 0,
           static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
-  std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
-  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  std::fill_n(packet.begin() + direct_setup_offset + 16, 160, 0x52);
+  put_tag(&packet, direct_setup_offset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
   return packet;
 }
 
@@ -674,8 +678,28 @@ void test_pris_eye_execution_plan() {
               absent->chunk_count == 0 && absent->eye_slot_mask == 0,
           "each per-level PRIS bucket accepts only the exact empty absent plan");
 
-    auto fixture = make_pris_eye_fixture(bucket_id, {{false, 2}});
+    auto ordinary = make_normal_ordinary_fixture(bucket_id);
     metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+    const auto ordinary_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+        ordinary.data(), ordinary.size(), kChainOffset, bucket_id, ordinary.data(),
+        ordinary.size(), &capture);
+    check(ordinary_plan.has_value() && ordinary_plan->present &&
+              ordinary_plan->bucket_id == bucket_id &&
+              ordinary_plan->ordinary.page_offset == kTexturePageOffset &&
+              ordinary_plan->ordinary.mode == -1 && ordinary_plan->chunk_count == 0 &&
+              ordinary_plan->eye_slot_mask == 0 &&
+              ordinary_plan->direct_reset_transfer_index == 3 &&
+              ordinary_plan->terminal_transfer_index == 4 &&
+              ordinary_plan->semantic_fingerprint != 0 && capture.valid &&
+              capture.classification == Classification::OrdinaryOnly &&
+              capture.transfer_count == 5 && capture.total_payload_bytes == 176 &&
+              capture.inert_transfers == 3 && capture.ordinary_descriptors == 1 &&
+              capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == 0 &&
+              capture.eye_markers == 0 && capture.other_transfers == 0 &&
+              capture.malformed_transfers == 0,
+          "each per-level PRIS bucket preflights its ordinary-only source envelope");
+
+    auto fixture = make_pris_eye_fixture(bucket_id, {{false, 2}});
     const auto plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
         fixture.packet.data(), fixture.packet.size(), kChainOffset, bucket_id,
         fixture.packet.data(), fixture.packet.size(), &capture);
@@ -764,6 +788,32 @@ void test_pris_eye_live_copy_semantics() {
         "a semantic payload mutation between live capture and copied execution is rejected");
 }
 
+void test_pris_ordinary_live_copy_semantics() {
+  auto live = make_normal_ordinary_fixture(200);
+  auto copied = make_normal_ordinary_fixture(200, -1, 0x2000);
+  const auto live_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      live.data(), live.size(), kChainOffset, 200, live.data(), live.size());
+  auto copied_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      copied.data(), copied.size(), kChainOffset, 200, copied.data(), copied.size());
+  check(live_plan.has_value() && copied_plan.has_value() && live_plan->present &&
+            copied_plan->present && live_plan->chunk_count == 0 &&
+            copied_plan->chunk_count == 0 &&
+            live_plan->direct_reset_relative_tag_offset !=
+                copied_plan->direct_reset_relative_tag_offset &&
+            metal_renderer::jak2_pris_eye_texture_upload_plans_match(*live_plan,
+                                                                      *copied_plan),
+        "relocated ordinary-only live and copied plans match by owned page semantics");
+
+  constexpr u32 kAlternatePageOffset = kTexturePageOffset + 0x100;
+  put_u64(&copied, kOrdinaryOffset + 0x2000 + 16, kAlternatePageOffset);
+  copied_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      copied.data(), copied.size(), kChainOffset, 200, copied.data(), copied.size());
+  check(copied_plan.has_value() && copied_plan->present && copied_plan->chunk_count == 0 &&
+            !metal_renderer::jak2_pris_eye_texture_upload_plans_match(*live_plan,
+                                                                       *copied_plan),
+        "an ordinary descriptor mutation between live capture and copied execution is rejected");
+}
+
 void test_pris_eye_shape_fails_closed() {
   auto malformed = make_pris_eye_fixture(200, {{false, 2}});
   put_u64(&malformed.packet, malformed.first_eye_offset + 336,
@@ -807,12 +857,12 @@ void test_pris_eye_shape_fails_closed() {
              .has_value(),
         "two chunks that target the same eye slots are rejected before execution");
 
-  auto ordinary_only = make_ordinary_fixture(200);
+  auto missing_reset = make_ordinary_fixture(200);
   check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
-             ordinary_only.data(), ordinary_only.size(), kChainOffset, 200,
-             ordinary_only.data(), ordinary_only.size())
+             missing_reset.data(), missing_reset.size(), kChainOffset, 200,
+             missing_reset.data(), missing_reset.size())
              .has_value(),
-        "an unobserved descriptor-only PRIS chain is not promoted to an executable plan");
+        "a PRIS descriptor without its exact source Direct reset is rejected");
 
   auto common = make_empty_fixture(metal_renderer::kJak2CommonPrisTextureUploadBucket);
   check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
@@ -1523,6 +1573,7 @@ int main() {
   test_texture_bucket_allowlist();
   test_pris_eye_execution_plan();
   test_pris_eye_live_copy_semantics();
+  test_pris_ordinary_live_copy_semantics();
   test_pris_eye_shape_fails_closed();
   test_normal_tfrag_execution_plan();
   test_common_pris_execution_plan();

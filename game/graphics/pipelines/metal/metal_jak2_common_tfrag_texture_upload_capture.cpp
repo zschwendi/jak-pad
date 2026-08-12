@@ -1137,14 +1137,18 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
 
   const std::size_t chunk_count =
       capture.transfer_count == 32 ? 1 : capture.transfer_count == 59 ? 2 : 0;
-  const u64 expected_payload_bytes = chunk_count == 1 ? 2032 : 3888;
-  const u32 expected_inert = chunk_count == 1 ? 4 : 5;
+  const bool ordinary_only = capture.transfer_count == 5;
+  const u64 expected_payload_bytes =
+      ordinary_only ? 176 : chunk_count == 1 ? 2032 : 3888;
+  const u32 expected_inert = ordinary_only ? 3 : chunk_count == 1 ? 4 : 5;
   const u32 expected_eye_markers = static_cast<u32>(chunk_count) * 2;
   const u32 expected_gs = static_cast<u32>(chunk_count) * 11;
   const u32 expected_other = static_cast<u32>(chunk_count) * 13;
   const bool exact_counts =
-      chunk_count != 0 &&
-      capture.classification == Jak2CommonTfragTextureUploadClass::EyeOrOther &&
+      (ordinary_only || chunk_count != 0) &&
+      capture.classification ==
+          (ordinary_only ? Jak2CommonTfragTextureUploadClass::OrdinaryOnly
+                         : Jak2CommonTfragTextureUploadClass::EyeOrOther) &&
       capture.total_payload_bytes == expected_payload_bytes &&
       capture.inert_transfers == expected_inert && capture.ordinary_descriptors == 1 &&
       capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == expected_gs &&

@@ -234,12 +234,12 @@ std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upl
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*!
- * Preflight the two exact source-written per-level PRIS eye envelopes observed in Jak II: one
- * ordinary upload, one or two complete different-eyes chunks, and the standard inert Direct
- * reset. Each chunk covers its qwc-8 display setup through its trailing qwc-2 ALPHA setup; the
- * following zero-qwc NEXT linker is identified separately. Relative offsets locate a separately
- * validated snapshot, while semantic matching deliberately ignores relocation of those offsets.
- * No texture-pool or renderer mutation occurs.
+ * Preflight the exact source-written per-level PRIS envelopes observed in Jak II: one ordinary
+ * upload, zero to two complete different-eyes chunks, and the standard inert Direct reset. Each
+ * eye chunk covers its qwc-8 display setup through its trailing qwc-2 ALPHA setup; the following
+ * zero-qwc NEXT linker is identified separately. Relative offsets locate a separately validated
+ * snapshot, while semantic matching deliberately ignores relocation of those offsets. No
+ * texture-pool or renderer mutation occurs.
  */
 std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
     const u8* dma_packet_snapshot,
