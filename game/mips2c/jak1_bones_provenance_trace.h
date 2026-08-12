@@ -143,6 +143,16 @@ struct Calculation {
 
 class Registry {
  public:
+  void set_enabled(bool enabled) {
+    if (m_enabled == enabled) {
+      return;
+    }
+    reset();
+    m_enabled = enabled;
+  }
+
+  bool enabled() const { return m_enabled; }
+
   bool record(u64 output_base,
               u64 joints_base,
               u64 bones_base,
@@ -151,7 +161,8 @@ class Registry {
               const u8* ee_memory,
               std::size_t ee_memory_size,
               const TargetCaptureContext& target_context = {}) {
-    if (!ee_memory || !bone_count || bone_count > kMaximumBoneCount || output_base > UINT32_MAX ||
+    if (!m_enabled || !ee_memory || !bone_count || bone_count > kMaximumBoneCount ||
+        output_base > UINT32_MAX ||
         joints_base > UINT32_MAX || bones_base > UINT32_MAX || camera_base > UINT32_MAX ||
         !span_fits(output_base, bone_count * kOutputStride, ee_memory_size) ||
         !span_fits(bones_base, bone_count * kBoneStride, ee_memory_size) ||
@@ -224,6 +235,9 @@ class Registry {
   }
 
   void record_post_flag(u64 target_address, u64 draw_status, u64 target_attack_id) {
+    if (!m_enabled) {
+      return;
+    }
     m_post_flag = {
         true,
         ++m_post_flag_serial,
@@ -481,6 +495,7 @@ class Registry {
   u64 m_serial = 0;
   PostFlagSnapshot m_post_flag;
   u64 m_post_flag_serial = 0;
+  bool m_enabled = true;
 };
 
 inline Registry& registry() {

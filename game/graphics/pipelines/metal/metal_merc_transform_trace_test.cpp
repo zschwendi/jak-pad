@@ -1000,6 +1000,15 @@ int main() {
   const jak1_bones_provenance_trace::TargetCaptureContext target_context = {
       kTarget, kTargetType, kControlType, kCpadType};
   jak1_bones_provenance_trace::Registry target_registry;
+  target_registry.set_enabled(false);
+  check(!target_registry.enabled() &&
+            !target_registry.record(kOutput, kJoints, kBones, kCount, kCamera, memory.data(),
+                                    memory.size(), target_context),
+        "disabled producer diagnostics do not capture bone provenance");
+  target_registry.record_post_flag(kTarget, 1u << 1, attack_id);
+  check(!target_registry.latest_post_flag(),
+        "disabled producer diagnostics do not capture target post flags");
+  target_registry.set_enabled(true);
   check(target_registry.record(kOutput, kJoints, kBones, kCount, kCamera, memory.data(),
                                memory.size(), target_context),
         "target-control capture stays attached to a valid producer calculation");
