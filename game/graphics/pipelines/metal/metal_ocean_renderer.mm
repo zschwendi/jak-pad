@@ -130,8 +130,6 @@ MetalOceanTexture::MetalOceanTexture(bool generate_mipmaps,
   m_index_buffer = [device newBufferWithBytes:m_pc.index_buffer.data()
                                        length:m_pc.index_buffer.size() * sizeof(u32)
                                       options:MTLResourceStorageModeShared];
-  m_dynamic_buffer = [device newBufferWithLength:NUM_VERTS * sizeof(Vertex)
-                                         options:MTLResourceStorageModeShared];
 }
 
 void MetalOceanTexture::init_textures(TexturePool& pool, GameVersion version) {
@@ -310,7 +308,12 @@ void MetalOceanTexture::run_gpu_passes(MetalSharedRenderState* render_state,
              m_pc.vtx_idx, NUM_VERTS);
     return;
   }
-  memcpy(m_dynamic_buffer.contents, m_pc.vertex_dynamic.data(), NUM_VERTS * sizeof(Vertex));
+  id<MTLBuffer> dynamic_buffer = nil;
+  u32 dynamic_buffer_offset = 0;
+  const u32 dynamic_buffer_size = NUM_VERTS * sizeof(Vertex);
+  void* dynamic_buffer_data =
+      ctx.stream->alloc(dynamic_buffer_size, &dynamic_buffer, &dynamic_buffer_offset);
+  memcpy(dynamic_buffer_data, m_pc.vertex_dynamic.data(), dynamic_buffer_size);
 
   GsTex0 tex0(m_envmap_adgif.tex0_data);
   id<MTLTexture> envmap =
@@ -334,7 +337,7 @@ void MetalOceanTexture::run_gpu_passes(MetalSharedRenderState* render_state,
     [enc setRenderPipelineState:ctx.pso_cache->get_pipeline(pso_key)];
     // no depth attachment: the GL renderer disables depth test and blending here
     [enc setVertexBuffer:m_position_buffer offset:0 atIndex:0];
-    [enc setVertexBuffer:m_dynamic_buffer offset:0 atIndex:1];
+    [enc setVertexBuffer:dynamic_buffer offset:dynamic_buffer_offset atIndex:1];
 
     MetalSamplerKey sampler_key;
     sampler_key.min_filter = MTLSamplerMinMagFilterLinear;
@@ -389,9 +392,12 @@ void MetalOceanTexture::run_gpu_passes(MetalSharedRenderState* render_state,
   }
 
   [cmds commit];
-  // the frame's command buffer is committed later, so this is only needed to
-  // keep the CPU-side dynamic vertex buffer safe to overwrite next frame
-  [cmds waitUntilCompleted];
+  if (!ctx.auxiliary_submissions_share_frame_queue) {
+    // Borrowed frame command buffers may be submitted to another queue. Preserve immediate
+    // ordering there; renderer-owned frames are ordered by the serial queue and the tracked main
+    // submission keeps this stream allocation alive until the ocean work has completed.
+    [cmds waitUntilCompleted];
+  }
 }
 
 // ---------------------------------------------------------------------------

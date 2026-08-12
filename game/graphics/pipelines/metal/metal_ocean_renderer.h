@@ -18,9 +18,10 @@
  * The one structural difference from the GL renderer: OceanTexture needs 1 + 8
  * offscreen render passes, and MetalFrameContext hands bucket renderers an
  * already-open encoder for the game target. The generator therefore runs on its
- * own command buffer, committed and waited on while the frame's encoder is
- * still recording. The frame's command buffer is committed later, so the
- * generated texture is always complete before anything samples it - the same
+ * own command buffer while the frame's encoder is still recording. Renderer-owned
+ * frames submit both command buffers to the same serial queue, while
+ * borrowed command buffers retain a conservative completion wait. Either path
+ * completes the generated texture before anything samples it - the same
  * ordering the immediate-mode GL renderer gets for free.
  */
 
@@ -68,7 +69,6 @@ class MetalOceanTexture : public OceanTextureVu {
   id<MTLTexture> m_result_texture;  // published to the pool
   id<MTLTexture> m_temp_texture;    // mip source when generating mipmaps
   id<MTLBuffer> m_position_buffer;  // static, mirrors the GL static vertex buffer
-  id<MTLBuffer> m_dynamic_buffer;   // VU output, rewritten each frame
   id<MTLBuffer> m_index_buffer;     // static
   u64 m_result_handle = 0;
   GpuTexture* m_tex0_gpu = nullptr;
