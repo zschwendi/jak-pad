@@ -37,7 +37,7 @@ std::vector<Transfer> make_lightning(u32 fragment_count, u32 vertices_per_fragme
                               VifKind::Nop, VifKind::UnpackV4_32));
     result.push_back(transfer(0, VifKind::Nop, VifKind::Mscal));
   }
-  result.push_back(transfer(160, VifKind::Nop, VifKind::Direct));
+  result.push_back(transfer(160, VifKind::Flusha, VifKind::Direct));
   result.push_back(transfer(0, VifKind::Nop, VifKind::Nop));
   return result;
 }

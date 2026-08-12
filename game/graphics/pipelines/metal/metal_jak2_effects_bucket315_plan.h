@@ -22,6 +22,7 @@ enum class Jak2EffectsBucket315VifKind : u8 {
   Mscalf,
   Stmod,
   Mscal,
+  Flusha,
 };
 
 struct Jak2EffectsBucket315Transfer {

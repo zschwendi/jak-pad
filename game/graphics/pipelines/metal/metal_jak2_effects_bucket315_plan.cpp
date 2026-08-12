@@ -56,7 +56,7 @@ std::optional<Jak2EffectsBucket315Plan> plan_jak2_effects_bucket315(
       !matches(transfers[2], 128, VifKind::Stcycl, VifKind::UnpackV4_32) ||
       !matches(transfers[3], 32, VifKind::Mscalf, VifKind::Stmod) ||
       !matches(transfers[4], 0, VifKind::Nop, VifKind::Nop) ||
-      !matches(transfers[transfer_count - 2], 160, VifKind::Nop, VifKind::Direct) ||
+      !matches(transfers[transfer_count - 2], 160, VifKind::Flusha, VifKind::Direct) ||
       !matches(transfers[transfer_count - 1], 0, VifKind::Nop, VifKind::Nop) ||
       (transfer_count - kFixedTransferCount) % 3 != 0) {
     return std::nullopt;
