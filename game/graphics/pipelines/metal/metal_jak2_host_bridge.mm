@@ -244,6 +244,11 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_merc_models = stats.merc_models;
   host->metrics.last_merc_draws = stats.merc_draws;
   host->metrics.last_merc_triangles = stats.merc_triangles;
+  host->metrics.last_merc_eye_draws = stats.merc_eye_draws;
+  host->metrics.last_merc_eye_renderer_missing = stats.merc_eye_renderer_missing;
+  host->metrics.last_merc_eye_lookup_failed = stats.merc_eye_lookup_failed;
+  host->metrics.last_merc_eye_placeholder_draws = stats.merc_eye_placeholder_draws;
+  host->metrics.last_merc_missing_textures = stats.merc_missing_textures;
   host->metrics.last_merc_malformed_dma = stats.merc_malformed_dma;
   host->metrics.last_merc_preflight_rejection_reason = stats.merc_preflight_rejection_reason;
   host->metrics.last_merc_missing_models = stats.merc_missing_models;
