@@ -1360,6 +1360,12 @@ if(APPLE)
         add_test(NAME jak2-effects-bucket315-capture-test
             COMMAND jak2-effects-bucket315-capture-test)
 
+        add_executable(jak2-gmerc-warp-bucket317-plan-test
+            graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan.cpp
+            graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan_test.cpp)
+        add_test(NAME jak2-gmerc-warp-bucket317-plan-test
+            COMMAND jak2-gmerc-warp-bucket317-plan-test)
+
         add_executable(jak2-pris2-bucket228-plan-test
             graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
             graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
