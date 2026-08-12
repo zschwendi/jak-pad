@@ -41,6 +41,8 @@ struct HostPad {
   goal_pad_state state;
   uint8_t rumble_large = 0;
   uint8_t rumble_small = 0;
+  uint8_t pending_rumble_large = 0;
+  uint8_t pending_rumble_small = 0;
   bool rumble_enabled = true;
   int reads = 0;
 };
@@ -132,6 +134,12 @@ int scePadSetActDirect(int port, int /*slot*/, const u8* data) {
   }
   g_pads[port].rumble_large = data[0];
   g_pads[port].rumble_small = data[1];
+  if (data[0] > g_pads[port].pending_rumble_large) {
+    g_pads[port].pending_rumble_large = data[0];
+  }
+  if (data[1] > g_pads[port].pending_rumble_small) {
+    g_pads[port].pending_rumble_small = data[1];
+  }
   return 1;
 }
 
@@ -352,6 +360,12 @@ goal_kernel_core_status goal_pad_set_state(int port, const goal_pad_state* state
     return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
   }
   g_pads[port].state = *state;
+  if (!state->connected) {
+    g_pads[port].rumble_large = 0;
+    g_pads[port].rumble_small = 0;
+    g_pads[port].pending_rumble_large = 0;
+    g_pads[port].pending_rumble_small = 0;
+  }
   return GOAL_KERNEL_CORE_OK;
 }
 
@@ -363,6 +377,8 @@ goal_kernel_core_status goal_pad_set_rumble_enabled(int port, int enabled) {
   if (!enabled) {
     g_pads[port].rumble_large = 0;
     g_pads[port].rumble_small = 0;
+    g_pads[port].pending_rumble_large = 0;
+    g_pads[port].pending_rumble_small = 0;
   }
   return GOAL_KERNEL_CORE_OK;
 }
@@ -377,6 +393,21 @@ goal_kernel_core_status goal_pad_get_rumble(int port, uint8_t* out_large, uint8_
   if (out_small) {
     *out_small = g_pads[port].rumble_small;
   }
+  return GOAL_KERNEL_CORE_OK;
+}
+
+goal_kernel_core_status goal_pad_take_rumble(int port, uint8_t* out_large, uint8_t* out_small) {
+  if (!valid_port(port)) {
+    return GOAL_KERNEL_CORE_INVALID_ARGUMENT;
+  }
+  if (out_large) {
+    *out_large = g_pads[port].pending_rumble_large;
+  }
+  if (out_small) {
+    *out_small = g_pads[port].pending_rumble_small;
+  }
+  g_pads[port].pending_rumble_large = 0;
+  g_pads[port].pending_rumble_small = 0;
   return GOAL_KERNEL_CORE_OK;
 }
 

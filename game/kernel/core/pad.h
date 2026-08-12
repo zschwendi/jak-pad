@@ -104,6 +104,13 @@ goal_kernel_core_status goal_pad_set_rumble_enabled(int port, int enabled);
  */
 goal_kernel_core_status goal_pad_get_rumble(int port, uint8_t* out_large, uint8_t* out_small);
 
+/*!
+ * Consume the strongest motor request GOAL issued since the previous consume. A host that pulls
+ * once per presented frame uses this instead of sampling a transient `direct` byte that may
+ * already have returned to zero later in the same frame.
+ */
+goal_kernel_core_status goal_pad_take_rumble(int port, uint8_t* out_large, uint8_t* out_small);
+
 /*! How many times GOAL has read `port`. A host can use this to see that the seam is being used. */
 int goal_pad_read_count(int port);
 
