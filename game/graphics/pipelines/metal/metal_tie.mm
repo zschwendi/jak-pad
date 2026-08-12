@@ -159,8 +159,9 @@ void MetalTie3::render(DmaFollower& dma,
   for (size_t i = 0; i < m_trees[geom].size(); i++) {
     auto& tree = m_trees[geom][i];
     metal_interp_time_of_day(m_settings.camera.itimes, *tree.colors, m_color_result.data());
+    id<MTLTexture> time_of_day = tree.buffers->time_of_day.at(render_state->frame_resource_slot);
     if (!render_state->secondary_view) {
-      metal_update_time_of_day_texture(tree.buffers->time_of_day, m_color_result.data(),
+      metal_update_time_of_day_texture(time_of_day, m_color_result.data(),
                                        tree.colors->color_count);
     }
     if (bg && bg->debug_all_visible) {
@@ -280,7 +281,7 @@ void MetalTie3::render_tree(int geom,
   metal_fill_background_fs_params(*render_state, &fs_params);
 
   [enc setVertexBuffer:tree.buffers->vertices offset:0 atIndex:0];
-  [enc setVertexTexture:tree.buffers->time_of_day atIndex:1];
+  [enc setVertexTexture:tree.buffers->time_of_day.at(render_state->frame_resource_slot) atIndex:1];
   if (use_envmap) {
     MetalEtieVsParams vs_params;
     metal_fill_etie_vs_params(m_settings.camera, render_state->version,

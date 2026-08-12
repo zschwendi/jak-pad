@@ -13,6 +13,7 @@
  * silently dropped.
  */
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,7 @@
 #include "common/versions/versions.h"
 
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
+#include "game/graphics/pipelines/metal/metal_frame_resources.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/pipelines/metal/metal_texture_upload_handler.h"
 #include "game/graphics/pipelines/metal/metal_view_transform.h"
@@ -36,8 +38,9 @@ class MetalEyeRenderer;
  * Per-frame bump allocator for dynamic vertex data. The GL renderers stream
  * vertices with glBufferData per draw; in Metal the data must live in an
  * MTLBuffer until the frame's command buffer completes, so batches are
- * sub-allocated from shared pages that are reset once the previous frame's
- * GPU work is known to be finished.
+ * sub-allocated from shared pages. MetalRenderer owns one allocator per
+ * in-flight frame-resource slot and resets a slot only after its exact command
+ * submission has completed.
  */
 class MetalStreamBuffer {
  public:
@@ -46,8 +49,8 @@ class MetalStreamBuffer {
 
   void init(id<MTLDevice> device) { m_device = device; }
 
-  // start of frame; only call once the previous frame's command buffer has
-  // completed (the pages are reused in place).
+  // Start of a slot's next frame; only call once the command buffer that last
+  // used this allocator has completed (the pages are reused in place).
   void reset() {
     m_page = 0;
     m_offset = 0;
@@ -106,6 +109,9 @@ struct MetalSharedRenderState {
   // The secondary view replays the already-copied chain only to encode another target. Persistent
   // uploads, diagnostics, callbacks, and aggregate frame statistics stay owned by the primary.
   bool secondary_view = false;
+  // Selects the stream-independent mutable GPU resources for this frame. Ordinary drawable
+  // frames rotate through three slots; borrowed/external frames use a dedicated fourth slot.
+  size_t frame_resource_slot = kMetalExternalFrameResourceSlot;
 };
 
 /*!

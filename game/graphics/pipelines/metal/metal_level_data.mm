@@ -76,11 +76,13 @@ bool upload_tree(id<MTLDevice> device,
                          indices.size() * sizeof(u32));
     return false;
   }
-  tree.time_of_day = make_time_of_day_texture(device);
-  if (!tree.time_of_day) {
-    *error = fmt::format("{} time-of-day texture allocation failed ({} texels)", label,
-                         kMetalTimeOfDayColorCount);
-    return false;
+  for (auto& time_of_day : tree.time_of_day) {
+    time_of_day = make_time_of_day_texture(device);
+    if (!time_of_day) {
+      *error = fmt::format("{} time-of-day texture allocation failed ({} texels)", label,
+                           kMetalTimeOfDayColorCount);
+      return false;
+    }
   }
   tree.vertex_count = vert_count;
   tree.index_count = (u32)indices.size();

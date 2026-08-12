@@ -30,31 +30,55 @@ void blend_sky_accumulate(u8 intensity, u8* out, const u8* in, u32 size) {
 }  // namespace
 
 MetalSkyBlendCPU::MetalSkyBlendCPU(id<MTLDevice> device) {
+  for (size_t slot = 0; slot < kMetalFrameResourceSlotCount; slot++) {
+    for (int i = 0; i < 2; i++) {
+      auto* desc =
+          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                             width:m_sizes[i]
+                                                            height:m_sizes[i]
+                                                         mipmapped:NO];
+      desc.usage = MTLTextureUsageShaderRead;
+      desc.storageMode = MTLStorageModeShared;
+      m_textures[slot][i].texture = [device newTextureWithDescriptor:desc];
+      m_textures[slot][i].handle = metal_texture_register(m_textures[slot][i].texture);
+    }
+  }
   for (int i = 0; i < 2; i++) {
-    auto* desc =
-        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-                                                           width:m_sizes[i]
-                                                          height:m_sizes[i]
-                                                       mipmapped:NO];
-    desc.usage = MTLTextureUsageShaderRead;
-    desc.storageMode = MTLStorageModeShared;
-    m_textures[i].texture = [device newTextureWithDescriptor:desc];
-    m_textures[i].handle = metal_texture_register(m_textures[i].texture);
     m_texture_data[i].resize(4 * m_sizes[i] * m_sizes[i]);
   }
 }
 
 void MetalSkyBlendCPU::init_textures(TexturePool& tex_pool, GameVersion version) {
+  for (size_t slot = 0; slot < kMetalFrameResourceSlotCount; slot++) {
+    for (int i = 0; i < 2; i++) {
+      TextureInput in;
+      in.gpu_texture = m_textures[slot][i].handle;
+      in.w = m_sizes[i];
+      in.h = m_sizes[i];
+      in.debug_name = fmt::format("PC-SKY-CPU-{}-{}", slot, i);
+      in.id = tex_pool.allocate_pc_port_texture(version);
+      u32 tbp = SKY_TEXTURE_VRAM_ADDRS[i];
+      m_textures[slot][i].pool_tex = tex_pool.give_texture(in);
+      m_textures[slot][i].tbp = tbp;
+      if (slot == kMetalExternalFrameResourceSlot) {
+        tex_pool.move_existing_to_vram(m_textures[slot][i].pool_tex, tbp);
+      }
+    }
+  }
+}
+
+void MetalSkyBlendCPU::start_frame(TexturePool& tex_pool, size_t frame_resource_slot) {
+  ASSERT(frame_resource_slot < kMetalFrameResourceSlotCount);
+  auto* textures = m_textures[frame_resource_slot];
   for (int i = 0; i < 2; i++) {
-    TextureInput in;
-    in.gpu_texture = m_textures[i].handle;
-    in.w = m_sizes[i];
-    in.h = m_sizes[i];
-    in.debug_name = fmt::format("PC-SKY-CPU-{}", i);
-    in.id = tex_pool.allocate_pc_port_texture(version);
-    u32 tbp = SKY_TEXTURE_VRAM_ADDRS[i];
-    m_textures[i].pool_tex = tex_pool.give_texture_and_load_to_vram(in, tbp);
-    m_textures[i].tbp = tbp;
+    if (!m_texture_data_valid[i]) {
+      continue;
+    }
+    [textures[i].texture replaceRegion:MTLRegionMake2D(0, 0, m_sizes[i], m_sizes[i])
+                                mipmapLevel:0
+                                  withBytes:m_texture_data[i].data()
+                                bytesPerRow:m_sizes[i] * 4];
+    tex_pool.move_existing_to_vram(textures[i].pool_tex, textures[i].tbp);
   }
 }
 
@@ -64,7 +88,6 @@ void MetalSkyBlendCPU::init_textures(TexturePool& tex_pool, GameVersion version)
 SkyBlendStats MetalSkyBlendCPU::do_sky_blends(DmaFollower& dma,
                                               MetalSharedRenderState* render_state) {
   SkyBlendStats stats;
-
   while (dma.current_tag().qwc == 6) {
     // assuming that the vif and gif-tag is correct
     auto setup_data = dma.read_and_advance();
@@ -120,15 +143,7 @@ SkyBlendStats MetalSkyBlendCPU::do_sky_blends(DmaFollower& dma,
       } else {
         is_first_draw ? stats.cloud_draws++ : stats.cloud_blends++;
       }
-
-      [m_textures[buffer_idx].texture
-          replaceRegion:MTLRegionMake2D(0, 0, m_sizes[buffer_idx], m_sizes[buffer_idx])
-            mipmapLevel:0
-              withBytes:m_texture_data[buffer_idx].data()
-            bytesPerRow:m_sizes[buffer_idx] * 4];
-
-      render_state->texture_pool->move_existing_to_vram(m_textures[buffer_idx].pool_tex,
-                                                        m_textures[buffer_idx].tbp);
+      m_texture_data_valid[buffer_idx] = true;
     }
   }
 

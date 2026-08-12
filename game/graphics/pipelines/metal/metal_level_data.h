@@ -37,6 +37,7 @@
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/dma/gs.h"
 #include "common/math/Vector.h"
+#include "game/graphics/pipelines/metal/metal_frame_resources.h"
 #include "game/graphics/pipelines/metal/metal_camera_trace.h"
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
@@ -166,9 +167,10 @@ struct MetalLevelData {
   struct TreeBuffers {
     id<MTLBuffer> vertices = nil;
     id<MTLBuffer> indices = nil;
-    // 1D RGBA8 palette the vertex shaders sample, refreshed per frame from the
-    // tree's packed time-of-day colors (GL: a GL_TEXTURE_1D per tree).
-    id<MTLTexture> time_of_day = nil;
+    // 1D RGBA8 palettes the vertex shaders sample, refreshed per frame from the tree's packed
+    // time-of-day colors (GL: a GL_TEXTURE_1D per tree). These are slot-local because the CPU
+    // refresh must not mutate a texture still sampled by an earlier in-flight frame.
+    std::array<id<MTLTexture>, kMetalFrameResourceSlotCount> time_of_day = {};
     u32 vertex_count = 0;
     u32 index_count = 0;
   };

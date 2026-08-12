@@ -294,9 +294,9 @@ void MetalTFragment::render_tree(int geom,
   // time of day: interpolate the packed palettes for this frame's itimes, then
   // refresh the tree's 1D palette texture the vertex shader reads.
   metal_interp_time_of_day(settings.camera.itimes, *tree.colors, m_color_result.data());
+  id<MTLTexture> time_of_day = tree.buffers->time_of_day.at(render_state->frame_resource_slot);
   if (!render_state->secondary_view) {
-    metal_update_time_of_day_texture(tree.buffers->time_of_day, m_color_result.data(),
-                                     tree.colors->color_count);
+    metal_update_time_of_day_texture(time_of_day, m_color_result.data(), tree.colors->color_count);
   }
 
   // visibility
@@ -319,7 +319,7 @@ void MetalTFragment::render_tree(int geom,
 
   [enc setVertexBuffer:tree.buffers->vertices offset:0 atIndex:0];
   [enc setVertexBytes:&vs_params length:sizeof(vs_params) atIndex:1];
-  [enc setVertexTexture:tree.buffers->time_of_day atIndex:1];
+  [enc setVertexTexture:time_of_day atIndex:1];
 
   const auto primitive =
       tree.use_strips ? MTLPrimitiveTypeTriangleStrip : MTLPrimitiveTypeTriangle;

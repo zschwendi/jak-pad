@@ -27,18 +27,20 @@ class MetalSkyBlendCPU {
  public:
   MetalSkyBlendCPU(id<MTLDevice> device);
   void init_textures(TexturePool& tex_pool, GameVersion version);
+  void start_frame(TexturePool& tex_pool, size_t frame_resource_slot);
   SkyBlendStats do_sky_blends(DmaFollower& dma, MetalSharedRenderState* render_state);
 
  private:
   static constexpr int m_sizes[2] = {32, 64};
   std::vector<u8> m_texture_data[2];
+  bool m_texture_data_valid[2] = {false, false};
 
   struct TexInfo {
     id<MTLTexture> texture;
     u64 handle = 0;
     u32 tbp = 0;
     GpuTexture* pool_tex = nullptr;
-  } m_textures[2];
+  } m_textures[kMetalFrameResourceSlotCount][2];
 };
 
 class MetalSkyRenderer : public MetalBucketRenderer {

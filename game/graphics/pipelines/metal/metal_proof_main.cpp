@@ -61,6 +61,7 @@
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/opengl_renderer/sprite/sprite_common.h"
 #include "game/graphics/pipelines/metal/metal_chain_replay.h"
+#include "game/graphics/pipelines/metal/metal_frame_resources.h"
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
 #include "game/graphics/pipelines/metal/metal_texture_upload_handler.h"
 #include "game/graphics/texture/TextureConverter.h"
@@ -93,6 +94,34 @@ void check(bool ok, const char* what) {
   if (!ok) {
     g_fail_count++;
   }
+}
+
+void test_frame_resource_slot_ring() {
+  MetalOrdinaryFrameSlotRing ring;
+  const auto first = ring.acquire();
+  ring.record_submission(first.slot, 101);
+  const auto second = ring.acquire();
+  ring.record_submission(second.slot, 102);
+  const auto third = ring.acquire();
+  ring.record_submission(third.slot, 103);
+  const auto wrap = ring.acquire();
+
+  check(first.slot == 0 && first.previous_submission == 0 && second.slot == 1 &&
+            second.previous_submission == 0 && third.slot == 2 && third.previous_submission == 0,
+        "frame resources: three initial frames acquire distinct slots without prior work");
+  check(wrap.slot == 0 && wrap.previous_submission == 101,
+        "frame resources: wraparound reports the exact slot-zero submission to await");
+  check(kMetalExternalFrameResourceSlot == 3 &&
+            kMetalExternalFrameResourceSlot != first.slot &&
+            kMetalExternalFrameResourceSlot != second.slot &&
+            kMetalExternalFrameResourceSlot != third.slot,
+        "frame resources: borrowed/external work has a dedicated fourth slot");
+
+  MetalMonotonicSubmissionCompletion external_completion;
+  external_completion.complete(202);
+  external_completion.complete(201);
+  check(external_completion.includes(202),
+        "frame resources: late quarantined external completion cannot regress newer ownership");
 }
 
 void check_pixel(const metal_renderer::FramePixels& frame,
@@ -1368,13 +1397,18 @@ void test_dma_chain(const GfxRendererModule* mod,
     chain.set_bucket_content((int)BucketId::DEBUG, transfers);
   }
 
-  // --- send the chain like the game does, twice (the sky texture blended in
+  // --- send the chain like the game does, three times without an intermediate wait (the sky
+  // texture blended in
   // frame N is drawn in frame N+1, since the sky-draw bucket precedes the
   // blend bucket) ------------------------------------------------------------
-  for (int frame = 0; frame < 2; frame++) {
+  const auto before_three_frame_ring = metal_renderer::get_stats();
+  for (int frame = 0; frame < 3; frame++) {
     mod->send_chain(mem.data(), kChainStart);
     display->render();
   }
+  const auto after_three_frame_ring = metal_renderer::get_stats();
+  check(after_three_frame_ring.stream_reuse_waits == before_three_frame_ring.stream_reuse_waits,
+        "chain: three successive drawable frames use fresh resource slots without reuse waits");
 
   metal_renderer::FramePixels frame;
   if (!metal_renderer::read_last_frame(&frame)) {
@@ -1479,21 +1513,23 @@ void test_dma_chain(const GfxRendererModule* mod,
       stats.tex_uploads, stats.sky_draws, stats.sky_blends, stats.cloud_draws, stats.cloud_blends,
       (unsigned long long)stats.skipped_bucket_bytes, (unsigned long long)stats.skipped_tfrag_bytes,
       stats.direct_unsupported_blends);
-  check(stats.chains_rendered == 2, "chain: two chains rendered");
+  check(stats.chains_rendered == 3, "chain: three chains rendered");
   check(stats.draw_calls >= 6, "chain: bucket draws were encoded");
   check(stats.tex_uploads == 1, "chain: texture bucket found one upload packet");
   check(stats.sky_draws == 1 && stats.sky_blends == 1, "chain: sky blended once per frame");
   check(stats.cloud_draws == 1 && stats.cloud_blends == 0, "chain: cloud drawn once per frame");
-  check(stats.skipped_bucket_bytes == 2 * 64, "chain: un-ported bucket content counted (64B x2)");
+  check(stats.skipped_bucket_bytes == 3 * 64, "chain: un-ported bucket content counted (64B x3)");
   check(stats.direct_unsupported_blends == 0, "chain: no unsupported blend modes hit");
 
   const auto before_reduced_stats = metal_renderer::get_chain_stats();
+  const auto before_wraparound = metal_renderer::get_stats();
   metal_renderer::set_detailed_frame_stats_enabled(false);
   mod->send_chain(mem.data(), kChainStart);
   display->render();
   metal_renderer::FramePixels reduced_stats_frame;
   const bool reduced_stats_frame_read = metal_renderer::read_last_frame(&reduced_stats_frame);
   const auto after_reduced_stats = metal_renderer::get_chain_stats();
+  const auto after_wraparound = metal_renderer::get_stats();
   metal_renderer::set_detailed_frame_stats_enabled(true);
   check(reduced_stats_frame_read && reduced_stats_frame.width == frame.width &&
             reduced_stats_frame.height == frame.height && reduced_stats_frame.rgba == frame.rgba,
@@ -1503,6 +1539,15 @@ void test_dma_chain(const GfxRendererModule* mod,
             after_reduced_stats.draw_calls == before_reduced_stats.draw_calls &&
             after_reduced_stats.triangles == before_reduced_stats.triangles,
         "chain: disabling detailed frame stats preserves cheap chain/draw/triangle counters");
+  check(after_wraparound.stream_reuse_waits == before_wraparound.stream_reuse_waits + 1,
+        "chain: the fourth drawable frame reuses slot zero only after its exact completion");
+  if (sky_out) {
+    const auto remapped_sky_out = pool->lookup(SKY_TEXTURE_VRAM_ADDRS[0]);
+    check(remapped_sky_out.has_value() && *remapped_sky_out != *sky_out,
+          "chain: wraparound publishes the current sky slot without invalidating the prior handle");
+    check_gpu_matches(*sky_out, blend_expect(sky_src.data, 32 * 32), 32, 32,
+                      "chain: prior sky slot stays immutable after the VRAM remap");
+  }
 
   metal_renderer::ExternalRenderTargetProofResult external;
   const bool external_rendered = metal_renderer::render_last_chain_to_external_target(
@@ -5190,6 +5235,7 @@ void run_chain_replay(const GfxRendererModule* mod,
 
 int main(int argc, char** argv) {
   lg::initialize();
+  test_frame_resource_slot_ring();
   // this proof needs no game data; any existing directory works as the project path
   file_util::setup_project_path(fs::current_path());
 

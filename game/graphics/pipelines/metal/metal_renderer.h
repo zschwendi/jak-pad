@@ -33,6 +33,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 class TexturePool;
+class MetalSkyBlendCPU;
 class MetalSkyBlendHandler;
 struct MetalPresentationState;
 
@@ -255,17 +256,19 @@ class MetalRenderer {
   u64 m_frame_count = 0;
   u64 m_command_submission_count = 0;
   u64 m_last_internal_frame_submission = 0;
-  u64 m_last_stream_submission = 0;
-  u64 m_last_external_stream_submission = 0;
+  MetalOrdinaryFrameSlotRing m_ordinary_stream_slots;
+  u64 m_external_stream_submission = 0;
   bool m_external_stereo_disabled = false;
   u64 m_stream_reuse_wait_count = 0;
 
   // --- DMA chain path (stage 4) ---------------------------------------------
-  MetalStreamBuffer m_stream;
+  std::array<MetalStreamBuffer, kMetalOrdinaryFrameResourceSlotCount> m_ordinary_streams;
+  MetalStreamBuffer m_external_stream;
   MetalSharedRenderState m_shared_state;
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
   TexturePool* m_texture_pool = nullptr;
   MetalSkyBlendHandler* m_sky_blend_handlers[2] = {nullptr, nullptr};
+  std::shared_ptr<MetalSkyBlendCPU> m_sky_cpu_blender;
   // level-geometry frame state, shared with the tfrag/tie/shrub renderers
   MetalBackgroundState m_background;
   metal_renderer::ChainStats m_chain_stats;

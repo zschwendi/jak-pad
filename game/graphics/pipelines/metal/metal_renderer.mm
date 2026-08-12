@@ -41,7 +41,8 @@ struct MetalPresentationState {
   u64 last_chain_ordinal = 0;
   u64 command_buffers_completed = 0;
   u64 command_buffer_errors = 0;
-  u64 last_stream_submission_completed = 0;
+  std::array<u64, kMetalOrdinaryFrameResourceSlotCount> ordinary_stream_submissions_completed = {};
+  MetalMonotonicSubmissionCompletion external_stream_completion;
   int last_command_buffer_status = 0;
   s64 last_command_buffer_error_code = 0;
   metal_renderer::ExternalSubmissionGate external_submission_gate;
@@ -319,6 +320,7 @@ void MetalRenderer::init_bucket_renderers_jak1() {
 
   auto sky_cpu_blender = std::make_shared<MetalSkyBlendCPU>(m_device);
   sky_cpu_blender->init_textures(*m_texture_pool, GameVersion::Jak1);
+  m_sky_cpu_blender = sky_cpu_blender;
 
   // eight buckets share one Merc2, as in the GL table
   auto merc = std::make_shared<MetalMerc2>(m_device, m_queue, m_texture_pool);
@@ -499,7 +501,10 @@ void MetalRenderer::init_bucket_renderers(TexturePool* pool, GameVersion version
 bool MetalRenderer::init(id<MTLDevice> device) {
   m_device = device;
   m_queue = [device newCommandQueue];
-  m_stream.init(device);
+  for (auto& stream : m_ordinary_streams) {
+    stream.init(device);
+  }
+  m_external_stream.init(device);
   m_presentation_state = std::make_shared<MetalPresentationState>();
 
   dispatch_data_t lib_data = dispatch_data_create(g_goalpad_metallib, g_goalpad_metallib_size,
@@ -847,20 +852,20 @@ MetalExternalFrameReservation MetalRenderer::reserve_external_stereo_frame() {
     return MetalExternalFrameReservation::failed;
   }
 
-  u64 last_stream_submission;
+  u64 external_stream_submission;
   {
     std::lock_guard<std::mutex> lock(m_frame_mutex);
     if (m_external_stereo_disabled) {
       return MetalExternalFrameReservation::failed;
     }
-    last_stream_submission = m_last_stream_submission;
+    external_stream_submission = m_external_stream_submission;
   }
   bool prior_stream_busy;
   {
     std::lock_guard<std::mutex> lock(m_presentation_state->mutex);
-    prior_stream_busy = last_stream_submission &&
-                        m_presentation_state->last_stream_submission_completed <
-                            last_stream_submission;
+    prior_stream_busy =
+        external_stream_submission &&
+        !m_presentation_state->external_stream_completion.includes(external_stream_submission);
   }
   switch (m_presentation_state->external_submission_gate.reserve(prior_stream_busy)) {
     case metal_renderer::ExternalSubmissionReservation::busy:
@@ -870,7 +875,7 @@ MetalExternalFrameReservation MetalRenderer::reserve_external_stereo_frame() {
     case metal_renderer::ExternalSubmissionReservation::reserved:
       break;
   }
-  m_stream.reset();
+  m_external_stream.reset();
   return MetalExternalFrameReservation::reserved;
 }
 
@@ -982,8 +987,7 @@ bool MetalRenderer::submit_external_stereo_frame(id<MTLCommandBuffer> command_bu
       return false;
     }
     m_command_submission_count = command_submission_id;
-    m_last_stream_submission = command_submission_id;
-    m_last_external_stream_submission = command_submission_id;
+    m_external_stream_submission = command_submission_id;
   }
 
   const auto completion_state = m_presentation_state;
@@ -1004,8 +1008,7 @@ bool MetalRenderer::submit_external_stereo_frame(id<MTLCommandBuffer> command_bu
           report_error = true;
         }
       }
-      completion_state->last_stream_submission_completed =
-          std::max(completion_state->last_stream_submission_completed, command_submission_id);
+      completion_state->external_stream_completion.complete(command_submission_id);
     }
     completion_state->external_submission_gate.complete(
         command_submission_id, status == MTLCommandBufferStatusCompleted);
@@ -1026,13 +1029,13 @@ void MetalRenderer::prepare_external_stereo_fallback() {
   }
 
   std::scoped_lock lock(m_frame_mutex, m_presentation_state->mutex);
-  const u64 external_submission = m_last_external_stream_submission;
-  if (!external_submission || m_last_stream_submission != external_submission ||
-      m_presentation_state->last_stream_submission_completed >= external_submission) {
+  const u64 external_submission = m_external_stream_submission;
+  if (!external_submission ||
+      m_presentation_state->external_stream_completion.includes(external_submission)) {
     return;
   }
-  m_stream.quarantine_in_flight_pages();
-  m_last_stream_submission = 0;
+  m_external_stream.quarantine_in_flight_pages();
+  m_external_stream_submission = 0;
   m_external_stereo_disabled = true;
 }
 
@@ -1054,25 +1057,51 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
   const bool external_target = view_id != 0;
   @autoreleasepool {
     ASSERT_MSG(!m_bucket_renderers.empty(), "init_bucket_renderers was not called");
-    if (borrowed_command_buffer == nil) {
-      // The ordinary renderer preserves its existing correctness-first wait. External stereo
-      // reserves this allocator before the game tick and returns busy instead of entering here.
-      u64 previous_stream_submission;
+    const bool ordinary_drawable_frame = layer && !external_target && borrowed_command_buffer == nil;
+    size_t ordinary_stream_slot = 0;
+    size_t frame_resource_slot = kMetalExternalFrameResourceSlot;
+    MetalStreamBuffer* frame_stream = &m_external_stream;
+    if (ordinary_drawable_frame) {
+      u64 previous_stream_submission = 0;
       {
         std::lock_guard<std::mutex> lock(m_frame_mutex);
-        previous_stream_submission = m_last_stream_submission;
+        const auto acquisition = m_ordinary_stream_slots.acquire();
+        ordinary_stream_slot = acquisition.slot;
+        previous_stream_submission = acquisition.previous_submission;
       }
       if (previous_stream_submission) {
         std::unique_lock<std::mutex> lock(m_presentation_state->mutex);
         m_presentation_state->command_buffer_cv.wait(lock, [&] {
-          return m_presentation_state->last_stream_submission_completed >=
+          return m_presentation_state
+                     ->ordinary_stream_submissions_completed[ordinary_stream_slot] ==
                  previous_stream_submission;
         });
         lock.unlock();
         std::lock_guard<std::mutex> frame_lock(m_frame_mutex);
         m_stream_reuse_wait_count++;
       }
-      m_stream.reset();
+      frame_stream = &m_ordinary_streams[ordinary_stream_slot];
+      frame_stream->reset();
+      frame_resource_slot = ordinary_stream_slot;
+    } else if (borrowed_command_buffer == nil) {
+      // External and headless paths stay on the dedicated allocator. External stereo reserves the
+      // same allocator before the game tick and therefore never enters this wait.
+      u64 previous_stream_submission = 0;
+      {
+        std::lock_guard<std::mutex> lock(m_frame_mutex);
+        previous_stream_submission = m_external_stream_submission;
+      }
+      if (previous_stream_submission) {
+        std::unique_lock<std::mutex> lock(m_presentation_state->mutex);
+        m_presentation_state->command_buffer_cv.wait(lock, [&] {
+          return m_presentation_state->external_stream_completion.includes(
+              previous_stream_submission);
+        });
+        lock.unlock();
+        std::lock_guard<std::mutex> frame_lock(m_frame_mutex);
+        m_stream_reuse_wait_count++;
+      }
+      m_external_stream.reset();
     }
 
     if (!external_target) {
@@ -1102,6 +1131,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.view_transform = view_transform;
     m_shared_state.detailed_frame_stats_enabled = m_detailed_frame_stats_enabled;
     m_shared_state.secondary_view = !frame_global_side_effects;
+    m_shared_state.frame_resource_slot = frame_resource_slot;
+    if (frame_global_side_effects && m_sky_cpu_blender) {
+      m_sky_cpu_blender->start_frame(*m_texture_pool, frame_resource_slot);
+    }
 
     id<MTLCommandBuffer> cmds = borrowed_command_buffer ?: [m_queue commandBuffer];
     if (cmds == nil) {
@@ -1145,7 +1178,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     ctx.enc = enc;
     ctx.pso_cache = &m_pso_cache;
     ctx.sampler_cache = &m_sampler_cache;
-    ctx.stream = &m_stream;
+    ctx.stream = frame_stream;
     ctx.color_format = kColorFormat;
     ctx.depth_format = kDepthFormat;
     ctx.cmds = cmds;
@@ -1382,9 +1415,15 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       {
         std::lock_guard<std::mutex> lock(m_frame_mutex);
         command_submission_id = ++m_command_submission_count;
-        m_last_stream_submission = command_submission_id;
+        if (ordinary_drawable_frame) {
+          m_ordinary_stream_slots.record_submission(ordinary_stream_slot, command_submission_id);
+        } else {
+          m_external_stream_submission = command_submission_id;
+        }
       }
       const auto completion_state = m_presentation_state;
+      const bool ordinary_submission = ordinary_drawable_frame;
+      const size_t completed_ordinary_slot = ordinary_stream_slot;
       [cmds addCompletedHandler:^(id<MTLCommandBuffer> completed) {
         const MTLCommandBufferStatus status = completed.status;
         const s64 error_code = completed.error ? completed.error.code : 0;
@@ -1402,9 +1441,13 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
               report_error = true;
             }
           }
-          completion_state->last_stream_submission_completed =
-              std::max(completion_state->last_stream_submission_completed,
-                       command_submission_id);
+          if (ordinary_submission) {
+            completion_state
+                ->ordinary_stream_submissions_completed[completed_ordinary_slot] =
+                command_submission_id;
+          } else {
+            completion_state->external_stream_completion.complete(command_submission_id);
+          }
         }
         if (report_error) {
           lg::error("Metal command buffer failed with status {} and error code {}",
