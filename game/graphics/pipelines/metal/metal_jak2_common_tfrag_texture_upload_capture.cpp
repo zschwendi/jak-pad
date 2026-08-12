@@ -607,21 +607,52 @@ bool validate_display_reset(const u8* payload) {
   return true;
 }
 
-bool validate_eye_adgif(const u8* payload, Jak2PrisEyeResolution resolution, u64 alpha) {
+bool is_valid_eye_texture_psm(GsTex0::PSM psm) {
+  switch (psm) {
+    case GsTex0::PSM::PSMCT32:
+    case GsTex0::PSM::PSMCT24:
+    case GsTex0::PSM::PSMCT16:
+    case GsTex0::PSM::PSMCT16S:
+    case GsTex0::PSM::PSMT8:
+    case GsTex0::PSM::PSMT4:
+    case GsTex0::PSM::PSMT8H:
+    case GsTex0::PSM::PSMT4HL:
+    case GsTex0::PSM::PSMT4HH:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool validate_eye_adgif(const u8* payload,
+                        Jak2PrisEyeResolution resolution,
+                        u64 alpha,
+                        u32* uv1_u,
+                        u32* uv1_v) {
   constexpr u64 kAdRegisters = static_cast<u64>(GifTag::RegisterDescriptor::AD);
   const u64 max_uv = resolution == Jak2PrisEyeResolution::Eye32 ? 31 : 63;
   const u64 expected_clamp = 1ull | (1ull << 2) | (max_uv << 14) | (max_uv << 34);
-  if (read_unaligned<u64>(payload) != make_gif_tag_word(5, false, 0, 1) ||
+  if (!uv1_u || !uv1_v ||
+      read_unaligned<u64>(payload) != make_gif_tag_word(5, false, 0, 1) ||
       read_unaligned<u64>(payload + 8) != kAdRegisters) {
     return false;
   }
   const auto adgif = read_unaligned<AdGifData>(payload + 16);
-  return adgif.tex0_addr == static_cast<u64>(GsRegisterAddress::TEX0_1) &&
-         adgif.tex1_addr == static_cast<u64>(GsRegisterAddress::TEX1_1) &&
-         adgif.mip_addr == static_cast<u64>(GsRegisterAddress::MIPTBP1_1) &&
-         adgif.clamp_addr == static_cast<u64>(GsRegisterAddress::CLAMP_1) &&
-         adgif.alpha_addr == static_cast<u64>(GsRegisterAddress::ALPHA_1) &&
-         adgif.clamp_data == expected_clamp && adgif.alpha_data == alpha;
+  const GsTex0 tex0(adgif.tex0_data);
+  const u32 cld = (adgif.tex0_data >> 61) & 7;
+  if (adgif.tex0_addr != static_cast<u64>(GsRegisterAddress::TEX0_1) ||
+      adgif.tex1_addr != static_cast<u64>(GsRegisterAddress::TEX1_1) ||
+      adgif.mip_addr != static_cast<u64>(GsRegisterAddress::MIPTBP1_1) ||
+      adgif.clamp_addr != static_cast<u64>(GsRegisterAddress::CLAMP_1) ||
+      adgif.alpha_addr != static_cast<u64>(GsRegisterAddress::ALPHA_1) ||
+      adgif.clamp_data != expected_clamp || adgif.alpha_data != alpha ||
+      tex0.tbw() == 0 || tex0.tw() > 11 || tex0.th() > 11 || tex0.tcc() != 1 ||
+      cld != 1 || !is_valid_eye_texture_psm(tex0.psm())) {
+    return false;
+  }
+  *uv1_u = 16u << tex0.tw();
+  *uv1_v = 16u << tex0.th();
+  return true;
 }
 
 bool validate_eye_scissor(const u8* payload, u64 expected) {
@@ -631,6 +662,11 @@ bool validate_eye_scissor(const u8* payload, u64 expected) {
 bool validate_eye_sprite(const u8* payload,
                          bool alpha_blend,
                          u32 alpha,
+                         u32 uv1_u,
+                         u32 uv1_v,
+                         u32 sprite_index,
+                         u32 eye_width,
+                         u32 target_y0,
                          bool exact_background,
                          u32 background_x0,
                          u32 background_y0,
@@ -660,15 +696,44 @@ bool validate_eye_sprite(const u8* payload,
       read_unaligned<u32>(payload + 92) != 0) {
     return false;
   }
-  if (!exact_background) {
-    return true;
+  const u32 x0 = read_unaligned<u32>(payload + 48);
+  const u32 y0 = read_unaligned<u32>(payload + 52);
+  const u32 x1 = read_unaligned<u32>(payload + 80);
+  const u32 y1 = read_unaligned<u32>(payload + 84);
+  if (x0 > 0xffff || y0 > 0xffff || x1 > 0xffff || y1 > 0xffff) {
+    return false;
   }
-  return read_unaligned<u64>(payload + 32) == 0 &&
-         read_unaligned<u32>(payload + 48) == background_x0 &&
-         read_unaligned<u32>(payload + 52) == background_y0 &&
-         read_unaligned<u64>(payload + 64) == 0 &&
-         read_unaligned<u32>(payload + 80) == background_x1 &&
-         read_unaligned<u32>(payload + 84) == background_y1;
+  if (exact_background) {
+    return read_unaligned<u64>(payload + 32) == 0 && x0 == background_x0 &&
+           y0 == background_y0 && read_unaligned<u64>(payload + 64) == 0 &&
+           x1 == background_x1 && y1 == background_y1;
+  }
+
+  if (read_unaligned<u64>(payload + 32) != 0 ||
+      read_unaligned<u32>(payload + 64) != uv1_u ||
+      read_unaligned<u32>(payload + 68) != uv1_v || y0 > y1) {
+    return false;
+  }
+  const bool right_eye = sprite_index == 2 || sprite_index == 4 || sprite_index == 6;
+  const bool mirrored_lid = sprite_index == 6;
+  if ((!mirrored_lid && x0 > x1) || (mirrored_lid && x0 < x1)) {
+    return false;
+  }
+  const u32 target_x0 = (1 + static_cast<u32>(right_eye)) * eye_width * 16;
+  const u32 target_x1 = target_x0 + eye_width * 16;
+  const u32 target_raw_y0 = (target_y0 + eye_width) * 16;
+  const u32 target_raw_y1 = target_raw_y0 + eye_width * 16;
+  if (std::max(x0, x1) < target_x0 || std::min(x0, x1) > target_x1 || y1 < target_raw_y0 ||
+      y0 > target_raw_y1) {
+    return false;
+  }
+  if (sprite_index == 5 && (x0 != eye_width * 16 || x1 != eye_width * 2 * 16)) {
+    return false;
+  }
+  if (sprite_index == 6 && (x0 != eye_width * 3 * 16 || x1 != eye_width * 2 * 16)) {
+    return false;
+  }
+  return true;
 }
 
 bool parse_pris_eye_chunk(const u8* snapshot,
@@ -711,6 +776,8 @@ bool parse_pris_eye_chunk(const u8* snapshot,
   u32 scissor_index = 0;
   u32 sprite_index = 0;
   u32 test_index = 0;
+  u32 current_uv1_u = 0;
+  u32 current_uv1_v = 0;
   for (u32 body_index = 0; body_index < kBodyKinds.size(); ++body_index) {
     const u32 transfer_index = start_transfer_index + 2 + body_index;
     switch (kBodyKinds[body_index]) {
@@ -718,7 +785,8 @@ bool parse_pris_eye_chunk(const u8* snapshot,
         if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
                                    capture.transfers[transfer_index], 6, 0, kDirectVif | 6,
                                    &payload) ||
-            !validate_eye_adgif(payload, out->resolution, kAdgifAlpha[adgif_index++])) {
+            !validate_eye_adgif(payload, out->resolution, kAdgifAlpha[adgif_index++],
+                                &current_uv1_u, &current_uv1_v)) {
           return false;
         }
         break;
@@ -768,7 +836,8 @@ bool parse_pris_eye_chunk(const u8* snapshot,
         const u32 background_x0 = eye_width * 16;
         const u32 background_y0 = (group * eye_width + eye_width) * 16;
         if (!validate_eye_sprite(payload, kSpriteBlend[sprite_index],
-                                 kSpriteAlpha[sprite_index], background, background_x0,
+                                 kSpriteAlpha[sprite_index], current_uv1_u, current_uv1_v,
+                                 sprite_index, eye_width, y0, background, background_x0,
                                  background_y0, (eye_width + full_width) * 16,
                                  background_y0 + eye_width * 16)) {
           return false;

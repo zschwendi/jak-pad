@@ -55,6 +55,12 @@ void put_u64(std::vector<u8>* memory, u32 offset, u64 value) {
   std::memcpy(memory->data() + offset, &value, sizeof(value));
 }
 
+u64 get_u64(const std::vector<u8>& memory, u32 offset) {
+  u64 value = 0;
+  std::memcpy(&value, memory.data() + offset, sizeof(value));
+  return value;
+}
+
 void put_float(std::vector<u8>* memory, u32 offset, float value) {
   std::memcpy(memory->data() + offset, &value, sizeof(value));
 }
@@ -167,8 +173,11 @@ u32 put_eye_adgif(std::vector<u8>* packet,
   put_ad_gif_header(packet, payload_offset, 5);
   const u64 max_uv = eye64 ? 63 : 31;
   const u64 clamp = 1ull | (1ull << 2) | (max_uv << 14) | (max_uv << 34);
+  const u64 tex0 = (texture_seed & 0x3fff) | (1ull << 14) |
+                   (static_cast<u64>(GsTex0::PSM::PSMT8) << 20) | (5ull << 26) |
+                   (5ull << 30) | (1ull << 34) | (1ull << 61);
   const std::array<u64, 10> adgif = {
-      texture_seed, static_cast<u64>(GsRegisterAddress::TEX0_1),
+      tex0,          static_cast<u64>(GsRegisterAddress::TEX0_1),
       0x101,        static_cast<u64>(GsRegisterAddress::TEX1_1),
       0x202,        static_cast<u64>(GsRegisterAddress::MIPTBP1_1),
       clamp,        static_cast<u64>(GsRegisterAddress::CLAMP_1),
@@ -204,13 +213,14 @@ u32 put_eye_sprite(std::vector<u8>* packet,
   put_u32(packet, payload_offset + 20, 128);
   put_u32(packet, payload_offset + 24, 128);
   put_u32(packet, payload_offset + 28, alpha);
-  put_u64(packet, payload_offset + 32, background ? 0 : 0x1000200030004ull);
+  put_u64(packet, payload_offset + 32, 0);
   put_u64(packet, payload_offset + 40, 0);
   put_u32(packet, payload_offset + 48, x0);
   put_u32(packet, payload_offset + 52, y0);
   put_u32(packet, payload_offset + 56, 0xffffff);
   put_u32(packet, payload_offset + 60, 0);
-  put_u64(packet, payload_offset + 64, background ? 0 : 0x5000600070008ull);
+  put_u32(packet, payload_offset + 64, background ? 0 : 512);
+  put_u32(packet, payload_offset + 68, background ? 0 : 512);
   put_u64(packet, payload_offset + 72, 0);
   put_u32(packet, payload_offset + 80, x1);
   put_u32(packet, payload_offset + 84, y1);
@@ -742,7 +752,9 @@ void test_pris_eye_live_copy_semantics() {
                                                                       *copied_plan),
         "live and relocated copied plans match by owned semantics rather than DMA placement");
 
-  put_u64(&copied.packet, copied.first_eye_offset + 224, 0xfeed);
+  const u64 copied_tex0 = get_u64(copied.packet, copied.first_eye_offset + 224);
+  put_u64(&copied.packet, copied.first_eye_offset + 224,
+          (copied_tex0 & ~0x3fffull) | 0x321);
   copied_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
       copied.packet.data(), copied.packet.size(), kChainOffset, 196, copied.packet.data(),
       copied.packet.size());
@@ -761,6 +773,32 @@ void test_pris_eye_shape_fails_closed() {
              malformed.packet.data(), malformed.packet.size())
              .has_value(),
         "a body scissor outside the exact 32-wide coordinate grammar is rejected");
+
+  auto bad_uv = make_pris_eye_fixture(200, {{false, 2}});
+  put_u32(&bad_uv.packet, bad_uv.first_eye_offset + 592, 511);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_uv.packet.data(), bad_uv.packet.size(), kChainOffset, 200,
+             bad_uv.packet.data(), bad_uv.packet.size())
+             .has_value(),
+        "a sprite UV extent that disagrees with its TEX0 width is rejected");
+
+  auto bad_xyz = make_pris_eye_fixture(200, {{false, 2}});
+  put_u32(&bad_xyz.packet, bad_xyz.first_eye_offset + 576, 0);
+  put_u32(&bad_xyz.packet, bad_xyz.first_eye_offset + 608, 16);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_xyz.packet.data(), bad_xyz.packet.size(), kChainOffset, 200,
+             bad_xyz.packet.data(), bad_xyz.packet.size())
+             .has_value(),
+        "a destination rectangle that cannot intersect its eye target is rejected");
+
+  auto bad_tex0 = make_pris_eye_fixture(200, {{false, 2}});
+  const u64 tex0 = get_u64(bad_tex0.packet, bad_tex0.first_eye_offset + 224);
+  put_u64(&bad_tex0.packet, bad_tex0.first_eye_offset + 224, tex0 & ~(1ull << 34));
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             bad_tex0.packet.data(), bad_tex0.packet.size(), kChainOffset, 200,
+             bad_tex0.packet.data(), bad_tex0.packet.size())
+             .has_value(),
+        "an eye source TEX0 without texture alpha is rejected");
 
   auto duplicate = make_pris_eye_fixture(196, {{false, 1}, {false, 1}});
   check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
