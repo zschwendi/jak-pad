@@ -110,7 +110,7 @@ vertex DirectTexturedVSOut direct_textured_vs(uint vid [[vertex_id]],
   DirectVertexIn v = verts[vid];
   DirectTexturedVSOut out;
   if (params.offscreen_mode == 1) {
-    out.pos = float4((v.xyzf.x - 0.453125) * 64.0, (v.xyzf.y - 0.5 + (2.25 / 64.0)) * 64.0,
+    out.pos = float4((v.xyzf.x - 0.453125) * 64.0, -(v.xyzf.y - 0.5 + (2.25 / 64.0)) * 64.0,
                      v.xyzf.z, 1.0);
   } else {
     out.pos = float4((v.xyzf.x - 0.5) * 16.0,

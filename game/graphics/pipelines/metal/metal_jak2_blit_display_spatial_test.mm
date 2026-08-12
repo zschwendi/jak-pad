@@ -840,13 +840,20 @@ int main() {
           "published a placeholder so snapshot lookup failures stay observable");
     const u64 placeholder = texture_pool.get_placeholder_texture();
 
-    std::array<u8, 4 * 4 * 4> red_source = {};
-    for (std::size_t offset = 0; offset < red_source.size(); offset += 4) {
-      red_source[offset] = 255;
-      red_source[offset + 3] = 255;
+    constexpr std::array<std::array<u8, 4>, 4> kProgressQuadrants = {
+        std::array<u8, 4>{255, 0, 0, 255},
+        std::array<u8, 4>{0, 255, 0, 255},
+        std::array<u8, 4>{0, 0, 255, 255},
+        std::array<u8, 4>{255, 255, 0, 255}};
+    std::array<u8, 4 * 4 * 4> progress_source = {};
+    for (std::size_t y = 0; y < 4; y++) {
+      for (std::size_t x = 0; x < 4; x++) {
+        const auto& color = kProgressQuadrants[(y >= 2 ? 2 : 0) + (x >= 2 ? 1 : 0)];
+        std::copy(color.begin(), color.end(), progress_source.begin() + (y * 4 + x) * 4);
+      }
     }
     const u64 progress_source_handle =
-        metal_upload_texture_rgba8(device, queue, red_source.data(), 4, 4);
+        metal_upload_texture_rgba8(device, queue, progress_source.data(), 4, 4);
     PcTextureId progress_source_id;
     {
       TextureInput input;
@@ -854,7 +861,7 @@ int main() {
       input.w = 4;
       input.h = 4;
       input.debug_page_name = "SYNTHETIC";
-      input.debug_name = "progress-red";
+      input.debug_name = "progress-quadrants";
       std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
       input.id = texture_pool.allocate_pc_port_texture(GameVersion::Jak2);
       progress_source_id = input.id;
@@ -959,9 +966,10 @@ int main() {
       check(progress.minimap_texture() &&
                 progress.minimap_texture().width == MetalProgressRenderer::kMinimapWidth &&
                 progress.minimap_texture().height == MetalProgressRenderer::kMinimapHeight &&
+                progress.minimap_texture().pixelFormat == color.pixelFormat &&
                 minimap_lookup && *minimap_lookup == progress.minimap_handle() &&
                 *minimap_lookup != placeholder,
-            "PROGRESS publishes a stable shader-readable 128x128 texture at TBP 4032");
+            "PROGRESS publishes a stable format-matched 128x128 texture at TBP 4032");
       check(minimap_stats.draw_calls == 3 && minimap_stats.triangles == 6 &&
                 minimap_stats.textured_draw_calls == 3 &&
                 minimap_stats.missing_texture_draw_calls == 0 &&
@@ -972,8 +980,12 @@ int main() {
       check(near_pixel(pixel_at(minimap_frame, 8, 8), {0, 0, 0, 0}) &&
                 near_pixel(pixel_at(minimap_frame, 16, 48), {0, 0, 0, 0}),
             "the offscreen minimap construction does not leak into the main upper-left target");
-      check(near_pixel(pixel_at(minimap_frame, 48, 48), {255, 0, 0, 255}, 5),
-            "the authored red map survives the alpha-only mask pass and appears lower-right");
+      check(near_pixel(pixel_at(minimap_frame, 40, 40), {255, 0, 0, 255}, 5) &&
+                near_pixel(pixel_at(minimap_frame, 56, 40), {0, 255, 0, 255}, 5) &&
+                near_pixel(pixel_at(minimap_frame, 40, 56), {0, 0, 255, 255}, 5) &&
+                near_pixel(pixel_at(minimap_frame, 56, 56), {255, 255, 0, 255}, 5),
+            "the lower-right minimap preserves TL red, TR green, BL blue, and BR yellow "
+            "through the alpha-only mask pass");
 
       stream.reset();
       auto copy_back_ctx =
