@@ -44,6 +44,10 @@ struct MetalPresentationState {
   u64 last_stream_submission_completed = 0;
   int last_command_buffer_status = 0;
   s64 last_command_buffer_error_code = 0;
+  u64 gpu_samples = 0;
+  double gpu_total_seconds = 0.0;
+  double last_gpu_seconds = 0.0;
+  double maximum_gpu_seconds = 0.0;
   metal_renderer::ExternalSubmissionGate external_submission_gate;
   bool mismatch_reported = false;
   bool command_buffer_error_reported = false;
@@ -1385,6 +1389,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       [cmds addCompletedHandler:^(id<MTLCommandBuffer> completed) {
         const MTLCommandBufferStatus status = completed.status;
         const s64 error_code = completed.error ? completed.error.code : 0;
+        const double gpu_start = completed.GPUStartTime;
+        const double gpu_end = completed.GPUEndTime;
         bool report_error = false;
         {
           std::lock_guard<std::mutex> lock(completion_state->mutex);
@@ -1392,6 +1398,15 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
           completion_state->last_command_buffer_error_code = error_code;
           if (status == MTLCommandBufferStatusCompleted) {
             completion_state->command_buffers_completed++;
+            if (std::isfinite(gpu_start) && std::isfinite(gpu_end) && gpu_start > 0.0 &&
+                gpu_end >= gpu_start) {
+              const double duration = gpu_end - gpu_start;
+              completion_state->gpu_samples++;
+              completion_state->gpu_total_seconds += duration;
+              completion_state->last_gpu_seconds = duration;
+              completion_state->maximum_gpu_seconds =
+                  std::max(completion_state->maximum_gpu_seconds, duration);
+            }
           } else {
             completion_state->command_buffer_errors++;
             if (!completion_state->command_buffer_error_reported) {
@@ -1674,6 +1689,10 @@ metal_renderer::ChainStats MetalRenderer::chain_stats() {
     out.last_presented_host_tick_id = m_presentation_state->last_host_tick_id;
     out.last_presented_chain_ordinal = m_presentation_state->last_chain_ordinal;
     out.last_actual_presentation_time = m_presentation_state->order.last_presented_time();
+    out.gpu_samples = m_presentation_state->gpu_samples;
+    out.gpu_total_seconds = m_presentation_state->gpu_total_seconds;
+    out.last_gpu_seconds = m_presentation_state->last_gpu_seconds;
+    out.maximum_gpu_seconds = m_presentation_state->maximum_gpu_seconds;
   }
   return out;
 }
