@@ -142,6 +142,12 @@ class MetalGeneric2 {
     u32 tri_count = 0;
   };
 
+  struct DrawBucketLookupEntry {
+    u64 key = 0;
+    u32 bucket = 0;
+    u32 generation = 0;
+  };
+
   // --- DMA (mirror of Generic2_DMA.cpp, Jak 1 path) ---
   bool check_for_end_of_generic_data(DmaFollower& dma, u32 next_bucket);
   bool handle_bucket_setup_dma(DmaFollower& dma, u32 next_bucket);
@@ -158,6 +164,9 @@ class MetalGeneric2 {
   void determine_draw_modes(bool enable_at, bool default_fog);
   void link_adgifs_back_to_frags();
   void draws_to_buckets();
+  void reset_draw_bucket_lookup();
+  bool find_draw_bucket(u64 key, u32* bucket) const;
+  bool store_draw_bucket(u64 key, u32 bucket);
   void process_matrices();
   void final_vertex_update();
   void build_index_buffer();
@@ -185,6 +194,9 @@ class MetalGeneric2 {
   std::vector<Adgif> m_adgifs;
   u32 m_next_free_bucket = 0;
   std::vector<Bucket> m_buckets;
+  std::vector<DrawBucketLookupEntry> m_draw_bucket_lookup;
+  std::size_t m_draw_bucket_lookup_mask = 0;
+  u32 m_draw_bucket_lookup_generation = 0;
   u32 m_next_free_idx = 0;
   std::vector<u32> m_indices;
 

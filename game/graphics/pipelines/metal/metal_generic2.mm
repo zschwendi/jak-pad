@@ -102,6 +102,14 @@ MetalGeneric2::MetalGeneric2(u32 num_verts, u32 num_frags, u32 num_adgif, u32 nu
   m_adgifs.resize(num_adgif);
   m_buckets.resize(num_buckets);
   m_indices.resize(num_verts * 3);
+
+  std::size_t lookup_capacity = 1;
+  const std::size_t minimum_lookup_capacity = std::max<std::size_t>(2, num_buckets * 2ull);
+  while (lookup_capacity < minimum_lookup_capacity) {
+    lookup_capacity *= 2;
+  }
+  m_draw_bucket_lookup.resize(lookup_capacity);
+  m_draw_bucket_lookup_mask = lookup_capacity - 1;
 }
 
 bool MetalGeneric2::expect(bool condition, const char* what) {
@@ -159,6 +167,58 @@ void MetalGeneric2::reset_buffers() {
   m_next_free_adgif = 0;
   m_next_free_bucket = 0;
   m_next_free_idx = 0;
+}
+
+void MetalGeneric2::reset_draw_bucket_lookup() {
+  m_draw_bucket_lookup_generation++;
+  if (m_draw_bucket_lookup_generation == 0) {
+    for (auto& entry : m_draw_bucket_lookup) {
+      entry.generation = 0;
+    }
+    m_draw_bucket_lookup_generation = 1;
+  }
+}
+
+namespace {
+
+std::size_t generic_draw_bucket_hash(u64 key) {
+  key ^= key >> 33;
+  key *= 0xff51afd7ed558ccdull;
+  key ^= key >> 33;
+  key *= 0xc4ceb9fe1a85ec53ull;
+  key ^= key >> 33;
+  return static_cast<std::size_t>(key);
+}
+
+}  // namespace
+
+bool MetalGeneric2::find_draw_bucket(u64 key, u32* bucket) const {
+  std::size_t slot = generic_draw_bucket_hash(key) & m_draw_bucket_lookup_mask;
+  for (std::size_t probe = 0; probe < m_draw_bucket_lookup.size(); probe++) {
+    const auto& entry = m_draw_bucket_lookup[slot];
+    if (entry.generation != m_draw_bucket_lookup_generation) {
+      return false;
+    }
+    if (entry.key == key) {
+      *bucket = entry.bucket;
+      return true;
+    }
+    slot = (slot + 1) & m_draw_bucket_lookup_mask;
+  }
+  return false;
+}
+
+bool MetalGeneric2::store_draw_bucket(u64 key, u32 bucket) {
+  std::size_t slot = generic_draw_bucket_hash(key) & m_draw_bucket_lookup_mask;
+  for (std::size_t probe = 0; probe < m_draw_bucket_lookup.size(); probe++) {
+    auto& entry = m_draw_bucket_lookup[slot];
+    if (entry.generation != m_draw_bucket_lookup_generation || entry.key == key) {
+      entry = {key, bucket, m_draw_bucket_lookup_generation};
+      return true;
+    }
+    slot = (slot + 1) & m_draw_bucket_lookup_mask;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -737,7 +797,7 @@ void MetalGeneric2::link_adgifs_back_to_frags() {
 }
 
 void MetalGeneric2::draws_to_buckets() {
-  std::unordered_map<u64, u32> draw_key_to_bucket;
+  reset_draw_bucket_lookup();
   for (u32 i = 0; i < m_next_free_adgif; i++) {
     auto& ad = m_adgifs[i];
     if (ad.uses_hud) {
@@ -749,7 +809,13 @@ void MetalGeneric2::draws_to_buckets() {
         return;
       }
       u32 bucket_idx = m_next_free_bucket++;
-      draw_key_to_bucket[ad.key()] = bucket_idx;
+      if (!store_draw_bucket(ad.key(), bucket_idx)) {
+        if (m_stats) {
+          m_stats->overflow++;
+        }
+        m_failed = true;
+        return;
+      }
       auto& bucket = m_buckets[bucket_idx];
       bucket.tbp = ad.tbp;
       bucket.mode = ad.mode;
@@ -758,16 +824,22 @@ void MetalGeneric2::draws_to_buckets() {
       ad.next = UINT32_MAX;
     } else {
       u64 key = ad.key();
-      const auto& bucket_it = draw_key_to_bucket.find(key);
-      if (bucket_it == draw_key_to_bucket.end()) {
+      u32 bucket_idx = 0;
+      if (!find_draw_bucket(key, &bucket_idx)) {
         if (m_next_free_bucket >= m_buckets.size()) {
           if (m_stats) {
             m_stats->overflow++;
           }
           return;
         }
-        u32 bucket_idx = m_next_free_bucket++;
-        draw_key_to_bucket[key] = bucket_idx;
+        bucket_idx = m_next_free_bucket++;
+        if (!store_draw_bucket(key, bucket_idx)) {
+          if (m_stats) {
+            m_stats->overflow++;
+          }
+          m_failed = true;
+          return;
+        }
         auto& bucket = m_buckets[bucket_idx];
         bucket.tbp = ad.tbp;
         bucket.mode = ad.mode;
@@ -775,7 +847,7 @@ void MetalGeneric2::draws_to_buckets() {
         bucket.last = i;
         ad.next = UINT32_MAX;
       } else {
-        auto& bucket = m_buckets[bucket_it->second];
+        auto& bucket = m_buckets[bucket_idx];
         m_adgifs[bucket.last].next = i;
         ad.next = UINT32_MAX;
         bucket.last = i;
