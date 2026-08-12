@@ -57,6 +57,7 @@ int main() {
   std::size_t ocean_mid_far = 0;
   std::size_t ocean_near = 0;
   std::size_t pris_eye = 0;
+  std::size_t common_pris = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -85,10 +86,11 @@ int main() {
     ocean_mid_far += table[i].behavior == Behavior::OceanMidFar;
     ocean_near += table[i].behavior == Behavior::OceanNear;
     pris_eye += table[i].behavior == Behavior::PrisEye;
+    common_pris += table[i].behavior == Behavior::CommonPris;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 35, "35 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 34, "34 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 28,
@@ -117,6 +119,7 @@ int main() {
   check(merc_alpha == 6, "six per-level alpha Merc buckets are implemented by Metal");
   check(merc_water == 7,
         "six per-level and one common water Merc buckets are implemented by Metal");
+  check(common_pris == 1, "one common PRIS texture bucket has a dedicated exact renderer");
   check(generic2 == 26,
         "26 source-proven normal GMerc buckets are implemented by Metal Generic2");
   check(ocean_mid_far == 1 && ocean_near == 1,
@@ -290,10 +293,10 @@ int main() {
         "per-level PRIS GMerc and every PRIS2 family remain deferred");
   check(has_behavior(jak2::BucketId::MERC_LCOM_TFRAG, Behavior::Merc) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_TFRAG, Behavior::Generic2) &&
-            has_behavior(jak2::BucketId::TEX_LCOM_PRIS, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TEX_LCOM_PRIS, Behavior::CommonPris) &&
             has_behavior(jak2::BucketId::MERC_LCOM_PRIS, Behavior::Merc) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_PRIS, Behavior::Generic2),
-        "common TFRAG and common PRIS draw paths are routed while unproven PRIS textures defer");
+        "common TFRAG and the owned common PRIS texture/draw paths are routed");
   check(has_behavior(jak2::BucketId::SHRUB_L0_SHRUB, Behavior::Shrub) &&
             has_behavior(jak2::BucketId::SHRUB_L1_SHRUB, Behavior::Shrub) &&
             has_behavior(jak2::BucketId::SHRUB_L2_SHRUB, Behavior::Shrub) &&

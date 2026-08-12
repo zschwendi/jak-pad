@@ -25,6 +25,9 @@ constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
 constexpr std::size_t kJak2PrisEyeMaximumChunks = 2;
 constexpr u32 kJak2PrisEyeChunkTransferCount = 26;
 constexpr u32 kJak2PrisEyeChunkPayloadBytes = 1856;
+constexpr u16 kJak2CommonPrisDarkJakAnimatorOpcode = 22;
+constexpr u32 kJak2CommonPrisDarkJakAnimatorBodyBytes = 32;
+constexpr std::size_t kJak2CommonPrisDarkJakAnimatorTbpCount = 4;
 constexpr u16 kJak2PrisPrisonJakAnimatorOpcode = 23;
 constexpr u16 kJak2PrisPrisonJakAnimatorStartOpcode = 12;
 constexpr u16 kJak2PrisPrisonJakAnimatorFinishOpcode = 13;
@@ -85,11 +88,6 @@ struct Jak2NormalTfragTextureUploadPlan {
   Jak2Bucket4OrdinaryUploadPlan ordinary;
 };
 
-struct Jak2CommonPrisTextureUploadPlan {
-  bool present = false;
-  Jak2Bucket4OrdinaryUploadPlan ordinary;
-};
-
 enum class Jak2PrisEyeResolution : u8 {
   Eye32,
   Eye64,
@@ -143,6 +141,37 @@ struct Jak2PrisEyeChunkPlan {
   u32 linker_relative_tag_offset = 0;
   u32 transfer_count = 0;
   u32 payload_bytes = 0;
+  u64 eye_slot_mask = 0;
+  u64 semantic_fingerprint = 0;
+};
+
+struct Jak2CommonPrisDarkJakAnimatorPlan {
+  float morph = 0.f;
+  std::array<u8, 12> source_padding = {};
+  std::array<u32, kJak2CommonPrisDarkJakAnimatorTbpCount> destination_tbps = {};
+  u32 start_transfer_index = 0;
+  u32 start_relative_tag_offset = 0;
+  u32 body_transfer_index = 0;
+  u32 body_relative_tag_offset = 0;
+  u32 finish_transfer_index = 0;
+  u32 finish_relative_tag_offset = 0;
+  u32 linker_transfer_index = 0;
+  u32 linker_relative_tag_offset = 0;
+  u64 semantic_fingerprint = 0;
+};
+
+struct Jak2CommonPrisTextureUploadPlan {
+  u32 bucket_id = kJak2CommonPrisTextureUploadBucket;
+  bool present = false;
+  Jak2Bucket4OrdinaryUploadPlan ordinary;
+  Jak2CommonPrisDarkJakAnimatorPlan dark_jak_animator;
+  std::array<Jak2PrisEyeChunkPlan, kJak2PrisEyeMaximumChunks> chunks = {};
+  std::size_t chunk_count = 0;
+  u32 direct_reset_transfer_index = 0;
+  u32 direct_reset_relative_tag_offset = 0;
+  u64 direct_reset_semantic_fingerprint = 0;
+  u32 terminal_transfer_index = 0;
+  u32 terminal_relative_tag_offset = 0;
   u64 eye_slot_mask = 0;
   u64 semantic_fingerprint = 0;
 };
@@ -290,9 +319,10 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*!
- * Plan one observed common PRIS texture envelope: one ordinary page descriptor, the fixed qwc-2 GS
- * setup, and the terminal qwc-10 Direct reset. The public Metal policy remains deferred because
- * live title DMA has additional variants; this helper is retained for bounded fixture work.
+ * Preflight common PRIS bucket 220. Apart from the exact empty form, only the two live source
+ * forms are accepted: ordinary/Dark-Jak/reset and ordinary/Dark-Jak/two-eye-chunks/reset. The
+ * returned plan owns the ordinary header and opcode-22 scalars and fingerprints every eye chunk.
+ * No texture-pool or renderer mutation occurs.
  */
 std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upload(
     const u8* dma_packet_snapshot,
@@ -301,6 +331,10 @@ std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upl
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+bool jak2_common_pris_texture_upload_plans_match(
+    const Jak2CommonPrisTextureUploadPlan& live,
+    const Jak2CommonPrisTextureUploadPlan& copied);
 
 /*!
  * Preflight the exact source-written per-level PRIS envelopes observed in Jak II: one ordinary

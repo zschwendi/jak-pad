@@ -22,6 +22,8 @@ constexpr u32 kSourceTbp = 100;
 constexpr u64 kEyeHash = 0x123456789abcdef0ull;
 constexpr u32 kPrisBucket = 200;
 constexpr u32 kPrisBucketOffset = kPrisBucket * 16;
+constexpr u32 kCommonPrisBucket = metal_renderer::kJak2CommonPrisTextureUploadBucket;
+constexpr u32 kCommonPrisBucketOffset = kCommonPrisBucket * 16;
 constexpr u32 kPrisOrdinaryOffset = 0x4000;
 constexpr u32 kPrisAnimatorOffset = 0x4800;
 constexpr u32 kPrisChunkOffset = 0x5000;
@@ -279,6 +281,78 @@ PrisFixture make_pris_fixture(std::size_t chunk_count, bool prison_jak_animator 
   return fixture;
 }
 
+struct CommonPrisFixture {
+  std::vector<u8> data;
+  metal_renderer::Jak2CommonPrisTextureUploadPlan plan;
+};
+
+CommonPrisFixture make_common_pris_fixture(std::size_t chunk_count) {
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  auto base = make_pris_fixture(chunk_count);
+  CommonPrisFixture fixture{std::move(base.data), {}};
+  fixture.plan.present = true;
+  fixture.plan.ordinary = base.plan.ordinary;
+  fixture.plan.chunk_count = chunk_count;
+
+  put_tag(&fixture.data, kCommonPrisBucketOffset, DmaTag::Kind::NEXT, 0,
+          kPrisOrdinaryOffset, 0, 0);
+  put_tag(&fixture.data, kPrisOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0,
+          kPrisAnimatorOffset, 0, 0);
+  auto& animator = fixture.plan.dark_jak_animator;
+  animator.morph = 0.5f;
+  animator.destination_tbps = {0x1200, 0x1210, 0x1220, 0x1230};
+  for (std::size_t i = 0; i < animator.source_padding.size(); ++i) {
+    animator.source_padding[i] = static_cast<u8>(0xa0 + i);
+  }
+  animator.semantic_fingerprint = 1;
+  animator.start_transfer_index = 3;
+  animator.start_relative_tag_offset = kPrisAnimatorOffset - kCommonPrisBucketOffset;
+  animator.body_transfer_index = 4;
+  animator.body_relative_tag_offset = animator.start_relative_tag_offset + 16;
+  animator.finish_transfer_index = 5;
+  animator.finish_relative_tag_offset = animator.body_relative_tag_offset + 16 +
+                                        metal_renderer::kJak2CommonPrisDarkJakAnimatorBodyBytes;
+  animator.linker_transfer_index = 6;
+  animator.linker_relative_tag_offset = animator.finish_relative_tag_offset + 16;
+  put_tag(&fixture.data, kPrisAnimatorOffset, DmaTag::Kind::CNT, 0, 0,
+          kPcPort | metal_renderer::kJak2PrisPrisonJakAnimatorStartOpcode, 0);
+  put_tag(&fixture.data, kPrisAnimatorOffset + 16, DmaTag::Kind::CNT,
+          metal_renderer::kJak2CommonPrisDarkJakAnimatorBodyBytes / 16, 0,
+          kPcPort | metal_renderer::kJak2CommonPrisDarkJakAnimatorOpcode, 0);
+  const u32 body_offset = kPrisAnimatorOffset + 32;
+  std::memcpy(fixture.data.data() + body_offset, &animator.morph, sizeof(animator.morph));
+  std::memcpy(fixture.data.data() + body_offset + 4, animator.source_padding.data(),
+              animator.source_padding.size());
+  std::memcpy(fixture.data.data() + body_offset + 16, animator.destination_tbps.data(),
+              sizeof(animator.destination_tbps));
+  const u32 finish_offset = body_offset + metal_renderer::kJak2CommonPrisDarkJakAnimatorBodyBytes;
+  put_tag(&fixture.data, finish_offset, DmaTag::Kind::CNT, 0, 0,
+          kPcPort | metal_renderer::kJak2PrisPrisonJakAnimatorFinishOpcode, 0);
+  put_tag(&fixture.data, finish_offset + 16, DmaTag::Kind::NEXT, 0,
+          kPrisChunkOffset, 0, 0);
+
+  for (std::size_t i = 0; i < chunk_count; ++i) {
+    auto chunk = base.plan.chunks[i];
+    const u32 start_offset = kPrisBucketOffset + chunk.start_relative_tag_offset;
+    const u32 linker_offset = kPrisBucketOffset + chunk.linker_relative_tag_offset;
+    chunk.start_transfer_index += 4;
+    chunk.linker_transfer_index += 4;
+    chunk.start_relative_tag_offset = start_offset - kCommonPrisBucketOffset;
+    chunk.linker_relative_tag_offset = linker_offset - kCommonPrisBucketOffset;
+    fixture.plan.chunks[i] = chunk;
+    fixture.plan.eye_slot_mask |= chunk.eye_slot_mask;
+  }
+  fixture.plan.direct_reset_transfer_index = 7 + static_cast<u32>(chunk_count) * 27;
+  const u32 reset_offset = kPrisBucketOffset + base.plan.direct_reset_relative_tag_offset;
+  fixture.plan.direct_reset_relative_tag_offset = reset_offset - kCommonPrisBucketOffset;
+  fixture.plan.terminal_transfer_index = fixture.plan.direct_reset_transfer_index + 1;
+  const u32 terminal_offset = kPrisBucketOffset + base.plan.terminal_relative_tag_offset;
+  fixture.plan.terminal_relative_tag_offset = terminal_offset - kCommonPrisBucketOffset;
+  put_tag(&fixture.data, terminal_offset, DmaTag::Kind::NEXT, 0,
+          kCommonPrisBucketOffset + 16, 0, 0);
+  return fixture;
+}
+
 struct HostBucketCounter {
   u32 calls = 0;
   u32 bucket_id = 0;
@@ -483,6 +557,62 @@ int main() {
                 animator_only_stats.command_buffers_completed == 0 &&
                 animator_only_stats.command_buffer_errors == 0,
             "the PRIS renderer consumes an animator-only plan through its terminal reset");
+
+      MetalJak2CommonPrisBucketRenderer common_pris_renderer(
+          "jak2-common-pris", kCommonPrisBucket);
+      CommonPrisFixture common_absent;
+      common_absent.data.resize(kCommonPrisBucketOffset + 32);
+      put_tag(&common_absent.data, kCommonPrisBucketOffset, DmaTag::Kind::CNT, 0, 0, 0, 0);
+      host_counter = {};
+      state.next_bucket = kCommonPrisBucketOffset + 16;
+      state.host_bucket_context = &host_counter;
+      state.jak2_common_pris_plan = &common_absent.plan;
+      renderer.start_frame();
+      DmaFollower common_absent_dma(common_absent.data.data(), kCommonPrisBucketOffset,
+                                    common_absent.data.size());
+      common_pris_renderer.render(common_absent_dma, &state, context);
+      check(host_counter.calls == 1 && host_counter.bucket_id == kCommonPrisBucket &&
+                common_absent_dma.current_tag_offset() == state.next_bucket &&
+                renderer.stats().eyes == 0 && renderer.stats().command_buffers_committed == 0,
+            "absent common PRIS still calls the host once and consumes its strict empty slot");
+
+      auto common_form_a = make_common_pris_fixture(0);
+      host_counter = {};
+      state.next_bucket = kCommonPrisBucketOffset + 16;
+      state.host_bucket_context = &host_counter;
+      state.jak2_common_pris_plan = &common_form_a.plan;
+      renderer.start_frame();
+      DmaFollower common_form_a_dma(common_form_a.data.data(), kCommonPrisBucketOffset,
+                                    common_form_a.data.size());
+      common_pris_renderer.render(common_form_a_dma, &state, context);
+      const auto common_form_a_stats = renderer.stats();
+      check(host_counter.calls == 1 && host_counter.bucket_id == kCommonPrisBucket &&
+                common_form_a_dma.current_tag_offset() == state.next_bucket &&
+                common_form_a_stats.eyes == 0 && common_form_a_stats.draw_calls == 0 &&
+                common_form_a_stats.command_buffers_committed == 0 &&
+                common_form_a_stats.command_buffers_completed == 0 &&
+                common_form_a_stats.command_buffer_errors == 0,
+            "common PRIS Form A calls the host once and consumes the Dark Jak/reset envelope");
+
+      auto common_form_b = make_common_pris_fixture(2);
+      host_counter = {};
+      state.jak2_common_pris_plan = &common_form_b.plan;
+      renderer.start_frame();
+      DmaFollower common_form_b_dma(common_form_b.data.data(), kCommonPrisBucketOffset,
+                                    common_form_b.data.size());
+      common_pris_renderer.render(common_form_b_dma, &state, context);
+      const auto common_form_b_stats = renderer.stats();
+      check(host_counter.calls == 1 && host_counter.bucket_id == kCommonPrisBucket &&
+                common_form_b_dma.current_tag_offset() == state.next_bucket &&
+                common_form_b_stats.eyes == 4 && common_form_b_stats.draw_calls == 16 &&
+                common_form_b_stats.triangles == 32 &&
+                common_form_b_stats.missing_textures == 0 &&
+                common_form_b_stats.unexpected_dma == 0 &&
+                common_form_b_stats.duplicate_slot_writes == 0 &&
+                common_form_b_stats.command_buffers_committed == 2 &&
+                common_form_b_stats.command_buffers_completed == 2 &&
+                common_form_b_stats.command_buffer_errors == 0,
+            "common PRIS Form B calls the host once then completes both detached eye chunks");
     }
 
     bool detached_all_eye_slots = true;

@@ -233,6 +233,30 @@ bool prison_jak_animator_body_matches(
          std::memcmp(transfer.data + 44, plan.source_padding.data() + 12, 4) == 0;
 }
 
+bool dark_jak_animator_body_matches(
+    const DmaTransfer& transfer,
+    const metal_renderer::Jak2CommonPrisDarkJakAnimatorPlan& plan) {
+  if (!transfer.data ||
+      transfer.size_bytes != metal_renderer::kJak2CommonPrisDarkJakAnimatorBodyBytes) {
+    return false;
+  }
+  float morph = 0.f;
+  std::memcpy(&morph, transfer.data, sizeof(morph));
+  if (!std::isfinite(morph) || morph < 0.f || morph > 1.f ||
+      std::memcmp(&morph, &plan.morph, sizeof(morph)) != 0 ||
+      std::memcmp(transfer.data + 4, plan.source_padding.data(), plan.source_padding.size()) != 0) {
+    return false;
+  }
+  for (std::size_t i = 0; i < plan.destination_tbps.size(); ++i) {
+    u32 tbp = 0;
+    std::memcpy(&tbp, transfer.data + 16 + i * sizeof(tbp), sizeof(tbp));
+    if (tbp != plan.destination_tbps[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 void MetalJak2PrisEyeBucketRenderer::render(DmaFollower& dma,
@@ -329,6 +353,123 @@ void MetalJak2PrisEyeBucketRenderer::render(DmaFollower& dma,
           fmt::format("Jak 2 PRIS eye chunk {} renderer execution failed", i));
     }
 
+    const u32 linker_offset = pris_expected_offset(*render_state, bucket_id,
+                                                   chunk.linker_relative_tag_offset);
+    pris_expect_offset(dma, linker_offset - (16 + 8 * 16 + 16 + 2 * 16),
+                       "chunk terminal qwc8");
+    pris_take(dma, DmaTag::Kind::CNT, 8, VifCode::Kind::FLUSHA, 0,
+              VifCode::Kind::DIRECT, 8, "chunk terminal qwc8");
+    pris_expect_offset(dma, linker_offset - (16 + 2 * 16), "chunk trailing qwc2");
+    pris_take(dma, DmaTag::Kind::CNT, 2, VifCode::Kind::NOP, 0,
+              VifCode::Kind::DIRECT, 2, "chunk trailing qwc2");
+    pris_expect_offset(dma, linker_offset, "chunk linker");
+    pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+              "chunk linker");
+  }
+
+  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                               plan.direct_reset_relative_tag_offset),
+                     "default reset");
+  pris_take(dma, DmaTag::Kind::CNT, 10, VifCode::Kind::FLUSHA, 0,
+            VifCode::Kind::DIRECT, 10, "default reset");
+  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                               plan.terminal_relative_tag_offset),
+                     "terminal linker");
+  pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+            "terminal linker");
+  pris_expect_offset(dma, render_state->next_bucket, "bucket boundary");
+}
+
+void MetalJak2CommonPrisBucketRenderer::render(DmaFollower& dma,
+                                                MetalSharedRenderState* render_state,
+                                                MetalFrameContext& ctx) {
+  if (!render_state || render_state->version != GameVersion::Jak2 ||
+      !render_state->eye_renderer || !render_state->host_bucket_callback ||
+      !render_state->jak2_common_pris_plan ||
+      static_cast<u32>(m_my_id) != metal_renderer::kJak2CommonPrisTextureUploadBucket) {
+    throw std::runtime_error("Jak 2 common PRIS renderer dispatch is incomplete");
+  }
+  const u32 bucket_id = static_cast<u32>(m_my_id);
+  const auto& plan = *render_state->jak2_common_pris_plan;
+  if (plan.bucket_id != bucket_id) {
+    throw std::runtime_error("Jak 2 common PRIS renderer received the wrong copied plan");
+  }
+  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id, 0), "bucket entry");
+  render_state->host_bucket_callback(render_state->host_bucket_context, bucket_id);
+
+  if (!plan.present) {
+    pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+              "absent terminal");
+    pris_expect_offset(dma, render_state->next_bucket, "absent boundary");
+    return;
+  }
+
+  pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+            "opening linker");
+  const auto descriptor =
+      pris_take(dma, DmaTag::Kind::CNT, 1, VifCode::Kind::PC_PORT, 0,
+                VifCode::Kind::NOP, 3, "ordinary descriptor");
+  u64 page_offset = 0;
+  s64 mode = 0;
+  std::memcpy(&page_offset, descriptor.data, sizeof(page_offset));
+  std::memcpy(&mode, descriptor.data + sizeof(page_offset), sizeof(mode));
+  if (page_offset != plan.ordinary.page_offset || mode != plan.ordinary.mode) {
+    throw std::runtime_error("Jak 2 common PRIS ordinary descriptor changed after preflight");
+  }
+  pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+            "ordinary linker");
+
+  const auto& animator = plan.dark_jak_animator;
+  if (animator.semantic_fingerprint == 0) {
+    throw std::runtime_error("Jak 2 common PRIS Dark Jak animator is not fingerprinted");
+  }
+  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                               animator.start_relative_tag_offset),
+                     "Dark Jak animator start");
+  pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::PC_PORT,
+            metal_renderer::kJak2PrisPrisonJakAnimatorStartOpcode, VifCode::Kind::NOP, 0,
+            "Dark Jak animator start");
+  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                               animator.body_relative_tag_offset),
+                     "Dark Jak animator body");
+  const auto body = pris_take(
+      dma, DmaTag::Kind::CNT, metal_renderer::kJak2CommonPrisDarkJakAnimatorBodyBytes / 16,
+      VifCode::Kind::PC_PORT, metal_renderer::kJak2CommonPrisDarkJakAnimatorOpcode,
+      VifCode::Kind::NOP, 0, "Dark Jak animator body");
+  if (!dark_jak_animator_body_matches(body, animator)) {
+    throw std::runtime_error("Jak 2 common PRIS Dark Jak animator changed after preflight");
+  }
+  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                               animator.finish_relative_tag_offset),
+                     "Dark Jak animator finish");
+  pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::PC_PORT,
+            metal_renderer::kJak2PrisPrisonJakAnimatorFinishOpcode,
+            VifCode::Kind::NOP, 0, "Dark Jak animator finish");
+  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                               animator.linker_relative_tag_offset),
+                     "Dark Jak animator linker");
+  pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+            "Dark Jak animator linker");
+
+  for (std::size_t i = 0; i < plan.chunk_count; ++i) {
+    const auto& chunk = plan.chunks[i];
+    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                                 chunk.start_relative_tag_offset),
+                       "chunk start");
+    const auto before = render_state->eye_renderer->stats();
+    render_state->eye_renderer->render_from_texture_bucket(dma, render_state, ctx);
+    const auto after = render_state->eye_renderer->stats();
+    if (after.eyes != before.eyes + 2 || after.draw_calls != before.draw_calls + 8 ||
+        after.triangles != before.triangles + 16 ||
+        after.missing_textures != before.missing_textures ||
+        after.command_buffers_committed != before.command_buffers_committed + 1 ||
+        after.command_buffers_completed != before.command_buffers_completed + 1 ||
+        after.unexpected_dma != before.unexpected_dma ||
+        after.duplicate_slot_writes != before.duplicate_slot_writes ||
+        after.command_buffer_errors != before.command_buffer_errors) {
+      throw std::runtime_error(
+          fmt::format("Jak 2 common PRIS eye chunk {} renderer execution failed", i));
+    }
     const u32 linker_offset = pris_expected_offset(*render_state, bucket_id,
                                                    chunk.linker_relative_tag_offset);
     pris_expect_offset(dma, linker_offset - (16 + 8 * 16 + 16 + 2 * 16),

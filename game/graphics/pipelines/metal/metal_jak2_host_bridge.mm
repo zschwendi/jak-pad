@@ -22,6 +22,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_dark_jak_clut_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_prison_clut_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_executor.h"
@@ -47,6 +48,7 @@ struct goal_jak2_metal_host {
   std::unique_ptr<metal_renderer::Jak2Bucket4MixedExecutor> bucket4_mixed_executor;
   std::unique_ptr<metal_renderer::Jak2Opcode27SkullGemExecutor> skull_gem_executor;
   std::unique_ptr<metal_renderer::Jak2PrisonClutExecutor> prison_clut_executor;
+  std::unique_ptr<metal_renderer::Jak2DarkJakClutExecutor> dark_jak_clut_executor;
   std::unique_ptr<metal_renderer::Jak2RawImageUploadExecutor> raw_image_upload_executor;
   FixedChunkDmaCopier copier{EE_MAIN_MEM_SIZE};
   goal_gfx_host callbacks = {};
@@ -102,7 +104,8 @@ bool jak2_metal_host_policy_table_is_audited() {
         descriptor.behavior != Jak2MetalBucketBehavior::Generic2 &&
         descriptor.behavior != Jak2MetalBucketBehavior::OceanMidFar &&
         descriptor.behavior != Jak2MetalBucketBehavior::OceanNear &&
-        descriptor.behavior != Jak2MetalBucketBehavior::PrisEye) {
+        descriptor.behavior != Jak2MetalBucketBehavior::PrisEye &&
+        descriptor.behavior != Jak2MetalBucketBehavior::CommonPris) {
       return false;
     }
   }
@@ -136,6 +139,9 @@ void merge_animated_texture_slots(goal_jak2_metal_host* host) {
   }
   if (host->prison_clut_executor) {
     host->prison_clut_executor->merge_animated_texture_slots(host->animated_texture_slots);
+  }
+  if (host->dark_jak_clut_executor) {
+    host->dark_jak_clut_executor->merge_animated_texture_slots(host->animated_texture_slots);
   }
 }
 
@@ -672,6 +678,7 @@ struct Jak2TextureUploadDispatch {
   const Jak2ShrubTextureUploadPlans* shrub_plans = nullptr;
   const Jak2AlphaTextureUploadPlans* alpha_plans = nullptr;
   const Jak2PrisEyeTextureUploadPlans* pris_eye_plans = nullptr;
+  const metal_renderer::Jak2CommonPrisTextureUploadPlan* common_pris_plan = nullptr;
   const Jak2WaterTextureUploadPlans* water_plans = nullptr;
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
   const metal_renderer::Jak2SpriteTextureUploadPlan* sprite_plan = nullptr;
@@ -682,16 +689,49 @@ struct Jak2TextureUploadDispatch {
   const std::array<std::optional<metal_renderer::Jak2PrisonClutExecutor::Prepared>,
                    metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
       prison_clut_prepared = nullptr;
+  const metal_renderer::Jak2DarkJakClutExecutor::Prepared* dark_jak_clut_prepared = nullptr;
   const u8* live_ee_memory = nullptr;
   bool* host_texture_mutated = nullptr;
   bool* sprite_callback_executed = nullptr;
   bool* raw_image_callback_executed = nullptr;
+  bool* common_pris_callback_executed = nullptr;
   std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
       pris_eye_callbacks_executed = nullptr;
 };
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  if (bucket_id == metal_renderer::kJak2CommonPrisTextureUploadBucket) {
+    if (!dispatch->common_pris_plan || !dispatch->common_pris_callback_executed) {
+      throw std::runtime_error("Jak 2 common PRIS texture dispatch is incomplete");
+    }
+    if (*dispatch->common_pris_callback_executed) {
+      throw std::runtime_error("Jak 2 common PRIS bucket callback repeated");
+    }
+    *dispatch->common_pris_callback_executed = true;
+    const auto& plan = *dispatch->common_pris_plan;
+    if (plan.bucket_id != bucket_id) {
+      throw std::runtime_error("Jak 2 common PRIS texture dispatch order is inconsistent");
+    }
+    if (!plan.present) {
+      return;
+    }
+    if (!dispatch->dark_jak_clut_prepared || !dispatch->host->dark_jak_clut_executor) {
+      throw std::runtime_error("Jak 2 Dark Jak CLUT dispatch is incomplete");
+    }
+    execute_ordinary_texture_upload_or_throw(
+        dispatch->host, plan.ordinary, dispatch->live_ee_memory,
+        &dispatch->host->metrics.common_pris_texture_upload.executions,
+        "Jak 2 common PRIS ordinary texture upload", dispatch->host_texture_mutated);
+    if (!dispatch->host->dark_jak_clut_executor->publish(
+            *dispatch->dark_jak_clut_prepared)) {
+      throw std::runtime_error(
+          std::string("Jak 2 Dark Jak CLUT publication failed: ") +
+          dispatch->host->dark_jak_clut_executor->last_error());
+    }
+    merge_animated_texture_slots(dispatch->host);
+    return;
+  }
   const auto pris = std::find(metal_renderer::kJak2PrisTextureUploadBuckets.begin(),
                               metal_renderer::kJak2PrisTextureUploadBuckets.end(), bucket_id);
   if (pris != metal_renderer::kJak2PrisTextureUploadBuckets.end()) {
@@ -1097,13 +1137,17 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id);
       record_texture_upload_metrics(&host->metrics.pris2_bucket_captures[i], bucket_id, capture);
     }
-    const auto common_pris_texture_capture =
-        metal_renderer::capture_jak2_tfrag_texture_upload(
-            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
-            metal_renderer::kJak2CommonPrisTextureUploadBucket);
+    metal_renderer::Jak2CommonTfragTextureUploadCapture common_pris_texture_capture;
+    const auto live_common_pris_plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &common_pris_texture_capture);
     record_texture_upload_metrics(&host->metrics.common_pris_texture_upload,
                                   metal_renderer::kJak2CommonPrisTextureUploadBucket,
                                   common_pris_texture_capture);
+    if (!live_common_pris_plan) {
+      record_failure(host, "Jak 2 common PRIS texture plan rejected bucket 220 DMA");
+      return;
+    }
     Jak2WaterTextureUploadPlans water_texture_plans;
     static_assert(GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT ==
                   metal_renderer::kJak2WaterTextureUploadBuckets.size());
@@ -1188,6 +1232,17 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
+    const auto copied_common_pris_plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+        copied.data.data(), copied.data.size(), copied.start_offset,
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+    if (!copied_common_pris_plan ||
+        !metal_renderer::jak2_common_pris_texture_upload_plans_match(
+            *live_common_pris_plan, *copied_common_pris_plan)) {
+      record_send_chain_failure(
+          host, "Jak 2 copied common PRIS texture plan did not match live bucket 220", false);
+      return;
+    }
+
     Jak2PrisEyeTextureUploadPlans copied_pris_eye_plans;
     for (std::size_t i = 0; i < metal_renderer::kJak2PrisTextureUploadBuckets.size(); ++i) {
       const u32 bucket_id = metal_renderer::kJak2PrisTextureUploadBuckets[i];
@@ -1250,6 +1305,23 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       copy_prison_clut_metrics(host);
     }
 
+    metal_renderer::Jak2DarkJakClutExecutor::Prepared dark_jak_clut_prepared;
+    if (copied_common_pris_plan->present &&
+        (!host->common_level || !host->common_level->level ||
+         !host->dark_jak_clut_executor ||
+         !host->dark_jak_clut_executor->prepare(copied_common_pris_plan->dark_jak_animator,
+                                                *host->common_level->level,
+                                                &dark_jak_clut_prepared))) {
+      const char* detail =
+          !host->common_level || !host->common_level->level
+              ? "common level art is unavailable"
+              : host->dark_jak_clut_executor ? host->dark_jak_clut_executor->last_error()
+                                             : "executor is unavailable";
+      record_failure(host,
+                     (std::string("Jak 2 Dark Jak CLUT preparation failed: ") + detail).c_str());
+      return;
+    }
+
     if (!metal_renderer::copied_jak2_raw_image_upload_markers_match_plan(
             copied.data.data(), copied.data.size(), copied.start_offset,
             raw_image_plan->present)) {
@@ -1309,6 +1381,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
 
     bool sprite_callback_executed = false;
     bool raw_image_callback_executed = false;
+    bool common_pris_callback_executed = false;
     std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>
         pris_eye_callbacks_executed = {};
     host->metrics.last_pris_eye_dispatches = 0;
@@ -1321,6 +1394,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &shrub_texture_plans,
         &alpha_texture_plans,
         &copied_pris_eye_plans,
+        &*copied_common_pris_plan,
         &water_texture_plans,
         &*common_tfrag_texture_plan,
         &*sprite_texture_plan,
@@ -1328,10 +1402,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         security_plan ? &security_prepared : nullptr,
         &prison_clut_prepared,
+        copied_common_pris_plan->present ? &dark_jak_clut_prepared : nullptr,
         static_cast<const u8*>(ee_base),
         &host_texture_mutated,
         &sprite_callback_executed,
         &raw_image_callback_executed,
+        &common_pris_callback_executed,
         &pris_eye_callbacks_executed};
     auto render_options = host->options;
     merge_animated_texture_slots(host);
@@ -1341,6 +1417,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.host_bucket_callback = execute_planned_texture_upload;
     render_options.jak2_pris_eye_plans = copied_pris_eye_plans.data();
     render_options.jak2_pris_eye_plan_count = copied_pris_eye_plans.size();
+    render_options.jak2_common_pris_plan = &*copied_common_pris_plan;
     const auto renderer_before = host->renderer.chain_stats();
     const bool acquired = host->renderer.render_chain_frame(
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
@@ -1352,7 +1429,9 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       expected_pris_eye_chunks += plan.chunk_count;
       expected_pris_eye_present_dispatches += plan.present;
     }
-    if (!std::all_of(pris_eye_callbacks_executed.begin(), pris_eye_callbacks_executed.end(),
+    expected_pris_eye_chunks += copied_common_pris_plan->chunk_count;
+    if (!common_pris_callback_executed ||
+        !std::all_of(pris_eye_callbacks_executed.begin(), pris_eye_callbacks_executed.end(),
                      [](bool executed) { return executed; }) ||
         host->metrics.last_pris_eye_dispatches != copied_pris_eye_plans.size() ||
         host->metrics.last_pris_eye_present_dispatches !=
@@ -1576,6 +1655,8 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
       std::make_unique<metal_renderer::Jak2Opcode27SkullGemExecutor>(
           host->renderer.device(), host->renderer.queue(), &host->textures);
   host->prison_clut_executor = std::make_unique<metal_renderer::Jak2PrisonClutExecutor>(
+      host->renderer.device(), host->renderer.queue());
+  host->dark_jak_clut_executor = std::make_unique<metal_renderer::Jak2DarkJakClutExecutor>(
       host->renderer.device(), host->renderer.queue());
   host->animated_texture_slots.assign(jak2_animated_texture_slots().size(), 0);
   host->raw_image_upload_executor =

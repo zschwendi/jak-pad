@@ -822,6 +822,32 @@ int main() {
               combined_anim_slots.eye_placeholder_draws == 0,
           "Merc Stats::add aggregates animated slots without changing eye telemetry");
 
+    std::array<u64, kDiagnosticAnimTextureIds.size()> common_pris_handles = {};
+    std::vector<u64> common_pris_slots(kPrisonAnimSlotCount, 0);
+    bool common_pris_slots_resolve_without_placeholders = true;
+    for (std::size_t i = 0; i < common_pris_handles.size(); ++i) {
+      std::array<u32, 16 * 16> pixels = {};
+      pixels.fill(rgba(static_cast<u8>(32 + i * 40), static_cast<u8>(64 + i * 24),
+                       static_cast<u8>(192 - i * 32), 255));
+      common_pris_handles[i] = metal_upload_texture_rgba8(
+          device, queue, reinterpret_cast<const u8*>(pixels.data()), 16, 16);
+      common_pris_slots[i] = common_pris_handles[i];
+      auto memory = make_source_chain(kDiagnosticAnimModelNames[i]);
+      const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 &common_pris_renderer, &memory, routed_frame++, nullptr,
+                                 &common_pris_slots);
+      common_pris_slots_resolve_without_placeholders &=
+          common_pris_handles[i] != 0 && result.completed && result.stats.anim_slot_draws == 1 &&
+          result.stats.anim_slot_placeholder_draws == 0 && result.stats.missing_textures == 0 &&
+          result.stats.anim_slot_draws_by_slot[i] == 1 &&
+          result.stats.anim_slot_placeholder_draws_by_slot[i] == 0;
+    }
+    check(common_pris_slots_resolve_without_placeholders,
+          "common PRIS animated slots 0-3 produce zero Merc placeholder draws");
+    for (const u64 handle : common_pris_handles) {
+      metal_texture_release(handle);
+    }
+
     std::vector<u64> diagnostic_slots(kDiagnosticAnimTextureIds.size(), 0);
     MetalMerc2::Stats combined_diagnostic_slots;
     MetalMerc2::Stats first_diagnostic_slot;

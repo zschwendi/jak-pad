@@ -357,10 +357,25 @@ std::vector<u8> make_common_pris_fixture(s64 mode = -1) {
   put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
   put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
   put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(mode));
-  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
-  put_tag(&packet, kAnimatorOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirectVif | 2);
-  std::fill_n(packet.begin() + kAnimatorOffset + 16, 32, 0x41);
-  put_tag(&packet, kAnimatorOffset + 48, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0,
+          kCommonPrisAnimatorOffset, 0, 0);
+  put_tag(&packet, kCommonPrisAnimatorOffset, DmaTag::Kind::CNT, 0, 0,
+          kPcPortVif | 12, 0);
+  put_tag(&packet, kCommonPrisAnimatorOffset + 16, DmaTag::Kind::CNT, 2, 0,
+          kPcPortVif | metal_renderer::kJak2CommonPrisDarkJakAnimatorOpcode, 0);
+  put_float(&packet, kCommonPrisAnimatorOffset + 32, 0.5f);
+  for (u32 i = 0; i < 12; ++i) {
+    packet[kCommonPrisAnimatorOffset + 36 + i] = static_cast<u8>(0xa0 + i);
+  }
+  constexpr std::array<u32, metal_renderer::kJak2CommonPrisDarkJakAnimatorTbpCount> kTbps = {
+      0x1200, 0x1210, 0x1220, 0x1230};
+  for (std::size_t i = 0; i < kTbps.size(); ++i) {
+    put_u32(&packet, kCommonPrisAnimatorOffset + 48 + static_cast<u32>(i) * 4, kTbps[i]);
+  }
+  put_tag(&packet, kCommonPrisAnimatorOffset + 64, DmaTag::Kind::CNT, 0, 0,
+          kPcPortVif | 13, 0);
+  put_tag(&packet, kCommonPrisAnimatorOffset + 80, DmaTag::Kind::NEXT, 0,
+          kDirectSetupOffset, 0, 0);
   put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
           static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
   std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
@@ -370,32 +385,7 @@ std::vector<u8> make_common_pris_fixture(s64 mode = -1) {
 }
 
 std::vector<u8> make_common_pris_opcode22_capture_fixture() {
-  constexpr u32 bucket_id = metal_renderer::kJak2CommonPrisTextureUploadBucket;
-  std::vector<u8> packet(kMemorySize);
-  const u32 end_offset = bucket_offset(bucket_id) + 16;
-  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
-  put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
-  put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
-  put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(-1));
-  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
-  put_tag(&packet, kAnimatorOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirectVif | 2);
-  std::fill_n(packet.begin() + kAnimatorOffset + 16, 32, 0x41);
-  put_tag(&packet, kAnimatorOffset + 48, DmaTag::Kind::NEXT, 0,
-          kCommonPrisAnimatorOffset, 0, 0);
-  put_tag(&packet, kCommonPrisAnimatorOffset, DmaTag::Kind::CNT, 0, 0,
-          kPcPortVif | 12, 0);
-  put_tag(&packet, kCommonPrisAnimatorOffset + 16, DmaTag::Kind::CNT, 2, 0,
-          kPcPortVif | 22, 0);
-  std::fill_n(packet.begin() + kCommonPrisAnimatorOffset + 32, 32, 0x72);
-  put_tag(&packet, kCommonPrisAnimatorOffset + 64, DmaTag::Kind::CNT, 0, 0,
-          kPcPortVif | 13, 0);
-  put_tag(&packet, kCommonPrisAnimatorOffset + 80, DmaTag::Kind::NEXT, 0,
-          kDirectSetupOffset, 0, 0);
-  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
-          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
-  std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
-  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
-  return packet;
+  return make_common_pris_fixture();
 }
 
 struct EyeChunkSpec {
@@ -542,6 +532,20 @@ PrisEyeFixture make_pris_eye_fixture(u32 bucket_id,
   put_tag(&fixture.packet, direct_offset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
   fixture.packet[kEyePageOffset + 8] = 0x44;
   return fixture;
+}
+
+std::vector<u8> make_common_pris_combined_fixture() {
+  auto packet = make_common_pris_fixture();
+  constexpr u32 bucket_id = metal_renderer::kJak2CommonPrisTextureUploadBucket;
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, kCommonPrisAnimatorOffset + 80, DmaTag::Kind::NEXT, 0,
+          kEyeFirstOffset, 0, 0);
+  u32 linker = put_different_eyes_chunk(&packet, kEyeFirstOffset, {false, 0});
+  put_tag(&packet, linker, DmaTag::Kind::NEXT, 0, kEyeSecondOffset, 0, 0);
+  linker = put_different_eyes_chunk(&packet, kEyeSecondOffset, {false, 1});
+  put_tag(&packet, linker, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  return packet;
 }
 
 void put_animator_array(std::vector<u8>* packet,
@@ -1262,11 +1266,67 @@ void test_common_pris_execution_plan() {
       packet.data(), packet.size(), kChainOffset, packet.data(), packet.size(), &capture);
   check(plan.has_value() && plan->present &&
             plan->ordinary.page_offset == kTexturePageOffset && plan->ordinary.mode == -1 &&
-            capture.valid && capture.transfer_count == 7 &&
+            plan->dark_jak_animator.morph == 0.5f &&
+            plan->dark_jak_animator.destination_tbps ==
+                std::array<u32, 4>{0x1200, 0x1210, 0x1220, 0x1230} &&
+            plan->chunk_count == 0 && capture.valid && capture.transfer_count == 9 &&
             capture.total_payload_bytes == 208 && capture.inert_transfers == 4 &&
-            capture.ordinary_descriptors == 1 && capture.gs_setup_transfers == 1 &&
-            capture.direct_setup_transfers == 1 && capture.other_transfers == 0,
-        "common PRIS owns the exact observed descriptor/GS/reset envelope");
+            capture.ordinary_descriptors == 1 && capture.gs_setup_transfers == 0 &&
+            capture.direct_setup_transfers == 1 && capture.animator_arrays == 1 &&
+            capture.animator_body_transfers == 1 && capture.animator_payload_bytes == 32 &&
+            capture.opcode_counts[12] == 1 && capture.opcode_counts[22] == 1 &&
+            capture.opcode_counts[13] == 1 && capture.eye_markers == 0 &&
+            capture.other_transfers == 0,
+        "common PRIS owns the exact nine-transfer Dark Jak form");
+
+  auto copied_packet = make_common_pris_fixture();
+  std::copy_n(packet.begin() + kTexturePageOffset,
+              metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes,
+              copied_packet.begin() + kTexturePageOffset);
+  const auto copied_plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+      copied_packet.data(), copied_packet.size(), kChainOffset, copied_packet.data(),
+      copied_packet.size());
+  check(copied_plan.has_value() &&
+            metal_renderer::jak2_common_pris_texture_upload_plans_match(*plan, *copied_plan),
+        "independently reparsed common PRIS plans match semantically");
+
+  copied_packet[kCommonPrisAnimatorOffset + 48] ^= 1;
+  const auto changed_plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+      copied_packet.data(), copied_packet.size(), kChainOffset, copied_packet.data(),
+      copied_packet.size());
+  check(changed_plan.has_value() &&
+            !metal_renderer::jak2_common_pris_texture_upload_plans_match(*plan, *changed_plan),
+        "a copied opcode-22 payload mutation fails the semantic equality barrier");
+
+  copied_packet = make_common_pris_fixture();
+  copied_packet[kDirectSetupOffset + 16] ^= 1;
+  const auto changed_reset_plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+      copied_packet.data(), copied_packet.size(), kChainOffset, copied_packet.data(),
+      copied_packet.size());
+  check(changed_reset_plan.has_value() &&
+            !metal_renderer::jak2_common_pris_texture_upload_plans_match(
+                *plan, *changed_reset_plan),
+        "a copied dynamic 160-byte reset mutation fails the semantic equality barrier");
+
+  packet = make_common_pris_combined_fixture();
+  const auto combined = metal_renderer::plan_jak2_common_pris_texture_upload(
+      packet.data(), packet.size(), kChainOffset, packet.data(), packet.size(), &capture);
+  check(combined.has_value() && combined->present && combined->chunk_count == 2 &&
+            combined->eye_slot_mask != 0 && capture.transfer_count == 63 &&
+            capture.total_payload_bytes == 3920 && capture.inert_transfers == 6 &&
+            capture.ordinary_descriptors == 1 && capture.direct_setup_transfers == 1 &&
+            capture.gs_setup_transfers == 22 && capture.animator_arrays == 1 &&
+            capture.animator_body_transfers == 1 && capture.animator_payload_bytes == 32 &&
+            capture.opcode_counts[12] == 1 && capture.opcode_counts[22] == 1 &&
+            capture.opcode_counts[13] == 1 && capture.eye_markers == 4 &&
+            capture.other_transfers == 26,
+        "common PRIS owns the exact 63-transfer Dark Jak plus two-eye form");
+
+  packet[kEyeSecondOffset + 24] ^= 1;
+  check(!metal_renderer::plan_jak2_common_pris_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
+             .has_value(),
+        "a malformed combined eye body fails before any execution plan is returned");
 
   packet = make_empty_fixture(metal_renderer::kJak2CommonPrisTextureUploadBucket);
   const auto absent = metal_renderer::plan_jak2_common_pris_texture_upload(
@@ -1281,11 +1341,11 @@ void test_common_pris_execution_plan() {
         "common PRIS rejects an unobserved upload mode");
 
   packet = make_common_pris_fixture();
-  put_u32(&packet, kAnimatorOffset + 12, kDirectVif | 3);
+  put_u32(&packet, kCommonPrisAnimatorOffset + 12, kDirectVif | 3);
   check(!metal_renderer::plan_jak2_common_pris_texture_upload(
              packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
              .has_value(),
-        "common PRIS rejects a non-source GS setup length");
+        "common PRIS rejects a non-source animator start");
 }
 
 void test_common_pris_opcode22_capture() {
@@ -1293,15 +1353,15 @@ void test_common_pris_opcode22_capture() {
       capture(make_common_pris_opcode22_capture_fixture(),
               metal_renderer::kJak2CommonPrisTextureUploadBucket);
   check(result.valid && result.present &&
-            result.classification == Classification::EyeOrOther &&
-            result.transfer_count == 11 && result.total_payload_bytes == 240 &&
-            result.inert_transfers == 5 && result.ordinary_descriptors == 1 &&
-            result.gs_setup_transfers == 1 && result.direct_setup_transfers == 1 &&
+            result.classification == Classification::OrdinaryAndAnimator &&
+            result.transfer_count == 9 && result.total_payload_bytes == 208 &&
+            result.inert_transfers == 4 && result.ordinary_descriptors == 1 &&
+            result.gs_setup_transfers == 0 && result.direct_setup_transfers == 1 &&
             result.animator_arrays == 1 && result.animator_body_transfers == 1 &&
             result.animator_payload_bytes == 32 && result.opcode_counts[12] == 1 &&
             result.opcode_counts[13] == 1 && result.opcode_counts[22] == 1 &&
             result.other_transfers == 0 && result.malformed_transfers == 0,
-        "common PRIS capture exposes the predicted 11-transfer/240-byte opcode-22 grammar");
+        "common PRIS capture exposes the live nine-transfer/208-byte opcode-22 grammar");
 }
 
 void test_normal_tfrag_execution_plan() {

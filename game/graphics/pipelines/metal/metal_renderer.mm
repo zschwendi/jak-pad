@@ -716,6 +716,16 @@ void MetalRenderer::init_bucket_renderers_jak2() {
         m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
             "jak2-pris-eye-unavailable", descriptor.id);
       }
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::CommonPris) {
+      ASSERT(bucket_id == metal_renderer::kJak2CommonPrisTextureUploadBucket);
+      ASSERT(batch_size == 0);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalJak2CommonPrisBucketRenderer>(
+            "jak2-common-pris", descriptor.id);
+      } else {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+            "jak2-common-pris-unavailable", descriptor.id);
+      }
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip) {
       ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
@@ -1211,6 +1221,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.host_bucket_callback = opts.host_bucket_callback;
     m_shared_state.jak2_pris_eye_plans = opts.jak2_pris_eye_plans;
     m_shared_state.jak2_pris_eye_plan_count = opts.jak2_pris_eye_plan_count;
+    m_shared_state.jak2_common_pris_plan = opts.jak2_common_pris_plan;
     struct HostBucketCallbackScope {
       MetalSharedRenderState* state;
       ~HostBucketCallbackScope() {
@@ -1220,6 +1231,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         state->host_bucket_callback = nullptr;
         state->jak2_pris_eye_plans = nullptr;
         state->jak2_pris_eye_plan_count = 0;
+        state->jak2_common_pris_plan = nullptr;
       }
     } host_bucket_callback_scope{&m_shared_state};
 

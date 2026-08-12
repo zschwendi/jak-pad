@@ -10,6 +10,7 @@
 namespace metal_renderer {
 
 constexpr std::size_t kJak2ClutBlendSlotCount = 6;
+constexpr std::size_t kJak2DarkJakClutBlendSlotCount = 4;
 constexpr std::size_t kJak2ClutBlendPaletteEntryCount = 256;
 
 using Jak2ClutBlendRgba = std::array<u8, 4>;
@@ -38,5 +39,10 @@ struct Jak2ClutBlendInput {
 bool blend_jak2_clut_group_cpu(float morph,
                                std::span<const Jak2ClutBlendInput> inputs,
                                std::span<std::vector<u8>> outputs);
+
+/*! Four-output common Dark Jak variant of the same indexed-palette blend. */
+bool blend_jak2_dark_jak_clut_group_cpu(float morph,
+                                        std::span<const Jak2ClutBlendInput> inputs,
+                                        std::span<std::vector<u8>> outputs);
 
 }  // namespace metal_renderer

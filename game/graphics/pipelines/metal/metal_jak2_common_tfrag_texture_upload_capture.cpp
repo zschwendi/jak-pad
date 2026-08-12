@@ -15,6 +15,7 @@ namespace {
 
 constexpr u16 kStartAnimatorArray = kJak2PrisPrisonJakAnimatorStartOpcode;
 constexpr u16 kFinishAnimatorArray = kJak2PrisPrisonJakAnimatorFinishOpcode;
+constexpr u16 kDarkJakOpcode = kJak2CommonPrisDarkJakAnimatorOpcode;
 constexpr u16 kPrisonJakOpcode = kJak2PrisPrisonJakAnimatorOpcode;
 constexpr u16 kSkullGemOpcode = 27;
 constexpr u16 kSecurityOpcode = 30;
@@ -345,6 +346,16 @@ bool metadata_is_prison_jak_body(const Jak2CommonTfragTransferMetadata& transfer
          transfer.vif1_immediate == 0;
 }
 
+bool metadata_is_dark_jak_body(const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) &&
+         transfer.qwc == kJak2CommonPrisDarkJakAnimatorBodyBytes / 16 &&
+         transfer.payload_bytes == kJak2CommonPrisDarkJakAnimatorBodyBytes &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+         transfer.vif0_immediate == kDarkJakOpcode &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif1_immediate == 0;
+}
+
 bool metadata_is_opcode30_security_body(
     const Jak2CommonTfragTransferMetadata& transfer) {
   return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 52 &&
@@ -392,6 +403,19 @@ bool has_exact_prison_jak_counts(const Jak2CommonTfragTextureUploadCapture& capt
     const u32 expected = present &&
                                  (i == kStartAnimatorArray || i == kFinishAnimatorArray ||
                                   i == kPrisonJakOpcode)
+                             ? 1
+                             : 0;
+    if (capture.opcode_counts[i] != expected) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool has_exact_dark_jak_counts(const Jak2CommonTfragTextureUploadCapture& capture) {
+  for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
+    const u32 expected = i == kStartAnimatorArray || i == kFinishAnimatorArray ||
+                                 i == kDarkJakOpcode
                              ? 1
                              : 0;
     if (capture.opcode_counts[i] != expected) {
@@ -1053,6 +1077,64 @@ bool parse_pris_prison_jak_animator(
 
   u64 fingerprint = kFnvOffsetBasis;
   hash_bytes(&fingerprint, payload, kJak2PrisPrisonJakAnimatorBodyBytes);
+  out->semantic_fingerprint = fingerprint;
+  return true;
+}
+
+bool parse_common_pris_dark_jak_animator(
+    const u8* snapshot,
+    std::size_t snapshot_size,
+    u32 chain_offset,
+    const Jak2CommonTfragTextureUploadCapture& capture,
+    u32 start_transfer_index,
+    Jak2CommonPrisDarkJakAnimatorPlan* out) {
+  if (!out || start_transfer_index + 3 >= capture.transfer_count ||
+      !metadata_is_animator_start(capture.transfers[start_transfer_index]) ||
+      !metadata_is_dark_jak_body(capture.transfers[start_transfer_index + 1]) ||
+      !metadata_is_animator_finish(capture.transfers[start_transfer_index + 2]) ||
+      !metadata_is_inert_next(capture.transfers[start_transfer_index + 3]) ||
+      !has_plain_next_tag(snapshot, snapshot_size, chain_offset,
+                          kJak2CommonPrisTextureUploadBucket,
+                          capture.transfers[start_transfer_index + 3])) {
+    return false;
+  }
+
+  const u8* payload = nullptr;
+  if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset,
+                             kJak2CommonPrisTextureUploadBucket,
+                             capture.transfers[start_transfer_index + 1],
+                             kJak2CommonPrisDarkJakAnimatorBodyBytes / 16,
+                             kPcPortVif | kDarkJakOpcode, 0, &payload)) {
+    return false;
+  }
+
+  out->morph = read_unaligned<float>(payload);
+  if (!std::isfinite(out->morph) || out->morph < 0.f || out->morph > 1.f) {
+    return false;
+  }
+  std::memcpy(out->source_padding.data(), payload + 4, out->source_padding.size());
+  for (std::size_t i = 0; i < out->destination_tbps.size(); ++i) {
+    const u32 tbp = read_unaligned<u32>(payload + 16 + i * sizeof(u32));
+    if (tbp != kJak2PrisPrisonJakAnimatorMissingTbp &&
+        tbp >= kJak2PrisPrisonJakAnimatorTbpUpperBound) {
+      return false;
+    }
+    out->destination_tbps[i] = tbp;
+  }
+
+  out->start_transfer_index = start_transfer_index;
+  out->start_relative_tag_offset = capture.transfers[start_transfer_index].relative_tag_offset;
+  out->body_transfer_index = start_transfer_index + 1;
+  out->body_relative_tag_offset = capture.transfers[out->body_transfer_index].relative_tag_offset;
+  out->finish_transfer_index = start_transfer_index + 2;
+  out->finish_relative_tag_offset =
+      capture.transfers[out->finish_transfer_index].relative_tag_offset;
+  out->linker_transfer_index = start_transfer_index + 3;
+  out->linker_relative_tag_offset =
+      capture.transfers[out->linker_transfer_index].relative_tag_offset;
+
+  u64 fingerprint = kFnvOffsetBasis;
+  hash_bytes(&fingerprint, payload, kJak2CommonPrisDarkJakAnimatorBodyBytes);
   out->semantic_fingerprint = fingerprint;
   return true;
 }
@@ -1734,46 +1816,160 @@ std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upl
     return plan;
   }
 
-  const bool exact_envelope =
-      capture.classification == Jak2CommonTfragTextureUploadClass::EyeOrOther &&
-      capture.transfer_count == 7 && capture.total_payload_bytes == 208 &&
-      capture.inert_transfers == 4 && capture.ordinary_descriptors == 1 &&
-      capture.gs_setup_transfers == 1 && capture.direct_setup_transfers == 1 &&
-      capture.animator_arrays == 0 && capture.eye_markers == 0 && capture.other_transfers == 0 &&
-      capture.malformed_transfers == 0 && metadata_is_inert_next(capture.transfers[0]) &&
-      metadata_is_ordinary_descriptor(capture.transfers[1]) &&
-      metadata_is_inert_next(capture.transfers[2]) &&
-      metadata_is_gs_setup(capture.transfers[3]) &&
-      metadata_is_inert_next(capture.transfers[4]) &&
-      metadata_is_direct_setup(capture.transfers[5]) &&
-      metadata_is_inert_next(capture.transfers[6]);
-  if (!exact_envelope) {
+  const bool combined = capture.transfer_count == 63;
+  const std::size_t chunk_count = combined ? 2 : 0;
+  const bool exact_counts =
+      (capture.transfer_count == 9 || combined) &&
+      capture.classification == (combined ? Jak2CommonTfragTextureUploadClass::EyeOrOther
+                                          : Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator) &&
+      capture.total_payload_bytes == (combined ? 3920 : 208) &&
+      capture.inert_transfers == (combined ? 6 : 4) &&
+      capture.ordinary_descriptors == 1 && capture.direct_setup_transfers == 1 &&
+      capture.gs_setup_transfers == (combined ? 22 : 0) &&
+      capture.animator_arrays == 1 && capture.animator_body_transfers == 1 &&
+      capture.animator_payload_bytes == kJak2CommonPrisDarkJakAnimatorBodyBytes &&
+      has_exact_dark_jak_counts(capture) && capture.eye_markers == (combined ? 4 : 0) &&
+      capture.other_transfers == (combined ? 26 : 0) && capture.malformed_transfers == 0;
+  if (!exact_counts || !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size,
+                                            chain_offset, kJak2CommonPrisTextureUploadBucket,
+                                            capture.transfers[0]) ||
+      !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                          kJak2CommonPrisTextureUploadBucket, capture.transfers[2])) {
     return std::nullopt;
   }
 
-  const auto& descriptor = capture.transfers[1];
-  const u64 descriptor_tag_offset =
-      static_cast<u64>(chain_offset) + kJak2CommonPrisTextureUploadBucket * 16 +
-      descriptor.relative_tag_offset;
-  const u64 descriptor_data_offset = descriptor_tag_offset + 16;
-  const std::size_t checked_snapshot_size =
-      std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
-  if (!range_is_valid(descriptor_data_offset, 16, checked_snapshot_size)) {
+  const u8* descriptor_payload = nullptr;
+  if (!get_plain_cnt_payload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                             kJak2CommonPrisTextureUploadBucket, capture.transfers[1], 1,
+                             kPcPortVif, 3, &descriptor_payload)) {
     return std::nullopt;
   }
-  const u64 page_offset = read_unaligned<u64>(dma_packet_snapshot + descriptor_data_offset);
-  const s64 mode =
-      read_unaligned<s64>(dma_packet_snapshot + descriptor_data_offset + sizeof(u64));
+  const u64 page_offset = read_unaligned<u64>(descriptor_payload);
+  const s64 mode = read_unaligned<s64>(descriptor_payload + sizeof(u64));
   if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
     return std::nullopt;
   }
+
+  if (!parse_common_pris_dark_jak_animator(
+          dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, capture, 3,
+          &plan.dark_jak_animator)) {
+    return std::nullopt;
+  }
+
+  plan.chunk_count = chunk_count;
+  u32 start_transfer_index = plan.dark_jak_animator.linker_transfer_index + 1;
+  u32 common_source_fbp = 0;
+  for (std::size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+    u32 source_fbp = 0;
+    auto& chunk = plan.chunks[chunk_index];
+    if (!parse_pris_eye_chunk(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                              kJak2CommonPrisTextureUploadBucket, capture,
+                              start_transfer_index, static_cast<u8>(chunk_index), &chunk,
+                              &source_fbp, nullptr) ||
+        !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                            kJak2CommonPrisTextureUploadBucket,
+                            capture.transfers[chunk.linker_transfer_index]) ||
+        (chunk_index != 0 && source_fbp != common_source_fbp) ||
+        (plan.eye_slot_mask & chunk.eye_slot_mask) != 0) {
+      return std::nullopt;
+    }
+    common_source_fbp = source_fbp;
+    plan.eye_slot_mask |= chunk.eye_slot_mask;
+    start_transfer_index = chunk.linker_transfer_index + 1;
+  }
+
+  plan.direct_reset_transfer_index = start_transfer_index;
+  plan.terminal_transfer_index = start_transfer_index + 1;
+  const u8* ignored_payload = nullptr;
+  if (plan.terminal_transfer_index >= capture.transfer_count ||
+      !get_plain_cnt_payload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                             kJak2CommonPrisTextureUploadBucket,
+                             capture.transfers[plan.direct_reset_transfer_index], 10,
+                             kFlushaVif, kDirectVif | 10, &ignored_payload) ||
+      !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                          kJak2CommonPrisTextureUploadBucket,
+                          capture.transfers[plan.terminal_transfer_index])) {
+    return std::nullopt;
+  }
+  plan.direct_reset_relative_tag_offset =
+      capture.transfers[plan.direct_reset_transfer_index].relative_tag_offset;
+  u64 reset_fingerprint = kFnvOffsetBasis;
+  hash_bytes(&reset_fingerprint, ignored_payload, 160);
+  plan.direct_reset_semantic_fingerprint = reset_fingerprint;
+  plan.terminal_relative_tag_offset =
+      capture.transfers[plan.terminal_transfer_index].relative_tag_offset;
 
   plan.present = true;
   plan.ordinary.page_offset = page_offset;
   plan.ordinary.mode = mode;
   std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
               plan.ordinary.page_header.size());
+
+  u64 fingerprint = kFnvOffsetBasis;
+  hash_bytes(&fingerprint, &plan.bucket_id, sizeof(plan.bucket_id));
+  hash_bytes(&fingerprint, &plan.ordinary.page_offset, sizeof(plan.ordinary.page_offset));
+  hash_bytes(&fingerprint, &plan.ordinary.mode, sizeof(plan.ordinary.mode));
+  hash_bytes(&fingerprint, plan.ordinary.page_header.data(), plan.ordinary.page_header.size());
+  hash_bytes(&fingerprint, &plan.dark_jak_animator.semantic_fingerprint,
+             sizeof(plan.dark_jak_animator.semantic_fingerprint));
+  hash_bytes(&fingerprint, &plan.chunk_count, sizeof(plan.chunk_count));
+  for (std::size_t i = 0; i < plan.chunk_count; ++i) {
+    const auto& chunk = plan.chunks[i];
+    hash_bytes(&fingerprint, &chunk.resolution, sizeof(chunk.resolution));
+    hash_bytes(&fingerprint, &chunk.pair_index, sizeof(chunk.pair_index));
+    hash_bytes(&fingerprint, &chunk.semantic_fingerprint, sizeof(chunk.semantic_fingerprint));
+  }
+  hash_bytes(&fingerprint, &plan.direct_reset_semantic_fingerprint,
+             sizeof(plan.direct_reset_semantic_fingerprint));
+  plan.semantic_fingerprint = fingerprint;
   return plan;
+}
+
+bool jak2_common_pris_texture_upload_plans_match(
+    const Jak2CommonPrisTextureUploadPlan& live,
+    const Jak2CommonPrisTextureUploadPlan& copied) {
+  if (live.bucket_id != copied.bucket_id || live.present != copied.present ||
+      live.chunk_count != copied.chunk_count || live.eye_slot_mask != copied.eye_slot_mask ||
+      live.semantic_fingerprint != copied.semantic_fingerprint) {
+    return false;
+  }
+  if (!live.present) {
+    return true;
+  }
+  if (live.ordinary.page_offset != copied.ordinary.page_offset ||
+      live.ordinary.mode != copied.ordinary.mode ||
+      live.ordinary.page_header != copied.ordinary.page_header ||
+      live.direct_reset_transfer_index != copied.direct_reset_transfer_index ||
+      live.direct_reset_semantic_fingerprint != copied.direct_reset_semantic_fingerprint ||
+      live.terminal_transfer_index != copied.terminal_transfer_index) {
+    return false;
+  }
+  const auto& a = live.dark_jak_animator;
+  const auto& b = copied.dark_jak_animator;
+  if (std::memcmp(&a.morph, &b.morph, sizeof(a.morph)) != 0 ||
+      a.source_padding != b.source_padding || a.destination_tbps != b.destination_tbps ||
+      a.start_transfer_index != b.start_transfer_index ||
+      a.body_transfer_index != b.body_transfer_index ||
+      a.finish_transfer_index != b.finish_transfer_index ||
+      a.linker_transfer_index != b.linker_transfer_index ||
+      a.semantic_fingerprint != b.semantic_fingerprint) {
+    return false;
+  }
+  for (std::size_t i = 0; i < live.chunk_count; ++i) {
+    const auto& live_chunk = live.chunks[i];
+    const auto& copied_chunk = copied.chunks[i];
+    if (live_chunk.resolution != copied_chunk.resolution ||
+        live_chunk.pair_index != copied_chunk.pair_index ||
+        live_chunk.start_transfer_index != copied_chunk.start_transfer_index ||
+        live_chunk.linker_transfer_index != copied_chunk.linker_transfer_index ||
+        live_chunk.transfer_count != copied_chunk.transfer_count ||
+        live_chunk.payload_bytes != copied_chunk.payload_bytes ||
+        live_chunk.eye_slot_mask != copied_chunk.eye_slot_mask ||
+        live_chunk.semantic_fingerprint != copied_chunk.semantic_fingerprint) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::optional<Jak2NormalShrubTextureUploadPlan> plan_jak2_normal_shrub_texture_upload(

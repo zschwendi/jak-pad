@@ -71,7 +71,6 @@ constexpr u32 kDuplicatePrisonClutAnimatorOffset = kChainOffset + 0x16600;
 constexpr u32 kDuplicatePrisonClutDirectOffset = kChainOffset + 0x16700;
 constexpr u32 kCommonPrisBucket = metal_renderer::kJak2CommonPrisTextureUploadBucket;
 constexpr u32 kCommonPrisDescriptorOffset = kChainOffset + 0x16800;
-constexpr u32 kCommonPrisGsSetupOffset = kChainOffset + 0x16900;
 constexpr u32 kCommonPrisAnimatorOffset = kChainOffset + 0x16a00;
 constexpr u32 kCommonPrisDirectOffset = kChainOffset + 0x16b00;
 constexpr std::size_t kGifQwords = 7;
@@ -217,15 +216,17 @@ void make_common_pris_opcode22_capture_chain() {
   std::memcpy(ee + kCommonPrisDescriptorOffset + 16, &kPageOffset, sizeof(kPageOffset));
   std::memcpy(ee + kCommonPrisDescriptorOffset + 24, &kMode, sizeof(kMode));
   put_tag(kCommonPrisDescriptorOffset + 32, DmaTag::Kind::NEXT, 0,
-          kCommonPrisGsSetupOffset);
-  put_tag(kCommonPrisGsSetupOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
-  std::memset(ee + kCommonPrisGsSetupOffset + 16, 0x41, 32);
-  put_tag(kCommonPrisGsSetupOffset + 48, DmaTag::Kind::NEXT, 0,
           kCommonPrisAnimatorOffset);
   put_tag(kCommonPrisAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
   put_tag(kCommonPrisAnimatorOffset + 16, DmaTag::Kind::CNT, 2, 0,
           kPcPort | 22, 0);
-  std::memset(ee + kCommonPrisAnimatorOffset + 32, 0x72, 32);
+  constexpr float kMorph = 0.5f;
+  constexpr std::array<u32, 4> kTbps = {0x1200, 0x1210, 0x1220, 0x1230};
+  std::memcpy(ee + kCommonPrisAnimatorOffset + 32, &kMorph, sizeof(kMorph));
+  for (u32 i = 0; i < 12; ++i) {
+    ee[kCommonPrisAnimatorOffset + 36 + i] = static_cast<u8>(0xa0 + i);
+  }
+  std::memcpy(ee + kCommonPrisAnimatorOffset + 48, kTbps.data(), sizeof(kTbps));
   put_tag(kCommonPrisAnimatorOffset + 64, DmaTag::Kind::CNT, 0, 0,
           kPcPort | 13, 0);
   put_tag(kCommonPrisAnimatorOffset + 80, DmaTag::Kind::NEXT, 0,
@@ -626,6 +627,19 @@ bool write_prison_clut_fr3(const std::filesystem::path& path) {
     level.index_textures.push_back(
         synthetic_prison_index_texture(kNames[slot][2], static_cast<u8>(slot * 8 + 20)));
   }
+  constexpr std::array<std::array<const char*, 3>, 4> kDarkJakNames = {{
+      {"jakbsmall-eyebrow", "jakbsmall-eyebrow-norm", "jakbsmall-eyebrow-dark"},
+      {"jakbsmall-face", "jakbsmall-face-norm", "jakbsmall-face-dark"},
+      {"jakbsmall-finger", "jakbsmall-finger-norm", "jakbsmall-finger-dark"},
+      {"jakbsmall-hair", "jakbsmall-hair-norm", "jakbsmall-hair-dark"},
+  }};
+  for (std::size_t slot = 0; slot < kDarkJakNames.size(); ++slot) {
+    level.index_textures.push_back(synthetic_prison_index_texture(kDarkJakNames[slot][0], 0));
+    level.index_textures.push_back(synthetic_prison_index_texture(
+        kDarkJakNames[slot][1], static_cast<u8>(slot * 8 + 4)));
+    level.index_textures.push_back(synthetic_prison_index_texture(
+        kDarkJakNames[slot][2], static_cast<u8>(slot * 8 + 20)));
+  }
 
   Serializer serializer;
   level.serialize(serializer);
@@ -1025,7 +1039,7 @@ int main() {
         "the host accepts an exact empty host-owned common TFRAG texture bucket");
   check(texture_capture_is_empty(metrics.common_pris_texture_upload, kCommonPrisBucket) &&
             metrics.common_pris_texture_upload.executions == 0,
-        "the host passively records empty common PRIS texture DMA without executing it");
+        "the absent common PRIS callback runs once without upload, CLUT, or eye execution");
   check(metrics.common_tfrag_ordinary_uploads == 0 &&
             metrics.common_tfrag_skull_gem_preparations == 0 &&
             metrics.common_tfrag_skull_gem_publications == 0 &&
@@ -1856,10 +1870,14 @@ int main() {
   goal_jak2_metal_host* common_pris_capture_host = goal_jak2_metal_host_create();
   goal_gfx_host common_pris_capture_callbacks = {};
   check(common_pris_capture_host &&
+            goal_jak2_metal_host_configure_level_art(common_pris_capture_host,
+                                                     prison_directory.c_str()) &&
             goal_jak2_metal_host_copy_gfx_host(common_pris_capture_host,
                                                &common_pris_capture_callbacks),
-        "created a host for passive common PRIS texture capture");
+        "created a configured host for common PRIS texture execution");
+  write_empty_texture_page(kTexturePageOffset, kTexturePageId);
   make_common_pris_opcode22_capture_chain();
+  const std::size_t common_pris_textures_before = metal_texture_live_count();
   common_pris_capture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   goal_jak2_metal_host_metrics common_pris_capture_metrics = {};
   const auto& common_pris = common_pris_capture_metrics.common_pris_texture_upload;
@@ -1869,19 +1887,32 @@ int main() {
             common_pris_capture_metrics.completed_chains == 1 &&
             common_pris_capture_metrics.failed_chains == 0 &&
             common_pris.bucket_id == kCommonPrisBucket && common_pris.captures == 1 &&
-            common_pris.present_captures == 1 && common_pris.executions == 0 &&
+            common_pris.present_captures == 1 && common_pris.executions == 1 &&
             common_pris.classifications[static_cast<std::size_t>(
-                metal_renderer::Jak2CommonTfragTextureUploadClass::EyeOrOther)] == 1 &&
-            common_pris.transfers == 11 && common_pris.payload_bytes == 240 &&
-            common_pris.inert_transfers == 5 && common_pris.ordinary_descriptors == 1 &&
-            common_pris.gs_setup_transfers == 1 && common_pris.direct_setup_transfers == 1 &&
+                metal_renderer::Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator)] == 1 &&
+            common_pris.transfers == 9 && common_pris.payload_bytes == 208 &&
+            common_pris.inert_transfers == 4 && common_pris.ordinary_descriptors == 1 &&
+            common_pris.gs_setup_transfers == 0 && common_pris.direct_setup_transfers == 1 &&
             common_pris.animator_arrays == 1 && common_pris.animator_body_transfers == 1 &&
             common_pris.animator_payload_bytes == 32 && common_pris.opcode_counts[12] == 1 &&
             common_pris.opcode_counts[13] == 1 && common_pris.opcode_counts[22] == 1 &&
             common_pris.other_transfers == 0 && common_pris.malformed_transfers == 0 &&
-            common_pris_capture_metrics.texture_uploads == 0,
-        "common PRIS exposes the exact synthetic opcode-22 envelope with zero executions");
+            common_pris_capture_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == common_pris_textures_before + 4,
+        "common PRIS executes the exact nine-transfer form and publishes four outputs");
+  make_common_pris_opcode22_capture_chain();
+  common_pris_capture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(common_pris_capture_host,
+                                         &common_pris_capture_metrics) &&
+            common_pris_capture_metrics.chains == 2 &&
+            common_pris_capture_metrics.completed_chains == 2 &&
+            common_pris_capture_metrics.failed_chains == 0 &&
+            common_pris_capture_metrics.common_pris_texture_upload.executions == 2 &&
+            metal_texture_live_count() == common_pris_textures_before + 4,
+        "a later common PRIS frame updates the same four stable registry textures");
   goal_jak2_metal_host_destroy(common_pris_capture_host);
+  check(metal_texture_live_count() == initial_texture_count,
+        "common PRIS host teardown releases common art and all four Dark Jak outputs");
 
   goal_jak2_metal_host* replacement = goal_jak2_metal_host_create();
   check(replacement != nullptr, "host ownership can be re-established after destruction");

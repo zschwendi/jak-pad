@@ -35,6 +35,7 @@ class MetalEyeRenderer;
 
 namespace metal_renderer {
 struct Jak2PrisEyeTextureUploadPlan;
+struct Jak2CommonPrisTextureUploadPlan;
 }
 
 using MetalHostBucketCallback = void (*)(void* context, u32 bucket_id);
@@ -102,6 +103,7 @@ struct MetalSharedRenderState {
   MetalHostBucketCallback host_bucket_callback = nullptr;
   const metal_renderer::Jak2PrisEyeTextureUploadPlan* jak2_pris_eye_plans = nullptr;
   std::size_t jak2_pris_eye_plan_count = 0;
+  const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;
   float target_fps = 60.f;
 };
 
@@ -210,6 +212,16 @@ class MetalHostHandledRenderer : public MetalBucketRenderer {
 class MetalJak2PrisEyeBucketRenderer : public MetalBucketRenderer {
  public:
   MetalJak2PrisEyeBucketRenderer(const std::string& name, int my_id)
+      : MetalBucketRenderer(name, my_id) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+};
+
+/*! Executes the independently preflighted common bucket-220 Dark Jak and eye composite. */
+class MetalJak2CommonPrisBucketRenderer : public MetalBucketRenderer {
+ public:
+  MetalJak2CommonPrisBucketRenderer(const std::string& name, int my_id)
       : MetalBucketRenderer(name, my_id) {}
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,

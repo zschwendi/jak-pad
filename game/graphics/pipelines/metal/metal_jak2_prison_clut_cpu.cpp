@@ -38,34 +38,32 @@ bool blend_palette(const Jak2ClutBlendPalette& start,
   return true;
 }
 
-}  // namespace
-
-bool blend_jak2_clut_group_cpu(float morph,
-                               std::span<const Jak2ClutBlendInput> inputs,
-                               std::span<std::vector<u8>> outputs) {
+bool blend_group(float morph,
+                 std::span<const Jak2ClutBlendInput> inputs,
+                 std::span<std::vector<u8>> outputs,
+                 std::size_t expected_count) {
   if (!std::isfinite(morph) || morph < 0.f || morph > 1.f ||
-      inputs.size() != kJak2ClutBlendSlotCount ||
-      outputs.size() != kJak2ClutBlendSlotCount) {
+      inputs.size() != expected_count || outputs.size() != expected_count) {
     return false;
   }
 
-  std::array<std::size_t, kJak2ClutBlendSlotCount> pixel_counts = {};
-  for (std::size_t slot = 0; slot < kJak2ClutBlendSlotCount; ++slot) {
+  std::vector<std::size_t> pixel_counts(expected_count);
+  for (std::size_t slot = 0; slot < expected_count; ++slot) {
     if (!valid_dimensions(inputs[slot].destination, &pixel_counts[slot])) {
       return false;
     }
   }
 
-  std::array<Jak2ClutBlendPalette, kJak2ClutBlendSlotCount> palettes = {};
-  for (std::size_t slot = 0; slot < kJak2ClutBlendSlotCount; ++slot) {
+  std::vector<Jak2ClutBlendPalette> palettes(expected_count);
+  for (std::size_t slot = 0; slot < expected_count; ++slot) {
     if (!blend_palette(inputs[slot].start_palette, inputs[slot].end_palette, morph,
                        &palettes[slot])) {
       return false;
     }
   }
 
-  std::array<std::vector<u8>, kJak2ClutBlendSlotCount> next_outputs;
-  for (std::size_t slot = 0; slot < kJak2ClutBlendSlotCount; ++slot) {
+  std::vector<std::vector<u8>> next_outputs(expected_count);
+  for (std::size_t slot = 0; slot < expected_count; ++slot) {
     next_outputs[slot].resize(pixel_counts[slot] * 4);
     for (std::size_t pixel = 0; pixel < pixel_counts[slot]; ++pixel) {
       const Jak2ClutBlendRgba& color = palettes[slot][inputs[slot].destination.indices[pixel]];
@@ -75,10 +73,24 @@ bool blend_jak2_clut_group_cpu(float morph,
     }
   }
 
-  for (std::size_t slot = 0; slot < kJak2ClutBlendSlotCount; ++slot) {
+  for (std::size_t slot = 0; slot < expected_count; ++slot) {
     outputs[slot] = std::move(next_outputs[slot]);
   }
   return true;
+}
+
+}  // namespace
+
+bool blend_jak2_clut_group_cpu(float morph,
+                               std::span<const Jak2ClutBlendInput> inputs,
+                               std::span<std::vector<u8>> outputs) {
+  return blend_group(morph, inputs, outputs, kJak2ClutBlendSlotCount);
+}
+
+bool blend_jak2_dark_jak_clut_group_cpu(float morph,
+                                        std::span<const Jak2ClutBlendInput> inputs,
+                                        std::span<std::vector<u8>> outputs) {
+  return blend_group(morph, inputs, outputs, kJak2DarkJakClutBlendSlotCount);
 }
 
 }  // namespace metal_renderer

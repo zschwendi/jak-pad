@@ -85,6 +85,7 @@ struct MetalRenderOptions {
   MetalHostBucketCallback host_bucket_callback = nullptr;
   const metal_renderer::Jak2PrisEyeTextureUploadPlan* jak2_pris_eye_plans = nullptr;
   std::size_t jak2_pris_eye_plan_count = 0;
+  const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;
   float target_fps = 60.f;
 };
 
