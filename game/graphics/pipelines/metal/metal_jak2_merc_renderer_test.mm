@@ -38,6 +38,7 @@ constexpr u32 kMercCommonShrubBucket = static_cast<u32>(jak2::BucketId::MERC_LCO
 constexpr u32 kMercShrubBucket = static_cast<u32>(jak2::BucketId::MERC_L0_SHRUB);
 constexpr u32 kMercCommonTfragBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_TFRAG);
 constexpr u32 kMercCommonPrisBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_PRIS);
+constexpr u32 kMercPrisBucket = static_cast<u32>(jak2::BucketId::MERC_L0_PRIS);
 constexpr u32 kOpening = 0x100;
 constexpr u32 kBoundary = 0x200;
 constexpr u32 kSetup = 0x400;
@@ -494,6 +495,8 @@ int main() {
         "merc-lcom-tfrag", static_cast<int>(kMercCommonTfragBucket), shared);
     MetalMercBucketRenderer common_pris_renderer(
         "merc-lcom-pris", static_cast<int>(kMercCommonPrisBucket), shared);
+    MetalMercBucketRenderer pris_renderer("merc-l0-pris", static_cast<int>(kMercPrisBucket),
+                                          shared);
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
@@ -567,15 +570,17 @@ int main() {
     const auto routed_merc = [&policy](u32 bucket_id) {
       return policy.at(bucket_id).behavior == metal_renderer::Jak2MetalBucketBehavior::Merc;
     };
-    check(routed_merc(kMercShrubBucket) && routed_merc(kMercCommonTfragBucket) &&
-              routed_merc(kMercCommonPrisBucket),
-          "the GPU fixtures select the routed SHRUB, common TFRAG, and common PRIS policies");
+    check(routed_merc(kMercShrubBucket) && routed_merc(kMercPrisBucket) &&
+              routed_merc(kMercCommonTfragBucket) && routed_merc(kMercCommonPrisBucket),
+          "the GPU fixtures select the routed SHRUB, per-level PRIS, common TFRAG, and common "
+          "PRIS policies");
     struct RoutedMercFixture {
       const char* category;
       MetalMercBucketRenderer* renderer;
     };
-    const std::array<RoutedMercFixture, 3> routed_fixtures = {{
+    const std::array<RoutedMercFixture, 4> routed_fixtures = {{
         {"per-level SHRUB", &shrub_renderer},
+        {"per-level PRIS", &pris_renderer},
         {"common TFRAG", &common_tfrag_renderer},
         {"common PRIS", &common_pris_renderer},
     }};

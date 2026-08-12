@@ -120,7 +120,7 @@ constexpr Table make_table() {
     generic2(level_bucket(BucketId::GMERC_L0_ALPHA, BucketId::GMERC_L1_ALPHA, level));
 
     defer(level_bucket(BucketId::TEX_L0_PRIS, BucketId::TEX_L1_PRIS, level));
-    defer(level_bucket(BucketId::MERC_L0_PRIS, BucketId::MERC_L1_PRIS, level));
+    merc(level_bucket(BucketId::MERC_L0_PRIS, BucketId::MERC_L1_PRIS, level));
     defer(level_bucket(BucketId::GMERC_L0_PRIS, BucketId::GMERC_L1_PRIS, level));
 
     defer(level_bucket(BucketId::TEX_L0_PRIS2, BucketId::TEX_L1_PRIS2, level));
@@ -196,7 +196,7 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 47);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 41);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 28);
@@ -213,7 +213,7 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTrans) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTransEnvmap) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWater) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWaterEnvmap) == 6);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 15);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 21);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::BlitDisplay) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercAlpha) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercWater) == 7);

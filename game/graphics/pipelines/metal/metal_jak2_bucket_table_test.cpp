@@ -86,7 +86,7 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 47, "47 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 41, "41 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 28,
@@ -109,8 +109,8 @@ int main() {
   check(tie_water == 6, "six water per-level TIE child buckets are implemented by Metal");
   check(tie_water_envmap == 6,
         "six water per-level ETIE child buckets are implemented by Metal");
-  check(merc == 15,
-        "15 normal, shrub, and common PRIS Merc buckets are implemented by Metal");
+  check(merc == 21,
+        "21 normal, shrub, per-level PRIS, and common PRIS Merc buckets are implemented by Metal");
   check(blit_display == 1, "one source-proven BlitDisplays bucket is implemented by Metal");
   check(merc_alpha == 6, "six per-level alpha Merc buckets are implemented by Metal");
   check(merc_water == 7,
@@ -238,6 +238,7 @@ int main() {
         "per-level water GMerc uses Generic2 while its unbound common neighbor stays strict-empty");
   bool source_proven_foreground_families = true;
   bool untyped_prismatic_families_deferred = true;
+  bool per_level_pris_merc_routed = true;
   for (int level = 0; level < jak2::LEVEL_MAX; ++level) {
     source_proven_foreground_families &=
         has_behavior(level_bucket(jak2::BucketId::MERC_L0_TFRAG,
@@ -256,9 +257,6 @@ int main() {
         has_behavior(level_bucket(jak2::BucketId::TEX_L0_PRIS,
                                   jak2::BucketId::TEX_L1_PRIS, level),
                      Behavior::DeferredSkip) &&
-        has_behavior(level_bucket(jak2::BucketId::MERC_L0_PRIS,
-                                  jak2::BucketId::MERC_L1_PRIS, level),
-                     Behavior::DeferredSkip) &&
         has_behavior(level_bucket(jak2::BucketId::GMERC_L0_PRIS,
                                   jak2::BucketId::GMERC_L1_PRIS, level),
                      Behavior::DeferredSkip) &&
@@ -271,11 +269,17 @@ int main() {
         has_behavior(level_bucket(jak2::BucketId::GMERC_L0_PRIS2,
                                   jak2::BucketId::GMERC_L1_PRIS2, level),
                      Behavior::DeferredSkip);
+    per_level_pris_merc_routed &=
+        has_behavior(level_bucket(jak2::BucketId::MERC_L0_PRIS,
+                                  jak2::BucketId::MERC_L1_PRIS, level),
+                     Behavior::Merc);
   }
   check(source_proven_foreground_families,
         "all per-level TFRAG and SHRUB Merc/normal-GMerc families are routed");
+  check(per_level_pris_merc_routed,
+        "all six per-level PRIS Merc draw buckets use the existing Metal Merc grammar");
   check(untyped_prismatic_families_deferred,
-        "all per-level PRIS and PRIS2 texture/draw triples remain deferred together");
+        "per-level PRIS texture/GMerc and every PRIS2 family remain deferred");
   check(has_behavior(jak2::BucketId::MERC_LCOM_TFRAG, Behavior::Merc) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_TFRAG, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::TEX_LCOM_PRIS, Behavior::DeferredSkip) &&
