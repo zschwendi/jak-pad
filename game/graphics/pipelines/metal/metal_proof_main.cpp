@@ -2466,6 +2466,62 @@ void test_tie_envmap_tree_order(const GfxRendererModule* mod,
           "TIE camera B changes the coverage exercised between repeated A frames");
   }
 
+  const auto detailed_camera_stats = metal_renderer::get_chain_stats();
+  const auto detailed_background_stats = metal_renderer::get_background_stats();
+  check(detailed_background_stats.camera_trace_enabled &&
+            detailed_background_stats.camera_packets == 1 &&
+            detailed_background_stats.render_camera_packets == 1 &&
+            detailed_camera_stats.last_camera_packets == 1 &&
+            detailed_camera_stats.last_camera_fingerprint != 0 &&
+            detailed_camera_stats.last_render_camera_fingerprint != 0,
+        "TIE detailed stats observe one producer and render camera packet");
+
+  metal_renderer::set_detailed_frame_stats_enabled(false);
+  metal_renderer::FramePixels frame_a_reduced_stats;
+  const bool read_a_reduced_stats = render_camera(camera_a, true, &frame_a_reduced_stats);
+  const auto reduced_camera_stats = metal_renderer::get_chain_stats();
+  const auto reduced_background_stats = metal_renderer::get_background_stats();
+  check(!reduced_background_stats.camera_trace_enabled &&
+            reduced_background_stats.camera_packets == 0 &&
+            reduced_background_stats.render_camera_packets == 0,
+        "TIE reduced stats skip producer and render camera observations");
+  check(reduced_camera_stats.chains_rendered == detailed_camera_stats.chains_rendered + 1 &&
+            reduced_camera_stats.draw_calls == detailed_camera_stats.draw_calls &&
+            reduced_camera_stats.triangles == detailed_camera_stats.triangles,
+        "TIE reduced stats preserve cheap chain, draw, and triangle counters");
+  check(reduced_camera_stats.last_camera_packets == detailed_camera_stats.last_camera_packets &&
+            reduced_camera_stats.last_camera_fingerprint ==
+                detailed_camera_stats.last_camera_fingerprint &&
+            reduced_camera_stats.last_render_camera_fingerprint ==
+                detailed_camera_stats.last_render_camera_fingerprint &&
+            reduced_camera_stats.packet_camera_mismatches ==
+                detailed_camera_stats.packet_camera_mismatches &&
+            reduced_camera_stats.render_camera_packet_mismatches ==
+                detailed_camera_stats.render_camera_packet_mismatches,
+        "TIE reduced stats leave post-dispatch camera diagnostics untouched");
+  if (read_a_second && read_a_reduced_stats) {
+    check(frame_a_second.width == frame_a_reduced_stats.width &&
+              frame_a_second.height == frame_a_reduced_stats.height &&
+              frame_a_second.rgba == frame_a_reduced_stats.rgba,
+          "TIE reduced stats preserve exact rendered output");
+  }
+
+  metal_renderer::set_detailed_frame_stats_enabled(true);
+  metal_renderer::FramePixels frame_a_detailed_restored;
+  const bool read_a_detailed_restored =
+      render_camera(camera_a, true, &frame_a_detailed_restored);
+  const auto restored_background_stats = metal_renderer::get_background_stats();
+  check(restored_background_stats.camera_trace_enabled &&
+            restored_background_stats.camera_packets == 1 &&
+            restored_background_stats.render_camera_packets == 1,
+        "TIE detailed stats resume camera observations from a clean frame");
+  if (read_a_second && read_a_detailed_restored) {
+    check(frame_a_second.width == frame_a_detailed_restored.width &&
+              frame_a_second.height == frame_a_detailed_restored.height &&
+              frame_a_second.rgba == frame_a_detailed_restored.rgba,
+          "TIE restored detailed stats preserve exact rendered output");
+  }
+
   metal_renderer::set_jak1_tie_envmap_second_pass_enabled(false);
   metal_renderer::FramePixels frame_a_base_only;
   const bool read_a_base_only = render_camera(camera_a, false, &frame_a_base_only);

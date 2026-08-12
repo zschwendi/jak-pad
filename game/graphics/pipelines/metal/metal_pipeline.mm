@@ -896,6 +896,9 @@ BackgroundStats get_background_stats() {
     return out;
   }
   const auto& bg = g_renderer->background_state();
+  out.camera_trace_enabled = bg.camera_trace_enabled;
+  out.camera_packets = bg.camera_trace.packet_count();
+  out.render_camera_packets = bg.render_camera_trace.packet_count();
   out.tfrag_draws = bg.tfrag_draws;
   out.tfrag_tris = bg.tfrag_tris;
   out.tie_draws = bg.tie_draws;

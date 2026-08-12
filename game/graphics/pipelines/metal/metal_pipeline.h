@@ -403,6 +403,9 @@ void unload_all_levels();
 
 // Per-frame background-renderer counters from the last chain frame.
 struct BackgroundStats {
+  bool camera_trace_enabled = false;
+  int camera_packets = 0;
+  int render_camera_packets = 0;
   int tfrag_draws = 0;
   int tfrag_tris = 0;
   int tie_draws = 0;

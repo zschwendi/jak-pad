@@ -133,7 +133,10 @@ void metal_finish_bucket(DmaFollower& dma, const MetalSharedRenderState& state) 
   }
 }
 
-void MetalBackgroundState::reset_frame() {
+void MetalBackgroundState::reset_frame(
+    bool enable_camera_trace,
+    const metal_camera_trace::Snapshot* expected_camera,
+    const metal_camera_trace::RenderSnapshot* expected_render_camera) {
   for (auto& vis : occlusion_vis) {
     vis.valid = false;
   }
@@ -150,13 +153,17 @@ void MetalBackgroundState::reset_frame() {
   missing_textures = 0;
   anim_slot_draws = 0;
   unexpected_dma = 0;
-  camera_trace.reset(nullptr);
-  render_camera_trace.reset();
+  camera_trace_enabled = enable_camera_trace;
+  camera_trace.reset(enable_camera_trace ? expected_camera : nullptr);
+  render_camera_trace.reset(enable_camera_trace ? expected_render_camera : nullptr);
   first_camera_mismatch_bucket.clear();
 }
 
 void MetalBackgroundState::observe_camera(const MetalGoalBackgroundCameraData& camera,
                                           const std::string& bucket) {
+  if (!camera_trace_enabled) {
+    return;
+  }
   const auto snapshot = metal_camera_trace::make_snapshot(camera.camera, &camera.trans);
   const auto observation = camera_trace.observe(snapshot);
   const auto render_snapshot = metal_camera_trace::make_render_snapshot(

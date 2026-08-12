@@ -101,6 +101,10 @@ struct MetalBackgroundState {
   bool use_occlusion_culling = true;
   bool debug_all_visible = false;
 
+  // Camera provenance is diagnostic only. Bucket parsing and the camera data consumed by shaders
+  // remain active when this is false.
+  bool camera_trace_enabled = true;
+
   // per-frame stats, read back by tests
   int tfrag_draws = 0;
   int tfrag_tris = 0;
@@ -123,7 +127,9 @@ struct MetalBackgroundState {
   metal_camera_trace::RenderFrameTrace render_camera_trace;
   std::string first_camera_mismatch_bucket;
 
-  void reset_frame();
+  void reset_frame(bool enable_camera_trace,
+                   const metal_camera_trace::Snapshot* expected_camera = nullptr,
+                   const metal_camera_trace::RenderSnapshot* expected_render_camera = nullptr);
   void observe_camera(const MetalGoalBackgroundCameraData& camera, const std::string& bucket);
 };
 

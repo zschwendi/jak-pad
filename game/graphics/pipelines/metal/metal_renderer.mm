@@ -1085,13 +1085,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     MetalBackgroundState secondary_background;
     MetalBackgroundState* background =
         frame_global_side_effects ? &m_background : &secondary_background;
-    background->reset_frame();
-    background->camera_trace.reset(
-        frame_global_side_effects && opts.expected_camera_valid ? &opts.expected_camera : nullptr);
-    background->render_camera_trace.reset(frame_global_side_effects &&
-                                                  opts.expected_render_camera_valid
-                                              ? &opts.expected_render_camera
-                                              : nullptr);
+    const bool trace_camera = frame_global_side_effects && m_detailed_frame_stats_enabled;
+    background->reset_frame(
+        trace_camera, trace_camera && opts.expected_camera_valid ? &opts.expected_camera : nullptr,
+        trace_camera && opts.expected_render_camera_valid ? &opts.expected_render_camera : nullptr);
     if (frame_global_side_effects && m_shared_state.eye_renderer) {
       m_shared_state.eye_renderer->start_frame();
     }
@@ -1178,6 +1175,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       m_chain_stats.last_host_tick_id = opts.host_tick_id;
       m_chain_stats.last_chain_ordinal = opts.chain_ordinal;
       m_chain_stats.last_engine_frame_id = opts.engine_frame_id;
+    }
+    if (frame_global_side_effects && m_detailed_frame_stats_enabled) {
       m_chain_stats.last_camera_fingerprint = m_background.camera_trace.first_packet_fingerprint();
       m_chain_stats.last_camera_packets = m_background.camera_trace.packet_count();
       m_chain_stats.last_live_camera_mismatches = m_background.camera_trace.expected_mismatches();
