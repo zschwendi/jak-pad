@@ -240,7 +240,8 @@ bool is_audited_tfrag_texture_upload_bucket(u32 bucket_id) {
              kJak2Pris2CaptureBuckets.end() ||
          std::find(kJak2WaterTextureUploadBuckets.begin(),
                    kJak2WaterTextureUploadBuckets.end(), bucket_id) !=
-             kJak2WaterTextureUploadBuckets.end();
+             kJak2WaterTextureUploadBuckets.end() ||
+         bucket_id == kJak2CommonWaterTextureUploadBucket;
 }
 
 bool is_normal_tfrag_texture_upload_bucket(u32 bucket_id) {

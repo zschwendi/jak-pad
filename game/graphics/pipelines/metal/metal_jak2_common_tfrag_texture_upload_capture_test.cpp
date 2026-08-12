@@ -603,6 +603,27 @@ std::vector<u8> make_ordinary_and_animator_fixture() {
   return packet;
 }
 
+std::vector<u8> make_common_water_capture_fixture() {
+  constexpr u32 bucket_id = metal_renderer::kJak2CommonWaterTextureUploadBucket;
+  auto packet = make_ordinary_fixture(bucket_id);
+  const u32 ordinary_boundary = kOrdinaryOffset + 32;
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, ordinary_boundary, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+  put_animator_array(&packet, kAnimatorOffset, 16, 1, end_offset);
+  return packet;
+}
+
+std::vector<u8> make_malformed_common_water_capture_fixture() {
+  constexpr u32 bucket_id = metal_renderer::kJak2CommonWaterTextureUploadBucket;
+  std::vector<u8> packet(kMemorySize);
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+  put_tag(&packet, kAnimatorOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif | 12, 0);
+  std::fill_n(packet.begin() + kAnimatorOffset + 16, 16, 0x73);
+  put_tag(&packet, kAnimatorOffset + 32, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  return packet;
+}
+
 void put_layer_values(std::vector<u8>* packet, u32 offset, float base, u8 padding) {
   for (u32 i = 0; i < 18; ++i) {
     put_float(packet, offset + i * sizeof(float), base + static_cast<float>(i) * 0.25f);
@@ -861,6 +882,34 @@ void test_pris2_diagnostic_capture() {
     check(!capture(other, bucket_id).valid,
           "every other PRIS2 bucket remains outside the diagnostic allowlist");
   }
+}
+
+void test_common_water_diagnostic_capture() {
+  constexpr u32 bucket_id = metal_renderer::kJak2CommonWaterTextureUploadBucket;
+  static_assert(bucket_id == 306);
+
+  auto result = capture(make_empty_fixture(bucket_id), bucket_id);
+  check(result.valid && !result.present && result.classification == Classification::Absent &&
+            result.transfer_count == 1 && result.inert_transfers == 1,
+        "common-water bucket 306 accepts the exact empty metadata envelope");
+
+  result = capture(make_common_water_capture_fixture(), bucket_id);
+  check(result.valid && result.present &&
+            result.classification == Classification::OrdinaryAndAnimator &&
+            result.transfer_count == 7 && result.total_payload_bytes == 32 &&
+            result.inert_transfers == 3 && result.ordinary_descriptors == 1 &&
+            result.animator_arrays == 1 && result.animator_body_transfers == 1 &&
+            result.animator_payload_bytes == 16 && result.opcode_counts[12] == 1 &&
+            result.opcode_counts[13] == 1 && result.opcode_counts[16] == 1 &&
+            result.eye_markers == 0 && result.other_transfers == 0 &&
+            result.malformed_transfers == 0,
+        "common-water bucket 306 passively records generic descriptor and animator metadata");
+
+  result = capture(make_malformed_common_water_capture_fixture(), bucket_id);
+  check(!result.valid && !result.present && result.classification == Classification::Malformed &&
+            result.transfer_count == 2 && result.total_payload_bytes == 16 &&
+            result.malformed_transfers == 1,
+        "common-water bucket 306 bounds malformed animator metadata without a plan");
 }
 
 void test_pris_eye_execution_plan() {
@@ -2076,6 +2125,7 @@ int main() {
   test_exact_empty_and_ordinary_metadata();
   test_texture_bucket_allowlist();
   test_pris2_diagnostic_capture();
+  test_common_water_diagnostic_capture();
   test_pris_eye_execution_plan();
   test_pris_eye_live_copy_semantics();
   test_pris_prison_jak_animator_variants();

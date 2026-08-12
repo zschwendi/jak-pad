@@ -35,8 +35,9 @@
 
 namespace {
 
-static_assert(offsetof(goal_jak2_metal_host_metrics, warp_texture_upload) +
-                  sizeof(goal_jak2_warp_texture_upload_metrics) ==
+static_assert(offsetof(goal_jak2_metal_host_metrics,
+                       common_water_texture_upload) +
+                  sizeof(goal_jak2_tfrag_texture_upload_metrics) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -74,6 +75,9 @@ constexpr u32 kDuplicatePrisonClutDescriptorOffset = kChainOffset + 0x16500;
 constexpr u32 kDuplicatePrisonClutAnimatorOffset = kChainOffset + 0x16600;
 constexpr u32 kDuplicatePrisonClutDirectOffset = kChainOffset + 0x16700;
 constexpr u32 kCommonPrisBucket = metal_renderer::kJak2CommonPrisTextureUploadBucket;
+constexpr u32 kCommonWaterBucket = metal_renderer::kJak2CommonWaterTextureUploadBucket;
+static_assert(kCommonWaterBucket == 306 &&
+              kCommonWaterBucket == static_cast<u32>(jak2::BucketId::TEX_LCOM_WATER));
 constexpr u32 kCommonPrisDescriptorOffset = kChainOffset + 0x16800;
 constexpr u32 kCommonPrisAnimatorOffset = kChainOffset + 0x16a00;
 constexpr u32 kCommonPrisDirectOffset = kChainOffset + 0x16b00;
@@ -81,6 +85,8 @@ constexpr u32 kPris2Bucket228 = metal_renderer::kJak2Pris2TextureUploadBucket;
 constexpr u32 kPris2Bucket228DescriptorOffset = kChainOffset + 0x16c00;
 constexpr u32 kPris2Bucket228DirectOffset = kChainOffset + 0x16d00;
 constexpr u32 kEffectsLightningPayloadOffset = kChainOffset + 0x17000;
+constexpr u32 kCommonWaterDescriptorOffset = kChainOffset + 0x17100;
+constexpr u32 kCommonWaterAnimatorOffset = kChainOffset + 0x17200;
 constexpr u32 kSkyPostBucket = metal_renderer::kJak2SkyPostTextureUploadBucket;
 constexpr u32 kSkyPostGroupOffset = kChainOffset + 0x17400;
 constexpr u32 kSkyPostDirectOffset = kChainOffset + 0x17500;
@@ -168,6 +174,35 @@ void make_effects_lightning_chain() {
   put_tag(cursor, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   cursor += 176;
   put_tag(cursor, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_common_water_capture_chain(bool malformed_animator_start) {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr s64 kMode = -1;
+  constexpr u64 kPageOffset = kTexturePageOffset;
+  const u32 bucket_offset = kChainOffset + kCommonWaterBucket * 16;
+
+  if (malformed_animator_start) {
+    put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kCommonWaterAnimatorOffset);
+    put_tag(kCommonWaterAnimatorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort | 12, 0);
+    std::memset(ee + kCommonWaterAnimatorOffset + 16, 0x73, 16);
+    put_tag(kCommonWaterAnimatorOffset + 32, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+    return;
+  }
+
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kCommonWaterDescriptorOffset);
+  put_tag(kCommonWaterDescriptorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  std::memcpy(ee + kCommonWaterDescriptorOffset + 16, &kPageOffset, sizeof(kPageOffset));
+  std::memcpy(ee + kCommonWaterDescriptorOffset + 24, &kMode, sizeof(kMode));
+  put_tag(kCommonWaterDescriptorOffset + 32, DmaTag::Kind::NEXT, 0,
+          kCommonWaterAnimatorOffset);
+  put_tag(kCommonWaterAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
+  put_tag(kCommonWaterAnimatorOffset + 16, DmaTag::Kind::CNT, 1, 0, kPcPort | 16, 0);
+  std::memset(ee + kCommonWaterAnimatorOffset + 32, 0x74, 16);
+  put_tag(kCommonWaterAnimatorOffset + 48, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, 0);
+  put_tag(kCommonWaterAnimatorOffset + 64, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
 metal_renderer::Jak2Opcode27LayerValues identity_layer_values() {
@@ -941,8 +976,10 @@ int main() {
                 metal_renderer::Jak2MetalBucketBehavior::Generic2 &&
             host_policy_table[kEffectsBucket].behavior ==
                 metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
+            host_policy_table[kCommonWaterBucket].behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
             metal_renderer::jak2_metal_host_policy_table_is_audited(),
-        "bucket 315 remains DeferredSkip while the host audits its live DMA");
+        "buckets 306 and 315 remain DeferredSkip while the host audits their live DMA");
 
   goal_jak2_metal_host_metrics frame_gate = {};
   frame_gate.chains = 1;
@@ -1160,6 +1197,9 @@ int main() {
         "all six per-level PRIS callbacks plus empty bucket 228 run once without eye execution");
   check(texture_captures_are_empty(metrics.water_texture_uploads, kWaterBuckets),
         "the host records all six empty source-identical water texture upload buckets");
+  check(texture_capture_is_empty(metrics.common_water_texture_upload, kCommonWaterBucket) &&
+            metrics.common_water_texture_upload.executions == 0,
+        "the host passively records empty common-water bucket 306 without execution");
   check(texture_capture_is_empty(metrics.common_tfrag_texture_upload, 187),
         "the host accepts an exact empty host-owned common TFRAG texture bucket");
   check(texture_capture_is_empty(metrics.common_pris_texture_upload, kCommonPrisBucket) &&
@@ -1410,6 +1450,64 @@ int main() {
             metal_texture_live_count() == warp_texture_initial_live_count,
         "an unsupported bucket-316 animator stays deferred and does not fail the chain");
   goal_jak2_metal_host_destroy(warp_texture_host);
+
+  goal_jak2_metal_host* common_water_host = goal_jak2_metal_host_create();
+  goal_gfx_host common_water_callbacks = {};
+  check(common_water_host &&
+            goal_jak2_metal_host_configure_level_art(common_water_host, fr3_directory.c_str()) &&
+            goal_jak2_metal_host_copy_gfx_host(common_water_host, &common_water_callbacks),
+        "created a host for passive common-water bucket-306 capture");
+  const std::size_t common_water_textures_before = metal_texture_live_count();
+  make_empty_chain();
+  common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  goal_jak2_metal_host_metrics common_water_metrics = {};
+  check(goal_jak2_metal_host_get_metrics(common_water_host, &common_water_metrics) &&
+            common_water_metrics.chains == 1 && common_water_metrics.completed_chains == 1 &&
+            common_water_metrics.failed_chains == 0 &&
+            texture_capture_is_empty(common_water_metrics.common_water_texture_upload,
+                                     kCommonWaterBucket) &&
+            common_water_metrics.common_water_texture_upload.executions == 0 &&
+            metal_texture_live_count() == common_water_textures_before,
+        "empty bucket 306 is observed before copy without texture mutation");
+
+  make_common_water_capture_chain(false);
+  common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(common_water_host, &common_water_metrics) &&
+            common_water_metrics.chains == 2 && common_water_metrics.completed_chains == 2 &&
+            common_water_metrics.failed_chains == 0 &&
+            common_water_metrics.common_water_texture_upload.bucket_id == kCommonWaterBucket &&
+            common_water_metrics.common_water_texture_upload.captures == 2 &&
+            common_water_metrics.common_water_texture_upload.present_captures == 1 &&
+            common_water_metrics.common_water_texture_upload.classifications[static_cast<std::size_t>(
+                metal_renderer::Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator)] == 1 &&
+            common_water_metrics.common_water_texture_upload.transfers == 8 &&
+            common_water_metrics.common_water_texture_upload.payload_bytes == 32 &&
+            common_water_metrics.common_water_texture_upload.ordinary_descriptors == 1 &&
+            common_water_metrics.common_water_texture_upload.animator_arrays == 1 &&
+            common_water_metrics.common_water_texture_upload.animator_body_transfers == 1 &&
+            common_water_metrics.common_water_texture_upload.animator_payload_bytes == 16 &&
+            common_water_metrics.common_water_texture_upload.opcode_counts[12] == 1 &&
+            common_water_metrics.common_water_texture_upload.opcode_counts[13] == 1 &&
+            common_water_metrics.common_water_texture_upload.opcode_counts[16] == 1 &&
+            common_water_metrics.common_water_texture_upload.executions == 0 &&
+            common_water_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == common_water_textures_before,
+        "generic descriptor and animator-shaped bucket 306 metadata stays passive");
+
+  make_common_water_capture_chain(true);
+  common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(common_water_host, &common_water_metrics) &&
+            common_water_metrics.chains == 3 && common_water_metrics.completed_chains == 3 &&
+            common_water_metrics.failed_chains == 0 &&
+            common_water_metrics.common_water_texture_upload.captures == 3 &&
+            common_water_metrics.common_water_texture_upload.classifications[static_cast<std::size_t>(
+                metal_renderer::Jak2CommonTfragTextureUploadClass::Malformed)] == 1 &&
+            common_water_metrics.common_water_texture_upload.malformed_transfers == 1 &&
+            common_water_metrics.common_water_texture_upload.executions == 0 &&
+            common_water_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == common_water_textures_before,
+        "malformed bounded bucket 306 telemetry is non-fatal and does not mutate textures");
+  goal_jak2_metal_host_destroy(common_water_host);
 
   goal_jak2_metal_host* security_host = goal_jak2_metal_host_create();
   goal_gfx_host security_callbacks = {};

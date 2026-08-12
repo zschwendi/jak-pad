@@ -330,6 +330,8 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t sky_post_texture_upload_executions;
   // Append-only passive telemetry. Bucket 316 remains deferred and has no execution counter.
   goal_jak2_warp_texture_upload_metrics warp_texture_upload;
+  // Append-only passive telemetry. Deferred common-water bucket 306 never executes here.
+  goal_jak2_tfrag_texture_upload_metrics common_water_texture_upload;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

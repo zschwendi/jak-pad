@@ -20,6 +20,7 @@ constexpr std::array<u32, 6> kJak2PrisTextureUploadBuckets = {196, 200, 204, 208
 // Samos-hut diagnostics. Bucket 228 has a separate typed executor; bucket 229 remains deferred.
 constexpr std::array<u32, 2> kJak2Pris2CaptureBuckets = {228, 229};
 constexpr std::array<u32, 6> kJak2WaterTextureUploadBuckets = {252, 261, 270, 279, 288, 297};
+constexpr u32 kJak2CommonWaterTextureUploadBucket = 306;
 constexpr std::size_t kJak2CommonTfragTextureUploadMaximumTransfers = 64;
 constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
 constexpr std::size_t kJak2PrisEyeMaximumChunks = 2;
@@ -288,15 +289,15 @@ struct Jak2CommonTfragTextureUploadPlan {
 };
 
 /*!
- * Inspect one audited Jak II texture-setup bucket or exact PRIS2 diagnostic bucket using tag and
- * VIF metadata only.
+ * Inspect one audited Jak II texture-setup or passive diagnostic bucket using tag and VIF metadata
+ * only.
  * The capture never reads transfer payload contents, retains no source pointers, and performs no
  * texture-pool or renderer mutation. The fixed-size result owns every recorded scalar and is safe
  * after the source snapshot is reused. Tag locations are relative to the bucket-table entry. Eye
  * DMA and otherwise unclassified work are reported as EyeOrOther rather than treated as executable
  * texture uploads. A valid result means only that the bounded metadata envelope was traversed
- * safely; execution still requires a separate typed plan. Bucket 228 has one; PRIS2 Merc and all
- * other PRIS2 work remain deferred.
+ * safely; execution still requires a separate typed plan. Bucket 228 has one; PRIS2 Merc and
+ * common-water bucket 306 remain deferred.
  */
 Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
     const u8* dma_packet_snapshot,
