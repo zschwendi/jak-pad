@@ -137,7 +137,6 @@ void make_empty_chain() {
 void make_effects_lightning_chain() {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
-  constexpr u32 kEffectsBucket = metal_renderer::kJak2EffectsBucket;
   constexpr u32 kMark = static_cast<u32>(VifCode::Kind::MARK) << 24;
   constexpr u32 kStcycl = static_cast<u32>(VifCode::Kind::STCYCL) << 24;
   constexpr u32 kUnpackV432 = static_cast<u32>(VifCode::Kind::UNPACK_V4_32) << 24;
