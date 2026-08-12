@@ -187,10 +187,6 @@ struct ChainStats {
   u64 last_presented_chain_ordinal = 0;
   double last_requested_presentation_time = 0.0;
   double last_actual_presentation_time = 0.0;
-  u64 gpu_samples = 0;
-  double gpu_total_seconds = 0.0;
-  double last_gpu_seconds = 0.0;
-  double maximum_gpu_seconds = 0.0;
   // from the last chain frame
   int draw_calls = 0;
   int triangles = 0;
