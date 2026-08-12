@@ -11,6 +11,28 @@
 
 void kmemcard_init_globals();
 
+class KmemcardSuccessfulSaveGeneration {
+ public:
+  constexpr explicit KmemcardSuccessfulSaveGeneration(u64 initial_value = 0)
+      : value_(initial_value) {}
+
+  constexpr void reset() { value_ = 0; }
+
+  constexpr void record_close_result(int close_result) {
+    if (close_result == 0) {
+      value_++;
+    }
+  }
+
+  constexpr u64 value() const { return value_; }
+
+ private:
+  u64 value_ = 0;
+};
+
+/*! Host-only generation incremented after each successfully closed native save. */
+u64 kmemcard_successful_save_generation();
+
 /*!
  * Put the raw save files in this directory instead of the desktop default
  * (file_util::get_user_memcard_dir). Pass nullptr or "" to go back to the default.

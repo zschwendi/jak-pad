@@ -33,6 +33,7 @@ static MemoryCardOperation op;
 static MemoryCardFile mc_files[4];
 // keep track of latest file selected. this is only used in an auto-save mode thats not used
 static int mc_last_file = -1;
+static KmemcardSuccessfulSaveGeneration successful_save_generation;
 
 // a random value we will use as the memory card "handle" for the pc port, which has no memcards.
 constexpr u32 PC_MEM_CARD_HANDLE = 0x6C616F67;
@@ -142,8 +143,13 @@ void kmemcard_init_globals() {
   p2 = 0;
   p3 = 0;
   p4 = 0;
+  successful_save_generation.reset();
   // memset(&dirent, 0, sizeof(sceMcTblGetDir));
   memset(&header, 0, sizeof(McHeader));
+}
+
+u64 kmemcard_successful_save_generation() {
+  return successful_save_generation.value();
 }
 
 /*!
@@ -284,7 +290,9 @@ void pc_game_save_synch() {
         mc_print("save file writing footer");
         if (fwrite(&header, sizeof(McHeader), 1, fd) == 1) {
           // cb_savedfooter //
-          if (fclose(fd) == 0) {
+          const int close_result = fclose(fd);
+          successful_save_generation.record_close_result(close_result);
+          if (close_result == 0) {
             // cb_closedsave //
             mc_print("All done with saving!!");
             op.operation = MemoryCardOperationKind::NO_OP;
