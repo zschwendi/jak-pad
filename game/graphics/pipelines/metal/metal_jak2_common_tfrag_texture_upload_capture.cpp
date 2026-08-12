@@ -459,6 +459,7 @@ bool parse_opcode30_security(const u8* source, Jak2Opcode30SecurityPlan* out) {
 
 constexpr u64 kFnvOffsetBasis = 14695981039346656037ull;
 constexpr u64 kFnvPrime = 1099511628211ull;
+constexpr u64 kGsSetAdRegisters = 0xeeeeeeeeeeeeeeeeull;
 
 void hash_bytes(u64* hash, const void* bytes, std::size_t size) {
   const auto* input = static_cast<const u8*>(bytes);
@@ -533,14 +534,14 @@ bool has_plain_next_tag(const u8* snapshot,
          read_unaligned<u32>(tag + 12) == 0;
 }
 
-bool validate_ad_gif_tag(const u8* payload, u32 nloop) {
-  return read_unaligned<u64>(payload) == make_gif_tag_word(nloop, false, 0, 1) &&
-         read_unaligned<u64>(payload + 8) ==
-             static_cast<u64>(GifTag::RegisterDescriptor::AD);
+bool validate_ad_gif_tag(const u8* payload, u32 nloop, u32 nreg, u64 registers) {
+  return read_unaligned<u64>(payload) == make_gif_tag_word(nloop, false, 0, nreg) &&
+         read_unaligned<u64>(payload + 8) == registers;
 }
 
 bool validate_single_ad(const u8* payload, GsRegisterAddress address, u64 value) {
-  return validate_ad_gif_tag(payload, 1) && read_unaligned<u64>(payload + 16) == value &&
+  return validate_ad_gif_tag(payload, 1, 1, kGsSetAdRegisters) &&
+         read_unaligned<u64>(payload + 16) == value &&
          read_unaligned<u64>(payload + 24) == static_cast<u64>(address);
 }
 
@@ -552,7 +553,7 @@ bool validate_display_setup(const u8* payload,
       GsRegisterAddress::FRAME_1,   GsRegisterAddress::TEST_1,
       GsRegisterAddress::TEXA,      GsRegisterAddress::ZBUF_1,
       GsRegisterAddress::TEXFLUSH};
-  if (!validate_ad_gif_tag(payload, kAddresses.size())) {
+  if (!validate_ad_gif_tag(payload, 1, kAddresses.size(), kGsSetAdRegisters)) {
     return false;
   }
 
@@ -594,7 +595,7 @@ bool validate_display_reset(const u8* payload) {
       0x198ull | (8ull << 16),       0x50000ull,
       0x8000000000ull,               0x130ull | (1ull << 24),
       0};
-  if (!validate_ad_gif_tag(payload, kAddresses.size())) {
+  if (!validate_ad_gif_tag(payload, 1, kAddresses.size(), kGsSetAdRegisters)) {
     return false;
   }
   for (std::size_t i = 0; i < kAddresses.size(); ++i) {
@@ -632,9 +633,7 @@ bool validate_eye_adgif(const u8* payload,
   constexpr u64 kAdRegisters = static_cast<u64>(GifTag::RegisterDescriptor::AD);
   const u64 max_uv = resolution == Jak2PrisEyeResolution::Eye32 ? 31 : 63;
   const u64 expected_clamp = 1ull | (1ull << 2) | (max_uv << 14) | (max_uv << 34);
-  if (!uv1_u || !uv1_v ||
-      read_unaligned<u64>(payload) != make_gif_tag_word(5, false, 0, 1) ||
-      read_unaligned<u64>(payload + 8) != kAdRegisters) {
+  if (!uv1_u || !uv1_v || !validate_ad_gif_tag(payload, 5, 1, kAdRegisters)) {
     return false;
   }
   const auto adgif = read_unaligned<AdGifData>(payload + 16);

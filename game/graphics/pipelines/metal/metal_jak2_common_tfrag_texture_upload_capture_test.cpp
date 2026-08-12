@@ -93,10 +93,13 @@ constexpr u64 make_scissor(u32 x0, u32 x1, u32 y0, u32 y1) {
          (static_cast<u64>(y0) << 32) | (static_cast<u64>(y1) << 48);
 }
 
-void put_ad_gif_header(std::vector<u8>* packet, u32 payload_offset, u32 nloop) {
-  put_u64(packet, payload_offset, make_gif_tag_word(nloop, false, 0, 1));
-  put_u64(packet, payload_offset + 8,
-          static_cast<u64>(GifTag::RegisterDescriptor::AD));
+void put_ad_gif_header(std::vector<u8>* packet,
+                       u32 payload_offset,
+                       u32 nloop,
+                       u32 nreg,
+                       u64 registers) {
+  put_u64(packet, payload_offset, make_gif_tag_word(nloop, false, 0, nreg));
+  put_u64(packet, payload_offset + 8, registers);
 }
 
 u32 put_gs_set(std::vector<u8>* packet,
@@ -104,7 +107,7 @@ u32 put_gs_set(std::vector<u8>* packet,
                GsRegisterAddress address,
                u64 value) {
   put_tag(packet, tag_offset, DmaTag::Kind::CNT, 2, 0, 0, kDirectVif | 2);
-  put_ad_gif_header(packet, tag_offset + 16, 1);
+  put_ad_gif_header(packet, tag_offset + 16, 1, 1, 0xeeeeeeeeeeeeeeeeull);
   put_u64(packet, tag_offset + 32, value);
   put_u64(packet, tag_offset + 40, static_cast<u64>(address));
   return tag_offset + 48;
@@ -131,7 +134,7 @@ u32 put_display_setup(std::vector<u8>* packet, u32 tag_offset, bool eye64) {
   put_tag(packet, tag_offset, DmaTag::Kind::CNT, 8, 0,
           static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 8);
   const u32 payload_offset = tag_offset + 16;
-  put_ad_gif_header(packet, payload_offset, kAddresses.size());
+  put_ad_gif_header(packet, payload_offset, 1, kAddresses.size(), 0xeeeeeeeeeeeeeeeeull);
   for (std::size_t i = 0; i < kAddresses.size(); ++i) {
     put_u64(packet, payload_offset + 16 + static_cast<u32>(i) * 16, values[i]);
     put_u64(packet, payload_offset + 24 + static_cast<u32>(i) * 16,
@@ -154,7 +157,7 @@ u32 put_display_reset(std::vector<u8>* packet, u32 tag_offset) {
   put_tag(packet, tag_offset, DmaTag::Kind::CNT, 8, 0,
           static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 8);
   const u32 payload_offset = tag_offset + 16;
-  put_ad_gif_header(packet, payload_offset, kAddresses.size());
+  put_ad_gif_header(packet, payload_offset, 1, kAddresses.size(), 0xeeeeeeeeeeeeeeeeull);
   for (std::size_t i = 0; i < kAddresses.size(); ++i) {
     put_u64(packet, payload_offset + 16 + static_cast<u32>(i) * 16, kValues[i]);
     put_u64(packet, payload_offset + 24 + static_cast<u32>(i) * 16,
@@ -170,7 +173,8 @@ u32 put_eye_adgif(std::vector<u8>* packet,
                   u64 alpha) {
   put_tag(packet, tag_offset, DmaTag::Kind::CNT, 6, 0, 0, kDirectVif | 6);
   const u32 payload_offset = tag_offset + 16;
-  put_ad_gif_header(packet, payload_offset, 5);
+  put_ad_gif_header(packet, payload_offset, 5, 1,
+                    static_cast<u64>(GifTag::RegisterDescriptor::AD));
   const u64 max_uv = eye64 ? 63 : 31;
   const u64 clamp = 1ull | (1ull << 2) | (max_uv << 14) | (max_uv << 34);
   const u64 tex0 = (texture_seed & 0x3fff) | (1ull << 14) |
@@ -815,6 +819,27 @@ void test_pris_ordinary_live_copy_semantics() {
 }
 
 void test_pris_eye_shape_fails_closed() {
+  auto transposed_gif_shape = make_pris_eye_fixture(200, {{false, 2}});
+  put_u64(&transposed_gif_shape.packet, transposed_gif_shape.first_eye_offset + 16,
+          make_gif_tag_word(7, false, 0, 1));
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             transposed_gif_shape.packet.data(), transposed_gif_shape.packet.size(),
+             kChainOffset, 200, transposed_gif_shape.packet.data(),
+             transposed_gif_shape.packet.size())
+             .has_value(),
+        "a GS-set tag with its source NLOOP and NREG transposed is rejected");
+
+  auto truncated_gif_registers = make_pris_eye_fixture(200, {{false, 2}});
+  put_u64(&truncated_gif_registers.packet,
+          truncated_gif_registers.first_eye_offset + 24,
+          static_cast<u64>(GifTag::RegisterDescriptor::AD));
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             truncated_gif_registers.packet.data(), truncated_gif_registers.packet.size(),
+             kChainOffset, 200, truncated_gif_registers.packet.data(),
+             truncated_gif_registers.packet.size())
+             .has_value(),
+        "a GS-set tag without the source's full A+D register list is rejected");
+
   auto malformed = make_pris_eye_fixture(200, {{false, 2}});
   put_u64(&malformed.packet, malformed.first_eye_offset + 336,
           make_scissor(0, 62, 64, 95));
