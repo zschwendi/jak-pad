@@ -1,11 +1,15 @@
 #include "metal_sprite_renderer.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <limits>
+#include <mutex>
 #include <utility>
 
 #include "common/log/log.h"
 #include "common/util/Assert.h"
+#include "common/util/fnv.h"
 
 #include "game/graphics/opengl_renderer/dma_helpers.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
@@ -25,6 +29,142 @@ constexpr int kMaxSpritesPerFlush = 8192;
 bool diagnostic_flag(const char* name) {
   const char* value = std::getenv(name);
   return value && value[0] == '1' && value[1] == '\0';
+}
+
+struct SpriteTextureAlphaSummary {
+  u64 count = 0;
+  u64 sum = 0;
+  u8 minimum = 255;
+  u8 maximum = 0;
+
+  void add(u8 alpha) {
+    count++;
+    sum += alpha;
+    minimum = std::min(minimum, alpha);
+    maximum = std::max(maximum, alpha);
+  }
+
+  u32 min() const { return count ? minimum : 0; }
+  u32 max() const { return count ? maximum : 0; }
+  u64 average_x100() const { return count ? (sum * 100 + count / 2) / count : 0; }
+
+  bool operator==(const SpriteTextureAlphaSummary& other) const {
+    return count == other.count && sum == other.sum && minimum == other.minimum &&
+           maximum == other.maximum;
+  }
+};
+
+struct SpriteTextureDiagnosticState {
+  u32 tbp = 0;
+  u32 mode = 0;
+  u32 tcc = 0;
+  u64 handle = 0;
+  u16 page = std::numeric_limits<u16>::max();
+  u16 tex = std::numeric_limits<u16>::max();
+  u16 width = 0;
+  u16 height = 0;
+  u32 source = 0;
+  u32 placeholder = 0;
+  u64 rgba_hash = 0;
+  SpriteTextureAlphaSummary all;
+  SpriteTextureAlphaSummary center;
+  SpriteTextureAlphaSummary edge;
+
+  bool operator==(const SpriteTextureDiagnosticState& other) const {
+    return tbp == other.tbp && mode == other.mode && tcc == other.tcc && handle == other.handle &&
+           page == other.page && tex == other.tex && width == other.width &&
+           height == other.height && source == other.source && placeholder == other.placeholder &&
+           rgba_hash == other.rgba_hash && all == other.all && center == other.center &&
+           edge == other.edge;
+  }
+};
+
+struct SpriteTextureDiagnosticLogState {
+  std::mutex mutex;
+  std::array<SpriteTextureDiagnosticState, 8> states = {};
+  std::size_t count = 0;
+};
+
+SpriteTextureDiagnosticLogState& sprite_texture_diagnostic_log_state() {
+  static SpriteTextureDiagnosticLogState state;
+  return state;
+}
+
+void log_sprite_texture_diagnostic(u32 tbp,
+                                   DrawMode mode,
+                                   u64 handle,
+                                   bool used_placeholder,
+                                   TexturePool* texture_pool) {
+  SpriteTextureDiagnosticState state;
+  state.tbp = tbp;
+  state.mode = mode.as_int();
+  state.tcc = mode.get_tcc_enable() ? 1 : 0;
+  state.handle = handle;
+  state.placeholder = used_placeholder ? 1 : 0;
+
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool->mutex());
+    GpuTexture* gpu_texture = texture_pool->lookup_gpu_texture(tbp);
+    if (gpu_texture) {
+      state.page = gpu_texture->tex_id.page;
+      state.tex = gpu_texture->tex_id.tex;
+      state.width = gpu_texture->w;
+      state.height = gpu_texture->h;
+      state.placeholder = gpu_texture->is_placeholder ? 1 : 0;
+    }
+    if (handle == texture_pool->get_placeholder_texture()) {
+      state.placeholder = 1;
+    }
+
+    const u8* source =
+        gpu_texture && !gpu_texture->is_placeholder ? gpu_texture->get_data_ptr() : nullptr;
+    if (source && state.width && state.height) {
+      state.source = 1;
+      const u64 byte_count = static_cast<u64>(state.width) * state.height * 4;
+      state.rgba_hash = fnv64(source, byte_count);
+      const u32 center_x_begin = state.width / 4;
+      const u32 center_x_end = state.width - center_x_begin;
+      const u32 center_y_begin = state.height / 4;
+      const u32 center_y_end = state.height - center_y_begin;
+      for (u32 y = 0; y < state.height; y++) {
+        for (u32 x = 0; x < state.width; x++) {
+          const std::size_t offset = (static_cast<std::size_t>(y) * state.width + x) * 4;
+          const u8 alpha = source[offset + 3];
+          const bool is_center =
+              x >= center_x_begin && x < center_x_end && y >= center_y_begin && y < center_y_end;
+          state.all.add(alpha);
+          (is_center ? state.center : state.edge).add(alpha);
+        }
+      }
+    }
+  }
+
+  std::size_t index = 0;
+  {
+    auto& log_state = sprite_texture_diagnostic_log_state();
+    std::lock_guard<std::mutex> log_lock(log_state.mutex);
+    for (std::size_t i = 0; i < log_state.count; i++) {
+      if (log_state.states[i] == state) {
+        return;
+      }
+    }
+    if (log_state.count >= log_state.states.size()) {
+      return;
+    }
+    index = log_state.count;
+    log_state.states[log_state.count++] = state;
+  }
+
+  lg::info(
+      "GOALPAD_JAK2_SPRITE_TEXTURE_STATE index={} tbp={} mode={} tcc={} handle={} page={} tex={} "
+      "width={} height={} source={} placeholder={} rgba_fnv={} alpha_min={} alpha_max={} "
+      "alpha_avg_x100={} center_count={} center_min={} center_max={} center_avg_x100={} "
+      "edge_count={} edge_min={} edge_max={} edge_avg_x100={}",
+      index, state.tbp, state.mode, state.tcc, state.handle, state.page, state.tex, state.width,
+      state.height, state.source, state.placeholder, state.rgba_hash, state.all.min(),
+      state.all.max(), state.all.average_x100(), state.center.count, state.center.min(),
+      state.center.max(), state.center.average_x100(), state.edge.count, state.edge.min(),
+      state.edge.max(), state.edge.average_x100());
 }
 
 constexpr PerGameVersion<u32> kNormalZbp(448, 304, 304, 304);
@@ -321,6 +461,7 @@ MetalSpriteRenderer::MetalSpriteRenderer(const std::string& name, int my_id)
   m_default_mode.set_zt(true);
   m_default_mode.set_ab(true);
   m_current_mode = m_default_mode;
+  m_log_sprite_textures = diagnostic_flag("GOALPAD_JAK2_DEBUG_LOG_SPRITE_TEXTURES");
 }
 
 void MetalSpriteRenderer::render(DmaFollower& dma,
@@ -1310,6 +1451,9 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
         m_stats.first_placeholder_tbp = tbp;
         m_stats.first_placeholder_draw_mode = mode.as_int();
       }
+    }
+    if (m_log_sprite_textures && render_state->version == GameVersion::Jak2) {
+      log_sprite_texture_diagnostic(tbp, mode, *tex, used_placeholder, render_state->texture_pool);
     }
 
     id<MTLRenderPipelineState> pso = ctx.pso_cache->get_pipeline(settings.pso);
