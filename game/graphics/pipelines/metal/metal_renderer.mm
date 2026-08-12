@@ -1332,39 +1332,45 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       // builds retain the actual presentation-order trace below.
       const u64 drawable_id = 0;
 #else
-      const u64 drawable_id = static_cast<u64>(drawable.drawableID);
+      const bool trace_presentation =
+          metal_camera_trace::should_attach_presentation_handler(m_detailed_frame_stats_enabled);
+      const u64 drawable_id = trace_presentation ? static_cast<u64>(drawable.drawableID) : 0;
 #endif
       m_chain_stats.submissions = submission_id;
       m_chain_stats.last_submission_id = submission_id;
       m_chain_stats.last_drawable_id = drawable_id;
       m_chain_stats.last_requested_presentation_time = opts.presentation_time;
 #if !TARGET_OS_SIMULATOR
-      const u64 engine_frame_id = opts.engine_frame_id;
-      const u64 host_tick_id = opts.host_tick_id;
-      const u64 chain_ordinal = opts.chain_ordinal;
-      const auto presentation_state = m_presentation_state;
-      [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
-        const double presented_time = presented.presentedTime;
-        const u64 presented_drawable_id = static_cast<u64>(presented.drawableID);
-        std::lock_guard<std::mutex> lock(presentation_state->mutex);
-        if (!presentation_state->order.observe(submission_id, presented_time)) {
-          if (!presentation_state->mismatch_reported) {
-            presentation_state->mismatch_reported = true;
-            lg::error(
-                "Metal presentation order mismatch: submission {} drawable {} at {:.6f} "
-                "disagrees with retained successful presentation history",
-                submission_id, presented_drawable_id, presented_time);
+      // This callback feeds presentation proof telemetry only. Command completion below owns
+      // submission errors and stream reuse regardless of the detailed-stats setting.
+      if (trace_presentation) {
+        const u64 engine_frame_id = opts.engine_frame_id;
+        const u64 host_tick_id = opts.host_tick_id;
+        const u64 chain_ordinal = opts.chain_ordinal;
+        const auto presentation_state = m_presentation_state;
+        [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
+          const double presented_time = presented.presentedTime;
+          const u64 presented_drawable_id = static_cast<u64>(presented.drawableID);
+          std::lock_guard<std::mutex> lock(presentation_state->mutex);
+          if (!presentation_state->order.observe(submission_id, presented_time)) {
+            if (!presentation_state->mismatch_reported) {
+              presentation_state->mismatch_reported = true;
+              lg::error(
+                  "Metal presentation order mismatch: submission {} drawable {} at {:.6f} "
+                  "disagrees with retained successful presentation history",
+                  submission_id, presented_drawable_id, presented_time);
+            }
           }
-        }
-        if (presented_time > 0.0 &&
-            presentation_state->order.last_submission_id() == submission_id) {
-          presentation_state->last_drawable_id = presented_drawable_id;
-          presentation_state->last_engine_frame_id = engine_frame_id;
-          presentation_state->last_host_tick_id = host_tick_id;
-          presentation_state->last_chain_ordinal = chain_ordinal;
-        }
-        presentation_state->presentation_cv.notify_all();
-      }];
+          if (presented_time > 0.0 &&
+              presentation_state->order.last_submission_id() == submission_id) {
+            presentation_state->last_drawable_id = presented_drawable_id;
+            presentation_state->last_engine_frame_id = engine_frame_id;
+            presentation_state->last_host_tick_id = host_tick_id;
+            presentation_state->last_chain_ordinal = chain_ordinal;
+          }
+          presentation_state->presentation_cv.notify_all();
+        }];
+      }
 #endif
       schedule_present(cmds, drawable, opts);
     } else if (layer) {

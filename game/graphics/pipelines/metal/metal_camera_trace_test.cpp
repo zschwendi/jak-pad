@@ -36,6 +36,11 @@ metal_camera_trace::RenderSnapshot scalar_render_snapshot(float value) {
 }  // namespace
 
 int main() {
+  check(!metal_camera_trace::should_attach_presentation_handler(false),
+        "reduced frame stats skip the drawable presentation handler");
+  check(metal_camera_trace::should_attach_presentation_handler(true),
+        "detailed frame stats retain the drawable presentation handler");
+
   std::array<u8, metal_camera_trace::kCameraMatrixBytes> camera = {};
   std::array<u8, metal_camera_trace::kTranslationBytes> translation = {};
   for (std::size_t i = 0; i < camera.size(); i++) {

@@ -18,6 +18,10 @@ constexpr std::size_t kSnapshotQwords = kSnapshotBytes / 16;
 constexpr std::size_t kRenderSnapshotQwords = 15;
 constexpr std::size_t kRenderSnapshotBytes = kRenderSnapshotQwords * 16;
 
+constexpr bool should_attach_presentation_handler(bool detailed_frame_stats_enabled) {
+  return detailed_frame_stats_enabled;
+}
+
 struct Snapshot {
   std::array<u8, kSnapshotBytes> bytes = {};
 
