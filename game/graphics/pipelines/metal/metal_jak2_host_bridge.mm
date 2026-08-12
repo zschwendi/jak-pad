@@ -969,18 +969,6 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 common TFRAG texture plan rejected bucket 187 DMA");
       return;
     }
-    metal_renderer::Jak2CommonTfragTextureUploadCapture common_pris_texture_capture;
-    const auto common_pris_texture_plan =
-        metal_renderer::plan_jak2_common_pris_texture_upload(
-            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
-            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &common_pris_texture_capture);
-    record_texture_upload_metrics(&host->metrics.common_pris_texture_upload,
-                                  metal_renderer::kJak2CommonPrisTextureUploadBucket,
-                                  common_pris_texture_capture);
-    if (!common_pris_texture_plan) {
-      record_failure(host, "Jak 2 common PRIS texture plan rejected bucket 220 DMA");
-      return;
-    }
     metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared skull_gem_prepared;
     metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity security_prepared;
     const metal_renderer::Jak2WaterTextureUploadPlan* security_plan = nullptr;
@@ -1099,7 +1087,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &alpha_texture_plans,
         &water_texture_plans,
         &*common_tfrag_texture_plan,
-        &*common_pris_texture_plan,
+        nullptr,
         &*map_texture_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         security_plan ? &security_prepared : nullptr,

@@ -185,9 +185,9 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*!
- * Plan the exact common PRIS texture envelope: one ordinary page descriptor, the fixed qwc-2 GS
- * setup, and the terminal qwc-10 Direct reset. The GL TextureUploadHandler consumes the descriptor
- * and treats both Direct payloads as inert. The plan owns its validated page header.
+ * Plan one observed common PRIS texture envelope: one ordinary page descriptor, the fixed qwc-2 GS
+ * setup, and the terminal qwc-10 Direct reset. The public Metal policy remains deferred because
+ * live title DMA has additional variants; this helper is retained for bounded fixture work.
  */
 std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upload(
     const u8* dma_packet_snapshot,

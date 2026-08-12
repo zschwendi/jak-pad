@@ -805,8 +805,10 @@ int main() {
         "the host records all six empty source-identical water texture upload buckets");
   check(texture_capture_is_empty(metrics.common_tfrag_texture_upload, 187),
         "the host accepts an exact empty host-owned common TFRAG texture bucket");
-  check(texture_capture_is_empty(metrics.common_pris_texture_upload, 220),
-        "the host accepts an exact empty host-owned common PRIS texture bucket");
+  check(metrics.common_pris_texture_upload.bucket_id == 0 &&
+            metrics.common_pris_texture_upload.captures == 0 &&
+            metrics.common_pris_texture_upload.executions == 0,
+        "the host leaves deferred common PRIS texture DMA outside host-owned capture");
   check(metrics.common_tfrag_ordinary_uploads == 0 &&
             metrics.common_tfrag_skull_gem_preparations == 0 &&
             metrics.common_tfrag_skull_gem_publications == 0 &&
