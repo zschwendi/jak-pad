@@ -22,6 +22,7 @@
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_fixture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
@@ -34,8 +35,8 @@
 namespace {
 
 static_assert(offsetof(goal_jak2_metal_host_metrics,
-                       effects_bucket315) +
-                  sizeof(goal_jak2_effects_bucket315_metrics) ==
+                       sky_post_texture_upload_executions) +
+                  sizeof(uint64_t) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -80,6 +81,9 @@ constexpr u32 kPris2Bucket228 = metal_renderer::kJak2Pris2TextureUploadBucket;
 constexpr u32 kPris2Bucket228DescriptorOffset = kChainOffset + 0x16c00;
 constexpr u32 kPris2Bucket228DirectOffset = kChainOffset + 0x16d00;
 constexpr u32 kEffectsLightningPayloadOffset = kChainOffset + 0x17000;
+constexpr u32 kSkyPostBucket = metal_renderer::kJak2SkyPostTextureUploadBucket;
+constexpr u32 kSkyPostGroupOffset = kChainOffset + 0x17400;
+constexpr u32 kSkyPostDirectOffset = kChainOffset + 0x17500;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -254,6 +258,28 @@ void make_pris2_bucket228_ordinary_only_chain() {
   put_tag(kPris2Bucket228DirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   std::memset(ee + kPris2Bucket228DirectOffset + 16, 0x52, 160);
   put_tag(kPris2Bucket228DirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_sky_post_texture_upload_chain(s64 mode = -1) {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  constexpr u64 kPageOffset = kTexturePageOffset;
+  const u32 bucket_offset = kChainOffset + kSkyPostBucket * 16;
+
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kSkyPostGroupOffset);
+  put_tag(kSkyPostGroupOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
+  std::memset(ee + kSkyPostGroupOffset + 16, 0, 32);
+  const u32 descriptor_offset = kSkyPostGroupOffset + 48;
+  put_tag(descriptor_offset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  std::memcpy(ee + descriptor_offset + 16, &kPageOffset, sizeof(kPageOffset));
+  std::memcpy(ee + descriptor_offset + 24, &mode, sizeof(mode));
+  put_tag(descriptor_offset + 32, DmaTag::Kind::NEXT, 0, kSkyPostDirectOffset);
+  put_tag(kSkyPostDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  std::memset(ee + kSkyPostDirectOffset + 16, 0, 160);
+  put_tag(kSkyPostDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
 void make_common_pris_opcode22_capture_chain() {
@@ -1751,6 +1777,43 @@ int main() {
             sprite_upload_metrics.sprite_texture_uploads == 5,
         "a pre-mutation bucket-312 rejection leaves the host usable by a repaired chain");
   goal_jak2_metal_host_destroy(sprite_upload_host);
+
+  goal_jak2_metal_host* sky_post_host = goal_jak2_metal_host_create();
+  goal_gfx_host sky_post_callbacks = {};
+  check(sky_post_host &&
+            goal_jak2_metal_host_copy_gfx_host(sky_post_host, &sky_post_callbacks),
+        "created a host for exact bucket-309 sky-post texture uploads");
+  write_texture_page();
+  make_sky_post_texture_upload_chain();
+  sky_post_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  goal_jak2_metal_host_metrics sky_post_metrics = {};
+  check(goal_jak2_metal_host_get_metrics(sky_post_host, &sky_post_metrics) &&
+            sky_post_metrics.chains == 1 && sky_post_metrics.completed_chains == 1 &&
+            sky_post_metrics.failed_chains == 0 &&
+            sky_post_metrics.sky_post_texture_upload_executions == 1 &&
+            sky_post_metrics.skipped_bucket_bytes == 0,
+        "bucket 309 executes its exact source-shaped ordinary upload once at bucket entry");
+
+  make_empty_chain();
+  sky_post_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(sky_post_host, &sky_post_metrics) &&
+            sky_post_metrics.chains == 2 && sky_post_metrics.completed_chains == 2 &&
+            sky_post_metrics.failed_chains == 0 &&
+            sky_post_metrics.sky_post_texture_upload_executions == 1,
+        "an absent bucket 309 still dispatches its marker without another upload");
+  const uint32_t sky_post_empty_copied_bytes = sky_post_metrics.last_copied_bytes;
+
+  make_sky_post_texture_upload_chain(-2);
+  sky_post_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  const char* sky_post_error = goal_jak2_metal_host_last_error(sky_post_host);
+  check(goal_jak2_metal_host_get_metrics(sky_post_host, &sky_post_metrics) &&
+            sky_post_metrics.chains == 3 && sky_post_metrics.completed_chains == 2 &&
+            sky_post_metrics.failed_chains == 1 &&
+            sky_post_metrics.sky_post_texture_upload_executions == 1 &&
+            sky_post_metrics.last_copied_bytes == sky_post_empty_copied_bytes &&
+            sky_post_error && std::strstr(sky_post_error, "sky-post texture plan rejected"),
+        "malformed bucket 309 fails before copying, mutation, or upload execution");
+  goal_jak2_metal_host_destroy(sky_post_host);
 
   goal_jak2_metal_host* map_upload_host = goal_jak2_metal_host_create();
   goal_gfx_host map_upload_callbacks = {};

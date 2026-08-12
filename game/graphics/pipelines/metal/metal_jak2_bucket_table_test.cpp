@@ -90,11 +90,11 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 32, "32 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 31, "31 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
-  check(host_texture_upload == 28,
-        "twenty-eight exact texture/setup buckets are handled synchronously by the host");
+  check(host_texture_upload == 29,
+        "twenty-nine exact texture/setup buckets are handled synchronously by the host");
   check(host_texture_upload_direct == 2,
         "two exact texture/setup buckets also retain their Direct payloads");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
@@ -341,6 +341,9 @@ int main() {
         "defer");
   check(has_behavior(jak2::BucketId::TEX_LCOM_SKY_PRE, Behavior::HostTextureUpload),
         "TEX_LCOM_SKY_PRE is the explicit host texture-upload bucket");
+  check(has_behavior(jak2::BucketId::TEX_LCOM_SKY_POST, Behavior::HostTextureUpload) &&
+            static_cast<std::size_t>(jak2::BucketId::TEX_LCOM_SKY_POST) == 309,
+        "TEX_LCOM_SKY_POST is the exact planned host texture-upload bucket");
   check(has_behavior(jak2::BucketId::TEX_LCOM_TFRAG, Behavior::HostTextureUpload),
         "TEX_LCOM_TFRAG is the exact host-owned skull-gem texture bucket");
   check(static_cast<std::size_t>(jak2::BucketId::TEX_LCOM_SHRUB) == 191 &&

@@ -1297,6 +1297,7 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_effects_bucket315_plan.cpp
             graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
@@ -1365,6 +1366,12 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan_test.cpp)
         add_test(NAME jak2-pris2-bucket228-plan-test
             COMMAND jak2-pris2-bucket228-plan-test)
+
+        add_executable(jak2-sky-post-texture-upload-plan-test
+            graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan_test.cpp)
+        add_test(NAME jak2-sky-post-texture-upload-plan-test
+            COMMAND jak2-sky-post-texture-upload-plan-test)
 
         add_executable(jak2-sprite-texture-upload-plan-test
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp

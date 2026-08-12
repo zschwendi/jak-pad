@@ -30,6 +30,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
+#include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
@@ -721,6 +722,7 @@ struct Jak2TextureUploadDispatch {
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
   const metal_renderer::Jak2SpriteTextureUploadPlan* sprite_plan = nullptr;
   const metal_renderer::Jak2MapTextureUploadPlan* map_plan = nullptr;
+  const metal_renderer::Jak2SkyPostTextureUploadPlan* sky_post_plan = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity* security_prepared =
       nullptr;
@@ -734,12 +736,39 @@ struct Jak2TextureUploadDispatch {
   bool* raw_image_callback_executed = nullptr;
   bool* common_pris_callback_executed = nullptr;
   bool* pris2_bucket228_callback_executed = nullptr;
+  bool* sky_post_callback_executed = nullptr;
   std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
       pris_eye_callbacks_executed = nullptr;
 };
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  if (bucket_id == metal_renderer::kJak2SkyPostTextureUploadBucket) {
+    if (!dispatch->sky_post_plan || !dispatch->sky_post_callback_executed) {
+      throw std::runtime_error("Jak 2 sky-post texture dispatch is incomplete");
+    }
+    if (*dispatch->sky_post_callback_executed) {
+      throw std::runtime_error("Jak 2 sky-post bucket callback repeated");
+    }
+    *dispatch->sky_post_callback_executed = true;
+    const auto& plan = *dispatch->sky_post_plan;
+    if (plan.bucket_id != bucket_id) {
+      throw std::runtime_error("Jak 2 sky-post texture dispatch order is inconsistent");
+    }
+    if (plan.variant == metal_renderer::Jak2SkyPostTextureUploadVariant::Absent) {
+      return;
+    }
+    metal_renderer::Jak2Bucket4OrdinaryUploadPlan ordinary;
+    ordinary.page_offset = plan.page_offset;
+    ordinary.mode = plan.mode;
+    std::copy_n(plan.page_header.begin(), ordinary.page_header.size(),
+                ordinary.page_header.begin());
+    execute_ordinary_texture_upload_or_throw(
+        dispatch->host, ordinary, dispatch->live_ee_memory,
+        &dispatch->host->metrics.sky_post_texture_upload_executions,
+        "Jak 2 sky-post ordinary texture upload", dispatch->host_texture_mutated);
+    return;
+  }
   if (bucket_id == metal_renderer::kJak2CommonPrisTextureUploadBucket) {
     if (!dispatch->common_pris_plan || !dispatch->common_pris_callback_executed) {
       throw std::runtime_error("Jak 2 common PRIS texture dispatch is incomplete");
@@ -1286,6 +1315,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 bucket 312 texture-upload plan is inconsistent");
       return;
     }
+    const auto live_sky_post_plan = metal_renderer::plan_jak2_sky_post_texture_upload(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        metal_renderer::kJak2SkyPostTextureUploadBucket, static_cast<const u8*>(ee_base),
+        EE_MAIN_MEM_SIZE);
+    if (!live_sky_post_plan) {
+      record_failure(host, "Jak 2 sky-post texture plan rejected malformed bucket 309 DMA");
+      return;
+    }
     metal_renderer::Jak2MapTextureUploadDiagnostic map_texture_diagnostic;
     const auto map_texture_plan = metal_renderer::plan_jak2_map_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
@@ -1321,6 +1358,18 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
             *live_common_pris_plan, *copied_common_pris_plan)) {
       record_send_chain_failure(
           host, "Jak 2 copied common PRIS texture plan did not match live bucket 220", false);
+      return;
+    }
+
+    const auto copied_sky_post_plan = metal_renderer::plan_jak2_sky_post_texture_upload(
+        copied.data.data(), copied.data.size(), copied.start_offset,
+        metal_renderer::kJak2SkyPostTextureUploadBucket, static_cast<const u8*>(ee_base),
+        EE_MAIN_MEM_SIZE);
+    if (!copied_sky_post_plan ||
+        !metal_renderer::jak2_sky_post_texture_upload_plans_match(
+            *live_sky_post_plan, *copied_sky_post_plan)) {
+      record_send_chain_failure(
+          host, "Jak 2 copied sky-post texture plan did not match live bucket 309", false);
       return;
     }
 
@@ -1494,6 +1543,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     bool raw_image_callback_executed = false;
     bool common_pris_callback_executed = false;
     bool pris2_bucket228_callback_executed = false;
+    bool sky_post_callback_executed = false;
     std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>
         pris_eye_callbacks_executed = {};
     host->metrics.last_pris_eye_dispatches = 0;
@@ -1512,6 +1562,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &*common_tfrag_texture_plan,
         &*sprite_texture_plan,
         &*map_texture_plan,
+        &*copied_sky_post_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         security_plan ? &security_prepared : nullptr,
         &prison_clut_prepared,
@@ -1522,6 +1573,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &raw_image_callback_executed,
         &common_pris_callback_executed,
         &pris2_bucket228_callback_executed,
+        &sky_post_callback_executed,
         &pris_eye_callbacks_executed};
     auto render_options = host->options;
     merge_animated_texture_slots(host);
@@ -1570,6 +1622,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     if (!sprite_callback_executed) {
       record_send_chain_failure(
           host, "Jak 2 bucket 312 texture-upload marker was not dispatched",
+          host_texture_mutated);
+      return;
+    }
+    if (!sky_post_callback_executed) {
+      record_send_chain_failure(
+          host, "Jak 2 sky-post texture-upload marker was not dispatched",
           host_texture_mutated);
       return;
     }

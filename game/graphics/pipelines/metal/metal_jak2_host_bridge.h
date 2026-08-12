@@ -315,6 +315,8 @@ typedef struct goal_jak2_metal_host_metrics {
       [GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT];
   // Append-only passive capture telemetry. No execution counter is exposed for deferred bucket 315.
   goal_jak2_effects_bucket315_metrics effects_bucket315;
+  // Append-only execution telemetry for exact typed bucket 309 sky-post uploads.
+  uint64_t sky_post_texture_upload_executions;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {
