@@ -1103,6 +1103,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.game_res_w = opts.game_res_w;
     m_shared_state.game_res_h = opts.game_res_h;
     m_shared_state.view_transform = view_transform;
+    m_shared_state.detailed_frame_stats_enabled = m_detailed_frame_stats_enabled;
     m_shared_state.secondary_view = !frame_global_side_effects;
 
     id<MTLCommandBuffer> cmds = borrowed_command_buffer ?: [m_queue commandBuffer];

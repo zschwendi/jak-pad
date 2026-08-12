@@ -1055,11 +1055,12 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
     }
   }
 
+  const bool detailed_diagnostics = render_state->detailed_frame_stats_enabled;
   bool model_has_palette_health_issue = false;
   bool expected_source_base_valid = false;
   u64 expected_source_base = 0;
   int provenance_probe_slot = -1;
-  if (model->name == "eichar-lod0") {
+  if (detailed_diagnostics && model->name == "eichar-lod0") {
     const auto slot_is_available = [&](int slot) {
       const u64 bit = 1ull << (slot % 64);
       return (required_bone_slots[slot / 64] & bit) && (populated_bone_slots[slot / 64] & bit);
@@ -1089,6 +1090,26 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
       const u32 nonfinite_lane_mask =
           metal_merc_transform_trace::nonfinite_lane_mask(matrix_lanes.data());
       const bool matrix_is_finite = nonfinite_lane_mask == 0;
+
+      if (!matrix_is_finite) {
+        stats->nonfinite_bone_matrices++;
+      }
+      if (!detailed_diagnostics) {
+        if (!matrix_is_finite) {
+          model_has_palette_health_issue = true;
+          if (model->name == "eichar-lod0") {
+            stats->eichar_palette_health_issues++;
+          }
+          if (!m_reported_palette_health_issue) {
+            lg::error(
+                "Metal merc: model '{}' required bone slot {} has non-finite matrix lanes {:#x} "
+                "(logged once)",
+                model->name, slot, nonfinite_lane_mask);
+            m_reported_palette_health_issue = true;
+          }
+        }
+        continue;
+      }
 
       auto axis_norm = [](const math::Vector4f& axis) {
         const double x = axis.x();
@@ -1207,7 +1228,6 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
 
       u8 issue_mask = 0;
       if (!matrix_is_finite) {
-        stats->nonfinite_bone_matrices++;
         issue_mask |= metal_renderer::MERC_PALETTE_HEALTH_NONFINITE;
       } else if (matrix_is_degenerate) {
         stats->degenerate_bone_matrices++;
@@ -1265,7 +1285,7 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   }
 
   const bool trace_eichar =
-      !render_state->secondary_view && model->name == "eichar-lod0" &&
+      detailed_diagnostics && !render_state->secondary_view && model->name == "eichar-lod0" &&
       model_ref->eichar_skin_profiles_by_effect &&
       model_ref->eichar_skin_profiles_by_effect->size() == model->effects.size();
   u64 eichar_packet_palette_hash = 0;
@@ -1718,7 +1738,7 @@ void MetalMerc2::do_draws(const Draw* draw_array,
     // shared vertex and palette buffers currently bound for this base draw.
     // Envmap is a deliberate second pass and is excluded from every duplicate
     // and weighted-skin count.
-    if (!envmap && draw.skin_profile) {
+    if (render_state->detailed_frame_stats_enabled && !envmap && draw.skin_profile) {
       const u32 palette_offset =
           bone_base + static_cast<u32>(sizeof(math::Vector4f)) * draw.first_bone;
       const size_t palette_bytes = draw.trace_bone_count * sizeof(ShaderMercMat);

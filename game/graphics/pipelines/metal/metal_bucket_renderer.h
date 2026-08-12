@@ -100,6 +100,9 @@ struct MetalSharedRenderState {
   int game_res_w = 640;
   int game_res_h = 480;
   metal_renderer::ViewTransform view_transform;
+  // Production hosts can disable expensive renderer diagnostics while retaining validation and
+  // functional frame counters. Desktop and tests keep the detailed path by default.
+  bool detailed_frame_stats_enabled = true;
   // The secondary view replays the already-copied chain only to encode another target. Persistent
   // uploads, diagnostics, callbacks, and aggregate frame statistics stay owned by the primary.
   bool secondary_view = false;

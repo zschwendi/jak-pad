@@ -1487,6 +1487,23 @@ void test_dma_chain(const GfxRendererModule* mod,
   check(stats.skipped_bucket_bytes == 2 * 64, "chain: un-ported bucket content counted (64B x2)");
   check(stats.direct_unsupported_blends == 0, "chain: no unsupported blend modes hit");
 
+  const auto before_reduced_stats = metal_renderer::get_chain_stats();
+  metal_renderer::set_detailed_frame_stats_enabled(false);
+  mod->send_chain(mem.data(), kChainStart);
+  display->render();
+  metal_renderer::FramePixels reduced_stats_frame;
+  const bool reduced_stats_frame_read = metal_renderer::read_last_frame(&reduced_stats_frame);
+  const auto after_reduced_stats = metal_renderer::get_chain_stats();
+  metal_renderer::set_detailed_frame_stats_enabled(true);
+  check(reduced_stats_frame_read && reduced_stats_frame.width == frame.width &&
+            reduced_stats_frame.height == frame.height && reduced_stats_frame.rgba == frame.rgba,
+        "chain: disabling detailed frame stats preserves rendered output");
+  check(after_reduced_stats.chains_rendered == before_reduced_stats.chains_rendered + 1 &&
+            after_reduced_stats.last_views_rendered == 1 &&
+            after_reduced_stats.draw_calls == before_reduced_stats.draw_calls &&
+            after_reduced_stats.triangles == before_reduced_stats.triangles,
+        "chain: disabling detailed frame stats preserves cheap chain/draw/triangle counters");
+
   metal_renderer::ExternalRenderTargetProofResult external;
   const bool external_rendered = metal_renderer::render_last_chain_to_external_target(
       frame.width, frame.height, &external);
