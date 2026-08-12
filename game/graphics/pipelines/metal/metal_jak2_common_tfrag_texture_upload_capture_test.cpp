@@ -31,6 +31,8 @@ constexpr u32 kEyeSecondOffset = 0xa000;
 constexpr u32 kEyeDirectOffset = 0xb000;
 constexpr u32 kPris2MercSetupOffset = 0xc000;
 constexpr u32 kPris2MercModelOffset = 0xd000;
+constexpr u32 kPris2MercPaddingOffset = 0xd800;
+constexpr u32 kPris2MercDefaultEndOffset = 0xe000;
 constexpr u32 kPrisAnimatorOffset = 0x8800;
 constexpr u32 kPrisAnimatorBodyTagOffset = kPrisAnimatorOffset + 16;
 constexpr u32 kPrisAnimatorBodyOffset = kPrisAnimatorBodyTagOffset + 16;
@@ -294,7 +296,8 @@ std::vector<u8> make_pris2_merc_capture_fixture() {
   const u32 end_offset = bucket_offset(bucket_id) + 16;
   const u32 gs_setup_offset = kPris2MercSetupOffset + 176;
   const u32 setup_link_offset = gs_setup_offset + 64;
-  const u32 model_link_offset = kPris2MercModelOffset + 80;
+  const u32 model_link_offset = kPris2MercModelOffset + 16 + 1664;
+  const u32 default_end_link_offset = kPris2MercDefaultEndOffset + 16 + 160;
 
   put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0,
           kPris2MercSetupOffset, 0, 0);
@@ -306,9 +309,16 @@ std::vector<u8> make_pris2_merc_capture_fixture() {
   std::fill_n(packet.begin() + gs_setup_offset + 16, 48, 0x62);
   put_tag(&packet, setup_link_offset, DmaTag::Kind::NEXT, 0, kPris2MercModelOffset, 0,
           0);
-  put_tag(&packet, kPris2MercModelOffset, DmaTag::Kind::CNT, 4, 0, 0, kPcPortVif);
-  std::fill_n(packet.begin() + kPris2MercModelOffset + 16, 64, 0x63);
-  put_tag(&packet, model_link_offset, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  put_tag(&packet, kPris2MercModelOffset, DmaTag::Kind::CNT, 104, 0, 0, kPcPortVif);
+  std::fill_n(packet.begin() + kPris2MercModelOffset + 16, 1664, 0x63);
+  put_tag(&packet, model_link_offset, DmaTag::Kind::NEXT, 0,
+          kPris2MercPaddingOffset, 0, 0);
+  put_tag(&packet, kPris2MercPaddingOffset, DmaTag::Kind::NEXT, 0,
+          kPris2MercDefaultEndOffset, 0, 0);
+  put_tag(&packet, kPris2MercDefaultEndOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(packet.begin() + kPris2MercDefaultEndOffset + 16, 160, 0x64);
+  put_tag(&packet, default_end_link_offset, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
   return packet;
 }
 
@@ -830,17 +840,18 @@ void test_pris2_diagnostic_capture() {
   result = capture(merc_packet, kPris2MercBucket);
   check(result.valid && result.present &&
             result.classification == Classification::EyeOrOther &&
-            result.transfer_count == 6 && result.total_payload_bytes == 272 &&
-            result.inert_transfers == 3 && result.ordinary_descriptors == 0 &&
-            result.direct_setup_transfers == 0 && result.animator_arrays == 0 &&
+            result.transfer_count == 9 && result.total_payload_bytes == 2032 &&
+            result.inert_transfers == 5 && result.ordinary_descriptors == 0 &&
+            result.direct_setup_transfers == 1 && result.animator_arrays == 0 &&
             result.eye_markers == 0 && result.other_transfers == 3 &&
             result.malformed_transfers == 0 && result.transfers[1].payload_bytes == 160 &&
             result.transfers[1].vif0_kind == static_cast<u8>(VifCode::Kind::STCYCL) &&
             result.transfers[2].payload_bytes == 48 &&
             result.transfers[2].vif1_kind == static_cast<u8>(VifCode::Kind::DIRECT) &&
-            result.transfers[4].payload_bytes == 64 &&
-            result.transfers[4].vif1_kind == static_cast<u8>(VifCode::Kind::PC_PORT),
-        "PRIS2 bucket 229 owns bounded scalar metadata for a Merc-shaped packet");
+            result.transfers[4].payload_bytes == 1664 &&
+            result.transfers[4].vif1_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+            result.transfers[7].payload_bytes == 160,
+        "PRIS2 bucket 229 reproduces the retained nine-transfer, 2032-byte Merc envelope");
 
   for (u32 bucket_id = 224; bucket_id <= 251; ++bucket_id) {
     if (bucket_id == kPris2TextureBucket || bucket_id == kPris2MercBucket) {

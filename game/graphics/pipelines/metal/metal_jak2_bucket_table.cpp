@@ -141,8 +141,9 @@ constexpr Table make_table() {
     tie_water_envmap(
         level_bucket(BucketId::ETIE_W_L0_WATER, BucketId::ETIE_W_L1_WATER, level));
   }
-  // Only the audited Samos-hut bucket-228 producer has a typed PRIS2 execution plan.
+  // Only the audited Samos-hut bucket pair has typed PRIS2 execution plans.
   pris_eye(BucketId::TEX_L1_PRIS2);
+  merc(BucketId::MERC_L1_PRIS2);
 
   host_texture_upload(BucketId::TEX_LCOM_TFRAG);
   merc(BucketId::MERC_LCOM_TFRAG);
@@ -204,7 +205,7 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 33);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 32);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 28);
@@ -221,7 +222,7 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTrans) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTransEnvmap) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWater) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWaterEnvmap) == 6);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 21);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 22);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::BlitDisplay) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercAlpha) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercWater) == 7);

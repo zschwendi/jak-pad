@@ -234,6 +234,83 @@ void test_source_shaped_bucket() {
         "the packet uses Jak 2's 400-byte fixed payload formula");
 }
 
+void test_pris2_bucket_229_capture_shape() {
+  std::vector<u8> memory(kEeSize, 0);
+  ModelOptions options;
+  options.matrix_count = 77;
+  const auto packet = make_model_packet("samos-highres", options);
+  const u32 model_patch = kModel0 + 16 + static_cast<u32>(packet.size());
+
+  put_tag(&memory, kOpening, DmaTag::Kind::NEXT, 0, kSetup, 0, 0);
+  const auto setup = make_setup();
+  put_tag(&memory, kSetup, DmaTag::Kind::CNT, 10, 0, vif(VifCode::Kind::STCYCL, 0x404),
+          vif(VifCode::Kind::STMOD));
+  std::memcpy(memory.data() + kSetup + 16, setup.data(), setup.size());
+  put_tag(&memory, kGsSetup, DmaTag::Kind::CNT, 3, 0, 0,
+          metal_jak2_merc_dma::kDirect3Vif);
+  put_tag(&memory, kSetupPatch, DmaTag::Kind::NEXT, 0, kModel0, 0, 0);
+  put_tag(&memory, kModel0, DmaTag::Kind::CNT, static_cast<u16>(packet.size() / 16), 0, 0,
+          metal_jak2_merc_dma::kPcPortVif);
+  std::memcpy(memory.data() + kModel0 + 16, packet.data(), packet.size());
+  put_tag(&memory, model_patch, DmaTag::Kind::NEXT, 0, kFinalLogicalPadding, 0, 0);
+  put_tag(&memory, kFinalLogicalPadding, DmaTag::Kind::NEXT, 0, kDefaultEnd, 0, 0);
+  put_tag(&memory, kDefaultEnd, DmaTag::Kind::CNT, 10, 0, vif(VifCode::Kind::FLUSHA),
+          vif(VifCode::Kind::DIRECT, 10));
+  put_tag(&memory, kDefaultEndNext, DmaTag::Kind::NEXT, 0, kBoundary, 0, 0);
+
+  metal_jak2_merc_dma::Bucket bucket;
+  std::string error;
+  check(packet.size() == 1664,
+        "the bucket-229 fixture has the observed 1664-byte PC_PORT model packet");
+  check(metal_jak2_merc_dma::validate_bucket(memory.data(), memory.size(), kOpening, kBoundary,
+                                             memory.size(), &bucket, &error) &&
+            bucket.model_count == 1 && bucket.models.size() == 1 &&
+            bucket.models[0].name == "samos-highres" &&
+            bucket.models[0].matrix_count == 77 && bucket.models[0].effect_count == 1,
+        "the exact bucket-229 shape passes the current Merc packet grammar");
+
+  int model_checks = 0;
+  DmaFollower preflight(memory.data(), kOpening, memory.size());
+  const auto outcome = metal_jak2_merc_dma::preflight_bucket(
+      &preflight, memory.data(), memory.size(), kOpening, kBoundary, memory.size(), nullptr,
+      [&](const metal_jak2_merc_dma::ModelPacket& model, std::string*) {
+        model_checks++;
+        return model.name == "samos-highres" && model.effect_count == 1;
+      });
+  check(outcome.should_render() && model_checks == 1 && preflight.current_tag_offset() == kOpening,
+        "bucket 229 passes transactional Merc model-pool preflight without consuming DMA");
+
+  DmaFollower capture(memory.data(), kOpening, memory.size());
+  std::size_t transfers = 0;
+  std::size_t payload_bytes = 0;
+  while (capture.current_tag_offset() != kBoundary) {
+    const auto transfer = capture.read_and_advance();
+    transfers++;
+    payload_bytes += transfer.size_bytes;
+  }
+  check(transfers == 9 && payload_bytes == 2032,
+        "bucket 229 reproduces the retained nine-transfer, 2032-byte capture envelope");
+
+  const auto rejected = [](const std::vector<u8>& candidate) {
+    metal_jak2_merc_dma::Bucket rejected_bucket;
+    std::string rejected_error;
+    return !metal_jak2_merc_dma::validate_bucket(
+               candidate.data(), candidate.size(), kOpening, kBoundary, candidate.size(),
+               &rejected_bucket, &rejected_error) &&
+           !rejected_error.empty();
+  };
+  auto malformed_model = memory;
+  put_u32(&malformed_model, kModel0 + 12, 0);
+  check(rejected(malformed_model), "bucket 229 rejects a non-PC_PORT model packet");
+  auto malformed_link = memory;
+  put_tag(&malformed_link, kFinalLogicalPadding, DmaTag::Kind::NEXT, 0, kModel0, 0, 0);
+  check(rejected(malformed_link), "bucket 229 rejects a padding link that loops to its model");
+  auto malformed_tail = memory;
+  put_tag(&malformed_tail, kDefaultEnd, DmaTag::Kind::CNT, 10, 0,
+          vif(VifCode::Kind::FLUSHA), vif(VifCode::Kind::DIRECT, 9));
+  check(rejected(malformed_tail), "bucket 229 rejects a non-DIRECT10 default-end tail");
+}
+
 void test_intermediate_padding_links() {
   Fixture fixture;
   put_tag(&fixture.memory, fixture.model0_patch, DmaTag::Kind::NEXT, 0,
@@ -645,6 +722,7 @@ void test_jak1_dialect_is_preserved() {
 
 int main() {
   test_source_shaped_bucket();
+  test_pris2_bucket_229_capture_shape();
   test_intermediate_padding_links();
   test_empty_bucket();
   test_bounded_chain_rejections();

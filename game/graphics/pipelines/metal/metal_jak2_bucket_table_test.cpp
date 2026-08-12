@@ -90,7 +90,7 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 33, "33 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 32, "32 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 28,
@@ -113,8 +113,8 @@ int main() {
   check(tie_water == 6, "six water per-level TIE child buckets are implemented by Metal");
   check(tie_water_envmap == 6,
         "six water per-level ETIE child buckets are implemented by Metal");
-  check(merc == 21,
-        "21 normal, shrub, per-level PRIS, and common PRIS Merc buckets are implemented by Metal");
+  check(merc == 22,
+        "22 normal, shrub, PRIS, and common PRIS Merc buckets are implemented by Metal");
   check(blit_display == 1, "one source-proven BlitDisplays bucket is implemented by Metal");
   check(merc_alpha == 6, "six per-level alpha Merc buckets are implemented by Metal");
   check(merc_water == 7,
@@ -273,9 +273,10 @@ int main() {
          has_behavior(level_bucket(jak2::BucketId::TEX_L0_PRIS2,
                                    jak2::BucketId::TEX_L1_PRIS2, level),
                       Behavior::DeferredSkip)) &&
-        has_behavior(level_bucket(jak2::BucketId::MERC_L0_PRIS2,
-                                  jak2::BucketId::MERC_L1_PRIS2, level),
-                     Behavior::DeferredSkip) &&
+        (level == 1 ||
+         has_behavior(level_bucket(jak2::BucketId::MERC_L0_PRIS2,
+                                   jak2::BucketId::MERC_L1_PRIS2, level),
+                      Behavior::DeferredSkip)) &&
         has_behavior(level_bucket(jak2::BucketId::GMERC_L0_PRIS2,
                                   jak2::BucketId::GMERC_L1_PRIS2, level),
                      Behavior::DeferredSkip);
@@ -293,8 +294,11 @@ int main() {
   check(has_behavior(jak2::BucketId::TEX_L1_PRIS2, Behavior::PrisEye) &&
             static_cast<std::size_t>(jak2::BucketId::TEX_L1_PRIS2) == 228,
         "only exact PRIS2 texture bucket 228 is promoted to the planned eye renderer");
+  check(has_behavior(jak2::BucketId::MERC_L1_PRIS2, Behavior::Merc) &&
+            static_cast<std::size_t>(jak2::BucketId::MERC_L1_PRIS2) == 229,
+        "only exact PRIS2 Merc bucket 229 is promoted to the existing typed Merc renderer");
   check(remaining_prismatic_families_deferred,
-        "PRIS GMerc and all PRIS2 buckets except texture bucket 228 remain deferred");
+        "PRIS GMerc and all PRIS2 buckets except the exact 228/229 pair remain deferred");
   check(has_behavior(jak2::BucketId::MERC_LCOM_TFRAG, Behavior::Merc) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_TFRAG, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::TEX_LCOM_PRIS, Behavior::CommonPris) &&
@@ -352,6 +356,7 @@ int main() {
         "DEBUG_NO_ZBUF1 and TEX_ALL_MAP preserve their reference upload-plus-Direct behavior");
   check(has_behavior(jak2::BucketId::SHADOW, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::MERC_L0_PRIS2, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::MERC_L1_PRIS2, Behavior::Merc) &&
             has_behavior(jak2::BucketId::GMERC_L5_PRIS2, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_WATER, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_WATER, Behavior::StrictEmpty) &&

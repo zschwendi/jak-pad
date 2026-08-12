@@ -102,6 +102,7 @@ std::optional<std::string> jak2_merc_bucket_name(std::size_t bucket_id) {
       std::tuple{jak2::BucketId::MERC_L0_SHRUB, jak2::BucketId::MERC_L1_SHRUB, "shrub"},
       std::tuple{jak2::BucketId::MERC_L0_ALPHA, jak2::BucketId::MERC_L1_ALPHA, "alpha"},
       std::tuple{jak2::BucketId::MERC_L0_PRIS, jak2::BucketId::MERC_L1_PRIS, "pris"},
+      std::tuple{jak2::BucketId::MERC_L0_PRIS2, jak2::BucketId::MERC_L1_PRIS2, "pris2"},
       std::tuple{jak2::BucketId::MERC_L0_WATER, jak2::BucketId::MERC_L1_WATER, "water"},
   };
   for (const auto& [level_0, level_1, category] : families) {

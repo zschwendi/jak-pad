@@ -54,6 +54,7 @@ constexpr u32 kMercShrubBucket = static_cast<u32>(jak2::BucketId::MERC_L0_SHRUB)
 constexpr u32 kMercCommonTfragBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_TFRAG);
 constexpr u32 kMercCommonPrisBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_PRIS);
 constexpr u32 kMercPrisBucket = static_cast<u32>(jak2::BucketId::MERC_L0_PRIS);
+constexpr u32 kMercPris2Bucket = static_cast<u32>(jak2::BucketId::MERC_L1_PRIS2);
 constexpr u32 kOpening = 0x100;
 constexpr u32 kBoundary = 0x200;
 constexpr u32 kSetup = 0x400;
@@ -71,6 +72,7 @@ constexpr float kMercZ = 8388608.f;
 
 static_assert(kMercBucket == 14);
 static_assert(kMercCommonShrubBucket == 192);
+static_assert(kMercPris2Bucket == 229);
 
 int failures = 0;
 
@@ -151,7 +153,7 @@ std::vector<u8> make_setup() {
   return data;
 }
 
-std::vector<u8> make_model_packet(const char* model_name) {
+std::vector<u8> make_model_packet(const char* model_name, u16 matrix_count = 2) {
   std::vector<u8> data(128, 0);
   const auto model_name_size = std::strlen(model_name) + 1;
   ASSERT(model_name_size <= data.size());
@@ -164,13 +166,11 @@ std::vector<u8> make_model_packet(const char* model_name) {
 
   const auto matrix_slots = data.size();
   data.resize(data.size() + 128, 0xff);
-  data[matrix_slots] = 0;
-  data[matrix_slots + 1] = 1;
-
-  append_u32(&data, kBone0);
-  data.resize(data.size() + 12, 0);
-  append_u32(&data, kBone1);
-  data.resize(data.size() + 12, 0);
+  for (u16 i = 0; i < matrix_count; i++) {
+    data[matrix_slots + i] = static_cast<u8>(i);
+    append_u32(&data, i == 1 ? kBone1 : kBone0);
+    data.resize(data.size() + 12, 0);
+  }
 
   append_u64(&data, 1);
   append_u64(&data, 0);
@@ -196,7 +196,9 @@ void write_bone(std::vector<u8>* memory, u32 address, float x, float y) {
   std::memcpy(memory->data() + address, matrix, sizeof(matrix));
 }
 
-std::vector<u8> make_source_chain(const char* model_name, bool add_second_logical_chain = false) {
+std::vector<u8> make_source_chain(const char* model_name,
+                                  bool add_second_logical_chain = false,
+                                  bool exact_pris2_shape = false) {
   std::vector<u8> memory(kMemorySize, 0);
   put_tag(&memory, kOpening, DmaTag::Kind::NEXT, 0, kSetup, 0, 0);
 
@@ -208,13 +210,15 @@ std::vector<u8> make_source_chain(const char* model_name, bool add_second_logica
           static_cast<u32>(VifCode::Kind::DIRECT) << 24 | 3);
   put_tag(&memory, kSetupPatch, DmaTag::Kind::NEXT, 0, kModel, 0, 0);
 
-  const auto packet = make_model_packet(model_name);
+  const auto packet = make_model_packet(model_name, exact_pris2_shape ? 77 : 2);
   put_tag(&memory, kModel, DmaTag::Kind::CNT, static_cast<u16>(packet.size() / 16), 0, 0,
           static_cast<u32>(VifCode::Kind::PC_PORT) << 24);
   std::memcpy(memory.data() + kModel + 16, packet.data(), packet.size());
   const u32 model_patch = kModel + 16 + static_cast<u32>(packet.size());
   put_tag(&memory, model_patch, DmaTag::Kind::NEXT, 0,
-          add_second_logical_chain ? kInterChainPadding : kTerminal, 0, 0);
+          add_second_logical_chain ? kInterChainPadding
+                                   : (exact_pris2_shape ? kFinalLogicalPadding : kTerminal),
+          0, 0);
   if (add_second_logical_chain) {
     put_tag(&memory, kInterChainPadding, DmaTag::Kind::NEXT, 0, kSecondModel, 0, 0);
     put_tag(&memory, kSecondModel, DmaTag::Kind::CNT,
@@ -223,6 +227,11 @@ std::vector<u8> make_source_chain(const char* model_name, bool add_second_logica
     std::memcpy(memory.data() + kSecondModel + 16, packet.data(), packet.size());
     const u32 second_model_patch = kSecondModel + 16 + static_cast<u32>(packet.size());
     put_tag(&memory, second_model_patch, DmaTag::Kind::NEXT, 0, kFinalLogicalPadding, 0, 0);
+    put_tag(&memory, kFinalLogicalPadding, DmaTag::Kind::NEXT, 0, kTerminal, 0, 0);
+    put_tag(&memory, kTerminal, DmaTag::Kind::CNT, 10, 0, vif(VifCode::Kind::FLUSHA),
+            vif(VifCode::Kind::DIRECT, 10));
+    put_tag(&memory, kTerminal + 16 + 10 * 16, DmaTag::Kind::NEXT, 0, kBoundary, 0, 0);
+  } else if (exact_pris2_shape) {
     put_tag(&memory, kFinalLogicalPadding, DmaTag::Kind::NEXT, 0, kTerminal, 0, 0);
     put_tag(&memory, kTerminal, DmaTag::Kind::CNT, 10, 0, vif(VifCode::Kind::FLUSHA),
             vif(VifCode::Kind::DIRECT, 10));
@@ -551,6 +560,8 @@ int main() {
         "merc-lcom-pris", static_cast<int>(kMercCommonPrisBucket), shared);
     MetalMercBucketRenderer pris_renderer("merc-l0-pris", static_cast<int>(kMercPrisBucket),
                                           shared);
+    MetalMercBucketRenderer pris2_renderer("merc-l1-pris2", static_cast<int>(kMercPris2Bucket),
+                                           shared);
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
@@ -625,22 +636,24 @@ int main() {
       return policy.at(bucket_id).behavior == metal_renderer::Jak2MetalBucketBehavior::Merc;
     };
     check(routed_merc(kMercShrubBucket) && routed_merc(kMercPrisBucket) &&
+              routed_merc(kMercPris2Bucket) &&
               routed_merc(kMercCommonTfragBucket) && routed_merc(kMercCommonPrisBucket),
-          "the GPU fixtures select the routed SHRUB, per-level PRIS, common TFRAG, and common "
-          "PRIS policies");
+          "the GPU fixtures select the routed SHRUB, PRIS, exact PRIS2, and common policies");
     struct RoutedMercFixture {
       const char* category;
       MetalMercBucketRenderer* renderer;
+      bool exact_pris2_shape;
     };
-    const std::array<RoutedMercFixture, 4> routed_fixtures = {{
-        {"per-level SHRUB", &shrub_renderer},
-        {"per-level PRIS", &pris_renderer},
-        {"common TFRAG", &common_tfrag_renderer},
-        {"common PRIS", &common_pris_renderer},
+    const std::array<RoutedMercFixture, 5> routed_fixtures = {{
+        {"per-level SHRUB", &shrub_renderer, false},
+        {"per-level PRIS", &pris_renderer, false},
+        {"exact bucket-229 PRIS2", &pris2_renderer, true},
+        {"common TFRAG", &common_tfrag_renderer, false},
+        {"common PRIS", &common_pris_renderer, false},
     }};
     u64 routed_frame = 8;
     for (const auto& fixture : routed_fixtures) {
-      auto memory = make_source_chain(kNormalModelName);
+      auto memory = make_source_chain(kNormalModelName, false, fixture.exact_pris2_shape);
       const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                                  fixture.renderer, &memory, routed_frame++);
       const bool rendered = result.completed && result.final_offset == kBoundary &&
