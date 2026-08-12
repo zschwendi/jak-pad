@@ -172,10 +172,12 @@ struct Fixture {
                 std::string* error = nullptr,
                 std::size_t copy_size = kEeSize,
                 u32 start = kOpening,
-                u32 boundary = kBoundary) const {
+                u32 boundary = kBoundary,
+                metal_jak2_merc_dma::PreflightRejectReason* rejection_reason = nullptr) const {
     metal_jak2_merc_dma::Bucket local;
     return metal_jak2_merc_dma::validate_bucket(memory.data(), copy_size, start, boundary,
-                                                memory.size(), bucket ? bucket : &local, error);
+                                                memory.size(), bucket ? bucket : &local, error,
+                                                rejection_reason);
   }
 };
 
@@ -531,8 +533,36 @@ void test_preflight_transaction() {
         });
     check(!outcome.should_render() && outcome.recovered &&
               dma.current_tag_offset() == kBoundary && malformed == 1 && model_checks == 1 &&
-              outcome.packet.models.empty(),
+              outcome.packet.models.empty() &&
+              outcome.rejection_reason ==
+                  metal_jak2_merc_dma::PreflightRejectReason::LoadedModelMismatch,
           "a loaded-model mismatch is also transactionally reset and directly recovered");
+  }
+}
+
+void test_preflight_rejection_reason() {
+  using Reason = metal_jak2_merc_dma::PreflightRejectReason;
+  static_assert(static_cast<u32>(Reason::None) == 0);
+  static_assert(static_cast<u32>(Reason::CompactedCopyBounds) == 1);
+
+  {
+    Fixture fixture;
+    metal_jak2_merc_dma::Bucket bucket;
+    std::string error;
+    auto reason = Reason::ModelPacket;
+    check(fixture.validate(&bucket, &error, fixture.memory.size(), kOpening, kBoundary, &reason) &&
+              reason == Reason::None,
+          "a healthy Merc bucket exports rejection reason zero");
+  }
+  {
+    Fixture fixture;
+    metal_jak2_merc_dma::Bucket bucket;
+    std::string error;
+    auto reason = Reason::None;
+    const bool valid = fixture.validate(&bucket, &error, kBoundary + 8, kOpening, kBoundary,
+                                        &reason);
+    check(!valid && !error.empty() && reason == Reason::CompactedCopyBounds,
+          "a compacted copy missing the boundary header exports the bounds rejection reason");
   }
 }
 
@@ -566,6 +596,7 @@ int main() {
   test_model_packet_edges();
   test_malformed_buckets();
   test_preflight_transaction();
+  test_preflight_rejection_reason();
   test_jak1_dialect_is_preserved();
   if (g_failures) {
     std::printf("FAIL: %d Jak 2 Merc DMA checks failed\n", g_failures);

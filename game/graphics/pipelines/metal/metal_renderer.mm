@@ -1783,6 +1783,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.merc_models = merc_stats.models;
     m_chain_stats.merc_missing_models = merc_stats.missing_models;
     m_chain_stats.merc_malformed_dma = merc_stats.malformed_dma;
+    m_chain_stats.merc_preflight_rejection_reason = merc_stats.preflight_rejection_reason;
     m_chain_stats.merc_draws = merc_stats.draws;
     m_chain_stats.merc_triangles = merc_stats.triangles;
     m_chain_stats.merc_envmap_draws = merc_stats.envmap_draws;

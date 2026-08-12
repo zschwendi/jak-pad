@@ -156,6 +156,7 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_merc_draws;
   uint64_t last_merc_triangles;
   uint64_t last_merc_malformed_dma;
+  uint32_t last_merc_preflight_rejection_reason;
   uint64_t last_merc_missing_models;
   uint64_t last_merc_bad_bone_pointers;
   uint64_t last_merc_missing_bone_slots;

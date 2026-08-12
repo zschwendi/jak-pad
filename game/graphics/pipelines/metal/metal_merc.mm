@@ -404,6 +404,9 @@ void MetalMerc2::Stats::add(const Stats& o) {
   eye_draws += o.eye_draws;
   missing_textures += o.missing_textures;
   malformed_dma += o.malformed_dma;
+  if (preflight_rejection_reason == 0 && o.preflight_rejection_reason != 0) {
+    preflight_rejection_reason = o.preflight_rejection_reason;
+  }
   bad_bone_pointers += o.bad_bone_pointers;
   bad_draw_ranges += o.bad_draw_ranges;
   missing_bone_slots += o.missing_bone_slots;
@@ -501,11 +504,13 @@ void MetalMerc2::render(DmaFollower& dma,
     // Only this decision can enter the DMA handlers or publish queued draws.
     // Empty and malformed buckets recover to the boundary inside preflight.
     if (!preflight.should_render()) {
-      if (preflight.action == metal_jak2_merc_dma::PreflightAction::SkipMalformed &&
-          !m_warned_malformed_dma) {
-        lg::warn("Metal Jak 2 merc: expected {}; the bucket is skipped (logged once)",
-                 preflight.error);
-        m_warned_malformed_dma = true;
+      if (preflight.action == metal_jak2_merc_dma::PreflightAction::SkipMalformed) {
+        stats->preflight_rejection_reason = static_cast<u32>(preflight.rejection_reason);
+        if (!m_warned_malformed_dma) {
+          lg::warn("Metal Jak 2 merc: expected {}; the bucket is skipped (logged once)",
+                   preflight.error);
+          m_warned_malformed_dma = true;
+        }
       }
       if (!preflight.recovered) {
         lg::error("Metal Jak 2 merc: cannot recover to an out-of-range bucket boundary");

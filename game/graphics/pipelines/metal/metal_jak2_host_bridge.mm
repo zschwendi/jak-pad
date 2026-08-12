@@ -244,6 +244,7 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_merc_draws = stats.merc_draws;
   host->metrics.last_merc_triangles = stats.merc_triangles;
   host->metrics.last_merc_malformed_dma = stats.merc_malformed_dma;
+  host->metrics.last_merc_preflight_rejection_reason = stats.merc_preflight_rejection_reason;
   host->metrics.last_merc_missing_models = stats.merc_missing_models;
   host->metrics.last_merc_bad_bone_pointers = stats.merc_bad_bone_pointers;
   host->metrics.last_merc_missing_bone_slots = stats.merc_missing_bone_slots;

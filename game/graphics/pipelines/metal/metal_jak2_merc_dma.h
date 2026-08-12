@@ -59,6 +59,21 @@ struct Bucket {
   std::vector<ModelPacket> models;
 };
 
+// Stable wire values exported through the host metrics. Keep existing values fixed.
+enum class PreflightRejectReason : u32 {
+  None = 0,
+  CompactedCopyBounds = 1,
+  OpeningTag = 2,
+  VuSetupTag = 3,
+  VuSetupPayload = 4,
+  GsSetupTag = 5,
+  SetupPatch = 6,
+  ModelChain = 7,
+  ModelPacket = 8,
+  ModelPatch = 9,
+  LoadedModelMismatch = 10,
+};
+
 struct TagView {
   DmaTag::Kind kind = DmaTag::Kind::REFE;
   u16 qwc = 0;
@@ -298,7 +313,14 @@ inline bool validate_bucket(const u8* copy_base,
                             u32 next_bucket,
                             std::size_t ee_memory_size,
                             Bucket* out,
-                            std::string* error) {
+                            std::string* error,
+                            PreflightRejectReason* rejection_reason = nullptr) {
+  const auto set_reason = [rejection_reason](PreflightRejectReason reason) {
+    if (rejection_reason) {
+      *rejection_reason = reason;
+    }
+  };
+  set_reason(PreflightRejectReason::CompactedCopyBounds);
   if (!out) {
     return fail(error, "a bucket output");
   }
@@ -310,6 +332,7 @@ inline bool validate_bucket(const u8* copy_base,
     return fail(error, "the next bucket header inside the compacted copy");
   }
 
+  set_reason(PreflightRejectReason::OpeningTag);
   TagView opening;
   if (!read_tag(copy_base, copy_size, start_offset, &opening, error)) {
     return false;
@@ -321,6 +344,7 @@ inline bool validate_bucket(const u8* copy_base,
       return fail(error, "an empty CNT to land exactly at the bucket boundary");
     }
     out->empty = true;
+    set_reason(PreflightRejectReason::None);
     return true;
   }
 
@@ -332,6 +356,7 @@ inline bool validate_bucket(const u8* copy_base,
     return fail(error, "Merc setup data after the populated opening");
   }
 
+  set_reason(PreflightRejectReason::VuSetupTag);
   TagView setup;
   if (!read_tag(copy_base, copy_size, opening.address, &setup, error)) {
     return false;
@@ -339,11 +364,13 @@ inline bool validate_bucket(const u8* copy_base,
   if (setup.kind != DmaTag::Kind::CNT || setup.qwc != 10 || setup.address != 0) {
     return fail(error, "an exact CNT qwc10 Merc VU setup tag");
   }
+  set_reason(PreflightRejectReason::VuSetupPayload);
   if (!validate_setup_packet(copy_base + setup.payload_offset, setup.payload_size, setup.vif0,
                              setup.vif1, error)) {
     return false;
   }
 
+  set_reason(PreflightRejectReason::GsSetupTag);
   TagView gs;
   if (!read_tag(copy_base, copy_size, setup.inline_end, &gs, error)) {
     return false;
@@ -353,6 +380,7 @@ inline bool validate_bucket(const u8* copy_base,
     return fail(error, "an exact 48-byte NOP/DIRECT-3 GS test/zbuf packet");
   }
 
+  set_reason(PreflightRejectReason::SetupPatch);
   TagView setup_patch;
   if (!read_tag(copy_base, copy_size, gs.inline_end, &setup_patch, error)) {
     return false;
@@ -369,6 +397,7 @@ inline bool validate_bucket(const u8* copy_base,
   // copy. There can therefore be no more distinct targets than qword slots.
   std::vector<bool> visited_offsets(copy_size / 16, false);
   for (std::size_t link_count = 0; link_count < visited_offsets.size(); link_count++) {
+    set_reason(PreflightRejectReason::ModelChain);
     const std::size_t current_slot = current / 16;
     if (visited_offsets[current_slot]) {
       return fail(error, "an acyclic Merc model chain");
@@ -386,6 +415,7 @@ inline bool validate_bucket(const u8* copy_base,
       if (out->model_count == 0) {
         return fail(error, "at least one model in a populated Merc bucket");
       }
+      set_reason(PreflightRejectReason::None);
       return true;
     }
 
@@ -394,6 +424,7 @@ inline bool validate_bucket(const u8* copy_base,
       return fail(error, "an exact CNT zero/PC_PORT model tag");
     }
     ModelPacket packet;
+    set_reason(PreflightRejectReason::ModelPacket);
     if (!parse_model_packet(copy_base + model.payload_offset, model.payload_size, model.vif0,
                             model.vif1, ee_memory_size, &packet, error)) {
       return false;
@@ -401,6 +432,7 @@ inline bool validate_bucket(const u8* copy_base,
     out->model_count++;
     out->models.push_back(std::move(packet));
 
+    set_reason(PreflightRejectReason::ModelPatch);
     TagView model_patch;
     if (!read_tag(copy_base, copy_size, model.inline_end, &model_patch, error)) {
       return false;
@@ -420,6 +452,7 @@ enum class PreflightAction { Render, SkipEmpty, SkipMalformed };
 
 struct PreflightOutcome {
   PreflightAction action = PreflightAction::SkipMalformed;
+  PreflightRejectReason rejection_reason = PreflightRejectReason::None;
   Bucket packet;
   std::string error;
   bool recovered = false;
@@ -438,10 +471,11 @@ PreflightOutcome preflight_bucket(DmaFollower* dma,
                                   ModelValidator&& validate_model) {
   PreflightOutcome result;
   bool valid = validate_bucket(copy_base, copy_size, start_offset, next_bucket, ee_memory_size,
-                               &result.packet, &result.error);
+                               &result.packet, &result.error, &result.rejection_reason);
   if (valid && !result.packet.empty) {
     for (const auto& model : result.packet.models) {
       if (!validate_model(model, &result.error)) {
+        result.rejection_reason = PreflightRejectReason::LoadedModelMismatch;
         valid = false;
         break;
       }

@@ -54,6 +54,7 @@ class MetalMerc2 {
     int eye_draws = 0;        // draws whose texture the eye renderer composed
     int missing_textures = 0;
     int malformed_dma = 0;      // rejected Jak 2 source-grammar buckets
+    u32 preflight_rejection_reason = 0;  // first rejecting bucket this frame
     int bad_bone_pointers = 0;  // bone address outside EE memory: identity used
     int bad_draw_ranges = 0;    // draw range outside the level's index buffer: skipped
     int missing_bone_slots = 0;  // unique weighted slots absent from model packets
