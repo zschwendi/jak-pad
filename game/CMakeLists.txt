@@ -436,6 +436,12 @@ if(GOAL_HOST_TESTS_ENABLED)
     add_test(NAME jak2-metal-opcode27-skull-gem-cpu-test
             COMMAND jak2-metal-opcode27-skull-gem-cpu-test)
 
+    add_executable(jak2-metal-prison-clut-cpu-test
+            graphics/pipelines/metal/metal_jak2_prison_clut_cpu.cpp
+            graphics/pipelines/metal/metal_jak2_prison_clut_cpu_test.cpp)
+    add_test(NAME jak2-metal-prison-clut-cpu-test
+            COMMAND jak2-metal-prison-clut-cpu-test)
+
     add_executable(jak2-metal-merc-dma-test
             graphics/pipelines/metal/metal_jak2_merc_dma_test.cpp)
     target_compile_definitions(jak2-metal-merc-dma-test PRIVATE NO_ASSERT=1)
