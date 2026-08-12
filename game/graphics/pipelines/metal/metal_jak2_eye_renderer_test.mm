@@ -7,6 +7,7 @@
 #include "common/dma/gs.h"
 
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
+#include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
 
@@ -19,6 +20,10 @@ namespace {
 
 constexpr u32 kSourceTbp = 100;
 constexpr u64 kEyeHash = 0x123456789abcdef0ull;
+constexpr u32 kPrisBucket = 200;
+constexpr u32 kPrisBucketOffset = kPrisBucket * 16;
+constexpr u32 kPrisOrdinaryOffset = 0x4000;
+constexpr u32 kPrisChunkOffset = 0x5000;
 
 int failures = 0;
 
@@ -39,10 +44,13 @@ void append_qword(std::vector<u8>* data, u64 lo, u64 hi) {
 void append_transfer(std::vector<u8>* chain,
                      const std::vector<u8>& payload,
                      VifCode::Kind vif0,
-                     VifCode::Kind vif1) {
+                     VifCode::Kind vif1,
+                     u16 vif0_immediate = 0,
+                     u16 vif1_immediate = 0) {
   const u64 tag = payload.size() / 16 |
                   (static_cast<u64>(DmaTag::Kind::CNT) << 28);
-  const u64 transferred_tag = static_cast<u64>(vif0) << 24 |
+  const u64 transferred_tag = vif0_immediate | (static_cast<u64>(vif0) << 24) |
+                              (static_cast<u64>(vif1_immediate) << 32) |
                               (static_cast<u64>(vif1) << 56);
   append_qword(chain, tag, transferred_tag);
   chain->insert(chain->end(), payload.begin(), payload.end());
@@ -65,16 +73,18 @@ std::vector<u8> make_adgif(u32 tbp) {
   return data;
 }
 
-std::vector<u8> make_scissor() {
+std::vector<u8> make_scissor(u32 pair) {
   std::vector<u8> data;
   const u64 tag = 1 | (1ull << 15) | (1ull << 60);
   append_qword(&data, tag, static_cast<u64>(GifTag::RegisterDescriptor::AD));
-  const u64 scissor = 31ull << 16 | 31ull << 48;
+  const u64 y0 = pair * 32;
+  const u64 y1 = y0 + 31;
+  const u64 scissor = 31ull << 16 | y0 << 32 | y1 << 48;
   append_qword(&data, scissor, static_cast<u64>(GsRegisterAddress::SCISSOR_1));
   return data;
 }
 
-std::vector<u8> make_sprite(u64 hash) {
+std::vector<u8> make_sprite(u64 hash, u32 pair) {
   std::vector<u8> data;
   const u64 tag = 1 | (1ull << 15) | (1ull << 46) | (5ull << 60);
   const u64 regs = static_cast<u64>(GifTag::RegisterDescriptor::RGBAQ) |
@@ -91,41 +101,147 @@ std::vector<u8> make_sprite(u64 hash) {
   color[12] = 128;
   data.insert(data.end(), color.begin(), color.end());
   append_qword(&data, hash, 0);
-  append_qword(&data, 512ull | (512ull << 32), 0xffffffull << 4);
+  const u64 y0 = static_cast<u64>((pair + 1) * 32 * 16);
+  const u64 y1 = y0 + 32 * 16;
+  append_qword(&data, 512ull | (y0 << 32), 0xffffffull << 4);
   append_qword(&data, 0, 0);
-  append_qword(&data, 1024ull | (1024ull << 32), 0xffffffull << 4);
+  append_qword(&data, 1024ull | (y1 << 32), 0xffffffull << 4);
   return data;
 }
 
-void append_eye_draw(std::vector<u8>* chain, u64 hash) {
-  append_transfer(chain, make_scissor(), VifCode::Kind::NOP, VifCode::Kind::DIRECT);
-  append_transfer(chain, make_sprite(hash), VifCode::Kind::NOP, VifCode::Kind::DIRECT);
+void append_eye_draw(std::vector<u8>* chain, u64 hash, u32 pair) {
+  append_transfer(chain, make_scissor(pair), VifCode::Kind::NOP, VifCode::Kind::DIRECT, 0, 2);
+  append_transfer(chain, make_sprite(hash, pair), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 6);
 }
 
-std::vector<u8> make_eye_chain() {
+std::vector<u8> make_eye_chain(u32 pair = 0) {
   std::vector<u8> chain;
   append_transfer(&chain, std::vector<u8>(128), VifCode::Kind::FLUSHA,
-                  VifCode::Kind::DIRECT);
-  append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP, VifCode::Kind::DIRECT);
+                  VifCode::Kind::DIRECT, 0, 8);
+  append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 2);
 
-  append_transfer(&chain, make_adgif(kSourceTbp), VifCode::Kind::NOP, VifCode::Kind::DIRECT);
-  append_eye_draw(&chain, kEyeHash);  // pair/hash metadata
-  append_eye_draw(&chain, 0);         // left iris
-  append_eye_draw(&chain, 0);         // right iris
+  append_transfer(&chain, make_adgif(kSourceTbp), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 6);
+  append_eye_draw(&chain, kEyeHash + pair, pair);  // pair/hash metadata
+  append_eye_draw(&chain, 0, pair);                 // left iris
+  append_transfer(&chain, make_adgif(kSourceTbp), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 6);
+  append_eye_draw(&chain, 0, pair);  // right iris
 
-  append_transfer(&chain, std::vector<u8>(16), VifCode::Kind::NOP, VifCode::Kind::DIRECT);
-  append_transfer(&chain, make_adgif(kSourceTbp), VifCode::Kind::NOP, VifCode::Kind::DIRECT);
-  append_eye_draw(&chain, 0);  // left pupil
-  append_eye_draw(&chain, 0);  // right pupil
+  append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 2);
+  append_transfer(&chain, make_adgif(kSourceTbp), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 6);
+  append_eye_draw(&chain, 0, pair);  // left pupil
+  append_transfer(&chain, make_adgif(kSourceTbp), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 6);
+  append_eye_draw(&chain, 0, pair);  // right pupil
 
-  append_transfer(&chain, std::vector<u8>(16), VifCode::Kind::NOP, VifCode::Kind::DIRECT);
-  append_transfer(&chain, make_adgif(kSourceTbp), VifCode::Kind::NOP, VifCode::Kind::DIRECT);
-  append_eye_draw(&chain, 0);  // left lid
-  append_eye_draw(&chain, 0);  // right lid
+  append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 2);
+  append_transfer(&chain, make_adgif(kSourceTbp), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 6);
+  append_eye_draw(&chain, 0, pair);  // left lid
+  append_transfer(&chain, make_adgif(kSourceTbp), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 6);
+  append_eye_draw(&chain, 0, pair);  // right lid
 
   // get_draws stops before the fixed GS-state restore transfer.
-  append_transfer(&chain, std::vector<u8>(128), VifCode::Kind::NOP, VifCode::Kind::DIRECT);
+  append_transfer(&chain, std::vector<u8>(128), VifCode::Kind::FLUSHA,
+                  VifCode::Kind::DIRECT, 0, 8);
+  append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
+                  VifCode::Kind::DIRECT, 0, 2);
   return chain;
+}
+
+void put_tag(std::vector<u8>* data,
+             u32 offset,
+             DmaTag::Kind kind,
+             u16 qwc,
+             u32 address,
+             u32 vif0,
+             u32 vif1) {
+  const u64 raw = qwc | (static_cast<u64>(kind) << 28) |
+                  (static_cast<u64>(address) << 32);
+  std::memcpy(data->data() + offset, &raw, sizeof(raw));
+  std::memcpy(data->data() + offset + 8, &vif0, sizeof(vif0));
+  std::memcpy(data->data() + offset + 12, &vif1, sizeof(vif1));
+}
+
+struct PrisFixture {
+  std::vector<u8> data;
+  metal_renderer::Jak2PrisEyeTextureUploadPlan plan;
+};
+
+PrisFixture make_pris_fixture(std::size_t chunk_count) {
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  constexpr u64 kPageOffset = 0x200000;
+  constexpr s64 kMode = -1;
+  PrisFixture fixture;
+  fixture.data.resize(0x8000);
+  fixture.plan.bucket_id = kPrisBucket;
+  fixture.plan.present = true;
+  fixture.plan.ordinary.page_offset = kPageOffset;
+  fixture.plan.ordinary.mode = kMode;
+  fixture.plan.chunk_count = chunk_count;
+
+  put_tag(&fixture.data, kPrisBucketOffset, DmaTag::Kind::NEXT, 0,
+          kPrisOrdinaryOffset, 0, 0);
+  put_tag(&fixture.data, kPrisOrdinaryOffset, DmaTag::Kind::CNT, 1, 0,
+          kPcPort, 3);
+  std::memcpy(fixture.data.data() + kPrisOrdinaryOffset + 16, &kPageOffset,
+              sizeof(kPageOffset));
+  std::memcpy(fixture.data.data() + kPrisOrdinaryOffset + 24, &kMode, sizeof(kMode));
+
+  u32 chunk_offset = kPrisChunkOffset;
+  put_tag(&fixture.data, kPrisOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0,
+          chunk_offset, 0, 0);
+  for (std::size_t i = 0; i < chunk_count; ++i) {
+    const auto chunk_data = make_eye_chain(static_cast<u32>(i));
+    std::memcpy(fixture.data.data() + chunk_offset, chunk_data.data(), chunk_data.size());
+    const u32 linker_offset = chunk_offset + static_cast<u32>(chunk_data.size());
+    put_tag(&fixture.data, linker_offset, DmaTag::Kind::NEXT, 0, linker_offset + 16, 0, 0);
+
+    auto& chunk = fixture.plan.chunks[i];
+    chunk.resolution = metal_renderer::Jak2PrisEyeResolution::Eye32;
+    chunk.pair_index = static_cast<u32>(i);
+    chunk.start_transfer_index = 3 + static_cast<u32>(i) * 27;
+    chunk.start_relative_tag_offset = chunk_offset - kPrisBucketOffset;
+    chunk.linker_transfer_index = chunk.start_transfer_index +
+                                  metal_renderer::kJak2PrisEyeChunkTransferCount;
+    chunk.linker_relative_tag_offset = linker_offset - kPrisBucketOffset;
+    chunk.transfer_count = metal_renderer::kJak2PrisEyeChunkTransferCount;
+    chunk.payload_bytes = metal_renderer::kJak2PrisEyeChunkPayloadBytes;
+    chunk.eye_slot_mask = 3ull << (i * 2);
+    fixture.plan.eye_slot_mask |= chunk.eye_slot_mask;
+    chunk_offset = linker_offset + 16;
+  }
+
+  fixture.plan.direct_reset_transfer_index = 3 + static_cast<u32>(chunk_count) * 27;
+  fixture.plan.direct_reset_relative_tag_offset = chunk_offset - kPrisBucketOffset;
+  put_tag(&fixture.data, chunk_offset, DmaTag::Kind::CNT, 10, 0, kFlusha,
+          kDirect | 10);
+  const u32 terminal_offset = chunk_offset + 176;
+  fixture.plan.terminal_transfer_index = fixture.plan.direct_reset_transfer_index + 1;
+  fixture.plan.terminal_relative_tag_offset = terminal_offset - kPrisBucketOffset;
+  put_tag(&fixture.data, terminal_offset, DmaTag::Kind::NEXT, 0,
+          kPrisBucketOffset + 16, 0, 0);
+  return fixture;
+}
+
+struct HostBucketCounter {
+  u32 calls = 0;
+  u32 bucket_id = 0;
+};
+
+void count_host_bucket(void* opaque, u32 bucket_id) {
+  auto* counter = static_cast<HostBucketCounter*>(opaque);
+  counter->calls++;
+  counter->bucket_id = bucket_id;
 }
 
 }  // namespace
@@ -223,6 +339,52 @@ int main() {
       check(next_frame.eyes == 2 && next_frame.duplicate_slot_writes == 0 &&
                 next_frame.command_buffers_completed == 1,
             "the same slots can be composed once in the next frame");
+
+      MetalJak2PrisEyeBucketRenderer pris_renderer("jak2-pris-eye-200", kPrisBucket);
+      state.eye_renderer = &renderer;
+      state.buckets_base = 0;
+      state.next_bucket = kPrisBucketOffset + 16;
+      state.host_bucket_callback = count_host_bucket;
+
+      auto one_chunk = make_pris_fixture(1);
+      HostBucketCounter host_counter;
+      state.host_bucket_context = &host_counter;
+      state.jak2_pris_eye_plans = &one_chunk.plan;
+      state.jak2_pris_eye_plan_count = 1;
+      renderer.start_frame();
+      DmaFollower one_chunk_dma(one_chunk.data.data(), kPrisBucketOffset,
+                                one_chunk.data.size());
+      pris_renderer.render(one_chunk_dma, &state, context);
+      const auto one_chunk_stats = renderer.stats();
+      check(host_counter.calls == 1 && host_counter.bucket_id == kPrisBucket &&
+                one_chunk_dma.current_tag_offset() == state.next_bucket &&
+                one_chunk_stats.eyes == 2 && one_chunk_stats.draw_calls == 8 &&
+                one_chunk_stats.triangles == 16 && one_chunk_stats.missing_textures == 0 &&
+                one_chunk_stats.unexpected_dma == 0 &&
+                one_chunk_stats.duplicate_slot_writes == 0 &&
+                one_chunk_stats.command_buffers_committed == 1 &&
+                one_chunk_stats.command_buffers_completed == 1 &&
+                one_chunk_stats.command_buffer_errors == 0,
+            "the PRIS bucket callback runs once before one exact detached eye chunk completes");
+
+      auto two_chunks = make_pris_fixture(2);
+      host_counter = {};
+      state.jak2_pris_eye_plans = &two_chunks.plan;
+      renderer.start_frame();
+      DmaFollower two_chunk_dma(two_chunks.data.data(), kPrisBucketOffset,
+                                two_chunks.data.size());
+      pris_renderer.render(two_chunk_dma, &state, context);
+      const auto two_chunk_stats = renderer.stats();
+      check(host_counter.calls == 1 && host_counter.bucket_id == kPrisBucket &&
+                two_chunk_dma.current_tag_offset() == state.next_bucket &&
+                two_chunk_stats.eyes == 4 && two_chunk_stats.draw_calls == 16 &&
+                two_chunk_stats.triangles == 32 && two_chunk_stats.missing_textures == 0 &&
+                two_chunk_stats.unexpected_dma == 0 &&
+                two_chunk_stats.duplicate_slot_writes == 0 &&
+                two_chunk_stats.command_buffers_committed == 2 &&
+                two_chunk_stats.command_buffers_completed == 2 &&
+                two_chunk_stats.command_buffer_errors == 0,
+            "the PRIS renderer follows both planned chunks and consumes every terminal shape");
     }
 
     bool detached_all_eye_slots = true;

@@ -33,6 +33,10 @@ struct MetalBackgroundState;
 // composes eye textures other renderers sample (metal_eye_renderer.h)
 class MetalEyeRenderer;
 
+namespace metal_renderer {
+struct Jak2PrisEyeTextureUploadPlan;
+}
+
 using MetalHostBucketCallback = void (*)(void* context, u32 bucket_id);
 
 /*!
@@ -96,6 +100,8 @@ struct MetalSharedRenderState {
   std::size_t animated_texture_slot_count = 0;
   void* host_bucket_context = nullptr;
   MetalHostBucketCallback host_bucket_callback = nullptr;
+  const metal_renderer::Jak2PrisEyeTextureUploadPlan* jak2_pris_eye_plans = nullptr;
+  std::size_t jak2_pris_eye_plan_count = 0;
   float target_fps = 60.f;
 };
 
@@ -189,6 +195,20 @@ class MetalSkipRenderer : public MetalBucketRenderer {
 class MetalHostHandledRenderer : public MetalBucketRenderer {
  public:
   MetalHostHandledRenderer(const std::string& name, int my_id)
+      : MetalBucketRenderer(name, my_id) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+};
+
+/*!
+ * Executes one prevalidated per-level Jak II PRIS eye bucket. The host owns the ordinary texture
+ * upload at the exact bucket-entry callback; this renderer then consumes only the copied plan's
+ * fixed prefix, eye chunks, linkers, and terminal reset.
+ */
+class MetalJak2PrisEyeBucketRenderer : public MetalBucketRenderer {
+ public:
+  MetalJak2PrisEyeBucketRenderer(const std::string& name, int my_id)
       : MetalBucketRenderer(name, my_id) {}
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,

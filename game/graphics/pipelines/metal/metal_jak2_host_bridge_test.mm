@@ -17,6 +17,7 @@
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_fixture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
+#include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_fixture.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_merc_model_pool.h"
@@ -51,6 +52,9 @@ constexpr u32 kWaterSecurityBucket = 252;
 constexpr u32 kWaterSecurityDescriptorOffset = kChainOffset + 0x15000;
 constexpr u32 kWaterSecurityAnimatorOffset = kChainOffset + 0x15100;
 constexpr u32 kWaterSecurityDirectOffset = kChainOffset + 0x15800;
+constexpr u32 kPrisOrdinaryBucket = 200;
+constexpr u32 kPrisOrdinaryDescriptorOffset = kChainOffset + 0x16000;
+constexpr u32 kPrisOrdinaryDirectOffset = kChainOffset + 0x16100;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -144,6 +148,27 @@ void make_water_security_chain() {
 
   put_tag(kWaterSecurityDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   put_tag(kWaterSecurityDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_pris_ordinary_only_chain() {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  constexpr s64 kMode = -1;
+  constexpr u64 kPageOffset = kTexturePageOffset;
+  const u32 bucket_offset = kChainOffset + kPrisOrdinaryBucket * 16;
+
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kPrisOrdinaryDescriptorOffset);
+  put_tag(kPrisOrdinaryDescriptorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  std::memcpy(ee + kPrisOrdinaryDescriptorOffset + 16, &kPageOffset, sizeof(kPageOffset));
+  std::memcpy(ee + kPrisOrdinaryDescriptorOffset + 24, &kMode, sizeof(kMode));
+  put_tag(kPrisOrdinaryDescriptorOffset + 32, DmaTag::Kind::NEXT, 0,
+          kPrisOrdinaryDirectOffset);
+  put_tag(kPrisOrdinaryDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  std::memset(ee + kPrisOrdinaryDirectOffset + 16, 0x52, 160);
+  put_tag(kPrisOrdinaryDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
 void put_u64(std::array<u8, kGifBytes>& payload, std::size_t offset, u64 value) {
@@ -730,8 +755,9 @@ int main() {
   check(metal_level_data::level_count() == initial_level_count + 1 &&
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
             metal_merc_models().model_count() == initial_merc_model_count &&
-            configured_texture_count == initial_texture_count + 6,
-        "common art, placeholder, and three OCEAN targets are resident without synthetic content");
+            configured_texture_count ==
+                initial_texture_count + 6 + METAL_NUM_EYE_PAIRS * 2,
+        "common art, placeholder, OCEAN targets, and detached eye targets are resident");
   check(goal_jak2_metal_host_configure_level_art(host, fr3_directory.c_str()) &&
             metal_level_data::level_count() == initial_level_count + 1 &&
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
@@ -805,6 +831,13 @@ int main() {
         "the host records all six empty source-identical alpha texture setup buckets");
   check(texture_captures_are_empty(metrics.pris_texture_uploads, kPrisBuckets),
         "the host records all six empty per-level PRIS texture buckets without executing them");
+  check(metrics.last_pris_eye_dispatches == kPrisBuckets.size() &&
+            metrics.last_pris_eye_present_dispatches == 0 &&
+            metrics.last_pris_eye_chunks == 0 && metrics.last_eye_composed == 0 &&
+            metrics.last_eye_command_buffers_committed == 0 &&
+            metrics.last_eye_command_buffers_completed == 0 &&
+            metrics.last_eye_command_buffer_errors == 0,
+        "all six empty per-level PRIS callbacks run once without eye execution");
   check(texture_captures_are_empty(metrics.water_texture_uploads, kWaterBuckets),
         "the host records all six empty source-identical water texture upload buckets");
   check(texture_capture_is_empty(metrics.common_tfrag_texture_upload, 187),
@@ -1155,6 +1188,45 @@ int main() {
                         "bucket 4 texture-upload capture rejected malformed DMA"),
         "malformed bucket 4 fails before mutation, copying, or dispatch");
   goal_jak2_metal_host_destroy(capture_host);
+
+  goal_jak2_metal_host* pris_upload_host = goal_jak2_metal_host_create();
+  goal_gfx_host pris_upload_callbacks = {};
+  check(pris_upload_host &&
+            goal_jak2_metal_host_copy_gfx_host(pris_upload_host, &pris_upload_callbacks),
+        "created a host for ordinary-only per-level PRIS integration");
+  write_empty_texture_page(kTexturePageOffset, kTexturePageId);
+  make_pris_ordinary_only_chain();
+  pris_upload_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  goal_jak2_metal_host_metrics pris_upload_metrics = {};
+  check(pris_upload_host &&
+            goal_jak2_metal_host_get_metrics(pris_upload_host, &pris_upload_metrics),
+        "copied metrics after the ordinary-only PRIS chain");
+  check(pris_upload_metrics.chains == 1 && pris_upload_metrics.completed_chains == 1 &&
+            pris_upload_metrics.failed_chains == 0 &&
+            pris_upload_metrics.last_buckets_dispatched == kBucketCount &&
+            pris_upload_metrics.last_pris_eye_dispatches ==
+                GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT &&
+            pris_upload_metrics.last_pris_eye_present_dispatches == 1 &&
+            pris_upload_metrics.last_pris_eye_chunks == 0 &&
+            pris_upload_metrics.pris_texture_uploads[1].bucket_id == kPrisOrdinaryBucket &&
+            pris_upload_metrics.pris_texture_uploads[1].present_captures == 1 &&
+            pris_upload_metrics.pris_texture_uploads[1].transfers == 5 &&
+            pris_upload_metrics.pris_texture_uploads[1].payload_bytes == 176 &&
+            pris_upload_metrics.pris_texture_uploads[1].ordinary_descriptors == 1 &&
+            pris_upload_metrics.pris_texture_uploads[1].direct_setup_transfers == 1 &&
+            pris_upload_metrics.pris_texture_uploads[1].executions == 1 &&
+            pris_upload_metrics.last_eye_composed == 0 &&
+            pris_upload_metrics.last_eye_draws == 0 &&
+            pris_upload_metrics.last_eye_triangles == 0 &&
+            pris_upload_metrics.last_eye_missing_textures == 0 &&
+            pris_upload_metrics.last_eye_unexpected_dma == 0 &&
+            pris_upload_metrics.last_eye_duplicate_slot_writes == 0 &&
+            pris_upload_metrics.last_eye_command_buffers_committed == 0 &&
+            pris_upload_metrics.last_eye_command_buffers_completed == 0 &&
+            pris_upload_metrics.last_eye_command_buffer_errors == 0 &&
+            pris_upload_metrics.skipped_bucket_bytes == 0,
+        "all six PRIS callbacks run, the ordinary upload runs once, and zero eye chunks execute");
+  goal_jak2_metal_host_destroy(pris_upload_host);
 
   goal_jak2_metal_host* sprite_upload_host = goal_jak2_metal_host_create();
   goal_gfx_host sprite_upload_callbacks = {};

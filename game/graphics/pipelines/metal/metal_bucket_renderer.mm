@@ -2,12 +2,15 @@
 
 #include <array>
 #include <cstring>
+#include <limits>
+#include <stdexcept>
 
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
 #include "game/graphics/pipelines/metal/metal_bucket_chain_semantics.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
+#include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_vis_data.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -149,6 +152,143 @@ void MetalHostHandledRenderer::render(DmaFollower& dma,
   while (dma.current_tag_offset() != render_state->next_bucket) {
     dma.read_and_advance();
   }
+}
+
+namespace {
+
+u32 pris_expected_offset(const MetalSharedRenderState& state, u32 bucket_id, u32 relative) {
+  const u64 offset = static_cast<u64>(state.buckets_base) + bucket_id * 16 + relative;
+  if (offset > std::numeric_limits<u32>::max()) {
+    throw std::runtime_error("Jak 2 PRIS eye plan offset overflowed");
+  }
+  return static_cast<u32>(offset);
+}
+
+void pris_expect_offset(const DmaFollower& dma, u32 expected, const char* what) {
+  if (dma.current_tag_offset() != expected) {
+    throw std::runtime_error(fmt::format("Jak 2 PRIS eye {} moved from {:#x} to {:#x}", what,
+                                         expected, dma.current_tag_offset()));
+  }
+}
+
+DmaTransfer pris_take(DmaFollower& dma,
+                      DmaTag::Kind kind,
+                      u16 qwc,
+                      VifCode::Kind vif0,
+                      u16 vif0_immediate,
+                      VifCode::Kind vif1,
+                      u16 vif1_immediate,
+                      const char* what) {
+  const auto tag = dma.current_tag();
+  const auto code0 = dma.current_tag_vifcode0();
+  const auto code1 = dma.current_tag_vifcode1();
+  if (tag.kind != kind || tag.qwc != qwc || tag.spr || code0.kind != vif0 ||
+      code0.immediate != vif0_immediate || code1.kind != vif1 ||
+      code1.immediate != vif1_immediate) {
+    throw std::runtime_error(fmt::format("Jak 2 PRIS eye {} did not match its copied plan", what));
+  }
+  return dma.read_and_advance();
+}
+
+const metal_renderer::Jak2PrisEyeTextureUploadPlan& pris_plan_for_bucket(
+    const MetalSharedRenderState& state,
+    u32 bucket_id) {
+  if (!state.jak2_pris_eye_plans || state.jak2_pris_eye_plan_count == 0) {
+    throw std::runtime_error("Jak 2 PRIS eye renderer has no copied execution plans");
+  }
+  for (std::size_t i = 0; i < state.jak2_pris_eye_plan_count; ++i) {
+    if (state.jak2_pris_eye_plans[i].bucket_id == bucket_id) {
+      return state.jak2_pris_eye_plans[i];
+    }
+  }
+  throw std::runtime_error(
+      fmt::format("Jak 2 PRIS eye renderer is missing bucket {} plan", bucket_id));
+}
+
+}  // namespace
+
+void MetalJak2PrisEyeBucketRenderer::render(DmaFollower& dma,
+                                             MetalSharedRenderState* render_state,
+                                             MetalFrameContext& ctx) {
+  if (!render_state || render_state->version != GameVersion::Jak2 ||
+      !render_state->eye_renderer || !render_state->host_bucket_callback) {
+    throw std::runtime_error("Jak 2 PRIS eye renderer dispatch is incomplete");
+  }
+  const u32 bucket_id = static_cast<u32>(m_my_id);
+  const auto& plan = pris_plan_for_bucket(*render_state, bucket_id);
+  const u32 bucket_offset = pris_expected_offset(*render_state, bucket_id, 0);
+  pris_expect_offset(dma, bucket_offset, "bucket entry");
+
+  // This is deliberately first: ordinary page publication has source ordering at bucket entry.
+  render_state->host_bucket_callback(render_state->host_bucket_context, bucket_id);
+
+  if (!plan.present) {
+    pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+              "absent terminal");
+    pris_expect_offset(dma, render_state->next_bucket, "absent boundary");
+    return;
+  }
+
+  pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+            "opening linker");
+  const auto descriptor =
+      pris_take(dma, DmaTag::Kind::CNT, 1, VifCode::Kind::PC_PORT, 0,
+                VifCode::Kind::NOP, 3, "ordinary descriptor");
+  u64 page_offset = 0;
+  s64 mode = 0;
+  std::memcpy(&page_offset, descriptor.data, sizeof(page_offset));
+  std::memcpy(&mode, descriptor.data + sizeof(page_offset), sizeof(mode));
+  if (page_offset != plan.ordinary.page_offset || mode != plan.ordinary.mode) {
+    throw std::runtime_error("Jak 2 PRIS eye ordinary descriptor changed after copied preflight");
+  }
+  pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+            "ordinary linker");
+
+  for (std::size_t i = 0; i < plan.chunk_count; ++i) {
+    const auto& chunk = plan.chunks[i];
+    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                                 chunk.start_relative_tag_offset),
+                       "chunk start");
+    const auto before = render_state->eye_renderer->stats();
+    render_state->eye_renderer->render_from_texture_bucket(dma, render_state, ctx);
+    const auto after = render_state->eye_renderer->stats();
+    if (after.eyes != before.eyes + 2 || after.draw_calls != before.draw_calls + 8 ||
+        after.triangles != before.triangles + 16 ||
+        after.missing_textures != before.missing_textures ||
+        after.command_buffers_committed != before.command_buffers_committed + 1 ||
+        after.command_buffers_completed != before.command_buffers_completed + 1 ||
+        after.unexpected_dma != before.unexpected_dma ||
+        after.duplicate_slot_writes != before.duplicate_slot_writes ||
+        after.command_buffer_errors != before.command_buffer_errors) {
+      throw std::runtime_error(
+          fmt::format("Jak 2 PRIS eye chunk {} renderer execution failed", i));
+    }
+
+    const u32 linker_offset = pris_expected_offset(*render_state, bucket_id,
+                                                   chunk.linker_relative_tag_offset);
+    pris_expect_offset(dma, linker_offset - (16 + 8 * 16 + 16 + 2 * 16),
+                       "chunk terminal qwc8");
+    pris_take(dma, DmaTag::Kind::CNT, 8, VifCode::Kind::FLUSHA, 0,
+              VifCode::Kind::DIRECT, 8, "chunk terminal qwc8");
+    pris_expect_offset(dma, linker_offset - (16 + 2 * 16), "chunk trailing qwc2");
+    pris_take(dma, DmaTag::Kind::CNT, 2, VifCode::Kind::NOP, 0,
+              VifCode::Kind::DIRECT, 2, "chunk trailing qwc2");
+    pris_expect_offset(dma, linker_offset, "chunk linker");
+    pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+              "chunk linker");
+  }
+
+  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                               plan.direct_reset_relative_tag_offset),
+                     "default reset");
+  pris_take(dma, DmaTag::Kind::CNT, 10, VifCode::Kind::FLUSHA, 0,
+            VifCode::Kind::DIRECT, 10, "default reset");
+  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                               plan.terminal_relative_tag_offset),
+                     "terminal linker");
+  pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+            "terminal linker");
+  pris_expect_offset(dma, render_state->next_bucket, "bucket boundary");
 }
 
 void MetalVisibilityBucketRenderer::render(DmaFollower& dma,

@@ -56,6 +56,7 @@ int main() {
   std::size_t generic2 = 0;
   std::size_t ocean_mid_far = 0;
   std::size_t ocean_near = 0;
+  std::size_t pris_eye = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -83,10 +84,11 @@ int main() {
     generic2 += table[i].behavior == Behavior::Generic2;
     ocean_mid_far += table[i].behavior == Behavior::OceanMidFar;
     ocean_near += table[i].behavior == Behavior::OceanNear;
+    pris_eye += table[i].behavior == Behavior::PrisEye;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 41, "41 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 35, "35 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 28,
@@ -119,6 +121,8 @@ int main() {
         "26 source-proven normal GMerc buckets are implemented by Metal Generic2");
   check(ocean_mid_far == 1 && ocean_near == 1,
         "both source-proven OCEAN renderer policies are explicit");
+  check(pris_eye == 6,
+        "six per-level PRIS texture buckets use the prevalidated eye execution path");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
             metal_renderer::kJak2MetalBucketExpectedFingerprint,
         "the ordered descriptor policy matches its fixed reference fingerprint");
@@ -237,7 +241,8 @@ int main() {
             has_behavior(jak2::BucketId::GMERC_LCOM_WATER, Behavior::StrictEmpty),
         "per-level water GMerc uses Generic2 while its unbound common neighbor stays strict-empty");
   bool source_proven_foreground_families = true;
-  bool untyped_prismatic_families_deferred = true;
+  bool remaining_prismatic_families_deferred = true;
+  bool per_level_pris_eye_routed = true;
   bool per_level_pris_merc_routed = true;
   for (int level = 0; level < jak2::LEVEL_MAX; ++level) {
     source_proven_foreground_families &=
@@ -253,10 +258,11 @@ int main() {
         has_behavior(level_bucket(jak2::BucketId::GMERC_L0_SHRUB,
                                   jak2::BucketId::GMERC_L1_SHRUB, level),
                      Behavior::Generic2);
-    untyped_prismatic_families_deferred &=
+    per_level_pris_eye_routed &=
         has_behavior(level_bucket(jak2::BucketId::TEX_L0_PRIS,
                                   jak2::BucketId::TEX_L1_PRIS, level),
-                     Behavior::DeferredSkip) &&
+                     Behavior::PrisEye);
+    remaining_prismatic_families_deferred &=
         has_behavior(level_bucket(jak2::BucketId::GMERC_L0_PRIS,
                                   jak2::BucketId::GMERC_L1_PRIS, level),
                      Behavior::DeferredSkip) &&
@@ -278,8 +284,10 @@ int main() {
         "all per-level TFRAG and SHRUB Merc/normal-GMerc families are routed");
   check(per_level_pris_merc_routed,
         "all six per-level PRIS Merc draw buckets use the existing Metal Merc grammar");
-  check(untyped_prismatic_families_deferred,
-        "per-level PRIS texture/GMerc and every PRIS2 family remain deferred");
+  check(per_level_pris_eye_routed,
+        "all six per-level PRIS texture buckets use the dedicated planned eye renderer");
+  check(remaining_prismatic_families_deferred,
+        "per-level PRIS GMerc and every PRIS2 family remain deferred");
   check(has_behavior(jak2::BucketId::MERC_LCOM_TFRAG, Behavior::Merc) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_TFRAG, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::TEX_LCOM_PRIS, Behavior::DeferredSkip) &&
@@ -316,7 +324,7 @@ int main() {
   check(has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::OceanMidFar) &&
             has_behavior(jak2::BucketId::OCEAN_NEAR, Behavior::OceanNear) &&
             has_behavior(jak2::BucketId::TEX_LCOM_WATER, Behavior::DeferredSkip) &&
-            has_behavior(jak2::BucketId::TEX_L5_PRIS, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TEX_L5_PRIS, Behavior::PrisEye) &&
             has_behavior(jak2::BucketId::TEX_L5_PRIS2, Behavior::DeferredSkip),
         "the paired OCEAN buckets route together while unsupported water and prismatic uploads "
         "defer");

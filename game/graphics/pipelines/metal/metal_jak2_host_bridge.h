@@ -138,6 +138,18 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t common_tfrag_skull_gem_texture;
   uint32_t common_tfrag_skull_gem_destination_tbp;
   uint32_t common_tfrag_skull_gem_anim_slot;
+  uint64_t last_pris_eye_dispatches;
+  uint64_t last_pris_eye_present_dispatches;
+  uint64_t last_pris_eye_chunks;
+  uint64_t last_eye_composed;
+  uint64_t last_eye_draws;
+  uint64_t last_eye_triangles;
+  uint64_t last_eye_missing_textures;
+  uint64_t last_eye_unexpected_dma;
+  uint64_t last_eye_duplicate_slot_writes;
+  uint64_t last_eye_command_buffers_committed;
+  uint64_t last_eye_command_buffers_completed;
+  uint64_t last_eye_command_buffer_errors;
   uint32_t last_copied_bytes;
   uint64_t last_buckets_dispatched;
   uint64_t command_buffers_committed;

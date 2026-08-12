@@ -83,6 +83,8 @@ struct MetalRenderOptions {
   // Optional synchronous host work that must stay ordered with Jak II bucket dispatch.
   void* host_bucket_context = nullptr;
   MetalHostBucketCallback host_bucket_callback = nullptr;
+  const metal_renderer::Jak2PrisEyeTextureUploadPlan* jak2_pris_eye_plans = nullptr;
+  std::size_t jak2_pris_eye_plan_count = 0;
   float target_fps = 60.f;
 };
 

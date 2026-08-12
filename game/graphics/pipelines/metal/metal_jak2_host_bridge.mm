@@ -96,7 +96,8 @@ bool jak2_metal_host_policy_table_is_audited() {
         descriptor.behavior != Jak2MetalBucketBehavior::MercWater &&
         descriptor.behavior != Jak2MetalBucketBehavior::Generic2 &&
         descriptor.behavior != Jak2MetalBucketBehavior::OceanMidFar &&
-        descriptor.behavior != Jak2MetalBucketBehavior::OceanNear) {
+        descriptor.behavior != Jak2MetalBucketBehavior::OceanNear &&
+        descriptor.behavior != Jak2MetalBucketBehavior::PrisEye) {
       return false;
     }
   }
@@ -256,6 +257,15 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_generic_triangles = stats.generic_triangles;
   host->metrics.last_generic_missing_textures = stats.generic_missing_textures;
   host->metrics.last_generic_unexpected_dma = stats.generic_unexpected_dma;
+  host->metrics.last_eye_composed = stats.eyes_composed;
+  host->metrics.last_eye_draws = stats.eye_draws;
+  host->metrics.last_eye_triangles = stats.eye_triangles;
+  host->metrics.last_eye_missing_textures = stats.eye_missing_textures;
+  host->metrics.last_eye_unexpected_dma = stats.eye_unexpected_dma;
+  host->metrics.last_eye_duplicate_slot_writes = stats.eye_duplicate_slot_writes;
+  host->metrics.last_eye_command_buffers_committed = stats.eye_command_buffers_committed;
+  host->metrics.last_eye_command_buffers_completed = stats.eye_command_buffers_completed;
+  host->metrics.last_eye_command_buffer_errors = stats.eye_command_buffer_errors;
   host->metrics.last_sky_draw_draws = stats.jak2_sky_draw_draws;
   host->metrics.last_sky_draw_triangles = stats.jak2_sky_draw_triangles;
   const auto& sky_batch = stats.jak2_sky_draw_last_batch;
@@ -581,6 +591,9 @@ using Jak2AlphaTextureUploadPlans =
 using Jak2WaterTextureUploadPlans =
     std::array<metal_renderer::Jak2WaterTextureUploadPlan,
                metal_renderer::kJak2WaterTextureUploadBuckets.size()>;
+using Jak2PrisEyeTextureUploadPlans =
+    std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan,
+               metal_renderer::kJak2PrisTextureUploadBuckets.size()>;
 
 struct Jak2TextureUploadDispatch {
   goal_jak2_metal_host* host = nullptr;
@@ -588,9 +601,9 @@ struct Jak2TextureUploadDispatch {
   const Jak2TfragTextureUploadPlans* tfrag_plans = nullptr;
   const Jak2ShrubTextureUploadPlans* shrub_plans = nullptr;
   const Jak2AlphaTextureUploadPlans* alpha_plans = nullptr;
+  const Jak2PrisEyeTextureUploadPlans* pris_eye_plans = nullptr;
   const Jak2WaterTextureUploadPlans* water_plans = nullptr;
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
-  const metal_renderer::Jak2CommonPrisTextureUploadPlan* common_pris_plan = nullptr;
   const metal_renderer::Jak2SpriteTextureUploadPlan* sprite_plan = nullptr;
   const metal_renderer::Jak2MapTextureUploadPlan* map_plan = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
@@ -600,10 +613,39 @@ struct Jak2TextureUploadDispatch {
   bool* host_texture_mutated = nullptr;
   bool* sprite_callback_executed = nullptr;
   bool* raw_image_callback_executed = nullptr;
+  std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
+      pris_eye_callbacks_executed = nullptr;
 };
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  const auto pris = std::find(metal_renderer::kJak2PrisTextureUploadBuckets.begin(),
+                              metal_renderer::kJak2PrisTextureUploadBuckets.end(), bucket_id);
+  if (pris != metal_renderer::kJak2PrisTextureUploadBuckets.end()) {
+    if (!dispatch->pris_eye_plans || !dispatch->pris_eye_callbacks_executed) {
+      throw std::runtime_error("Jak 2 PRIS eye texture dispatch is incomplete");
+    }
+    const std::size_t index = static_cast<std::size_t>(
+        pris - metal_renderer::kJak2PrisTextureUploadBuckets.begin());
+    if ((*dispatch->pris_eye_callbacks_executed)[index]) {
+      throw std::runtime_error(
+          fmt::format("Jak 2 PRIS eye bucket {} callback repeated", bucket_id));
+    }
+    (*dispatch->pris_eye_callbacks_executed)[index] = true;
+    dispatch->host->metrics.last_pris_eye_dispatches++;
+    const auto& plan = (*dispatch->pris_eye_plans)[index];
+    if (plan.bucket_id != bucket_id) {
+      throw std::runtime_error("Jak 2 PRIS eye texture dispatch order is inconsistent");
+    }
+    if (plan.present) {
+      execute_ordinary_texture_upload_or_throw(
+          dispatch->host, plan.ordinary, dispatch->live_ee_memory,
+          &dispatch->host->metrics.pris_texture_uploads[index].executions,
+          "Jak 2 PRIS eye ordinary texture upload", dispatch->host_texture_mutated);
+      dispatch->host->metrics.last_pris_eye_present_dispatches++;
+    }
+    return;
+  }
   if (bucket_id == static_cast<u32>(jak2::BucketId::TEX_ALL_SPRITE)) {
     if (!dispatch->sprite_callback_executed) {
       throw std::runtime_error("Jak 2 bucket 312 texture-upload marker tracking is unavailable");
@@ -690,17 +732,6 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
         metal_renderer::kJak2SkullGemAnimatedTextureSlot;
     return;
   }
-  if (bucket_id == metal_renderer::kJak2CommonPrisTextureUploadBucket) {
-    if (!dispatch->common_pris_plan || !dispatch->common_pris_plan->present) {
-      return;
-    }
-    execute_ordinary_texture_upload_or_throw(
-        dispatch->host, dispatch->common_pris_plan->ordinary, dispatch->live_ee_memory,
-        &dispatch->host->metrics.common_pris_texture_upload.executions,
-        "Jak 2 common PRIS ordinary texture upload", dispatch->host_texture_mutated);
-    return;
-  }
-
   const auto found = std::find(metal_renderer::kJak2NormalTfragTextureUploadBuckets.begin(),
                                metal_renderer::kJak2NormalTfragTextureUploadBuckets.end(),
                                bucket_id);
@@ -947,13 +978,23 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       alpha_texture_plans[i] = *plan;
     }
+    Jak2PrisEyeTextureUploadPlans live_pris_eye_plans;
     static_assert(GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT ==
                   metal_renderer::kJak2PrisTextureUploadBuckets.size());
     for (std::size_t i = 0; i < metal_renderer::kJak2PrisTextureUploadBuckets.size(); ++i) {
       const u32 bucket_id = metal_renderer::kJak2PrisTextureUploadBuckets[i];
-      const auto capture = metal_renderer::capture_jak2_tfrag_texture_upload(
-          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id);
+      metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+      const auto plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id,
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &capture);
       record_texture_upload_metrics(&host->metrics.pris_texture_uploads[i], bucket_id, capture);
+      if (!plan) {
+        const std::string error = "Jak 2 PRIS eye texture plan rejected bucket " +
+                                  std::to_string(bucket_id) + " DMA";
+        record_failure(host, error.c_str());
+        return;
+      }
+      live_pris_eye_plans[i] = *plan;
     }
     Jak2WaterTextureUploadPlans water_texture_plans;
     static_assert(GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT ==
@@ -1039,6 +1080,24 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
+    Jak2PrisEyeTextureUploadPlans copied_pris_eye_plans;
+    for (std::size_t i = 0; i < metal_renderer::kJak2PrisTextureUploadBuckets.size(); ++i) {
+      const u32 bucket_id = metal_renderer::kJak2PrisTextureUploadBuckets[i];
+      const auto copied_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+          copied.data.data(), copied.data.size(), copied.start_offset, bucket_id,
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+      if (!copied_plan || !metal_renderer::jak2_pris_eye_texture_upload_plans_match(
+                              live_pris_eye_plans[i], *copied_plan)) {
+        record_send_chain_failure(
+            host,
+            "Jak 2 copied PRIS eye texture plan did not match live bucket " +
+                std::to_string(bucket_id),
+            false);
+        return;
+      }
+      copied_pris_eye_plans[i] = *copied_plan;
+    }
+
     if (!metal_renderer::copied_jak2_raw_image_upload_markers_match_plan(
             copied.data.data(), copied.data.size(), copied.start_offset,
             raw_image_plan->present)) {
@@ -1098,15 +1157,20 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
 
     bool sprite_callback_executed = false;
     bool raw_image_callback_executed = false;
+    std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>
+        pris_eye_callbacks_executed = {};
+    host->metrics.last_pris_eye_dispatches = 0;
+    host->metrics.last_pris_eye_present_dispatches = 0;
+    host->metrics.last_pris_eye_chunks = 0;
     Jak2TextureUploadDispatch texture_dispatch{
         host,
         &*raw_image_plan,
         &tfrag_texture_plans,
         &shrub_texture_plans,
         &alpha_texture_plans,
+        &copied_pris_eye_plans,
         &water_texture_plans,
         &*common_tfrag_texture_plan,
-        nullptr,
         &*sprite_texture_plan,
         &*map_texture_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
@@ -1114,18 +1178,48 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         static_cast<const u8*>(ee_base),
         &host_texture_mutated,
         &sprite_callback_executed,
-        &raw_image_callback_executed};
+        &raw_image_callback_executed,
+        &pris_eye_callbacks_executed};
     auto render_options = host->options;
     const auto& animated_texture_slots = host->skull_gem_executor->animated_texture_slots();
     render_options.animated_texture_slots = animated_texture_slots.data();
     render_options.animated_texture_slot_count = animated_texture_slots.size();
     render_options.host_bucket_context = &texture_dispatch;
     render_options.host_bucket_callback = execute_planned_texture_upload;
+    render_options.jak2_pris_eye_plans = copied_pris_eye_plans.data();
+    render_options.jak2_pris_eye_plan_count = copied_pris_eye_plans.size();
     const auto renderer_before = host->renderer.chain_stats();
     const bool acquired = host->renderer.render_chain_frame(
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
     const auto renderer_after = host->renderer.chain_stats();
     copy_renderer_metrics(host);
+    std::size_t expected_pris_eye_chunks = 0;
+    std::size_t expected_pris_eye_present_dispatches = 0;
+    for (const auto& plan : copied_pris_eye_plans) {
+      expected_pris_eye_chunks += plan.chunk_count;
+      expected_pris_eye_present_dispatches += plan.present;
+    }
+    if (!std::all_of(pris_eye_callbacks_executed.begin(), pris_eye_callbacks_executed.end(),
+                     [](bool executed) { return executed; }) ||
+        host->metrics.last_pris_eye_dispatches != copied_pris_eye_plans.size() ||
+        host->metrics.last_pris_eye_present_dispatches !=
+            expected_pris_eye_present_dispatches) {
+      record_send_chain_failure(host, "Jak 2 PRIS eye bucket callback dispatch was incomplete",
+                                host_texture_mutated);
+      return;
+    }
+    if (host->metrics.last_eye_composed != expected_pris_eye_chunks * 2 ||
+        host->metrics.last_eye_missing_textures != 0 ||
+        host->metrics.last_eye_unexpected_dma != 0 ||
+        host->metrics.last_eye_duplicate_slot_writes != 0 ||
+        host->metrics.last_eye_command_buffers_committed != expected_pris_eye_chunks ||
+        host->metrics.last_eye_command_buffers_completed != expected_pris_eye_chunks ||
+        host->metrics.last_eye_command_buffer_errors != 0) {
+      record_send_chain_failure(host, "Jak 2 PRIS eye renderer execution violated its exact gate",
+                                host_texture_mutated);
+      return;
+    }
+    host->metrics.last_pris_eye_chunks = expected_pris_eye_chunks;
     if (!sprite_callback_executed) {
       record_send_chain_failure(
           host, "Jak 2 bucket 312 texture-upload marker was not dispatched",
