@@ -1214,6 +1214,15 @@ if(APPLE)
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak2-metal-tie-renderer-test COMMAND jak2-metal-tie-renderer-test)
 
+        add_executable(jak2-metal-eye-renderer-test
+            graphics/pipelines/metal/metal_jak2_eye_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_eye_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-eye-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-eye-renderer-test COMMAND jak2-metal-eye-renderer-test)
+
         add_executable(jak2-metal-merc-renderer-test
             graphics/pipelines/metal/metal_jak2_merc_renderer_test.mm)
         set_source_files_properties(
