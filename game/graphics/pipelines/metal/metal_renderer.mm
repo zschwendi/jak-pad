@@ -901,18 +901,11 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
       render_chain_frame_impl(opts, nil, left.color_texture, left.color_slice, left.depth_texture,
                               left.depth_slice, &left.viewport, left.clear_depth, left.view_id,
                               left.view_transform, true, command_buffer, chain_data, chain_offset);
-  const metal_renderer::ChainStats primary_stats = m_chain_stats;
   const bool right_rendered =
       left_rendered && render_chain_frame_impl(
                            opts, nil, right.color_texture, right.color_slice, right.depth_texture,
                            right.depth_slice, &right.viewport, right.clear_depth, right.view_id,
                            right.view_transform, false, command_buffer, chain_data, chain_offset);
-  if (left_rendered) {
-    // Keep the primary's frame diagnostics while retaining the actual number of GPU submissions.
-    const u64 command_buffers_committed = m_chain_stats.command_buffers_committed;
-    m_chain_stats = primary_stats;
-    m_chain_stats.command_buffers_committed = command_buffers_committed;
-  }
   if (right_rendered) {
     m_chain_stats.last_views_rendered = 2;
 #if GOALPAD_VISION_STEREO_EYE_MARKERS
@@ -1164,8 +1157,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     ctx.game_depth_slice = depth_slice;
     ctx.game_viewport = frame_viewport;
 
-    m_chain_stats.last_buckets_dispatched = 0;
-    m_chain_stats.last_frame_global_callbacks = 0;
+    if (frame_global_side_effects) {
+      m_chain_stats.last_buckets_dispatched = 0;
+      m_chain_stats.last_frame_global_callbacks = 0;
+    }
     switch (m_shared_state.version) {
       case GameVersion::Jak1:
         dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset), ctx);
@@ -1421,197 +1416,206 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       }
     }
 
-    // frame stats for tests / debugging
-    m_chain_stats.chains_rendered++;
-    m_chain_stats.last_views_rendered = 1;
-    m_chain_stats.draw_calls = ctx.draw_calls;
-    m_chain_stats.triangles = ctx.triangles;
-    int uploads = 0;
-    u64 skipped = 0;
-    int unsupported_blends = 0;
-    m_chain_stats.ocean_draws = 0;
-    m_chain_stats.ocean_triangles = 0;
-    m_chain_stats.ocean_missing_textures = 0;
-    MetalMerc2::Stats merc_stats;
-    MetalGeneric2::Stats generic_stats;
-    for (auto& r : m_bucket_renderers) {
-      if (auto* t = dynamic_cast<MetalTextureBucketRenderer*>(r.get())) {
-        uploads += t->last_stats().uploads;
-      } else if (auto* s = dynamic_cast<MetalSkipRenderer*>(r.get())) {
-        skipped += s->skipped_bytes();
-      } else if (auto* d = dynamic_cast<MetalDirectRenderer*>(r.get())) {
-        unsupported_blends += d->stats().unsupported_blends;
-      } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
-        unsupported_blends += sky->direct_stats().unsupported_blends;
-      } else if (auto* omf = dynamic_cast<MetalOceanMidAndFar*>(r.get())) {
-        m_chain_stats.ocean_texture_verts = omf->texture_stats().vertices;
-        m_chain_stats.ocean_mid_verts = omf->mid_stats().vertices;
-        m_chain_stats.ocean_draws += omf->texture_stats().draw_calls + omf->mid_stats().draw_calls;
-        m_chain_stats.ocean_triangles +=
-            omf->texture_stats().triangles + omf->mid_stats().triangles;
-        m_chain_stats.ocean_missing_textures +=
-            omf->texture_stats().missing_textures + omf->mid_stats().missing_textures;
-        m_chain_stats.ocean_mid_texture = omf->texture_handle();
-        unsupported_blends += omf->direct_stats().unsupported_blends;
-      } else if (auto* on = dynamic_cast<MetalOceanNear*>(r.get())) {
-        m_chain_stats.ocean_near_verts = on->near_stats().vertices;
-        m_chain_stats.ocean_draws += on->texture_stats().draw_calls + on->near_stats().draw_calls;
-        m_chain_stats.ocean_triangles += on->texture_stats().triangles + on->near_stats().triangles;
-        m_chain_stats.ocean_missing_textures +=
-            on->texture_stats().missing_textures + on->near_stats().missing_textures;
-        m_chain_stats.ocean_near_texture = on->texture_handle();
-      } else if (auto* sp = dynamic_cast<MetalSpriteRenderer*>(r.get())) {
-        const auto& ss = sp->stats();
-        m_chain_stats.sprites_2d = ss.count_2d_grp0 - ss.sprites_3d;
-        m_chain_stats.sprites_3d = ss.sprites_3d;
-        m_chain_stats.sprites_hud = ss.count_2d_grp1;
-        m_chain_stats.sprites_distort = ss.distort_sprites;
-        m_chain_stats.sprite_draws = ss.draw_calls;
-        m_chain_stats.sprite_missing_textures = ss.missing_textures;
-      } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {
-        merc_stats.add(mc->stats());
-      } else if (auto* sh = dynamic_cast<MetalShadowRenderer*>(r.get())) {
-        const auto& ss = sh->stats();
-        m_chain_stats.shadow_volumes = ss.volumes;
-        m_chain_stats.shadow_vertices = ss.vertices;
-        m_chain_stats.shadow_draws = ss.draw_calls;
-        m_chain_stats.shadow_triangles = ss.triangles;
-        m_chain_stats.shadow_unexpected_dma = ss.unexpected_dma;
-      } else if (auto* gn = dynamic_cast<MetalGeneric2BucketRenderer*>(r.get())) {
-        generic_stats.add(gn->stats());
-      } else if (auto* ey = dynamic_cast<MetalEyeRenderer*>(r.get())) {
-        const auto& es = ey->stats();
-        m_chain_stats.eyes_composed = es.eyes;
-        m_chain_stats.eye_draws = es.draw_calls;
-        m_chain_stats.eye_triangles = es.triangles;
-        m_chain_stats.eye_missing_textures = es.missing_textures;
-        m_chain_stats.eye_unexpected_dma = es.unexpected_dma;
-        m_chain_stats.eye_texture = es.first_texture;
+    if (frame_global_side_effects) {
+      m_chain_stats.chains_rendered++;
+      m_chain_stats.last_views_rendered = 1;
+      m_chain_stats.draw_calls = ctx.draw_calls;
+      m_chain_stats.triangles = ctx.triangles;
+    }
+
+    // Detailed diagnostics require an RTTI walk over every bucket renderer. Hosts that do not
+    // consume those diagnostics can skip the aggregation without changing rendering or essential
+    // frame/submission accounting.
+    if (frame_global_side_effects && m_detailed_frame_stats_enabled) {
+      int uploads = 0;
+      u64 skipped = 0;
+      int unsupported_blends = 0;
+      m_chain_stats.ocean_draws = 0;
+      m_chain_stats.ocean_triangles = 0;
+      m_chain_stats.ocean_missing_textures = 0;
+      MetalMerc2::Stats merc_stats;
+      MetalGeneric2::Stats generic_stats;
+      for (auto& r : m_bucket_renderers) {
+        if (auto* t = dynamic_cast<MetalTextureBucketRenderer*>(r.get())) {
+          uploads += t->last_stats().uploads;
+        } else if (auto* s = dynamic_cast<MetalSkipRenderer*>(r.get())) {
+          skipped += s->skipped_bytes();
+        } else if (auto* d = dynamic_cast<MetalDirectRenderer*>(r.get())) {
+          unsupported_blends += d->stats().unsupported_blends;
+        } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
+          unsupported_blends += sky->direct_stats().unsupported_blends;
+        } else if (auto* omf = dynamic_cast<MetalOceanMidAndFar*>(r.get())) {
+          m_chain_stats.ocean_texture_verts = omf->texture_stats().vertices;
+          m_chain_stats.ocean_mid_verts = omf->mid_stats().vertices;
+          m_chain_stats.ocean_draws +=
+              omf->texture_stats().draw_calls + omf->mid_stats().draw_calls;
+          m_chain_stats.ocean_triangles +=
+              omf->texture_stats().triangles + omf->mid_stats().triangles;
+          m_chain_stats.ocean_missing_textures +=
+              omf->texture_stats().missing_textures + omf->mid_stats().missing_textures;
+          m_chain_stats.ocean_mid_texture = omf->texture_handle();
+          unsupported_blends += omf->direct_stats().unsupported_blends;
+        } else if (auto* on = dynamic_cast<MetalOceanNear*>(r.get())) {
+          m_chain_stats.ocean_near_verts = on->near_stats().vertices;
+          m_chain_stats.ocean_draws += on->texture_stats().draw_calls + on->near_stats().draw_calls;
+          m_chain_stats.ocean_triangles +=
+              on->texture_stats().triangles + on->near_stats().triangles;
+          m_chain_stats.ocean_missing_textures +=
+              on->texture_stats().missing_textures + on->near_stats().missing_textures;
+          m_chain_stats.ocean_near_texture = on->texture_handle();
+        } else if (auto* sp = dynamic_cast<MetalSpriteRenderer*>(r.get())) {
+          const auto& ss = sp->stats();
+          m_chain_stats.sprites_2d = ss.count_2d_grp0 - ss.sprites_3d;
+          m_chain_stats.sprites_3d = ss.sprites_3d;
+          m_chain_stats.sprites_hud = ss.count_2d_grp1;
+          m_chain_stats.sprites_distort = ss.distort_sprites;
+          m_chain_stats.sprite_draws = ss.draw_calls;
+          m_chain_stats.sprite_missing_textures = ss.missing_textures;
+        } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {
+          merc_stats.add(mc->stats());
+        } else if (auto* sh = dynamic_cast<MetalShadowRenderer*>(r.get())) {
+          const auto& ss = sh->stats();
+          m_chain_stats.shadow_volumes = ss.volumes;
+          m_chain_stats.shadow_vertices = ss.vertices;
+          m_chain_stats.shadow_draws = ss.draw_calls;
+          m_chain_stats.shadow_triangles = ss.triangles;
+          m_chain_stats.shadow_unexpected_dma = ss.unexpected_dma;
+        } else if (auto* gn = dynamic_cast<MetalGeneric2BucketRenderer*>(r.get())) {
+          generic_stats.add(gn->stats());
+        } else if (auto* ey = dynamic_cast<MetalEyeRenderer*>(r.get())) {
+          const auto& es = ey->stats();
+          m_chain_stats.eyes_composed = es.eyes;
+          m_chain_stats.eye_draws = es.draw_calls;
+          m_chain_stats.eye_triangles = es.triangles;
+          m_chain_stats.eye_missing_textures = es.missing_textures;
+          m_chain_stats.eye_unexpected_dma = es.unexpected_dma;
+          m_chain_stats.eye_texture = es.first_texture;
+        }
       }
-    }
-    m_chain_stats.generic_fragments = generic_stats.fragments;
-    m_chain_stats.generic_vertices = generic_stats.vertices;
-    m_chain_stats.generic_adgifs = generic_stats.adgifs;
-    m_chain_stats.generic_draw_buckets = generic_stats.draw_buckets;
-    m_chain_stats.generic_draws = generic_stats.draw_calls;
-    m_chain_stats.generic_triangles = generic_stats.triangles;
-    m_chain_stats.generic_missing_textures = generic_stats.missing_textures;
-    m_chain_stats.generic_unsupported_blends = generic_stats.unsupported_blends;
-    m_chain_stats.generic_unexpected_dma = generic_stats.unexpected_dma;
-    m_chain_stats.generic_overflow = generic_stats.overflow;
-    m_chain_stats.merc_models = merc_stats.models;
-    m_chain_stats.merc_missing_models = merc_stats.missing_models;
-    m_chain_stats.merc_draws = merc_stats.draws;
-    m_chain_stats.merc_triangles = merc_stats.triangles;
-    m_chain_stats.merc_envmap_draws = merc_stats.envmap_draws;
-    m_chain_stats.merc_bone_vectors = merc_stats.bone_vectors;
-    m_chain_stats.merc_mod_vtx_uploads = merc_stats.mod_vtx_uploads;
-    m_chain_stats.merc_mod_vtx_skipped = merc_stats.mod_vtx_skipped;
-    m_chain_stats.merc_eye_draws = merc_stats.eye_draws;
-    m_chain_stats.merc_missing_textures = merc_stats.missing_textures;
-    m_chain_stats.merc_bad_bone_pointers = merc_stats.bad_bone_pointers;
-    m_chain_stats.merc_bad_draw_ranges = merc_stats.bad_draw_ranges;
-    m_chain_stats.merc_missing_bone_slots = merc_stats.missing_bone_slots;
-    m_chain_stats.merc_models_with_missing_bone_slots = merc_stats.models_with_missing_bone_slots;
-    m_chain_stats.merc_nonfinite_bone_matrices = merc_stats.nonfinite_bone_matrices;
-    m_chain_stats.merc_degenerate_bone_matrices = merc_stats.degenerate_bone_matrices;
-    m_chain_stats.merc_incoherent_bone_sources = merc_stats.incoherent_bone_sources;
-    m_chain_stats.merc_models_with_palette_health_issues =
-        merc_stats.models_with_palette_health_issues;
-    m_chain_stats.merc_eichar_palette_health_issues = merc_stats.eichar_palette_health_issues;
-    m_chain_stats.merc_eichar_transform_discontinuities =
-        merc_stats.eichar_transform_discontinuities;
-    m_chain_stats.merc_eichar_provenance_events = merc_stats.eichar_provenance_events;
-    m_chain_stats.merc_eichar_output_composition_mismatches =
-        merc_stats.eichar_output_composition_mismatches;
-    m_chain_stats.merc_eichar_target_control_events = merc_stats.eichar_target_control_events;
-    m_chain_stats.merc_eichar_target_control_divergences =
-        merc_stats.eichar_target_control_divergences;
-    m_chain_stats.merc_eichar_target_control_attack_boundaries =
-        merc_stats.eichar_target_control_attack_boundaries;
-    m_chain_stats.merc_eichar_target_control_capture_attempts =
-        merc_stats.eichar_target_control_capture_attempts;
-    m_chain_stats.merc_eichar_target_control_valid_observations =
-        merc_stats.eichar_target_control_valid_observations;
-    m_chain_stats.merc_eichar_weighted_skin = merc_stats.eichar_weighted_skin;
-    m_chain_stats.merc_eichar_duplication = merc_stats.eichar_duplication;
-    if (merc_stats.eichar_target_control_capture_attempts > 0) {
-      m_chain_stats.last_merc_eichar_target_control_capture_stage =
-          merc_stats.last_eichar_target_control_capture_stage;
-      m_chain_stats.last_merc_eichar_target_control_capture_result =
-          merc_stats.last_eichar_target_control_capture_result;
-    }
-    if (merc_stats.eichar_target_control_valid_observations > 0) {
-      m_chain_stats.last_merc_eichar_target_control_observation =
-          merc_stats.last_eichar_target_control_observation;
-    }
-    if (!m_chain_stats.first_merc_palette_health_event.valid() &&
-        merc_stats.first_palette_health_event.valid()) {
-      m_chain_stats.first_merc_palette_health_event = merc_stats.first_palette_health_event;
-    }
-    if (merc_stats.last_palette_health_event.valid()) {
-      m_chain_stats.last_merc_palette_health_event = merc_stats.last_palette_health_event;
-    }
-    if (!m_chain_stats.first_merc_eichar_palette_health_event.valid() &&
-        merc_stats.first_eichar_palette_health_event.valid()) {
-      m_chain_stats.first_merc_eichar_palette_health_event =
-          merc_stats.first_eichar_palette_health_event;
-    }
-    if (merc_stats.last_eichar_palette_health_event.valid()) {
-      m_chain_stats.last_merc_eichar_palette_health_event =
-          merc_stats.last_eichar_palette_health_event;
-    }
-    if (!m_chain_stats.first_merc_eichar_transform_discontinuity.valid() &&
-        merc_stats.first_eichar_transform_discontinuity.valid()) {
-      m_chain_stats.first_merc_eichar_transform_discontinuity =
-          merc_stats.first_eichar_transform_discontinuity;
-    }
-    if (merc_stats.last_eichar_transform_discontinuity.valid()) {
-      m_chain_stats.last_merc_eichar_transform_discontinuity =
-          merc_stats.last_eichar_transform_discontinuity;
-    }
-    if (!m_chain_stats.first_merc_eichar_provenance_event.valid() &&
-        merc_stats.first_eichar_provenance_event.valid()) {
-      m_chain_stats.first_merc_eichar_provenance_event = merc_stats.first_eichar_provenance_event;
-    }
-    if (merc_stats.last_eichar_provenance_event.valid()) {
-      m_chain_stats.last_merc_eichar_provenance_event = merc_stats.last_eichar_provenance_event;
-    }
-    if (!m_chain_stats.first_merc_eichar_output_composition_mismatch.valid() &&
-        merc_stats.first_eichar_output_composition_mismatch.valid()) {
-      m_chain_stats.first_merc_eichar_output_composition_mismatch =
-          merc_stats.first_eichar_output_composition_mismatch;
-    }
-    if (merc_stats.last_eichar_output_composition_mismatch.valid()) {
-      m_chain_stats.last_merc_eichar_output_composition_mismatch =
-          merc_stats.last_eichar_output_composition_mismatch;
-    }
-    if (!m_chain_stats.first_merc_eichar_target_control_event.valid() &&
-        merc_stats.first_eichar_target_control_event.valid()) {
-      m_chain_stats.first_merc_eichar_target_control_event =
-          merc_stats.first_eichar_target_control_event;
-    }
-    if (merc_stats.last_eichar_target_control_event.valid()) {
-      m_chain_stats.last_merc_eichar_target_control_event =
-          merc_stats.last_eichar_target_control_event;
-    }
-    m_chain_stats.tex_uploads = uploads;
-    m_chain_stats.skipped_bucket_bytes = skipped;
-    m_chain_stats.direct_unsupported_blends = unsupported_blends;
-    SkyBlendStats blend_stats;
-    for (auto* handler : m_sky_blend_handlers) {
-      if (handler) {
-        blend_stats.sky_draws += handler->last_stats().sky_draws;
-        blend_stats.sky_blends += handler->last_stats().sky_blends;
-        blend_stats.cloud_draws += handler->last_stats().cloud_draws;
-        blend_stats.cloud_blends += handler->last_stats().cloud_blends;
+      m_chain_stats.generic_fragments = generic_stats.fragments;
+      m_chain_stats.generic_vertices = generic_stats.vertices;
+      m_chain_stats.generic_adgifs = generic_stats.adgifs;
+      m_chain_stats.generic_draw_buckets = generic_stats.draw_buckets;
+      m_chain_stats.generic_draws = generic_stats.draw_calls;
+      m_chain_stats.generic_triangles = generic_stats.triangles;
+      m_chain_stats.generic_missing_textures = generic_stats.missing_textures;
+      m_chain_stats.generic_unsupported_blends = generic_stats.unsupported_blends;
+      m_chain_stats.generic_unexpected_dma = generic_stats.unexpected_dma;
+      m_chain_stats.generic_overflow = generic_stats.overflow;
+      m_chain_stats.merc_models = merc_stats.models;
+      m_chain_stats.merc_missing_models = merc_stats.missing_models;
+      m_chain_stats.merc_draws = merc_stats.draws;
+      m_chain_stats.merc_triangles = merc_stats.triangles;
+      m_chain_stats.merc_envmap_draws = merc_stats.envmap_draws;
+      m_chain_stats.merc_bone_vectors = merc_stats.bone_vectors;
+      m_chain_stats.merc_mod_vtx_uploads = merc_stats.mod_vtx_uploads;
+      m_chain_stats.merc_mod_vtx_skipped = merc_stats.mod_vtx_skipped;
+      m_chain_stats.merc_eye_draws = merc_stats.eye_draws;
+      m_chain_stats.merc_missing_textures = merc_stats.missing_textures;
+      m_chain_stats.merc_bad_bone_pointers = merc_stats.bad_bone_pointers;
+      m_chain_stats.merc_bad_draw_ranges = merc_stats.bad_draw_ranges;
+      m_chain_stats.merc_missing_bone_slots = merc_stats.missing_bone_slots;
+      m_chain_stats.merc_models_with_missing_bone_slots = merc_stats.models_with_missing_bone_slots;
+      m_chain_stats.merc_nonfinite_bone_matrices = merc_stats.nonfinite_bone_matrices;
+      m_chain_stats.merc_degenerate_bone_matrices = merc_stats.degenerate_bone_matrices;
+      m_chain_stats.merc_incoherent_bone_sources = merc_stats.incoherent_bone_sources;
+      m_chain_stats.merc_models_with_palette_health_issues =
+          merc_stats.models_with_palette_health_issues;
+      m_chain_stats.merc_eichar_palette_health_issues = merc_stats.eichar_palette_health_issues;
+      m_chain_stats.merc_eichar_transform_discontinuities =
+          merc_stats.eichar_transform_discontinuities;
+      m_chain_stats.merc_eichar_provenance_events = merc_stats.eichar_provenance_events;
+      m_chain_stats.merc_eichar_output_composition_mismatches =
+          merc_stats.eichar_output_composition_mismatches;
+      m_chain_stats.merc_eichar_target_control_events = merc_stats.eichar_target_control_events;
+      m_chain_stats.merc_eichar_target_control_divergences =
+          merc_stats.eichar_target_control_divergences;
+      m_chain_stats.merc_eichar_target_control_attack_boundaries =
+          merc_stats.eichar_target_control_attack_boundaries;
+      m_chain_stats.merc_eichar_target_control_capture_attempts =
+          merc_stats.eichar_target_control_capture_attempts;
+      m_chain_stats.merc_eichar_target_control_valid_observations =
+          merc_stats.eichar_target_control_valid_observations;
+      m_chain_stats.merc_eichar_weighted_skin = merc_stats.eichar_weighted_skin;
+      m_chain_stats.merc_eichar_duplication = merc_stats.eichar_duplication;
+      if (merc_stats.eichar_target_control_capture_attempts > 0) {
+        m_chain_stats.last_merc_eichar_target_control_capture_stage =
+            merc_stats.last_eichar_target_control_capture_stage;
+        m_chain_stats.last_merc_eichar_target_control_capture_result =
+            merc_stats.last_eichar_target_control_capture_result;
       }
+      if (merc_stats.eichar_target_control_valid_observations > 0) {
+        m_chain_stats.last_merc_eichar_target_control_observation =
+            merc_stats.last_eichar_target_control_observation;
+      }
+      if (!m_chain_stats.first_merc_palette_health_event.valid() &&
+          merc_stats.first_palette_health_event.valid()) {
+        m_chain_stats.first_merc_palette_health_event = merc_stats.first_palette_health_event;
+      }
+      if (merc_stats.last_palette_health_event.valid()) {
+        m_chain_stats.last_merc_palette_health_event = merc_stats.last_palette_health_event;
+      }
+      if (!m_chain_stats.first_merc_eichar_palette_health_event.valid() &&
+          merc_stats.first_eichar_palette_health_event.valid()) {
+        m_chain_stats.first_merc_eichar_palette_health_event =
+            merc_stats.first_eichar_palette_health_event;
+      }
+      if (merc_stats.last_eichar_palette_health_event.valid()) {
+        m_chain_stats.last_merc_eichar_palette_health_event =
+            merc_stats.last_eichar_palette_health_event;
+      }
+      if (!m_chain_stats.first_merc_eichar_transform_discontinuity.valid() &&
+          merc_stats.first_eichar_transform_discontinuity.valid()) {
+        m_chain_stats.first_merc_eichar_transform_discontinuity =
+            merc_stats.first_eichar_transform_discontinuity;
+      }
+      if (merc_stats.last_eichar_transform_discontinuity.valid()) {
+        m_chain_stats.last_merc_eichar_transform_discontinuity =
+            merc_stats.last_eichar_transform_discontinuity;
+      }
+      if (!m_chain_stats.first_merc_eichar_provenance_event.valid() &&
+          merc_stats.first_eichar_provenance_event.valid()) {
+        m_chain_stats.first_merc_eichar_provenance_event = merc_stats.first_eichar_provenance_event;
+      }
+      if (merc_stats.last_eichar_provenance_event.valid()) {
+        m_chain_stats.last_merc_eichar_provenance_event = merc_stats.last_eichar_provenance_event;
+      }
+      if (!m_chain_stats.first_merc_eichar_output_composition_mismatch.valid() &&
+          merc_stats.first_eichar_output_composition_mismatch.valid()) {
+        m_chain_stats.first_merc_eichar_output_composition_mismatch =
+            merc_stats.first_eichar_output_composition_mismatch;
+      }
+      if (merc_stats.last_eichar_output_composition_mismatch.valid()) {
+        m_chain_stats.last_merc_eichar_output_composition_mismatch =
+            merc_stats.last_eichar_output_composition_mismatch;
+      }
+      if (!m_chain_stats.first_merc_eichar_target_control_event.valid() &&
+          merc_stats.first_eichar_target_control_event.valid()) {
+        m_chain_stats.first_merc_eichar_target_control_event =
+            merc_stats.first_eichar_target_control_event;
+      }
+      if (merc_stats.last_eichar_target_control_event.valid()) {
+        m_chain_stats.last_merc_eichar_target_control_event =
+            merc_stats.last_eichar_target_control_event;
+      }
+      m_chain_stats.tex_uploads = uploads;
+      m_chain_stats.skipped_bucket_bytes = skipped;
+      m_chain_stats.direct_unsupported_blends = unsupported_blends;
+      SkyBlendStats blend_stats;
+      for (auto* handler : m_sky_blend_handlers) {
+        if (handler) {
+          blend_stats.sky_draws += handler->last_stats().sky_draws;
+          blend_stats.sky_blends += handler->last_stats().sky_blends;
+          blend_stats.cloud_draws += handler->last_stats().cloud_draws;
+          blend_stats.cloud_blends += handler->last_stats().cloud_blends;
+        }
+      }
+      m_chain_stats.sky_draws = blend_stats.sky_draws;
+      m_chain_stats.sky_blends = blend_stats.sky_blends;
+      m_chain_stats.cloud_draws = blend_stats.cloud_draws;
+      m_chain_stats.cloud_blends = blend_stats.cloud_blends;
+      m_chain_stats.skipped_tfrag_bytes = 0;
     }
-    m_chain_stats.sky_draws = blend_stats.sky_draws;
-    m_chain_stats.sky_blends = blend_stats.sky_blends;
-    m_chain_stats.cloud_draws = blend_stats.cloud_draws;
-    m_chain_stats.cloud_blends = blend_stats.cloud_blends;
-    m_chain_stats.skipped_tfrag_bytes = 0;
     m_shared_state.background = &m_background;
     m_shared_state.secondary_view = false;
     m_shared_state.view_transform = {};

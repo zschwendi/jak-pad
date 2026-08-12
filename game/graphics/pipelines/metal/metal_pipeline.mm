@@ -819,6 +819,12 @@ ChainStats get_chain_stats() {
   return g_renderer ? g_renderer->chain_stats() : ChainStats{};
 }
 
+void set_detailed_frame_stats_enabled(bool enabled) {
+  if (g_renderer) {
+    g_renderer->set_detailed_frame_stats_enabled(enabled);
+  }
+}
+
 void set_s7_override(u32 s7_ptr) {
   metal_set_s7_override(s7_ptr);
 }

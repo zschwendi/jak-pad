@@ -177,6 +177,9 @@ class MetalRenderer {
 
   metal_renderer::ScaffoldStats stats();
   metal_renderer::ChainStats chain_stats();
+  void set_detailed_frame_stats_enabled(bool enabled) {
+    m_detailed_frame_stats_enabled = enabled;
+  }
 
   // Background (tfrag/tie/shrub) counters from the last chain frame.
   const MetalBackgroundState& background_state() const { return m_background; }
@@ -266,6 +269,7 @@ class MetalRenderer {
   // level-geometry frame state, shared with the tfrag/tie/shrub renderers
   MetalBackgroundState m_background;
   metal_renderer::ChainStats m_chain_stats;
+  bool m_detailed_frame_stats_enabled = true;
   bool m_reported_camera_mismatch = false;
   std::shared_ptr<MetalPresentationState> m_presentation_state;
   u64 m_submission_count = 0;

@@ -296,6 +296,11 @@ struct ChainStats {
 
 ChainStats get_chain_stats();
 
+// Controls the expensive per-bucket diagnostic aggregation performed after a chain frame. The
+// renderer keeps essential frame, submission, presentation, and command-buffer counters in either
+// mode. Enabled by default so desktop tools and tests retain their existing diagnostics.
+void set_detailed_frame_stats_enabled(bool enabled);
+
 // Blocks until the last submitted frame finishes on the GPU, then reads back
 // the offscreen game render target. Returns false if no frame has been rendered.
 bool read_last_frame(FramePixels* out);
