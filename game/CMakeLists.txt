@@ -1249,6 +1249,16 @@ if(APPLE)
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak2-metal-generic2-renderer-test COMMAND jak2-metal-generic2-renderer-test)
 
+        add_executable(jak2-metal-effects315-lightning-proof
+            graphics/pipelines/metal/metal_jak2_effects315_lightning_proof.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_effects315_lightning_proof.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-effects315-lightning-proof
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-effects315-lightning-proof
+            COMMAND jak2-metal-effects315-lightning-proof)
+
         add_executable(jak2-metal-glow-final-flare-proof
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_glow_final_flare_proof.mm)

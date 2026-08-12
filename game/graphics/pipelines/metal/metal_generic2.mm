@@ -86,6 +86,56 @@ u32 unpack_vtx_tcs(MetalGeneric2::Vertex* vtx, const u8* data, u32 vtx_count) {
   return vtx_count * 4;
 }
 
+void unpack_lightning_vertices(MetalGeneric2::Vertex* out, const u8* in, u32 count) {
+  for (u32 i = 0; i < count; i++) {
+    s32 s, t;
+    memcpy(&s, in, sizeof(s));
+    memcpy(&t, in + 4, sizeof(t));
+    const s32 s_masked = s & ~1;
+    out->st[0] = s_masked;
+    out->st[1] = t;
+    out->adc = s_masked == s;
+
+    u32 rgba[4];
+    memcpy(rgba, in + 16, sizeof(rgba));
+    for (int component = 0; component < 4; component++) {
+      out->rgba[component] = rgba[component];
+    }
+
+    memcpy(out->xyz.data(), in + 32, 3 * sizeof(float));
+    out++;
+    in += 48;
+  }
+}
+
+bool is_source_lightning_direct(const DmaTransfer& transfer) {
+  if (transfer.size_bytes != 32 || transfer.vifcode0().kind != VifCode::Kind::NOP) {
+    return false;
+  }
+  const auto direct = transfer.vifcode1();
+  if (direct.kind != VifCode::Kind::DIRECT || direct.immediate != 2) {
+    return false;
+  }
+  const GifTag tag(transfer.data);
+  u64 address;
+  memcpy(&address, transfer.data + 24, sizeof(address));
+  return tag.nloop() == 1 && tag.eop() && tag.nreg() == 1 &&
+         tag.reg(0) == GifTag::RegisterDescriptor::AD &&
+         address == static_cast<u64>(GsRegisterAddress::ZBUF_1);
+}
+
+bool is_source_lightning_unpack(const DmaTransfer& transfer,
+                                u32 payload_bytes,
+                                u16 address,
+                                u16 count) {
+  const auto unpack = transfer.vifcode1();
+  const VifCodeUnpack unpack_fields(unpack);
+  return transfer.size_bytes == payload_bytes && transfer.vifcode0().kind == VifCode::Kind::NOP &&
+         unpack.kind == VifCode::Kind::UNPACK_V4_32 && unpack.num == count &&
+         unpack_fields.addr_qw == address && !unpack_fields.is_unsigned &&
+         !unpack_fields.use_tops_flag;
+}
+
 }  // namespace
 
 void MetalGeneric2::Stats::add(const Stats& o) {
@@ -96,6 +146,7 @@ void MetalGeneric2::Stats::add(const Stats& o) {
   draw_calls += o.draw_calls;
   triangles += o.triangles;
   missing_textures += o.missing_textures;
+  placeholder_draws += o.placeholder_draws;
   unsupported_blends += o.unsupported_blends;
   unexpected_dma += o.unexpected_dma;
   overflow += o.overflow;
@@ -673,6 +724,148 @@ void MetalGeneric2::process_dma_jak2(DmaFollower& dma, u32 next_bucket) {
          "the final Jak 2 generic NOP and bucket boundary");
 }
 
+void MetalGeneric2::process_dma_lightning(DmaFollower& dma, u32 next_bucket) {
+  reset_buffers();
+
+  const auto first = dma.read_and_advance();
+  if (first.size_bytes == 0 && first.vif0() == 0 && first.vif1() == 0 &&
+      dma.current_tag_offset() == next_bucket) {
+    return;
+  }
+  const auto first_kind = first.vifcode0().kind;
+  if (!expect(first.size_bytes == 0 &&
+                  (first_kind == VifCode::Kind::MARK || first_kind == VifCode::Kind::NOP) &&
+                  first.vifcode1().kind == VifCode::Kind::NOP,
+              "the Jak 2 Lightning bucket marker")) {
+    return;
+  }
+
+  const auto direct = dma.read_and_advance();
+  if (!expect(is_source_lightning_direct(direct),
+              "the Jak 2 Lightning 32-byte ZBUF_1 DIRECT setup")) {
+    return;
+  }
+  u64 zbuf_value;
+  memcpy(&zbuf_value, direct.data + 16, sizeof(zbuf_value));
+  if (!expect(GsZbuf(zbuf_value).zmsk(), "masked Jak 2 Lightning depth writes")) {
+    return;
+  }
+  m_drawing_config.zmsk = true;
+
+  const auto constants = dma.read_and_advance();
+  const auto constants_stcycl = constants.vifcode0();
+  const auto constants_unpack = constants.vifcode1();
+  const VifCodeUnpack constants_unpack_fields(constants_unpack);
+  if (!expect(constants.size_bytes == 128 && constants_stcycl.kind == VifCode::Kind::STCYCL &&
+                  constants_stcycl.immediate == 0x404 &&
+                  constants_unpack.kind == VifCode::Kind::UNPACK_V4_32 &&
+                  constants_unpack.num == 8 && constants_unpack_fields.addr_qw == 897 &&
+                  !constants_unpack_fields.is_unsigned && !constants_unpack_fields.use_tops_flag,
+              "the Jak 2 Lightning 128-byte constants unpack at VU address 897")) {
+    return;
+  }
+  memcpy(&m_drawing_config.pfog0, constants.data, sizeof(float));
+  memcpy(&m_drawing_config.fog_min, constants.data + 4, sizeof(float));
+  memcpy(&m_drawing_config.fog_max, constants.data + 8, sizeof(float));
+  memcpy(m_drawing_config.hvdf_offset.data(), constants.data + 32, 16);
+
+  const auto vu_setup = dma.read_and_advance();
+  if (!expect(vu_setup.size_bytes == 32 && vu_setup.vifcode0().kind == VifCode::Kind::MSCALF &&
+                  vu_setup.vifcode0().immediate == 0 &&
+                  vu_setup.vifcode1().kind == VifCode::Kind::STMOD &&
+                  vu_setup.vifcode1().immediate == 0,
+              "the Jak 2 Lightning 32-byte MSCALF/STMOD setup")) {
+    return;
+  }
+
+  const auto setup_end = dma.read_and_advance();
+  if (!expect(setup_end.size_bytes == 0 && setup_end.vif0() == 0 && setup_end.vif1() == 0,
+              "the Jak 2 Lightning setup NOP")) {
+    return;
+  }
+
+  u16 expected_header_address = 837;
+  u16 expected_vertex_address = 9;
+  if (!expect(dma.current_tag_offset() != next_bucket,
+              "the Jak 2 Lightning fixed FLUSHA/DIRECT terminator")) {
+    return;
+  }
+  auto transfer = dma.read_and_advance();
+  while (transfer.vifcode1().kind == VifCode::Kind::UNPACK_V4_32) {
+    if (!expect(is_source_lightning_unpack(transfer, FRAG_HEADER_SIZE + sizeof(AdGifData),
+                                           expected_header_address, 12),
+                "a Jak 2 Lightning 192-byte header/adgif unpack")) {
+      return;
+    }
+    if (!expect(dma.current_tag_offset() != next_bucket,
+                "Jak 2 Lightning vertices after the header")) {
+      return;
+    }
+    const auto vertices = dma.read_and_advance();
+    const u32 vertex_count = vertices.size_bytes / 48;
+    if (!expect(
+            vertices.size_bytes % 48 == 0 && vertex_count >= 4 && vertex_count <= 82 &&
+                (vertex_count & 1) == 0 &&
+                is_source_lightning_unpack(vertices, vertices.size_bytes, expected_vertex_address,
+                                           static_cast<u16>(vertices.size_bytes / 16)),
+            "Jak 2 Lightning 48-byte packed vertices")) {
+      return;
+    }
+    if (!expect(dma.current_tag_offset() != next_bucket,
+                "Jak 2 Lightning MSCAL 6 after the vertices")) {
+      return;
+    }
+    const auto mscal = dma.read_and_advance();
+    if (!expect(mscal.size_bytes == 0 && mscal.vifcode0().kind == VifCode::Kind::NOP &&
+                    mscal.vifcode1().kind == VifCode::Kind::MSCAL &&
+                    mscal.vifcode1().immediate == 6,
+                "Jak 2 Lightning MSCAL 6")) {
+      return;
+    }
+
+    auto* fragment = next_frag();
+    auto* adgif = next_adgif();
+    if (!fragment || !adgif || !alloc_vtx(vertex_count)) {
+      return;
+    }
+    memcpy(fragment->header, transfer.data, FRAG_HEADER_SIZE);
+    fragment->adgif_idx = m_next_free_adgif - 1;
+    fragment->adgif_count = 1;
+    fragment->vtx_idx = m_next_free_vert - vertex_count;
+    fragment->vtx_count = vertex_count;
+    fragment->mscal_addr = 6;
+    fragment->uses_hud = false;
+    memcpy(&adgif->data, transfer.data + FRAG_HEADER_SIZE, sizeof(AdGifData));
+    unpack_lightning_vertices(&m_verts[fragment->vtx_idx], vertices.data, vertex_count);
+
+    expected_header_address = 1704 - expected_header_address;
+    expected_vertex_address += 279;
+    if (expected_vertex_address > 567) {
+      expected_vertex_address = 9;
+    }
+    if (!expect(dma.current_tag_offset() != next_bucket,
+                "the Jak 2 Lightning fixed terminator after a fragment")) {
+      return;
+    }
+    transfer = dma.read_and_advance();
+  }
+
+  const auto flusha = transfer.vifcode0();
+  const auto final_direct = transfer.vifcode1();
+  if (!expect(transfer.size_bytes == 160 && flusha.kind == VifCode::Kind::FLUSHA &&
+                  final_direct.kind == VifCode::Kind::DIRECT && final_direct.immediate == 10,
+              "the Jak 2 Lightning 160-byte FLUSHA/DIRECT terminator")) {
+    return;
+  }
+  if (!expect(dma.current_tag_offset() != next_bucket, "the final Jak 2 Lightning NOP transfer")) {
+    return;
+  }
+  const auto end = dma.read_and_advance();
+  expect(end.size_bytes == 0 && end.vif0() == 0 && end.vif1() == 0 &&
+             dma.current_tag_offset() == next_bucket,
+         "the final Jak 2 Lightning NOP and bucket boundary");
+}
+
 // ---------------------------------------------------------------------------
 // Build - mirror of Generic2_Build.cpp
 // ---------------------------------------------------------------------------
@@ -1220,6 +1413,7 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
   // mirror of setup_opengl_tex
   const u32 tbp_to_lookup = first.tbp & 0x7fff;
   const bool use_mt4hh = first.tbp & 0x8000;
+  bool uses_placeholder = false;
   auto tex_handle = use_mt4hh ? render_state->texture_pool->lookup_mt4hh(tbp_to_lookup)
                               : render_state->texture_pool->lookup(tbp_to_lookup);
   if (!tex_handle) {
@@ -1231,10 +1425,12 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
       lg::warn("Metal generic2: no texture at VRAM slot {}, using the placeholder (logged once)",
                tbp_to_lookup);
     }
+    uses_placeholder = true;
     tex_handle = render_state->texture_pool->get_placeholder_texture();
   }
   id<MTLTexture> tex = metal_texture_lookup(*tex_handle);
   if (!tex) {
+    uses_placeholder = true;
     tex = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
   }
   if (!tex) {
@@ -1270,6 +1466,9 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
                    indexType:MTLIndexTypeUInt32
                  indexBuffer:index_buffer
            indexBufferOffset:(index_base + bucket.idx_idx) * sizeof(u32)];
+  if (uses_placeholder && m_stats) {
+    m_stats->placeholder_draws++;
+  }
   ctx.draw_calls++;
   ctx.triangles += bucket.tri_count;
   if (m_stats) {
@@ -1362,20 +1561,38 @@ void MetalGeneric2::render(DmaFollower& dma,
                            MetalSharedRenderState* render_state,
                            MetalFrameContext& ctx,
                            Stats* stats) {
+  render_in_mode(dma, render_state, ctx, Mode::NORMAL, stats);
+}
+
+void MetalGeneric2::render_in_mode(DmaFollower& dma,
+                                   MetalSharedRenderState* render_state,
+                                   MetalFrameContext& ctx,
+                                   Mode mode,
+                                   Stats* stats) {
   m_stats = stats;
   m_failed = false;
 
-  if (render_state->version == GameVersion::Jak1) {
-    process_dma_jak1(dma, render_state->next_bucket);
-  } else if (render_state->version == GameVersion::Jak2) {
-    process_dma_jak2(dma, render_state->next_bucket);
-  } else {
-    expect(false, "a supported Generic2 game version");
+  switch (mode) {
+    case Mode::NORMAL:
+      if (render_state->version == GameVersion::Jak1) {
+        process_dma_jak1(dma, render_state->next_bucket);
+      } else if (render_state->version == GameVersion::Jak2) {
+        process_dma_jak2(dma, render_state->next_bucket);
+      } else {
+        expect(false, "a supported Generic2 game version");
+      }
+      break;
+    case Mode::LIGHTNING:
+      if (render_state->version == GameVersion::Jak2) {
+        process_dma_lightning(dma, render_state->next_bucket);
+      } else {
+        expect(false, "Jak 2 for the Generic2 Lightning mode");
+      }
+      break;
   }
 
   if (!m_failed) {
-    // Both bound paths use Mode::NORMAL.
-    setup_draws(true, true);
+    setup_draws(mode == Mode::NORMAL, true);
   }
   if (!m_failed) {
     do_draws(render_state, ctx);
@@ -1399,5 +1616,5 @@ void MetalGeneric2BucketRenderer::render(DmaFollower& dma,
                                          MetalSharedRenderState* render_state,
                                          MetalFrameContext& ctx) {
   m_stats = MetalGeneric2::Stats();
-  m_generic->render(dma, render_state, ctx, &m_stats);
+  m_generic->render_in_mode(dma, render_state, ctx, m_mode, &m_stats);
 }
