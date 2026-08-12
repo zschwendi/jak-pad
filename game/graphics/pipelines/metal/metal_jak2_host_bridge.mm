@@ -1163,6 +1163,11 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     record_texture_upload_metrics(&host->metrics.common_water_texture_upload,
                                   metal_renderer::kJak2CommonWaterTextureUploadBucket,
                                   common_water_capture);
+    const auto subtitle_capture = metal_renderer::capture_jak2_tfrag_texture_upload(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        metal_renderer::kJak2SubtitleBucket);
+    record_texture_upload_metrics(&host->metrics.subtitle_capture,
+                                  metal_renderer::kJak2SubtitleBucket, subtitle_capture);
     if (!update_draw_region(host)) {
       record_failure(host, "Jak 2 CAMetalLayer has no finite drawable size");
       return;

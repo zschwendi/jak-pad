@@ -12,6 +12,7 @@ namespace metal_renderer {
 
 constexpr u32 kJak2CommonTfragTextureUploadBucket = 187;
 constexpr u32 kJak2CommonPrisTextureUploadBucket = 220;
+constexpr u32 kJak2SubtitleBucket = 322;
 constexpr std::array<u32, 6> kJak2NormalTfragTextureUploadBuckets = {7, 18, 29, 40, 51, 62};
 constexpr std::array<u32, 7> kJak2NormalShrubTextureUploadBuckets = {
     73, 82, 91, 100, 109, 118, 191};

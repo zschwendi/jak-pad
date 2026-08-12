@@ -35,8 +35,7 @@
 
 namespace {
 
-static_assert(offsetof(goal_jak2_metal_host_metrics,
-                       common_water_texture_upload) +
+static_assert(offsetof(goal_jak2_metal_host_metrics, subtitle_capture) +
                   sizeof(goal_jak2_tfrag_texture_upload_metrics) ==
               sizeof(goal_jak2_metal_host_metrics));
 
@@ -95,6 +94,10 @@ constexpr u32 kWarpTextureUploadGroupOffset = kChainOffset + 0x17800;
 constexpr u32 kWarpTextureUploadGroupStride = 0x100;
 constexpr u32 kWarpTextureUploadTailOffset = kChainOffset + 0x18000;
 constexpr u32 kWarpTextureUploadAnimatorOffset = kChainOffset + 0x18100;
+constexpr u32 kSubtitleBucket = metal_renderer::kJak2SubtitleBucket;
+static_assert(kSubtitleBucket == static_cast<u32>(jak2::BucketId::SUBTITLE));
+constexpr u32 kSubtitleCaptureOffset = kChainOffset + 0x18200;
+constexpr u32 kSubtitleMalformedOffset = kChainOffset + 0x18400;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -357,6 +360,44 @@ void make_warp_texture_animator_chain() {
   put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kWarpTextureUploadAnimatorOffset);
   put_tag(kWarpTextureUploadAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
   put_tag(kWarpTextureUploadAnimatorOffset + 16, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_subtitle_mixed_capture_chain() {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  const u32 bucket_offset = kChainOffset + kSubtitleBucket * 16;
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kSubtitleCaptureOffset);
+  put_tag(kSubtitleCaptureOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  put_tag(kSubtitleCaptureOffset + 32, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
+  put_tag(kSubtitleCaptureOffset + 48, DmaTag::Kind::CNT, 1, 0, kPcPort | 22, 0);
+  put_tag(kSubtitleCaptureOffset + 80, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, 0);
+  put_tag(kSubtitleCaptureOffset + 96, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  put_tag(kSubtitleCaptureOffset + 272, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+  std::memset(ee + kSubtitleCaptureOffset + 16, 0, 16);
+  std::memset(ee + kSubtitleCaptureOffset + 64, 0, 16);
+  std::memset(ee + kSubtitleCaptureOffset + 112, 0, 160);
+}
+
+void make_subtitle_direct_only_chain() {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  const u32 bucket_offset = kChainOffset + kSubtitleBucket * 16;
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kSubtitleCaptureOffset);
+  put_tag(kSubtitleCaptureOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  put_tag(kSubtitleCaptureOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+  std::memset(ee + kSubtitleCaptureOffset + 16, 0, 160);
+}
+
+void make_subtitle_capture_malformed_chain() {
+  make_empty_chain();
+  const u32 bucket_offset = kChainOffset + kSubtitleBucket * 16;
+  put_tag(bucket_offset, DmaTag::Kind::CALL, 0, kSubtitleMalformedOffset);
+  put_tag(kSubtitleMalformedOffset, DmaTag::Kind::RET);
 }
 
 void make_common_pris_opcode22_capture_chain() {
@@ -1508,6 +1549,72 @@ int main() {
             metal_texture_live_count() == common_water_textures_before,
         "malformed bounded bucket 306 telemetry is non-fatal and does not mutate textures");
   goal_jak2_metal_host_destroy(common_water_host);
+
+  goal_jak2_metal_host* subtitle_host = goal_jak2_metal_host_create();
+  goal_gfx_host subtitle_callbacks = {};
+  const std::size_t subtitle_initial_live_count = metal_texture_live_count();
+  check(subtitle_host && goal_jak2_metal_host_copy_gfx_host(subtitle_host, &subtitle_callbacks) &&
+            metal_renderer::jak2_metal_bucket_table()[kSubtitleBucket].behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
+        "created a host while bucket 322 remains DeferredSkip");
+  goal_jak2_metal_host_metrics subtitle_metrics = {};
+  make_empty_chain();
+  subtitle_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(subtitle_host, &subtitle_metrics) &&
+            subtitle_metrics.chains == 1 && subtitle_metrics.completed_chains == 1 &&
+            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.bucket_id ==
+                kSubtitleBucket &&
+            subtitle_metrics.subtitle_capture.captures == 1 &&
+            subtitle_metrics.subtitle_capture.present_captures == 0 &&
+            subtitle_metrics.subtitle_capture.executions == 0 &&
+            subtitle_metrics.subtitle_capture.classifications[static_cast<std::size_t>(
+                metal_renderer::Jak2CommonTfragTextureUploadClass::Absent)] == 1,
+        "bucket 322 observes the exact empty form without execution");
+
+  make_subtitle_mixed_capture_chain();
+  subtitle_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(subtitle_host, &subtitle_metrics) &&
+            subtitle_metrics.chains == 2 && subtitle_metrics.completed_chains == 2 &&
+            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.captures == 2 &&
+            subtitle_metrics.subtitle_capture.present_captures == 1 &&
+            subtitle_metrics.subtitle_capture.executions == 0 &&
+            subtitle_metrics.subtitle_capture.ordinary_descriptors == 1 &&
+            subtitle_metrics.subtitle_capture.animator_arrays == 1 &&
+            subtitle_metrics.subtitle_capture.animator_body_transfers == 1 &&
+            subtitle_metrics.subtitle_capture.direct_setup_transfers == 1 &&
+            subtitle_metrics.subtitle_capture.classifications[static_cast<std::size_t>(
+                metal_renderer::Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator)] == 1 &&
+            subtitle_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == subtitle_initial_live_count,
+        "bucket 322 records mixed animator/upload/Direct metadata without a route or mutation");
+
+  make_subtitle_direct_only_chain();
+  subtitle_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(subtitle_host, &subtitle_metrics) &&
+            subtitle_metrics.chains == 3 && subtitle_metrics.completed_chains == 3 &&
+            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.captures == 3 &&
+            subtitle_metrics.subtitle_capture.present_captures == 2 &&
+            subtitle_metrics.subtitle_capture.executions == 0 &&
+            subtitle_metrics.subtitle_capture.direct_setup_transfers == 2 &&
+            subtitle_metrics.subtitle_capture.classifications[static_cast<std::size_t>(
+                metal_renderer::Jak2CommonTfragTextureUploadClass::EyeOrOther)] == 1 &&
+            subtitle_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == subtitle_initial_live_count,
+        "unclassified bucket-322 Direct-like metadata stays passive and non-fatal");
+
+  make_subtitle_capture_malformed_chain();
+  subtitle_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(subtitle_host, &subtitle_metrics) &&
+            subtitle_metrics.chains == 4 && subtitle_metrics.completed_chains == 4 &&
+            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.captures == 4 &&
+            subtitle_metrics.subtitle_capture.executions == 0 &&
+            subtitle_metrics.subtitle_capture.malformed_transfers == 1 &&
+            subtitle_metrics.subtitle_capture.classifications[static_cast<std::size_t>(
+                metal_renderer::Jak2CommonTfragTextureUploadClass::Malformed)] == 1 &&
+            subtitle_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == subtitle_initial_live_count,
+        "capture-malformed bucket-322 metadata stays deferred and does not fail the chain");
+  goal_jak2_metal_host_destroy(subtitle_host);
 
   goal_jak2_metal_host* security_host = goal_jak2_metal_host_create();
   goal_gfx_host security_callbacks = {};

@@ -2119,6 +2119,59 @@ void test_transfer_limit_is_enforced() {
         "the fixed transfer bound fails closed without overrunning owned metadata");
 }
 
+void test_subtitle_capture_is_metadata_only() {
+  constexpr u32 kSubtitleBucket = metal_renderer::kJak2SubtitleBucket;
+  auto empty = make_empty_fixture(kSubtitleBucket);
+  const auto empty_before = empty;
+  auto result = capture(empty, kSubtitleBucket);
+  check(empty == empty_before && result.valid && !result.present &&
+            result.classification == Classification::Absent && result.transfer_count == 1 &&
+            result.total_payload_bytes == 0,
+        "bucket 322 accepts the exact empty form as immutable metadata only");
+
+  auto mixed = make_ordinary_fixture(kSubtitleBucket);
+  const u32 end_offset = bucket_offset(kSubtitleBucket) + 16;
+  put_tag(&mixed, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+  put_animator_array(&mixed, kAnimatorOffset, 22, 1, kDirectSetupOffset);
+  put_tag(&mixed, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(mixed.begin() + kDirectSetupOffset + 16, 160, 0x52);
+  put_tag(&mixed, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  const auto mixed_before = mixed;
+  result = capture(mixed, kSubtitleBucket);
+  check(mixed == mixed_before && result.valid && result.present &&
+            result.classification == Classification::OrdinaryAndAnimator &&
+            result.ordinary_descriptors == 1 && result.animator_arrays == 1 &&
+            result.animator_body_transfers == 1 && result.direct_setup_transfers == 1 &&
+            result.opcode_counts[22] == 1 &&
+            !metal_renderer::plan_jak2_normal_tfrag_texture_upload(
+                 mixed.data(), mixed.size(), kChainOffset, kSubtitleBucket, mixed.data(),
+                 mixed.size())
+                 .has_value(),
+        "bucket 322 records mixed animator/upload/Direct metadata without an executable plan");
+
+  std::vector<u8> direct_only(kMemorySize);
+  put_tag(&direct_only, bucket_offset(kSubtitleBucket), DmaTag::Kind::NEXT, 0,
+          kDirectSetupOffset, 0, 0);
+  put_tag(&direct_only, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  put_tag(&direct_only, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  const auto direct_before = direct_only;
+  result = capture(direct_only, kSubtitleBucket);
+  check(direct_only == direct_before && result.valid && result.present &&
+            result.classification == Classification::EyeOrOther &&
+            result.direct_setup_transfers == 1,
+        "bucket-322 Direct-like metadata stays unclassified and immutable");
+
+  auto malformed = make_empty_fixture(kSubtitleBucket);
+  put_tag(&malformed, bucket_offset(kSubtitleBucket), DmaTag::Kind::CALL, 0,
+          kAnimatorOffset, 0, 0);
+  const auto malformed_before = malformed;
+  result = capture(malformed, kSubtitleBucket);
+  check(malformed == malformed_before && !result.valid && result.malformed_transfers == 1,
+        "bucket-322 malformed metadata is retained without mutation or grammar inference");
+}
+
 }  // namespace
 
 int main() {
@@ -2152,6 +2205,7 @@ int main() {
   test_animator_structure_fails_closed();
   test_follower_range_alignment_cycle_and_kind_bounds();
   test_transfer_limit_is_enforced();
+  test_subtitle_capture_is_metadata_only();
   std::puts("PASS: Jak II foreground texture-upload metadata capture");
   return 0;
 }
