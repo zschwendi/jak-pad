@@ -43,5 +43,6 @@ class MetalGlowRenderer {
   id<MTLTexture> m_probe_depth = nil;
   id<MTLTexture> m_game_depth_snapshot = nil;
   id<MTLTexture> m_missing_texture_fallback = nil;
+  bool m_warned_missing_texture = false;
   Stats m_stats;
 };

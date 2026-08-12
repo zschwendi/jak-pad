@@ -25,13 +25,14 @@ namespace {
 
 constexpr int kTargetSize = 64;
 constexpr u32 kFlareTbp = 0x2a0;
-constexpr u32 kMissingFlareTbp = 0x2a1;
+constexpr u32 kPlaceholderFlareTbp = 0x2a1;
 constexpr u16 kFlareTexturePage = 11;
 constexpr u32 kChainOffset = 0x100;
 constexpr u32 kUploadGroupOffset = 0x2000;
 constexpr u32 kUploadTailOffset = 0x3000;
 constexpr u32 kTexturePageOffset = 0x6000;
 constexpr u32 kTextureObjectOffset = 0x6100;
+constexpr u32 kPlaceholderTextureObjectOffset = 0x6200;
 constexpr u32 kSyntheticS7 = 0x7f00;
 constexpr std::size_t kFixtureMemorySize = 0x10000;
 
@@ -123,15 +124,19 @@ SpriteTextureUploadFixture make_sprite_texture_upload_fixture() {
 
   GoalTexturePage page = {};
   page.id = kFlareTexturePage;
-  page.length = 1;
+  page.length = 2;
   std::memcpy(fixture.live.data() + kTexturePageOffset, &page, sizeof(page));
   put_u32(&fixture.live, kTexturePageOffset + sizeof(page), kTextureObjectOffset);
+  put_u32(&fixture.live, kTexturePageOffset + sizeof(page) + sizeof(u32),
+          kPlaceholderTextureObjectOffset);
   GoalTexture texture = {};
   texture.w = 8;
   texture.h = 8;
   texture.num_mips = 1;
   texture.dest[0] = kFlareTbp;
   std::memcpy(fixture.live.data() + kTextureObjectOffset, &texture, sizeof(texture));
+  texture.dest[0] = kPlaceholderFlareTbp;
+  std::memcpy(fixture.live.data() + kPlaceholderTextureObjectOffset, &texture, sizeof(texture));
   return fixture;
 }
 
@@ -308,6 +313,8 @@ int main() {
     }
     check(texture_pool.lookup(kFlareTbp).value_or(0) == flare_handle,
           "bucket-312 upload publishes the transparent-falloff source at the glow TBP");
+    check(texture_pool.lookup(kPlaceholderFlareTbp).value_or(0) == placeholder_handle,
+          "bucket-312 upload publishes the pool placeholder while converted flare data is absent");
     const auto release_textures = [&]() {
       if (flare_registered) {
         std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
@@ -542,10 +549,11 @@ int main() {
     context.draw_calls = 0;
     context.triangles = 0;
 
-    SpriteGlowOutput missing = make_center_flare();
-    missing.adgif.tex0_data =
-        (missing.adgif.tex0_data & ~0x3fffull) | static_cast<u64>(kMissingFlareTbp);
-    renderer.draw(&missing, 1, &state, context);
+    SpriteGlowOutput placeholder_backed = make_center_flare();
+    placeholder_backed.adgif.tex0_data =
+        (placeholder_backed.adgif.tex0_data & ~0x3fffull) |
+        static_cast<u64>(kPlaceholderFlareTbp);
+    renderer.draw(&placeholder_backed, 1, &state, context);
     check(renderer.stats().sprites_submitted == 1 && renderer.stats().invalid_records == 0 &&
               renderer.stats().sprites_drawn == 1 && renderer.stats().draw_calls == 1 &&
               renderer.stats().triangles == 2 && renderer.stats().visibility_draw_calls == 6 &&
@@ -553,8 +561,8 @@ int main() {
               renderer.stats().missing_textures == 1 &&
               context.draw_calls == 7 && context.triangles == 14 &&
               pso_cache.pipeline_count() == 4 && sampler_cache.count() == 1,
-          "a valid missing TBP runs visibility, uses the fail-soft radial fallback, and reports "
-          "one draw");
+          "a placeholder-backed TBP runs visibility, uses the fail-soft radial fallback, and "
+          "reports one draw");
     [context.enc endEncoding];
 #if TARGET_OS_OSX
     id<MTLBlitCommandEncoder> missing_blit = [missing_commands blitCommandEncoder];
@@ -564,7 +572,7 @@ int main() {
     [missing_commands commit];
     [missing_commands waitUntilCompleted];
     check(missing_commands.status == MTLCommandBufferStatusCompleted,
-          "the unresolved-texture glow command buffer completed");
+          "the placeholder-backed glow command buffer completed");
     if (missing_commands.status != MTLCommandBufferStatusCompleted && missing_commands.error) {
       std::printf("Metal command-buffer error: %s\n",
                   missing_commands.error.localizedDescription.UTF8String);
@@ -576,11 +584,11 @@ int main() {
         mipmapLevel:0
               slice:1];
     check(is_bgra(pixels, kTargetSize / 2, kTargetSize / 2, 0, 0, 255, 255),
-          "the unresolved-texture fallback keeps the flare center bright");
+          "the placeholder-backed fallback keeps the flare center bright");
     check(red_at(pixels, 25, 25) < 16,
-          "the unresolved-texture fallback fades near the flare quad corner");
+          "the placeholder-backed fallback fades near the flare quad corner");
     check(is_bgra(pixels, 2, 2, 0, 0, 0, 0),
-          "the unresolved-texture fallback leaves pixels outside the flare unchanged");
+          "the placeholder-backed fallback leaves pixels outside the flare unchanged");
 
     stream.reset();
     id<MTLCommandBuffer> boosted_commands = [queue commandBuffer];

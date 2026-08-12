@@ -502,13 +502,18 @@ void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
 
   for (const auto& record : records) {
     std::optional<u64> handle = render_state->texture_pool->lookup(record.tbp);
-    id<MTLTexture> texture = handle ? metal_texture_lookup(*handle) : nil;
+    const bool placeholder_backed =
+        handle && *handle == render_state->texture_pool->get_placeholder_texture();
+    id<MTLTexture> texture = handle && !placeholder_backed ? metal_texture_lookup(*handle) : nil;
     if (!texture) {
       m_stats.missing_textures++;
-      lg::warn(
-          "Metal glow: failed to resolve texture at {}; using synthetic fail-soft radial "
-          "fallback (not source-faithful)",
-          record.tbp);
+      if (!m_warned_missing_texture) {
+        lg::warn(
+            "Metal glow: source texture at {} is {}; using synthetic fail-soft radial fallback "
+            "(not source-faithful); further warnings are suppressed",
+            record.tbp, placeholder_backed ? "placeholder-backed" : "unresolved");
+        m_warned_missing_texture = true;
+      }
       if (ensure_missing_texture_fallback(ctx.game_color.device)) {
         texture = m_missing_texture_fallback;
       } else {
