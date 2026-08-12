@@ -96,6 +96,7 @@ void MetalGeneric2::Stats::add(const Stats& o) {
   draw_calls += o.draw_calls;
   triangles += o.triangles;
   missing_textures += o.missing_textures;
+  missing_warp_publications += o.missing_warp_publications;
   unsupported_blends += o.unsupported_blends;
   unexpected_dma += o.unexpected_dma;
   overflow += o.overflow;
@@ -1220,8 +1221,28 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
   // mirror of setup_opengl_tex
   const u32 tbp_to_lookup = first.tbp & 0x7fff;
   const bool use_mt4hh = first.tbp & 0x8000;
+  const bool warp_sample =
+      m_mode == Mode::WARP && render_state->version == GameVersion::Jak2 && tbp_to_lookup == 1216;
+  if (m_mode == Mode::WARP && !warp_sample) {
+    if (m_stats) {
+      m_stats->missing_warp_publications++;
+    }
+    return;
+  }
+  if (warp_sample) {
+    settings.sampler.wrap_s = MTLSamplerAddressModeClampToEdge;
+    settings.sampler.wrap_t = MTLSamplerAddressModeClampToEdge;
+  }
   auto tex_handle = use_mt4hh ? render_state->texture_pool->lookup_mt4hh(tbp_to_lookup)
                               : render_state->texture_pool->lookup(tbp_to_lookup);
+  if (warp_sample &&
+      (!tex_handle || *tex_handle == render_state->texture_pool->get_placeholder_texture())) {
+    if (m_stats) {
+      m_stats->missing_textures++;
+      m_stats->missing_warp_publications++;
+    }
+    return;
+  }
   if (!tex_handle) {
     if (m_stats) {
       m_stats->missing_textures++;
@@ -1234,6 +1255,13 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
     tex_handle = render_state->texture_pool->get_placeholder_texture();
   }
   id<MTLTexture> tex = metal_texture_lookup(*tex_handle);
+  if (warp_sample && !tex) {
+    if (m_stats) {
+      m_stats->missing_textures++;
+      m_stats->missing_warp_publications++;
+    }
+    return;
+  }
   if (!tex) {
     tex = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
   }
@@ -1262,7 +1290,7 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
   fs.alpha_reject = settings.alpha_reject;
   fs.color_mult = settings.color_mult;
   fs.gfx_hack_no_tex = 0;
-  fs.warp_sample_mode = 0;
+  fs.warp_sample_mode = warp_sample;
   [enc setFragmentBytes:&fs length:sizeof(fs) atIndex:0];
 
   [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
@@ -1313,10 +1341,11 @@ void MetalGeneric2::do_draws(MetalSharedRenderState* render_state, MetalFrameCon
   vs.fog_constants[2] = m_drawing_config.fog_max;
   memcpy(vs.hvdf_offset, m_drawing_config.hvdf_offset.data(), sizeof(vs.hvdf_offset));
   vs.use_full_matrix = 0;  // NORMAL mode never sets one
-  vs.warp_sample_mode = 0;
-  vs.height_scale = metal_height_scale(render_state->version);
-  vs.scissor_adjust = metal_scissor_adjust(render_state->version);
-  vs.warp_off = 0.f;
+  vs.warp_sample_mode = m_mode == Mode::WARP;
+  vs.height_scale = m_mode == Mode::WARP ? 0.5f : metal_height_scale(render_state->version);
+  vs.scissor_adjust =
+      m_mode == Mode::WARP ? (512.f / 416.f) : metal_scissor_adjust(render_state->version);
+  vs.warp_off = m_mode == Mode::WARP ? 0.1875f : 0.f;
   [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
 
   // The GL renderer draws in a fixed alpha-mode order so translucent content
@@ -1362,10 +1391,21 @@ void MetalGeneric2::render(DmaFollower& dma,
                            MetalSharedRenderState* render_state,
                            MetalFrameContext& ctx,
                            Stats* stats) {
+  render_in_mode(dma, render_state, ctx, Mode::NORMAL, stats);
+}
+
+void MetalGeneric2::render_in_mode(DmaFollower& dma,
+                                   MetalSharedRenderState* render_state,
+                                   MetalFrameContext& ctx,
+                                   Mode mode,
+                                   Stats* stats) {
   m_stats = stats;
+  m_mode = mode;
   m_failed = false;
 
-  if (render_state->version == GameVersion::Jak1) {
+  if (mode == Mode::WARP && render_state->version != GameVersion::Jak2) {
+    expect(false, "Jak 2 for the private Generic2 WARP mode");
+  } else if (render_state->version == GameVersion::Jak1) {
     process_dma_jak1(dma, render_state->next_bucket);
   } else if (render_state->version == GameVersion::Jak2) {
     process_dma_jak2(dma, render_state->next_bucket);
@@ -1374,8 +1414,7 @@ void MetalGeneric2::render(DmaFollower& dma,
   }
 
   if (!m_failed) {
-    // Both bound paths use Mode::NORMAL.
-    setup_draws(true, true);
+    setup_draws(true, mode != Mode::WARP);
   }
   if (!m_failed) {
     do_draws(render_state, ctx);
@@ -1388,6 +1427,7 @@ void MetalGeneric2::render(DmaFollower& dma,
     stats->draw_buckets += (int)m_next_free_bucket;
   }
   m_stats = nullptr;
+  m_mode = Mode::NORMAL;
 
   // whatever happened, leave the follower at the next bucket
   while (dma.current_tag_offset() != render_state->next_bucket) {

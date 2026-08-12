@@ -12,8 +12,9 @@
  * and sampler keys, and the vertex/index data goes into the frame's stream
  * buffer instead of a re-uploaded GL_STREAM_DRAW buffer.
  *
- * Mode::NORMAL is ported for Jak 1 and Jak 2. The LIGHTNING / WARP / PRIM modes
- * and the Jak 3 DMA layout are not.
+ * Mode::NORMAL is ported for Jak 1 and Jak 2. Jak 2 WARP is retained as a
+ * private proof path; no production bucket selects it yet. LIGHTNING / PRIM and
+ * the Jak 3 DMA layout are not ported.
  */
 
 #include <memory>
@@ -38,6 +39,7 @@ class MetalGeneric2 {
     int draw_calls = 0;
     int triangles = 0;
     int missing_textures = 0;
+    int missing_warp_publications = 0;
     int unsupported_blends = 0;
     int unexpected_dma = 0;  // a bucket did not match: consumed and reported
     int overflow = 0;        // more data than the fixed buffers hold: reported
@@ -50,11 +52,20 @@ class MetalGeneric2 {
                 u32 num_adgif = 10000,
                 u32 num_buckets = 800);
 
-  // Mirror of Generic2::render_in_mode with Mode::NORMAL.
+  enum class Mode { NORMAL, WARP };
+
+  // Production entry point. Both bound game paths use NORMAL.
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx,
               Stats* stats);
+
+  // Private proof-only entry point. WARP is not wired to bucket 317.
+  void render_in_mode(DmaFollower& dma,
+                      MetalSharedRenderState* render_state,
+                      MetalFrameContext& ctx,
+                      Mode mode,
+                      Stats* stats);
 
   // Must match GenericVertexIn in shaders/generic.metal (and Generic2::Vertex).
   struct Vertex {
@@ -193,6 +204,7 @@ class MetalGeneric2 {
   bool alloc_vtx(u32 count);
 
   Stats* m_stats = nullptr;
+  Mode m_mode = Mode::NORMAL;
   std::unordered_map<std::string, bool> m_logged;
 };
 

@@ -107,6 +107,10 @@ id<MTLTexture> metal_texture_lookup(u64 handle) {
   return it == r.textures.end() ? nil : it->second;
 }
 
+bool metal_texture_replace(u64 handle, id<MTLTexture> replacement) {
+  return replace_registered_texture(handle, replacement);
+}
+
 void metal_texture_release(u64 handle) {
   auto& r = registry();
   std::lock_guard<std::mutex> lock(r.mutex);
