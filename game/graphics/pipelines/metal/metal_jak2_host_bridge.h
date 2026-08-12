@@ -168,6 +168,8 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_merc_models;
   uint64_t last_merc_draws;
   uint64_t last_merc_triangles;
+  uint64_t last_merc_anim_slot_draws;
+  uint64_t last_merc_anim_slot_placeholder_draws;
   uint64_t last_merc_eye_draws;
   uint64_t last_merc_eye_renderer_missing;
   uint64_t last_merc_eye_lookup_failed;

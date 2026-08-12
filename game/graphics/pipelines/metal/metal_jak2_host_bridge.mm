@@ -257,6 +257,9 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_merc_models = stats.merc_models;
   host->metrics.last_merc_draws = stats.merc_draws;
   host->metrics.last_merc_triangles = stats.merc_triangles;
+  host->metrics.last_merc_anim_slot_draws = stats.merc_anim_slot_draws;
+  host->metrics.last_merc_anim_slot_placeholder_draws =
+      stats.merc_anim_slot_placeholder_draws;
   host->metrics.last_merc_eye_draws = stats.merc_eye_draws;
   host->metrics.last_merc_eye_renderer_missing = stats.merc_eye_renderer_missing;
   host->metrics.last_merc_eye_lookup_failed = stats.merc_eye_lookup_failed;

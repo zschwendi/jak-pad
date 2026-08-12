@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -32,6 +33,13 @@ constexpr char kFilteredModelName[] = "jak2-merc-filtered-model";
 constexpr char kAlphaModelName[] = "jak2-merc-alpha-model";
 constexpr char kWaterModelName[] = "jak2-merc-water-model";
 constexpr char kEyeModelName[] = "jak2-merc-eye-model";
+constexpr char kAnimIntMinModelName[] = "jak2-merc-anim-int-min-model";
+constexpr std::array<s32, 6> kPrisonAnimTextureIds = {-5, -6, -8, -9, -10, -11};
+constexpr std::array<const char*, 6> kPrisonAnimModelNames = {
+    "jak2-merc-prison-anim-slot-4", "jak2-merc-prison-anim-slot-5",
+    "jak2-merc-prison-anim-slot-7", "jak2-merc-prison-anim-slot-8",
+    "jak2-merc-prison-anim-slot-9", "jak2-merc-prison-anim-slot-10"};
+constexpr std::size_t kPrisonAnimSlotCount = 11;
 constexpr u32 kMercBucket = static_cast<u32>(jak2::BucketId::MERC_L0_TFRAG);
 constexpr u32 kMercAlphaBucket = static_cast<u32>(jak2::BucketId::MERC_L0_ALPHA);
 constexpr u32 kMercWaterBucket = static_cast<u32>(jak2::BucketId::MERC_L0_WATER);
@@ -269,7 +277,8 @@ std::unique_ptr<tfrag3::Level> make_level() {
                                  bool alpha_blend,
                                  bool depth_write,
                                  bool filtered,
-                                 u8 eye_id = 0xff) {
+                                 s32 tree_tex_id,
+                                 u8 eye_id) {
     tfrag3::MercDraw draw;
     draw.mode.set_depth_write_enable(depth_write);
     draw.mode.set_zt(true);
@@ -283,7 +292,7 @@ std::unique_ptr<tfrag3::Level> make_level() {
     draw.mode.set_filt_enable(filtered);
     draw.mode.set_clamp_s_enable(true);
     draw.mode.set_clamp_t_enable(true);
-    draw.tree_tex_id = 0;
+    draw.tree_tex_id = tree_tex_id;
     draw.eye_id = eye_id;
     draw.first_index = 0;
     draw.index_count = 4;
@@ -304,11 +313,15 @@ std::unique_ptr<tfrag3::Level> make_level() {
   };
   // extract_merc.cpp maps category 3 to alpha blend, category 4 to alpha blend without depth
   // writes, and preserves each shader's TEX1 MMAG filter choice in the extracted DrawMode.
-  add_model(kNormalModelName, false, true, false);
-  add_model(kFilteredModelName, false, true, true);
-  add_model(kAlphaModelName, true, true, true);
-  add_model(kWaterModelName, true, false, true);
-  add_model(kEyeModelName, false, true, true, 0);
+  add_model(kNormalModelName, false, true, false, 0, 0xff);
+  add_model(kFilteredModelName, false, true, true, 0, 0xff);
+  add_model(kAlphaModelName, true, true, true, 0, 0xff);
+  add_model(kWaterModelName, true, false, true, 0, 0xff);
+  add_model(kEyeModelName, false, true, true, 0, 0);
+  for (std::size_t i = 0; i < kPrisonAnimModelNames.size(); i++) {
+    add_model(kPrisonAnimModelNames[i], false, true, false, kPrisonAnimTextureIds[i], 0xff);
+  }
+  add_model(kAnimIntMinModelName, false, true, false, std::numeric_limits<s32>::min(), 0xff);
   return level;
 }
 
@@ -330,7 +343,8 @@ RenderResult render(id<MTLDevice> device,
                     MetalMercBucketRenderer* renderer,
                     std::vector<u8>* memory,
                     u64 frame_id,
-                    MetalEyeRenderer* eye_renderer = nullptr) {
+                    MetalEyeRenderer* eye_renderer = nullptr,
+                    const std::vector<u64>* animated_texture_slots = nullptr) {
   RenderResult result;
   auto* color_desc = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -388,6 +402,10 @@ RenderResult render(id<MTLDevice> device,
   state.version = GameVersion::Jak2;
   state.texture_pool = texture_pool;
   state.eye_renderer = eye_renderer;
+  state.animated_texture_slots =
+      animated_texture_slots ? animated_texture_slots->data() : nullptr;
+  state.animated_texture_slot_count =
+      animated_texture_slots ? animated_texture_slots->size() : 0;
   state.dma_copy_base = memory->data();
   state.dma_copy_size = memory->size();
   state.ee_memory = memory->data();
@@ -527,9 +545,9 @@ int main() {
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
-              load.level_name == kLevelName && load.models == 5 && load.vertices == 4 &&
+              load.level_name == kLevelName && load.models == 12 && load.vertices == 4 &&
               load.indices == 4,
-          "registered normal, filtered, alpha, water, and eye synthetic Merc models");
+          "registered static, eye, and animated-slot synthetic Merc models");
     if (failures) {
       if (!load_error.empty()) {
         std::printf("Merc load error: %s\n", load_error.c_str());
@@ -697,6 +715,109 @@ int main() {
     check(water_depth == 0 && common_water_depth == 0,
           "per-level and common water Merc preserve the cleared depth attachment");
 
+    std::array<u64, kPrisonAnimTextureIds.size()> animated_handles = {};
+    std::vector<u64> animated_texture_slots(kPrisonAnimSlotCount, 0);
+    bool published_all_animated_textures = true;
+    for (std::size_t i = 0; i < animated_handles.size(); i++) {
+      std::array<u32, 16 * 16> pixels = {};
+      const u32 color = rgba(static_cast<u8>(40 + i * 32), static_cast<u8>(220 - i * 24),
+                             static_cast<u8>(48 + i * 20), 255);
+      for (auto& pixel : pixels) {
+        pixel = color;
+      }
+      animated_handles[i] = metal_upload_texture_rgba8(
+          device, queue, reinterpret_cast<const u8*>(pixels.data()), 16, 16);
+      published_all_animated_textures &= animated_handles[i] != 0;
+      const s64 slot = -static_cast<s64>(kPrisonAnimTextureIds[i]) - 1;
+      animated_texture_slots.at(static_cast<std::size_t>(slot)) = animated_handles[i];
+    }
+    check(published_all_animated_textures,
+          "published six synthetic textures in the prison animated-slot positions");
+
+    MetalMerc2::Stats combined_anim_slots;
+    std::array<Pixel, kPrisonAnimTextureIds.size()> animated_pixels = {};
+    for (std::size_t i = 0; i < kPrisonAnimModelNames.size(); i++) {
+      auto memory = make_source_chain(kPrisonAnimModelNames[i]);
+      const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 &normal_renderer, &memory, routed_frame++, nullptr,
+                                 &animated_texture_slots);
+      check(result.completed && result.final_offset == kBoundary && result.stats.models == 1 &&
+                result.stats.draws == 1 && result.stats.anim_slot_draws == 1 &&
+                result.stats.anim_slot_placeholder_draws == 0 &&
+                result.stats.missing_textures == 0 && result.stats.eye_draws == 0 &&
+                result.stats.eye_placeholder_draws == 0 && result.draw_calls == 1,
+            fmt::format("Merc tree texture {} resolves through animated slot {}",
+                        kPrisonAnimTextureIds[i],
+                        -static_cast<s64>(kPrisonAnimTextureIds[i]) - 1)
+                .c_str());
+      animated_pixels[i] = center_pixel(result.pixels);
+      combined_anim_slots.add(result.stats);
+    }
+    bool animated_pixels_are_distinct = true;
+    for (std::size_t i = 0; i < animated_pixels.size(); i++) {
+      for (std::size_t j = i + 1; j < animated_pixels.size(); j++) {
+        animated_pixels_are_distinct &= animated_pixels[i] != animated_pixels[j];
+      }
+    }
+    check(animated_pixels_are_distinct,
+          "the six prison animated slots sample their six distinct published textures");
+
+    auto zero_slots = animated_texture_slots;
+    zero_slots[4] = 0;
+    auto zero_memory = make_source_chain(kPrisonAnimModelNames[0]);
+    const auto zero_slot = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                  &normal_renderer, &zero_memory, routed_frame++, nullptr,
+                                  &zero_slots);
+
+    auto int_min_memory = make_source_chain(kAnimIntMinModelName);
+    const auto out_of_range_slot = render(
+        device, queue, &pso_cache, &sampler_cache, &texture_pool, &normal_renderer,
+        &int_min_memory, routed_frame++, nullptr, &animated_texture_slots);
+
+    auto stale_slots = animated_texture_slots;
+    metal_texture_release(animated_handles[1]);
+    animated_handles[1] = 0;
+    auto stale_memory = make_source_chain(kPrisonAnimModelNames[1]);
+    const auto stale_slot = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                   &normal_renderer, &stale_memory, routed_frame++, nullptr,
+                                   &stale_slots);
+
+    const auto is_animated_placeholder = [](const RenderResult& result) {
+      return result.completed && result.final_offset == kBoundary && result.stats.models == 1 &&
+             result.stats.draws == 1 && result.stats.anim_slot_draws == 1 &&
+             result.stats.anim_slot_placeholder_draws == 1 &&
+             result.stats.missing_textures == 1 && result.stats.eye_draws == 0 &&
+             result.stats.eye_renderer_missing == 0 && result.stats.eye_lookup_failed == 0 &&
+             result.stats.eye_placeholder_draws == 0 && result.draw_calls == 1;
+    };
+    check(is_animated_placeholder(zero_slot),
+          "a zero published animated-slot handle draws the counted placeholder");
+    check(is_animated_placeholder(out_of_range_slot),
+          "INT_MIN maps in signed 64-bit space and draws the counted out-of-range placeholder");
+    check(is_animated_placeholder(stale_slot),
+          "a stale published animated-slot handle draws the counted placeholder");
+    const Pixel zero_slot_pixel = center_pixel(zero_slot.pixels);
+    check(zero_slot_pixel == center_pixel(out_of_range_slot.pixels) &&
+              zero_slot_pixel == center_pixel(stale_slot.pixels) &&
+              zero_slot_pixel != animated_pixels[0],
+          "zero, out-of-range, and stale animated slots visibly use the placeholder texture");
+
+    combined_anim_slots.add(zero_slot.stats);
+    combined_anim_slots.add(out_of_range_slot.stats);
+    combined_anim_slots.add(stale_slot.stats);
+    check(combined_anim_slots.anim_slot_draws == 9 &&
+              combined_anim_slots.anim_slot_placeholder_draws == 3 &&
+              combined_anim_slots.missing_textures == 3 && combined_anim_slots.eye_draws == 0 &&
+              combined_anim_slots.eye_renderer_missing == 0 &&
+              combined_anim_slots.eye_lookup_failed == 0 &&
+              combined_anim_slots.eye_placeholder_draws == 0,
+          "Merc Stats::add aggregates animated slots without changing eye telemetry");
+    for (u64 handle : animated_handles) {
+      if (handle) {
+        metal_texture_release(handle);
+      }
+    }
+
     auto missing_eye_memory = make_source_chain(kEyeModelName);
     const auto missing_eye = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                                     &normal_renderer, &missing_eye_memory, routed_frame++);
@@ -704,6 +825,8 @@ int main() {
               missing_eye.stats.eye_renderer_missing == 1 &&
               missing_eye.stats.eye_lookup_failed == 0 &&
               missing_eye.stats.eye_placeholder_draws == 1 &&
+              missing_eye.stats.anim_slot_draws == 0 &&
+              missing_eye.stats.anim_slot_placeholder_draws == 0 &&
               missing_eye.stats.missing_textures == 1 && missing_eye.draw_calls == 1,
           "a missing eye renderer records one broad missing-texture placeholder fallback");
 
@@ -720,6 +843,8 @@ int main() {
                 uncomposed_eye.stats.eye_renderer_missing == 0 &&
                 uncomposed_eye.stats.eye_lookup_failed == 1 &&
                 uncomposed_eye.stats.eye_placeholder_draws == 1 &&
+                uncomposed_eye.stats.anim_slot_draws == 0 &&
+                uncomposed_eye.stats.anim_slot_placeholder_draws == 0 &&
                 uncomposed_eye.stats.missing_textures == 1 && uncomposed_eye.draw_calls == 1,
             "an uncomposed eye slot records lookup failure and broad placeholder fallback");
       combined_eye_fallbacks.add(missing_eye.stats);
@@ -729,6 +854,8 @@ int main() {
               combined_eye_fallbacks.eye_renderer_missing == 1 &&
               combined_eye_fallbacks.eye_lookup_failed == 1 &&
               combined_eye_fallbacks.eye_placeholder_draws == 2 &&
+              combined_eye_fallbacks.anim_slot_draws == 0 &&
+              combined_eye_fallbacks.anim_slot_placeholder_draws == 0 &&
               combined_eye_fallbacks.missing_textures == 2,
           "Merc Stats::add preserves every explicit eye fallback counter");
 

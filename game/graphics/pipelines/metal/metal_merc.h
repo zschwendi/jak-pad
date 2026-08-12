@@ -51,6 +51,8 @@ class MetalMerc2 {
     int lights = 0;
     int mod_vtx_uploads = 0;  // effects whose blerc / mod-vertex update was uploaded
     int mod_vtx_skipped = 0;  // effects that asked for one but could not be updated (reported)
+    int anim_slot_draws = 0;
+    int anim_slot_placeholder_draws = 0;
     int eye_draws = 0;        // draws whose texture the eye renderer composed
     int eye_renderer_missing = 0;
     int eye_lookup_failed = 0;

@@ -401,6 +401,8 @@ void MetalMerc2::Stats::add(const Stats& o) {
   lights += o.lights;
   mod_vtx_uploads += o.mod_vtx_uploads;
   mod_vtx_skipped += o.mod_vtx_skipped;
+  anim_slot_draws += o.anim_slot_draws;
+  anim_slot_placeholder_draws += o.anim_slot_placeholder_draws;
   eye_draws += o.eye_draws;
   eye_renderer_missing += o.eye_renderer_missing;
   eye_lookup_failed += o.eye_lookup_failed;
@@ -1685,6 +1687,20 @@ void MetalMerc2::do_draws(const Draw* draw_array,
         lg::warn("Metal merc: no eye texture for draw {}; using the placeholder (logged once)",
                  draw.texture & 0xff);
         m_warned_eyes = true;
+      }
+    } else if (draw.texture < 0) {
+      stats->anim_slot_draws++;
+      const s64 slot = -static_cast<s64>(draw.texture) - 1;
+      if (render_state->animated_texture_slots &&
+          static_cast<u64>(slot) < render_state->animated_texture_slot_count) {
+        const u64 handle = render_state->animated_texture_slots[slot];
+        if (handle) {
+          tex = metal_texture_lookup(handle);
+        }
+      }
+      if (!tex) {
+        stats->anim_slot_placeholder_draws++;
+        stats->missing_textures++;
       }
     } else {
       stats->missing_textures++;

@@ -1853,6 +1853,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.merc_bone_vectors = merc_stats.bone_vectors;
     m_chain_stats.merc_mod_vtx_uploads = merc_stats.mod_vtx_uploads;
     m_chain_stats.merc_mod_vtx_skipped = merc_stats.mod_vtx_skipped;
+    m_chain_stats.merc_anim_slot_draws = merc_stats.anim_slot_draws;
+    m_chain_stats.merc_anim_slot_placeholder_draws = merc_stats.anim_slot_placeholder_draws;
     m_chain_stats.merc_eye_draws = merc_stats.eye_draws;
     m_chain_stats.merc_eye_renderer_missing = merc_stats.eye_renderer_missing;
     m_chain_stats.merc_eye_lookup_failed = merc_stats.eye_lookup_failed;
