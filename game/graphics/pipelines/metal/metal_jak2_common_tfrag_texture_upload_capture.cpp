@@ -7,6 +7,7 @@
 #include <limits>
 
 #include "common/dma/dma.h"
+#include "common/dma/gs.h"
 #include "common/goal_constants.h"
 
 namespace metal_renderer {
@@ -256,6 +257,12 @@ bool is_alpha_texture_upload_bucket(u32 bucket_id) {
          kJak2AlphaTextureUploadBuckets.end();
 }
 
+bool is_pris_texture_upload_bucket(u32 bucket_id) {
+  return std::find(kJak2PrisTextureUploadBuckets.begin(),
+                   kJak2PrisTextureUploadBuckets.end(), bucket_id) !=
+         kJak2PrisTextureUploadBuckets.end();
+}
+
 bool is_water_texture_upload_bucket(u32 bucket_id) {
   return std::find(kJak2WaterTextureUploadBuckets.begin(),
                    kJak2WaterTextureUploadBuckets.end(), bucket_id) !=
@@ -448,6 +455,374 @@ bool parse_fixed_animation(const u8* source, Plan* out) {
 bool parse_opcode30_security(const u8* source, Jak2Opcode30SecurityPlan* out) {
   return parse_fixed_animation(source, &out->environment) &&
          parse_fixed_animation(source + sizeof(out->environment), &out->dot);
+}
+
+constexpr u64 kFnvOffsetBasis = 14695981039346656037ull;
+constexpr u64 kFnvPrime = 1099511628211ull;
+
+void hash_bytes(u64* hash, const void* bytes, std::size_t size) {
+  const auto* input = static_cast<const u8*>(bytes);
+  for (std::size_t i = 0; i < size; ++i) {
+    *hash ^= input[i];
+    *hash *= kFnvPrime;
+  }
+}
+
+constexpr u64 make_gif_tag_word(u32 nloop, bool pre, u32 prim, u32 nreg) {
+  return static_cast<u64>(nloop) | (1ull << 15) | (static_cast<u64>(pre) << 46) |
+         (static_cast<u64>(prim) << 47) | (static_cast<u64>(nreg) << 60);
+}
+
+constexpr u64 make_scissor(u32 x0, u32 x1, u32 y0, u32 y1) {
+  return static_cast<u64>(x0) | (static_cast<u64>(x1) << 16) |
+         (static_cast<u64>(y0) << 32) | (static_cast<u64>(y1) << 48);
+}
+
+bool get_transfer_tag(const u8* snapshot,
+                      std::size_t snapshot_size,
+                      u32 chain_offset,
+                      u32 bucket_id,
+                      const Jak2CommonTfragTransferMetadata& transfer,
+                      const u8** out_tag) {
+  const u64 bucket_offset = static_cast<u64>(chain_offset) + bucket_id * 16;
+  const u64 tag_offset = bucket_offset + transfer.relative_tag_offset;
+  const std::size_t checked_size = std::min<std::size_t>(snapshot_size, EE_MAIN_MEM_SIZE);
+  if (!snapshot || !out_tag || !range_is_valid(tag_offset, 16 + transfer.payload_bytes,
+                                                checked_size)) {
+    return false;
+  }
+  *out_tag = snapshot + tag_offset;
+  return true;
+}
+
+bool get_plain_cnt_payload(const u8* snapshot,
+                           std::size_t snapshot_size,
+                           u32 chain_offset,
+                           u32 bucket_id,
+                           const Jak2CommonTfragTransferMetadata& transfer,
+                           u16 qwc,
+                           u32 vif0,
+                           u32 vif1,
+                           const u8** out_payload) {
+  const u8* tag = nullptr;
+  if (!get_transfer_tag(snapshot, snapshot_size, chain_offset, bucket_id, transfer, &tag) ||
+      transfer.tag_kind != static_cast<u8>(DmaTag::Kind::CNT) || transfer.qwc != qwc ||
+      transfer.payload_bytes != static_cast<u32>(qwc) * 16 ||
+      read_unaligned<u64>(tag) !=
+          (static_cast<u64>(qwc) | (static_cast<u64>(DmaTag::Kind::CNT) << 28)) ||
+      read_unaligned<u32>(tag + 8) != vif0 || read_unaligned<u32>(tag + 12) != vif1) {
+    return false;
+  }
+  *out_payload = tag + 16;
+  return true;
+}
+
+bool has_plain_next_tag(const u8* snapshot,
+                        std::size_t snapshot_size,
+                        u32 chain_offset,
+                        u32 bucket_id,
+                        const Jak2CommonTfragTransferMetadata& transfer) {
+  const u8* tag = nullptr;
+  if (!get_transfer_tag(snapshot, snapshot_size, chain_offset, bucket_id, transfer, &tag) ||
+      !metadata_is_inert_next(transfer)) {
+    return false;
+  }
+  const u64 raw = read_unaligned<u64>(tag);
+  return static_cast<u32>(raw) == (static_cast<u32>(DmaTag::Kind::NEXT) << 28) &&
+         (raw >> 32) != 0 && read_unaligned<u32>(tag + 8) == 0 &&
+         read_unaligned<u32>(tag + 12) == 0;
+}
+
+bool validate_ad_gif_tag(const u8* payload, u32 nloop) {
+  return read_unaligned<u64>(payload) == make_gif_tag_word(nloop, false, 0, 1) &&
+         read_unaligned<u64>(payload + 8) ==
+             static_cast<u64>(GifTag::RegisterDescriptor::AD);
+}
+
+bool validate_single_ad(const u8* payload, GsRegisterAddress address, u64 value) {
+  return validate_ad_gif_tag(payload, 1) && read_unaligned<u64>(payload + 16) == value &&
+         read_unaligned<u64>(payload + 24) == static_cast<u64>(address);
+}
+
+bool validate_display_setup(const u8* payload,
+                            Jak2PrisEyeResolution* resolution,
+                            u32* source_fbp) {
+  constexpr std::array<GsRegisterAddress, 7> kAddresses = {
+      GsRegisterAddress::SCISSOR_1, GsRegisterAddress::XYOFFSET_1,
+      GsRegisterAddress::FRAME_1,   GsRegisterAddress::TEST_1,
+      GsRegisterAddress::TEXA,      GsRegisterAddress::ZBUF_1,
+      GsRegisterAddress::TEXFLUSH};
+  if (!validate_ad_gif_tag(payload, kAddresses.size())) {
+    return false;
+  }
+
+  std::array<u64, kAddresses.size()> values = {};
+  for (std::size_t i = 0; i < kAddresses.size(); ++i) {
+    values[i] = read_unaligned<u64>(payload + 16 + i * 16);
+    if (read_unaligned<u64>(payload + 24 + i * 16) !=
+        static_cast<u64>(kAddresses[i])) {
+      return false;
+    }
+  }
+
+  const GsFrame frame(values[2]);
+  const bool eye32 = values[0] == make_scissor(0, 63, 0, 511) &&
+                     values[1] == (512ull | (512ull << 32)) && frame.fbw() == 1;
+  const bool eye64 = values[0] == make_scissor(0, 127, 0, 255) &&
+                     values[1] == (1024ull | (1024ull << 32)) && frame.fbw() == 2;
+  if (eye32 == eye64 || frame.psm() != GsFrame::PSM::PSMCT32 || frame.fbmsk() != 0 ||
+      values[2] != (static_cast<u64>(frame.fbp()) |
+                    (static_cast<u64>(frame.fbw()) << 16)) ||
+      values[3] != 0x30000 || values[4] != 0x8000000080ull ||
+      values[5] != (0x130ull | (1ull << 24) | (1ull << 32)) || values[6] != 0) {
+    return false;
+  }
+
+  *resolution = eye32 ? Jak2PrisEyeResolution::Eye32 : Jak2PrisEyeResolution::Eye64;
+  *source_fbp = frame.fbp();
+  return true;
+}
+
+bool validate_display_reset(const u8* payload) {
+  constexpr std::array<GsRegisterAddress, 7> kAddresses = {
+      GsRegisterAddress::SCISSOR_1, GsRegisterAddress::XYOFFSET_1,
+      GsRegisterAddress::FRAME_1,   GsRegisterAddress::TEST_1,
+      GsRegisterAddress::TEXA,      GsRegisterAddress::ZBUF_1,
+      GsRegisterAddress::TEXFLUSH};
+  constexpr std::array<u64, 7> kValues = {
+      make_scissor(0, 511, 0, 415), 0x730000007000ull,
+      0x198ull | (8ull << 16),       0x50000ull,
+      0x8000000000ull,               0x130ull | (1ull << 24),
+      0};
+  if (!validate_ad_gif_tag(payload, kAddresses.size())) {
+    return false;
+  }
+  for (std::size_t i = 0; i < kAddresses.size(); ++i) {
+    if (read_unaligned<u64>(payload + 16 + i * 16) != kValues[i] ||
+        read_unaligned<u64>(payload + 24 + i * 16) !=
+            static_cast<u64>(kAddresses[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool validate_eye_adgif(const u8* payload, Jak2PrisEyeResolution resolution, u64 alpha) {
+  constexpr u64 kAdRegisters = static_cast<u64>(GifTag::RegisterDescriptor::AD);
+  const u64 max_uv = resolution == Jak2PrisEyeResolution::Eye32 ? 31 : 63;
+  const u64 expected_clamp = 1ull | (1ull << 2) | (max_uv << 14) | (max_uv << 34);
+  if (read_unaligned<u64>(payload) != make_gif_tag_word(5, false, 0, 1) ||
+      read_unaligned<u64>(payload + 8) != kAdRegisters) {
+    return false;
+  }
+  const auto adgif = read_unaligned<AdGifData>(payload + 16);
+  return adgif.tex0_addr == static_cast<u64>(GsRegisterAddress::TEX0_1) &&
+         adgif.tex1_addr == static_cast<u64>(GsRegisterAddress::TEX1_1) &&
+         adgif.mip_addr == static_cast<u64>(GsRegisterAddress::MIPTBP1_1) &&
+         adgif.clamp_addr == static_cast<u64>(GsRegisterAddress::CLAMP_1) &&
+         adgif.alpha_addr == static_cast<u64>(GsRegisterAddress::ALPHA_1) &&
+         adgif.clamp_data == expected_clamp && adgif.alpha_data == alpha;
+}
+
+bool validate_eye_scissor(const u8* payload, u64 expected) {
+  return validate_single_ad(payload, GsRegisterAddress::SCISSOR_1, expected);
+}
+
+bool validate_eye_sprite(const u8* payload,
+                         bool alpha_blend,
+                         u32 alpha,
+                         bool exact_background,
+                         u32 background_x0,
+                         u32 background_y0,
+                         u32 background_x1,
+                         u32 background_y1) {
+  constexpr u64 kSpriteRegisters =
+      static_cast<u64>(GifTag::RegisterDescriptor::RGBAQ) |
+      (static_cast<u64>(GifTag::RegisterDescriptor::UV) << 4) |
+      (static_cast<u64>(GifTag::RegisterDescriptor::XYZ2) << 8) |
+      (static_cast<u64>(GifTag::RegisterDescriptor::UV) << 12) |
+      (static_cast<u64>(GifTag::RegisterDescriptor::XYZ2) << 16);
+  const u32 prim = static_cast<u32>(GsPrim::Kind::SPRITE) | (1u << 4) |
+                   (static_cast<u32>(alpha_blend) << 6) | (1u << 8);
+  if (read_unaligned<u64>(payload) != make_gif_tag_word(1, true, prim, 5) ||
+      read_unaligned<u64>(payload + 8) != kSpriteRegisters ||
+      read_unaligned<u32>(payload + 16) != 128 ||
+      read_unaligned<u32>(payload + 20) != 128 ||
+      read_unaligned<u32>(payload + 24) != 128 ||
+      read_unaligned<u32>(payload + 28) != alpha ||
+      read_unaligned<u32>(payload + 40) != 0 ||
+      read_unaligned<u32>(payload + 44) != 0 ||
+      read_unaligned<u32>(payload + 56) != 0xffffff ||
+      read_unaligned<u32>(payload + 60) != 0 ||
+      read_unaligned<u32>(payload + 72) != 0 ||
+      read_unaligned<u32>(payload + 76) != 0 ||
+      read_unaligned<u32>(payload + 88) != 0xffffff ||
+      read_unaligned<u32>(payload + 92) != 0) {
+    return false;
+  }
+  if (!exact_background) {
+    return true;
+  }
+  return read_unaligned<u64>(payload + 32) == 0 &&
+         read_unaligned<u32>(payload + 48) == background_x0 &&
+         read_unaligned<u32>(payload + 52) == background_y0 &&
+         read_unaligned<u64>(payload + 64) == 0 &&
+         read_unaligned<u32>(payload + 80) == background_x1 &&
+         read_unaligned<u32>(payload + 84) == background_y1;
+}
+
+bool parse_pris_eye_chunk(const u8* snapshot,
+                          std::size_t snapshot_size,
+                          u32 chain_offset,
+                          u32 bucket_id,
+                          const Jak2CommonTfragTextureUploadCapture& capture,
+                          u32 start_transfer_index,
+                          Jak2PrisEyeChunkPlan* out,
+                          u32* source_fbp) {
+  constexpr std::array<u8, 22> kBodyKinds = {
+      0, 1, 2, 1, 2, 0, 1, 2, 3, 0, 1,
+      2, 0, 1, 2, 3, 0, 1, 2, 0, 1, 2};
+  constexpr std::array<u32, 7> kSpriteAlpha = {128, 128, 128, 128, 128, 0, 0};
+  constexpr std::array<bool, 7> kSpriteBlend = {false, false, false, true, true, true, true};
+  constexpr std::array<u64, 6> kAdgifAlpha = {0x44, 0x44, 0x44, 0x44, 1, 1};
+
+  if (!out || !source_fbp ||
+      start_transfer_index + kJak2PrisEyeChunkTransferCount > capture.transfer_count) {
+    return false;
+  }
+
+  const u8* payload = nullptr;
+  if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                             capture.transfers[start_transfer_index], 8, kFlushaVif,
+                             kDirectVif | 8, &payload) ||
+      !validate_display_setup(payload, &out->resolution, source_fbp) ||
+      !get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                             capture.transfers[start_transfer_index + 1], 2, 0,
+                             kDirectVif | 2, &payload) ||
+      !validate_single_ad(payload, GsRegisterAddress::TEST_1, 0x30003)) {
+    return false;
+  }
+
+  const u32 eye_width = out->resolution == Jak2PrisEyeResolution::Eye32 ? 32 : 64;
+  const u32 full_width = eye_width * 2;
+  u32 y0 = 0;
+  u32 pair_index = 0;
+  u32 adgif_index = 0;
+  u32 scissor_index = 0;
+  u32 sprite_index = 0;
+  u32 test_index = 0;
+  for (u32 body_index = 0; body_index < kBodyKinds.size(); ++body_index) {
+    const u32 transfer_index = start_transfer_index + 2 + body_index;
+    switch (kBodyKinds[body_index]) {
+      case 0:
+        if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                                   capture.transfers[transfer_index], 6, 0, kDirectVif | 6,
+                                   &payload) ||
+            !validate_eye_adgif(payload, out->resolution, kAdgifAlpha[adgif_index++])) {
+          return false;
+        }
+        break;
+      case 1: {
+        if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                                   capture.transfers[transfer_index], 2, 0, kDirectVif | 2,
+                                   &payload)) {
+          return false;
+        }
+        if (scissor_index == 0) {
+          const u64 raw_scissor = read_unaligned<u64>(payload + 16);
+          const GsScissor scissor(raw_scissor);
+          if (scissor.x0() != 0 || scissor.x1() != full_width - 1 ||
+              scissor.y1() != scissor.y0() + eye_width - 1 ||
+              scissor.y0() % eye_width != 0) {
+            return false;
+          }
+          y0 = scissor.y0();
+          pair_index = out->resolution == Jak2PrisEyeResolution::Eye32
+                           ? y0 / eye_width
+                           : (y0 / eye_width) * 4;
+          if (pair_index >= 20) {
+            return false;
+          }
+        }
+        const bool right = scissor_index != 0 && (scissor_index % 2) == 0;
+        const u32 expected_x0 = scissor_index == 0 ? 0 : (right ? eye_width : 0);
+        const u32 expected_x1 = scissor_index == 0 ? full_width - 1
+                                                   : expected_x0 + eye_width - 1;
+        if (!validate_eye_scissor(payload,
+                                  make_scissor(expected_x0, expected_x1, y0,
+                                               y0 + eye_width - 1))) {
+          return false;
+        }
+        scissor_index++;
+      } break;
+      case 2: {
+        if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                                   capture.transfers[transfer_index], 6, 0, kDirectVif | 6,
+                                   &payload)) {
+          return false;
+        }
+        const bool background = sprite_index == 0;
+        const u32 group = out->resolution == Jak2PrisEyeResolution::Eye32
+                              ? pair_index
+                              : pair_index / 4;
+        const u32 background_x0 = eye_width * 16;
+        const u32 background_y0 = (group * eye_width + eye_width) * 16;
+        if (!validate_eye_sprite(payload, kSpriteBlend[sprite_index],
+                                 kSpriteAlpha[sprite_index], background, background_x0,
+                                 background_y0, (eye_width + full_width) * 16,
+                                 background_y0 + eye_width * 16)) {
+          return false;
+        }
+        sprite_index++;
+      } break;
+      case 3:
+        if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                                   capture.transfers[transfer_index], 2, 0, kDirectVif | 2,
+                                   &payload) ||
+            !validate_single_ad(payload, GsRegisterAddress::TEST_1,
+                                test_index++ == 0 ? 0x33001 : 0x30003)) {
+          return false;
+        }
+        break;
+      default:
+        return false;
+    }
+  }
+
+  if (adgif_index != kAdgifAlpha.size() || scissor_index != 7 ||
+      sprite_index != kSpriteAlpha.size() || test_index != 2 ||
+      !get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                             capture.transfers[start_transfer_index + 24], 8, kFlushaVif,
+                             kDirectVif | 8, &payload) ||
+      !validate_display_reset(payload) ||
+      !get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                             capture.transfers[start_transfer_index + 25], 2, 0,
+                             kDirectVif | 2, &payload) ||
+      !validate_single_ad(payload, GsRegisterAddress::ALPHA_1, 0x44)) {
+    return false;
+  }
+
+  u64 fingerprint = kFnvOffsetBasis;
+  for (u32 i = 0; i < kJak2PrisEyeChunkTransferCount; ++i) {
+    const auto& transfer = capture.transfers[start_transfer_index + i];
+    const u8* tag = nullptr;
+    if (!get_transfer_tag(snapshot, snapshot_size, chain_offset, bucket_id, transfer, &tag)) {
+      return false;
+    }
+    hash_bytes(&fingerprint, tag, 16 + transfer.payload_bytes);
+  }
+
+  out->pair_index = pair_index;
+  out->start_transfer_index = start_transfer_index;
+  out->start_relative_tag_offset = capture.transfers[start_transfer_index].relative_tag_offset;
+  out->linker_transfer_index = start_transfer_index + kJak2PrisEyeChunkTransferCount;
+  out->linker_relative_tag_offset =
+      capture.transfers[out->linker_transfer_index].relative_tag_offset;
+  out->transfer_count = kJak2PrisEyeChunkTransferCount;
+  out->payload_bytes = kJak2PrisEyeChunkPayloadBytes;
+  out->eye_slot_mask = 3ull << (pair_index * 2);
+  out->semantic_fingerprint = fingerprint;
+  return true;
 }
 
 bool page_header_is_valid(const u8* live_ee_memory,
@@ -661,6 +1036,162 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
   std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
               plan.ordinary.page_header.size());
   return plan;
+}
+
+std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture) {
+  const auto capture = capture_jak2_tfrag_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, bucket_id);
+  if (out_capture) {
+    *out_capture = capture;
+  }
+  if (!is_pris_texture_upload_bucket(bucket_id) || !capture.valid) {
+    return std::nullopt;
+  }
+
+  Jak2PrisEyeTextureUploadPlan plan;
+  plan.bucket_id = bucket_id;
+  if (!capture.present) {
+    if (capture.classification != Jak2CommonTfragTextureUploadClass::Absent ||
+        capture.transfer_count != 1 || capture.total_payload_bytes != 0 ||
+        capture.inert_transfers != 1 || !metadata_is_strict_empty(capture.transfers[0])) {
+      return std::nullopt;
+    }
+    return plan;
+  }
+
+  const std::size_t chunk_count =
+      capture.transfer_count == 32 ? 1 : capture.transfer_count == 59 ? 2 : 0;
+  const u64 expected_payload_bytes = chunk_count == 1 ? 2032 : 3888;
+  const u32 expected_inert = chunk_count == 1 ? 4 : 5;
+  const u32 expected_eye_markers = static_cast<u32>(chunk_count) * 2;
+  const u32 expected_gs = static_cast<u32>(chunk_count) * 11;
+  const u32 expected_other = static_cast<u32>(chunk_count) * 13;
+  const bool exact_counts =
+      chunk_count != 0 &&
+      capture.classification == Jak2CommonTfragTextureUploadClass::EyeOrOther &&
+      capture.total_payload_bytes == expected_payload_bytes &&
+      capture.inert_transfers == expected_inert && capture.ordinary_descriptors == 1 &&
+      capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == expected_gs &&
+      capture.animator_arrays == 0 && capture.animator_body_transfers == 0 &&
+      capture.animator_payload_bytes == 0 && capture.eye_markers == expected_eye_markers &&
+      capture.other_transfers == expected_other && capture.malformed_transfers == 0;
+  if (!exact_counts || !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size,
+                                            chain_offset, bucket_id, capture.transfers[0]) ||
+      !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                          bucket_id, capture.transfers[2])) {
+    return std::nullopt;
+  }
+
+  const u8* descriptor_payload = nullptr;
+  if (!get_plain_cnt_payload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                             bucket_id, capture.transfers[1], 1, kPcPortVif, 3,
+                             &descriptor_payload)) {
+    return std::nullopt;
+  }
+  const u64 page_offset = read_unaligned<u64>(descriptor_payload);
+  const s64 mode = read_unaligned<s64>(descriptor_payload + sizeof(u64));
+  if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
+    return std::nullopt;
+  }
+
+  plan.chunk_count = chunk_count;
+  u32 start_transfer_index = 3;
+  u32 common_source_fbp = 0;
+  for (std::size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+    u32 source_fbp = 0;
+    auto& chunk = plan.chunks[chunk_index];
+    if (!parse_pris_eye_chunk(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                              bucket_id, capture, start_transfer_index, &chunk,
+                              &source_fbp) ||
+        !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                            bucket_id, capture.transfers[chunk.linker_transfer_index]) ||
+        (chunk_index != 0 && source_fbp != common_source_fbp) ||
+        (plan.eye_slot_mask & chunk.eye_slot_mask) != 0) {
+      return std::nullopt;
+    }
+    common_source_fbp = source_fbp;
+    plan.eye_slot_mask |= chunk.eye_slot_mask;
+    start_transfer_index = chunk.linker_transfer_index + 1;
+  }
+
+  plan.direct_reset_transfer_index = start_transfer_index;
+  plan.terminal_transfer_index = start_transfer_index + 1;
+  const u8* ignored_payload = nullptr;
+  if (plan.terminal_transfer_index >= capture.transfer_count ||
+      !get_plain_cnt_payload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                             bucket_id, capture.transfers[plan.direct_reset_transfer_index], 10,
+                             kFlushaVif, kDirectVif | 10, &ignored_payload) ||
+      !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                          bucket_id, capture.transfers[plan.terminal_transfer_index])) {
+    return std::nullopt;
+  }
+  plan.direct_reset_relative_tag_offset =
+      capture.transfers[plan.direct_reset_transfer_index].relative_tag_offset;
+  plan.terminal_relative_tag_offset =
+      capture.transfers[plan.terminal_transfer_index].relative_tag_offset;
+
+  plan.present = true;
+  plan.ordinary.page_offset = page_offset;
+  plan.ordinary.mode = mode;
+  std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
+              plan.ordinary.page_header.size());
+
+  u64 fingerprint = kFnvOffsetBasis;
+  hash_bytes(&fingerprint, &plan.bucket_id, sizeof(plan.bucket_id));
+  hash_bytes(&fingerprint, &plan.ordinary.page_offset, sizeof(plan.ordinary.page_offset));
+  hash_bytes(&fingerprint, &plan.ordinary.mode, sizeof(plan.ordinary.mode));
+  hash_bytes(&fingerprint, plan.ordinary.page_header.data(),
+             plan.ordinary.page_header.size());
+  hash_bytes(&fingerprint, &plan.chunk_count, sizeof(plan.chunk_count));
+  for (std::size_t i = 0; i < plan.chunk_count; ++i) {
+    const auto& chunk = plan.chunks[i];
+    hash_bytes(&fingerprint, &chunk.resolution, sizeof(chunk.resolution));
+    hash_bytes(&fingerprint, &chunk.pair_index, sizeof(chunk.pair_index));
+    hash_bytes(&fingerprint, &chunk.semantic_fingerprint,
+               sizeof(chunk.semantic_fingerprint));
+  }
+  plan.semantic_fingerprint = fingerprint;
+  return plan;
+}
+
+bool jak2_pris_eye_texture_upload_plans_match(
+    const Jak2PrisEyeTextureUploadPlan& live,
+    const Jak2PrisEyeTextureUploadPlan& copied) {
+  if (live.bucket_id != copied.bucket_id || live.present != copied.present ||
+      live.chunk_count != copied.chunk_count || live.eye_slot_mask != copied.eye_slot_mask ||
+      live.semantic_fingerprint != copied.semantic_fingerprint) {
+    return false;
+  }
+  if (!live.present) {
+    return true;
+  }
+  if (live.ordinary.page_offset != copied.ordinary.page_offset ||
+      live.ordinary.mode != copied.ordinary.mode ||
+      live.ordinary.page_header != copied.ordinary.page_header ||
+      live.direct_reset_transfer_index != copied.direct_reset_transfer_index ||
+      live.terminal_transfer_index != copied.terminal_transfer_index) {
+    return false;
+  }
+  for (std::size_t i = 0; i < live.chunk_count; ++i) {
+    const auto& a = live.chunks[i];
+    const auto& b = copied.chunks[i];
+    if (a.resolution != b.resolution || a.pair_index != b.pair_index ||
+        a.start_transfer_index != b.start_transfer_index ||
+        a.linker_transfer_index != b.linker_transfer_index ||
+        a.transfer_count != b.transfer_count || a.payload_bytes != b.payload_bytes ||
+        a.eye_slot_mask != b.eye_slot_mask ||
+        a.semantic_fingerprint != b.semantic_fingerprint) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(

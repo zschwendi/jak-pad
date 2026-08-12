@@ -20,6 +20,9 @@ constexpr std::array<u32, 6> kJak2PrisTextureUploadBuckets = {196, 200, 204, 208
 constexpr std::array<u32, 6> kJak2WaterTextureUploadBuckets = {252, 261, 270, 279, 288, 297};
 constexpr std::size_t kJak2CommonTfragTextureUploadMaximumTransfers = 64;
 constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
+constexpr std::size_t kJak2PrisEyeMaximumChunks = 2;
+constexpr u32 kJak2PrisEyeChunkTransferCount = 26;
+constexpr u32 kJak2PrisEyeChunkPayloadBytes = 1856;
 
 enum class Jak2CommonTfragTextureUploadClass : u8 {
   Malformed,
@@ -75,6 +78,38 @@ struct Jak2NormalTfragTextureUploadPlan {
 struct Jak2CommonPrisTextureUploadPlan {
   bool present = false;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
+};
+
+enum class Jak2PrisEyeResolution : u8 {
+  Eye32,
+  Eye64,
+};
+
+struct Jak2PrisEyeChunkPlan {
+  Jak2PrisEyeResolution resolution = Jak2PrisEyeResolution::Eye32;
+  u32 pair_index = 0;
+  u32 start_transfer_index = 0;
+  u32 start_relative_tag_offset = 0;
+  u32 linker_transfer_index = 0;
+  u32 linker_relative_tag_offset = 0;
+  u32 transfer_count = 0;
+  u32 payload_bytes = 0;
+  u64 eye_slot_mask = 0;
+  u64 semantic_fingerprint = 0;
+};
+
+struct Jak2PrisEyeTextureUploadPlan {
+  u32 bucket_id = 0;
+  bool present = false;
+  Jak2Bucket4OrdinaryUploadPlan ordinary;
+  std::array<Jak2PrisEyeChunkPlan, kJak2PrisEyeMaximumChunks> chunks = {};
+  std::size_t chunk_count = 0;
+  u32 direct_reset_transfer_index = 0;
+  u32 direct_reset_relative_tag_offset = 0;
+  u32 terminal_transfer_index = 0;
+  u32 terminal_relative_tag_offset = 0;
+  u64 eye_slot_mask = 0;
+  u64 semantic_fingerprint = 0;
 };
 
 struct Jak2NormalShrubTextureUploadPlan {
@@ -197,6 +232,31 @@ std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upl
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+/*!
+ * Preflight the two exact source-written per-level PRIS eye envelopes observed in Jak II: one
+ * ordinary upload, one or two complete different-eyes chunks, and the standard inert Direct
+ * reset. Each chunk covers its qwc-8 display setup through its trailing qwc-2 ALPHA setup; the
+ * following zero-qwc NEXT linker is identified separately. Relative offsets locate a separately
+ * validated snapshot, while semantic matching deliberately ignores relocation of those offsets.
+ * No texture-pool or renderer mutation occurs.
+ */
+std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+/*!
+ * Compare independently preflighted live and copied plans without requiring identical DMA
+ * placement. This is the mutation barrier: execution may begin only after it returns true.
+ */
+bool jak2_pris_eye_texture_upload_plans_match(
+    const Jak2PrisEyeTextureUploadPlan& live,
+    const Jak2PrisEyeTextureUploadPlan& copied);
 
 /*!
  * Plan a water page upload written by upload-vram-pages-pris-pc. The page writer itself emits only

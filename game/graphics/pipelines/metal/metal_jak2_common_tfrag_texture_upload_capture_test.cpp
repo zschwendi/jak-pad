@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "common/dma/dma.h"
+#include "common/dma/gs.h"
 
 namespace {
 
@@ -23,7 +24,12 @@ constexpr u32 kAnimatorFinishOffset = kAnimatorBodyOffset + 496;
 constexpr u32 kAnimatorNextOffset = kAnimatorFinishOffset + 16;
 constexpr u32 kSecurityAnimatorFinishOffset = kAnimatorBodyOffset + 832;
 constexpr u32 kSecurityAnimatorNextOffset = kSecurityAnimatorFinishOffset + 16;
-constexpr std::size_t kMemorySize = 0x10000;
+constexpr u32 kEyeOrdinaryOffset = 0x8000;
+constexpr u32 kEyeFirstOffset = 0x9000;
+constexpr u32 kEyeSecondOffset = 0xa000;
+constexpr u32 kEyeDirectOffset = 0xb000;
+constexpr u32 kEyePageOffset = 0x18000;
+constexpr std::size_t kMemorySize = 0x20000;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
 
@@ -69,6 +75,148 @@ void put_tag(std::vector<u8>* memory,
   put_u64(memory, offset, tag);
   put_u32(memory, offset + 8, vif0);
   put_u32(memory, offset + 12, vif1);
+}
+
+constexpr u64 make_gif_tag_word(u32 nloop, bool pre, u32 prim, u32 nreg) {
+  return static_cast<u64>(nloop) | (1ull << 15) | (static_cast<u64>(pre) << 46) |
+         (static_cast<u64>(prim) << 47) | (static_cast<u64>(nreg) << 60);
+}
+
+constexpr u64 make_scissor(u32 x0, u32 x1, u32 y0, u32 y1) {
+  return static_cast<u64>(x0) | (static_cast<u64>(x1) << 16) |
+         (static_cast<u64>(y0) << 32) | (static_cast<u64>(y1) << 48);
+}
+
+void put_ad_gif_header(std::vector<u8>* packet, u32 payload_offset, u32 nloop) {
+  put_u64(packet, payload_offset, make_gif_tag_word(nloop, false, 0, 1));
+  put_u64(packet, payload_offset + 8,
+          static_cast<u64>(GifTag::RegisterDescriptor::AD));
+}
+
+u32 put_gs_set(std::vector<u8>* packet,
+               u32 tag_offset,
+               GsRegisterAddress address,
+               u64 value) {
+  put_tag(packet, tag_offset, DmaTag::Kind::CNT, 2, 0, 0, kDirectVif | 2);
+  put_ad_gif_header(packet, tag_offset + 16, 1);
+  put_u64(packet, tag_offset + 32, value);
+  put_u64(packet, tag_offset + 40, static_cast<u64>(address));
+  return tag_offset + 48;
+}
+
+u32 put_display_setup(std::vector<u8>* packet, u32 tag_offset, bool eye64) {
+  constexpr std::array<GsRegisterAddress, 7> kAddresses = {
+      GsRegisterAddress::SCISSOR_1, GsRegisterAddress::XYOFFSET_1,
+      GsRegisterAddress::FRAME_1,   GsRegisterAddress::TEST_1,
+      GsRegisterAddress::TEXA,      GsRegisterAddress::ZBUF_1,
+      GsRegisterAddress::TEXFLUSH};
+  const u32 width = eye64 ? 128 : 64;
+  const u32 height = eye64 ? 256 : 512;
+  const u32 xy_offset = eye64 ? 1024 : 512;
+  const u32 fbw = eye64 ? 2 : 1;
+  const std::array<u64, 7> values = {
+      make_scissor(0, width - 1, 0, height - 1),
+      static_cast<u64>(xy_offset) | (static_cast<u64>(xy_offset) << 32),
+      124ull | (static_cast<u64>(fbw) << 16),
+      0x30000,
+      0x8000000080ull,
+      0x130ull | (1ull << 24) | (1ull << 32),
+      0};
+  put_tag(packet, tag_offset, DmaTag::Kind::CNT, 8, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 8);
+  const u32 payload_offset = tag_offset + 16;
+  put_ad_gif_header(packet, payload_offset, kAddresses.size());
+  for (std::size_t i = 0; i < kAddresses.size(); ++i) {
+    put_u64(packet, payload_offset + 16 + static_cast<u32>(i) * 16, values[i]);
+    put_u64(packet, payload_offset + 24 + static_cast<u32>(i) * 16,
+            static_cast<u64>(kAddresses[i]));
+  }
+  return tag_offset + 144;
+}
+
+u32 put_display_reset(std::vector<u8>* packet, u32 tag_offset) {
+  constexpr std::array<GsRegisterAddress, 7> kAddresses = {
+      GsRegisterAddress::SCISSOR_1, GsRegisterAddress::XYOFFSET_1,
+      GsRegisterAddress::FRAME_1,   GsRegisterAddress::TEST_1,
+      GsRegisterAddress::TEXA,      GsRegisterAddress::ZBUF_1,
+      GsRegisterAddress::TEXFLUSH};
+  constexpr std::array<u64, 7> kValues = {
+      make_scissor(0, 511, 0, 415), 0x730000007000ull,
+      0x198ull | (8ull << 16),       0x50000ull,
+      0x8000000000ull,               0x130ull | (1ull << 24),
+      0};
+  put_tag(packet, tag_offset, DmaTag::Kind::CNT, 8, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 8);
+  const u32 payload_offset = tag_offset + 16;
+  put_ad_gif_header(packet, payload_offset, kAddresses.size());
+  for (std::size_t i = 0; i < kAddresses.size(); ++i) {
+    put_u64(packet, payload_offset + 16 + static_cast<u32>(i) * 16, kValues[i]);
+    put_u64(packet, payload_offset + 24 + static_cast<u32>(i) * 16,
+            static_cast<u64>(kAddresses[i]));
+  }
+  return tag_offset + 144;
+}
+
+u32 put_eye_adgif(std::vector<u8>* packet,
+                  u32 tag_offset,
+                  bool eye64,
+                  u32 texture_seed,
+                  u64 alpha) {
+  put_tag(packet, tag_offset, DmaTag::Kind::CNT, 6, 0, 0, kDirectVif | 6);
+  const u32 payload_offset = tag_offset + 16;
+  put_ad_gif_header(packet, payload_offset, 5);
+  const u64 max_uv = eye64 ? 63 : 31;
+  const u64 clamp = 1ull | (1ull << 2) | (max_uv << 14) | (max_uv << 34);
+  const std::array<u64, 10> adgif = {
+      texture_seed, static_cast<u64>(GsRegisterAddress::TEX0_1),
+      0x101,        static_cast<u64>(GsRegisterAddress::TEX1_1),
+      0x202,        static_cast<u64>(GsRegisterAddress::MIPTBP1_1),
+      clamp,        static_cast<u64>(GsRegisterAddress::CLAMP_1),
+      alpha,        static_cast<u64>(GsRegisterAddress::ALPHA_1)};
+  for (std::size_t i = 0; i < adgif.size(); ++i) {
+    put_u64(packet, payload_offset + 16 + static_cast<u32>(i) * 8, adgif[i]);
+  }
+  return tag_offset + 112;
+}
+
+u32 put_eye_sprite(std::vector<u8>* packet,
+                   u32 tag_offset,
+                   bool alpha_blend,
+                   u32 alpha,
+                   u32 x0,
+                   u32 y0,
+                   u32 x1,
+                   u32 y1,
+                   bool background) {
+  constexpr u64 kRegisters =
+      static_cast<u64>(GifTag::RegisterDescriptor::RGBAQ) |
+      (static_cast<u64>(GifTag::RegisterDescriptor::UV) << 4) |
+      (static_cast<u64>(GifTag::RegisterDescriptor::XYZ2) << 8) |
+      (static_cast<u64>(GifTag::RegisterDescriptor::UV) << 12) |
+      (static_cast<u64>(GifTag::RegisterDescriptor::XYZ2) << 16);
+  const u32 prim = static_cast<u32>(GsPrim::Kind::SPRITE) | (1u << 4) |
+                   (static_cast<u32>(alpha_blend) << 6) | (1u << 8);
+  put_tag(packet, tag_offset, DmaTag::Kind::CNT, 6, 0, 0, kDirectVif | 6);
+  const u32 payload_offset = tag_offset + 16;
+  put_u64(packet, payload_offset, make_gif_tag_word(1, true, prim, 5));
+  put_u64(packet, payload_offset + 8, kRegisters);
+  put_u32(packet, payload_offset + 16, 128);
+  put_u32(packet, payload_offset + 20, 128);
+  put_u32(packet, payload_offset + 24, 128);
+  put_u32(packet, payload_offset + 28, alpha);
+  put_u64(packet, payload_offset + 32, background ? 0 : 0x1000200030004ull);
+  put_u64(packet, payload_offset + 40, 0);
+  put_u32(packet, payload_offset + 48, x0);
+  put_u32(packet, payload_offset + 52, y0);
+  put_u32(packet, payload_offset + 56, 0xffffff);
+  put_u32(packet, payload_offset + 60, 0);
+  put_u64(packet, payload_offset + 64, background ? 0 : 0x5000600070008ull);
+  put_u64(packet, payload_offset + 72, 0);
+  put_u32(packet, payload_offset + 80, x1);
+  put_u32(packet, payload_offset + 84, y1);
+  put_u32(packet, payload_offset + 88, 0xffffff);
+  put_u32(packet, payload_offset + 92, 0);
+  return tag_offset + 112;
 }
 
 Capture capture(const std::vector<u8>& packet,
@@ -165,6 +313,112 @@ std::vector<u8> make_common_pris_fixture(s64 mode = -1) {
   put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
   packet[kTexturePageOffset + 8] = 0x44;
   return packet;
+}
+
+struct EyeChunkSpec {
+  bool eye64 = false;
+  u32 pair_index = 0;
+};
+
+struct PrisEyeFixture {
+  std::vector<u8> packet;
+  u32 first_eye_offset = 0;
+};
+
+u32 put_different_eyes_chunk(std::vector<u8>* packet,
+                             u32 tag_offset,
+                             const EyeChunkSpec& spec) {
+  const u32 eye_width = spec.eye64 ? 64 : 32;
+  const u32 full_width = eye_width * 2;
+  const u32 group = spec.eye64 ? spec.pair_index / 4 : spec.pair_index;
+  const u32 y0 = group * eye_width;
+  u32 cursor = put_display_setup(packet, tag_offset, spec.eye64);
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::TEST_1, 0x30003);
+
+  u32 texture_seed = 0x100 + spec.pair_index * 16;
+  cursor = put_eye_adgif(packet, cursor, spec.eye64, texture_seed++, 0x44);
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::SCISSOR_1,
+                      make_scissor(0, full_width - 1, y0, y0 + eye_width - 1));
+  const u32 background_x0 = eye_width * 16;
+  const u32 background_y0 = (group * eye_width + eye_width) * 16;
+  cursor = put_eye_sprite(packet, cursor, false, 128, background_x0, background_y0,
+                          (eye_width + full_width) * 16,
+                          background_y0 + eye_width * 16, true);
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::SCISSOR_1,
+                      make_scissor(0, eye_width - 1, y0, y0 + eye_width - 1));
+  cursor = put_eye_sprite(packet, cursor, false, 128, eye_width * 16,
+                          (y0 + eye_width) * 16, eye_width * 2 * 16,
+                          (y0 + eye_width * 2) * 16, false);
+  cursor = put_eye_adgif(packet, cursor, spec.eye64, texture_seed++, 0x44);
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::SCISSOR_1,
+                      make_scissor(eye_width, full_width - 1, y0,
+                                    y0 + eye_width - 1));
+  cursor = put_eye_sprite(packet, cursor, false, 128, eye_width * 2 * 16,
+                          (y0 + eye_width) * 16, eye_width * 3 * 16,
+                          (y0 + eye_width * 2) * 16, false);
+
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::TEST_1, 0x33001);
+  cursor = put_eye_adgif(packet, cursor, spec.eye64, texture_seed++, 0x44);
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::SCISSOR_1,
+                      make_scissor(0, eye_width - 1, y0, y0 + eye_width - 1));
+  cursor = put_eye_sprite(packet, cursor, true, 128, eye_width * 16,
+                          (y0 + eye_width) * 16, eye_width * 2 * 16,
+                          (y0 + eye_width * 2) * 16, false);
+  cursor = put_eye_adgif(packet, cursor, spec.eye64, texture_seed++, 0x44);
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::SCISSOR_1,
+                      make_scissor(eye_width, full_width - 1, y0,
+                                    y0 + eye_width - 1));
+  cursor = put_eye_sprite(packet, cursor, true, 128, eye_width * 2 * 16,
+                          (y0 + eye_width) * 16, eye_width * 3 * 16,
+                          (y0 + eye_width * 2) * 16, false);
+
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::TEST_1, 0x30003);
+  cursor = put_eye_adgif(packet, cursor, spec.eye64, texture_seed++, 1);
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::SCISSOR_1,
+                      make_scissor(0, eye_width - 1, y0, y0 + eye_width - 1));
+  cursor = put_eye_sprite(packet, cursor, true, 0, eye_width * 16, y0 * 16,
+                          eye_width * 2 * 16, (y0 + eye_width) * 16, false);
+  cursor = put_eye_adgif(packet, cursor, spec.eye64, texture_seed, 1);
+  cursor = put_gs_set(packet, cursor, GsRegisterAddress::SCISSOR_1,
+                      make_scissor(eye_width, full_width - 1, y0,
+                                    y0 + eye_width - 1));
+  cursor = put_eye_sprite(packet, cursor, true, 0, eye_width * 3 * 16, y0 * 16,
+                          eye_width * 2 * 16, (y0 + eye_width) * 16, false);
+
+  cursor = put_display_reset(packet, cursor);
+  return put_gs_set(packet, cursor, GsRegisterAddress::ALPHA_1, 0x44);
+}
+
+PrisEyeFixture make_pris_eye_fixture(u32 bucket_id,
+                                     const std::vector<EyeChunkSpec>& chunks,
+                                     u32 dma_relocation = 0) {
+  PrisEyeFixture fixture{std::vector<u8>(kMemorySize), kEyeFirstOffset + dma_relocation};
+  const u32 ordinary_offset = kEyeOrdinaryOffset + dma_relocation;
+  const u32 first_offset = kEyeFirstOffset + dma_relocation;
+  const u32 second_offset = kEyeSecondOffset + dma_relocation;
+  const u32 direct_offset = kEyeDirectOffset + dma_relocation;
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+
+  put_tag(&fixture.packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0,
+          ordinary_offset, 0, 0);
+  put_tag(&fixture.packet, ordinary_offset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&fixture.packet, ordinary_offset + 16, kEyePageOffset);
+  put_u64(&fixture.packet, ordinary_offset + 24, static_cast<u64>(-1));
+  put_tag(&fixture.packet, ordinary_offset + 32, DmaTag::Kind::NEXT, 0,
+          first_offset, 0, 0);
+
+  u32 linker_offset = put_different_eyes_chunk(&fixture.packet, first_offset, chunks.at(0));
+  if (chunks.size() == 2) {
+    put_tag(&fixture.packet, linker_offset, DmaTag::Kind::NEXT, 0, second_offset, 0, 0);
+    linker_offset = put_different_eyes_chunk(&fixture.packet, second_offset, chunks.at(1));
+  }
+  put_tag(&fixture.packet, linker_offset, DmaTag::Kind::NEXT, 0, direct_offset, 0, 0);
+  put_tag(&fixture.packet, direct_offset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(fixture.packet.begin() + direct_offset + 16, 160, 0x52);
+  put_tag(&fixture.packet, direct_offset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  fixture.packet[kEyePageOffset + 8] = 0x44;
+  return fixture;
 }
 
 void put_animator_array(std::vector<u8>* packet,
@@ -399,6 +653,135 @@ void test_texture_bucket_allowlist() {
              packet.data(), packet.size(), kChainOffset, 8)
              .valid,
         "an unaudited bucket cannot enter the TFRAG texture classifier");
+}
+
+void test_pris_eye_execution_plan() {
+  for (const u32 bucket_id : metal_renderer::kJak2PrisTextureUploadBuckets) {
+    auto empty = make_empty_fixture(bucket_id);
+    const auto absent = metal_renderer::plan_jak2_pris_eye_texture_upload(
+        empty.data(), empty.size(), kChainOffset, bucket_id, empty.data(), empty.size());
+    check(absent.has_value() && !absent->present && absent->bucket_id == bucket_id &&
+              absent->chunk_count == 0 && absent->eye_slot_mask == 0,
+          "each per-level PRIS bucket accepts only the exact empty absent plan");
+
+    auto fixture = make_pris_eye_fixture(bucket_id, {{false, 2}});
+    metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+    const auto plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+        fixture.packet.data(), fixture.packet.size(), kChainOffset, bucket_id,
+        fixture.packet.data(), fixture.packet.size(), &capture);
+    check(plan.has_value() && plan->present && plan->bucket_id == bucket_id &&
+              plan->ordinary.page_offset == kEyePageOffset && plan->ordinary.mode == -1 &&
+              plan->chunk_count == 1 && plan->eye_slot_mask == 0x30 &&
+              plan->chunks[0].resolution ==
+                  metal_renderer::Jak2PrisEyeResolution::Eye32 &&
+              plan->chunks[0].pair_index == 2 &&
+              plan->chunks[0].start_transfer_index == 3 &&
+              plan->chunks[0].linker_transfer_index == 29 &&
+              plan->chunks[0].transfer_count ==
+                  metal_renderer::kJak2PrisEyeChunkTransferCount &&
+              plan->chunks[0].payload_bytes ==
+                  metal_renderer::kJak2PrisEyeChunkPayloadBytes &&
+              plan->chunks[0].semantic_fingerprint != 0 &&
+              plan->direct_reset_transfer_index == 30 && plan->terminal_transfer_index == 31 &&
+              plan->semantic_fingerprint != 0 && capture.valid &&
+              capture.transfer_count == 32 && capture.total_payload_bytes == 2032 &&
+              capture.inert_transfers == 4 && capture.ordinary_descriptors == 1 &&
+              capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == 11 &&
+              capture.eye_markers == 2 && capture.other_transfers == 13 &&
+              capture.malformed_transfers == 0,
+          "each per-level PRIS bucket preflights the exact 32-transfer eye envelope");
+  }
+
+  auto two = make_pris_eye_fixture(196, {{false, 0}, {false, 1}});
+  metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+  const auto two_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      two.packet.data(), two.packet.size(), kChainOffset, 196, two.packet.data(),
+      two.packet.size(), &capture);
+  check(two_plan.has_value() && two_plan->present && two_plan->chunk_count == 2 &&
+            two_plan->chunks[0].pair_index == 0 && two_plan->chunks[1].pair_index == 1 &&
+            two_plan->chunks[0].start_transfer_index == 3 &&
+            two_plan->chunks[0].linker_transfer_index == 29 &&
+            two_plan->chunks[1].start_transfer_index == 30 &&
+            two_plan->chunks[1].linker_transfer_index == 56 &&
+            two_plan->direct_reset_transfer_index == 57 &&
+            two_plan->terminal_transfer_index == 58 && two_plan->eye_slot_mask == 0xf &&
+            capture.transfer_count == 59 && capture.total_payload_bytes == 3888 &&
+            capture.inert_transfers == 5 && capture.ordinary_descriptors == 1 &&
+            capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == 22 &&
+            capture.eye_markers == 4 && capture.other_transfers == 26 &&
+            capture.malformed_transfers == 0,
+        "the opening envelope preflights two complete source-ordered eye chunks");
+
+  auto eye64 = make_pris_eye_fixture(200, {{true, 8}});
+  const auto eye64_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      eye64.packet.data(), eye64.packet.size(), kChainOffset, 200, eye64.packet.data(),
+      eye64.packet.size());
+  check(eye64_plan.has_value() && eye64_plan->present &&
+            eye64_plan->chunks[0].resolution ==
+                metal_renderer::Jak2PrisEyeResolution::Eye64 &&
+            eye64_plan->chunks[0].pair_index == 8 &&
+            eye64_plan->chunks[0].eye_slot_mask == (3ull << 16),
+        "the same typed grammar distinguishes the source 64-wide eye variant");
+}
+
+void test_pris_eye_live_copy_semantics() {
+  auto live = make_pris_eye_fixture(196, {{false, 0}, {true, 8}});
+  auto copied = make_pris_eye_fixture(196, {{false, 0}, {true, 8}}, 0x4000);
+  const auto live_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      live.packet.data(), live.packet.size(), kChainOffset, 196, live.packet.data(),
+      live.packet.size());
+  auto copied_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      copied.packet.data(), copied.packet.size(), kChainOffset, 196, copied.packet.data(),
+      copied.packet.size());
+  check(live_plan.has_value() && copied_plan.has_value() &&
+            live_plan->chunks[0].start_relative_tag_offset !=
+                copied_plan->chunks[0].start_relative_tag_offset &&
+            live_plan->chunks[1].linker_relative_tag_offset !=
+                copied_plan->chunks[1].linker_relative_tag_offset &&
+            metal_renderer::jak2_pris_eye_texture_upload_plans_match(*live_plan,
+                                                                      *copied_plan),
+        "live and relocated copied plans match by owned semantics rather than DMA placement");
+
+  put_u64(&copied.packet, copied.first_eye_offset + 224, 0xfeed);
+  copied_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+      copied.packet.data(), copied.packet.size(), kChainOffset, 196, copied.packet.data(),
+      copied.packet.size());
+  check(copied_plan.has_value() &&
+            !metal_renderer::jak2_pris_eye_texture_upload_plans_match(*live_plan,
+                                                                       *copied_plan),
+        "a semantic payload mutation between live capture and copied execution is rejected");
+}
+
+void test_pris_eye_shape_fails_closed() {
+  auto malformed = make_pris_eye_fixture(200, {{false, 2}});
+  put_u64(&malformed.packet, malformed.first_eye_offset + 336,
+          make_scissor(0, 62, 64, 95));
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             malformed.packet.data(), malformed.packet.size(), kChainOffset, 200,
+             malformed.packet.data(), malformed.packet.size())
+             .has_value(),
+        "a body scissor outside the exact 32-wide coordinate grammar is rejected");
+
+  auto duplicate = make_pris_eye_fixture(196, {{false, 1}, {false, 1}});
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             duplicate.packet.data(), duplicate.packet.size(), kChainOffset, 196,
+             duplicate.packet.data(), duplicate.packet.size())
+             .has_value(),
+        "two chunks that target the same eye slots are rejected before execution");
+
+  auto ordinary_only = make_ordinary_fixture(200);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             ordinary_only.data(), ordinary_only.size(), kChainOffset, 200,
+             ordinary_only.data(), ordinary_only.size())
+             .has_value(),
+        "an unobserved descriptor-only PRIS chain is not promoted to an executable plan");
+
+  auto common = make_empty_fixture(metal_renderer::kJak2CommonPrisTextureUploadBucket);
+  check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+             common.data(), common.size(), kChainOffset,
+             metal_renderer::kJak2CommonPrisTextureUploadBucket, common.data(), common.size())
+             .has_value(),
+        "common PRIS bucket 220 remains outside the per-level eye grammar");
 }
 
 void test_common_pris_execution_plan() {
@@ -1100,6 +1483,9 @@ void test_transfer_limit_is_enforced() {
 int main() {
   test_exact_empty_and_ordinary_metadata();
   test_texture_bucket_allowlist();
+  test_pris_eye_execution_plan();
+  test_pris_eye_live_copy_semantics();
+  test_pris_eye_shape_fails_closed();
   test_normal_tfrag_execution_plan();
   test_common_pris_execution_plan();
   test_normal_shrub_execution_plan();
