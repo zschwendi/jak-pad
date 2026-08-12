@@ -42,8 +42,8 @@ struct Jak2SkyPostTextureUploadPlan {
 };
 
 /*!
- * Preflight the exact empty bucket or the source-shaped six-transfer, 208-byte
- * sky-post upload. The returned plan owns the validated 128-byte texture-page
+ * Preflight an exact empty bucket tag or the source-shaped six-transfer,
+ * 208-byte sky-post upload. The returned plan owns the validated 128-byte texture-page
  * header and contains no host pointers. Tag addresses and packet offsets are
  * followed for bounds checking but are not retained as semantics, so an
  * independently relocated DMA copy can be compared with the live plan.

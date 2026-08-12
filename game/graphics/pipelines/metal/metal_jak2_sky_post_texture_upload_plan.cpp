@@ -126,6 +126,12 @@ bool is_inert_next(const CheckedTransfer &transfer) {
          transfer.vif1 == 0;
 }
 
+bool is_inert_cnt(const CheckedTransfer &transfer) {
+  return transfer.kind == kDmaCnt && transfer.qwc == 0 &&
+         transfer.payload_bytes == 0 && transfer.vif0 == 0 &&
+         transfer.vif1 == 0;
+}
+
 bool is_gs_texflush_setup(const CheckedTransfer &transfer) {
   return transfer.kind == kDmaCnt && transfer.qwc == 2 &&
          transfer.payload_bytes == 32 && transfer.vif0 == 0 &&
@@ -226,7 +232,8 @@ std::optional<Jak2SkyPostTextureUploadPlan> plan_jak2_sky_post_texture_upload(
   CheckedDmaFollower dma(dma_packet_snapshot, dma_packet_snapshot_size,
                          bucket_offset);
   std::array<CheckedTransfer, kJak2SkyPostTextureUploadTransferCount> transfers;
-  if (!dma.read(&transfers[0]) || !is_inert_next(transfers[0])) {
+  if (!dma.read(&transfers[0]) ||
+      (!is_inert_next(transfers[0]) && !is_inert_cnt(transfers[0]))) {
     return std::nullopt;
   }
 
@@ -236,6 +243,9 @@ std::optional<Jak2SkyPostTextureUploadPlan> plan_jak2_sky_post_texture_upload(
   if (dma.offset() == end_offset) {
     plan.semantic_fingerprint = plan_fingerprint(plan);
     return plan;
+  }
+  if (!is_inert_next(transfers[0])) {
+    return std::nullopt;
   }
 
   for (std::size_t i = 1; i < transfers.size(); ++i) {

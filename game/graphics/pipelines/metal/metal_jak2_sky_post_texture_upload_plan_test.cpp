@@ -68,6 +68,12 @@ std::vector<u8> make_absent_fixture(u32 chain_offset = kChainOffset) {
   return memory;
 }
 
+std::vector<u8> make_absent_cnt_fixture(u32 chain_offset = kChainOffset) {
+  std::vector<u8> memory(kMemorySize);
+  put_tag(&memory, bucket_offset(chain_offset), kDmaCnt, 0, 0, 0, 0);
+  return memory;
+}
+
 std::vector<u8> make_present_fixture(u32 chain_offset = kChainOffset,
                                      u32 relocation = 0) {
   std::vector<u8> memory(kMemorySize);
@@ -126,6 +132,10 @@ void test_exact_present_and_absent() {
   check(absent.has_value() && absent->variant == Variant::Absent &&
             absent->transfer_count == 1 && absent->total_payload_bytes == 0,
         "the exact one-link empty bucket produces an absent plan");
+  const auto absent_cnt = parse(make_absent_cnt_fixture());
+  check(absent_cnt.has_value() && absent_cnt->variant == Variant::Absent &&
+            absent_cnt->transfer_count == 1 && absent_cnt->total_payload_bytes == 0,
+        "the canonical zero-CNT empty bucket produces an absent plan");
 }
 
 void test_relocated_semantic_match() {
