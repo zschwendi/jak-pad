@@ -822,11 +822,19 @@ void test_pris_eye_shape_fails_closed() {
   auto transposed_gif_shape = make_pris_eye_fixture(200, {{false, 2}});
   put_u64(&transposed_gif_shape.packet, transposed_gif_shape.first_eye_offset + 16,
           make_gif_tag_word(7, false, 0, 1));
+  metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
   check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
              transposed_gif_shape.packet.data(), transposed_gif_shape.packet.size(),
              kChainOffset, 200, transposed_gif_shape.packet.data(),
-             transposed_gif_shape.packet.size())
-             .has_value(),
+             transposed_gif_shape.packet.size(), nullptr, &rejection)
+             .has_value() &&
+            rejection.reason ==
+                metal_renderer::Jak2PrisEyeTextureUploadRejectReason::SetupTag &&
+            rejection.chunk_index == 0 &&
+            rejection.body_index == metal_renderer::kJak2PrisEyeRejectIndexNotApplicable &&
+            std::strcmp(metal_renderer::jak2_pris_eye_texture_upload_reject_reason_name(
+                            rejection.reason),
+                        "setup-tag") == 0,
         "a GS-set tag with its source NLOOP and NREG transposed is rejected");
 
   auto truncated_gif_registers = make_pris_eye_fixture(200, {{false, 2}});

@@ -461,6 +461,24 @@ constexpr u64 kFnvOffsetBasis = 14695981039346656037ull;
 constexpr u64 kFnvPrime = 1099511628211ull;
 constexpr u64 kGsSetAdRegisters = 0xeeeeeeeeeeeeeeeeull;
 
+enum class DisplayValidation {
+  Valid,
+  Tag,
+  Values,
+};
+
+void set_pris_eye_rejection(
+    Jak2PrisEyeTextureUploadRejection* rejection,
+    Jak2PrisEyeTextureUploadRejectReason reason,
+    u8 chunk_index = kJak2PrisEyeRejectIndexNotApplicable,
+    u8 body_index = kJak2PrisEyeRejectIndexNotApplicable) {
+  if (rejection) {
+    rejection->reason = reason;
+    rejection->chunk_index = chunk_index;
+    rejection->body_index = body_index;
+  }
+}
+
 void hash_bytes(u64* hash, const void* bytes, std::size_t size) {
   const auto* input = static_cast<const u8*>(bytes);
   for (std::size_t i = 0; i < size; ++i) {
@@ -545,16 +563,16 @@ bool validate_single_ad(const u8* payload, GsRegisterAddress address, u64 value)
          read_unaligned<u64>(payload + 24) == static_cast<u64>(address);
 }
 
-bool validate_display_setup(const u8* payload,
-                            Jak2PrisEyeResolution* resolution,
-                            u32* source_fbp) {
+DisplayValidation validate_display_setup(const u8* payload,
+                                         Jak2PrisEyeResolution* resolution,
+                                         u32* source_fbp) {
   constexpr std::array<GsRegisterAddress, 7> kAddresses = {
       GsRegisterAddress::SCISSOR_1, GsRegisterAddress::XYOFFSET_1,
       GsRegisterAddress::FRAME_1,   GsRegisterAddress::TEST_1,
       GsRegisterAddress::TEXA,      GsRegisterAddress::ZBUF_1,
       GsRegisterAddress::TEXFLUSH};
   if (!validate_ad_gif_tag(payload, 1, kAddresses.size(), kGsSetAdRegisters)) {
-    return false;
+    return DisplayValidation::Tag;
   }
 
   std::array<u64, kAddresses.size()> values = {};
@@ -562,7 +580,7 @@ bool validate_display_setup(const u8* payload,
     values[i] = read_unaligned<u64>(payload + 16 + i * 16);
     if (read_unaligned<u64>(payload + 24 + i * 16) !=
         static_cast<u64>(kAddresses[i])) {
-      return false;
+      return DisplayValidation::Values;
     }
   }
 
@@ -576,15 +594,15 @@ bool validate_display_setup(const u8* payload,
                     (static_cast<u64>(frame.fbw()) << 16)) ||
       values[3] != 0x30000 || values[4] != 0x8000000080ull ||
       values[5] != (0x130ull | (1ull << 24) | (1ull << 32)) || values[6] != 0) {
-    return false;
+    return DisplayValidation::Values;
   }
 
   *resolution = eye32 ? Jak2PrisEyeResolution::Eye32 : Jak2PrisEyeResolution::Eye64;
   *source_fbp = frame.fbp();
-  return true;
+  return DisplayValidation::Valid;
 }
 
-bool validate_display_reset(const u8* payload) {
+DisplayValidation validate_display_reset(const u8* payload) {
   constexpr std::array<GsRegisterAddress, 7> kAddresses = {
       GsRegisterAddress::SCISSOR_1, GsRegisterAddress::XYOFFSET_1,
       GsRegisterAddress::FRAME_1,   GsRegisterAddress::TEST_1,
@@ -596,16 +614,16 @@ bool validate_display_reset(const u8* payload) {
       0x8000000000ull,               0x130ull | (1ull << 24),
       0};
   if (!validate_ad_gif_tag(payload, 1, kAddresses.size(), kGsSetAdRegisters)) {
-    return false;
+    return DisplayValidation::Tag;
   }
   for (std::size_t i = 0; i < kAddresses.size(); ++i) {
     if (read_unaligned<u64>(payload + 16 + i * 16) != kValues[i] ||
         read_unaligned<u64>(payload + 24 + i * 16) !=
             static_cast<u64>(kAddresses[i])) {
-      return false;
+      return DisplayValidation::Values;
     }
   }
-  return true;
+  return DisplayValidation::Valid;
 }
 
 bool is_valid_eye_texture_psm(GsTex0::PSM psm) {
@@ -741,8 +759,10 @@ bool parse_pris_eye_chunk(const u8* snapshot,
                           u32 bucket_id,
                           const Jak2CommonTfragTextureUploadCapture& capture,
                           u32 start_transfer_index,
+                          u8 chunk_index,
                           Jak2PrisEyeChunkPlan* out,
-                          u32* source_fbp) {
+                          u32* source_fbp,
+                          Jak2PrisEyeTextureUploadRejection* rejection) {
   constexpr std::array<u8, 22> kBodyKinds = {
       0, 1, 2, 1, 2, 0, 1, 2, 3, 0, 1,
       2, 0, 1, 2, 3, 0, 1, 2, 0, 1, 2};
@@ -752,18 +772,35 @@ bool parse_pris_eye_chunk(const u8* snapshot,
 
   if (!out || !source_fbp ||
       start_transfer_index + kJak2PrisEyeChunkTransferCount > capture.transfer_count) {
+    set_pris_eye_rejection(rejection, Jak2PrisEyeTextureUploadRejectReason::ChunkBounds,
+                           chunk_index);
     return false;
   }
 
   const u8* payload = nullptr;
   if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
                              capture.transfers[start_transfer_index], 8, kFlushaVif,
-                             kDirectVif | 8, &payload) ||
-      !validate_display_setup(payload, &out->resolution, source_fbp) ||
-      !get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                             kDirectVif | 8, &payload)) {
+    set_pris_eye_rejection(rejection, Jak2PrisEyeTextureUploadRejectReason::SetupTransfer,
+                           chunk_index);
+    return false;
+  }
+  const auto setup_validation = validate_display_setup(payload, &out->resolution, source_fbp);
+  if (setup_validation != DisplayValidation::Valid) {
+    set_pris_eye_rejection(
+        rejection,
+        setup_validation == DisplayValidation::Tag
+            ? Jak2PrisEyeTextureUploadRejectReason::SetupTag
+            : Jak2PrisEyeTextureUploadRejectReason::SetupValues,
+        chunk_index);
+    return false;
+  }
+  if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
                              capture.transfers[start_transfer_index + 1], 2, 0,
                              kDirectVif | 2, &payload) ||
       !validate_single_ad(payload, GsRegisterAddress::TEST_1, 0x30003)) {
+    set_pris_eye_rejection(rejection, Jak2PrisEyeTextureUploadRejectReason::InitialTest,
+                           chunk_index);
     return false;
   }
 
@@ -784,15 +821,22 @@ bool parse_pris_eye_chunk(const u8* snapshot,
         if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
                                    capture.transfers[transfer_index], 6, 0, kDirectVif | 6,
                                    &payload) ||
-            !validate_eye_adgif(payload, out->resolution, kAdgifAlpha[adgif_index++],
+            !validate_eye_adgif(payload, out->resolution, kAdgifAlpha[adgif_index],
                                 &current_uv1_u, &current_uv1_v)) {
+          set_pris_eye_rejection(rejection,
+                                 Jak2PrisEyeTextureUploadRejectReason::BodyAdgif,
+                                 chunk_index, static_cast<u8>(body_index));
           return false;
         }
+        adgif_index++;
         break;
       case 1: {
         if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
                                    capture.transfers[transfer_index], 2, 0, kDirectVif | 2,
                                    &payload)) {
+          set_pris_eye_rejection(rejection,
+                                 Jak2PrisEyeTextureUploadRejectReason::BodyScissor,
+                                 chunk_index, static_cast<u8>(body_index));
           return false;
         }
         if (scissor_index == 0) {
@@ -801,6 +845,9 @@ bool parse_pris_eye_chunk(const u8* snapshot,
           if (scissor.x0() != 0 || scissor.x1() != full_width - 1 ||
               scissor.y1() != scissor.y0() + eye_width - 1 ||
               scissor.y0() % eye_width != 0) {
+            set_pris_eye_rejection(rejection,
+                                   Jak2PrisEyeTextureUploadRejectReason::BodyScissor,
+                                   chunk_index, static_cast<u8>(body_index));
             return false;
           }
           y0 = scissor.y0();
@@ -808,6 +855,9 @@ bool parse_pris_eye_chunk(const u8* snapshot,
                            ? y0 / eye_width
                            : (y0 / eye_width) * 4;
           if (pair_index >= 20) {
+            set_pris_eye_rejection(rejection,
+                                   Jak2PrisEyeTextureUploadRejectReason::BodyScissor,
+                                   chunk_index, static_cast<u8>(body_index));
             return false;
           }
         }
@@ -818,6 +868,9 @@ bool parse_pris_eye_chunk(const u8* snapshot,
         if (!validate_eye_scissor(payload,
                                   make_scissor(expected_x0, expected_x1, y0,
                                                y0 + eye_width - 1))) {
+          set_pris_eye_rejection(rejection,
+                                 Jak2PrisEyeTextureUploadRejectReason::BodyScissor,
+                                 chunk_index, static_cast<u8>(body_index));
           return false;
         }
         scissor_index++;
@@ -826,6 +879,9 @@ bool parse_pris_eye_chunk(const u8* snapshot,
         if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
                                    capture.transfers[transfer_index], 6, 0, kDirectVif | 6,
                                    &payload)) {
+          set_pris_eye_rejection(rejection,
+                                 Jak2PrisEyeTextureUploadRejectReason::BodySprite,
+                                 chunk_index, static_cast<u8>(body_index));
           return false;
         }
         const bool background = sprite_index == 0;
@@ -839,6 +895,9 @@ bool parse_pris_eye_chunk(const u8* snapshot,
                                  sprite_index, eye_width, y0, background, background_x0,
                                  background_y0, (eye_width + full_width) * 16,
                                  background_y0 + eye_width * 16)) {
+          set_pris_eye_rejection(rejection,
+                                 Jak2PrisEyeTextureUploadRejectReason::BodySprite,
+                                 chunk_index, static_cast<u8>(body_index));
           return false;
         }
         sprite_index++;
@@ -849,6 +908,9 @@ bool parse_pris_eye_chunk(const u8* snapshot,
                                    &payload) ||
             !validate_single_ad(payload, GsRegisterAddress::TEST_1,
                                 test_index++ == 0 ? 0x33001 : 0x30003)) {
+          set_pris_eye_rejection(rejection,
+                                 Jak2PrisEyeTextureUploadRejectReason::BodyTest,
+                                 chunk_index, static_cast<u8>(body_index));
           return false;
         }
         break;
@@ -858,15 +920,34 @@ bool parse_pris_eye_chunk(const u8* snapshot,
   }
 
   if (adgif_index != kAdgifAlpha.size() || scissor_index != 7 ||
-      sprite_index != kSpriteAlpha.size() || test_index != 2 ||
-      !get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+      sprite_index != kSpriteAlpha.size() || test_index != 2) {
+    set_pris_eye_rejection(rejection, Jak2PrisEyeTextureUploadRejectReason::ChunkBounds,
+                           chunk_index);
+    return false;
+  }
+  if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
                              capture.transfers[start_transfer_index + 24], 8, kFlushaVif,
-                             kDirectVif | 8, &payload) ||
-      !validate_display_reset(payload) ||
-      !get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
+                             kDirectVif | 8, &payload)) {
+    set_pris_eye_rejection(rejection, Jak2PrisEyeTextureUploadRejectReason::ResetTransfer,
+                           chunk_index);
+    return false;
+  }
+  const auto reset_validation = validate_display_reset(payload);
+  if (reset_validation != DisplayValidation::Valid) {
+    set_pris_eye_rejection(
+        rejection,
+        reset_validation == DisplayValidation::Tag
+            ? Jak2PrisEyeTextureUploadRejectReason::ResetTag
+            : Jak2PrisEyeTextureUploadRejectReason::ResetValues,
+        chunk_index);
+    return false;
+  }
+  if (!get_plain_cnt_payload(snapshot, snapshot_size, chain_offset, bucket_id,
                              capture.transfers[start_transfer_index + 25], 2, 0,
                              kDirectVif | 2, &payload) ||
       !validate_single_ad(payload, GsRegisterAddress::ALPHA_1, 0x44)) {
+    set_pris_eye_rejection(rejection, Jak2PrisEyeTextureUploadRejectReason::Alpha,
+                           chunk_index);
     return false;
   }
 
@@ -875,6 +956,9 @@ bool parse_pris_eye_chunk(const u8* snapshot,
     const auto& transfer = capture.transfers[start_transfer_index + i];
     const u8* tag = nullptr;
     if (!get_transfer_tag(snapshot, snapshot_size, chain_offset, bucket_id, transfer, &tag)) {
+      set_pris_eye_rejection(rejection,
+                             Jak2PrisEyeTextureUploadRejectReason::ChunkFingerprint,
+                             chunk_index);
       return false;
     }
     hash_bytes(&fingerprint, tag, 16 + transfer.payload_bytes);
@@ -912,6 +996,67 @@ bool page_header_is_valid(const u8* live_ee_memory,
 }
 
 }  // namespace
+
+const char* jak2_pris_eye_texture_upload_reject_reason_name(
+    Jak2PrisEyeTextureUploadRejectReason reason) {
+  switch (reason) {
+    case Jak2PrisEyeTextureUploadRejectReason::None:
+      return "none";
+    case Jak2PrisEyeTextureUploadRejectReason::UnsupportedBucket:
+      return "unsupported-bucket";
+    case Jak2PrisEyeTextureUploadRejectReason::CaptureInvalid:
+      return "capture-invalid";
+    case Jak2PrisEyeTextureUploadRejectReason::AbsentEnvelope:
+      return "absent-envelope";
+    case Jak2PrisEyeTextureUploadRejectReason::Counts:
+      return "counts";
+    case Jak2PrisEyeTextureUploadRejectReason::Opening:
+      return "opening";
+    case Jak2PrisEyeTextureUploadRejectReason::Descriptor:
+      return "descriptor";
+    case Jak2PrisEyeTextureUploadRejectReason::Page:
+      return "page";
+    case Jak2PrisEyeTextureUploadRejectReason::ChunkBounds:
+      return "chunk-bounds";
+    case Jak2PrisEyeTextureUploadRejectReason::SetupTransfer:
+      return "setup-transfer";
+    case Jak2PrisEyeTextureUploadRejectReason::SetupTag:
+      return "setup-tag";
+    case Jak2PrisEyeTextureUploadRejectReason::SetupValues:
+      return "setup-values";
+    case Jak2PrisEyeTextureUploadRejectReason::InitialTest:
+      return "initial-test";
+    case Jak2PrisEyeTextureUploadRejectReason::BodyAdgif:
+      return "body-adgif";
+    case Jak2PrisEyeTextureUploadRejectReason::BodyScissor:
+      return "body-scissor";
+    case Jak2PrisEyeTextureUploadRejectReason::BodySprite:
+      return "body-sprite";
+    case Jak2PrisEyeTextureUploadRejectReason::BodyTest:
+      return "body-test";
+    case Jak2PrisEyeTextureUploadRejectReason::ResetTransfer:
+      return "reset-transfer";
+    case Jak2PrisEyeTextureUploadRejectReason::ResetTag:
+      return "reset-tag";
+    case Jak2PrisEyeTextureUploadRejectReason::ResetValues:
+      return "reset-values";
+    case Jak2PrisEyeTextureUploadRejectReason::Alpha:
+      return "alpha";
+    case Jak2PrisEyeTextureUploadRejectReason::Linker:
+      return "linker";
+    case Jak2PrisEyeTextureUploadRejectReason::SourceFramebuffer:
+      return "source-framebuffer";
+    case Jak2PrisEyeTextureUploadRejectReason::DuplicateEyeSlots:
+      return "duplicate-eye-slots";
+    case Jak2PrisEyeTextureUploadRejectReason::DefaultReset:
+      return "default-reset";
+    case Jak2PrisEyeTextureUploadRejectReason::Terminal:
+      return "terminal";
+    case Jak2PrisEyeTextureUploadRejectReason::ChunkFingerprint:
+      return "chunk-fingerprint";
+  }
+  return "unknown";
+}
 
 Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
     const u8* dma_packet_snapshot,
@@ -1113,13 +1258,24 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
     u32 bucket_id,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
-    Jak2CommonTfragTextureUploadCapture* out_capture) {
+    Jak2CommonTfragTextureUploadCapture* out_capture,
+    Jak2PrisEyeTextureUploadRejection* out_rejection) {
+  if (out_rejection) {
+    *out_rejection = {};
+  }
   const auto capture = capture_jak2_tfrag_texture_upload(
       dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, bucket_id);
   if (out_capture) {
     *out_capture = capture;
   }
-  if (!is_pris_texture_upload_bucket(bucket_id) || !capture.valid) {
+  if (!is_pris_texture_upload_bucket(bucket_id)) {
+    set_pris_eye_rejection(out_rejection,
+                           Jak2PrisEyeTextureUploadRejectReason::UnsupportedBucket);
+    return std::nullopt;
+  }
+  if (!capture.valid) {
+    set_pris_eye_rejection(out_rejection,
+                           Jak2PrisEyeTextureUploadRejectReason::CaptureInvalid);
     return std::nullopt;
   }
 
@@ -1129,6 +1285,8 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
     if (capture.classification != Jak2CommonTfragTextureUploadClass::Absent ||
         capture.transfer_count != 1 || capture.total_payload_bytes != 0 ||
         capture.inert_transfers != 1 || !metadata_is_strict_empty(capture.transfers[0])) {
+      set_pris_eye_rejection(out_rejection,
+                             Jak2PrisEyeTextureUploadRejectReason::AbsentEnvelope);
       return std::nullopt;
     }
     return plan;
@@ -1154,10 +1312,15 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
       capture.animator_arrays == 0 && capture.animator_body_transfers == 0 &&
       capture.animator_payload_bytes == 0 && capture.eye_markers == expected_eye_markers &&
       capture.other_transfers == expected_other && capture.malformed_transfers == 0;
-  if (!exact_counts || !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size,
-                                            chain_offset, bucket_id, capture.transfers[0]) ||
+  if (!exact_counts) {
+    set_pris_eye_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::Counts);
+    return std::nullopt;
+  }
+  if (!has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                          bucket_id, capture.transfers[0]) ||
       !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
                           bucket_id, capture.transfers[2])) {
+    set_pris_eye_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::Opening);
     return std::nullopt;
   }
 
@@ -1165,11 +1328,19 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
   if (!get_plain_cnt_payload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
                              bucket_id, capture.transfers[1], 1, kPcPortVif, 3,
                              &descriptor_payload)) {
+    set_pris_eye_rejection(out_rejection,
+                           Jak2PrisEyeTextureUploadRejectReason::Descriptor);
     return std::nullopt;
   }
   const u64 page_offset = read_unaligned<u64>(descriptor_payload);
   const s64 mode = read_unaligned<s64>(descriptor_payload + sizeof(u64));
-  if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
+  if (mode != -1) {
+    set_pris_eye_rejection(out_rejection,
+                           Jak2PrisEyeTextureUploadRejectReason::Descriptor);
+    return std::nullopt;
+  }
+  if (!page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
+    set_pris_eye_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::Page);
     return std::nullopt;
   }
 
@@ -1180,12 +1351,27 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
     u32 source_fbp = 0;
     auto& chunk = plan.chunks[chunk_index];
     if (!parse_pris_eye_chunk(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
-                              bucket_id, capture, start_transfer_index, &chunk,
-                              &source_fbp) ||
-        !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
-                            bucket_id, capture.transfers[chunk.linker_transfer_index]) ||
-        (chunk_index != 0 && source_fbp != common_source_fbp) ||
-        (plan.eye_slot_mask & chunk.eye_slot_mask) != 0) {
+                              bucket_id, capture, start_transfer_index,
+                              static_cast<u8>(chunk_index), &chunk, &source_fbp,
+                              out_rejection)) {
+      return std::nullopt;
+    }
+    if (!has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                            bucket_id, capture.transfers[chunk.linker_transfer_index])) {
+      set_pris_eye_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::Linker,
+                             static_cast<u8>(chunk_index));
+      return std::nullopt;
+    }
+    if (chunk_index != 0 && source_fbp != common_source_fbp) {
+      set_pris_eye_rejection(
+          out_rejection, Jak2PrisEyeTextureUploadRejectReason::SourceFramebuffer,
+          static_cast<u8>(chunk_index));
+      return std::nullopt;
+    }
+    if ((plan.eye_slot_mask & chunk.eye_slot_mask) != 0) {
+      set_pris_eye_rejection(
+          out_rejection, Jak2PrisEyeTextureUploadRejectReason::DuplicateEyeSlots,
+          static_cast<u8>(chunk_index));
       return std::nullopt;
     }
     common_source_fbp = source_fbp;
@@ -1199,9 +1385,14 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
   if (plan.terminal_transfer_index >= capture.transfer_count ||
       !get_plain_cnt_payload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
                              bucket_id, capture.transfers[plan.direct_reset_transfer_index], 10,
-                             kFlushaVif, kDirectVif | 10, &ignored_payload) ||
-      !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                             kFlushaVif, kDirectVif | 10, &ignored_payload)) {
+    set_pris_eye_rejection(out_rejection,
+                           Jak2PrisEyeTextureUploadRejectReason::DefaultReset);
+    return std::nullopt;
+  }
+  if (!has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
                           bucket_id, capture.transfers[plan.terminal_transfer_index])) {
+    set_pris_eye_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::Terminal);
     return std::nullopt;
   }
   plan.direct_reset_relative_tag_offset =

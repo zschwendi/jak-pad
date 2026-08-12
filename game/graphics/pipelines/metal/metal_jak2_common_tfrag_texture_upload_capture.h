@@ -85,6 +85,45 @@ enum class Jak2PrisEyeResolution : u8 {
   Eye64,
 };
 
+enum class Jak2PrisEyeTextureUploadRejectReason : u8 {
+  None,
+  UnsupportedBucket,
+  CaptureInvalid,
+  AbsentEnvelope,
+  Counts,
+  Opening,
+  Descriptor,
+  Page,
+  ChunkBounds,
+  SetupTransfer,
+  SetupTag,
+  SetupValues,
+  InitialTest,
+  BodyAdgif,
+  BodyScissor,
+  BodySprite,
+  BodyTest,
+  ResetTransfer,
+  ResetTag,
+  ResetValues,
+  Alpha,
+  Linker,
+  SourceFramebuffer,
+  DuplicateEyeSlots,
+  DefaultReset,
+  Terminal,
+  ChunkFingerprint,
+};
+
+constexpr u8 kJak2PrisEyeRejectIndexNotApplicable = 0xff;
+
+struct Jak2PrisEyeTextureUploadRejection {
+  Jak2PrisEyeTextureUploadRejectReason reason =
+      Jak2PrisEyeTextureUploadRejectReason::None;
+  u8 chunk_index = kJak2PrisEyeRejectIndexNotApplicable;
+  u8 body_index = kJak2PrisEyeRejectIndexNotApplicable;
+};
+
 struct Jak2PrisEyeChunkPlan {
   Jak2PrisEyeResolution resolution = Jak2PrisEyeResolution::Eye32;
   u32 pair_index = 0;
@@ -248,7 +287,11 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
     u32 bucket_id,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
-    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr,
+    Jak2PrisEyeTextureUploadRejection* out_rejection = nullptr);
+
+const char* jak2_pris_eye_texture_upload_reject_reason_name(
+    Jak2PrisEyeTextureUploadRejectReason reason);
 
 /*!
  * Compare independently preflighted live and copied plans without requiring identical DMA

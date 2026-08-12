@@ -148,6 +148,19 @@ void record_send_chain_failure(goal_jak2_metal_host* host,
   }
 }
 
+std::string format_pris_eye_rejection(
+    const metal_renderer::Jak2PrisEyeTextureUploadRejection& rejection) {
+  std::string result =
+      metal_renderer::jak2_pris_eye_texture_upload_reject_reason_name(rejection.reason);
+  if (rejection.chunk_index != metal_renderer::kJak2PrisEyeRejectIndexNotApplicable) {
+    result += " chunk=" + std::to_string(rejection.chunk_index);
+  }
+  if (rejection.body_index != metal_renderer::kJak2PrisEyeRejectIndexNotApplicable) {
+    result += " body=" + std::to_string(rejection.body_index);
+  }
+  return result;
+}
+
 std::string fr3_path(const goal_jak2_metal_host* host, const std::string& name) {
   const bool has_separator = !host->fr3_directory.empty() && host->fr3_directory.back() == '/';
   return host->fr3_directory + (has_separator ? "" : "/") + name + ".fr3";
@@ -989,13 +1002,15 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     for (std::size_t i = 0; i < metal_renderer::kJak2PrisTextureUploadBuckets.size(); ++i) {
       const u32 bucket_id = metal_renderer::kJak2PrisTextureUploadBuckets[i];
       metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+      metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
       const auto plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
           static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id,
-          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &capture);
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &capture, &rejection);
       record_texture_upload_metrics(&host->metrics.pris_texture_uploads[i], bucket_id, capture);
       if (!plan) {
         const std::string error = "Jak 2 PRIS eye texture plan rejected bucket " +
-                                  std::to_string(bucket_id) + " DMA";
+                                  std::to_string(bucket_id) + " DMA: " +
+                                  format_pris_eye_rejection(rejection);
         record_failure(host, error.c_str());
         return;
       }
@@ -1088,11 +1103,20 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     Jak2PrisEyeTextureUploadPlans copied_pris_eye_plans;
     for (std::size_t i = 0; i < metal_renderer::kJak2PrisTextureUploadBuckets.size(); ++i) {
       const u32 bucket_id = metal_renderer::kJak2PrisTextureUploadBuckets[i];
+      metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
       const auto copied_plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
           copied.data.data(), copied.data.size(), copied.start_offset, bucket_id,
-          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
-      if (!copied_plan || !metal_renderer::jak2_pris_eye_texture_upload_plans_match(
-                              live_pris_eye_plans[i], *copied_plan)) {
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, nullptr, &rejection);
+      if (!copied_plan) {
+        record_send_chain_failure(
+            host,
+            "Jak 2 copied PRIS eye texture plan rejected bucket " +
+                std::to_string(bucket_id) + ": " + format_pris_eye_rejection(rejection),
+            false);
+        return;
+      }
+      if (!metal_renderer::jak2_pris_eye_texture_upload_plans_match(
+              live_pris_eye_plans[i], *copied_plan)) {
         record_send_chain_failure(
             host,
             "Jak 2 copied PRIS eye texture plan did not match live bucket " +
