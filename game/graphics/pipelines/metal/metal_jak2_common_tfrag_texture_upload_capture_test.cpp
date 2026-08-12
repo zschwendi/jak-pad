@@ -17,6 +17,7 @@ constexpr u32 kOrdinaryOffset = 0x4000;
 constexpr u32 kAnimatorOffset = 0x5000;
 constexpr u32 kDirectSetupOffset = 0x6000;
 constexpr u32 kExtraTransferOffset = 0x6800;
+constexpr u32 kCommonPrisAnimatorOffset = 0x6a00;
 constexpr u32 kTexturePageOffset = 0x7000;
 constexpr u32 kAnimatorBodyTagOffset = kAnimatorOffset + 16;
 constexpr u32 kAnimatorBodyOffset = kAnimatorBodyTagOffset + 16;
@@ -365,6 +366,35 @@ std::vector<u8> make_common_pris_fixture(s64 mode = -1) {
   std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
   put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
   packet[kTexturePageOffset + 8] = 0x44;
+  return packet;
+}
+
+std::vector<u8> make_common_pris_opcode22_capture_fixture() {
+  constexpr u32 bucket_id = metal_renderer::kJak2CommonPrisTextureUploadBucket;
+  std::vector<u8> packet(kMemorySize);
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&packet, kOrdinaryOffset + 16, kTexturePageOffset);
+  put_u64(&packet, kOrdinaryOffset + 24, static_cast<u64>(-1));
+  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+  put_tag(&packet, kAnimatorOffset, DmaTag::Kind::CNT, 2, 0, 0, kDirectVif | 2);
+  std::fill_n(packet.begin() + kAnimatorOffset + 16, 32, 0x41);
+  put_tag(&packet, kAnimatorOffset + 48, DmaTag::Kind::NEXT, 0,
+          kCommonPrisAnimatorOffset, 0, 0);
+  put_tag(&packet, kCommonPrisAnimatorOffset, DmaTag::Kind::CNT, 0, 0,
+          kPcPortVif | 12, 0);
+  put_tag(&packet, kCommonPrisAnimatorOffset + 16, DmaTag::Kind::CNT, 2, 0,
+          kPcPortVif | 22, 0);
+  std::fill_n(packet.begin() + kCommonPrisAnimatorOffset + 32, 32, 0x72);
+  put_tag(&packet, kCommonPrisAnimatorOffset + 64, DmaTag::Kind::CNT, 0, 0,
+          kPcPortVif | 13, 0);
+  put_tag(&packet, kCommonPrisAnimatorOffset + 80, DmaTag::Kind::NEXT, 0,
+          kDirectSetupOffset, 0, 0);
+  put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(packet.begin() + kDirectSetupOffset + 16, 160, 0x52);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
   return packet;
 }
 
@@ -1258,6 +1288,22 @@ void test_common_pris_execution_plan() {
         "common PRIS rejects a non-source GS setup length");
 }
 
+void test_common_pris_opcode22_capture() {
+  const auto result =
+      capture(make_common_pris_opcode22_capture_fixture(),
+              metal_renderer::kJak2CommonPrisTextureUploadBucket);
+  check(result.valid && result.present &&
+            result.classification == Classification::EyeOrOther &&
+            result.transfer_count == 11 && result.total_payload_bytes == 240 &&
+            result.inert_transfers == 5 && result.ordinary_descriptors == 1 &&
+            result.gs_setup_transfers == 1 && result.direct_setup_transfers == 1 &&
+            result.animator_arrays == 1 && result.animator_body_transfers == 1 &&
+            result.animator_payload_bytes == 32 && result.opcode_counts[12] == 1 &&
+            result.opcode_counts[13] == 1 && result.opcode_counts[22] == 1 &&
+            result.other_transfers == 0 && result.malformed_transfers == 0,
+        "common PRIS capture exposes the predicted 11-transfer/240-byte opcode-22 grammar");
+}
+
 void test_normal_tfrag_execution_plan() {
   for (const u32 bucket_id : metal_renderer::kJak2NormalTfragTextureUploadBuckets) {
     auto packet = make_normal_ordinary_fixture(bucket_id);
@@ -1932,6 +1978,7 @@ int main() {
   test_pris_eye_shape_fails_closed();
   test_normal_tfrag_execution_plan();
   test_common_pris_execution_plan();
+  test_common_pris_opcode22_capture();
   test_normal_shrub_execution_plan();
   test_alpha_execution_plan();
   test_water_execution_plan();

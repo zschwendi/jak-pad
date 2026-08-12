@@ -403,6 +403,13 @@ void MetalMerc2::Stats::add(const Stats& o) {
   mod_vtx_skipped += o.mod_vtx_skipped;
   anim_slot_draws += o.anim_slot_draws;
   anim_slot_placeholder_draws += o.anim_slot_placeholder_draws;
+  for (std::size_t i = 0; i < anim_slot_draws_by_slot.size(); ++i) {
+    anim_slot_draws_by_slot[i] += o.anim_slot_draws_by_slot[i];
+    anim_slot_placeholder_draws_by_slot[i] += o.anim_slot_placeholder_draws_by_slot[i];
+    if (!anim_slot_first_model_hashes[i] && o.anim_slot_first_model_hashes[i]) {
+      anim_slot_first_model_hashes[i] = o.anim_slot_first_model_hashes[i];
+    }
+  }
   eye_draws += o.eye_draws;
   eye_renderer_missing += o.eye_renderer_missing;
   eye_lookup_failed += o.eye_lookup_failed;
@@ -1387,6 +1394,7 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   args.lights = lights;
   args.first_bone = first_bone;
   args.skin_profile = nullptr;
+  args.model_name_hash = fnv64(model->name);
   args.trace_source_base = expected_source_base;
   args.trace_source_base_valid = expected_source_base_valid;
   args.trace_packet_palette_hash = eichar_packet_palette_hash;
@@ -1505,6 +1513,7 @@ MetalMerc2::Draw* MetalMerc2::alloc_normal_draw(const tfrag3::MercDraw& mdraw,
   draw->flags = 0;
   draw->mod_vtx = {};
   draw->skin_profile = args.skin_profile;
+  draw->model_name_hash = args.model_name_hash;
   draw->trace_source_base = args.trace_source_base;
   draw->trace_source_base_valid = args.trace_source_base_valid;
   draw->trace_packet_palette_hash = args.trace_packet_palette_hash;
@@ -1554,6 +1563,7 @@ MetalMerc2::Draw* MetalMerc2::try_alloc_envmap_draw(const tfrag3::MercDraw& mdra
   draw->flags = 0;
   draw->mod_vtx = {};
   draw->skin_profile = args.skin_profile;
+  draw->model_name_hash = args.model_name_hash;
   draw->trace_source_base = args.trace_source_base;
   draw->trace_source_base_valid = args.trace_source_base_valid;
   draw->trace_packet_palette_hash = args.trace_packet_palette_hash;
@@ -1691,6 +1701,13 @@ void MetalMerc2::do_draws(const Draw* draw_array,
     } else if (draw.texture < 0) {
       stats->anim_slot_draws++;
       const s64 slot = -static_cast<s64>(draw.texture) - 1;
+      if (slot >= 0 && static_cast<std::size_t>(slot) < stats->anim_slot_draws_by_slot.size()) {
+        const std::size_t diagnostic_slot = static_cast<std::size_t>(slot);
+        stats->anim_slot_draws_by_slot[diagnostic_slot]++;
+        if (!stats->anim_slot_first_model_hashes[diagnostic_slot]) {
+          stats->anim_slot_first_model_hashes[diagnostic_slot] = draw.model_name_hash;
+        }
+      }
       if (render_state->animated_texture_slots &&
           static_cast<u64>(slot) < render_state->animated_texture_slot_count) {
         const u64 handle = render_state->animated_texture_slots[slot];
@@ -1700,6 +1717,10 @@ void MetalMerc2::do_draws(const Draw* draw_array,
       }
       if (!tex) {
         stats->anim_slot_placeholder_draws++;
+        if (slot >= 0 &&
+            static_cast<std::size_t>(slot) < stats->anim_slot_placeholder_draws_by_slot.size()) {
+          stats->anim_slot_placeholder_draws_by_slot[static_cast<std::size_t>(slot)]++;
+        }
         stats->missing_textures++;
       }
     } else {

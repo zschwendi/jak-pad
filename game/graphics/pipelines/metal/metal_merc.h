@@ -53,6 +53,9 @@ class MetalMerc2 {
     int mod_vtx_skipped = 0;  // effects that asked for one but could not be updated (reported)
     int anim_slot_draws = 0;
     int anim_slot_placeholder_draws = 0;
+    std::array<int, 4> anim_slot_draws_by_slot = {};
+    std::array<int, 4> anim_slot_placeholder_draws_by_slot = {};
+    std::array<u64, 4> anim_slot_first_model_hashes = {};
     int eye_draws = 0;        // draws whose texture the eye renderer composed
     int eye_renderer_missing = 0;
     int eye_lookup_failed = 0;
@@ -191,6 +194,7 @@ class MetalMerc2 {
     u8 no_strip;
     ModBuffers mod_vtx;  // vertices for this draw when MOD_VTX is set
     const metal_merc_skin_trace::DrawProfile* skin_profile;
+    u64 model_name_hash;
     u64 trace_source_base;
     u64 trace_packet_palette_hash;
     u32 trace_packet_sequence;
@@ -222,6 +226,7 @@ class MetalMerc2 {
     u32 lights;
     u32 first_bone;
     const metal_merc_skin_trace::DrawProfile* skin_profile;
+    u64 model_name_hash;
     u64 trace_source_base;
     u64 trace_packet_palette_hash;
     u32 trace_packet_sequence;

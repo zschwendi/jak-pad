@@ -289,6 +289,9 @@ struct ChainStats {
   int merc_mod_vtx_skipped = 0;  // effects that asked for one but could not be updated
   int merc_anim_slot_draws = 0;
   int merc_anim_slot_placeholder_draws = 0;
+  std::array<int, 4> merc_anim_slot_draws_by_slot = {};
+  std::array<int, 4> merc_anim_slot_placeholder_draws_by_slot = {};
+  std::array<u64, 4> merc_anim_slot_first_model_hashes = {};
   int merc_eye_draws = 0;        // draws whose texture the eye renderer composed
   int merc_eye_renderer_missing = 0;
   int merc_eye_lookup_failed = 0;

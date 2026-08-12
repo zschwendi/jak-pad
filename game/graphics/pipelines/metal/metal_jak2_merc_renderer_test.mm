@@ -10,6 +10,7 @@
 
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/dma/dma.h"
+#include "common/util/fnv.h"
 
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
@@ -34,6 +35,10 @@ constexpr char kAlphaModelName[] = "jak2-merc-alpha-model";
 constexpr char kWaterModelName[] = "jak2-merc-water-model";
 constexpr char kEyeModelName[] = "jak2-merc-eye-model";
 constexpr char kAnimIntMinModelName[] = "jak2-merc-anim-int-min-model";
+constexpr std::array<s32, 4> kDiagnosticAnimTextureIds = {-1, -2, -3, -4};
+constexpr std::array<const char*, 4> kDiagnosticAnimModelNames = {
+    "jak2-merc-diag-anim-slot-0", "jak2-merc-diag-anim-slot-1",
+    "jak2-merc-diag-anim-slot-2", "jak2-merc-diag-anim-slot-3"};
 constexpr std::array<s32, 6> kPrisonAnimTextureIds = {-5, -6, -8, -9, -10, -11};
 constexpr std::array<const char*, 6> kPrisonAnimModelNames = {
     "jak2-merc-prison-anim-slot-4", "jak2-merc-prison-anim-slot-5",
@@ -321,6 +326,10 @@ std::unique_ptr<tfrag3::Level> make_level() {
   for (std::size_t i = 0; i < kPrisonAnimModelNames.size(); i++) {
     add_model(kPrisonAnimModelNames[i], false, true, false, kPrisonAnimTextureIds[i], 0xff);
   }
+  for (std::size_t i = 0; i < kDiagnosticAnimModelNames.size(); i++) {
+    add_model(kDiagnosticAnimModelNames[i], false, true, false,
+              kDiagnosticAnimTextureIds[i], 0xff);
+  }
   add_model(kAnimIntMinModelName, false, true, false, std::numeric_limits<s32>::min(), 0xff);
   return level;
 }
@@ -545,7 +554,7 @@ int main() {
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
-              load.level_name == kLevelName && load.models == 12 && load.vertices == 4 &&
+              load.level_name == kLevelName && load.models == 16 && load.vertices == 4 &&
               load.indices == 4,
           "registered static, eye, and animated-slot synthetic Merc models");
     if (failures) {
@@ -812,6 +821,50 @@ int main() {
               combined_anim_slots.eye_lookup_failed == 0 &&
               combined_anim_slots.eye_placeholder_draws == 0,
           "Merc Stats::add aggregates animated slots without changing eye telemetry");
+
+    std::vector<u64> diagnostic_slots(kDiagnosticAnimTextureIds.size(), 0);
+    MetalMerc2::Stats combined_diagnostic_slots;
+    MetalMerc2::Stats first_diagnostic_slot;
+    bool exact_diagnostic_slots = true;
+    for (std::size_t i = 0; i < kDiagnosticAnimModelNames.size(); ++i) {
+      auto memory = make_source_chain(kDiagnosticAnimModelNames[i]);
+      const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 &normal_renderer, &memory, routed_frame++, nullptr,
+                                 &diagnostic_slots);
+      exact_diagnostic_slots &=
+          result.completed && result.stats.anim_slot_draws == 1 &&
+          result.stats.anim_slot_placeholder_draws == 1 && result.stats.missing_textures == 1;
+      for (std::size_t slot = 0; slot < kDiagnosticAnimModelNames.size(); ++slot) {
+        const bool selected = slot == i;
+        exact_diagnostic_slots &=
+            result.stats.anim_slot_draws_by_slot[slot] == static_cast<int>(selected) &&
+            result.stats.anim_slot_placeholder_draws_by_slot[slot] ==
+                static_cast<int>(selected) &&
+            result.stats.anim_slot_first_model_hashes[slot] ==
+                (selected ? fnv64(std::string(kDiagnosticAnimModelNames[i])) : 0);
+      }
+      if (i == 0) {
+        first_diagnostic_slot = result.stats;
+      }
+      combined_diagnostic_slots.add(result.stats);
+    }
+    check(exact_diagnostic_slots,
+          "Merc reports exact per-frame draw, placeholder, and model-hash facts for slots 0-3");
+    combined_diagnostic_slots.add(first_diagnostic_slot);
+    const std::array<int, 4> expected_repeated_draws = {2, 1, 1, 1};
+    std::array<u64, 4> expected_first_model_hashes = {};
+    for (std::size_t i = 0; i < expected_first_model_hashes.size(); ++i) {
+      expected_first_model_hashes[i] = fnv64(std::string(kDiagnosticAnimModelNames[i]));
+    }
+    check(combined_diagnostic_slots.anim_slot_draws == 5 &&
+              combined_diagnostic_slots.anim_slot_placeholder_draws == 5 &&
+              combined_diagnostic_slots.missing_textures == 5 &&
+              combined_diagnostic_slots.anim_slot_draws_by_slot == expected_repeated_draws &&
+              combined_diagnostic_slots.anim_slot_placeholder_draws_by_slot ==
+                  expected_repeated_draws &&
+              combined_diagnostic_slots.anim_slot_first_model_hashes ==
+                  expected_first_model_hashes,
+          "Merc aggregation preserves slots 0-3 repeat counts and first stable model hashes");
     for (u64 handle : animated_handles) {
       if (handle) {
         metal_texture_release(handle);

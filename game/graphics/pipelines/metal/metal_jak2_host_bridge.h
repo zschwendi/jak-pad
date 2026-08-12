@@ -85,6 +85,7 @@ enum {
   GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT = 6,
   GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT = 7,
   GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT = 4,
+  GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT = 4,
 };
 
 typedef struct goal_jak2_tfrag_texture_upload_metrics {
@@ -290,6 +291,12 @@ typedef struct goal_jak2_metal_host_metrics {
   // Keep diagnostic growth at the tail so every established metrics field retains its offset.
   goal_jak2_tfrag_texture_upload_metrics
       pris2_bucket_captures[GOAL_JAK2_PRIS2_CAPTURE_BUCKET_COUNT];
+  uint64_t
+      last_merc_anim_slot_draws_by_slot[GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT];
+  uint64_t last_merc_anim_slot_placeholder_draws_by_slot
+      [GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT];
+  uint64_t last_merc_anim_slot_first_model_hashes
+      [GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT];
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

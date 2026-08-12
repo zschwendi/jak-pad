@@ -299,6 +299,16 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_merc_anim_slot_draws = stats.merc_anim_slot_draws;
   host->metrics.last_merc_anim_slot_placeholder_draws =
       stats.merc_anim_slot_placeholder_draws;
+  static_assert(GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT ==
+                std::tuple_size_v<decltype(stats.merc_anim_slot_draws_by_slot)>);
+  for (std::size_t i = 0; i < stats.merc_anim_slot_draws_by_slot.size(); ++i) {
+    host->metrics.last_merc_anim_slot_draws_by_slot[i] =
+        stats.merc_anim_slot_draws_by_slot[i];
+    host->metrics.last_merc_anim_slot_placeholder_draws_by_slot[i] =
+        stats.merc_anim_slot_placeholder_draws_by_slot[i];
+    host->metrics.last_merc_anim_slot_first_model_hashes[i] =
+        stats.merc_anim_slot_first_model_hashes[i];
+  }
   host->metrics.last_merc_eye_draws = stats.merc_eye_draws;
   host->metrics.last_merc_eye_renderer_missing = stats.merc_eye_renderer_missing;
   host->metrics.last_merc_eye_lookup_failed = stats.merc_eye_lookup_failed;
@@ -1087,6 +1097,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id);
       record_texture_upload_metrics(&host->metrics.pris2_bucket_captures[i], bucket_id, capture);
     }
+    const auto common_pris_texture_capture =
+        metal_renderer::capture_jak2_tfrag_texture_upload(
+            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+            metal_renderer::kJak2CommonPrisTextureUploadBucket);
+    record_texture_upload_metrics(&host->metrics.common_pris_texture_upload,
+                                  metal_renderer::kJak2CommonPrisTextureUploadBucket,
+                                  common_pris_texture_capture);
     Jak2WaterTextureUploadPlans water_texture_plans;
     static_assert(GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT ==
                   metal_renderer::kJak2WaterTextureUploadBuckets.size());
