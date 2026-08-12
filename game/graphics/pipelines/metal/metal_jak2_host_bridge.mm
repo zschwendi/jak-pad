@@ -591,17 +591,38 @@ struct Jak2TextureUploadDispatch {
   const Jak2WaterTextureUploadPlans* water_plans = nullptr;
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* common_pris_plan = nullptr;
+  const metal_renderer::Jak2SpriteTextureUploadPlan* sprite_plan = nullptr;
   const metal_renderer::Jak2MapTextureUploadPlan* map_plan = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity* security_prepared =
       nullptr;
   const u8* live_ee_memory = nullptr;
   bool* host_texture_mutated = nullptr;
+  bool* sprite_callback_executed = nullptr;
   bool* raw_image_callback_executed = nullptr;
 };
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  if (bucket_id == static_cast<u32>(jak2::BucketId::TEX_ALL_SPRITE)) {
+    if (!dispatch->sprite_callback_executed) {
+      throw std::runtime_error("Jak 2 bucket 312 texture-upload marker tracking is unavailable");
+    }
+    if (*dispatch->sprite_callback_executed) {
+      throw std::runtime_error("Jak 2 bucket 312 texture-upload marker repeated");
+    }
+    *dispatch->sprite_callback_executed = true;
+    if (!dispatch->sprite_plan) {
+      throw std::runtime_error("Jak 2 bucket 312 texture-upload dispatch is incomplete");
+    }
+    for (std::size_t i = 0; i < dispatch->sprite_plan->upload_count; ++i) {
+      execute_ordinary_texture_upload_or_throw(
+          dispatch->host, dispatch->sprite_plan->uploads[i], dispatch->live_ee_memory,
+          &dispatch->host->metrics.sprite_texture_uploads,
+          "Jak 2 bucket 312 ordinary texture upload", dispatch->host_texture_mutated);
+    }
+    return;
+  }
   if (bucket_id == metal_renderer::kJak2RawImageUploadBucket) {
     if (!dispatch->raw_image_callback_executed) {
       throw std::runtime_error("Jak 2 bucket 318 raw-image marker tracking is unavailable");
@@ -806,25 +827,6 @@ bool execute_bucket4_plan(goal_jak2_metal_host* host,
   return true;
 }
 
-bool execute_sprite_texture_upload_plan(
-    goal_jak2_metal_host* host,
-    const metal_renderer::Jak2SpriteTextureUploadPlan& plan,
-    const u8* live_ee_memory) {
-  if (plan.present != (plan.upload_count > 0) ||
-      plan.upload_count > metal_renderer::kJak2SpriteTextureUploadMaximumGroups) {
-    fail_current_chain_closed(host, "Jak 2 bucket 312 texture-upload plan is inconsistent");
-    return false;
-  }
-  for (std::size_t i = 0; i < plan.upload_count; ++i) {
-    if (!execute_ordinary_texture_upload(
-            host, plan.uploads[i], live_ee_memory, &host->metrics.sprite_texture_uploads,
-            "Jak 2 bucket 312 ordinary texture upload")) {
-      return false;
-    }
-  }
-  return true;
-}
-
 bool update_draw_region(goal_jak2_metal_host* host) {
   if (!host->layer) {
     return true;
@@ -996,6 +998,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 bucket 312 texture-upload plan rejected malformed DMA");
       return;
     }
+    if (sprite_texture_plan->present != (sprite_texture_plan->upload_count > 0) ||
+        sprite_texture_plan->upload_count >
+            metal_renderer::kJak2SpriteTextureUploadMaximumGroups) {
+      record_failure(host, "Jak 2 bucket 312 texture-upload plan is inconsistent");
+      return;
+    }
     metal_renderer::Jak2MapTextureUploadDiagnostic map_texture_diagnostic;
     const auto map_texture_plan = metal_renderer::plan_jak2_map_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
@@ -1079,12 +1087,8 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     }
     host_texture_mutated =
         !std::holds_alternative<metal_renderer::Jak2Bucket4AbsentPlan>(*bucket4_plan);
-    if (!execute_sprite_texture_upload_plan(host, *sprite_texture_plan,
-                                            static_cast<const u8*>(ee_base))) {
-      return;
-    }
-    host_texture_mutated = host_texture_mutated || sprite_texture_plan->present;
 
+    bool sprite_callback_executed = false;
     bool raw_image_callback_executed = false;
     Jak2TextureUploadDispatch texture_dispatch{
         host,
@@ -1095,11 +1099,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &water_texture_plans,
         &*common_tfrag_texture_plan,
         nullptr,
+        &*sprite_texture_plan,
         &*map_texture_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         security_plan ? &security_prepared : nullptr,
         static_cast<const u8*>(ee_base),
         &host_texture_mutated,
+        &sprite_callback_executed,
         &raw_image_callback_executed};
     auto render_options = host->options;
     const auto& animated_texture_slots = host->skull_gem_executor->animated_texture_slots();
@@ -1112,6 +1118,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
     const auto renderer_after = host->renderer.chain_stats();
     copy_renderer_metrics(host);
+    if (!sprite_callback_executed) {
+      record_send_chain_failure(
+          host, "Jak 2 bucket 312 texture-upload marker was not dispatched",
+          host_texture_mutated);
+      return;
+    }
     if (raw_image_callback_executed != raw_image_plan->present) {
       record_send_chain_failure(
           host, "Jak 2 bucket 318 raw-image publication marker did not match its plan",

@@ -1174,7 +1174,7 @@ int main() {
             sprite_upload_metrics.last_sprite_texture_upload.pages[0] == kTexturePageOffset &&
             sprite_upload_metrics.last_sprite_texture_upload.modes[0] == -1 &&
             sprite_upload_metrics.skipped_bucket_bytes == 0,
-        "valid bucket 312 executes its exact ordered ordinary upload without skipped bytes");
+        "bucket 312 dispatches its exact ordered ordinary upload through the host callback");
 
   write_empty_texture_page(kTexturePageOffset + kTexturePageStride, kTexturePageId + 1);
   write_empty_texture_page(kTexturePageOffset + 2 * kTexturePageStride, kTexturePageId + 2);
@@ -1209,7 +1209,7 @@ int main() {
             sprite_upload_metrics.last_sprite_texture_upload.valid == 1 &&
             sprite_upload_metrics.last_sprite_texture_upload.present == 0 &&
             sprite_upload_metrics.last_sprite_texture_upload.upload_count == 0,
-        "a strict-empty bucket 312 remains valid and does not execute another upload");
+        "a strict-empty bucket 312 still dispatches its host marker without another upload");
   const uint32_t sprite_empty_copied_bytes = sprite_upload_metrics.last_copied_bytes;
 
   make_sprite_texture_upload_chain(1, -2);
