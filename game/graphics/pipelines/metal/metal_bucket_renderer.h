@@ -204,10 +204,10 @@ class MetalHostHandledRenderer : public MetalBucketRenderer {
 };
 
 /*!
- * Executes one prevalidated per-level Jak II PRIS eye bucket. The host owns the ordinary texture
- * upload at the exact bucket-entry callback; this renderer then consumes only the copied plan's
- * fixed prefix, optional validated prison-Jak animator no-op, eye chunks, linkers, and terminal
- * reset.
+ * Executes one prevalidated Jak II PRIS eye bucket. The host owns the ordinary texture upload at
+ * the exact bucket-entry callback; this renderer then consumes only the copied plan's fixed prefix,
+ * optional validated prison-Jak animator no-op, eye chunks, linkers, and terminal reset. The exact
+ * allowlist is the six per-level PRIS producers plus typed PRIS2 bucket 228.
  */
 class MetalJak2PrisEyeBucketRenderer : public MetalBucketRenderer {
  public:

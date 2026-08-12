@@ -8,6 +8,7 @@
 
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
 
@@ -178,22 +179,25 @@ struct PrisFixture {
   metal_renderer::Jak2PrisEyeTextureUploadPlan plan;
 };
 
-PrisFixture make_pris_fixture(std::size_t chunk_count, bool prison_jak_animator = false) {
+PrisFixture make_pris_fixture(std::size_t chunk_count,
+                              bool prison_jak_animator = false,
+                              u32 bucket_id = kPrisBucket) {
   constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
   constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
   constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
   constexpr u64 kPageOffset = 0x200000;
   constexpr s64 kMode = -1;
+  const u32 bucket_offset = bucket_id * 16;
   PrisFixture fixture;
   fixture.data.resize(0x8000);
-  fixture.plan.bucket_id = kPrisBucket;
+  fixture.plan.bucket_id = bucket_id;
   fixture.plan.present = true;
   fixture.plan.ordinary.page_offset = kPageOffset;
   fixture.plan.ordinary.mode = kMode;
   fixture.plan.chunk_count = chunk_count;
   fixture.plan.has_prison_jak_animator = prison_jak_animator;
 
-  put_tag(&fixture.data, kPrisBucketOffset, DmaTag::Kind::NEXT, 0,
+  put_tag(&fixture.data, bucket_offset, DmaTag::Kind::NEXT, 0,
           kPrisOrdinaryOffset, 0, 0);
   put_tag(&fixture.data, kPrisOrdinaryOffset, DmaTag::Kind::CNT, 1, 0,
           kPcPort, 3);
@@ -214,7 +218,7 @@ PrisFixture make_pris_fixture(std::size_t chunk_count, bool prison_jak_animator 
     }
     animator.semantic_fingerprint = 1;
     animator.start_transfer_index = 3;
-    animator.start_relative_tag_offset = kPrisAnimatorOffset - kPrisBucketOffset;
+    animator.start_relative_tag_offset = kPrisAnimatorOffset - bucket_offset;
     animator.body_transfer_index = 4;
     animator.body_relative_tag_offset = animator.start_relative_tag_offset + 16;
     animator.finish_transfer_index = 5;
@@ -257,10 +261,10 @@ PrisFixture make_pris_fixture(std::size_t chunk_count, bool prison_jak_animator 
     chunk.resolution = metal_renderer::Jak2PrisEyeResolution::Eye32;
     chunk.pair_index = static_cast<u32>(i);
     chunk.start_transfer_index = (prison_jak_animator ? 7 : 3) + static_cast<u32>(i) * 27;
-    chunk.start_relative_tag_offset = chunk_offset - kPrisBucketOffset;
+    chunk.start_relative_tag_offset = chunk_offset - bucket_offset;
     chunk.linker_transfer_index = chunk.start_transfer_index +
                                   metal_renderer::kJak2PrisEyeChunkTransferCount;
-    chunk.linker_relative_tag_offset = linker_offset - kPrisBucketOffset;
+    chunk.linker_relative_tag_offset = linker_offset - bucket_offset;
     chunk.transfer_count = metal_renderer::kJak2PrisEyeChunkTransferCount;
     chunk.payload_bytes = metal_renderer::kJak2PrisEyeChunkPayloadBytes;
     chunk.eye_slot_mask = 3ull << (i * 2);
@@ -270,15 +274,34 @@ PrisFixture make_pris_fixture(std::size_t chunk_count, bool prison_jak_animator 
 
   fixture.plan.direct_reset_transfer_index = (prison_jak_animator ? 7 : 3) +
                                              static_cast<u32>(chunk_count) * 27;
-  fixture.plan.direct_reset_relative_tag_offset = chunk_offset - kPrisBucketOffset;
+  fixture.plan.direct_reset_relative_tag_offset = chunk_offset - bucket_offset;
   put_tag(&fixture.data, chunk_offset, DmaTag::Kind::CNT, 10, 0, kFlusha,
           kDirect | 10);
   const u32 terminal_offset = chunk_offset + 176;
   fixture.plan.terminal_transfer_index = fixture.plan.direct_reset_transfer_index + 1;
-  fixture.plan.terminal_relative_tag_offset = terminal_offset - kPrisBucketOffset;
+  fixture.plan.terminal_relative_tag_offset = terminal_offset - bucket_offset;
   put_tag(&fixture.data, terminal_offset, DmaTag::Kind::NEXT, 0,
-          kPrisBucketOffset + 16, 0, 0);
+          bucket_offset + 16, 0, 0);
   return fixture;
+}
+
+metal_renderer::Jak2Pris2Bucket228Plan make_pris2_bucket228_plan(
+    const PrisFixture& fixture) {
+  metal_renderer::Jak2Pris2Bucket228Plan plan;
+  plan.variant = fixture.plan.chunk_count == 0
+                     ? metal_renderer::Jak2Pris2Bucket228Variant::OrdinaryOnly
+                     : metal_renderer::Jak2Pris2Bucket228Variant::OneEyeChunk;
+  plan.ordinary = fixture.plan.ordinary;
+  if (fixture.plan.chunk_count == 1) {
+    plan.eye_chunk = fixture.plan.chunks[0];
+  }
+  plan.direct_reset_transfer_index = fixture.plan.direct_reset_transfer_index;
+  plan.direct_reset_relative_tag_offset = fixture.plan.direct_reset_relative_tag_offset;
+  plan.terminal_transfer_index = fixture.plan.terminal_transfer_index;
+  plan.terminal_relative_tag_offset = fixture.plan.terminal_relative_tag_offset;
+  plan.eye_slot_mask = fixture.plan.eye_slot_mask;
+  plan.semantic_fingerprint = 1;
+  return plan;
 }
 
 struct CommonPrisFixture {
@@ -557,6 +580,54 @@ int main() {
                 animator_only_stats.command_buffers_completed == 0 &&
                 animator_only_stats.command_buffer_errors == 0,
             "the PRIS renderer consumes an animator-only plan through its terminal reset");
+
+      constexpr u32 kPris2Bucket = metal_renderer::kJak2Pris2TextureUploadBucket;
+      constexpr u32 kPris2BucketOffset = kPris2Bucket * 16;
+      MetalJak2PrisEyeBucketRenderer pris2_renderer("jak2-pris2-eye-228", kPris2Bucket);
+      state.next_bucket = kPris2BucketOffset + 16;
+
+      auto pris2_ordinary = make_pris_fixture(0, false, kPris2Bucket);
+      const auto pris2_ordinary_source = make_pris2_bucket228_plan(pris2_ordinary);
+      const auto pris2_ordinary_plan =
+          metal_renderer::adapt_jak2_pris2_bucket228_to_pris_eye_plan(
+              pris2_ordinary_source);
+      host_counter = {};
+      state.jak2_pris_eye_plans = &pris2_ordinary_plan;
+      renderer.start_frame();
+      DmaFollower pris2_ordinary_dma(pris2_ordinary.data.data(), kPris2BucketOffset,
+                                     pris2_ordinary.data.size());
+      pris2_renderer.render(pris2_ordinary_dma, &state, context);
+      const auto pris2_ordinary_stats = renderer.stats();
+      check(host_counter.calls == 1 && host_counter.bucket_id == kPris2Bucket &&
+                pris2_ordinary_dma.current_tag_offset() == state.next_bucket &&
+                pris2_ordinary_stats.eyes == 0 && pris2_ordinary_stats.draw_calls == 0 &&
+                pris2_ordinary_stats.triangles == 0 &&
+                pris2_ordinary_stats.command_buffers_committed == 0 &&
+                pris2_ordinary_stats.command_buffers_completed == 0 &&
+                pris2_ordinary_stats.command_buffer_errors == 0,
+            "adapted bucket 228 ordinary-only form calls back once and reaches its boundary");
+
+      auto pris2_eye = make_pris_fixture(1, false, kPris2Bucket);
+      const auto pris2_eye_source = make_pris2_bucket228_plan(pris2_eye);
+      const auto pris2_eye_plan =
+          metal_renderer::adapt_jak2_pris2_bucket228_to_pris_eye_plan(pris2_eye_source);
+      host_counter = {};
+      state.jak2_pris_eye_plans = &pris2_eye_plan;
+      renderer.start_frame();
+      DmaFollower pris2_eye_dma(pris2_eye.data.data(), kPris2BucketOffset,
+                                pris2_eye.data.size());
+      pris2_renderer.render(pris2_eye_dma, &state, context);
+      const auto pris2_eye_stats = renderer.stats();
+      check(host_counter.calls == 1 && host_counter.bucket_id == kPris2Bucket &&
+                pris2_eye_dma.current_tag_offset() == state.next_bucket &&
+                pris2_eye_stats.eyes == 2 && pris2_eye_stats.draw_calls == 8 &&
+                pris2_eye_stats.triangles == 16 && pris2_eye_stats.missing_textures == 0 &&
+                pris2_eye_stats.unexpected_dma == 0 &&
+                pris2_eye_stats.duplicate_slot_writes == 0 &&
+                pris2_eye_stats.command_buffers_committed == 1 &&
+                pris2_eye_stats.command_buffers_completed == 1 &&
+                pris2_eye_stats.command_buffer_errors == 0,
+            "adapted bucket 228 one-eye form executes 2 eyes, 8 draws, and 16 triangles once");
 
       MetalJak2CommonPrisBucketRenderer common_pris_renderer(
           "jak2-common-pris", kCommonPrisBucket);

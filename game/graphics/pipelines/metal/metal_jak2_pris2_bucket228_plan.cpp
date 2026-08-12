@@ -62,19 +62,20 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_bucket228(
       dma_packet_snapshot, dma_packet_snapshot_size, alias_chain_offset,
       kPrisGrammarAliasBucket, live_ee_memory, live_ee_memory_size, out_capture,
       out_rejection);
-  if (!source_plan || !source_plan->present || source_plan->has_prison_jak_animator ||
-      source_plan->chunk_count > 1) {
+  if (!source_plan || source_plan->has_prison_jak_animator || source_plan->chunk_count > 1) {
     if (source_plan && out_rejection &&
         out_rejection->reason == Jak2PrisEyeTextureUploadRejectReason::None) {
-      set_rejection(out_rejection,
-                    source_plan->present ? Jak2PrisEyeTextureUploadRejectReason::Counts
-                                         : Jak2PrisEyeTextureUploadRejectReason::AbsentEnvelope);
+      set_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::Counts);
     }
     return std::nullopt;
   }
 
-  const bool ordinary_only = source_plan->chunk_count == 0;
   Jak2Pris2Bucket228Plan plan;
+  if (!source_plan->present) {
+    plan.variant = Jak2Pris2Bucket228Variant::Absent;
+    return plan;
+  }
+  const bool ordinary_only = source_plan->chunk_count == 0;
   plan.variant = ordinary_only ? Jak2Pris2Bucket228Variant::OrdinaryOnly
                                : Jak2Pris2Bucket228Variant::OneEyeChunk;
   plan.ordinary = source_plan->ordinary;
@@ -103,11 +104,61 @@ bool jak2_pris2_bucket228_plans_match(const Jak2Pris2Bucket228Plan& live,
       live.semantic_fingerprint != copied.semantic_fingerprint) {
     return false;
   }
+  if (live.variant == Jak2Pris2Bucket228Variant::Absent) {
+    return true;
+  }
   if (live.variant == Jak2Pris2Bucket228Variant::OrdinaryOnly) {
     return true;
   }
   return live.variant == Jak2Pris2Bucket228Variant::OneEyeChunk &&
          eye_chunks_match(live.eye_chunk, copied.eye_chunk);
+}
+
+Jak2PrisEyeTextureUploadPlan adapt_jak2_pris2_bucket228_to_pris_eye_plan(
+    const Jak2Pris2Bucket228Plan& source) {
+  Jak2PrisEyeTextureUploadPlan result;
+  result.bucket_id = kJak2Pris2TextureUploadBucket;
+  if (source.bucket_id != kJak2Pris2TextureUploadBucket ||
+      source.variant == Jak2Pris2Bucket228Variant::Absent) {
+    return result;
+  }
+  result.present = true;
+  result.ordinary = source.ordinary;
+  if (source.variant == Jak2Pris2Bucket228Variant::OneEyeChunk) {
+    result.chunks[0] = source.eye_chunk;
+    result.chunk_count = 1;
+  }
+  result.direct_reset_transfer_index = source.direct_reset_transfer_index;
+  result.direct_reset_relative_tag_offset = source.direct_reset_relative_tag_offset;
+  result.terminal_transfer_index = source.terminal_transfer_index;
+  result.terminal_relative_tag_offset = source.terminal_relative_tag_offset;
+  result.eye_slot_mask = source.eye_slot_mask;
+  result.semantic_fingerprint = source.semantic_fingerprint;
+  return result;
+}
+
+bool jak2_pris_eye_slot_masks_are_disjoint(
+    const Jak2PrisEyeTextureUploadPlan* per_level_plans,
+    std::size_t per_level_plan_count,
+    const Jak2CommonPrisTextureUploadPlan& common_plan,
+    const Jak2Pris2Bucket228Plan& pris2_bucket228_plan) {
+  if (!per_level_plans && per_level_plan_count != 0) {
+    return false;
+  }
+  u64 claimed = 0;
+  const auto claim = [&claimed](u64 mask) {
+    if ((claimed & mask) != 0) {
+      return false;
+    }
+    claimed |= mask;
+    return true;
+  };
+  for (std::size_t i = 0; i < per_level_plan_count; ++i) {
+    if (!claim(per_level_plans[i].eye_slot_mask)) {
+      return false;
+    }
+  }
+  return claim(common_plan.eye_slot_mask) && claim(pris2_bucket228_plan.eye_slot_mask);
 }
 
 }  // namespace metal_renderer

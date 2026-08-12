@@ -1221,6 +1221,8 @@ if(APPLE)
         add_test(NAME jak2-metal-tie-renderer-test COMMAND jak2-metal-tie-renderer-test)
 
         add_executable(jak2-metal-eye-renderer-test
+            graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
             graphics/pipelines/metal/metal_jak2_eye_renderer_test.mm)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_eye_renderer_test.mm
@@ -1291,6 +1293,7 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
             graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp
             graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp)
         set_source_files_properties(
@@ -1346,6 +1349,13 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture_test.cpp)
         add_test(NAME jak2-common-tfrag-texture-upload-capture-test
             COMMAND jak2-common-tfrag-texture-upload-capture-test)
+
+        add_executable(jak2-pris2-bucket228-plan-test
+            graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
+            graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan_test.cpp)
+        add_test(NAME jak2-pris2-bucket228-plan-test
+            COMMAND jak2-pris2-bucket228-plan-test)
 
         add_executable(jak2-sprite-texture-upload-plan-test
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp

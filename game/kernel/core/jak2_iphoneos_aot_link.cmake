@@ -75,6 +75,7 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_host_bridge.mm"
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp")
   set_source_files_properties(

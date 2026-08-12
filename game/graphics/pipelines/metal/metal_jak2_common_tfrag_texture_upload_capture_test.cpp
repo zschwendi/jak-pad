@@ -824,7 +824,7 @@ void test_pris2_diagnostic_capture() {
             !metal_renderer::plan_jak2_pris_eye_texture_upload(
                 texture_packet.data(), texture_packet.size(), kChainOffset, kPris2TextureBucket,
                 texture_packet.data(), texture_packet.size()),
-        "PRIS2 bucket 228 capture does not promote it to a texture or eye execution plan");
+        "bucket 228 stays outside the common texture and six-bucket PRIS plan allowlists");
 
   const auto merc_packet = make_pris2_merc_capture_fixture();
   result = capture(merc_packet, kPris2MercBucket);

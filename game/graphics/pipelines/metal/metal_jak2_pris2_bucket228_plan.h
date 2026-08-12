@@ -12,13 +12,14 @@ namespace metal_renderer {
 constexpr u32 kJak2Pris2TextureUploadBucket = 228;
 
 enum class Jak2Pris2Bucket228Variant : u8 {
+  Absent,
   OrdinaryOnly,
   OneEyeChunk,
 };
 
 struct Jak2Pris2Bucket228Plan {
   u32 bucket_id = kJak2Pris2TextureUploadBucket;
-  Jak2Pris2Bucket228Variant variant = Jak2Pris2Bucket228Variant::OrdinaryOnly;
+  Jak2Pris2Bucket228Variant variant = Jak2Pris2Bucket228Variant::Absent;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
   Jak2PrisEyeChunkPlan eye_chunk;
   u32 direct_reset_transfer_index = 0;
@@ -30,10 +31,10 @@ struct Jak2Pris2Bucket228Plan {
 };
 
 /*!
- * Preflight the two observed PRIS2 bucket-228 envelopes without mutating renderer state: the
- * ordinary descriptor/reset form and the single different-eyes chunk form. The returned plan owns
- * the ordinary page header and the bounded eye metadata. Animator, two-chunk, absent, malformed,
- * and otherwise extended forms are rejected.
+ * Preflight exact absence plus the two observed present PRIS2 bucket-228 envelopes without
+ * mutating renderer state: the ordinary descriptor/reset form and single different-eyes chunk
+ * form. The returned plan owns the ordinary page header and bounded eye metadata. Animator,
+ * two-chunk, malformed, and otherwise extended forms are rejected.
  */
 std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_bucket228(
     const u8* dma_packet_snapshot,
@@ -51,5 +52,19 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_bucket228(
  */
 bool jak2_pris2_bucket228_plans_match(const Jak2Pris2Bucket228Plan& live,
                                       const Jak2Pris2Bucket228Plan& copied);
+
+/*!
+ * Adapt an independently preflighted bucket-228 plan to the existing PRIS eye renderer contract.
+ * This is the only seam that broadens that renderer beyond the six per-level PRIS producers.
+ */
+Jak2PrisEyeTextureUploadPlan adapt_jak2_pris2_bucket228_to_pris_eye_plan(
+    const Jak2Pris2Bucket228Plan& source);
+
+/*! Reject overlapping eye publications across the per-level, common, and bucket-228 plans. */
+bool jak2_pris_eye_slot_masks_are_disjoint(
+    const Jak2PrisEyeTextureUploadPlan* per_level_plans,
+    std::size_t per_level_plan_count,
+    const Jak2CommonPrisTextureUploadPlan& common_plan,
+    const Jak2Pris2Bucket228Plan& pris2_bucket228_plan);
 
 }  // namespace metal_renderer

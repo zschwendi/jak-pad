@@ -22,6 +22,7 @@
 #include "game/graphics/pipelines/metal/metal_generic2.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_blit_display_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
@@ -705,9 +706,12 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       ocean->init_textures(*m_texture_pool, GameVersion::Jak2);
       m_bucket_renderers[bucket_id] = std::move(ocean);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::PrisEye) {
-      ASSERT(std::find(metal_renderer::kJak2PrisTextureUploadBuckets.begin(),
-                       metal_renderer::kJak2PrisTextureUploadBuckets.end(), bucket_id) !=
-             metal_renderer::kJak2PrisTextureUploadBuckets.end());
+      const bool exact_pris_eye_bucket =
+          std::find(metal_renderer::kJak2PrisTextureUploadBuckets.begin(),
+                    metal_renderer::kJak2PrisTextureUploadBuckets.end(), bucket_id) !=
+              metal_renderer::kJak2PrisTextureUploadBuckets.end() ||
+          bucket_id == metal_renderer::kJak2Pris2TextureUploadBucket;
+      ASSERT(exact_pris_eye_bucket);
       ASSERT(batch_size == 0);
       if (m_host_texture_uploads) {
         m_bucket_renderers[bucket_id] = std::make_unique<MetalJak2PrisEyeBucketRenderer>(

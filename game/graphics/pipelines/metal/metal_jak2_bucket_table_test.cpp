@@ -90,7 +90,7 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 34, "34 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 33, "33 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 28,
@@ -124,8 +124,8 @@ int main() {
         "26 source-proven normal GMerc buckets are implemented by Metal Generic2");
   check(ocean_mid_far == 1 && ocean_near == 1,
         "both source-proven OCEAN renderer policies are explicit");
-  check(pris_eye == 6,
-        "six per-level PRIS texture buckets use the prevalidated eye execution path");
+  check(pris_eye == 7,
+        "six per-level PRIS buckets and exact PRIS2 bucket 228 use planned eye execution");
   check(metal_renderer::jak2_metal_bucket_table_fingerprint() ==
             metal_renderer::kJak2MetalBucketExpectedFingerprint,
         "the ordered descriptor policy matches its fixed reference fingerprint");
@@ -269,9 +269,10 @@ int main() {
         has_behavior(level_bucket(jak2::BucketId::GMERC_L0_PRIS,
                                   jak2::BucketId::GMERC_L1_PRIS, level),
                      Behavior::DeferredSkip) &&
-        has_behavior(level_bucket(jak2::BucketId::TEX_L0_PRIS2,
-                                  jak2::BucketId::TEX_L1_PRIS2, level),
-                     Behavior::DeferredSkip) &&
+        (level == 1 ||
+         has_behavior(level_bucket(jak2::BucketId::TEX_L0_PRIS2,
+                                   jak2::BucketId::TEX_L1_PRIS2, level),
+                      Behavior::DeferredSkip)) &&
         has_behavior(level_bucket(jak2::BucketId::MERC_L0_PRIS2,
                                   jak2::BucketId::MERC_L1_PRIS2, level),
                      Behavior::DeferredSkip) &&
@@ -289,8 +290,11 @@ int main() {
         "all six per-level PRIS Merc draw buckets use the existing Metal Merc grammar");
   check(per_level_pris_eye_routed,
         "all six per-level PRIS texture buckets use the dedicated planned eye renderer");
+  check(has_behavior(jak2::BucketId::TEX_L1_PRIS2, Behavior::PrisEye) &&
+            static_cast<std::size_t>(jak2::BucketId::TEX_L1_PRIS2) == 228,
+        "only exact PRIS2 texture bucket 228 is promoted to the planned eye renderer");
   check(remaining_prismatic_families_deferred,
-        "per-level PRIS GMerc and every PRIS2 family remain deferred");
+        "PRIS GMerc and all PRIS2 buckets except texture bucket 228 remain deferred");
   check(has_behavior(jak2::BucketId::MERC_LCOM_TFRAG, Behavior::Merc) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_TFRAG, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::TEX_LCOM_PRIS, Behavior::CommonPris) &&
@@ -347,11 +351,12 @@ int main() {
             has_behavior(jak2::BucketId::TEX_ALL_MAP, Behavior::HostTextureUploadDirect),
         "DEBUG_NO_ZBUF1 and TEX_ALL_MAP preserve their reference upload-plus-Direct behavior");
   check(has_behavior(jak2::BucketId::SHADOW, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::MERC_L0_PRIS2, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_PRIS2, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_WATER, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_WATER, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::DEBUG3, Behavior::DeferredSkip),
-        "deferred PRIS2, Generic2 water, strict common-water, and tail bindings stay explicit");
+        "bucket 229 and remaining PRIS2, water, common-water, and tail bindings stay explicit");
   check(has_behavior(jak2::BucketId::SKY_DRAW, Behavior::Direct) &&
             has_behavior(jak2::BucketId::PROGRESS, Behavior::Direct) &&
             has_behavior(jak2::BucketId::SCREEN_FILTER, Behavior::Direct) &&

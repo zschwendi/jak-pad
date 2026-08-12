@@ -347,6 +347,18 @@ std::optional<metal_renderer::Jak2Pris2Bucket228Plan> plan(
 }
 
 void test_observed_forms() {
+  Fixture absent{std::vector<u8>(kMemorySize), 0, 0};
+  put_tag(&absent.packet, bucket_offset(), DmaTag::Kind::CNT, 0, 0, 0, 0);
+  const auto absent_plan = plan(absent);
+  check(absent_plan && absent_plan->variant == Variant::Absent &&
+            absent_plan->eye_slot_mask == 0,
+        "bucket 228 accepts an exact absent slot as a structural no-op");
+  const auto absent_renderer_plan =
+      metal_renderer::adapt_jak2_pris2_bucket228_to_pris_eye_plan(*absent_plan);
+  check(!absent_renderer_plan.present &&
+            absent_renderer_plan.bucket_id == metal_renderer::kJak2Pris2TextureUploadBucket,
+        "the exact absent bucket-228 slot adapts to a renderer no-op");
+
   auto ordinary = make_fixture({});
   Capture capture;
   const auto ordinary_plan = plan(ordinary, &capture);
@@ -364,6 +376,13 @@ void test_observed_forms() {
             capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == 0 &&
             capture.eye_markers == 0 && capture.other_transfers == 0,
         "bucket 228 accepts only the exact ordinary descriptor/reset form");
+  const auto ordinary_renderer_plan =
+      metal_renderer::adapt_jak2_pris2_bucket228_to_pris_eye_plan(*ordinary_plan);
+  check(ordinary_renderer_plan.present && ordinary_renderer_plan.chunk_count == 0 &&
+            ordinary_renderer_plan.ordinary.page_offset == kPageOffset &&
+            ordinary_renderer_plan.direct_reset_transfer_index == 3 &&
+            ordinary_renderer_plan.terminal_transfer_index == 4,
+        "the ordinary bucket-228 plan adapts to the shared renderer without eye work");
   ordinary.packet[kPageOffset + 8] = 0;
   check(ordinary_plan->ordinary.page_header[8] == 0x44,
         "the bucket-228 plan owns its bounded page header");
@@ -389,6 +408,14 @@ void test_observed_forms() {
             capture.eye_markers == 2 && capture.other_transfers == 13 &&
             capture.malformed_transfers == 0,
         "bucket 228 accepts the exact live one-eye-chunk envelope");
+  const auto eye_renderer_plan =
+      metal_renderer::adapt_jak2_pris2_bucket228_to_pris_eye_plan(*eye_plan);
+  check(eye_renderer_plan.present && eye_renderer_plan.bucket_id == 228 &&
+            eye_renderer_plan.chunk_count == 1 &&
+            eye_renderer_plan.chunks[0].pair_index == eye_plan->eye_chunk.pair_index &&
+            eye_renderer_plan.eye_slot_mask == eye_plan->eye_slot_mask &&
+            eye_renderer_plan.semantic_fingerprint == eye_plan->semantic_fingerprint,
+        "the one-eye bucket-228 plan adapts exactly to the shared PRIS eye renderer");
 }
 
 void test_live_copy_matching() {
@@ -412,11 +439,30 @@ void test_live_copy_matching() {
         "a valid source mutation between live and copied plans fails matching");
 }
 
-void test_source_grammar_and_rejections() {
-  Fixture absent{std::vector<u8>(kMemorySize), 0, 0};
-  put_tag(&absent.packet, bucket_offset(), DmaTag::Kind::CNT, 0, 0, 0, 0);
-  check(!plan(absent).has_value(), "an absent bucket has no executable bucket-228 plan");
+void test_cross_plan_eye_slot_ownership() {
+  std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan, 2> per_level;
+  per_level[0].eye_slot_mask = 0x3;
+  per_level[1].eye_slot_mask = 0xc;
+  metal_renderer::Jak2CommonPrisTextureUploadPlan common;
+  common.eye_slot_mask = 0x30;
+  metal_renderer::Jak2Pris2Bucket228Plan pris2;
+  pris2.eye_slot_mask = 0xc0;
+  check(metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
+            per_level.data(), per_level.size(), common, pris2),
+        "per-level, common, and bucket-228 disjoint eye slots are accepted");
 
+  pris2.eye_slot_mask = 0x20;
+  check(!metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
+             per_level.data(), per_level.size(), common, pris2),
+        "bucket 228 cannot overlap a common-PRIS eye slot");
+  pris2.eye_slot_mask = 0;
+  per_level[1].eye_slot_mask = 0x2;
+  check(!metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
+             per_level.data(), per_level.size(), common, pris2),
+        "per-level PRIS producers cannot overlap each other before mutation");
+}
+
+void test_source_grammar_and_rejections() {
   auto clipped = make_fixture({{false, 2}});
   put_u32(&clipped.packet, clipped.first_eye_offset + 576, 0);
   put_u32(&clipped.packet, clipped.first_eye_offset + 608, 16);
@@ -477,6 +523,7 @@ void test_source_grammar_and_rejections() {
 int main() {
   test_observed_forms();
   test_live_copy_matching();
+  test_cross_plan_eye_slot_ownership();
   test_source_grammar_and_rejections();
   std::puts("metal_jak2_pris2_bucket228_plan_test: PASS");
   return 0;
