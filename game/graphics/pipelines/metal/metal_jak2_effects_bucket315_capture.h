@@ -9,6 +9,8 @@
 
 namespace metal_renderer {
 
+// This is a diagnostic budget, deliberately smaller than the source Lightning maximum. Hitting
+// it is malformed for this passive seam; it does not claim that every source-valid packet fits.
 constexpr std::size_t kJak2EffectsBucket315MaximumTransfers = 256;
 
 enum class Jak2EffectsBucket315CaptureClass : u8 {
@@ -31,6 +33,9 @@ struct Jak2EffectsBucket315TransferMetadata {
 /*
  * Fixed-size, payload-free observation of one live Jak II EFFECTS bucket. Every payload is hashed
  * while the source chain is still stable; no source bytes, pointers, strings, or paths survive.
+ * `Other` means that traversal was well-formed but did not satisfy the source Lightning shape.
+ * Every classification is diagnostic-only: a later exact typed parser must separately prove any
+ * execution eligibility.
  */
 struct Jak2EffectsBucket315Capture {
   bool valid = false;
@@ -68,7 +73,7 @@ Jak2EffectsBucket315Capture capture_jak2_effects_bucket315(const u8* dma_packet_
                                                             u32 chain_offset,
                                                             u32 bucket_id);
 
-/*! Compare independent live and copied observations without retaining either packet. */
+/*! Compare independent observations without retaining either packet or their relocatable offsets. */
 bool jak2_effects_bucket315_captures_match(const Jak2EffectsBucket315Capture& live,
                                            const Jak2EffectsBucket315Capture& copied);
 

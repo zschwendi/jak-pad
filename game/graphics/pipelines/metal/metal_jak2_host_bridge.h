@@ -116,6 +116,22 @@ typedef struct goal_jak2_tfrag_texture_upload_metrics {
   uint16_t last_nonordinary_vif1_immediate;
 } goal_jak2_tfrag_texture_upload_metrics;
 
+typedef struct goal_jak2_effects_bucket315_metrics {
+  uint64_t captures;
+  uint64_t valid_captures;
+  uint64_t malformed_captures;
+  uint64_t absent_captures;
+  uint64_t lightning_captures;
+  uint64_t other_captures;
+  uint64_t payload_bytes;
+  uint32_t last_transfer_count;
+  uint32_t last_fragment_count;
+  uint32_t last_vertex_count;
+  uint64_t last_payload_bytes;
+  uint64_t last_semantic_fingerprint;
+  uint8_t last_classification;
+} goal_jak2_effects_bucket315_metrics;
+
 typedef struct goal_jak2_metal_host_metrics {
   uint64_t chains;
   uint64_t completed_chains;
@@ -297,6 +313,8 @@ typedef struct goal_jak2_metal_host_metrics {
       [GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT];
   uint64_t last_merc_anim_slot_first_model_hashes
       [GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT];
+  // Append-only passive capture telemetry. No execution counter is exposed for deferred bucket 315.
+  goal_jak2_effects_bucket315_metrics effects_bucket315;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

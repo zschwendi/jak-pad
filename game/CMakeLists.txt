@@ -1293,6 +1293,8 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
             graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp
             graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
+            graphics/pipelines/metal/metal_jak2_effects_bucket315_capture.cpp
+            graphics/pipelines/metal/metal_jak2_effects_bucket315_plan.cpp
             graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp)
@@ -1349,6 +1351,13 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture_test.cpp)
         add_test(NAME jak2-common-tfrag-texture-upload-capture-test
             COMMAND jak2-common-tfrag-texture-upload-capture-test)
+
+        add_executable(jak2-effects-bucket315-capture-test
+            graphics/pipelines/metal/metal_jak2_effects_bucket315_plan.cpp
+            graphics/pipelines/metal/metal_jak2_effects_bucket315_capture.cpp
+            graphics/pipelines/metal/metal_jak2_effects_bucket315_capture_test.cpp)
+        add_test(NAME jak2-effects-bucket315-capture-test
+            COMMAND jak2-effects-bucket315-capture-test)
 
         add_executable(jak2-pris2-bucket228-plan-test
             graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp

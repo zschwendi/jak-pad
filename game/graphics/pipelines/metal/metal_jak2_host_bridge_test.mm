@@ -18,6 +18,7 @@
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_fixture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_effects_bucket315_capture.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_fixture.h"
@@ -33,8 +34,8 @@
 namespace {
 
 static_assert(offsetof(goal_jak2_metal_host_metrics,
-                       last_merc_anim_slot_first_model_hashes) +
-                  sizeof(uint64_t) * GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT ==
+                       effects_bucket315) +
+                  sizeof(goal_jak2_effects_bucket315_metrics) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -44,6 +45,7 @@ constexpr u32 kScreenFilterBucket = static_cast<u32>(jak2::BucketId::SCREEN_FILT
 constexpr u32 kDebugNoZbuf2Bucket = static_cast<u32>(jak2::BucketId::DEBUG_NO_ZBUF2);
 constexpr u32 kMapTextureUploadBucket = static_cast<u32>(jak2::BucketId::TEX_ALL_MAP);
 constexpr u32 kProgressBucket = static_cast<u32>(jak2::BucketId::PROGRESS);
+constexpr u32 kEffectsBucket = metal_renderer::kJak2EffectsBucket;
 constexpr u32 kSkyDrawPayloadOffset = kChainOffset + 0x4000;
 constexpr u32 kScreenFilterPayloadOffset = kChainOffset + 0x5000;
 constexpr u32 kDebugNoZbuf2PayloadOffset = kChainOffset + 0x6000;
@@ -77,6 +79,7 @@ constexpr u32 kCommonPrisDirectOffset = kChainOffset + 0x16b00;
 constexpr u32 kPris2Bucket228 = metal_renderer::kJak2Pris2TextureUploadBucket;
 constexpr u32 kPris2Bucket228DescriptorOffset = kChainOffset + 0x16c00;
 constexpr u32 kPris2Bucket228DirectOffset = kChainOffset + 0x16d00;
+constexpr u32 kEffectsLightningPayloadOffset = kChainOffset + 0x17000;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -129,6 +132,34 @@ void make_empty_chain() {
     put_tag(kChainOffset + bucket * 16, DmaTag::Kind::CNT);
   }
   put_tag(kChainOffset + kBucketCount * 16, DmaTag::Kind::END);
+}
+
+void make_effects_lightning_chain() {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kEffectsBucket = metal_renderer::kJak2EffectsBucket;
+  constexpr u32 kMark = static_cast<u32>(VifCode::Kind::MARK) << 24;
+  constexpr u32 kStcycl = static_cast<u32>(VifCode::Kind::STCYCL) << 24;
+  constexpr u32 kUnpackV432 = static_cast<u32>(VifCode::Kind::UNPACK_V4_32) << 24;
+  constexpr u32 kMscalf = static_cast<u32>(VifCode::Kind::MSCALF) << 24;
+  constexpr u32 kStmod = static_cast<u32>(VifCode::Kind::STMOD) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  const u32 bucket_offset = kChainOffset + kEffectsBucket * 16;
+  std::memset(ee + kEffectsLightningPayloadOffset, 0, 0x400);
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kEffectsLightningPayloadOffset, kMark);
+  u32 cursor = kEffectsLightningPayloadOffset;
+  put_tag(cursor, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
+  cursor += 48;
+  put_tag(cursor, DmaTag::Kind::CNT, 8, 0, kStcycl, kUnpackV432);
+  cursor += 144;
+  put_tag(cursor, DmaTag::Kind::CNT, 2, 0, kMscalf, kStmod);
+  cursor += 48;
+  put_tag(cursor, DmaTag::Kind::CNT);
+  cursor += 16;
+  put_tag(cursor, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  cursor += 176;
+  put_tag(cursor, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
 metal_renderer::Jak2Opcode27LayerValues identity_layer_values() {
@@ -841,8 +872,10 @@ int main() {
                 metal_renderer::Jak2MetalBucketBehavior::Generic2 &&
             host_policy_table[static_cast<std::size_t>(jak2::BucketId::GMERC_L5_WATER)].behavior ==
                 metal_renderer::Jak2MetalBucketBehavior::Generic2 &&
+            host_policy_table[kEffectsBucket].behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
             metal_renderer::jak2_metal_host_policy_table_is_audited(),
-        "the host allowlist accepts the fixed table's explicit Generic2 behavior");
+        "bucket 315 remains DeferredSkip while the host audits its live DMA");
 
   goal_jak2_metal_host_metrics frame_gate = {};
   frame_gate.chains = 1;
@@ -1234,6 +1267,28 @@ int main() {
             metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == initial_texture_count,
         "destroy unloaded recorded serialized keys in reverse and released every texture handle");
+
+  goal_jak2_metal_host* effects_host = goal_jak2_metal_host_create();
+  goal_gfx_host effects_callbacks = {};
+  check(effects_host && goal_jak2_metal_host_configure_level_art(effects_host, fr3_directory.c_str()) &&
+            goal_jak2_metal_host_copy_gfx_host(effects_host, &effects_callbacks),
+        "created a host for the passive bucket-315 live capture");
+  make_effects_lightning_chain();
+  effects_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  goal_jak2_metal_host_metrics effects_metrics = {};
+  check(goal_jak2_metal_host_get_metrics(effects_host, &effects_metrics) &&
+            effects_metrics.chains == 1 && effects_metrics.completed_chains == 1 &&
+            effects_metrics.failed_chains == 0 && effects_metrics.effects_bucket315.captures == 1 &&
+            effects_metrics.effects_bucket315.valid_captures == 1 &&
+            effects_metrics.effects_bucket315.lightning_captures == 1 &&
+            effects_metrics.effects_bucket315.malformed_captures == 0 &&
+            effects_metrics.effects_bucket315.other_captures == 0 &&
+            effects_metrics.effects_bucket315.last_transfer_count == 7 &&
+            effects_metrics.effects_bucket315.last_payload_bytes == 352 &&
+            effects_metrics.effects_bucket315.last_classification ==
+                static_cast<uint8_t>(metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning),
+        "bucket 315 is captured from live DMA before copy without execution or promotion");
+  goal_jak2_metal_host_destroy(effects_host);
 
   goal_jak2_metal_host* security_host = goal_jak2_metal_host_create();
   goal_gfx_host security_callbacks = {};

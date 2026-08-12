@@ -23,6 +23,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_dark_jak_clut_executor.h"
+#include "game/graphics/pipelines/metal/metal_jak2_effects_bucket315_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_prison_clut_executor.h"
@@ -616,6 +617,38 @@ void record_texture_upload_metrics(
   }
 }
 
+void record_effects_bucket315_metrics(
+    goal_jak2_effects_bucket315_metrics* out,
+    const metal_renderer::Jak2EffectsBucket315Capture& capture) {
+  ++out->captures;
+  if (!capture.valid) {
+    ++out->malformed_captures;
+    return;
+  }
+  ++out->valid_captures;
+  out->payload_bytes += capture.total_payload_bytes;
+  out->last_transfer_count = capture.transfer_count;
+  out->last_fragment_count = capture.fragment_count;
+  out->last_vertex_count = capture.vertex_count;
+  out->last_payload_bytes = capture.total_payload_bytes;
+  out->last_semantic_fingerprint = capture.semantic_fingerprint;
+  out->last_classification = static_cast<uint8_t>(capture.classification);
+  switch (capture.classification) {
+    case metal_renderer::Jak2EffectsBucket315CaptureClass::Absent:
+      ++out->absent_captures;
+      break;
+    case metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning:
+      ++out->lightning_captures;
+      break;
+    case metal_renderer::Jak2EffectsBucket315CaptureClass::Other:
+      ++out->other_captures;
+      break;
+    case metal_renderer::Jak2EffectsBucket315CaptureClass::Malformed:
+      ++out->malformed_captures;
+      break;
+  }
+}
+
 void execute_ordinary_texture_upload_or_throw(
     goal_jak2_metal_host* host,
     const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
@@ -1064,6 +1097,11 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     host->options.host_tick_id = host->metrics.chains;
     host->options.chain_ordinal = host->metrics.chains;
     host->options.engine_frame_id = host->metrics.chains;
+    // Observe immutable live DMA before validation, copying, or any host texture mutation.
+    const auto effects_bucket315_capture = metal_renderer::capture_jak2_effects_bucket315(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        metal_renderer::kJak2EffectsBucket);
+    record_effects_bucket315_metrics(&host->metrics.effects_bucket315, effects_bucket315_capture);
     if (!update_draw_region(host)) {
       record_failure(host, "Jak 2 CAMetalLayer has no finite drawable size");
       return;

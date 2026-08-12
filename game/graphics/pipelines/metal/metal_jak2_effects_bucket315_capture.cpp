@@ -203,7 +203,6 @@ Jak2EffectsBucket315Capture capture_jak2_effects_bucket315(const u8* dma_packet_
     metadata.payload_fingerprint = fingerprint_bytes(transfer.payload, transfer.payload_bytes);
     metadata.qwc = transfer.tag.qwc;
     metadata.tag_kind = static_cast<u8>(transfer.tag.kind);
-    hash_u32(&fingerprint, metadata.relative_tag_offset);
     hash_u32(&fingerprint, metadata.payload_bytes);
     hash_u32(&fingerprint, metadata.vif0);
     hash_u32(&fingerprint, metadata.vif1);
@@ -246,8 +245,8 @@ bool jak2_effects_bucket315_captures_match(const Jak2EffectsBucket315Capture& li
   for (u32 i = 0; i < live.transfer_count; ++i) {
     const auto& a = live.transfers[i];
     const auto& b = copied.transfers[i];
-    if (a.relative_tag_offset != b.relative_tag_offset || a.payload_bytes != b.payload_bytes ||
-        a.vif0 != b.vif0 || a.vif1 != b.vif1 || a.payload_fingerprint != b.payload_fingerprint ||
+    if (a.payload_bytes != b.payload_bytes || a.vif0 != b.vif0 || a.vif1 != b.vif1 ||
+        a.payload_fingerprint != b.payload_fingerprint ||
         a.qwc != b.qwc || a.tag_kind != b.tag_kind) {
       return false;
     }

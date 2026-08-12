@@ -48,15 +48,18 @@ void put_tag(std::vector<u8>* memory,
   std::memset(memory->data() + offset + 16, fill, static_cast<std::size_t>(qwc) * 16);
 }
 
-u32 bucket_offset() {
-  return kChainOffset + metal_renderer::kJak2EffectsBucket * 16;
+u32 bucket_offset(u32 chain_offset = kChainOffset) {
+  return chain_offset + metal_renderer::kJak2EffectsBucket * 16;
 }
 
-std::vector<u8> make_chain(u32 fragments, u32 vertices) {
+std::vector<u8> make_chain(u32 fragments,
+                           u32 vertices,
+                           u32 chain_offset = kChainOffset,
+                           u32 data_offset = kDataOffset) {
   std::vector<u8> memory(kMemorySize);
-  put_tag(&memory, bucket_offset(), DmaTag::Kind::NEXT, 0, kDataOffset,
+  put_tag(&memory, bucket_offset(chain_offset), DmaTag::Kind::NEXT, 0, data_offset,
           vif(VifCode::Kind::MARK), 0);
-  u32 cursor = kDataOffset;
+  u32 cursor = data_offset;
   auto append = [&](u16 qwc, u32 vif0, u32 vif1, u8 fill = 0) {
     put_tag(&memory, cursor, DmaTag::Kind::CNT, qwc, 0, vif0, vif1, fill);
     cursor += 16 + qwc * 16;
@@ -72,13 +75,14 @@ std::vector<u8> make_chain(u32 fragments, u32 vertices) {
   }
   append(10, vif(VifCode::Kind::FLUSHA), kDirect | 10, 0xaa);
   put_tag(&memory, cursor, DmaTag::Kind::NEXT, 0,
-          kChainOffset + (metal_renderer::kJak2EffectsBucket + 1) * 16, 0, 0);
+          chain_offset + (metal_renderer::kJak2EffectsBucket + 1) * 16, 0, 0);
   return memory;
 }
 
-metal_renderer::Jak2EffectsBucket315Capture capture(const std::vector<u8>& memory) {
+metal_renderer::Jak2EffectsBucket315Capture capture(const std::vector<u8>& memory,
+                                                     u32 chain_offset = kChainOffset) {
   return metal_renderer::capture_jak2_effects_bucket315(memory.data(), memory.size(),
-                                                         kChainOffset,
+                                                         chain_offset,
                                                          metal_renderer::kJak2EffectsBucket);
 }
 
@@ -106,6 +110,14 @@ void test_capture_and_telemetry() {
   const auto active_copy = capture(active);
   check(metal_renderer::jak2_effects_bucket315_captures_match(active_capture, active_copy),
         "independent equivalent captures compare without retaining packets");
+  const auto relocated_capture = capture(make_chain(2, 32, kChainOffset + 0x1000,
+                                                     kDataOffset + 0x2000),
+                                         kChainOffset + 0x1000);
+  check(active_capture.transfers[1].relative_tag_offset !=
+            relocated_capture.transfers[1].relative_tag_offset &&
+            metal_renderer::jak2_effects_bucket315_captures_match(active_capture,
+                                                                    relocated_capture),
+        "relocated live and copied envelopes compare by semantics, not tag offsets");
   active[active_capture.transfers[6].relative_tag_offset + bucket_offset() + 16] ^= 1;
   check(!metal_renderer::jak2_effects_bucket315_captures_match(active_capture, capture(active)),
         "a payload mutation changes the owned capture fingerprint");
@@ -116,14 +128,20 @@ void test_capture_and_telemetry() {
             large_capture.total_payload_bytes == 54496 && large_capture.fragment_count == 12 &&
             large_capture.vertex_count == 1080,
         "a large source-shaped envelope stays bounded and capture-only");
+  const auto over_budget_capture = capture(make_chain(84, 1));
+  check(!over_budget_capture.valid && over_budget_capture.classification ==
+             metal_renderer::Jak2EffectsBucket315CaptureClass::Malformed,
+        "the 256-transfer telemetry budget rejects an over-budget source envelope");
 
   metal_renderer::Jak2EffectsBucket315Telemetry telemetry;
   metal_renderer::observe_jak2_effects_bucket315_capture(&telemetry, absent_capture);
   metal_renderer::observe_jak2_effects_bucket315_capture(&telemetry, city_capture);
   metal_renderer::observe_jak2_effects_bucket315_capture(&telemetry, active_capture);
   metal_renderer::observe_jak2_effects_bucket315_capture(&telemetry, large_capture);
-  check(telemetry.captures == 4 && telemetry.valid_captures == 4 &&
+  metal_renderer::observe_jak2_effects_bucket315_capture(&telemetry, over_budget_capture);
+  check(telemetry.captures == 5 && telemetry.valid_captures == 4 &&
             telemetry.absent_captures == 1 && telemetry.lightning_captures == 3 &&
+            telemetry.malformed_captures == 1 &&
             telemetry.captured_payload_bytes == 58656 && telemetry.last_payload_bytes == 54496 &&
             telemetry.last_fragment_count == 12 && telemetry.last_vertex_count == 1080,
         "numeric telemetry exposes absent/352/3808/large-ready capture state");
@@ -142,6 +160,8 @@ void test_absent_and_rejections() {
   put_u32(&malformed, kDataOffset + 12, vif(VifCode::Kind::NOP));
   check(capture(malformed).classification == metal_renderer::Jak2EffectsBucket315CaptureClass::Other,
         "a structurally safe but non-Lightning VIF form stays capture-only");
+  check(absent_capture.valid && capture(malformed).valid,
+        "Absent and Other remain diagnostic observations, not execution authorization");
   check(!metal_renderer::capture_jak2_effects_bucket315(malformed.data(), malformed.size(),
                                                          kChainOffset,
                                                          metal_renderer::kJak2EffectsBucket + 1)
