@@ -424,7 +424,7 @@ void MetalRenderer::init_bucket_renderers_jak1() {
     // the same way the GL table publishes render_state->eye_renderer
     auto eyes = std::make_unique<MetalEyeRenderer>(
         "common-pris-eyes", (int)BucketId::MERC_EYES_AFTER_PRIS, m_device, m_queue);
-    eyes->init_textures(*m_texture_pool, GameVersion::Jak1);
+    ASSERT(eyes->init_textures(*m_texture_pool, GameVersion::Jak1));
     m_shared_state.eye_renderer = eyes.get();
     set(BucketId::MERC_EYES_AFTER_PRIS, std::move(eyes));
   }
@@ -467,6 +467,11 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   const auto& table = metal_renderer::jak2_metal_bucket_table();
   ASSERT(table.size() == static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS));
   m_bucket_renderers.resize(table.size());
+
+  auto eyes = std::make_unique<MetalEyeRenderer>("jak2-detached-eyes", 0, m_device, m_queue);
+  ASSERT(eyes->init_textures(*m_texture_pool, GameVersion::Jak2));
+  m_shared_state.eye_renderer = eyes.get();
+  m_jak2_eye_renderer = std::move(eyes);
 
   constexpr auto first_tfrag = static_cast<std::size_t>(jak2::BucketId::TFRAG_L0_TFRAG);
   constexpr auto tfrag_stride = static_cast<std::size_t>(jak2::BucketId::TFRAG_L1_TFRAG) -
@@ -725,6 +730,9 @@ void MetalRenderer::init_bucket_renderers_jak2() {
 void MetalRenderer::init_bucket_renderers(TexturePool* pool,
                                           GameVersion version,
                                           bool host_texture_uploads) {
+  m_shared_state.eye_renderer = nullptr;
+  m_bucket_renderers.clear();
+  m_jak2_eye_renderer.reset();
   m_texture_pool = pool;
   m_host_texture_uploads = host_texture_uploads;
   m_jak2_blit_display = nullptr;
@@ -739,6 +747,14 @@ void MetalRenderer::init_bucket_renderers(TexturePool* pool,
     default:
       ASSERT_MSG(false, "Metal bucket renderers only support Jak 1 and Jak 2");
   }
+}
+
+MetalRenderer::MetalRenderer() = default;
+
+MetalRenderer::~MetalRenderer() {
+  m_shared_state.eye_renderer = nullptr;
+  m_bucket_renderers.clear();
+  m_jak2_eye_renderer.reset();
 }
 
 bool MetalRenderer::init(id<MTLDevice> device) {
@@ -1602,8 +1618,36 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.ocean_command_buffers_completed = 0;
     m_chain_stats.ocean_command_buffer_errors = 0;
     m_chain_stats.ocean_last_command_buffer_status = 0;
+    m_chain_stats.eyes_composed = 0;
+    m_chain_stats.eye_draws = 0;
+    m_chain_stats.eye_triangles = 0;
+    m_chain_stats.eye_missing_textures = 0;
+    m_chain_stats.eye_unexpected_dma = 0;
+    m_chain_stats.eye_duplicate_slot_writes = 0;
+    m_chain_stats.eye_command_buffers_committed = 0;
+    m_chain_stats.eye_command_buffers_completed = 0;
+    m_chain_stats.eye_command_buffer_errors = 0;
+    m_chain_stats.eye_last_command_buffer_status = 0;
+    m_chain_stats.eye_texture = 0;
     MetalMerc2::Stats merc_stats;
     MetalGeneric2::Stats generic_stats;
+    const auto aggregate_eye_stats = [this](const MetalEyeRenderer::Stats& stats) {
+      m_chain_stats.eyes_composed += stats.eyes;
+      m_chain_stats.eye_draws += stats.draw_calls;
+      m_chain_stats.eye_triangles += stats.triangles;
+      m_chain_stats.eye_missing_textures += stats.missing_textures;
+      m_chain_stats.eye_unexpected_dma += stats.unexpected_dma;
+      m_chain_stats.eye_duplicate_slot_writes += stats.duplicate_slot_writes;
+      m_chain_stats.eye_command_buffers_committed += stats.command_buffers_committed;
+      m_chain_stats.eye_command_buffers_completed += stats.command_buffers_completed;
+      m_chain_stats.eye_command_buffer_errors += stats.command_buffer_errors;
+      if (stats.last_command_buffer_status != 0) {
+        m_chain_stats.eye_last_command_buffer_status = stats.last_command_buffer_status;
+      }
+      if (!m_chain_stats.eye_texture) {
+        m_chain_stats.eye_texture = stats.first_texture;
+      }
+    };
     if (m_shared_state.version == GameVersion::Jak2 && m_jak2_blit_display) {
       const auto& stats = m_jak2_blit_display->stats();
       m_chain_stats.jak2_blit_display_plan_valid = stats.plan_valid;
@@ -1766,14 +1810,11 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       } else if (auto* gn = dynamic_cast<MetalGeneric2BucketRenderer*>(r.get())) {
         generic_stats.add(gn->stats());
       } else if (auto* ey = dynamic_cast<MetalEyeRenderer*>(r.get())) {
-        const auto& es = ey->stats();
-        m_chain_stats.eyes_composed = es.eyes;
-        m_chain_stats.eye_draws = es.draw_calls;
-        m_chain_stats.eye_triangles = es.triangles;
-        m_chain_stats.eye_missing_textures = es.missing_textures;
-        m_chain_stats.eye_unexpected_dma = es.unexpected_dma;
-        m_chain_stats.eye_texture = es.first_texture;
+        aggregate_eye_stats(ey->stats());
       }
+    }
+    if (m_jak2_eye_renderer) {
+      aggregate_eye_stats(m_jak2_eye_renderer->stats());
     }
     m_chain_stats.generic_fragments = generic_stats.fragments;
     m_chain_stats.generic_vertices = generic_stats.vertices;
@@ -1796,6 +1837,9 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.merc_mod_vtx_uploads = merc_stats.mod_vtx_uploads;
     m_chain_stats.merc_mod_vtx_skipped = merc_stats.mod_vtx_skipped;
     m_chain_stats.merc_eye_draws = merc_stats.eye_draws;
+    m_chain_stats.merc_eye_renderer_missing = merc_stats.eye_renderer_missing;
+    m_chain_stats.merc_eye_lookup_failed = merc_stats.eye_lookup_failed;
+    m_chain_stats.merc_eye_placeholder_draws = merc_stats.eye_placeholder_draws;
     m_chain_stats.merc_missing_textures = merc_stats.missing_textures;
     m_chain_stats.merc_bad_bone_pointers = merc_stats.bad_bone_pointers;
     m_chain_stats.merc_bad_draw_ranges = merc_stats.bad_draw_ranges;

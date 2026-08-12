@@ -104,6 +104,9 @@ struct MetalExternalRenderTargetDescriptor {
 
 class MetalRenderer {
  public:
+  MetalRenderer();
+  ~MetalRenderer();
+
   bool init(id<MTLDevice> device);
   id<MTLDevice> device() const { return m_device; }
   id<MTLCommandQueue> queue() const { return m_queue; }
@@ -240,6 +243,7 @@ class MetalRenderer {
   MetalStreamBuffer m_stream;
   MetalSharedRenderState m_shared_state;
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
+  std::unique_ptr<MetalEyeRenderer> m_jak2_eye_renderer;
   TexturePool* m_texture_pool = nullptr;
   bool m_host_texture_uploads = false;
   MetalJak2BlitDisplayRenderer* m_jak2_blit_display = nullptr;

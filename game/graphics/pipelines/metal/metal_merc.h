@@ -52,6 +52,9 @@ class MetalMerc2 {
     int mod_vtx_uploads = 0;  // effects whose blerc / mod-vertex update was uploaded
     int mod_vtx_skipped = 0;  // effects that asked for one but could not be updated (reported)
     int eye_draws = 0;        // draws whose texture the eye renderer composed
+    int eye_renderer_missing = 0;
+    int eye_lookup_failed = 0;
+    int eye_placeholder_draws = 0;
     int missing_textures = 0;
     int malformed_dma = 0;      // rejected Jak 2 source-grammar buckets
     u32 preflight_rejection_reason = 0;  // first rejecting bucket this frame

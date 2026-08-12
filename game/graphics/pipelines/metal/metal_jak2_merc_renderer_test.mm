@@ -11,6 +11,7 @@
 #include "common/dma/dma.h"
 
 #include "game/graphics/opengl_renderer/buckets.h"
+#include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
@@ -30,6 +31,7 @@ constexpr char kNormalModelName[] = "jak2-merc-normal-model";
 constexpr char kFilteredModelName[] = "jak2-merc-filtered-model";
 constexpr char kAlphaModelName[] = "jak2-merc-alpha-model";
 constexpr char kWaterModelName[] = "jak2-merc-water-model";
+constexpr char kEyeModelName[] = "jak2-merc-eye-model";
 constexpr u32 kMercBucket = static_cast<u32>(jak2::BucketId::MERC_L0_TFRAG);
 constexpr u32 kMercAlphaBucket = static_cast<u32>(jak2::BucketId::MERC_L0_ALPHA);
 constexpr u32 kMercWaterBucket = static_cast<u32>(jak2::BucketId::MERC_L0_WATER);
@@ -263,8 +265,11 @@ std::unique_ptr<tfrag3::Level> make_level() {
   }
   merc.indices = {0, 1, 2, 3};
 
-  const auto add_model =
-      [&merc](const char* name, bool alpha_blend, bool depth_write, bool filtered) {
+  const auto add_model = [&merc](const char* name,
+                                 bool alpha_blend,
+                                 bool depth_write,
+                                 bool filtered,
+                                 u8 eye_id = 0xff) {
     tfrag3::MercDraw draw;
     draw.mode.set_depth_write_enable(depth_write);
     draw.mode.set_zt(true);
@@ -279,6 +284,7 @@ std::unique_ptr<tfrag3::Level> make_level() {
     draw.mode.set_clamp_s_enable(true);
     draw.mode.set_clamp_t_enable(true);
     draw.tree_tex_id = 0;
+    draw.eye_id = eye_id;
     draw.first_index = 0;
     draw.index_count = 4;
     draw.num_triangles = 2;
@@ -302,6 +308,7 @@ std::unique_ptr<tfrag3::Level> make_level() {
   add_model(kFilteredModelName, false, true, true);
   add_model(kAlphaModelName, true, true, true);
   add_model(kWaterModelName, true, false, true);
+  add_model(kEyeModelName, false, true, true, 0);
   return level;
 }
 
@@ -322,7 +329,8 @@ RenderResult render(id<MTLDevice> device,
                     TexturePool* texture_pool,
                     MetalMercBucketRenderer* renderer,
                     std::vector<u8>* memory,
-                    u64 frame_id) {
+                    u64 frame_id,
+                    MetalEyeRenderer* eye_renderer = nullptr) {
   RenderResult result;
   auto* color_desc = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -379,6 +387,7 @@ RenderResult render(id<MTLDevice> device,
   MetalSharedRenderState state;
   state.version = GameVersion::Jak2;
   state.texture_pool = texture_pool;
+  state.eye_renderer = eye_renderer;
   state.dma_copy_base = memory->data();
   state.dma_copy_size = memory->size();
   state.ee_memory = memory->data();
@@ -518,9 +527,9 @@ int main() {
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
-              load.level_name == kLevelName && load.models == 4 && load.vertices == 4 &&
+              load.level_name == kLevelName && load.models == 5 && load.vertices == 4 &&
               load.indices == 4,
-          "registered normal, filtered, alpha, and water synthetic Merc models");
+          "registered normal, filtered, alpha, water, and eye synthetic Merc models");
     if (failures) {
       if (!load_error.empty()) {
         std::printf("Merc load error: %s\n", load_error.c_str());
@@ -687,6 +696,41 @@ int main() {
           "alpha Merc writes depth across the same covered pixels as opaque Merc");
     check(water_depth == 0 && common_water_depth == 0,
           "per-level and common water Merc preserve the cleared depth attachment");
+
+    auto missing_eye_memory = make_source_chain(kEyeModelName);
+    const auto missing_eye = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                    &normal_renderer, &missing_eye_memory, routed_frame++);
+    check(missing_eye.completed && missing_eye.stats.eye_draws == 1 &&
+              missing_eye.stats.eye_renderer_missing == 1 &&
+              missing_eye.stats.eye_lookup_failed == 0 &&
+              missing_eye.stats.eye_placeholder_draws == 1 &&
+              missing_eye.stats.missing_textures == 1 && missing_eye.draw_calls == 1,
+          "a missing eye renderer records one broad missing-texture placeholder fallback");
+
+    MetalMerc2::Stats combined_eye_fallbacks;
+    {
+      MetalEyeRenderer uncomposed_eyes("uncomposed-jak2-eyes", 0, device, queue);
+      check(uncomposed_eyes.init_textures(texture_pool, GameVersion::Jak2),
+            "initialized an uncomposed eye renderer for Merc fallback coverage");
+      auto uncomposed_eye_memory = make_source_chain(kEyeModelName);
+      const auto uncomposed_eye = render(
+          device, queue, &pso_cache, &sampler_cache, &texture_pool, &normal_renderer,
+          &uncomposed_eye_memory, routed_frame++, &uncomposed_eyes);
+      check(uncomposed_eye.completed && uncomposed_eye.stats.eye_draws == 1 &&
+                uncomposed_eye.stats.eye_renderer_missing == 0 &&
+                uncomposed_eye.stats.eye_lookup_failed == 1 &&
+                uncomposed_eye.stats.eye_placeholder_draws == 1 &&
+                uncomposed_eye.stats.missing_textures == 1 && uncomposed_eye.draw_calls == 1,
+            "an uncomposed eye slot records lookup failure and broad placeholder fallback");
+      combined_eye_fallbacks.add(missing_eye.stats);
+      combined_eye_fallbacks.add(uncomposed_eye.stats);
+    }
+    check(combined_eye_fallbacks.eye_draws == 2 &&
+              combined_eye_fallbacks.eye_renderer_missing == 1 &&
+              combined_eye_fallbacks.eye_lookup_failed == 1 &&
+              combined_eye_fallbacks.eye_placeholder_draws == 2 &&
+              combined_eye_fallbacks.missing_textures == 2,
+          "Merc Stats::add preserves every explicit eye fallback counter");
 
     auto malformed_memory = make_source_chain(kAlphaModelName);
     put_tag(&malformed_memory, kModel, DmaTag::Kind::CNT, 0xffff, 0, 0,

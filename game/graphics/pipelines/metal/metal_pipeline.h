@@ -288,6 +288,9 @@ struct ChainStats {
   int merc_mod_vtx_uploads = 0;  // effects whose blerc / mod-vertex update was uploaded
   int merc_mod_vtx_skipped = 0;  // effects that asked for one but could not be updated
   int merc_eye_draws = 0;        // draws whose texture the eye renderer composed
+  int merc_eye_renderer_missing = 0;
+  int merc_eye_lookup_failed = 0;
+  int merc_eye_placeholder_draws = 0;
   int merc_missing_textures = 0;
   int merc_bad_bone_pointers = 0;  // bone pointer outside EE memory
   int merc_bad_draw_ranges = 0;    // draw range outside the level's index buffer
@@ -333,6 +336,11 @@ struct ChainStats {
   int eye_triangles = 0;
   int eye_missing_textures = 0;
   int eye_unexpected_dma = 0;
+  int eye_duplicate_slot_writes = 0;
+  int eye_command_buffers_committed = 0;
+  int eye_command_buffers_completed = 0;
+  int eye_command_buffer_errors = 0;
+  int eye_last_command_buffer_status = 0;
   // registry handle of the first eye composed this frame, so tests can read it
   u64 eye_texture = 0;
   // generic2 buckets, from the last chain frame
