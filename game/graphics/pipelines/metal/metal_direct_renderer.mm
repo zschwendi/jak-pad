@@ -62,6 +62,182 @@ u32 get_direct_qwc_or_nop(const VifCode& code) {
 MetalDirectRenderer::MetalDirectRenderer(const std::string& name, int my_id, int batch_size)
     : MetalBucketRenderer(name, my_id), m_prim_buffer(batch_size) {}
 
+MetalProgressRenderer::MetalProgressRenderer(const std::string& name,
+                                             int my_id,
+                                             int batch_size,
+                                             id<MTLDevice> device,
+                                             TexturePool* texture_pool)
+    : MetalDirectRenderer(name, my_id, batch_size), m_device(device), m_texture_pool(texture_pool) {
+  ASSERT(m_device);
+  ASSERT(m_texture_pool);
+}
+
+MetalProgressRenderer::~MetalProgressRenderer() {
+  detach_pool();
+  if (m_minimap_handle) {
+    metal_texture_release(m_minimap_handle);
+  }
+}
+
+void MetalProgressRenderer::detach_pool() {
+  if (m_texture_pool && m_minimap_pool_texture && m_minimap_handle) {
+    std::lock_guard<std::mutex> pool_lock(m_texture_pool->mutex());
+    m_texture_pool->unload_texture(m_minimap_texture_id, m_minimap_handle);
+  }
+  m_minimap_pool_texture = nullptr;
+  m_texture_pool = nullptr;
+}
+
+void MetalProgressRenderer::render(DmaFollower& dma,
+                                   MetalSharedRenderState* render_state,
+                                   MetalFrameContext& ctx) {
+  ASSERT(render_state->version == GameVersion::Jak2);
+  ASSERT(render_state->texture_pool == m_texture_pool);
+  m_current_fbp = kScreenFbp;
+  m_target_stats = {};
+  set_offscreen_mode(false);
+  MetalDirectRenderer::render(dma, render_state, ctx);
+  ASSERT_MSG(m_current_fbp == kScreenFbp,
+             "Metal Jak II PROGRESS ended without restoring framebuffer 408");
+  ASSERT(!offscreen_mode());
+}
+
+void MetalProgressRenderer::ensure_minimap_targets(MetalSharedRenderState* render_state,
+                                                   MetalFrameContext& ctx) {
+  ASSERT(render_state->texture_pool == m_texture_pool);
+  ASSERT(ctx.cmds && ctx.game_color && ctx.game_depth);
+  ASSERT(ctx.color_format == ctx.game_color.pixelFormat);
+  ASSERT(ctx.depth_format == ctx.game_depth.pixelFormat);
+  if (!m_minimap_color) {
+    auto* color_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:static_cast<MTLPixelFormat>(ctx.color_format)
+                                     width:kMinimapWidth
+                                    height:kMinimapHeight
+                                 mipmapped:NO];
+    color_desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    color_desc.storageMode = MTLStorageModePrivate;
+    m_minimap_color = [m_device newTextureWithDescriptor:color_desc];
+
+    auto* depth_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:static_cast<MTLPixelFormat>(ctx.depth_format)
+                                     width:kMinimapWidth
+                                    height:kMinimapHeight
+                                 mipmapped:NO];
+    depth_desc.usage = MTLTextureUsageRenderTarget;
+    depth_desc.storageMode = MTLStorageModePrivate;
+    m_minimap_depth = [m_device newTextureWithDescriptor:depth_desc];
+    ASSERT_MSG(m_minimap_color && m_minimap_depth,
+               "Metal Jak II PROGRESS could not allocate its 128x128 minimap targets");
+
+    m_minimap_handle = metal_texture_register(m_minimap_color);
+    ASSERT_MSG(m_minimap_handle, "Metal Jak II PROGRESS could not register its minimap texture");
+
+    TextureInput input;
+    input.gpu_texture = m_minimap_handle;
+    input.w = kMinimapWidth;
+    input.h = kMinimapHeight;
+    input.debug_page_name = "PC-MAP";
+    input.debug_name = "map";
+    {
+      std::lock_guard<std::mutex> pool_lock(m_texture_pool->mutex());
+      input.id = m_texture_pool->allocate_pc_port_texture(GameVersion::Jak2);
+      m_minimap_texture_id = input.id;
+      m_minimap_pool_texture =
+          m_texture_pool->give_texture_and_load_to_vram(input, kMinimapVramAddr);
+    }
+    ASSERT(m_minimap_pool_texture);
+  } else {
+    ASSERT(m_minimap_color.width == kMinimapWidth && m_minimap_color.height == kMinimapHeight &&
+           m_minimap_color.pixelFormat == ctx.game_color.pixelFormat);
+    ASSERT(m_minimap_depth.width == kMinimapWidth && m_minimap_depth.height == kMinimapHeight &&
+           m_minimap_depth.pixelFormat == ctx.game_depth.pixelFormat);
+  }
+
+  {
+    std::lock_guard<std::mutex> pool_lock(m_texture_pool->mutex());
+    m_texture_pool->move_existing_to_vram(m_minimap_pool_texture, kMinimapVramAddr);
+  }
+  m_target_stats.published = true;
+}
+
+void MetalProgressRenderer::begin_minimap_pass(MetalFrameContext& ctx) {
+  ASSERT(ctx.enc && ctx.cmds && m_minimap_color && m_minimap_depth);
+  [ctx.enc endEncoding];
+
+  auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = m_minimap_color;
+  pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  pass.depthAttachment.texture = m_minimap_depth;
+  pass.depthAttachment.loadAction = MTLLoadActionClear;
+  pass.depthAttachment.storeAction = MTLStoreActionStore;
+  pass.depthAttachment.clearDepth = 0.0;
+  pass.stencilAttachment.texture = m_minimap_depth;
+  pass.stencilAttachment.loadAction = MTLLoadActionClear;
+  pass.stencilAttachment.storeAction = MTLStoreActionStore;
+  pass.stencilAttachment.clearStencil = 0;
+  ctx.enc = [ctx.cmds renderCommandEncoderWithDescriptor:pass];
+  ASSERT(ctx.enc);
+  [ctx.enc setCullMode:MTLCullModeNone];
+  [ctx.enc setViewport:MTLViewport{0.0, 0.0, kMinimapWidth, kMinimapHeight, 0.0, 1.0}];
+}
+
+void MetalProgressRenderer::resume_game_pass(MetalFrameContext& ctx) {
+  ASSERT(ctx.enc && ctx.cmds && ctx.game_color && ctx.game_depth);
+  [ctx.enc endEncoding];
+
+  auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = ctx.game_color;
+  pass.colorAttachments[0].slice = ctx.game_color_slice;
+  pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  pass.depthAttachment.texture = ctx.game_depth;
+  pass.depthAttachment.slice = ctx.game_depth_slice;
+  pass.depthAttachment.loadAction = MTLLoadActionLoad;
+  pass.depthAttachment.storeAction = MTLStoreActionStore;
+  pass.stencilAttachment.texture = ctx.game_depth;
+  pass.stencilAttachment.slice = ctx.game_depth_slice;
+  pass.stencilAttachment.loadAction = MTLLoadActionLoad;
+  pass.stencilAttachment.storeAction = MTLStoreActionStore;
+  ctx.enc = [ctx.cmds renderCommandEncoderWithDescriptor:pass];
+  ASSERT(ctx.enc);
+  [ctx.enc setCullMode:MTLCullModeNone];
+  [ctx.enc setViewport:ctx.game_viewport];
+}
+
+void MetalProgressRenderer::handle_frame(u64 val,
+                                         MetalSharedRenderState* render_state,
+                                         MetalFrameContext& ctx) {
+  const GsFrame frame(val);
+  const u32 fbp = frame.fbp();
+  bool flushed = false;
+  m_target_stats.frame_registers++;
+  if (fbp != m_current_fbp) {
+    flush_pending(render_state, ctx);
+    flushed = true;
+    switch (fbp) {
+      case kMinimapFbp:
+        ensure_minimap_targets(render_state, ctx);
+        begin_minimap_pass(ctx);
+        set_offscreen_mode(true);
+        m_target_stats.to_minimap++;
+        break;
+      case kScreenFbp:
+        ASSERT_MSG(m_current_fbp == kMinimapFbp,
+                   "Metal Jak II PROGRESS restored framebuffer 408 from an unexpected target");
+        resume_game_pass(ctx);
+        set_offscreen_mode(false);
+        m_target_stats.to_screen++;
+        break;
+      default:
+        ASSERT_MSG(false, fmt::format("Unknown fbp in MetalProgressRenderer: {}", fbp));
+    }
+    m_current_fbp = fbp;
+    m_target_stats.current_fbp = fbp;
+  }
+  update_frame_write_mask(frame.fbmsk(), flushed, render_state, ctx);
+}
+
 void MetalHostTextureUploadDirectRenderer::render(DmaFollower& dma,
                                                   MetalSharedRenderState* render_state,
                                                   MetalFrameContext& ctx) {
@@ -141,6 +317,23 @@ void MetalDirectRenderer::reset_state() {
   m_test_state_needs_double_draw = false;
 
   m_stats = {};
+}
+
+void MetalDirectRenderer::handle_frame(u64, MetalSharedRenderState*, MetalFrameContext&) {}
+
+void MetalDirectRenderer::update_frame_write_mask(u32 fbmsk,
+                                                  bool already_flushed,
+                                                  MetalSharedRenderState* render_state,
+                                                  MetalFrameContext& ctx) {
+  const bool write_rgb = fbmsk != 0xffffff;
+  if (write_rgb == m_test_state.write_rgb) {
+    return;
+  }
+  if (!already_flushed) {
+    m_stats.flush_from_test++;
+    flush_pending(render_state, ctx);
+  }
+  m_test_state.write_rgb = write_rgb;
 }
 
 /*!
@@ -667,7 +860,7 @@ void MetalDirectRenderer::handle_ad(const u8* data,
     case GsRegisterAddress::TEXFLUSH:
       break;
     case GsRegisterAddress::FRAME_1:
-      // ignored (the GL base DirectRenderer ignores it too)
+      handle_frame(value, render_state, ctx);
       break;
     case GsRegisterAddress::RGBAQ: {  // shadow scissor does this
       m_prim_building.rgba_reg[0] = data[0];

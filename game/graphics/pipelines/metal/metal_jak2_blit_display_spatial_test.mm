@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #include "common/dma/dma.h"
@@ -27,6 +28,7 @@ constexpr int kTargetSize = 64;
 constexpr u32 kBlitBucket = static_cast<u32>(jak2::BucketId::BUCKET_3);
 constexpr u32 kSkyDrawBucket = static_cast<u32>(jak2::BucketId::SKY_DRAW);
 constexpr u32 kProgressBucket = static_cast<u32>(jak2::BucketId::PROGRESS);
+constexpr u32 kProgressSourceTbp = 0x1200;
 
 int failures = 0;
 
@@ -185,6 +187,69 @@ std::vector<u8> make_snapshot_sky_draw() {
 std::vector<u8> make_progress_overlay() {
   std::vector<u8> payload;
   append_basic_sprite(&payload, 0x7c00, 0x7b00, 0x8400, 0x8500, {240, 200, 20, 128});
+  return payload;
+}
+
+void append_ad(std::vector<u8>* payload,
+               GsRegisterAddress address,
+               u64 value,
+               bool eop = false) {
+  append_gif_tag(payload, 1, static_cast<u64>(GifTag::RegisterDescriptor::AD), 1, false, 0, eop);
+  append_qword(payload, value, static_cast<u64>(address));
+}
+
+u64 frame(u32 fbp, u32 fbw, u32 fbmsk = 0) {
+  return fbp | (static_cast<u64>(fbw) << 16) | (static_cast<u64>(fbmsk) << 32);
+}
+
+void append_texture_state(std::vector<u8>* payload, u32 tbp, u32 size_exponent) {
+  constexpr u64 kAd = static_cast<u64>(GifTag::RegisterDescriptor::AD);
+  append_gif_tag(payload, 3, kAd, 1, false, 0, false);
+  const u64 tex0 = tbp | (1ull << 14) | (static_cast<u64>(size_exponent) << 26) |
+                   (static_cast<u64>(size_exponent) << 30) | (1ull << 34);
+  append_qword(payload, tex0, static_cast<u64>(GsRegisterAddress::TEX0_1));
+  append_qword(payload, 0, static_cast<u64>(GsRegisterAddress::TEX1_1));
+  append_qword(payload, 0b101, static_cast<u64>(GsRegisterAddress::CLAMP_1));
+}
+
+void append_textured_sprite(std::vector<u8>* payload,
+                            u32 x0,
+                            u32 y0,
+                            u32 x1,
+                            u32 y1,
+                            const std::array<u8, 4>& color,
+                            bool eop = false) {
+  constexpr u64 kSt = static_cast<u64>(GifTag::RegisterDescriptor::ST);
+  constexpr u64 kRgbaq = static_cast<u64>(GifTag::RegisterDescriptor::RGBAQ);
+  constexpr u64 kXyzf2 = static_cast<u64>(GifTag::RegisterDescriptor::XYZF2);
+  constexpr u64 kRegisters =
+      kSt | (kRgbaq << 4) | (kXyzf2 << 8) | (kSt << 12) | (kRgbaq << 16) | (kXyzf2 << 20);
+  constexpr u64 kPrim = static_cast<u64>(GsPrim::Kind::SPRITE) | (1ull << 4);
+  append_gif_tag(payload, 1, kRegisters, 6, true, kPrim, eop);
+  append_st(payload, 0.f, 0.f);
+  append_rgbaq(payload, color);
+  append_xyzf2(payload, x0, y0);
+  append_st(payload, 1.f, 1.f);
+  append_rgbaq(payload, color);
+  append_xyzf2(payload, x1, y1);
+}
+
+std::vector<u8> make_progress_minimap() {
+  std::vector<u8> payload;
+  append_ad(&payload, GsRegisterAddress::FRAME_1, frame(MetalProgressRenderer::kMinimapFbp, 2));
+  append_texture_state(&payload, kProgressSourceTbp, 2);
+  append_textured_sprite(&payload, 0x7000, 0x7300, 0x7800, 0x7b00, {128, 128, 128, 128});
+
+  // The source uses a second FRAME write mask while staying on FBP 126 for
+  // the minimap mask. A hostile green tint makes an RGB-write regression
+  // visible: source-faithful alpha-only output leaves the red map unchanged.
+  append_ad(&payload, GsRegisterAddress::FRAME_1,
+            frame(MetalProgressRenderer::kMinimapFbp, 2, 0xffffff));
+  append_textured_sprite(&payload, 0x7000, 0x7300, 0x7800, 0x7b00, {0, 128, 0, 128});
+
+  append_ad(&payload, GsRegisterAddress::FRAME_1, frame(MetalProgressRenderer::kScreenFbp, 10));
+  append_texture_state(&payload, MetalProgressRenderer::kMinimapVramAddr, 7);
+  append_textured_sprite(&payload, 0x8000, 0x8000, 0x9000, 0x8d00, {128, 128, 128, 128}, true);
   return payload;
 }
 
@@ -441,6 +506,24 @@ void render_direct(MetalDirectRenderer* renderer,
   renderer->reset_state();
   renderer->render_gif(payload.data(), static_cast<u32>(payload.size()), state, *ctx);
   renderer->flush_pending(state, *ctx);
+}
+
+void render_progress(MetalProgressRenderer* renderer,
+                     const std::vector<u8>& payload,
+                     MetalSharedRenderState* state,
+                     MetalFrameContext* ctx) {
+  constexpr u32 kPayloadOffset = 64;
+  const u32 tail_offset = kPayloadOffset + 16 + static_cast<u32>(payload.size());
+  std::vector<u8> chain(tail_offset + 16, 0);
+  put_tag(&chain, 0, DmaTag::Kind::NEXT, 0, kPayloadOffset);
+  put_tag(&chain, 16, DmaTag::Kind::END);
+  put_tag(&chain, kPayloadOffset, DmaTag::Kind::CNT, static_cast<u16>(payload.size() / 16), 0, 0,
+          vif(VifCode::Kind::DIRECT, static_cast<u16>(payload.size() / 16)));
+  std::memcpy(chain.data() + kPayloadOffset + 16, payload.data(), payload.size());
+  put_tag(&chain, tail_offset, DmaTag::Kind::NEXT, 0, 16);
+  state->next_bucket = 16;
+  DmaFollower dma(chain.data(), 0, chain.size());
+  renderer->render(dma, state, *ctx);
 }
 
 void test_renderer_fallback_lifecycle(id<MTLDevice> device) {
@@ -757,6 +840,30 @@ int main() {
           "published a placeholder so snapshot lookup failures stay observable");
     const u64 placeholder = texture_pool.get_placeholder_texture();
 
+    std::array<u8, 4 * 4 * 4> red_source = {};
+    for (std::size_t offset = 0; offset < red_source.size(); offset += 4) {
+      red_source[offset] = 255;
+      red_source[offset + 3] = 255;
+    }
+    const u64 progress_source_handle =
+        metal_upload_texture_rgba8(device, queue, red_source.data(), 4, 4);
+    PcTextureId progress_source_id;
+    {
+      TextureInput input;
+      input.gpu_texture = progress_source_handle;
+      input.w = 4;
+      input.h = 4;
+      input.debug_page_name = "SYNTHETIC";
+      input.debug_name = "progress-red";
+      std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+      input.id = texture_pool.allocate_pc_port_texture(GameVersion::Jak2);
+      progress_source_id = input.id;
+      texture_pool.give_texture_and_load_to_vram(input, kProgressSourceTbp);
+    }
+    check(progress_source_handle != 0 && texture_pool.lookup(kProgressSourceTbp) &&
+              *texture_pool.lookup(kProgressSourceTbp) == progress_source_handle,
+          "published the synthetic PROGRESS source texture");
+
     id<MTLTexture> color = make_color_target(device);
     id<MTLTexture> depth = make_depth_target(device);
     check(color != nil && depth != nil, "created the deterministic 64x64 game targets");
@@ -768,8 +875,9 @@ int main() {
       MetalJak2BlitDisplayRenderer blit("blit-display", kBlitBucket, &texture_pool);
       MetalDirectRenderer sky("sky-draw", kSkyDrawBucket,
                               metal_renderer::jak2_metal_direct_batch_size(kSkyDrawBucket));
-      MetalDirectRenderer progress("progress", kProgressBucket,
-                                   metal_renderer::jak2_metal_direct_batch_size(kProgressBucket));
+      MetalProgressRenderer progress("progress", kProgressBucket,
+                                     metal_renderer::jak2_metal_direct_batch_size(kProgressBucket),
+                                     device, &texture_pool);
 
       MetalSharedRenderState state;
       state.version = GameVersion::Jak2;
@@ -834,6 +942,40 @@ int main() {
             "PROGRESS lands after SKY_DRAW and visibly replaces the sampled center");
 
       stream.reset();
+      auto minimap_ctx =
+          begin_frame(queue, color, depth, &pso_cache, &sampler_cache, &stream, false);
+      render_progress(&progress, make_progress_minimap(), &state, &minimap_ctx);
+      const auto minimap_stats = progress.stats();
+      const auto target_stats = progress.target_stats();
+      std::vector<u8> minimap_frame;
+      check(finish_frame(&minimap_ctx, &blit, color, &minimap_frame),
+            "PROGRESS completed its 128x128 offscreen pass and later HUD composite");
+
+      const auto minimap_lookup = texture_pool.lookup(MetalProgressRenderer::kMinimapVramAddr);
+      check(target_stats.frame_registers == 3 && target_stats.to_minimap == 1 &&
+                target_stats.to_screen == 1 && target_stats.published &&
+                target_stats.current_fbp == MetalProgressRenderer::kScreenFbp,
+            "PROGRESS performs the exact FBP 408 -> 126 -> 408 transition");
+      check(progress.minimap_texture() &&
+                progress.minimap_texture().width == MetalProgressRenderer::kMinimapWidth &&
+                progress.minimap_texture().height == MetalProgressRenderer::kMinimapHeight &&
+                minimap_lookup && *minimap_lookup == progress.minimap_handle() &&
+                *minimap_lookup != placeholder,
+            "PROGRESS publishes a stable shader-readable 128x128 texture at TBP 4032");
+      check(minimap_stats.draw_calls == 3 && minimap_stats.triangles == 6 &&
+                minimap_stats.textured_draw_calls == 3 &&
+                minimap_stats.missing_texture_draw_calls == 0 &&
+                minimap_stats.last_batch.texture_lookup_hit &&
+                !minimap_stats.last_batch.used_placeholder &&
+                minimap_stats.last_batch.tex0_tbp == MetalProgressRenderer::kMinimapVramAddr,
+            "both minimap construction and the later HUD sample avoid the placeholder");
+      check(near_pixel(pixel_at(minimap_frame, 8, 8), {0, 0, 0, 0}) &&
+                near_pixel(pixel_at(minimap_frame, 16, 48), {0, 0, 0, 0}),
+            "the offscreen minimap construction does not leak into the main upper-left target");
+      check(near_pixel(pixel_at(minimap_frame, 48, 48), {255, 0, 0, 255}, 5),
+            "the authored red map survives the alpha-only mask pass and appears lower-right");
+
+      stream.reset();
       auto copy_back_ctx =
           begin_frame(queue, color, depth, &pso_cache, &sampler_cache, &stream, true);
       render_blit(&blit, metal_renderer::Jak2BlitDisplayCommand::CopyBack, &state, &copy_back_ctx);
@@ -854,6 +996,12 @@ int main() {
           blit.stats().copy_back_requested && blit.stats().copy_back_performed && copy_back_matches,
           "frame-end opcode 0x11 restores over later buckets only for a matching snapshot");
     }
+
+    {
+      std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+      texture_pool.unload_texture(progress_source_id, progress_source_handle);
+    }
+    metal_texture_release(progress_source_handle);
 
     metal_texture_release(placeholder);
     texture_pool.set_placeholder(0);

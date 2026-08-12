@@ -689,8 +689,13 @@ void MetalRenderer::init_bucket_renderers_jak2() {
         default:
           ASSERT(false);
       }
-      m_bucket_renderers[bucket_id] =
-          std::make_unique<MetalDirectRenderer>(name, descriptor.id, batch_size);
+      if (static_cast<jak2::BucketId>(bucket_id) == jak2::BucketId::PROGRESS) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalProgressRenderer>(
+            name, descriptor.id, batch_size, m_device, m_texture_pool);
+      } else {
+        m_bucket_renderers[bucket_id] =
+            std::make_unique<MetalDirectRenderer>(name, descriptor.id, batch_size);
+      }
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::OceanMidFar) {
       ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::OCEAN_MID_FAR));
       ASSERT(batch_size == 0);
