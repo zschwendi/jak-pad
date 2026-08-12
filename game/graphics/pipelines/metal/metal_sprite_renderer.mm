@@ -1,6 +1,7 @@
 #include "metal_sprite_renderer.h"
 
 #include <array>
+#include <cstdlib>
 #include <utility>
 
 #include "common/log/log.h"
@@ -20,6 +21,11 @@ namespace {
 // behaviourally identical - the GL renderer already flushes mid-block at its
 // own limit (Sprite3::do_block_common).
 constexpr int kMaxSpritesPerFlush = 8192;
+
+bool diagnostic_flag(const char* name) {
+  const char* value = std::getenv(name);
+  return value && value[0] == '1' && value[1] == '\0';
+}
 
 constexpr PerGameVersion<u32> kNormalZbp(448, 304, 304, 304);
 
@@ -392,8 +398,9 @@ void MetalSpriteRenderer::render_jak2(DmaFollower& dma,
   parse_jak2_glow_and_residual(dma, render_state);
 
   const auto& glow_outputs = pending_glow_outputs();
-  m_glow_renderer.draw(glow_outputs.empty() ? nullptr : glow_outputs.data(), glow_outputs.size(),
-                       render_state, ctx);
+  const bool skip_glow = diagnostic_flag("GOALPAD_JAK2_DEBUG_SKIP_SPRITE_GLOW");
+  m_glow_renderer.draw(skip_glow || glow_outputs.empty() ? nullptr : glow_outputs.data(),
+                       skip_glow ? 0 : glow_outputs.size(), render_state, ctx);
   const auto& glow_stats = m_glow_renderer.stats();
   m_stats.glow_invalid_records = glow_stats.invalid_records;
   m_stats.glow_force_visible_submitted = glow_stats.sprites_submitted;
@@ -1208,6 +1215,16 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
                                         MetalFrameContext& ctx,
                                         bool double_draw) {
   if (m_sprite_idx == 0 || m_bucket_list.empty()) {
+    m_sprite_buckets.clear();
+    m_bucket_list.clear();
+    m_last_bucket_key = UINT64_MAX;
+    m_last_bucket = nullptr;
+    m_sprite_idx = 0;
+    return;
+  }
+
+  if (render_state->version == GameVersion::Jak2 &&
+      diagnostic_flag("GOALPAD_JAK2_DEBUG_SKIP_SPRITE_NORMAL")) {
     m_sprite_buckets.clear();
     m_bucket_list.clear();
     m_last_bucket_key = UINT64_MAX;
