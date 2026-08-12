@@ -409,14 +409,15 @@ inline bool validate_bucket(const u8* copy_base,
       return false;
     }
     if (is_zero_next(model)) {
-      if (model.address != next_bucket) {
-        return fail(error, "the terminal NEXT to land exactly at the bucket boundary");
+      if (model.address == next_bucket) {
+        if (out->model_count == 0) {
+          return fail(error, "at least one model in a populated Merc bucket");
+        }
+        set_reason(PreflightRejectReason::None);
+        return true;
       }
-      if (out->model_count == 0) {
-        return fail(error, "at least one model in a populated Merc bucket");
-      }
-      set_reason(PreflightRejectReason::None);
-      return true;
+      current = model.address;
+      continue;
     }
 
     if (model.kind != DmaTag::Kind::CNT || model.address != 0 || model.vif0 != 0 ||

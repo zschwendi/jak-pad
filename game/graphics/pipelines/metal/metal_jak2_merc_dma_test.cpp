@@ -13,6 +13,7 @@ constexpr u32 kBoundary = 0x200;
 constexpr u32 kSetup = 0x400;
 constexpr u32 kGsSetup = kSetup + 16 + 10 * 16;
 constexpr u32 kSetupPatch = kGsSetup + 16 + 3 * 16;
+constexpr u32 kInterChainPadding = 0x700;
 constexpr u32 kModel0 = 0x800;
 constexpr u32 kModel1 = 0x1200;
 constexpr u32 kTerminal = 0x1800;
@@ -228,6 +229,37 @@ void test_source_shaped_bucket() {
   check(bucket.models[0].effect_pointers_offset + 16 ==
             400 + 16 * bucket.models[0].matrix_count + 32,
         "the packet uses Jak 2's 400-byte fixed payload formula");
+}
+
+void test_intermediate_padding_links() {
+  Fixture fixture;
+  put_tag(&fixture.memory, fixture.model0_patch, DmaTag::Kind::NEXT, 0,
+          kInterChainPadding, 0, 0);
+  put_tag(&fixture.memory, kInterChainPadding, DmaTag::Kind::NEXT, 0, kModel1, 0, 0);
+
+  metal_jak2_merc_dma::Bucket bucket;
+  std::string error;
+  check(fixture.validate(&bucket, &error) && bucket.model_count == 2 &&
+            bucket.models.size() == 2 && bucket.models[0].name == "jak2-merc-a" &&
+            bucket.models[1].name == "jak2-merc-b",
+        "the zero-qwc NEXT separator between logical Merc chains is followed");
+
+  DmaFollower dma(fixture.memory.data(), kOpening, fixture.memory.size());
+  int malformed = 0;
+  int model_checks = 0;
+  auto outcome = metal_jak2_merc_dma::preflight_bucket(
+      &dma, fixture.memory.data(), fixture.memory.size(), kOpening, kBoundary,
+      fixture.memory.size(), &malformed,
+      [&](const metal_jak2_merc_dma::ModelPacket&, std::string*) {
+        model_checks++;
+        return true;
+      });
+  check(outcome.action == metal_jak2_merc_dma::PreflightAction::Render &&
+            outcome.should_render() && !outcome.recovered && malformed == 0 &&
+            model_checks == 2 && outcome.rejection_reason ==
+                                     metal_jak2_merc_dma::PreflightRejectReason::None &&
+            dma.current_tag_offset() == kOpening,
+        "padding-link preflight remains renderable without recovery or malformed telemetry");
 }
 
 void test_empty_bucket() {
@@ -591,6 +623,7 @@ void test_jak1_dialect_is_preserved() {
 
 int main() {
   test_source_shaped_bucket();
+  test_intermediate_padding_links();
   test_empty_bucket();
   test_bounded_chain_rejections();
   test_model_packet_edges();

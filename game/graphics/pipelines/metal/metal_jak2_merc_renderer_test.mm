@@ -45,7 +45,9 @@ constexpr u32 kSetup = 0x400;
 constexpr u32 kGsSetup = kSetup + 16 + 10 * 16;
 constexpr u32 kSetupPatch = kGsSetup + 16 + 3 * 16;
 constexpr u32 kModel = 0x800;
-constexpr u32 kTerminal = 0xc00;
+constexpr u32 kInterChainPadding = 0xc00;
+constexpr u32 kSecondModel = 0x1000;
+constexpr u32 kTerminal = 0x1800;
 constexpr u32 kBone0 = 0x3000;
 constexpr u32 kBone1 = 0x3080;
 constexpr std::size_t kMemorySize = 0x4000;
@@ -178,7 +180,7 @@ void write_bone(std::vector<u8>* memory, u32 address, float x, float y) {
   std::memcpy(memory->data() + address, matrix, sizeof(matrix));
 }
 
-std::vector<u8> make_source_chain(const char* model_name) {
+std::vector<u8> make_source_chain(const char* model_name, bool add_second_logical_chain = false) {
   std::vector<u8> memory(kMemorySize, 0);
   put_tag(&memory, kOpening, DmaTag::Kind::NEXT, 0, kSetup, 0, 0);
 
@@ -195,7 +197,17 @@ std::vector<u8> make_source_chain(const char* model_name) {
           static_cast<u32>(VifCode::Kind::PC_PORT) << 24);
   std::memcpy(memory.data() + kModel + 16, packet.data(), packet.size());
   const u32 model_patch = kModel + 16 + static_cast<u32>(packet.size());
-  put_tag(&memory, model_patch, DmaTag::Kind::NEXT, 0, kTerminal, 0, 0);
+  put_tag(&memory, model_patch, DmaTag::Kind::NEXT, 0,
+          add_second_logical_chain ? kInterChainPadding : kTerminal, 0, 0);
+  if (add_second_logical_chain) {
+    put_tag(&memory, kInterChainPadding, DmaTag::Kind::NEXT, 0, kSecondModel, 0, 0);
+    put_tag(&memory, kSecondModel, DmaTag::Kind::CNT,
+            static_cast<u16>(packet.size() / 16), 0, 0,
+            static_cast<u32>(VifCode::Kind::PC_PORT) << 24);
+    std::memcpy(memory.data() + kSecondModel + 16, packet.data(), packet.size());
+    const u32 second_model_patch = kSecondModel + 16 + static_cast<u32>(packet.size());
+    put_tag(&memory, second_model_patch, DmaTag::Kind::NEXT, 0, kTerminal, 0, 0);
+  }
   put_tag(&memory, kTerminal, DmaTag::Kind::NEXT, 0, kBoundary, 0, 0);
 
   write_bone(&memory, kBone0, 2048.f, 2048.f);
@@ -599,6 +611,17 @@ int main() {
             fmt::format("the routed {} Merc policy produces GPU pixels", fixture.category)
                 .c_str());
     }
+
+    auto spliced_pris_memory = make_source_chain(kNormalModelName, true);
+    const auto spliced_pris = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                     &pris_renderer, &spliced_pris_memory, routed_frame++);
+    check(spliced_pris.completed && spliced_pris.final_offset == kBoundary &&
+              spliced_pris.stats.models == 2 && spliced_pris.stats.draws == 2 &&
+              spliced_pris.stats.triangles == 4 && spliced_pris.draw_calls == 2 &&
+              spliced_pris.triangles == 4 && spliced_pris.stats.malformed_dma == 0 &&
+              spliced_pris.stats.missing_models == 0 &&
+              count_non_black(spliced_pris.pixels) > 0,
+          "the per-level PRIS Merc path draws two logical chains separated by a padding NEXT");
 
     auto filtered_memory = make_source_chain(kFilteredModelName);
     const auto filtered = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
