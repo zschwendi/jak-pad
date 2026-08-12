@@ -165,9 +165,9 @@ class Jak1ManagedDisplaySettingsTest(unittest.TestCase):
         )
         self.assertEqual(
             option_names(managed),
-            ["game-resolution", "aspect-ratio", "frame-rate", "ps2-options", "back"],
+            ["game-resolution", "aspect-ratio", "ps2-options", "back"],
         )
-        for removed in ("display-mode", "display", "vsync", "msaa"):
+        for removed in ("display-mode", "display", "vsync", "msaa", "frame-rate"):
             self.assertNotIn(f"(text-id {removed})", managed)
 
         init_options = extract_form(self.progress, "(defun init-game-options")
@@ -175,11 +175,23 @@ class Jak1ManagedDisplaySettingsTest(unittest.TestCase):
             "(if (pc-host-manages-display?) *graphic-options-managed-display* *graphic-options-pc*)",
             init_options,
         )
-        self.assertIn(
+        self.assertNotIn(
             "(set! (-> *graphic-options-managed-display* 2 value-to-modify) "
             "(&-> *progress-carousell* int-backup))",
             init_options,
         )
+
+    def test_frame_rate_writer_retains_host_authority_without_changing_desktop(self) -> None:
+        setter = extract_form(self.pckernel_common, "(defmethod set-frame-rate!")
+        self.assertIn(
+            "(let ((effective-rate (if (pc-host-manages-display?) "
+            "(pc-get-active-display-refresh-rate) rate)))",
+            setter,
+        )
+        self.assertIn("(pc-set-frame-rate effective-rate)", setter)
+        self.assertIn("(set! (-> obj target-fps) effective-rate)", setter)
+        self.assertIn("(case effective-rate", setter)
+        self.assertTrue(setter.endswith("effective-rate))"))
 
     def test_managed_aspect_submenu_can_only_select_fit_to_screen_or_back(self) -> None:
         desktop = extract_form(self.progress, "(define *aspect-ratio-options*")

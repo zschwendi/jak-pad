@@ -311,14 +311,6 @@
             :param3 (game-option-menu aspect-ratio))
        (new 'static
             'game-option
-            :option-type (game-option-type frame-rate)
-            :name (text-id frame-rate)
-            :scale #t
-            :option-disabled-func
-            (lambda ()
-              (or (-> *pc-settings* speedrunner-mode?) (<= (pc-get-active-display-refresh-rate) 60))))
-       (new 'static
-            'game-option
             :option-type (game-option-type menu)
             :name (text-id ps2-options)
             :scale #t
@@ -2215,7 +2207,6 @@
   (set! (-> *graphic-options-pc* 3 value-to-modify) (&-> *pc-settings* vsync?))
   (set! (-> *graphic-options-pc* 5 value-to-modify) (&-> *progress-carousell* int-backup))
   (set! (-> *graphic-options-pc* 6 value-to-modify) (&-> *progress-carousell* int-backup))
-  (set! (-> *graphic-options-managed-display* 2 value-to-modify) (&-> *progress-carousell* int-backup))
   (set! (-> *misc-options* 0 value-to-modify) (&-> *pc-settings* money-starburst?))
   (set! (-> *misc-options* 1 value-to-modify) (&-> *pc-settings* discord-rpc?))
   (set! (-> *misc-options* 2 value-to-modify) (&-> *pc-settings* skip-movies?))

@@ -65,14 +65,16 @@
 
 (defmethod set-frame-rate! ((obj pc-settings) (rate int) (call-handlers symbol))
   "set the target framerate."
-  (if call-handlers (pc-set-frame-rate rate))
-  (if (and (!= 'fullscreen (pc-get-display-mode)) (!= (pc-get-active-display-refresh-rate) rate)) (set! (-> obj vsync?) #f))
-  (set! (-> obj target-fps) rate)
-  (case rate
-    ((50) (set-game-setting! obj 'video-mode 'pal))
-    ((60) (set-game-setting! obj 'video-mode 'ntsc))
-    (else (set-game-setting! obj 'video-mode 'custom)))
-  rate)
+  (let ((effective-rate (if (pc-host-manages-display?) (pc-get-active-display-refresh-rate) rate)))
+    (if call-handlers (pc-set-frame-rate effective-rate))
+    (if (and (!= 'fullscreen (pc-get-display-mode)) (!= (pc-get-active-display-refresh-rate) effective-rate))
+      (set! (-> obj vsync?) #f))
+    (set! (-> obj target-fps) effective-rate)
+    (case effective-rate
+      ((50) (set-game-setting! obj 'video-mode 'pal))
+      ((60) (set-game-setting! obj 'video-mode 'ntsc))
+      (else (set-game-setting! obj 'video-mode 'custom)))
+    effective-rate))
 
 (defmethod commit-to-file ((obj pc-settings))
   "commits the current settings to the file"
