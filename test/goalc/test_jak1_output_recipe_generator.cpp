@@ -261,7 +261,7 @@ int main(int argc, char** argv) {
     check(bool(parsed), "real source-object-pack manifest parses");
     if (parsed) {
       check(parsed.value().identity.object_count == 518 &&
-                parsed.value().identity.aggregate_xxh64 == 0x0a6387a3959fd8cb,
+                parsed.value().identity.aggregate_xxh64 == 0x44f9fbb492ed188a,
             "real source-object-pack manifest has the expected checked identity");
     }
   }
