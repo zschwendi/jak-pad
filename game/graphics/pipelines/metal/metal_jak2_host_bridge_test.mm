@@ -793,6 +793,8 @@ int main() {
       73, 82, 91, 100, 109, 118, 191};
   constexpr std::array<u32, GOAL_JAK2_ALPHA_TEXTURE_UPLOAD_BUCKET_COUNT> kAlphaBuckets = {
       127, 137, 147, 157, 167, 177};
+  constexpr std::array<u32, GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT> kPrisBuckets = {
+      196, 200, 204, 208, 212, 216};
   constexpr std::array<u32, GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT> kWaterBuckets = {
       252, 261, 270, 279, 288, 297};
   check(texture_captures_are_empty(metrics.tfrag_texture_uploads, kTfragBuckets),
@@ -801,6 +803,8 @@ int main() {
         "the host records all seven empty normal/common SHRUB texture setup buckets");
   check(texture_captures_are_empty(metrics.alpha_texture_uploads, kAlphaBuckets),
         "the host records all six empty source-identical alpha texture setup buckets");
+  check(texture_captures_are_empty(metrics.pris_texture_uploads, kPrisBuckets),
+        "the host records all six empty per-level PRIS texture buckets without executing them");
   check(texture_captures_are_empty(metrics.water_texture_uploads, kWaterBuckets),
         "the host records all six empty source-identical water texture upload buckets");
   check(texture_capture_is_empty(metrics.common_tfrag_texture_upload, 187),

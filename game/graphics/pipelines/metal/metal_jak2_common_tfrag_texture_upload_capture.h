@@ -16,6 +16,7 @@ constexpr std::array<u32, 6> kJak2NormalTfragTextureUploadBuckets = {7, 18, 29, 
 constexpr std::array<u32, 7> kJak2NormalShrubTextureUploadBuckets = {
     73, 82, 91, 100, 109, 118, 191};
 constexpr std::array<u32, 6> kJak2AlphaTextureUploadBuckets = {127, 137, 147, 157, 167, 177};
+constexpr std::array<u32, 6> kJak2PrisTextureUploadBuckets = {196, 200, 204, 208, 212, 216};
 constexpr std::array<u32, 6> kJak2WaterTextureUploadBuckets = {252, 261, 270, 279, 288, 297};
 constexpr std::size_t kJak2CommonTfragTextureUploadMaximumTransfers = 64;
 constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;

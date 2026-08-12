@@ -365,6 +365,23 @@ void test_texture_bucket_allowlist() {
           "each source-identical alpha texture bucket accepts an exact empty chain");
   }
 
+  for (const u32 bucket_id : metal_renderer::kJak2PrisTextureUploadBuckets) {
+    auto result = capture(make_empty_fixture(bucket_id), bucket_id);
+    check(result.valid && !result.present && result.classification == Classification::Absent,
+          "each per-level PRIS texture bucket accepts an exact empty chain");
+
+    std::vector<u8> eye(kMemorySize);
+    const u32 end_offset = bucket_offset(bucket_id) + 16;
+    put_tag(&eye, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+    put_tag(&eye, kOrdinaryOffset, DmaTag::Kind::CNT, 8, 0, 0, kDirectVif | 8);
+    put_tag(&eye, kOrdinaryOffset + 144, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+    result = capture(eye, bucket_id);
+    check(result.valid && result.present && result.classification == Classification::EyeOrOther &&
+              result.eye_markers == 1 && result.other_transfers == 0 &&
+              result.total_payload_bytes == 128,
+          "each per-level PRIS texture bucket reports a qwc-8 eye marker without promotion");
+  }
+
   for (const u32 bucket_id : metal_renderer::kJak2WaterTextureUploadBuckets) {
     const auto result = capture(make_empty_fixture(bucket_id), bucket_id);
     check(result.valid && !result.present && result.classification == Classification::Absent,
