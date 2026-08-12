@@ -1,12 +1,16 @@
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #include "common/util/Assert.h"
 
 #include "game/graphics/pipelines/metal/metal_sprite_renderer.h"
+#include "game/graphics/pipelines/metal/metal_texture.h"
+#include "game/graphics/texture/TexturePool.h"
 
 #import <Metal/Metal.h>
 #import <TargetConditionals.h>
@@ -18,6 +22,7 @@ namespace {
 
 constexpr int kDistortTargetWidth = 128;
 constexpr int kDistortTargetHeight = 96;
+constexpr u32 kNormalSpriteTextureTbp = 0x7e0;
 
 u32 vif_code(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
   return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
@@ -242,6 +247,46 @@ bool output_is_finite(const SpriteGlowOutput& output) {
   return vector_is_finite(output.flare_draw_color) && std::isfinite(output.perspective_q);
 }
 
+struct NormalSpriteFixture {
+  SpriteFrameData frame = {};
+  Sprite3DMatrixData matrix = {};
+  SpriteVecData2d vector = {};
+  AdGifData adgif = {};
+
+  NormalSpriteFixture(bool tcc, bool filtered) {
+    frame.xy_array[0] = math::Vector4f(-128.f, -64.f, 0.f, 0.f);
+    frame.xy_array[1] = math::Vector4f(128.f, -64.f, 0.f, 0.f);
+    frame.xy_array[2] = math::Vector4f(-128.f, 64.f, 0.f, 0.f);
+    frame.xy_array[3] = math::Vector4f(128.f, 64.f, 0.f, 0.f);
+    frame.st_array[0] = math::Vector4f(0.f, 0.f, 0.f, 0.f);
+    frame.st_array[1] = math::Vector4f(1.f, 0.f, 0.f, 0.f);
+    frame.st_array[2] = math::Vector4f(0.f, 1.f, 0.f, 0.f);
+    frame.st_array[3] = math::Vector4f(1.f, 1.f, 0.f, 0.f);
+    frame.basis_x = math::Vector4f(1.f, 0.f, 0.f, 0.f);
+    frame.basis_y = math::Vector4f(0.f, 1.f, 0.f, 0.f);
+    frame.pfog0 = 1.f;
+    frame.inv_area = 1.f;
+    frame.max_scale = 1024.f;
+
+    matrix.camera = math::Matrix4f::identity();
+
+    vector.xyz_sx = math::Vector4f(2048.f, 2048.f, 8388608.f, 1.f);
+    vector.flag_rot_sy = math::Vector4f(0.f, 0.f, 0.f, 1.f);
+    vector.rgba = math::Vector4f(128.f, 128.f, 128.f, 64.f);
+
+    adgif.tex0_data = gs_tex0(kNormalSpriteTextureTbp, 1, 0, 2, 2) |
+                      (static_cast<u64>(tcc) << 34);
+    adgif.tex0_addr = static_cast<u64>(GsRegisterAddress::TEX0_1);
+    adgif.tex1_data = static_cast<u64>(filtered) << 5;
+    adgif.tex1_addr = static_cast<u64>(GsRegisterAddress::TEX1_1);
+    adgif.mip_addr = static_cast<u64>(GsRegisterAddress::MIPTBP1_1);
+    adgif.clamp_data = 0b101;
+    adgif.clamp_addr = static_cast<u64>(GsRegisterAddress::CLAMP_1);
+    adgif.alpha_data = gs_alpha(0, 1, 0, 1);
+    adgif.alpha_addr = static_cast<u64>(GsRegisterAddress::ALPHA_1);
+  }
+};
+
 SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
                                       bool use_chain3_glow_tail = false,
                                       bool include_glow_marked_group0 = false,
@@ -249,7 +294,8 @@ SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
                                       bool malformed_glow_template = false,
                                       int glow_record_count = 1,
                                       const std::vector<MetalSpriteRenderer::SpriteDistortFrameData>*
-                                          distorters = nullptr) {
+                                          distorters = nullptr,
+                                      const NormalSpriteFixture* normal_sprite = nullptr) {
   SyntheticChain chain;
   chain.empty_next();
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 7),
@@ -276,13 +322,15 @@ SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 3),
                  make_sprite_direct_setup());
   chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(0x2a, SpriteDataMem::FrameData, false),
-                 std::vector<u8>(sizeof(SpriteFrameData), 0));
+                 normal_sprite ? bytes_of(normal_sprite->frame)
+                               : std::vector<u8>(sizeof(SpriteFrameData), 0));
   chain.transfer(vif_code(VifCode::Kind::MSCALF, SpriteProgMem::Init),
                  vif_code(VifCode::Kind::FLUSHE));
   chain.transfer(vif_code(VifCode::Kind::BASE, SpriteDataMem::Buffer0),
                  vif_code(VifCode::Kind::OFFSET, SpriteDataMem::Buffer1));
   chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(5, SpriteDataMem::Matrix, false),
-                 std::vector<u8>(sizeof(Sprite3DMatrixData), 0));
+                 normal_sprite ? bytes_of(normal_sprite->matrix)
+                               : std::vector<u8>(sizeof(Sprite3DMatrixData), 0));
   if (include_glow_marked_group0) {
     std::vector<u8> header(16, 0);
     const u32 sprite_count = 1;
@@ -297,6 +345,19 @@ SyntheticChain make_normal_jak2_chain(bool include_empty_hud_chunk = false,
     chain.transfer(vif_code(VifCode::Kind::NOP),
                    vif_unpack_v4_32(5, SpriteDataMem::Adgif, true),
                    std::vector<u8>(sizeof(AdGifData), 0));
+    chain.transfer(vif_code(VifCode::Kind::NOP),
+                   vif_code(VifCode::Kind::MSCAL, SpriteProgMem::Sprites2dGrp0));
+  } else if (normal_sprite) {
+    std::vector<u8> header(16, 0);
+    const u32 sprite_count = 1;
+    std::memcpy(header.data(), &sprite_count, sizeof(sprite_count));
+    chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(1, SpriteDataMem::Header, true), header);
+    chain.transfer(vif_code(VifCode::Kind::NOP),
+                   vif_unpack_v4_32(3, SpriteDataMem::Vector, true),
+                   bytes_of(normal_sprite->vector));
+    chain.transfer(vif_code(VifCode::Kind::NOP),
+                   vif_unpack_v4_32(5, SpriteDataMem::Adgif, true),
+                   bytes_of(normal_sprite->adgif));
     chain.transfer(vif_code(VifCode::Kind::NOP),
                    vif_code(VifCode::Kind::MSCAL, SpriteProgMem::Sprites2dGrp0));
   }
@@ -618,6 +679,187 @@ bool pixel_near(Pixel actual, Pixel expected, int tolerance = 2) {
          near(actual.b, expected.b) && near(actual.a, expected.a);
 }
 
+void test_normal_sprite_tcc_is_independent_of_filter() {
+  id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+  ASSERT(device);
+  id<MTLCommandQueue> queue = [device newCommandQueue];
+  ASSERT(queue);
+
+  dispatch_data_t library_data = dispatch_data_create(
+      g_goalpad_metallib, g_goalpad_metallib_size, nullptr,
+      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  NSError* library_error = nil;
+  id<MTLLibrary> library = [device newLibraryWithData:library_data error:&library_error];
+  if (!library && library_error) {
+    std::printf("Metal library error: %s\n", library_error.localizedDescription.UTF8String);
+  }
+  ASSERT(library);
+
+  MetalPsoCache pso_cache;
+  MetalSamplerCache sampler_cache;
+  MetalStreamBuffer stream;
+  ASSERT(pso_cache.init(device, library));
+  sampler_cache.init(device);
+  stream.init(device);
+
+  const std::size_t initial_live_textures = metal_texture_live_count();
+  TexturePool texture_pool(GameVersion::Jak2);
+  ASSERT(metal_setup_placeholder(device, queue, texture_pool));
+  const u64 placeholder = texture_pool.get_placeholder_texture();
+
+  std::array<u8, 4 * 4 * 4> source = {};
+  for (int y = 0; y < 4; y++) {
+    for (int x = 0; x < 4; x++) {
+      const std::size_t offset = static_cast<std::size_t>(y * 4 + x) * 4;
+      source[offset + 0] = 200;
+      source[offset + 1] = 120;
+      source[offset + 2] = 40;
+      source[offset + 3] = (x >= 1 && x <= 2 && y >= 1 && y <= 2) ? 64 : 0;
+    }
+  }
+  const u64 source_handle = metal_upload_texture_rgba8(device, queue, source.data(), 4, 4);
+  ASSERT(source_handle);
+  PcTextureId source_id;
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+    TextureInput input;
+    input.debug_page_name = "SYNTHETIC";
+    input.debug_name = "jak2-normal-sprite-tcc";
+    input.id = texture_pool.allocate_pc_port_texture(GameVersion::Jak2);
+    source_id = input.id;
+    input.gpu_texture = source_handle;
+    input.src_data = source.data();
+    input.w = 4;
+    input.h = 4;
+    texture_pool.give_texture_and_load_to_vram(input, kNormalSpriteTextureTbp);
+  }
+  ASSERT(texture_pool.lookup(kNormalSpriteTextureTbp).value_or(0) == source_handle);
+
+  struct Case {
+    bool tcc;
+    bool filtered;
+  };
+  constexpr Case cases[] = {{true, false}, {false, true}};
+  constexpr Pixel clear = {16, 32, 48, 255};
+
+  for (const auto& test_case : cases) {
+    stream.reset();
+    NormalSpriteFixture fixture(test_case.tcc, test_case.filtered);
+    auto chain = make_normal_jak2_chain(false, false, false, nullptr, false, 1, nullptr,
+                                        &fixture);
+    const u32 next_bucket = chain.finish();
+
+    auto* color_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                     width:kDistortTargetWidth
+                                    height:kDistortTargetHeight
+                                 mipmapped:NO];
+    color_desc.usage = MTLTextureUsageRenderTarget;
+#if TARGET_OS_OSX
+    color_desc.storageMode = MTLStorageModeManaged;
+#else
+    color_desc.storageMode = MTLStorageModeShared;
+#endif
+    id<MTLTexture> color = [device newTextureWithDescriptor:color_desc];
+    ASSERT(color);
+
+    auto* depth_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                     width:kDistortTargetWidth
+                                    height:kDistortTargetHeight
+                                 mipmapped:NO];
+    depth_desc.usage = MTLTextureUsageRenderTarget;
+    depth_desc.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> depth = [device newTextureWithDescriptor:depth_desc];
+    ASSERT(depth);
+
+    id<MTLCommandBuffer> commands = [queue commandBuffer];
+    auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = color;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.colorAttachments[0].clearColor =
+        MTLClearColorMake(clear.r / 255.f, clear.g / 255.f, clear.b / 255.f, 1.f);
+    pass.depthAttachment.texture = depth;
+    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.storeAction = MTLStoreActionStore;
+    pass.depthAttachment.clearDepth = 0;
+    pass.stencilAttachment.texture = depth;
+    pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    pass.stencilAttachment.clearStencil = 0;
+
+    MetalFrameContext ctx;
+    ctx.cmds = commands;
+    ctx.enc = [commands renderCommandEncoderWithDescriptor:pass];
+    ctx.pso_cache = &pso_cache;
+    ctx.sampler_cache = &sampler_cache;
+    ctx.stream = &stream;
+    ctx.color_format = MTLPixelFormatBGRA8Unorm;
+    ctx.depth_format = MTLPixelFormatDepth32Float_Stencil8;
+    ctx.game_color = color;
+    ctx.game_depth = depth;
+    ctx.game_viewport = {0.0, 0.0, kDistortTargetWidth, kDistortTargetHeight, 0.0, 1.0};
+    [ctx.enc setCullMode:MTLCullModeNone];
+    [ctx.enc setViewport:ctx.game_viewport];
+
+    MetalSharedRenderState state;
+    state.version = GameVersion::Jak2;
+    state.next_bucket = next_bucket;
+    state.texture_pool = &texture_pool;
+    state.game_res_w = kDistortTargetWidth;
+    state.game_res_h = kDistortTargetHeight;
+    DmaFollower dma(chain.bytes.data(), 0, chain.bytes.size());
+    MetalSpriteRenderer renderer("synthetic-jak2-normal-sprite", 313);
+    renderer.render(dma, &state, ctx);
+
+    ASSERT(dma.current_tag_offset() == next_bucket);
+    ASSERT(renderer.stats().normal_sprites_submitted == 1);
+    ASSERT(renderer.stats().draw_calls == 1);
+    ASSERT(renderer.stats().triangles == 2);
+    ASSERT(renderer.stats().missing_textures == 0);
+    [ctx.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> sync = [commands blitCommandEncoder];
+    [sync synchronizeResource:color];
+    [sync endEncoding];
+#endif
+    [commands commit];
+    [commands waitUntilCompleted];
+    if (commands.status != MTLCommandBufferStatusCompleted && commands.error) {
+      std::printf("Metal command-buffer error: %s\n",
+                  commands.error.localizedDescription.UTF8String);
+    }
+    ASSERT(commands.status == MTLCommandBufferStatusCompleted);
+
+    std::vector<u8> pixels(kDistortTargetWidth * kDistortTargetHeight * 4);
+    [color getBytes:pixels.data()
+        bytesPerRow:kDistortTargetWidth * 4
+         fromRegion:MTLRegionMake2D(0, 0, kDistortTargetWidth, kDistortTargetHeight)
+        mipmapLevel:0];
+    const Pixel center = read_bgra_pixel(pixels, 64, 48);
+    const Pixel feather = read_bgra_pixel(pixels, 36, 48);
+    if (test_case.tcc) {
+      ASSERT(center.a >= 56 && center.a <= 72);
+      ASSERT(!pixel_near(center, clear));
+      ASSERT(pixel_near(feather, clear));
+    } else {
+      constexpr Pixel opaque_source = {200, 120, 40, 255};
+      ASSERT(pixel_near(center, opaque_source, 3));
+      ASSERT(pixel_near(feather, opaque_source, 3));
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+    texture_pool.unload_texture(source_id, source_handle);
+  }
+  metal_texture_release(source_handle);
+  metal_texture_release(placeholder);
+  texture_pool.set_placeholder(0);
+  ASSERT(metal_texture_live_count() == initial_live_textures);
+}
+
 void test_multi_distorter_spatial_sampling_and_alpha() {
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();
   ASSERT(device);
@@ -813,6 +1055,7 @@ int main() {
     test_jak2_hud_program();
     test_jak2_glow_marker_is_not_submitted_as_an_ordinary_sprite();
     test_control_led_glow_without_constants_remains_explicitly_unsupported();
+    test_normal_sprite_tcc_is_independent_of_filter();
     test_multi_distorter_spatial_sampling_and_alpha();
   }
   std::puts("jak2-metal-sprite-renderer-test: PASS");

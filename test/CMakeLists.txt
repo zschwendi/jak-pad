@@ -40,6 +40,10 @@ add_executable(goalc-test
 target_link_libraries(goalc-test common runtime compiler gtest decomp Zydis libzstd_static tree-sitter)
 
 if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
+  add_executable(draw-mode-test ${CMAKE_CURRENT_LIST_DIR}/common/test_draw_mode.cpp)
+  target_link_libraries(draw-mode-test PRIVATE common)
+  add_test(NAME draw-mode COMMAND draw-mode-test)
+
   add_executable(dma-chain-validation-test
                  ${CMAKE_CURRENT_LIST_DIR}/common/test_dma_chain_validation.cpp)
   target_compile_definitions(dma-chain-validation-test PRIVATE NO_ASSERT=1)
