@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <vector>
 
 #include "common/log/log.h"
@@ -53,6 +55,142 @@ struct GlowDrawRecord {
 
 constexpr int kScissorWidth = 512;
 constexpr int kScissorHeight = 416;
+
+bool glow_texture_diagnostic_enabled() {
+  const char* value = std::getenv("GOALPAD_JAK2_DEBUG_LOG_GLOW_TEXTURES");
+  return value && value[0] == '1' && value[1] == '\0';
+}
+
+struct TextureDiagnosticKey {
+  u32 tbp = 0;
+  u16 page = 0;
+  u16 tex = 0;
+  u64 handle = 0;
+  bool pool_entry = false;
+  bool placeholder = false;
+};
+
+struct TextureDiagnosticLogState {
+  std::mutex mutex;
+  std::array<TextureDiagnosticKey, 8> keys = {};
+  std::size_t count = 0;
+};
+
+TextureDiagnosticLogState& texture_diagnostic_log_state() {
+  static TextureDiagnosticLogState state;
+  return state;
+}
+
+struct TextureRegionSummary {
+  u64 count = 0;
+  std::array<u8, 4> minimum = {255, 255, 255, 255};
+  std::array<u8, 4> maximum = {};
+  std::array<u64, 4> sum = {};
+
+  void add(const u8* rgba) {
+    count++;
+    for (std::size_t channel = 0; channel < 4; channel++) {
+      minimum[channel] = std::min(minimum[channel], rgba[channel]);
+      maximum[channel] = std::max(maximum[channel], rgba[channel]);
+      sum[channel] += rgba[channel];
+    }
+  }
+
+  u32 min(std::size_t channel) const { return count ? minimum[channel] : 0; }
+  u32 max(std::size_t channel) const { return count ? maximum[channel] : 0; }
+  u64 average_x100(std::size_t channel) const {
+    return count ? (sum[channel] * 100 + count / 2) / count : 0;
+  }
+};
+
+void log_glow_texture_diagnostic(u32 tbp, TexturePool* texture_pool) {
+  TextureDiagnosticKey key;
+  u16 gpu_width = 0;
+  u16 gpu_height = 0;
+  u64 mtl_width = 0;
+  u64 mtl_height = 0;
+  bool source_available = false;
+  TextureRegionSummary center;
+  TextureRegionSummary edge;
+  std::size_t index = 0;
+
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool->mutex());
+    GpuTexture* gpu_texture = texture_pool->lookup_gpu_texture(tbp);
+    const auto handle = texture_pool->lookup(tbp);
+    key.tbp = tbp;
+    key.pool_entry = gpu_texture != nullptr;
+    key.handle = handle.value_or(0);
+    if (gpu_texture) {
+      key.page = gpu_texture->tex_id.page;
+      key.tex = gpu_texture->tex_id.tex;
+      key.placeholder = gpu_texture->is_placeholder;
+      if (!gpu_texture->is_placeholder) {
+        gpu_width = gpu_texture->w;
+        gpu_height = gpu_texture->h;
+      }
+    }
+
+    auto& log_state = texture_diagnostic_log_state();
+    {
+      std::lock_guard<std::mutex> log_lock(log_state.mutex);
+      for (std::size_t i = 0; i < log_state.count; i++) {
+        const auto& logged = log_state.keys[i];
+        if (logged.tbp == key.tbp && logged.page == key.page && logged.tex == key.tex &&
+            logged.handle == key.handle && logged.pool_entry == key.pool_entry &&
+            logged.placeholder == key.placeholder) {
+          return;
+        }
+      }
+      if (log_state.count >= log_state.keys.size()) {
+        return;
+      }
+      index = log_state.count;
+      log_state.keys[log_state.count++] = key;
+    }
+
+    id<MTLTexture> metal_texture = handle ? metal_texture_lookup(*handle) : nil;
+    if (metal_texture) {
+      mtl_width = metal_texture.width;
+      mtl_height = metal_texture.height;
+    }
+
+    const u8* source =
+        gpu_texture && !gpu_texture->is_placeholder ? gpu_texture->get_data_ptr() : nullptr;
+    if (source && gpu_width && gpu_height) {
+      source_available = true;
+      const u32 center_x_begin = gpu_width / 4;
+      const u32 center_x_end = gpu_width - center_x_begin;
+      const u32 center_y_begin = gpu_height / 4;
+      const u32 center_y_end = gpu_height - center_y_begin;
+      for (u32 y = 0; y < gpu_height; y++) {
+        for (u32 x = 0; x < gpu_width; x++) {
+          const std::size_t offset = (static_cast<std::size_t>(y) * gpu_width + x) * 4;
+          const bool is_center =
+              x >= center_x_begin && x < center_x_end && y >= center_y_begin && y < center_y_end;
+          (is_center ? center : edge).add(source + offset);
+        }
+      }
+    }
+  }
+
+  lg::info("Metal glow texture diagnostic: index={} tbp={} pool={} page={} tex={} handle={} "
+           "gpu_width={} gpu_height={} mtl_width={} mtl_height={} placeholder={} source={} "
+           "center_count={} center_r_min={} center_r_max={} center_r_avg_x100={} center_g_min={} "
+           "center_g_max={} center_g_avg_x100={} center_b_min={} center_b_max={} "
+           "center_b_avg_x100={} center_a_min={} center_a_max={} center_a_avg_x100={} "
+           "edge_count={} edge_r_min={} edge_r_max={} edge_r_avg_x100={} edge_g_min={} "
+           "edge_g_max={} edge_g_avg_x100={} edge_b_min={} edge_b_max={} edge_b_avg_x100={} "
+           "edge_a_min={} edge_a_max={} edge_a_avg_x100={}",
+           index, key.tbp, key.pool_entry ? 1 : 0, key.page, key.tex, key.handle, gpu_width,
+           gpu_height, mtl_width, mtl_height, key.placeholder ? 1 : 0, source_available ? 1 : 0,
+           center.count, center.min(0), center.max(0), center.average_x100(0), center.min(1),
+           center.max(1), center.average_x100(1), center.min(2), center.max(2),
+           center.average_x100(2), center.min(3), center.max(3), center.average_x100(3), edge.count,
+           edge.min(0), edge.max(0), edge.average_x100(0), edge.min(1), edge.max(1),
+           edge.average_x100(1), edge.min(2), edge.max(2), edge.average_x100(2), edge.min(3),
+           edge.max(3), edge.average_x100(3));
+}
 
 bool try_make_record(const SpriteGlowOutput& sprite,
                      u32 index_offset,
@@ -500,7 +638,11 @@ void MetalGlowRenderer::draw(const SpriteGlowOutput* sprites,
   [ctx.enc setFragmentTexture:m_probe_color[kDownsampleIterations - 1] atIndex:1];
   [ctx.enc setFragmentSamplerState:probe_sampler atIndex:1];
 
+  const bool log_glow_textures = glow_texture_diagnostic_enabled();
   for (const auto& record : records) {
+    if (log_glow_textures) {
+      log_glow_texture_diagnostic(record.tbp, render_state->texture_pool);
+    }
     std::optional<u64> handle = render_state->texture_pool->lookup(record.tbp);
     const bool placeholder_backed =
         handle && *handle == render_state->texture_pool->get_placeholder_texture();
