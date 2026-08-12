@@ -1079,6 +1079,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       live_pris_eye_plans[i] = *plan;
     }
+    static_assert(GOAL_JAK2_PRIS2_CAPTURE_BUCKET_COUNT ==
+                  metal_renderer::kJak2Pris2CaptureBuckets.size());
+    for (std::size_t i = 0; i < metal_renderer::kJak2Pris2CaptureBuckets.size(); ++i) {
+      const u32 bucket_id = metal_renderer::kJak2Pris2CaptureBuckets[i];
+      const auto capture = metal_renderer::capture_jak2_tfrag_texture_upload(
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id);
+      record_texture_upload_metrics(&host->metrics.pris2_bucket_captures[i], bucket_id, capture);
+    }
     Jak2WaterTextureUploadPlans water_texture_plans;
     static_assert(GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT ==
                   metal_renderer::kJak2WaterTextureUploadBuckets.size());

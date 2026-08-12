@@ -361,6 +361,9 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
   for (const auto& upload : metal.shrub_texture_uploads) {
     print_texture_capture("shrub", upload);
   }
+  for (const auto& capture : metal.pris2_bucket_captures) {
+    print_texture_capture("pris2-capture", capture);
+  }
   print_texture_capture("common-tfrag", metal.common_tfrag_texture_upload);
   std::printf(
       "common-tfrag-skull-gem: ordinary=%llu prepared=%llu published=%llu "

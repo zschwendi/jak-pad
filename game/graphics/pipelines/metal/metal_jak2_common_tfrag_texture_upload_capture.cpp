@@ -235,6 +235,8 @@ bool is_audited_tfrag_texture_upload_bucket(u32 bucket_id) {
          std::find(kJak2PrisTextureUploadBuckets.begin(),
                    kJak2PrisTextureUploadBuckets.end(), bucket_id) !=
              kJak2PrisTextureUploadBuckets.end() ||
+         std::find(kJak2Pris2CaptureBuckets.begin(), kJak2Pris2CaptureBuckets.end(), bucket_id) !=
+             kJak2Pris2CaptureBuckets.end() ||
          std::find(kJak2WaterTextureUploadBuckets.begin(),
                    kJak2WaterTextureUploadBuckets.end(), bucket_id) !=
              kJak2WaterTextureUploadBuckets.end();

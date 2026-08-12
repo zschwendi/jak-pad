@@ -17,6 +17,8 @@ constexpr std::array<u32, 7> kJak2NormalShrubTextureUploadBuckets = {
     73, 82, 91, 100, 109, 118, 191};
 constexpr std::array<u32, 6> kJak2AlphaTextureUploadBuckets = {127, 137, 147, 157, 167, 177};
 constexpr std::array<u32, 6> kJak2PrisTextureUploadBuckets = {196, 200, 204, 208, 212, 216};
+// Observation-only Samos-hut probes. These buckets remain deferred in the Metal bucket table.
+constexpr std::array<u32, 2> kJak2Pris2CaptureBuckets = {228, 229};
 constexpr std::array<u32, 6> kJak2WaterTextureUploadBuckets = {252, 261, 270, 279, 288, 297};
 constexpr std::size_t kJak2CommonTfragTextureUploadMaximumTransfers = 64;
 constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
@@ -257,13 +259,14 @@ struct Jak2CommonTfragTextureUploadPlan {
 };
 
 /*!
- * Inspect one audited Jak II TFRAG or SHRUB texture-setup bucket using tag and VIF metadata only.
+ * Inspect one audited Jak II texture-setup bucket or exact PRIS2 diagnostic bucket using tag and
+ * VIF metadata only.
  * The capture never reads transfer payload contents, retains no source pointers, and performs no
  * texture-pool or renderer mutation. The fixed-size result owns every recorded scalar and is safe
  * after the source snapshot is reused. Tag locations are relative to the bucket-table entry. Eye
  * DMA and otherwise unclassified work are reported as EyeOrOther rather than treated as executable
  * texture uploads. A valid result means only that the bounded metadata envelope was traversed
- * safely; it does not make animator or eye work executable.
+ * safely; it does not make animator, eye, PRIS2 texture, or PRIS2 Merc work executable.
  */
 Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
     const u8* dma_packet_snapshot,

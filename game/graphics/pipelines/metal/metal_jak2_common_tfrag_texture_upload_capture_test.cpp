@@ -28,6 +28,8 @@ constexpr u32 kEyeOrdinaryOffset = 0x8000;
 constexpr u32 kEyeFirstOffset = 0x9000;
 constexpr u32 kEyeSecondOffset = 0xa000;
 constexpr u32 kEyeDirectOffset = 0xb000;
+constexpr u32 kPris2MercSetupOffset = 0xc000;
+constexpr u32 kPris2MercModelOffset = 0xd000;
 constexpr u32 kPrisAnimatorOffset = 0x8800;
 constexpr u32 kPrisAnimatorBodyTagOffset = kPrisAnimatorOffset + 16;
 constexpr u32 kPrisAnimatorBodyOffset = kPrisAnimatorBodyTagOffset + 16;
@@ -282,6 +284,30 @@ std::vector<u8> make_normal_ordinary_fixture(u32 bucket_id,
           static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
   std::fill_n(packet.begin() + direct_setup_offset + 16, 160, 0x52);
   put_tag(&packet, direct_setup_offset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  return packet;
+}
+
+std::vector<u8> make_pris2_merc_capture_fixture() {
+  constexpr u32 bucket_id = 229;
+  std::vector<u8> packet(kMemorySize);
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
+  const u32 gs_setup_offset = kPris2MercSetupOffset + 176;
+  const u32 setup_link_offset = gs_setup_offset + 64;
+  const u32 model_link_offset = kPris2MercModelOffset + 80;
+
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0,
+          kPris2MercSetupOffset, 0, 0);
+  put_tag(&packet, kPris2MercSetupOffset, DmaTag::Kind::CNT, 10, 0,
+          (static_cast<u32>(VifCode::Kind::STCYCL) << 24) | 0x404,
+          static_cast<u32>(VifCode::Kind::STMOD) << 24);
+  std::fill_n(packet.begin() + kPris2MercSetupOffset + 16, 160, 0x61);
+  put_tag(&packet, gs_setup_offset, DmaTag::Kind::CNT, 3, 0, 0, kDirectVif | 3);
+  std::fill_n(packet.begin() + gs_setup_offset + 16, 48, 0x62);
+  put_tag(&packet, setup_link_offset, DmaTag::Kind::NEXT, 0, kPris2MercModelOffset, 0,
+          0);
+  put_tag(&packet, kPris2MercModelOffset, DmaTag::Kind::CNT, 4, 0, 0, kPcPortVif);
+  std::fill_n(packet.begin() + kPris2MercModelOffset + 16, 64, 0x63);
+  put_tag(&packet, model_link_offset, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
   return packet;
 }
 
@@ -720,6 +746,64 @@ void test_texture_bucket_allowlist() {
              packet.data(), packet.size(), kChainOffset, 8)
              .valid,
         "an unaudited bucket cannot enter the TFRAG texture classifier");
+}
+
+void test_pris2_diagnostic_capture() {
+  constexpr u32 kPris2TextureBucket = 228;
+  constexpr u32 kPris2MercBucket = 229;
+  static_assert(metal_renderer::kJak2Pris2CaptureBuckets[0] == kPris2TextureBucket);
+  static_assert(metal_renderer::kJak2Pris2CaptureBuckets[1] == kPris2MercBucket);
+
+  for (const u32 bucket_id : metal_renderer::kJak2Pris2CaptureBuckets) {
+    const auto result = capture(make_empty_fixture(bucket_id), bucket_id);
+    check(result.valid && !result.present && result.classification == Classification::Absent &&
+              result.transfer_count == 1 && result.inert_transfers == 1 &&
+              result.total_payload_bytes == 0,
+          "each selected PRIS2 diagnostic bucket accepts an exact empty chain");
+  }
+
+  auto texture_packet = make_normal_ordinary_fixture(kPris2TextureBucket);
+  auto result = capture(texture_packet, kPris2TextureBucket);
+  check(result.valid && result.present &&
+            result.classification == Classification::OrdinaryOnly &&
+            result.transfer_count == 5 && result.total_payload_bytes == 176 &&
+            result.inert_transfers == 3 && result.ordinary_descriptors == 1 &&
+            result.direct_setup_transfers == 1 && result.animator_arrays == 0 &&
+            result.eye_markers == 0 && result.other_transfers == 0 &&
+            result.malformed_transfers == 0,
+        "PRIS2 bucket 228 reports the audited descriptor-and-standard-reset envelope");
+  check(!metal_renderer::plan_jak2_normal_tfrag_texture_upload(
+             texture_packet.data(), texture_packet.size(), kChainOffset, kPris2TextureBucket,
+             texture_packet.data(), texture_packet.size()) &&
+            !metal_renderer::plan_jak2_pris_eye_texture_upload(
+                texture_packet.data(), texture_packet.size(), kChainOffset, kPris2TextureBucket,
+                texture_packet.data(), texture_packet.size()),
+        "PRIS2 bucket 228 capture does not promote it to a texture or eye execution plan");
+
+  const auto merc_packet = make_pris2_merc_capture_fixture();
+  result = capture(merc_packet, kPris2MercBucket);
+  check(result.valid && result.present &&
+            result.classification == Classification::EyeOrOther &&
+            result.transfer_count == 6 && result.total_payload_bytes == 272 &&
+            result.inert_transfers == 3 && result.ordinary_descriptors == 0 &&
+            result.direct_setup_transfers == 0 && result.animator_arrays == 0 &&
+            result.eye_markers == 0 && result.other_transfers == 3 &&
+            result.malformed_transfers == 0 && result.transfers[1].payload_bytes == 160 &&
+            result.transfers[1].vif0_kind == static_cast<u8>(VifCode::Kind::STCYCL) &&
+            result.transfers[2].payload_bytes == 48 &&
+            result.transfers[2].vif1_kind == static_cast<u8>(VifCode::Kind::DIRECT) &&
+            result.transfers[4].payload_bytes == 64 &&
+            result.transfers[4].vif1_kind == static_cast<u8>(VifCode::Kind::PC_PORT),
+        "PRIS2 bucket 229 owns bounded scalar metadata for a Merc-shaped packet");
+
+  for (u32 bucket_id = 224; bucket_id <= 251; ++bucket_id) {
+    if (bucket_id == kPris2TextureBucket || bucket_id == kPris2MercBucket) {
+      continue;
+    }
+    const auto other = make_empty_fixture(bucket_id);
+    check(!capture(other, bucket_id).valid,
+          "every other PRIS2 bucket remains outside the diagnostic allowlist");
+  }
 }
 
 void test_pris_eye_execution_plan() {
@@ -1840,6 +1924,7 @@ void test_transfer_limit_is_enforced() {
 int main() {
   test_exact_empty_and_ordinary_metadata();
   test_texture_bucket_allowlist();
+  test_pris2_diagnostic_capture();
   test_pris_eye_execution_plan();
   test_pris_eye_live_copy_semantics();
   test_pris_prison_jak_animator_variants();

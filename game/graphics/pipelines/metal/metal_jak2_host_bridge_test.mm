@@ -2,6 +2,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -29,6 +30,11 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 namespace {
+
+static_assert(offsetof(goal_jak2_metal_host_metrics, pris2_bucket_captures) +
+                  sizeof(goal_jak2_tfrag_texture_upload_metrics) *
+                      GOAL_JAK2_PRIS2_CAPTURE_BUCKET_COUNT ==
+              sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
 constexpr u32 kBucketCount = static_cast<u32>(jak2::BucketId::MAX_BUCKETS);
@@ -952,6 +958,8 @@ int main() {
       127, 137, 147, 157, 167, 177};
   constexpr std::array<u32, GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT> kPrisBuckets = {
       196, 200, 204, 208, 212, 216};
+  constexpr std::array<u32, GOAL_JAK2_PRIS2_CAPTURE_BUCKET_COUNT> kPris2CaptureBuckets = {228,
+                                                                                         229};
   constexpr std::array<u32, GOAL_JAK2_WATER_TEXTURE_UPLOAD_BUCKET_COUNT> kWaterBuckets = {
       252, 261, 270, 279, 288, 297};
   check(texture_captures_are_empty(metrics.tfrag_texture_uploads, kTfragBuckets),
@@ -962,6 +970,10 @@ int main() {
         "the host records all six empty source-identical alpha texture setup buckets");
   check(texture_captures_are_empty(metrics.pris_texture_uploads, kPrisBuckets),
         "the host records all six empty per-level PRIS texture buckets without executing them");
+  check(texture_captures_are_empty(metrics.pris2_bucket_captures, kPris2CaptureBuckets) &&
+            metrics.pris2_bucket_captures[0].executions == 0 &&
+            metrics.pris2_bucket_captures[1].executions == 0,
+        "the host passively records empty PRIS2 buckets 228/229 without executing them");
   check(metrics.last_pris_eye_dispatches == kPrisBuckets.size() &&
             metrics.last_pris_eye_present_dispatches == 0 &&
             metrics.last_pris_eye_chunks == 0 && metrics.last_eye_composed == 0 &&
