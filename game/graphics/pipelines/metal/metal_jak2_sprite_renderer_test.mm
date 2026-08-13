@@ -838,15 +838,15 @@ void test_normal_sprite_tcc_is_independent_of_filter() {
          fromRegion:MTLRegionMake2D(0, 0, kDistortTargetWidth, kDistortTargetHeight)
         mipmapLevel:0];
     const Pixel center = read_bgra_pixel(pixels, 64, 48);
-    const Pixel feather = read_bgra_pixel(pixels, 36, 48);
+    const Pixel transparent_texel = read_bgra_pixel(pixels, 90, 48);
     if (test_case.tcc) {
       ASSERT(center.a >= 56 && center.a <= 72);
       ASSERT(!pixel_near(center, clear));
-      ASSERT(pixel_near(feather, clear));
+      ASSERT(pixel_near(transparent_texel, clear));
     } else {
       constexpr Pixel opaque_source = {200, 120, 40, 255};
       ASSERT(pixel_near(center, opaque_source, 3));
-      ASSERT(pixel_near(feather, opaque_source, 3));
+      ASSERT(pixel_near(transparent_texel, opaque_source, 3));
     }
   }
 
