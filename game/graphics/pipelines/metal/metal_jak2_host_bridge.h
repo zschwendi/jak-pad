@@ -378,6 +378,13 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_shadow_bucket195_metrics shadow_bucket195;
   // Append-only passive metadata. Bucket 317 remains DeferredSkip with no execution route.
   goal_jak2_gmerc_warp_bucket317_metrics gmerc_warp_bucket317;
+  // Append-only runtime diagnostics for the active BlitDisplays renderer.
+  uint32_t last_blit_display_snapshot_requested;
+  uint32_t last_blit_display_copy_back_requested;
+  uint32_t last_blit_display_copy_back_performed;
+  uint32_t last_blit_display_texture_tbp;
+  uint32_t last_blit_display_texture_lookup_hit;
+  uint32_t last_blit_display_used_placeholder;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

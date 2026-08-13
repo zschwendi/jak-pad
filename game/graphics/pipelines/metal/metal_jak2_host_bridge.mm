@@ -370,6 +370,17 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_sky_draw_batch_alpha_test_mode = sky_batch.alpha_test_mode;
   host->metrics.last_sky_draw_batch_alpha_aref = sky_batch.alpha_aref;
   host->metrics.last_sky_draw_batch_alpha_afail = sky_batch.alpha_afail;
+  host->metrics.last_blit_display_snapshot_requested =
+      stats.jak2_blit_display_snapshot_requested;
+  host->metrics.last_blit_display_copy_back_requested =
+      stats.jak2_blit_display_copy_back_requested;
+  host->metrics.last_blit_display_copy_back_performed =
+      stats.jak2_blit_display_copy_back_performed;
+  host->metrics.last_blit_display_texture_tbp = stats.jak2_blit_display_texture_tbp;
+  host->metrics.last_blit_display_texture_lookup_hit =
+      stats.jak2_blit_display_texture_lookup_hit;
+  host->metrics.last_blit_display_used_placeholder =
+      stats.jak2_blit_display_used_placeholder;
   host->metrics.last_screen_filter_draws = stats.jak2_screen_filter_draws;
   host->metrics.last_screen_filter_triangles = stats.jak2_screen_filter_triangles;
   host->metrics.last_progress_draws = stats.jak2_progress_draws;

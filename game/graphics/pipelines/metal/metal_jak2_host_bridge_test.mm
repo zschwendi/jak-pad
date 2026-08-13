@@ -16,6 +16,7 @@
 #include "common/util/compress.h"
 
 #include "game/graphics/opengl_renderer/buckets.h"
+#include "game/graphics/pipelines/metal/metal_jak2_blit_display_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_fixture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_effects_bucket315_capture.h"
@@ -37,8 +38,8 @@
 
 namespace {
 
-static_assert(offsetof(goal_jak2_metal_host_metrics, gmerc_warp_bucket317) +
-                  sizeof(goal_jak2_gmerc_warp_bucket317_metrics) ==
+static_assert(offsetof(goal_jak2_metal_host_metrics, last_blit_display_used_placeholder) +
+                  sizeof(uint32_t) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -106,6 +107,9 @@ constexpr u32 kShadowCaptureOffset = kChainOffset + 0x18600;
 constexpr u32 kGmercWarpBucket = metal_renderer::kJak2GmercWarpBucket;
 static_assert(kGmercWarpBucket == static_cast<u32>(jak2::BucketId::GMERC_WARP));
 constexpr u32 kGmercWarpPayloadOffset = kChainOffset + 0x18c00;
+constexpr u32 kBlitDisplayBucket = metal_renderer::kJak2BlitDisplayBucket;
+static_assert(kBlitDisplayBucket == static_cast<u32>(jak2::BucketId::BUCKET_3));
+constexpr u32 kBlitDisplayPayloadOffset = kChainOffset + 0x19000;
 constexpr std::size_t kGifQwords = 7;
 constexpr std::size_t kGifBytes = kGifQwords * 16;
 constexpr u16 kTexturePageId = 11;
@@ -1138,6 +1142,31 @@ void make_textured_sky_draw_chain(u32 texture_vram) {
   put_textured_direct_draw(kSkyDrawBucket, kSkyDrawPayloadOffset, texture_vram);
 }
 
+void put_blit_display_snapshot(bool copy_back) {
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  const u32 bucket_offset = kChainOffset + kBlitDisplayBucket * 16;
+  std::memset(static_cast<u8*>(g_ee_main_mem) + kBlitDisplayPayloadOffset, 0, 0x80);
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kBlitDisplayPayloadOffset);
+  u32 cursor = kBlitDisplayPayloadOffset;
+  put_tag(cursor, DmaTag::Kind::CNT, 1, 0, kPcPort | 0x10,
+          kPcPort | metal_renderer::kJak2BlitDisplayTbp);
+  cursor += 32;
+  if (copy_back) {
+    put_tag(cursor, DmaTag::Kind::NEXT, 0, cursor + 16);
+    cursor += 16;
+    put_tag(cursor, DmaTag::Kind::CNT, 0, 0, kPcPort | 0x11, kPcPort);
+    cursor += 16;
+  }
+  put_tag(cursor, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_blit_snapshot_sky_draw_chain(bool copy_back) {
+  make_empty_chain();
+  put_blit_display_snapshot(copy_back);
+  put_textured_direct_draw(kSkyDrawBucket, kSkyDrawPayloadOffset,
+                           metal_renderer::kJak2BlitDisplayTbp);
+}
+
 void make_map_texture_upload_and_progress_chain(s64 mode = -1) {
   make_empty_chain();
   put_map_texture_upload(1, mode);
@@ -1543,6 +1572,50 @@ int main() {
             metrics.last_sky_draw_batch_used_placeholder == 0,
         "SKY_DRAW resolved the configured GAME texture through upload and relocation mapping");
 
+  make_blit_snapshot_sky_draw_chain(false);
+  callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(host, &metrics),
+        "copied metrics after a BlitDisplays snapshot feeds SKY_DRAW");
+  check(metrics.chains == 6 && metrics.completed_chains == 6 && metrics.failed_chains == 0 &&
+            metrics.last_blit_display_snapshot_requested == 1 &&
+            metrics.last_blit_display_copy_back_requested == 0 &&
+            metrics.last_blit_display_copy_back_performed == 0 &&
+            metrics.last_blit_display_texture_tbp == metal_renderer::kJak2BlitDisplayTbp &&
+            metrics.last_blit_display_texture_lookup_hit == 1 &&
+            metrics.last_blit_display_used_placeholder == 0,
+        "host ABI exposes the successful snapshot, TBP, lookup, and non-placeholder result");
+  check(metrics.last_sky_draw_batch_valid == 1 &&
+            metrics.last_sky_draw_batch_textured == 1 &&
+            metrics.last_sky_draw_batch_tex0_tbp == metal_renderer::kJak2BlitDisplayTbp &&
+            metrics.last_sky_draw_batch_texture_lookup_hit == 1 &&
+            metrics.last_sky_draw_batch_used_placeholder == 0 &&
+            metrics.last_sky_draw_batch_blend_enabled == 1 &&
+            metrics.last_sky_draw_batch_blend_a ==
+                static_cast<uint32_t>(GsAlpha::BlendMode::SOURCE) &&
+            metrics.last_sky_draw_batch_blend_b ==
+                static_cast<uint32_t>(GsAlpha::BlendMode::DEST) &&
+            metrics.last_sky_draw_batch_blend_c ==
+                static_cast<uint32_t>(GsAlpha::BlendMode::SOURCE) &&
+            metrics.last_sky_draw_batch_blend_d ==
+                static_cast<uint32_t>(GsAlpha::BlendMode::DEST),
+        "SKY_DRAW ABI correlates the snapshot TBP lookup with its exact blend equation");
+
+  make_blit_snapshot_sky_draw_chain(true);
+  callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(host, &metrics),
+        "copied metrics after the first-menu snapshot and copy-back shape");
+  check(metrics.chains == 7 && metrics.completed_chains == 7 && metrics.failed_chains == 0 &&
+            metrics.last_blit_display_snapshot_requested == 1 &&
+            metrics.last_blit_display_copy_back_requested == 1 &&
+            metrics.last_blit_display_copy_back_performed == 1 &&
+            metrics.last_blit_display_texture_tbp == metal_renderer::kJak2BlitDisplayTbp &&
+            metrics.last_blit_display_texture_lookup_hit == 1 &&
+            metrics.last_blit_display_used_placeholder == 0 &&
+            metrics.last_sky_draw_batch_tex0_tbp == metal_renderer::kJak2BlitDisplayTbp &&
+            metrics.last_sky_draw_batch_texture_lookup_hit == 1 &&
+            metrics.last_sky_draw_batch_used_placeholder == 0,
+        "host ABI distinguishes the first-menu copy-back while SKY_DRAW samples the snapshot");
+
   const char* missing_level[] = {"missing-level"};
   callbacks.set_levels(missing_level, 1);
   check(metal_level_data::level_count() == initial_level_count + 2 &&
@@ -1551,8 +1624,8 @@ int main() {
         "a missing requested FR3 leaves neither loader partially resident");
   make_empty_chain();
   callbacks.send_chain(g_ee_main_mem, kChainOffset);
-  check(goal_jak2_metal_host_get_metrics(host, &metrics) && metrics.chains == 6 &&
-            metrics.completed_chains == 5 && metrics.failed_chains == 1,
+  check(goal_jak2_metal_host_get_metrics(host, &metrics) && metrics.chains == 8 &&
+            metrics.completed_chains == 7 && metrics.failed_chains == 1,
         "a requested FR3 load failure fails the next renderer chain closed");
 
   goal_jak2_metal_host_destroy(host);
