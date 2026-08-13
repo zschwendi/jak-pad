@@ -27,8 +27,10 @@ namespace {
 constexpr int kTargetSize = 64;
 constexpr u32 kBlitBucket = static_cast<u32>(jak2::BucketId::BUCKET_3);
 constexpr u32 kSkyDrawBucket = static_cast<u32>(jak2::BucketId::SKY_DRAW);
+constexpr u32 kParticlesBucket = static_cast<u32>(jak2::BucketId::PARTICLES);
 constexpr u32 kProgressBucket = static_cast<u32>(jak2::BucketId::PROGRESS);
 constexpr u32 kProgressSourceTbp = 0x1200;
+constexpr u32 kPauseWarpSourceTbp = 0x4c0;
 
 int failures = 0;
 
@@ -121,6 +123,14 @@ void append_xyzf2(std::vector<u8>* data, u32 x, u32 y) {
   append_qword(data, static_cast<u64>(x) | (static_cast<u64>(y) << 32), kZ << 4);
 }
 
+void append_source_xyzf2(std::vector<u8>* data, u32 x, u32 y) {
+  append_qword(data, static_cast<u64>(x) | (static_cast<u64>(y) << 32));
+}
+
+void append_uv(std::vector<u8>* data, u32 u, u32 v) {
+  append_qword(data, static_cast<u64>(u) | (static_cast<u64>(v) << 32));
+}
+
 void append_st(std::vector<u8>* data, float s, float t) {
   constexpr float kQ = 1.f;
   const std::size_t offset = data->size();
@@ -146,6 +156,103 @@ void append_basic_sprite(std::vector<u8>* payload,
   append_xyzf2(payload, x0, y0);
   append_rgbaq(payload, color);
   append_xyzf2(payload, x1, y1);
+}
+
+std::vector<u8> make_ad_packet(std::initializer_list<std::pair<GsRegisterAddress, u64>> registers) {
+  std::vector<u8> payload;
+  constexpr u64 kAd = static_cast<u64>(GifTag::RegisterDescriptor::AD);
+  append_gif_tag(&payload, static_cast<u16>(registers.size()), kAd, 1, false, 0);
+  for (const auto& [address, value] : registers) {
+    append_qword(&payload, value, static_cast<u64>(address));
+  }
+  return payload;
+}
+
+u64 source_tex0(u32 tbp) {
+  return tbp | (8ull << 14) | (9ull << 26) | (9ull << 30) | (1ull << 34);
+}
+
+std::vector<u8> make_source_pause_sprite(u32 u0,
+                                         u32 v0,
+                                         u32 x0,
+                                         u32 y0,
+                                         u32 u1,
+                                         u32 v1,
+                                         u32 x1,
+                                         u32 y1,
+                                         const std::array<u8, 4>& color) {
+  std::vector<u8> payload;
+  constexpr u64 kRgbaq = static_cast<u64>(GifTag::RegisterDescriptor::RGBAQ);
+  constexpr u64 kUv = static_cast<u64>(GifTag::RegisterDescriptor::UV);
+  constexpr u64 kXyzf2 = static_cast<u64>(GifTag::RegisterDescriptor::XYZF2);
+  constexpr u64 kRegisters = kRgbaq | (kUv << 4) | (kXyzf2 << 8) | (kUv << 12) | (kXyzf2 << 16);
+  constexpr u64 kPrim =
+      static_cast<u64>(GsPrim::Kind::SPRITE) | (1ull << 4) | (1ull << 6) | (1ull << 8);
+  append_gif_tag(&payload, 1, kRegisters, 5, true, kPrim);
+  append_rgbaq(&payload, color);
+  append_uv(&payload, u0, v0);
+  append_source_xyzf2(&payload, x0, y0);
+  append_uv(&payload, u1, v1);
+  append_source_xyzf2(&payload, x1, y1);
+  return payload;
+}
+
+std::vector<std::vector<u8>> make_source_pause_sky_draw(bool include_final_tint) {
+  constexpr u64 kZbuf = 0x130 | (1ull << 24);
+  constexpr u64 kTest = 1ull | (1ull << 1) | (1ull << 16) | (1ull << 17);
+  constexpr u64 kTex1 = (1ull << 5) | (1ull << 6);
+  constexpr u64 kClamp = 0b101;
+  constexpr u64 kSourceOverAlpha = (1ull << 2) | (1ull << 6);
+
+  std::vector<std::vector<u8>> packets;
+  packets.push_back(make_ad_packet({
+      {GsRegisterAddress::ZBUF_1, kZbuf},
+      {GsRegisterAddress::TEST_1, kTest},
+      {GsRegisterAddress::ALPHA_1, 0},
+      {GsRegisterAddress::TEX0_1, source_tex0(kPauseWarpSourceTbp)},
+      {GsRegisterAddress::TEX1_1, kTex1},
+      {GsRegisterAddress::CLAMP_1, kClamp},
+      {GsRegisterAddress::TEXFLUSH, 0},
+  }));
+  packets.push_back(make_source_pause_sprite(8, 8, 0x8000, 0x8000, 8200, 6664, 0x9000, 0x8d00,
+                                             {128, 128, 128, 128}));
+  packets.push_back(make_ad_packet({
+      {GsRegisterAddress::ALPHA_1, kSourceOverAlpha},
+      {GsRegisterAddress::TEX0_1, source_tex0(metal_renderer::kJak2BlitDisplayTbp)},
+      {GsRegisterAddress::TEXFLUSH, 0},
+  }));
+  packets.push_back(make_source_pause_sprite(0, 0, 0x8000, 0x8000, 2048, 1664, 0x9000, 0x8d00,
+                                             {128, 128, 128, 80}));
+  if (include_final_tint) {
+    packets.push_back(make_ad_packet({{GsRegisterAddress::ALPHA_1, 0}}));
+    packets.push_back(make_source_pause_sprite(0, 416 * 16, 0x7000, 0x7300, 512 * 16, 0, 0x9000,
+                                               0x8d00, {160, 112, 32, 128}));
+  }
+  return packets;
+}
+
+void append_source_progress_sprite(std::vector<u8>* payload,
+                                   u32 x0,
+                                   u32 y0,
+                                   u32 x1,
+                                   u32 y1,
+                                   const std::array<u8, 4>& color,
+                                   bool eop) {
+  constexpr u64 kPrimRegister = static_cast<u64>(GifTag::RegisterDescriptor::PRIM);
+  constexpr u64 kRgbaq = static_cast<u64>(GifTag::RegisterDescriptor::RGBAQ);
+  constexpr u64 kXyzf2 = static_cast<u64>(GifTag::RegisterDescriptor::XYZF2);
+  constexpr u64 kRegisters = kPrimRegister | (kRgbaq << 4) | (kXyzf2 << 8) | (kXyzf2 << 12);
+  const u64 tag = 1ull | (static_cast<u64>(eop) << 15) | (1ull << 58) | (4ull << 60);
+  append_qword(payload, tag, kRegisters);
+
+  constexpr u64 kPrim = static_cast<u64>(GsPrim::Kind::SPRITE) | (1ull << 6);
+  const u64 rgba = static_cast<u64>(color[0]) | (static_cast<u64>(color[1]) << 8) |
+                   (static_cast<u64>(color[2]) << 16) | (static_cast<u64>(color[3]) << 24);
+  constexpr u64 kZ = 0x3fffff;
+  const u64 xyz0 = x0 | (static_cast<u64>(y0) << 16) | (kZ << 32);
+  const u64 xyz1 = x1 | (static_cast<u64>(y1) << 16) | (kZ << 32);
+  append_qword(payload, kPrim, rgba);
+  append_qword(payload, xyz0, xyz1);
 }
 
 std::vector<u8> make_spatial_frame_a() {
@@ -234,6 +341,23 @@ void append_textured_sprite(std::vector<u8>* payload,
   append_xyzf2(payload, x1, y1);
 }
 
+std::vector<u8> make_source_progress_alpha_retention() {
+  std::vector<u8> payload;
+  append_ad(&payload, GsRegisterAddress::FRAME_1, frame(MetalProgressRenderer::kScreenFbp, 8));
+  constexpr std::array<u8, 3> kHighlightRgb = {0x40, 0x80, 0x80};
+  append_source_progress_sprite(&payload, 0x7000, 0x7300, 0x8000, 0x8d00,
+                                {kHighlightRgb[0], kHighlightRgb[1], kHighlightRgb[2], 32}, false);
+  append_source_progress_sprite(&payload, 0x8000, 0x7300, 0x9000, 0x8d00,
+                                {kHighlightRgb[0], kHighlightRgb[1], kHighlightRgb[2], 64}, true);
+  return payload;
+}
+
+std::vector<u8> make_source_page_panel() {
+  std::vector<u8> payload;
+  append_source_progress_sprite(&payload, 0x7800, 0x7800, 0x8800, 0x8800, {64, 64, 64, 64}, true);
+  return payload;
+}
+
 std::vector<u8> make_progress_minimap() {
   std::vector<u8> payload;
   append_ad(&payload, GsRegisterAddress::FRAME_1, frame(MetalProgressRenderer::kMinimapFbp, 2));
@@ -320,6 +444,31 @@ struct Pixel {
   u8 a = 0;
 };
 
+Pixel textured_modulate(const Pixel& texture, const Pixel& vertex) {
+  const auto component = [](u8 texel, u8 color, int scale) {
+    return static_cast<u8>(
+        std::clamp(static_cast<int>(std::lround(texel * color * scale / 255.f)), 0, 255));
+  };
+  return {component(texture.r, vertex.r, 2), component(texture.g, vertex.g, 2),
+          component(texture.b, vertex.b, 2), component(texture.a, vertex.a, 4)};
+}
+
+Pixel source_over(const Pixel& source, const Pixel& destination) {
+  const float alpha = source.a / 255.f;
+  const auto component = [alpha](u8 src, u8 dst) {
+    return static_cast<u8>(
+        std::clamp(static_cast<int>(std::lround(src * alpha + dst * (1.f - alpha))), 0, 255));
+  };
+  return {component(source.r, destination.r), component(source.g, destination.g),
+          component(source.b, destination.b), source.a};
+}
+
+Pixel basic_source_over(const Pixel& source, const Pixel& destination) {
+  Pixel shader_source = source;
+  shader_source.a = static_cast<u8>(std::min(255, static_cast<int>(source.a) * 2));
+  return source_over(shader_source, destination);
+}
+
 Pixel pixel_at(const std::vector<u8>& bgra, int x, int y) {
   const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
   return {bgra[offset + 2], bgra[offset + 1], bgra[offset], bgra[offset + 3]};
@@ -355,6 +504,20 @@ id<MTLTexture> make_color_target(id<MTLDevice> device) {
   descriptor.storageMode = MTLStorageModeShared;
 #endif
   return [device newTextureWithDescriptor:descriptor];
+}
+
+void fill_color_target(id<MTLTexture> color, const Pixel& pixel) {
+  std::vector<u8> bgra(kTargetSize * kTargetSize * 4);
+  for (std::size_t offset = 0; offset < bgra.size(); offset += 4) {
+    bgra[offset] = pixel.b;
+    bgra[offset + 1] = pixel.g;
+    bgra[offset + 2] = pixel.r;
+    bgra[offset + 3] = pixel.a;
+  }
+  [color replaceRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+           mipmapLevel:0
+             withBytes:bgra.data()
+           bytesPerRow:kTargetSize * 4];
 }
 
 id<MTLTexture> make_depth_target(id<MTLDevice> device) {
@@ -505,6 +668,17 @@ void render_direct(MetalDirectRenderer* renderer,
                    MetalFrameContext* ctx) {
   renderer->reset_state();
   renderer->render_gif(payload.data(), static_cast<u32>(payload.size()), state, *ctx);
+  renderer->flush_pending(state, *ctx);
+}
+
+void render_direct_packets(MetalDirectRenderer* renderer,
+                           const std::vector<std::vector<u8>>& packets,
+                           MetalSharedRenderState* state,
+                           MetalFrameContext* ctx) {
+  renderer->reset_state();
+  for (const auto& packet : packets) {
+    renderer->render_gif(packet.data(), static_cast<u32>(packet.size()), state, *ctx);
+  }
   renderer->flush_pending(state, *ctx);
 }
 
@@ -871,6 +1045,28 @@ int main() {
               *texture_pool.lookup(kProgressSourceTbp) == progress_source_handle,
           "published the synthetic PROGRESS source texture");
 
+    constexpr Pixel kPauseWarpPixel = {24, 56, 88, 255};
+    const std::array<u8, 4> pause_warp_source = {kPauseWarpPixel.r, kPauseWarpPixel.g,
+                                                 kPauseWarpPixel.b, kPauseWarpPixel.a};
+    const u64 pause_warp_handle =
+        metal_upload_texture_rgba8(device, queue, pause_warp_source.data(), 1, 1);
+    PcTextureId pause_warp_id;
+    {
+      TextureInput input;
+      input.gpu_texture = pause_warp_handle;
+      input.w = 1;
+      input.h = 1;
+      input.debug_page_name = "SYNTHETIC";
+      input.debug_name = "pause-warp-source";
+      std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+      input.id = texture_pool.allocate_pc_port_texture(GameVersion::Jak2);
+      pause_warp_id = input.id;
+      texture_pool.give_texture_and_load_to_vram(input, kPauseWarpSourceTbp);
+    }
+    check(pause_warp_handle != 0 && texture_pool.lookup(kPauseWarpSourceTbp) &&
+              *texture_pool.lookup(kPauseWarpSourceTbp) == pause_warp_handle,
+          "published the synthetic SKY_DRAW scratch texture at TBP 0x4c0");
+
     id<MTLTexture> color = make_color_target(device);
     id<MTLTexture> depth = make_depth_target(device);
     check(color != nil && depth != nil, "created the deterministic 64x64 game targets");
@@ -882,6 +1078,7 @@ int main() {
       MetalJak2BlitDisplayRenderer blit("blit-display", kBlitBucket, &texture_pool);
       MetalDirectRenderer sky("sky-draw", kSkyDrawBucket,
                               metal_renderer::jak2_metal_direct_batch_size(kSkyDrawBucket));
+      MetalDirectRenderer particles("particles", kParticlesBucket, 1024);
       MetalProgressRenderer progress("progress", kProgressBucket,
                                      metal_renderer::jak2_metal_direct_batch_size(kProgressBucket),
                                      device, &texture_pool);
@@ -891,6 +1088,94 @@ int main() {
       state.texture_pool = &texture_pool;
       state.game_res_w = kTargetSize;
       state.game_res_h = kTargetSize;
+
+      constexpr Pixel kCapturedPause = {96, 144, 192, 128};
+      fill_color_target(color, kCapturedPause);
+      stream.reset();
+      auto transition_ctx =
+          begin_frame(queue, color, depth, &pso_cache, &sampler_cache, &stream, true);
+      render_blit(&blit, metal_renderer::Jak2BlitDisplayCommand::Snapshot, &state, &transition_ctx);
+      render_direct_packets(&sky, make_source_pause_sky_draw(false), &state, &transition_ctx);
+      const auto transition_stats = sky.stats();
+      std::vector<u8> transition_frame;
+      check(finish_frame(&transition_ctx, &blit, color, &transition_frame),
+            "source-shaped SKY_DRAW alpha-80 transition completed");
+
+      const Pixel transition_source = textured_modulate(kCapturedPause, {128, 128, 128, 80});
+      const Pixel transition_destination = textured_modulate(kPauseWarpPixel, {128, 128, 128, 128});
+      const Pixel expected_transition = source_over(transition_source, transition_destination);
+      check(near_pixel(pixel_at(transition_frame, 48, 48), expected_transition, 4) &&
+                !near_pixel(pixel_at(transition_frame, 48, 48), transition_source, 4),
+            "SKY_DRAW alpha-80 source-over pass retains its TBP 0x4c0 destination");
+      check(transition_stats.last_batch.textured && transition_stats.last_batch.blend_enabled &&
+                transition_stats.last_batch.blend_a == 0 &&
+                transition_stats.last_batch.blend_b == 1 &&
+                transition_stats.last_batch.blend_c == 0 &&
+                transition_stats.last_batch.blend_d == 1 &&
+                transition_stats.last_batch.tex0_tbp == metal_renderer::kJak2BlitDisplayTbp &&
+                transition_stats.last_batch.tex0_tcc,
+            "the alpha-80 pass preserves source ALPHA (Cs-Cd)*As+Cd and TCC state");
+
+      stream.reset();
+      auto opaque_ctx =
+          begin_frame(queue, color, depth, &pso_cache, &sampler_cache, &stream, false);
+      render_direct_packets(&sky, make_source_pause_sky_draw(true), &state, &opaque_ctx);
+      const auto opaque_stats = sky.stats();
+      std::vector<u8> opaque_frame;
+      check(finish_frame(&opaque_ctx, &blit, color, &opaque_frame),
+            "source-shaped SKY_DRAW final tint completed");
+      const Pixel expected_opaque = textured_modulate(kCapturedPause, {160, 112, 32, 128});
+      check(near_pixel(pixel_at(opaque_frame, 16, 16), expected_opaque, 4) &&
+                near_pixel(pixel_at(opaque_frame, 48, 48), expected_opaque, 4),
+            "raw-zero SKY ALPHA produces the source-intended opaque full-screen tint");
+      check(opaque_stats.last_batch.textured && opaque_stats.last_batch.blend_enabled &&
+                opaque_stats.last_batch.blend_a == 0 && opaque_stats.last_batch.blend_b == 0 &&
+                opaque_stats.last_batch.blend_c == 0 && opaque_stats.last_batch.blend_d == 0,
+            "the final tint retains ABE while raw-zero ALPHA selects blend-disable semantics");
+
+      constexpr Pixel kUiDestination = {200, 104, 24, 255};
+      fill_color_target(color, kUiDestination);
+      stream.reset();
+      auto progress_alpha_ctx =
+          begin_frame(queue, color, depth, &pso_cache, &sampler_cache, &stream, true);
+      render_progress(&progress, make_source_progress_alpha_retention(), &state,
+                      &progress_alpha_ctx);
+      const auto progress_alpha_stats = progress.stats();
+      const auto progress_alpha_targets = progress.target_stats();
+      std::vector<u8> progress_alpha_frame;
+      check(finish_frame(&progress_alpha_ctx, &blit, color, &progress_alpha_frame),
+            "source-shaped PROGRESS alpha-32/64 sprites completed");
+      const Pixel expected_alpha32 = basic_source_over({64, 128, 128, 32}, kUiDestination);
+      const Pixel expected_alpha64 = basic_source_over({64, 128, 128, 64}, kUiDestination);
+      check(near_pixel(pixel_at(progress_alpha_frame, 16, 32), expected_alpha32, 3) &&
+                near_pixel(pixel_at(progress_alpha_frame, 48, 32), expected_alpha64, 3),
+            "PROGRESS alpha-32/64 sprites retain the destination at their distinct weights");
+      check(progress_alpha_targets.frame_registers == 1 &&
+                progress_alpha_targets.current_fbp == MetalProgressRenderer::kScreenFbp &&
+                progress_alpha_targets.to_minimap == 0 && progress_alpha_targets.to_screen == 0 &&
+                progress_alpha_stats.last_batch.blend_enabled &&
+                progress_alpha_stats.last_batch.blend_a == 0 &&
+                progress_alpha_stats.last_batch.blend_b == 1 &&
+                progress_alpha_stats.last_batch.blend_c == 0 &&
+                progress_alpha_stats.last_batch.blend_d == 1,
+            "pause UI stays on source FRAME FBP 408 with standard source-alpha blending");
+
+      fill_color_target(color, kUiDestination);
+      stream.reset();
+      auto panel_ctx = begin_frame(queue, color, depth, &pso_cache, &sampler_cache, &stream, true);
+      render_direct(&particles, make_source_page_panel(), &state, &panel_ctx);
+      const auto panel_stats = particles.stats();
+      std::vector<u8> panel_frame;
+      check(finish_frame(&panel_ctx, &blit, color, &panel_frame),
+            "source-shaped PARTICLES page panel completed");
+      const Pixel expected_panel = basic_source_over({64, 64, 64, 64}, kUiDestination);
+      check(near_pixel(pixel_at(panel_frame, 32, 32), expected_panel, 3) &&
+                !near_pixel(pixel_at(panel_frame, 32, 32), {64, 64, 64, 128}, 3),
+            "RGBA 64/64/64/64 page panel remains approximately half translucent");
+      check(panel_stats.last_batch.blend_enabled && panel_stats.last_batch.blend_a == 0 &&
+                panel_stats.last_batch.blend_b == 1 && panel_stats.last_batch.blend_c == 0 &&
+                panel_stats.last_batch.blend_d == 1,
+            "the page panel keeps the Direct source-over blend equation");
 
       stream.reset();
       auto frame_a_ctx =
@@ -1014,6 +1299,12 @@ int main() {
       texture_pool.unload_texture(progress_source_id, progress_source_handle);
     }
     metal_texture_release(progress_source_handle);
+
+    {
+      std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+      texture_pool.unload_texture(pause_warp_id, pause_warp_handle);
+    }
+    metal_texture_release(pause_warp_handle);
 
     metal_texture_release(placeholder);
     texture_pool.set_placeholder(0);
