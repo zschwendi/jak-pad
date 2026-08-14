@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -253,8 +254,15 @@ struct VagPlayback {
   s32 primary_voice = -1;
   s32 secondary_voice = -1;
   u32 chunks_loaded = 0;
+  u32 sampled_nax = 0;
   u32 last_nax = 0;
   u64 played_bytes = 0;
+  u64 clock_samples = 0;
+  u64 invalid_nax_samples = 0;
+  u64 ring_wraps = 0;
+  u64 position_advances = 0;
+  u64 position_stalls = 0;
+  u64 half_transitions = 0;
   s32 position = 0;
   s32 volume = 0x400;
   s16 pitch_mod = 0;
@@ -271,6 +279,8 @@ struct VagPlayback {
 
 std::array<VagPlayback, 4> g_vag_playbacks;
 std::array<bool, 4> g_vag_voices_used = {};
+std::atomic<u64> g_audio_pull_calls = 0;
+std::atomic<u64> g_audio_pulled_frames = 0;
 s32 g_dialog_volume = 0x400;
 std::vector<u8> g_vag_chunk;
 
@@ -1385,18 +1395,33 @@ void frame_vag_playbacks() {
       continue;
     }
     const u32 nax = sceSdGetAddr(vag_voice_reg(playback.primary_voice, SD_VA_NAX));
+    playback.sampled_nax = nax;
+    playback.clock_samples++;
     if (nax < kVagSram[playback.primary_voice] ||
         nax >= kVagSram[playback.primary_voice] + 0x4000) {
+      playback.invalid_nax_samples++;
       continue;
     }
     const u32 previous = playback.last_nax - kVagSram[playback.primary_voice];
     const u32 current = nax - kVagSram[playback.primary_voice];
-    playback.played_bytes += current >= previous ? current - previous : current + 0x4000 - previous;
+    if (current < previous) {
+      playback.ring_wraps++;
+    }
+    playback.played_bytes +=
+        current >= previous ? current - previous : current + 0x4000 - previous;
     playback.last_nax = nax;
-    playback.position = static_cast<s32>(playback.played_bytes * 1792 / playback.sample_rate);
+    const s32 next_position =
+        static_cast<s32>(playback.played_bytes * 1792 / playback.sample_rate);
+    if (next_position > playback.position) {
+      playback.position_advances++;
+    } else {
+      playback.position_stalls++;
+    }
+    playback.position = next_position;
 
     const bool current_half = current >= kVagChannelChunkSize;
     if (current_half != playback.current_half) {
+      playback.half_transitions++;
       playback.current_half = current_half;
       if (playback.bytes_read < playback.total_bytes && !load_vag_chunk(&playback)) {
         playback.finished = true;
@@ -2506,6 +2531,8 @@ goal_kernel_core_status goal_jak2_sound_rpc_install(void) {
   }
   g_vag_playbacks = {};
   g_vag_voices_used = {};
+  g_audio_pull_calls.store(0, std::memory_order_relaxed);
+  g_audio_pulled_frames.store(0, std::memory_order_relaxed);
   g_vag_chunk.clear();
   g_dialog_volume = 0x400;
   g_vag_directory.clear();
@@ -2628,6 +2655,57 @@ void goal_jak2_sound_rpc_stats_get(goal_jak2_sound_rpc_stats* out) {
 void goal_jak2_sound_player_state_get(goal_jak2_sound_player_state* out) {
   if (out) {
     *out = g_player_state;
+  }
+}
+
+void goal_jak2_sound_stream_state_get(goal_jak2_sound_stream_state* out) {
+  if (!out) {
+    return;
+  }
+  *out = {};
+  out->pull_calls = g_audio_pull_calls.load(std::memory_order_relaxed);
+  out->pulled_frames = g_audio_pulled_frames.load(std::memory_order_relaxed);
+  for (size_t i = 0; i < g_vag_playbacks.size(); i++) {
+    const VagPlayback& playback = g_vag_playbacks[i];
+    goal_jak2_sound_stream_slot_state& state = out->slots[i];
+    memcpy(state.name, playback.name.data(), playback.name.size());
+    state.id = playback.id;
+    state.primary_voice = playback.primary_voice;
+    state.secondary_voice = playback.secondary_voice;
+    state.ring_base = playback.primary_voice >= 0 ? kVagSram[playback.primary_voice] : 0;
+    state.sampled_nax = playback.sampled_nax;
+    state.last_nax = playback.last_nax;
+    state.total_bytes = playback.total_bytes;
+    state.bytes_read = playback.bytes_read;
+    state.sample_rate = playback.sample_rate;
+    state.chunks_loaded = playback.chunks_loaded;
+    state.played_bytes = playback.played_bytes;
+    state.clock_samples = playback.clock_samples;
+    state.invalid_nax_samples = playback.invalid_nax_samples;
+    state.ring_wraps = playback.ring_wraps;
+    state.position_advances = playback.position_advances;
+    state.position_stalls = playback.position_stalls;
+    state.half_transitions = playback.half_transitions;
+    state.active = playback.id != 0;
+    state.playing = playback.playing;
+    state.paused = playback.paused;
+    state.finished = playback.finished;
+    state.current_half = playback.current_half;
+
+    const auto stream = std::find_if(g_streams.begin(), g_streams.end(), [&](const auto& entry) {
+      return entry.id == playback.id && entry.name == playback.name;
+    });
+    if (stream != g_streams.end()) {
+      state.published_position = stream->position;
+      state.published_status = stream->status;
+    }
+  }
+}
+
+void goal_jak2_sound_audio_pull_record(int32_t pulled_frames) {
+  g_audio_pull_calls.fetch_add(1, std::memory_order_relaxed);
+  if (pulled_frames > 0) {
+    g_audio_pulled_frames.fetch_add(static_cast<u64>(pulled_frames), std::memory_order_relaxed);
   }
 }
 

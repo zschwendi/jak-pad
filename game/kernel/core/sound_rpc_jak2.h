@@ -67,6 +67,42 @@ typedef struct goal_jak2_sound_player_state {
   int32_t camera_angle;
 } goal_jak2_sound_player_state;
 
+enum { GOAL_JAK2_SOUND_STREAM_SLOT_COUNT = 4 };
+
+typedef struct goal_jak2_sound_stream_slot_state {
+  char name[48];
+  int32_t id;
+  int32_t published_position;
+  uint32_t published_status;
+  int32_t primary_voice;
+  int32_t secondary_voice;
+  uint32_t ring_base;
+  uint32_t sampled_nax;
+  uint32_t last_nax;
+  uint32_t total_bytes;
+  uint32_t bytes_read;
+  uint32_t sample_rate;
+  uint32_t chunks_loaded;
+  uint64_t played_bytes;
+  uint64_t clock_samples;
+  uint64_t invalid_nax_samples;
+  uint64_t ring_wraps;
+  uint64_t position_advances;
+  uint64_t position_stalls;
+  uint64_t half_transitions;
+  uint8_t active;
+  uint8_t playing;
+  uint8_t paused;
+  uint8_t finished;
+  uint8_t current_half;
+} goal_jak2_sound_stream_slot_state;
+
+typedef struct goal_jak2_sound_stream_state {
+  uint64_t pull_calls;
+  uint64_t pulled_frames;
+  goal_jak2_sound_stream_slot_state slots[GOAL_JAK2_SOUND_STREAM_SLOT_COUNT];
+} goal_jak2_sound_stream_state;
+
 /*!
  * Replace Jak 2's rpc-call/rpc-busy? machine stubs with synchronous player, loader, STR and PLAY
  * responders. The kernel and machine-stub symbol table must already be initialized. This owns one
@@ -88,6 +124,12 @@ void goal_jak2_sound_frame(void);
 void goal_jak2_sound_rpc_stats_get(goal_jak2_sound_rpc_stats* out);
 
 void goal_jak2_sound_player_state_get(goal_jak2_sound_player_state* out);
+
+/*! Snapshot the raw-voice clock and GOAL-published state for each active channel-5 stream. */
+void goal_jak2_sound_stream_state_get(goal_jak2_sound_stream_state* out);
+
+/*! Record one completed host mixer pull for the stream-clock diagnostic snapshot. */
+void goal_jak2_sound_audio_pull_record(int32_t pulled_frames);
 
 /*!
  * Route one call or busy query through the installed Jak 2 sound responder. These are the

@@ -1101,14 +1101,14 @@ int main() {
   constexpr u32 kValidVagSector = 2;
   write_value(&vag_directory, 12, kValidVagSector);
   memcpy(vag_directory.data() + 20, "STEREOT ", 8);
-  constexpr u32 kStereoVagSector = 16;
+  constexpr u32 kStereoVagSector = 64;
   write_value(&vag_directory, 28, kStereoVagSector);
   write_value(&vag_directory, 32, u32(1));
   memcpy(vag_directory.data() + 36, "BADRANGE", 8);
   write_value(&vag_directory, 44, UINT32_MAX);
   constexpr size_t kValidVagOffset = kValidVagSector * SECTOR_SIZE;
   constexpr size_t kStereoVagOffset = kStereoVagSector * SECTOR_SIZE;
-  constexpr size_t kMonoVagBytes = 0x6000;
+  constexpr size_t kMonoVagBytes = 0x14000;
   constexpr size_t kStereoVagBytes = 0x4000;
   std::vector<u8> vagwad(kStereoVagOffset + kStereoVagBytes, 0);
   write_value(&vagwad, kValidVagOffset, u32(0x56414770));  // little-endian pGAV
@@ -1220,6 +1220,8 @@ int main() {
   check_u32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : UINT32_MAX, 0,
             "the stream clock remains zero before the mixer consumes ADPCM");
 
+  goal_jak2_sound_stream_state pulls_before{};
+  goal_jak2_sound_stream_state_get(&pulls_before);
   std::array<s16, 16384> streamed_audio{};
   check_s32(goal_game_sound_pull_audio(streamed_audio.data(), streamed_audio.size() / 2),
             streamed_audio.size() / 2,
@@ -1230,10 +1232,57 @@ int main() {
   goal_jak2_sound_frame();
   published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
   audio_slot = find_stream(published_info, "audioone", 0x10002);
-  const s32 position_after_audio =
+  s32 position_after_audio =
       audio_slot >= 0 ? published_info.stream_position[audio_slot] : -1;
   check(position_after_audio > 0,
         "the published stream clock advances from the raw voice ADPCM cursor");
+
+  bool long_stream_clock_advanced = true;
+  for (int buffer = 0; buffer < 8; buffer++) {
+    streamed_audio.fill(0);
+    goal_game_sound_pull_audio(streamed_audio.data(), streamed_audio.size() / 2);
+    goal_jak2_sound_frame();
+    published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+    audio_slot = find_stream(published_info, "audioone", 0x10002);
+    const s32 next_position =
+        audio_slot >= 0 ? published_info.stream_position[audio_slot] : -1;
+    long_stream_clock_advanced &=
+        audio_slot >= 0 &&
+        (published_info.stream_status[audio_slot] & kStreamBuffered) != 0 &&
+        next_position > position_after_audio;
+    position_after_audio = next_position;
+  }
+  check(long_stream_clock_advanced,
+        "a long VAG retains playing status and advances across repeated SPU half-buffer wraps");
+
+  goal_jak2_sound_stream_state stream_state{};
+  goal_jak2_sound_stream_state_get(&stream_state);
+  check(stream_state.pull_calls == pulls_before.pull_calls + 9 &&
+            stream_state.pulled_frames ==
+                pulls_before.pulled_frames + 9 * streamed_audio.size() / 2,
+        "stream telemetry counts host mixer calls and rendered frames across the long VAG");
+  const auto audio_state = std::find_if(
+      std::begin(stream_state.slots), std::end(stream_state.slots),
+      [](const auto& slot) { return slot.active && slot.id == 0x10002; });
+  check(audio_state != std::end(stream_state.slots),
+        "stream telemetry exposes the active long VAG");
+  if (audio_state != std::end(stream_state.slots)) {
+    check_s32(audio_state->published_position, position_after_audio,
+              "stream telemetry matches the GOAL-published clock");
+    check_u32(audio_state->published_status,
+              kStreamBuffered | kStreamPlaying | kStreamLoadingAudio | kStreamCurrentMovie,
+              "stream telemetry matches the GOAL-published status");
+    check(audio_state->sampled_nax >= audio_state->ring_base &&
+              audio_state->sampled_nax < audio_state->ring_base + 0x4000,
+          "stream telemetry exposes a valid raw-voice NAX sample");
+    check(audio_state->played_bytes > 0 && audio_state->bytes_read > 0 &&
+              audio_state->total_bytes == kMonoVagBytes,
+          "stream telemetry exposes source and consumed byte counts");
+    check(audio_state->clock_samples >= 9 && audio_state->invalid_nax_samples == 0 &&
+              audio_state->ring_wraps >= 2 && audio_state->half_transitions >= 5 &&
+              audio_state->position_advances >= 9,
+          "stream telemetry distinguishes healthy wraps, transitions, and clock advances");
+  }
 
   auto stream_control = guarded_buffer(kCommandSize, "jak2-stream-player-control");
   auto* stream_control_command =
