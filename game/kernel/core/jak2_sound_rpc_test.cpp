@@ -1231,8 +1231,9 @@ int main() {
   check_u32(audio_slot >= 0 ? published_info.stream_status[audio_slot] : UINT32_MAX,
             kStreamBuffered | kStreamPlaying | kStreamLoadingAudio | kStreamCurrentMovie,
             "play adds bit 4 without discarding buffered or GUI queue state");
-  check_u32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : UINT32_MAX, 0,
-            "the stream clock remains zero before the mixer consumes ADPCM");
+  check_u32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : UINT32_MAX,
+            0x30 * 1792 / 48000,
+            "the pre-mixer stream clock retains the source VAG header offset");
   no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
   check_u32(no_audio_slot >= 0 ? published_info.stream_status[no_audio_slot] : UINT32_MAX,
             kStreamQueuedWithoutAudio | kStreamPlaying | kStreamArtLoad,
@@ -1397,6 +1398,10 @@ int main() {
     check(audio_state->played_bytes > 0 && audio_state->bytes_read > 0 &&
               audio_state->total_bytes == kMonoVagBytes,
           "stream telemetry exposes source and consumed byte counts");
+    check_s32(audio_state->published_position,
+              static_cast<s32>((audio_state->played_bytes + 0x30) * 1792 /
+                               audio_state->sample_rate),
+              "the VAG clock retains the source 0x30-byte header offset");
     check(audio_state->clock_samples >= 9 && audio_state->invalid_nax_samples == 0 &&
               audio_state->ring_wraps >= 2 && audio_state->half_transitions >= 5 &&
               audio_state->position_advances >= 9,
@@ -1427,6 +1432,18 @@ int main() {
             position_after_audio,
         "CONTINUE resumes both VAG output and its published clock");
   check_guards(stream_control, "ordinary VAG control commands preserve their canaries");
+
+  reset_play_request(play, 2);
+  set_play_stream(play, 0, "queue-replacement", 0x10008);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  check(find_stream(published_info, "audioone", 0x10002) >= 0 &&
+            find_stream(published_info, "art-no-audio", 0x10001) >= 0,
+        "replacing the pending queue preserves active streams");
+  check(find_stream(published_info, "queued-no-audio", 0x10007) < 0 &&
+            find_stream(published_info, "queue-replacement", 0x10008) >= 0,
+        "replacing the pending queue removes only omitted unplayed streams");
 
   reset_play_request(play, 2, 1u << 0 | 1u << 5);
   set_play_stream(play, 0, "art-no-audio", 0x10001);
@@ -1497,6 +1514,13 @@ int main() {
             find_stream(published_info, "stereot", 0x10006) < 0,
         "stopping both stereo streams releases all four raw voices");
 
+  stream_control_command =
+      reset_player_command(stream_control, 0, jak2::Jak2SoundCommand::pause_sound);
+  stream_control_command->sound_id.sound_id = 0x10001;
+  rpc_call(0, 0, 1, stream_control.data.offset, stream_control.size, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+
   const auto state_before_rejected_play = published_info;
   reset_play_request(play, 0);
   set_play_stream(play, 0, "art-no-audio", 0x10001);
@@ -1540,18 +1564,16 @@ int main() {
   rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
   goal_jak2_sound_frame();
   published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
-  bool cleared_streams = true;
-  for (size_t i = 0; i < 4; i++) {
-    cleared_streams &= published_info.stream_position[i] == 0;
-    cleared_streams &= published_info.stream_status[i] == 0;
-    cleared_streams &= published_info.stream_name[i].dat[0] == '\0';
-    cleared_streams &= published_info.stream_id[i] == 0;
-  }
-  check(cleared_streams, "an empty queue removes every retained stream slot");
+  no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
+  check(no_audio_slot >= 0 &&
+            (published_info.stream_status[no_audio_slot] & kStreamPlaying) != 0,
+        "an empty pending queue preserves the unrelated active stream");
+  check(find_stream(published_info, "queue-replacement", 0x10008) < 0,
+        "an empty pending queue removes an unplayed queued stream");
   goal_jak2_sound_rpc_stats_get(&stats);
-  check_u32(stats.stream_batches, 9, "only valid PLAY batches are counted");
-  check_u32(stats.stream_commands, 10, "exact 0x100-multiple command counts are retained");
-  check_u32(stats.stream_queue_requests, 5, "valid queue commands are counted exactly");
+  check_u32(stats.stream_batches, 10, "only valid PLAY batches are counted");
+  check_u32(stats.stream_commands, 11, "exact 0x100-multiple command counts are retained");
+  check_u32(stats.stream_queue_requests, 6, "valid queue commands are counted exactly");
   check_u32(stats.stream_play_requests, 3,
             "valid mono, duplicate, and stereo play requests are counted");
   check_u32(stats.stream_stop_requests, 2, "valid mono and stereo stops are counted exactly");

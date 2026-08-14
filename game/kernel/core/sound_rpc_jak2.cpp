@@ -239,6 +239,7 @@ s32 g_music_volume = 0x400;
 u8 g_flava = 0;
 
 constexpr u32 kVagSectorSize = 0x800;
+constexpr u32 kVagHeaderSize = 0x30;
 constexpr u32 kVagChannelChunkSize = 0x2000;
 constexpr u32 kVagStereoChunkSize = 0x4000;
 constexpr std::array<u32, 4> kVagSram = {0x5040, 0x9080, 0xd0c0, 0x11100};
@@ -1416,8 +1417,10 @@ void frame_vag_playbacks() {
     playback.played_bytes +=
         current >= previous ? current - previous : current + 0x4000 - previous;
     playback.last_nax = nax;
-    const s32 next_position =
-        static_cast<s32>(playback.played_bytes * 1792 / playback.sample_rate);
+    // GetVAGStreamPos measures from the start of the VAG allocation. Playback starts after the
+    // 0x30-byte header, so retain that source offset in the published movie clock.
+    const s32 next_position = static_cast<s32>(
+        (playback.played_bytes + kVagHeaderSize) * 1792 / playback.sample_rate);
     if (next_position > playback.position) {
       playback.position_advances++;
     } else {
@@ -1551,6 +1554,11 @@ void apply_queue_command(const RPC_Play_Cmd_Jak2& command,
         desired_used[i] = true;
         break;
       }
+    }
+    // A queue RPC replaces only upstream's pending EEStreamsList. Streams that have already
+    // moved to EEPlayList remain active until an explicit stop command removes them.
+    if (!next[slot].id && (g_streams[slot].status & kStreamPlaying)) {
+      next[slot] = g_streams[slot];
     }
   }
 
