@@ -69,6 +69,9 @@ int main() {
     tfrag3::Level game_level = common_level;
     game_level.textures.insert(game_level.textures.end(), ctywide_level.textures.begin(),
                                ctywide_level.textures.end());
+    game_level.textures.push_back(source_texture("bomb-gradient", 0xff000000));
+    game_level.textures.push_back(source_texture("bomb-gradient-rim", 0xff204060));
+    game_level.textures.push_back(source_texture("bomb-gradient-flames", 0xff604020));
 
     metal_renderer::Jak2Opcode27SkullGemPlan plan;
     plan.time = 0.f;
@@ -204,6 +207,47 @@ int main() {
               executor.stats().security_publications == 2,
           "full security publication reuses slot 20 and adds packet-owned slot 21");
 
+    metal_renderer::Jak2Opcode28BombPlan bomb_plan;
+    bomb_plan.time = 0.f;
+    bomb_plan.destination_tbp = 133;
+    metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedBomb bomb_prepared;
+    const bool bomb_clear_prepared = executor.prepare_bomb(bomb_plan, game_level,
+                                                           &bomb_prepared);
+    bool bomb_clear_alpha_is_opaque = bomb_prepared.rgba.size() == 16;
+    for (std::size_t i = 3; i < bomb_prepared.rgba.size(); i += 4) {
+      bomb_clear_alpha_is_opaque &= bomb_prepared.rgba[i] == 255;
+    }
+    check(bomb_clear_prepared && bomb_clear_alpha_is_opaque,
+          "bomb clear alpha 0x80 becomes RGBA8 255 through tex_anim.frag division by 128");
+    for (auto& layer : bomb_plan.layers) {
+      layer.start = identity_values();
+      layer.end = identity_values();
+    }
+    check(!executor.prepare_bomb(bomb_plan, common_level, &bomb_prepared),
+          "bomb textures outside their GAME owner fail before publication");
+    tfrag3::Level conflicting_game_level = game_level;
+    conflicting_game_level.textures.push_back(
+        source_texture("bomb-gradient-rim", 0xff101010));
+    check(!executor.prepare_bomb(bomb_plan, conflicting_game_level, &bomb_prepared),
+          "conflicting GAME bomb sources fail before publication");
+    tfrag3::Level malformed_game_level = game_level;
+    malformed_game_level.textures.back().data.pop_back();
+    check(!executor.prepare_bomb(bomb_plan, malformed_game_level, &bomb_prepared),
+          "malformed GAME bomb sources fail before publication");
+    check(executor.prepare_bomb(bomb_plan, game_level, &bomb_prepared) &&
+              bomb_prepared.width == 2 && bomb_prepared.height == 2 &&
+              bomb_prepared.destination_tbp == 133,
+          "opcode-28 preparation uses the GAME-owned bomb destination and two sources");
+    check(executor.publish_bomb(bomb_prepared),
+          "prepared opcode-28 bomb output publishes to Metal and TexturePool");
+    const u64 bomb_handle = executor.animated_texture_slots().at(
+        metal_renderer::kJak2BombAnimatedTextureSlot);
+    check(bomb_handle != 0 && bomb_handle != security_environment_handle &&
+              pool.lookup(133).value_or(0) == bomb_handle &&
+              executor.stats().bomb_preparations == 2 &&
+              executor.stats().bomb_publications == 1,
+          "bomb publication owns packet TBP 133 and animated slot 15");
+
     MetalLevelData level;
     MetalSharedRenderState render_state;
     render_state.texture_pool = &pool;
@@ -214,8 +258,12 @@ int main() {
     check(resolved == metal_texture_lookup(stable_handle) && background.anim_slot_draws == 1 &&
               background.missing_textures == 0,
           "negative tree texture -15 resolves through animated slot 14 without a placeholder");
+    resolved = metal_background_texture(level, -16, &render_state, &background);
+    check(resolved == metal_texture_lookup(bomb_handle) && background.anim_slot_draws == 2 &&
+              background.missing_textures == 0,
+          "negative tree texture -16 resolves through bomb animated slot 15");
     resolved = metal_background_texture(level, -1, &render_state, &background);
-    check(resolved == metal_texture_lookup(placeholder) && background.anim_slot_draws == 2 &&
+    check(resolved == metal_texture_lookup(placeholder) && background.anim_slot_draws == 3 &&
               background.missing_textures == 1,
           "an unpublished animated slot remains a counted placeholder fallback");
     resolved = metal_background_texture(level, -21, &render_state, &background);
@@ -228,7 +276,7 @@ int main() {
           "negative tree texture -22 resolves through security dot slot 21");
     resolved = metal_background_texture(level, std::numeric_limits<s32>::min(), &render_state,
                                         &background);
-    check(resolved == metal_texture_lookup(placeholder) && background.anim_slot_draws == 5 &&
+    check(resolved == metal_texture_lookup(placeholder) && background.anim_slot_draws == 6 &&
               background.missing_textures == 2,
           "the minimum signed texture ID is range-checked without overflow");
 

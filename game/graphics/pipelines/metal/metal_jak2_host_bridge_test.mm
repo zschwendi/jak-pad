@@ -93,6 +93,7 @@ constexpr u32 kEffectsLightningPayloadOffset = kChainOffset + 0x17000;
 constexpr u32 kCommonWaterDescriptorOffset = kChainOffset + 0x17100;
 constexpr u32 kCommonWaterAnimatorOffset = kChainOffset + 0x17200;
 constexpr u32 kCommonWaterDirectOffset = kChainOffset + 0x1a000;
+constexpr u32 kLiveBombTexturePageOffset = 0x1dc3384;
 constexpr u32 kSkyPostBucket = metal_renderer::kJak2SkyPostTextureUploadBucket;
 constexpr u32 kSkyPostGroupOffset = kChainOffset + 0x17400;
 constexpr u32 kSkyPostDirectOffset = kChainOffset + 0x17500;
@@ -550,7 +551,41 @@ void make_common_water_environment_chain(bool dot_only) {
     std::memcpy(ee + body_offset, &environment, sizeof(environment));
   }
   const u32 finish_offset = body_offset + body_bytes;
-  put_tag(finish_offset, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, kPcPort);
+  put_tag(finish_offset, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, 0);
+  put_tag(finish_offset + 16, DmaTag::Kind::NEXT, 0, kCommonWaterDirectOffset);
+  put_tag(kCommonWaterDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  put_tag(kCommonWaterDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+}
+
+void make_common_water_bomb_chain() {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  constexpr s64 kMode = -1;
+  constexpr u64 kPageOffset = kLiveBombTexturePageOffset;
+  const u32 bucket_offset = kChainOffset + kCommonWaterBucket * 16;
+
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kCommonWaterDescriptorOffset);
+  put_tag(kCommonWaterDescriptorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  std::memcpy(ee + kCommonWaterDescriptorOffset + 16, &kPageOffset, sizeof(kPageOffset));
+  std::memcpy(ee + kCommonWaterDescriptorOffset + 24, &kMode, sizeof(kMode));
+  put_tag(kCommonWaterDescriptorOffset + 32, DmaTag::Kind::NEXT, 0,
+          kCommonWaterAnimatorOffset);
+  put_tag(kCommonWaterAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
+  const u32 body_tag = kCommonWaterAnimatorOffset + 16;
+  metal_renderer::Jak2Opcode28BombPlan bomb;
+  bomb.time = 0.f;
+  bomb.destination_tbp = 0x80;
+  for (auto& layer : bomb.layers) {
+    layer.start = identity_layer_values();
+    layer.end = identity_layer_values();
+  }
+  put_tag(body_tag, DmaTag::Kind::CNT, sizeof(bomb) / 16, 0, 0x0800001c, 0);
+  std::memcpy(ee + body_tag + 16, &bomb, sizeof(bomb));
+  const u32 finish_offset = body_tag + 16 + sizeof(bomb);
+  put_tag(finish_offset, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, 0);
   put_tag(finish_offset + 16, DmaTag::Kind::NEXT, 0, kCommonWaterDirectOffset);
   put_tag(kCommonWaterDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   put_tag(kCommonWaterDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
@@ -1206,6 +1241,9 @@ bool write_synthetic_fr3(const std::filesystem::path& path,
     texture.debug_tpage_name = "host-residency-page";
     texture.load_to_pool = true;
     level.textures.push_back(std::move(texture));
+    level.textures.push_back(synthetic_source_texture("bomb-gradient", 0xff000000));
+    level.textures.push_back(synthetic_source_texture("bomb-gradient-rim", 0xff204060));
+    level.textures.push_back(synthetic_source_texture("bomb-gradient-flames", 0xff604020));
     level.textures.push_back(synthetic_source_texture("security-env-dest", 0xff000000));
     level.textures.push_back(synthetic_source_texture("security-env-uscroll", 0xff102030));
     add_dark_jak_sources(&level);
@@ -2417,8 +2455,8 @@ int main() {
             metal_texture_live_count() == common_water_textures_before,
         "empty bucket 306 dispatches its exact absent plan without texture mutation");
 
-  write_empty_texture_page(kTexturePageOffset, kTexturePageId);
-  make_common_water_environment_chain(false);
+  write_empty_texture_page(kLiveBombTexturePageOffset, kTexturePageId);
+  make_common_water_bomb_chain();
   common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(common_water_host, &common_water_metrics) &&
             common_water_metrics.chains == 2 && common_water_metrics.completed_chains == 2 &&
@@ -2428,27 +2466,46 @@ int main() {
             common_water_metrics.common_water_texture_upload.transfers == 10 &&
             common_water_metrics.common_water_texture_upload.payload_bytes == 512 &&
             common_water_metrics.common_water_texture_upload.animator_payload_bytes == 336 &&
+            common_water_metrics.common_water_texture_upload.opcode_counts[28] == 1 &&
             common_water_metrics.common_water_texture_upload.executions == 1 &&
             common_water_metrics.texture_uploads == 0 &&
             metal_texture_live_count() == common_water_textures_before + 1,
-        "common GAME art executes the source-finish bucket-306 environment form without ctywide");
+        "common GAME art executes the exact first-frame bucket-306 bomb form");
+
+  write_empty_texture_page(kTexturePageOffset, kTexturePageId);
+  make_common_water_environment_chain(false);
+  common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(common_water_host, &common_water_metrics) &&
+            common_water_metrics.chains == 3 && common_water_metrics.completed_chains == 3 &&
+            common_water_metrics.failed_chains == 0 &&
+            common_water_metrics.common_water_texture_upload.captures == 3 &&
+            common_water_metrics.common_water_texture_upload.present_captures == 2 &&
+            common_water_metrics.common_water_texture_upload.transfers == 19 &&
+            common_water_metrics.common_water_texture_upload.payload_bytes == 1024 &&
+            common_water_metrics.common_water_texture_upload.animator_payload_bytes == 672 &&
+            common_water_metrics.common_water_texture_upload.opcode_counts[28] == 1 &&
+            common_water_metrics.common_water_texture_upload.opcode_counts[30] == 1 &&
+            common_water_metrics.common_water_texture_upload.executions == 2 &&
+            common_water_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == common_water_textures_before + 2,
+        "common GAME art preserves the exact opcode-30 security-environment variant");
 
   make_common_water_environment_chain(true);
   common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   const char* common_water_error = goal_jak2_metal_host_last_error(common_water_host);
   check(goal_jak2_metal_host_get_metrics(common_water_host, &common_water_metrics) &&
-            common_water_metrics.chains == 3 && common_water_metrics.completed_chains == 2 &&
+            common_water_metrics.chains == 4 && common_water_metrics.completed_chains == 3 &&
             common_water_metrics.failed_chains == 1 &&
-            common_water_metrics.common_water_texture_upload.captures == 3 &&
-            common_water_metrics.common_water_texture_upload.present_captures == 2 &&
-            common_water_metrics.common_water_texture_upload.executions == 1 &&
+            common_water_metrics.common_water_texture_upload.captures == 4 &&
+            common_water_metrics.common_water_texture_upload.present_captures == 3 &&
+            common_water_metrics.common_water_texture_upload.executions == 2 &&
             common_water_metrics.texture_uploads == 0 &&
-            metal_texture_live_count() == common_water_textures_before + 1 && common_water_error &&
+            metal_texture_live_count() == common_water_textures_before + 2 && common_water_error &&
             std::strstr(common_water_error, "common-water texture plan rejected bucket 306"),
         "dot-only opcode 30 fails closed before additional common-water texture mutation");
   goal_jak2_metal_host_destroy(common_water_host);
   check(metal_texture_live_count() == common_water_global_live_count,
-        "common-water host teardown releases its environment publication");
+        "common-water host teardown releases its bomb and environment publications");
 
   goal_jak2_metal_host* subtitle_host = goal_jak2_metal_host_create();
   goal_gfx_host subtitle_callbacks = {};

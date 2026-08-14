@@ -9,6 +9,7 @@
 
 #include "common/dma/dma.h"
 #include "common/dma/gs.h"
+#include "common/goal_constants.h"
 
 namespace {
 
@@ -71,6 +72,12 @@ void put_u64(std::vector<u8>* memory, u32 offset, u64 value) {
 
 u64 get_u64(const std::vector<u8>& memory, u32 offset) {
   u64 value = 0;
+  std::memcpy(&value, memory.data() + offset, sizeof(value));
+  return value;
+}
+
+u32 get_u32(const std::vector<u8>& memory, u32 offset) {
+  u32 value = 0;
   std::memcpy(&value, memory.data() + offset, sizeof(value));
   return value;
 }
@@ -608,7 +615,11 @@ std::vector<u8> make_ordinary_and_animator_fixture() {
 
 void put_layer_values(std::vector<u8>* packet, u32 offset, float base, u8 padding);
 
-std::vector<u8> make_common_water_execution_fixture(u32 dma_relocation = 0, u32 finish_vif1 = 0) {
+std::vector<u8> make_common_water_fixed_animation_fixture(u16 opcode,
+                                                          float time,
+                                                          u32 destination_tbp,
+                                                          u64 page_offset,
+                                                          u32 dma_relocation) {
   constexpr u32 bucket_id = metal_renderer::kJak2CommonWaterTextureUploadBucket;
   std::vector<u8> packet(kMemorySize);
   const u32 ordinary_offset = kOrdinaryOffset + dma_relocation;
@@ -622,22 +633,22 @@ std::vector<u8> make_common_water_execution_fixture(u32 dma_relocation = 0, u32 
 
   put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, ordinary_offset, 0, 0);
   put_tag(&packet, ordinary_offset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
-  put_u64(&packet, ordinary_offset + 16, kTexturePageOffset);
+  put_u64(&packet, ordinary_offset + 16, page_offset);
   put_u64(&packet, ordinary_offset + 24, static_cast<u64>(-1));
   put_tag(&packet, ordinary_offset + 32, DmaTag::Kind::NEXT, 0, animator_offset, 0, 0);
 
   put_tag(&packet, animator_offset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 12, 0);
   put_tag(&packet, animator_body_tag_offset, DmaTag::Kind::CNT, 21, 0,
-          kPcPortVif | 30, 0);
-  put_float(&packet, animator_body_offset, 1200.f);
-  put_u32(&packet, animator_body_offset + 4, 0x2345);
+          kPcPortVif | opcode, 0);
+  put_float(&packet, animator_body_offset, time);
+  put_u32(&packet, animator_body_offset + 4, destination_tbp);
   for (u32 i = 0; i < 4; ++i) {
     put_layer_values(&packet, animator_body_offset + 16 + i * 80,
                      20.f + static_cast<float>(i) * 20.f,
                      static_cast<u8>(0xc0 + i));
   }
   put_tag(&packet, animator_finish_offset, DmaTag::Kind::CNT, 0, 0,
-          kPcPortVif | 13, finish_vif1);
+          kPcPortVif | 13, 0);
   put_tag(&packet, animator_next_offset, DmaTag::Kind::NEXT, 0,
           direct_setup_offset, 0, 0);
 
@@ -646,8 +657,21 @@ std::vector<u8> make_common_water_execution_fixture(u32 dma_relocation = 0, u32 
   std::fill_n(packet.begin() + direct_setup_offset + 16, 160, 0x52);
   put_tag(&packet, direct_setup_offset + 176, DmaTag::Kind::NEXT, 0,
           end_offset, 0, 0);
-  packet[kTexturePageOffset + 8] = 0x44;
+  if (page_offset + metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes <= packet.size()) {
+    packet[page_offset + 8] = 0x44;
+  }
   return packet;
+}
+
+std::vector<u8> make_common_water_execution_fixture(u32 dma_relocation = 0) {
+  return make_common_water_fixed_animation_fixture(30, 1200.f, 0x2345,
+                                                   kTexturePageOffset, dma_relocation);
+}
+
+std::vector<u8> make_common_water_bomb_fixture(u32 dma_relocation = 0,
+                                               u64 page_offset = kTexturePageOffset) {
+  return make_common_water_fixed_animation_fixture(28, 0.f, 0x80, page_offset,
+                                                   dma_relocation);
 }
 
 std::vector<u8> make_malformed_common_water_capture_fixture() {
@@ -980,25 +1004,54 @@ void test_common_water_execution_plan() {
             result.malformed_transfers == 0,
         "common-water bucket 306 owns the exact descriptor/environment/reset plan");
 
-  auto legacy_finish_packet = make_common_water_execution_fixture(0, kPcPortVif);
-  const auto legacy_finish_plan = metal_renderer::plan_jak2_common_water_texture_upload(
-      legacy_finish_packet.data(), legacy_finish_packet.size(), kChainOffset,
-      legacy_finish_packet.data(), legacy_finish_packet.size(), &result);
-  check(legacy_finish_plan.has_value() && legacy_finish_plan->present && result.valid &&
-            result.transfers[5].vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
-            result.transfers[5].vif0_immediate == 13 &&
-            result.transfers[5].vif1_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
-            result.transfers[5].vif1_immediate == 0,
-        "common-water bucket 306 accepts the source-defined legacy PC_PORT finish VIF");
-
   auto unsupported_finish_packet = make_common_water_execution_fixture();
   put_u32(&unsupported_finish_packet, kSecurityEnvironmentAnimatorFinishOffset + 12,
-          kPcPortVif | 1);
+          kPcPortVif);
   const auto unsupported_finish_plan = metal_renderer::plan_jak2_common_water_texture_upload(
       unsupported_finish_packet.data(), unsupported_finish_packet.size(), kChainOffset,
       unsupported_finish_packet.data(), unsupported_finish_packet.size(), &result);
   check(!unsupported_finish_plan.has_value() && !result.valid && result.malformed_transfers == 1,
-        "common-water bucket 306 rejects any other finish VIF1 encoding");
+        "common-water capture requires the source-defined NOP finish VIF1");
+
+  constexpr u64 kLiveBombPageOffset = 0x1dc3384;
+  auto bomb_packet = make_common_water_bomb_fixture(0, kLiveBombPageOffset);
+  std::vector<u8> bomb_live_memory(EE_MAIN_MEM_SIZE);
+  bomb_live_memory[kLiveBombPageOffset + 8] = 0xb3;
+  const auto bomb_plan = metal_renderer::plan_jak2_common_water_texture_upload(
+      bomb_packet.data(), bomb_packet.size(), kChainOffset, bomb_live_memory.data(),
+      bomb_live_memory.size(), &result);
+  check(bomb_plan.has_value() && bomb_plan->present &&
+            bomb_plan->variant == metal_renderer::Jak2CommonWaterTextureUploadVariant::
+                                      DescriptorBombAndStandardReset &&
+            bomb_plan->ordinary.page_offset == kLiveBombPageOffset &&
+            bomb_plan->ordinary.mode == -1 && bomb_plan->ordinary.page_header[8] == 0xb3 &&
+            bomb_plan->bomb.time == 0.f && bomb_plan->bomb.destination_tbp == 0x80 &&
+            bomb_plan->bomb.layers[0].start.color[0] == 20.f &&
+            bomb_plan->bomb.layers[1].end.st_rot == 84.25f && result.valid &&
+            result.present && result.transfer_count == 9 &&
+            result.total_payload_bytes == 512 && result.animator_payload_bytes == 336 &&
+            result.opcode_counts[12] == 1 && result.opcode_counts[13] == 1 &&
+            result.opcode_counts[28] == 1 &&
+            get_u32(bomb_packet, kAnimatorBodyTagOffset + 8) == 0x0800001c &&
+            result.transfers[5].vif1_kind == static_cast<u8>(VifCode::Kind::NOP),
+        "common-water bucket 306 owns the exact live opcode-28 bomb envelope");
+
+  auto relocated_bomb_packet = make_common_water_bomb_fixture(0x200, kLiveBombPageOffset);
+  auto relocated_bomb = metal_renderer::plan_jak2_common_water_texture_upload(
+      relocated_bomb_packet.data(), relocated_bomb_packet.size(), kChainOffset,
+      bomb_live_memory.data(), bomb_live_memory.size());
+  check(relocated_bomb.has_value() &&
+            metal_renderer::jak2_common_water_texture_upload_plans_match(
+                *bomb_plan, *relocated_bomb),
+        "live and relocated copied opcode-28 bomb plans match by owned semantics");
+  put_float(&relocated_bomb_packet, kAnimatorBodyOffset + 0x200, 1.f);
+  relocated_bomb = metal_renderer::plan_jak2_common_water_texture_upload(
+      relocated_bomb_packet.data(), relocated_bomb_packet.size(), kChainOffset,
+      bomb_live_memory.data(), bomb_live_memory.size());
+  check(relocated_bomb.has_value() &&
+            !metal_renderer::jak2_common_water_texture_upload_plans_match(
+                *bomb_plan, *relocated_bomb),
+        "live/copy matching rejects a changed bomb scalar");
 
   auto relocated_packet = make_common_water_execution_fixture(0x200);
   auto relocated = metal_renderer::plan_jak2_common_water_texture_upload(
@@ -1968,11 +2021,11 @@ void test_common_opcode27_shape_variants_fail_closed() {
 
   packet = make_common_execution_fixture();
   put_u32(&packet, kAnimatorFinishOffset + 12, kPcPortVif);
-  check(capture(packet).valid &&
+  check(!capture(packet).valid &&
             !metal_renderer::plan_jak2_common_tfrag_texture_upload(
                  packet.data(), packet.size(), kChainOffset, packet.data(), packet.size())
                  .has_value(),
-        "the legacy alternate finish metadata stays capturable but not executable by this plan");
+        "the alternate PC_PORT finish is rejected before opcode-27 planning");
 
   packet = make_common_execution_fixture();
   put_tag(&packet, kDirectSetupOffset, DmaTag::Kind::CNT, 9, 0,
@@ -2093,8 +2146,8 @@ void test_animator_and_combined_metadata() {
         "ordered descriptor and animator metadata remain a composite classification");
 
   result = capture(make_animator_fixture(kPcPortVif));
-  check(result.valid && result.classification == Classification::AnimatorOnly,
-        "the source-defined legacy PC_PORT finish VIF is accepted");
+  check(!result.valid && result.malformed_transfers == 1,
+        "an animator finish with a second PC_PORT VIF is rejected");
 
   std::vector<u8> qwc8_animator(kMemorySize);
   const u32 end_offset = bucket_offset() + 16;

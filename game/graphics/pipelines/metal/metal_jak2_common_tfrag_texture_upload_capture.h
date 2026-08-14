@@ -245,6 +245,14 @@ struct Jak2Opcode27SkullGemPlan {
 };
 static_assert(sizeof(Jak2Opcode27SkullGemPlan) == 496);
 
+struct Jak2Opcode28BombPlan {
+  float time = 0;
+  u32 destination_tbp = 0;
+  std::array<u8, 8> source_header_tail = {};
+  std::array<Jak2Opcode27LayerTransition, 2> layers = {};
+};
+static_assert(sizeof(Jak2Opcode28BombPlan) == 336);
+
 struct Jak2Opcode30SecurityEnvironmentPlan {
   float time = 0;
   u32 destination_tbp = 0;
@@ -285,6 +293,7 @@ struct Jak2WaterTextureUploadPlan {
 
 enum class Jak2CommonWaterTextureUploadVariant : u8 {
   Absent,
+  DescriptorBombAndStandardReset,
   DescriptorSecurityEnvironmentAndStandardReset,
 };
 
@@ -293,6 +302,7 @@ struct Jak2CommonWaterTextureUploadPlan {
   bool present = false;
   Jak2CommonWaterTextureUploadVariant variant = Jak2CommonWaterTextureUploadVariant::Absent;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
+  Jak2Opcode28BombPlan bomb;
   Jak2Opcode30SecurityEnvironmentPlan security_environment;
 };
 
@@ -400,10 +410,10 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
 
 /*!
- * Plan the exact common-water bucket-306 form emitted when the resolved security fixed-animation
- * array contains only its first entry: ordinary page descriptor, opcode-30 qwc-21 environment
- * body, and the standard inert Direct reset. pc-update-fixed-anim serializes resolved entries as a
- * prefix, so this is specifically the two-layer security-environment output, never a dot-only
+ * Plan the exact captured bomb form and the existing source-defined security-environment form for
+ * common-water bucket 306: an ordinary page descriptor, one qwc-21 two-layer animator body, and
+ * the standard inert Direct reset. pc-update-fixed-anim serializes resolved entries as a prefix,
+ * so the opcode-30 form is specifically the security-environment output, never a dot-only
  * substitute. The plan owns both the page header and every animator scalar.
  */
 std::optional<Jak2CommonWaterTextureUploadPlan> plan_jak2_common_water_texture_upload(

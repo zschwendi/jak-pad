@@ -911,6 +911,8 @@ struct Jak2TextureUploadDispatch {
       nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurityOutput*
       common_water_environment_prepared = nullptr;
+  const metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedBomb*
+      common_water_bomb_prepared = nullptr;
   const std::array<std::optional<metal_renderer::Jak2PrisonClutExecutor::Prepared>,
                    metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
       prison_clut_prepared = nullptr;
@@ -1018,18 +1020,39 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
     if (!plan.present) {
       return;
     }
-    if (!dispatch->common_water_environment_prepared ||
-        !dispatch->host->skull_gem_executor) {
-      throw std::runtime_error("Jak 2 common-water environment dispatch is incomplete");
+    if (!dispatch->host->skull_gem_executor) {
+      throw std::runtime_error("Jak 2 common-water fixed-animation dispatch is incomplete");
+    }
+    switch (plan.variant) {
+      case metal_renderer::Jak2CommonWaterTextureUploadVariant::DescriptorBombAndStandardReset:
+        if (!dispatch->common_water_bomb_prepared) {
+          throw std::runtime_error("Jak 2 common-water bomb dispatch is incomplete");
+        }
+        break;
+      case metal_renderer::Jak2CommonWaterTextureUploadVariant::
+          DescriptorSecurityEnvironmentAndStandardReset:
+        if (!dispatch->common_water_environment_prepared) {
+          throw std::runtime_error("Jak 2 common-water environment dispatch is incomplete");
+        }
+        break;
+      case metal_renderer::Jak2CommonWaterTextureUploadVariant::Absent:
+        throw std::runtime_error("Jak 2 common-water present plan has an absent variant");
     }
     execute_ordinary_texture_upload_or_throw(
         dispatch->host, plan.ordinary, dispatch->live_ee_memory,
         &dispatch->host->metrics.common_water_texture_upload.executions,
         "Jak 2 common-water ordinary texture upload", dispatch->host_texture_mutated);
-    if (!dispatch->host->skull_gem_executor->publish_security_environment(
-            *dispatch->common_water_environment_prepared)) {
+    const bool published =
+        plan.variant ==
+                metal_renderer::Jak2CommonWaterTextureUploadVariant::
+                    DescriptorBombAndStandardReset
+            ? dispatch->host->skull_gem_executor->publish_bomb(
+                  *dispatch->common_water_bomb_prepared)
+            : dispatch->host->skull_gem_executor->publish_security_environment(
+                  *dispatch->common_water_environment_prepared);
+    if (!published) {
       throw std::runtime_error(
-          std::string("Jak 2 common-water environment publication failed: ") +
+          std::string("Jak 2 common-water fixed-animation publication failed: ") +
           dispatch->host->skull_gem_executor->last_error());
     }
     merge_animated_texture_slots(dispatch->host);
@@ -1660,6 +1683,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity security_prepared;
     metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurityOutput
         common_water_environment_prepared;
+    metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedBomb common_water_bomb_prepared;
     const metal_renderer::Jak2WaterTextureUploadPlan* security_plan = nullptr;
     metal_renderer::Jak2Bucket4TextureUploadCapture bucket4_capture;
     const auto bucket4_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
@@ -1971,18 +1995,40 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
     if (copied_common_water_plan->present &&
-        (!host->common_level || !host->common_level->level || !host->skull_gem_executor ||
-         !host->skull_gem_executor->prepare_security_environment(
-             copied_common_water_plan->security_environment, *host->common_level->level,
-             &common_water_environment_prepared))) {
+        (!host->common_level || !host->common_level->level || !host->skull_gem_executor)) {
       const char* detail =
           !host->common_level || !host->common_level->level
-              ? "common level art is unavailable"
-              : host->skull_gem_executor ? host->skull_gem_executor->last_error()
-                                         : "executor is unavailable";
+              ? "GAME level art is unavailable"
+              : "executor is unavailable";
       record_failure(
           host,
-          (std::string("Jak 2 common-water environment preparation failed: ") + detail)
+          (std::string("Jak 2 common-water fixed-animation preparation failed: ") + detail)
+              .c_str());
+      return;
+    }
+    if (copied_common_water_plan->variant ==
+            metal_renderer::Jak2CommonWaterTextureUploadVariant::
+                DescriptorBombAndStandardReset &&
+        !host->skull_gem_executor->prepare_bomb(
+            copied_common_water_plan->bomb, *host->common_level->level,
+            &common_water_bomb_prepared)) {
+      record_failure(
+          host,
+          (std::string("Jak 2 common-water bomb preparation failed: ") +
+           host->skull_gem_executor->last_error())
+              .c_str());
+      return;
+    }
+    if (copied_common_water_plan->variant ==
+            metal_renderer::Jak2CommonWaterTextureUploadVariant::
+                DescriptorSecurityEnvironmentAndStandardReset &&
+        !host->skull_gem_executor->prepare_security_environment(
+            copied_common_water_plan->security_environment, *host->common_level->level,
+            &common_water_environment_prepared)) {
+      record_failure(
+          host,
+          (std::string("Jak 2 common-water environment preparation failed: ") +
+           host->skull_gem_executor->last_error())
               .c_str());
       return;
     }
@@ -2025,7 +2071,16 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &*copied_sky_post_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         security_plan ? &security_prepared : nullptr,
-        copied_common_water_plan->present ? &common_water_environment_prepared : nullptr,
+        copied_common_water_plan->variant ==
+                metal_renderer::Jak2CommonWaterTextureUploadVariant::
+                    DescriptorSecurityEnvironmentAndStandardReset
+            ? &common_water_environment_prepared
+            : nullptr,
+        copied_common_water_plan->variant ==
+                metal_renderer::Jak2CommonWaterTextureUploadVariant::
+                    DescriptorBombAndStandardReset
+            ? &common_water_bomb_prepared
+            : nullptr,
         &prison_clut_prepared,
         copied_common_pris_plan->present ? &dark_jak_clut_prepared : nullptr,
         static_cast<const u8*>(ee_base),
