@@ -239,6 +239,8 @@ void make_effects_lightning_chain() {
   cursor += 48;
   put_tag(cursor, DmaTag::Kind::CNT);
   cursor += 16;
+  put_tag(cursor, DmaTag::Kind::CNT);
+  cursor += 16;
   put_tag(cursor, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   cursor += 176;
   put_tag(cursor, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
@@ -1679,7 +1681,7 @@ int main() {
             effects_metrics.effects_bucket315.lightning_captures == 1 &&
             effects_metrics.effects_bucket315.malformed_captures == 0 &&
             effects_metrics.effects_bucket315.other_captures == 0 &&
-            effects_metrics.effects_bucket315.last_transfer_count == 7 &&
+            effects_metrics.effects_bucket315.last_transfer_count == 8 &&
             effects_metrics.effects_bucket315.last_payload_bytes == 352 &&
             effects_metrics.effects_bucket315.last_classification ==
                 static_cast<uint8_t>(metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning),
