@@ -22,7 +22,13 @@ namespace {
 
 constexpr int kDistortTargetWidth = 128;
 constexpr int kDistortTargetHeight = 96;
-constexpr u32 kNormalSpriteTextureTbp = 0x7e0;
+constexpr u16 kEffectsTexturePage = 12;
+constexpr u16 kMechFlameTextureIndex = 144;
+constexpr u32 kMechFlameTextureComboId =
+    (static_cast<u32>(kEffectsTexturePage) << 16) | kMechFlameTextureIndex;
+constexpr u32 kMechFlameTextureTbp = 325;
+constexpr u16 kMechFlameTextureSize = 64;
+static_assert(kMechFlameTextureComboId == 786576);
 
 u32 vif_code(VifCode::Kind kind, u16 immediate = 0, u8 num = 0) {
   return (static_cast<u32>(kind) << 24) | (static_cast<u32>(num) << 16) | immediate;
@@ -253,7 +259,7 @@ struct NormalSpriteFixture {
   SpriteVecData2d vector = {};
   AdGifData adgif = {};
 
-  NormalSpriteFixture(bool tcc, bool filtered) {
+  NormalSpriteFixture(bool tcc, bool filtered, float particle_alpha = 64.f) {
     frame.xy_array[0] = math::Vector4f(-128.f, -64.f, 0.f, 0.f);
     frame.xy_array[1] = math::Vector4f(128.f, -64.f, 0.f, 0.f);
     frame.xy_array[2] = math::Vector4f(-128.f, 64.f, 0.f, 0.f);
@@ -272,9 +278,9 @@ struct NormalSpriteFixture {
 
     vector.xyz_sx = math::Vector4f(2048.f, 2048.f, 8388608.f, 1.f);
     vector.flag_rot_sy = math::Vector4f(0.f, 0.f, 0.f, 1.f);
-    vector.rgba = math::Vector4f(128.f, 128.f, 128.f, 64.f);
+    vector.rgba = math::Vector4f(128.f, 128.f, 128.f, particle_alpha);
 
-    adgif.tex0_data = gs_tex0(kNormalSpriteTextureTbp, 1, 0, 2, 2) |
+    adgif.tex0_data = gs_tex0(kMechFlameTextureTbp, 1, 0, 6, 6) |
                       (static_cast<u64>(tcc) << 34);
     adgif.tex0_addr = static_cast<u64>(GsRegisterAddress::TEX0_1);
     adgif.tex1_data = static_cast<u64>(filtered) << 5;
@@ -679,7 +685,32 @@ bool pixel_near(Pixel actual, Pixel expected, int tolerance = 2) {
          near(actual.b, expected.b) && near(actual.a, expected.a);
 }
 
-void test_normal_sprite_tcc_is_independent_of_filter() {
+void publish_synthetic_mech_flame(TexturePool& texture_pool) {
+  constexpr u32 kGoalFalse = 0xffffffff;
+  constexpr std::size_t kTexturePointerCount = kMechFlameTextureIndex + 1;
+  constexpr std::size_t kTextureDescriptionOffset =
+      sizeof(GoalTexturePage) + kTexturePointerCount * sizeof(u32);
+  std::vector<u8> memory(kTextureDescriptionOffset + sizeof(GoalTexture), 0);
+
+  GoalTexturePage page = {};
+  page.id = kEffectsTexturePage;
+  page.length = kTexturePointerCount;
+  std::memcpy(memory.data(), &page, sizeof(page));
+  for (std::size_t index = 0; index < kTexturePointerCount; index++) {
+    write_u32(memory, sizeof(GoalTexturePage) + index * sizeof(u32), kGoalFalse);
+  }
+  write_u32(memory,
+            sizeof(GoalTexturePage) + kMechFlameTextureIndex * sizeof(u32),
+            kTextureDescriptionOffset);
+
+  GoalTexture texture = {};
+  texture.num_mips = 1;
+  texture.dest[0] = kMechFlameTextureTbp;
+  std::memcpy(memory.data() + kTextureDescriptionOffset, &texture, sizeof(texture));
+  texture_pool.handle_upload_now(memory.data(), -1, memory.data(), kGoalFalse, false);
+}
+
+void test_mech_flame_identity_publication_and_alpha() {
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();
   ASSERT(device);
   id<MTLCommandQueue> queue = [device newCommandQueue];
@@ -707,44 +738,56 @@ void test_normal_sprite_tcc_is_independent_of_filter() {
   ASSERT(metal_setup_placeholder(device, queue, texture_pool));
   const u64 placeholder = texture_pool.get_placeholder_texture();
 
-  std::array<u8, 4 * 4 * 4> source = {};
-  for (int y = 0; y < 4; y++) {
-    for (int x = 0; x < 4; x++) {
-      const std::size_t offset = static_cast<std::size_t>(y * 4 + x) * 4;
+  std::vector<u8> source(kMechFlameTextureSize * kMechFlameTextureSize * 4, 0);
+  for (int y = 0; y < kMechFlameTextureSize; y++) {
+    for (int x = 0; x < kMechFlameTextureSize; x++) {
+      const std::size_t offset =
+          static_cast<std::size_t>(y * kMechFlameTextureSize + x) * 4;
       source[offset + 0] = 200;
       source[offset + 1] = 120;
       source[offset + 2] = 40;
-      source[offset + 3] = (x >= 1 && x <= 2 && y >= 1 && y <= 2) ? 64 : 0;
+      source[offset + 3] = (x >= 24 && x < 40 && y >= 24 && y < 40) ? 128 : 0;
     }
   }
-  const u64 source_handle = metal_upload_texture_rgba8(device, queue, source.data(), 4, 4);
+  const u64 source_handle = metal_upload_texture_rgba8(
+      device, queue, source.data(), kMechFlameTextureSize, kMechFlameTextureSize);
   ASSERT(source_handle);
   PcTextureId source_id;
   {
     std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
     TextureInput input;
     input.debug_page_name = "SYNTHETIC";
-    input.debug_name = "jak2-normal-sprite-tcc";
-    input.id = texture_pool.allocate_pc_port_texture(GameVersion::Jak2);
+    input.debug_name = "mech-flame";
+    input.id = PcTextureId::from_combo_id(kMechFlameTextureComboId);
     source_id = input.id;
     input.gpu_texture = source_handle;
     input.src_data = source.data();
-    input.w = 4;
-    input.h = 4;
-    texture_pool.give_texture_and_load_to_vram(input, kNormalSpriteTextureTbp);
+    input.w = kMechFlameTextureSize;
+    input.h = kMechFlameTextureSize;
+    texture_pool.give_texture(input);
   }
-  ASSERT(texture_pool.lookup(kNormalSpriteTextureTbp).value_or(0) == source_handle);
+  publish_synthetic_mech_flame(texture_pool);
+  ASSERT(texture_pool.lookup(kMechFlameTextureTbp).value_or(0) == source_handle);
+  const GpuTexture* published = texture_pool.lookup_gpu_texture(kMechFlameTextureTbp);
+  ASSERT(published);
+  ASSERT(published->tex_id == PcTextureId(kEffectsTexturePage, kMechFlameTextureIndex));
 
   struct Case {
     bool tcc;
     bool filtered;
+    float particle_alpha;
+    u8 expected_center_alpha;
   };
-  constexpr Case cases[] = {{true, false}, {false, true}};
+  constexpr Case cases[] = {
+      {true, false, 128.f, 255},
+      {true, false, 64.f, 128},
+      {false, true, 64.f, 255},
+  };
   constexpr Pixel clear = {16, 32, 48, 255};
 
   for (const auto& test_case : cases) {
     stream.reset();
-    NormalSpriteFixture fixture(test_case.tcc, test_case.filtered);
+    NormalSpriteFixture fixture(test_case.tcc, test_case.filtered, test_case.particle_alpha);
     auto chain = make_normal_jak2_chain(false, false, false, nullptr, false, 1, nullptr,
                                         &fixture);
     const u32 next_bucket = chain.finish();
@@ -840,7 +883,7 @@ void test_normal_sprite_tcc_is_independent_of_filter() {
     const Pixel center = read_bgra_pixel(pixels, 64, 48);
     const Pixel transparent_texel = read_bgra_pixel(pixels, 90, 48);
     if (test_case.tcc) {
-      ASSERT(center.a >= 56 && center.a <= 72);
+      ASSERT(std::abs(static_cast<int>(center.a) - test_case.expected_center_alpha) <= 2);
       ASSERT(!pixel_near(center, clear));
       ASSERT(pixel_near(transparent_texel, clear));
     } else {
@@ -858,6 +901,7 @@ void test_normal_sprite_tcc_is_independent_of_filter() {
   metal_texture_release(placeholder);
   texture_pool.set_placeholder(0);
   ASSERT(metal_texture_live_count() == initial_live_textures);
+  std::puts("jak2-metal-sprite-renderer-test: mech-flame identity/alpha PASS");
 }
 
 void test_multi_distorter_spatial_sampling_and_alpha() {
@@ -1055,7 +1099,7 @@ int main() {
     test_jak2_hud_program();
     test_jak2_glow_marker_is_not_submitted_as_an_ordinary_sprite();
     test_control_led_glow_without_constants_remains_explicitly_unsupported();
-    test_normal_sprite_tcc_is_independent_of_filter();
+    test_mech_flame_identity_publication_and_alpha();
     test_multi_distorter_spatial_sampling_and_alpha();
   }
   std::puts("jak2-metal-sprite-renderer-test: PASS");
