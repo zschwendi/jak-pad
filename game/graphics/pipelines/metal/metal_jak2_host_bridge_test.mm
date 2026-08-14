@@ -1663,9 +1663,9 @@ int main() {
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
             metal_merc_models().model_count() == initial_merc_model_count &&
             configured_texture_count ==
-                initial_texture_count + 14 + METAL_NUM_EYE_PAIRS * 2,
-        "common art, Dark Jak defaults, placeholder, OCEAN targets, and detached eye targets are "
-        "resident");
+                initial_texture_count + 20 + METAL_NUM_EYE_PAIRS * 2,
+        "common art, Bomb and Dark Jak sources/defaults, placeholder, OCEAN targets, and detached "
+        "eye targets are resident");
   check(goal_jak2_metal_host_configure_level_art(host, fr3_directory.c_str()) &&
             metal_level_data::level_count() == initial_level_count + 1 &&
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
