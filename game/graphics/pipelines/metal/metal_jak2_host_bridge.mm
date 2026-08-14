@@ -32,6 +32,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.h"
@@ -115,7 +116,8 @@ bool jak2_metal_host_policy_table_is_audited() {
         descriptor.behavior != Jak2MetalBucketBehavior::PrisEye &&
         descriptor.behavior != Jak2MetalBucketBehavior::CommonPris &&
         descriptor.behavior != Jak2MetalBucketBehavior::EffectsLightning &&
-        descriptor.behavior != Jak2MetalBucketBehavior::Warp) {
+        descriptor.behavior != Jak2MetalBucketBehavior::Warp &&
+        descriptor.behavior != Jak2MetalBucketBehavior::Shadow2) {
       return false;
     }
   }
@@ -380,6 +382,27 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   warp.last_actual_unexpected_dma = stats.warp317_unexpected_dma;
   warp.last_actual_overflow = stats.warp317_overflow;
   warp.last_snapshot_texture = stats.warp317_snapshot_texture;
+  auto& shadow = host->metrics.shadow_bucket195_execution;
+  shadow.last_actual_executions = stats.shadow195_executions;
+  shadow.last_actual_absent = stats.shadow195_absent;
+  shadow.last_actual_ready = stats.shadow195_ready;
+  shadow.last_actual_deferred_no_draw = stats.shadow195_deferred_no_draw;
+  shadow.last_actual_input_batches = stats.shadow195_input_batches;
+  shadow.last_actual_input_vertices = stats.shadow195_input_vertices;
+  shadow.last_actual_input_records = stats.shadow195_input_records;
+  shadow.last_actual_output_vertices = stats.shadow195_output_vertices;
+  shadow.last_actual_front_triangles = stats.shadow195_front_triangles;
+  shadow.last_actual_back_triangles = stats.shadow195_back_triangles;
+  shadow.last_actual_draws = stats.shadow195_draws;
+  shadow.last_actual_triangles = stats.shadow195_triangles;
+  shadow.last_actual_darken_draws = stats.shadow195_darken_draws;
+  shadow.last_actual_lighten_draws = stats.shadow195_lighten_draws;
+  shadow.last_actual_unexpected_dma = stats.shadow195_unexpected_dma;
+  shadow.last_actual_invalid_plan = stats.shadow195_invalid_plan;
+  shadow.last_actual_nonfinite_projection = stats.shadow195_nonfinite_projection;
+  shadow.last_actual_overflow = stats.shadow195_overflow;
+  shadow.last_actual_pipeline_failures = stats.shadow195_pipeline_failures;
+  shadow.last_actual_reached_boundary = stats.shadow195_reached_boundary ? 1 : 0;
   host->metrics.last_eye_composed = stats.eyes_composed;
   host->metrics.last_eye_draws = stats.eye_draws;
   host->metrics.last_eye_triangles = stats.eye_triangles;
@@ -1441,6 +1464,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2ShadowBucket195);
     record_shadow_bucket195_metrics(&host->metrics.shadow_bucket195, shadow_bucket195_capture);
+    const auto live_shadow_bucket195_plan = metal_renderer::plan_jak2_shadow_bucket195(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+        metal_renderer::kJak2ShadowBucket195PlanBucket);
+    if (!live_shadow_bucket195_plan) {
+      record_failure(host, "Jak 2 shadow bucket 195 live DMA failed exact preflight");
+      return;
+    }
     const auto gmerc_warp_bucket317_plan = metal_renderer::plan_jak2_gmerc_warp_bucket317(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2GmercWarpBucket);
@@ -1685,6 +1715,17 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                   copied_chain_validation.error) +
               " (" + dma_chain_validation_error_message(copied_chain_validation.dma.error) + ")",
           host_texture_mutated);
+      return;
+    }
+
+    const auto copied_shadow_bucket195_plan = metal_renderer::plan_jak2_shadow_bucket195(
+        copied.data.data(), copied.data.size(), copied.start_offset,
+        metal_renderer::kJak2ShadowBucket195PlanBucket);
+    if (!copied_shadow_bucket195_plan ||
+        !metal_renderer::jak2_shadow_bucket195_plans_match(
+            *live_shadow_bucket195_plan, *copied_shadow_bucket195_plan)) {
+      record_send_chain_failure(
+          host, "Jak 2 copied shadow bucket 195 did not match exact live DMA", false);
       return;
     }
 
@@ -2015,6 +2056,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.jak2_pris_eye_plan_count = copied_pris_eye_renderer_plans.size();
     render_options.jak2_common_pris_plan = &*copied_common_pris_plan;
     render_options.jak2_gmerc_warp_bucket317_plan = &*copied_gmerc_warp_bucket317_plan;
+    render_options.jak2_shadow_bucket195_plan = &*copied_shadow_bucket195_plan;
     const u64 warp_texture_upload_executions_before =
         host->metrics.warp_texture_upload_executions;
     const auto pris2_texture_upload_executions_before =
@@ -2034,6 +2076,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         copied_gmerc_warp_bucket317_plan->continued_fragment_count;
     warp_execution.last_expected_vertices = copied_gmerc_warp_bucket317_plan->vertex_count;
     warp_execution.last_expected_adgifs = copied_gmerc_warp_bucket317_plan->adgif_count;
+    auto& shadow_execution = host->metrics.shadow_bucket195_execution;
+    shadow_execution.last_expected_disposition =
+        static_cast<uint32_t>(copied_shadow_bucket195_plan->disposition);
+    shadow_execution.last_expected_batches =
+        static_cast<uint32_t>(copied_shadow_bucket195_plan->batches.size());
+    shadow_execution.last_expected_vertices = copied_shadow_bucket195_plan->vertex_count;
+    shadow_execution.last_expected_records = copied_shadow_bucket195_plan->record_count;
     const auto renderer_before = host->renderer.chain_stats();
     const bool acquired = host->renderer.render_chain_frame(
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
@@ -2108,6 +2157,61 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
     warp_execution.completed_executions++;
+    const auto expected_shadow_disposition = copied_shadow_bucket195_plan->disposition;
+    const bool shadow_ready = expected_shadow_disposition ==
+                              metal_renderer::Jak2ShadowBucket195PlanDisposition::Ready;
+    const bool shadow_deferred = expected_shadow_disposition ==
+                                 metal_renderer::Jak2ShadowBucket195PlanDisposition::
+                                     AcceptedDeferredNoDraw;
+    const uint32_t expected_shadow_triangles =
+        shadow_execution.last_actual_front_triangles +
+        shadow_execution.last_actual_back_triangles;
+    const bool shadow_has_geometry = shadow_ready && expected_shadow_triangles != 0;
+    bool expected_darken = false;
+    bool expected_lighten = false;
+    if (shadow_has_geometry) {
+      for (uint32_t channel = 0; channel < 3; ++channel) {
+        expected_darken |= copied_shadow_bucket195_plan->color[channel] < 128;
+        expected_lighten |= copied_shadow_bucket195_plan->color[channel] > 128;
+      }
+    }
+    const uint32_t expected_shadow_draws =
+        (shadow_execution.last_actual_front_triangles != 0 ? 1u : 0u) +
+        (shadow_execution.last_actual_back_triangles != 0 ? 1u : 0u) +
+        (expected_darken ? 1u : 0u) + (expected_lighten ? 1u : 0u);
+    const bool shadow_no_draw = !shadow_ready || !shadow_has_geometry;
+    if (shadow_execution.last_actual_executions != 1 ||
+        shadow_execution.last_actual_absent !=
+            (expected_shadow_disposition ==
+                     metal_renderer::Jak2ShadowBucket195PlanDisposition::Absent
+                 ? 1u
+                 : 0u) ||
+        shadow_execution.last_actual_ready != (shadow_ready ? 1u : 0u) ||
+        shadow_execution.last_actual_deferred_no_draw != (shadow_deferred ? 1u : 0u) ||
+        shadow_execution.last_actual_input_batches != shadow_execution.last_expected_batches ||
+        shadow_execution.last_actual_input_vertices != shadow_execution.last_expected_vertices ||
+        shadow_execution.last_actual_input_records != shadow_execution.last_expected_records ||
+        shadow_execution.last_actual_output_vertices != expected_shadow_triangles * 3 ||
+        shadow_execution.last_actual_draws != (shadow_no_draw ? 0u : expected_shadow_draws) ||
+        shadow_execution.last_actual_triangles !=
+            (shadow_no_draw ? 0u
+                            : expected_shadow_triangles +
+                                  2u * ((expected_darken ? 1u : 0u) +
+                                        (expected_lighten ? 1u : 0u))) ||
+        shadow_execution.last_actual_darken_draws != (expected_darken ? 1u : 0u) ||
+        shadow_execution.last_actual_lighten_draws != (expected_lighten ? 1u : 0u) ||
+        shadow_execution.last_actual_unexpected_dma != 0 ||
+        shadow_execution.last_actual_invalid_plan != 0 ||
+        shadow_execution.last_actual_nonfinite_projection != 0 ||
+        shadow_execution.last_actual_overflow != 0 ||
+        shadow_execution.last_actual_pipeline_failures != 0 ||
+        shadow_execution.last_actual_reached_boundary != 1) {
+      record_send_chain_failure(
+          host, "Jak 2 Shadow2 bucket 195 violated its exact execution gate",
+          host_texture_mutated);
+      return;
+    }
+    shadow_execution.completed_executions++;
     if (!warp_texture_upload_callback_executed ||
         !counter_advanced_by(warp_texture_upload_executions_before,
                              host->metrics.warp_texture_upload_executions,

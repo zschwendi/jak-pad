@@ -41,8 +41,8 @@
 
 namespace {
 
-static_assert(offsetof(goal_jak2_metal_host_metrics, gmerc_warp_bucket317_execution) +
-                  sizeof(goal_jak2_gmerc_warp_bucket317_execution_metrics) ==
+static_assert(offsetof(goal_jak2_metal_host_metrics, shadow_bucket195_execution) +
+                  sizeof(goal_jak2_shadow_bucket195_execution_metrics) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -107,7 +107,7 @@ constexpr u32 kSubtitleCaptureOffset = kChainOffset + 0x18200;
 constexpr u32 kSubtitleMalformedOffset = kChainOffset + 0x18400;
 constexpr u32 kShadowBucket = metal_renderer::kJak2ShadowBucket195;
 static_assert(kShadowBucket == static_cast<u32>(jak2::BucketId::SHADOW));
-constexpr u32 kShadowCaptureOffset = kChainOffset + 0x18600;
+constexpr u32 kShadowCaptureOffset = kChainOffset + 0x18500;
 constexpr u32 kGmercWarpBucket = metal_renderer::kJak2GmercWarpBucket;
 static_assert(kGmercWarpBucket == static_cast<u32>(jak2::BucketId::GMERC_WARP));
 constexpr u32 kGmercWarpPayloadOffset = kChainOffset + 0x18c00;
@@ -405,7 +405,7 @@ void make_effects_lightning_chain(u32 fragments = 0,
   put_tag(cursor, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
-void make_shadow_top_only_capture_chain() {
+void make_shadow_bucket195_chain(bool ready = false) {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
   constexpr u32 kStcycl = static_cast<u32>(VifCode::Kind::STCYCL) << 24;
@@ -414,32 +414,93 @@ void make_shadow_top_only_capture_chain() {
   constexpr u32 kMscalf = static_cast<u32>(VifCode::Kind::MSCALF) << 24;
   constexpr u32 kFlushe = static_cast<u32>(VifCode::Kind::FLUSHE) << 24;
   constexpr u32 kFlush = static_cast<u32>(VifCode::Kind::FLUSH) << 24;
+  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
   const u32 bucket_offset = kChainOffset + kShadowBucket * 16;
-  std::memset(ee + kShadowCaptureOffset, 0, 0x400);
+  std::memset(ee + kShadowCaptureOffset, 0, 0x700);
   put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kShadowCaptureOffset);
   u32 cursor = kShadowCaptureOffset;
   put_tag(cursor, DmaTag::Kind::CNT, 13, 0, kStcycl | 0x404,
           kUnpackV432 | (13 << 16) | 0x370);
+  if (ready) {
+    constexpr float kHvdf[3] = {2048.f, 2048.f, 12582912.f};
+    constexpr float kFog = 1.f;
+    std::memcpy(ee + cursor + 16 + 64, kHvdf, sizeof(kHvdf));
+    std::memcpy(ee + cursor + 16 + 80, &kFog, sizeof(kFog));
+  }
   cursor += 224;
   put_tag(cursor, DmaTag::Kind::CNT, 4, 0, kStcycl | 0x404,
           kUnpackV432 | (4 << 16) | 0x3ac);
   cursor += 80;
   put_tag(cursor, DmaTag::Kind::CNT, 4, 0, kStcycl | 0x404,
           kUnpackV432 | (4 << 16));
+  if (ready) {
+    std::array<float, 16> perspective = {};
+    perspective[0] = -4096.f;
+    perspective[5] = -6656.f;
+    perspective[12] = 2048.f;
+    perspective[13] = 3328.f;
+    perspective[15] = -1.f;
+    std::memcpy(ee + cursor + 16, perspective.data(), sizeof(perspective));
+  }
   cursor += 80;
   put_tag(cursor, DmaTag::Kind::CNT, 0, 0, kMscalf | 10, kFlushe);
   cursor += 16;
   put_tag(cursor, DmaTag::Kind::CNT);
   cursor += 16;
-  put_tag(cursor, DmaTag::Kind::CNT, 3, 0, kFlush,
-          kUnpackV432 | (3 << 16) | 4);
-  cursor += 64;
-  put_tag(cursor, DmaTag::Kind::CNT, 2, 0, kFlush,
+  struct ShadowVertex {
+    float x;
+    float y;
+    float z;
+    u32 pad;
+  };
+  constexpr std::array<ShadowVertex, 4> kTop = {{{0.4375f, 0.46875f, 0.75f, 0},
+                                                  {0.4375f, 0.53125f, 0.75f, 0},
+                                                  {0.5625f, 0.46875f, 0.75f, 0},
+                                                  {0.5625f, 0.53125f, 0.75f, 0}}};
+  constexpr std::array<ShadowVertex, 4> kBottom = {{{0.5f, 0.46875f, 0.75f, 0},
+                                                     {0.5f, 0.53125f, 0.75f, 0},
+                                                     {0.5625f, 0.46875f, 0.75f, 0},
+                                                     {0.5625f, 0.53125f, 0.75f, 0}}};
+  const u8 vertex_count = ready ? 4 : 3;
+  put_tag(cursor, DmaTag::Kind::CNT, vertex_count, 0, kFlush,
+          kUnpackV432 | (vertex_count << 16) | 4);
+  if (ready) {
+    std::memcpy(ee + cursor + 16, kTop.data(), sizeof(kTop));
+  }
+  cursor += 16 + vertex_count * 16;
+  if (ready) {
+    put_tag(cursor, DmaTag::Kind::CNT, 4, 0, 0,
+            kUnpackV432 | (4 << 16) | 174);
+    std::memcpy(ee + cursor + 16, kBottom.data(), sizeof(kBottom));
+    cursor += 80;
+  }
+  put_tag(cursor, DmaTag::Kind::CNT, 2, 0, 0,
           kUnpackV48 | (4 << 16) | (1 << 14) | 344);
-  const u32 trailing_mscalf6 = kMscalf | 6;
-  std::memcpy(ee + cursor + 16 + 4 * 4 + 12, &trailing_mscalf6,
-              sizeof(trailing_mscalf6));
+  const u32 header = ready ? 2 : 0x101;
+  constexpr std::array<u8, 4> kRecord0 = {0, 1, 2, 1};
+  constexpr std::array<u8, 4> kRecord1 = {2, 1, 3, 1};
+  std::memcpy(ee + cursor + 16, &header, sizeof(header));
+  std::memcpy(ee + cursor + 20, kRecord0.data(), kRecord0.size());
+  if (ready) {
+    std::memcpy(ee + cursor + 24, kRecord1.data(), kRecord1.size());
+  }
+  const u32 trailing_mscalf = kMscalf | (ready ? 2 : 6);
+  std::memcpy(ee + cursor + 16 + 4 * 4 + 12, &trailing_mscalf,
+              sizeof(trailing_mscalf));
   cursor += 48;
+  put_tag(cursor, DmaTag::Kind::CNT, 6, 0, kFlusha, kDirect | 6);
+  cursor += 112;
+  put_tag(cursor, DmaTag::Kind::CNT, 35, 0, kFlusha, kDirect | 35);
+  constexpr std::array<u8, 4> kColor = {64, 192, 128, 128};
+  std::memcpy(ee + cursor + 16 + 24, kColor.data(), kColor.size());
+  cursor += 576;
+  put_tag(cursor, DmaTag::Kind::CNT, 8, 0, kFlusha, kDirect | 8);
+  cursor += 144;
+  put_tag(cursor, DmaTag::Kind::NEXT, 0, cursor + 16);
+  cursor += 16;
+  put_tag(cursor, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  cursor += 176;
   put_tag(cursor, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
@@ -1979,8 +2040,8 @@ int main() {
   const std::size_t shadow_initial_live_count = metal_texture_live_count();
   check(shadow_host && goal_jak2_metal_host_copy_gfx_host(shadow_host, &shadow_callbacks) &&
             metal_renderer::jak2_metal_bucket_table()[kShadowBucket].behavior ==
-                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
-        "created a host while shadow bucket 195 remains deferred");
+                metal_renderer::Jak2MetalBucketBehavior::Shadow2,
+        "created a host with the exact Shadow2 bucket-195 route");
   goal_jak2_metal_host_metrics shadow_metrics = {};
   make_empty_chain();
   shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
@@ -1992,10 +2053,15 @@ int main() {
             shadow_metrics.shadow_bucket195.observed == 0 &&
             shadow_metrics.shadow_bucket195.last_transfer_count == 1 &&
             shadow_metrics.shadow_bucket195.last_total_payload_bytes == 0 &&
-            shadow_metrics.shadow_bucket195.last_reached_boundary == 1,
-        "bucket 195 observes its exact empty form before copy without execution");
+            shadow_metrics.shadow_bucket195.last_reached_boundary == 1 &&
+            shadow_metrics.shadow_bucket195_execution.completed_executions == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_executions == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_absent == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_draws == 0 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 1,
+        "bucket 195 parses live/copy and executes its exact Absent form without drawing");
 
-  make_shadow_top_only_capture_chain();
+  make_shadow_bucket195_chain();
   shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(shadow_host, &shadow_metrics) &&
             shadow_metrics.chains == 2 && shadow_metrics.completed_chains == 2 &&
@@ -2005,20 +2071,68 @@ int main() {
             shadow_metrics.shadow_bucket195.observed == 1 &&
             shadow_metrics.shadow_bucket195.malformed == 0 &&
             shadow_metrics.shadow_bucket195.limit_exceeded == 0 &&
-            shadow_metrics.shadow_bucket195.last_transfer_count == 9 &&
+            shadow_metrics.shadow_bucket195.last_transfer_count == 14 &&
             shadow_metrics.shadow_bucket195.last_v4_32_transfer_count == 4 &&
             shadow_metrics.shadow_bucket195.last_v4_8_transfer_count == 1 &&
             shadow_metrics.shadow_bucket195.last_v4_32_unpack_count == 24 &&
             shadow_metrics.shadow_bucket195.last_v4_8_unpack_count == 4 &&
-            shadow_metrics.shadow_bucket195.last_direct_transfer_count == 0 &&
-            shadow_metrics.shadow_bucket195.last_total_payload_bytes == 416 &&
+            shadow_metrics.shadow_bucket195.last_direct_transfer_count == 4 &&
+            shadow_metrics.shadow_bucket195.last_total_payload_bytes == 1360 &&
+            shadow_metrics.shadow_bucket195.last_direct_payload_bytes == 944 &&
+            shadow_metrics.shadow_bucket195.last_flusha_direct_payload_bytes == 944 &&
             shadow_metrics.shadow_bucket195.last_semantic_fingerprint != 0 &&
             shadow_metrics.shadow_bucket195.last_terminal_qwc == 0 &&
             shadow_metrics.shadow_bucket195.last_terminal_tag_kind ==
                 static_cast<uint8_t>(DmaTag::Kind::NEXT) &&
             shadow_metrics.shadow_bucket195.last_reached_boundary == 1 &&
+            shadow_metrics.shadow_bucket195_execution.completed_executions == 2 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_executions == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_deferred_no_draw == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_batches == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_vertices == 3 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_records == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_output_vertices == 0 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_draws == 0 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 1 &&
             metal_texture_live_count() == shadow_initial_live_count,
-        "top-only MSCALF6 shadow metadata remains passive and never mutates textures");
+        "top-only MSCALF6 remains accepted, exact-boundary, and no-draw without bottom access");
+
+  make_shadow_bucket195_chain(true);
+  shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(shadow_host, &shadow_metrics) &&
+            shadow_metrics.chains == 3 && shadow_metrics.completed_chains == 3 &&
+            shadow_metrics.failed_chains == 0 &&
+            shadow_metrics.shadow_bucket195_execution.completed_executions == 3 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_ready == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_batches == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_vertices == 8 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_records == 2 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_output_vertices == 12 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_front_triangles == 2 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_back_triangles == 2 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_draws == 4 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_triangles == 8 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_darken_draws == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_lighten_draws == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_unexpected_dma == 0 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_invalid_plan == 0 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_nonfinite_projection == 0 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_overflow == 0 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_pipeline_failures == 0 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 1,
+        "a Ready bucket-195 plan passes the exact host geometry, draw, and error gate");
+
+  const uint32_t shadow_copied_before_malformed = shadow_metrics.last_copied_bytes;
+  make_shadow_bucket195_chain();
+  constexpr u32 kTopOnlyIndexHeaderOffset = kShadowCaptureOffset + 416 + 64 + 16;
+  static_cast<u8*>(g_ee_main_mem)[kTopOnlyIndexHeaderOffset] = 0;
+  shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(shadow_host, &shadow_metrics) &&
+            shadow_metrics.chains == 4 && shadow_metrics.completed_chains == 3 &&
+            shadow_metrics.failed_chains == 1 &&
+            shadow_metrics.last_copied_bytes == shadow_copied_before_malformed &&
+            shadow_metrics.shadow_bucket195_execution.completed_executions == 3,
+        "malformed live bucket 195 is rejected before copy or renderer mutation");
   goal_jak2_metal_host_destroy(shadow_host);
 
   goal_jak2_metal_host* warp_texture_host = goal_jak2_metal_host_create();

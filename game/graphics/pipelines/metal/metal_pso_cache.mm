@@ -35,6 +35,7 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"sprite_glow_vs", "sprite_glow_fs"},
     {"ocean_envmap_haze_vs", "ocean_envmap_haze_fs"},
     {"ocean_envmap_radial_vs", "ocean_envmap_radial_fs"},
+    {"shadow2_vs", "shadow2_fs"},                // SHADOW2
 };
 
 size_t hash_combine(size_t seed, size_t v) {

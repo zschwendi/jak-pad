@@ -397,6 +397,27 @@ struct ChainStats {
   int shadow_draws = 0;
   int shadow_triangles = 0;
   int shadow_unexpected_dma = 0;
+  // Exact Jak II SHADOW bucket 195, kept separate from Jak 1 ShadowVu telemetry.
+  int shadow195_executions = 0;
+  int shadow195_absent = 0;
+  int shadow195_ready = 0;
+  int shadow195_deferred_no_draw = 0;
+  int shadow195_input_batches = 0;
+  int shadow195_input_vertices = 0;
+  int shadow195_input_records = 0;
+  int shadow195_output_vertices = 0;
+  int shadow195_front_triangles = 0;
+  int shadow195_back_triangles = 0;
+  int shadow195_draws = 0;
+  int shadow195_triangles = 0;
+  int shadow195_darken_draws = 0;
+  int shadow195_lighten_draws = 0;
+  int shadow195_unexpected_dma = 0;
+  int shadow195_invalid_plan = 0;
+  int shadow195_nonfinite_projection = 0;
+  int shadow195_overflow = 0;
+  int shadow195_pipeline_failures = 0;
+  bool shadow195_reached_boundary = false;
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets

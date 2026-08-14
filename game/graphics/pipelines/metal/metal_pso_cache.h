@@ -44,6 +44,7 @@ enum class MetalShaderId : u16 {
   SPRITE_GLOW_DRAW = 22,
   OCEAN_ENVMAP_HAZE = 23,
   OCEAN_ENVMAP_RADIAL = 24,
+  SHADOW2 = 25,         // Jak II Shadow2 projection and final color passes
   COUNT,
 };
 

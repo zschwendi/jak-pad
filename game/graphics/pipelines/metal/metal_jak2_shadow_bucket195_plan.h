@@ -30,15 +30,21 @@ enum class Jak2ShadowBucket195CommandKind : u8 {
 
 struct Jak2ShadowBucket195Vertex {
   std::array<u8, 16> bytes = {};
+
+  bool operator==(const Jak2ShadowBucket195Vertex&) const = default;
 };
 
 struct Jak2ShadowBucket195Record {
   std::array<u8, 4> bytes = {};
+
+  bool operator==(const Jak2ShadowBucket195Record&) const = default;
 };
 
 struct Jak2ShadowBucket195Command {
   Jak2ShadowBucket195CommandKind kind = Jak2ShadowBucket195CommandKind::Caps;
   std::vector<Jak2ShadowBucket195Record> records;
+
+  bool operator==(const Jak2ShadowBucket195Command&) const = default;
 };
 
 struct Jak2ShadowBucket195Batch {
@@ -48,6 +54,8 @@ struct Jak2ShadowBucket195Batch {
   bool has_top_upload = false;
   bool has_bottom_upload = false;
   bool top_only = false;
+
+  bool operator==(const Jak2ShadowBucket195Batch&) const = default;
 };
 
 /*
@@ -78,6 +86,8 @@ struct Jak2ShadowBucket195Plan {
   bool has_color_direct35 = false;
   bool has_reset_display_state = false;
   bool has_default_end_state = false;
+
+  bool operator==(const Jak2ShadowBucket195Plan&) const = default;
 };
 
 std::optional<Jak2ShadowBucket195Plan> plan_jak2_shadow_bucket195(
@@ -85,5 +95,8 @@ std::optional<Jak2ShadowBucket195Plan> plan_jak2_shadow_bucket195(
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
     u32 bucket_id);
+
+bool jak2_shadow_bucket195_plans_match(const Jak2ShadowBucket195Plan& live,
+                                       const Jak2ShadowBucket195Plan& copied);
 
 }  // namespace metal_renderer

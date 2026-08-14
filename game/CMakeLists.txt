@@ -1321,6 +1321,7 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_effects_bucket315_plan.cpp
             graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan.cpp
             graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.cpp
+            graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.cpp
             graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.cpp
@@ -1404,6 +1405,16 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan_test.cpp)
         add_test(NAME jak2-shadow-bucket195-plan-test
             COMMAND jak2-shadow-bucket195-plan-test)
+
+        add_executable(jak2-shadow-bucket195-renderer-test
+            graphics/pipelines/metal/metal_jak2_shadow_bucket195_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_shadow_bucket195_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-shadow-bucket195-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-shadow-bucket195-renderer-test
+            COMMAND jak2-shadow-bucket195-renderer-test)
 
         add_executable(jak2-gmerc-warp-bucket317-plan-test
             graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan.cpp

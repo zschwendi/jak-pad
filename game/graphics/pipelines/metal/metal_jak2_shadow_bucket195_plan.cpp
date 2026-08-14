@@ -510,4 +510,9 @@ std::optional<Jak2ShadowBucket195Plan> plan_jak2_shadow_bucket195(
   return plan;
 }
 
+bool jak2_shadow_bucket195_plans_match(const Jak2ShadowBucket195Plan& live,
+                                       const Jak2ShadowBucket195Plan& copied) {
+  return live == copied;
+}
+
 }  // namespace metal_renderer

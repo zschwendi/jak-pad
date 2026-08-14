@@ -186,6 +186,34 @@ typedef struct goal_jak2_shadow_bucket195_metrics {
   uint8_t last_reached_boundary;
 } goal_jak2_shadow_bucket195_metrics;
 
+typedef struct goal_jak2_shadow_bucket195_execution_metrics {
+  uint64_t completed_executions;
+  uint32_t last_expected_disposition;
+  uint32_t last_expected_batches;
+  uint32_t last_expected_vertices;
+  uint32_t last_expected_records;
+  uint32_t last_actual_executions;
+  uint32_t last_actual_absent;
+  uint32_t last_actual_ready;
+  uint32_t last_actual_deferred_no_draw;
+  uint32_t last_actual_input_batches;
+  uint32_t last_actual_input_vertices;
+  uint32_t last_actual_input_records;
+  uint32_t last_actual_output_vertices;
+  uint32_t last_actual_front_triangles;
+  uint32_t last_actual_back_triangles;
+  uint32_t last_actual_draws;
+  uint32_t last_actual_triangles;
+  uint32_t last_actual_darken_draws;
+  uint32_t last_actual_lighten_draws;
+  uint32_t last_actual_unexpected_dma;
+  uint32_t last_actual_invalid_plan;
+  uint32_t last_actual_nonfinite_projection;
+  uint32_t last_actual_overflow;
+  uint32_t last_actual_pipeline_failures;
+  uint32_t last_actual_reached_boundary;
+} goal_jak2_shadow_bucket195_execution_metrics;
+
 typedef struct goal_jak2_gmerc_warp_bucket317_metrics {
   uint64_t observations;
   uint64_t absent;
@@ -438,6 +466,8 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_effects_bucket315_execution_metrics effects_bucket315_execution;
   // Append-only exact execution telemetry for source framebuffer-warp bucket 317.
   goal_jak2_gmerc_warp_bucket317_execution_metrics gmerc_warp_bucket317_execution;
+  // Append-only exact execution telemetry for source Shadow2 bucket 195.
+  goal_jak2_shadow_bucket195_execution_metrics shadow_bucket195_execution;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

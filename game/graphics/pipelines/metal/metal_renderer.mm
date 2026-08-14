@@ -25,6 +25,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_blit_display_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow2_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_renderer.h"
 #include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
@@ -675,6 +676,12 @@ void MetalRenderer::init_bucket_renderers_jak2() {
         m_bucket_renderers[bucket_id] =
             std::make_unique<MetalSkipRenderer>("jak2-gmerc-warp-unavailable", descriptor.id);
       }
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Shadow2) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::SHADOW));
+      ASSERT(batch_size == 0);
+      m_bucket_renderers[bucket_id] =
+          std::make_unique<metal_renderer::MetalJak2Shadow2Renderer>(
+              "shadow", descriptor.id);
     } else if (descriptor.behavior ==
                metal_renderer::Jak2MetalBucketBehavior::HostTextureUploadDirect) {
       ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1) ||
@@ -1258,6 +1265,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.jak2_pris_eye_plan_count = opts.jak2_pris_eye_plan_count;
     m_shared_state.jak2_common_pris_plan = opts.jak2_common_pris_plan;
     m_shared_state.jak2_gmerc_warp_bucket317_plan = opts.jak2_gmerc_warp_bucket317_plan;
+    m_shared_state.jak2_shadow_bucket195_plan = opts.jak2_shadow_bucket195_plan;
     struct HostBucketCallbackScope {
       MetalSharedRenderState* state;
       ~HostBucketCallbackScope() {
@@ -1269,6 +1277,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         state->jak2_pris_eye_plan_count = 0;
         state->jak2_common_pris_plan = nullptr;
         state->jak2_gmerc_warp_bucket317_plan = nullptr;
+        state->jak2_shadow_bucket195_plan = nullptr;
       }
     } host_bucket_callback_scope{&m_shared_state};
 
@@ -1874,6 +1883,29 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         m_chain_stats.shadow_draws = ss.draw_calls;
         m_chain_stats.shadow_triangles = ss.triangles;
         m_chain_stats.shadow_unexpected_dma = ss.unexpected_dma;
+      } else if (auto* sh2 =
+                     dynamic_cast<metal_renderer::MetalJak2Shadow2Renderer*>(r.get())) {
+        const auto& ss = sh2->stats();
+        m_chain_stats.shadow195_executions = ss.executions;
+        m_chain_stats.shadow195_absent = ss.absent;
+        m_chain_stats.shadow195_ready = ss.ready;
+        m_chain_stats.shadow195_deferred_no_draw = ss.accepted_deferred_no_draw;
+        m_chain_stats.shadow195_input_batches = ss.input_batches;
+        m_chain_stats.shadow195_input_vertices = ss.input_vertices;
+        m_chain_stats.shadow195_input_records = ss.input_records;
+        m_chain_stats.shadow195_output_vertices = ss.output_vertices;
+        m_chain_stats.shadow195_front_triangles = ss.front_triangles;
+        m_chain_stats.shadow195_back_triangles = ss.back_triangles;
+        m_chain_stats.shadow195_draws = ss.draw_calls;
+        m_chain_stats.shadow195_triangles = ss.triangles;
+        m_chain_stats.shadow195_darken_draws = ss.darken_draws;
+        m_chain_stats.shadow195_lighten_draws = ss.lighten_draws;
+        m_chain_stats.shadow195_unexpected_dma = ss.unexpected_dma;
+        m_chain_stats.shadow195_invalid_plan = ss.invalid_plan;
+        m_chain_stats.shadow195_nonfinite_projection = ss.nonfinite_projection;
+        m_chain_stats.shadow195_overflow = ss.overflow;
+        m_chain_stats.shadow195_pipeline_failures = ss.pipeline_failures;
+        m_chain_stats.shadow195_reached_boundary = ss.reached_boundary;
       } else if (auto* gn = dynamic_cast<MetalGeneric2BucketRenderer*>(r.get())) {
         if (gn->mode() == MetalGeneric2::Mode::LIGHTNING) {
           effects315_stats.add(gn->stats());

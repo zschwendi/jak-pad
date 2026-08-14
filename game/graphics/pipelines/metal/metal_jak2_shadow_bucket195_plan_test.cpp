@@ -202,8 +202,19 @@ void test_absent_and_ready_plan() {
 
   const auto relocated = plan(normal_fixture(true, kChainOffset + 0x1000, kDataOffset + 0x8000));
   check(relocated && relocated->record_count == ready->record_count &&
-            relocated->vertex_count == ready->vertex_count && relocated->color == ready->color,
-        "the owned plan is independent of DMA relocation");
+            relocated->vertex_count == ready->vertex_count && relocated->color == ready->color &&
+            metal_renderer::jak2_shadow_bucket195_plans_match(*ready, *relocated),
+        "independent live/copy parses match semantically across DMA relocation");
+
+  auto changed = *relocated;
+  changed.batches[0].top_vertices[0].bytes[0] ^= 1;
+  check(!metal_renderer::jak2_shadow_bucket195_plans_match(*ready, changed),
+        "a changed owned vertex byte fails live/copy semantic matching");
+
+  changed = *relocated;
+  changed.color[2] ^= 1;
+  check(!metal_renderer::jak2_shadow_bucket195_plans_match(*ready, changed),
+        "a changed owned color byte fails live/copy semantic matching");
 }
 
 void test_retained_live_scalar_shape() {
@@ -233,6 +244,22 @@ void test_retained_live_scalar_shape() {
             shaped->batches.back().bottom_vertices.empty(),
         "the retained tick-600 transfer, V4_32, V4_8, Direct, and payload scalar shape parses "
         "exactly");
+}
+
+void test_retained_payload_envelope() {
+  Fixture fixture;
+  fixture.fixed_prefix(true);
+  fixture.vertices(4, 128, VifCode::Kind::FLUSH, 0x21);
+  fixture.vertices(174, 128, VifCode::Kind::NOP, 0x22);
+  std::vector<std::array<u8, 4>> records(108, {0, 1, 2, 1});
+  fixture.indices(344, 2, records);
+  fixture.tail();
+
+  const auto retained_size = plan(fixture);
+  check(retained_size && retained_size->disposition == Disposition::Ready &&
+            retained_size->payload_bytes == 6400 && retained_size->vertex_count == 256 &&
+            retained_size->record_count == 108 && retained_size->direct_payload_bytes == 1504,
+        "an exact 6400-byte retained-gameplay-sized source envelope stays fully owned");
 }
 
 void test_top_only_is_accepted_deferred() {
@@ -354,6 +381,7 @@ void test_bounded_snapshot_rejections() {
 int main() {
   test_absent_and_ready_plan();
   test_retained_live_scalar_shape();
+  test_retained_payload_envelope();
   test_top_only_is_accepted_deferred();
   test_source_exact_rejections();
   test_bounded_snapshot_rejections();

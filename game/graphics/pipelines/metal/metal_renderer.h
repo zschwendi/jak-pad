@@ -87,6 +87,7 @@ struct MetalRenderOptions {
   std::size_t jak2_pris_eye_plan_count = 0;
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;
   const metal_renderer::Jak2GmercWarpBucket317Plan* jak2_gmerc_warp_bucket317_plan = nullptr;
+  const metal_renderer::Jak2ShadowBucket195Plan* jak2_shadow_bucket195_plan = nullptr;
   float target_fps = 60.f;
 };
 
