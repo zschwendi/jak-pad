@@ -163,6 +163,8 @@ goal_kernel_core_status goal_kernel_core_resolve_data_path(const char* name,
  * `kernel/gkernel-h.gc`). `thread-suspend` aborts when a live stack does not fit; this reports
  * what did fit, so a run can say how close those numbers came to being wrong.
  *
+ * Samples are global across all GOAL threads. This API does not classify individual process roles.
+ *
  * The name strings are owned by the kernel and are valid until shutdown.
  */
 typedef struct goal_thread_stack_watermark_report {
@@ -173,6 +175,10 @@ typedef struct goal_thread_stack_watermark_report {
   int fullest_used; /*!< the suspend that came closest to filling its buffer */
   int fullest_size;
   const char* fullest_name;
+  int current_used; /*!< the most recent stack range validated by suspend or resume */
+  int current_size;
+  int overflow_failures;   /*!< ranges larger than their backup buffers */
+  int validation_failures; /*!< all rejected suspend and resume stack ranges */
 } goal_thread_stack_watermark_report;
 
 void goal_thread_stack_watermark(goal_thread_stack_watermark_report* out);
