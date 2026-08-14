@@ -86,6 +86,95 @@ u32 unpack_vtx_tcs(MetalGeneric2::Vertex* vtx, const u8* data, u32 vtx_count) {
   return vtx_count * 4;
 }
 
+void unpack_lightning_vertices(MetalGeneric2::Vertex* out, const u8* in, u32 count) {
+  for (u32 i = 0; i < count; i++) {
+    s32 s, t;
+    memcpy(&s, in, sizeof(s));
+    memcpy(&t, in + 4, sizeof(t));
+    const s32 s_masked = s & ~1;
+    out->st[0] = s_masked;
+    out->st[1] = t;
+    out->adc = s_masked == s;
+
+    u32 rgba[4];
+    memcpy(rgba, in + 16, sizeof(rgba));
+    for (int component = 0; component < 4; component++) {
+      out->rgba[component] = rgba[component];
+    }
+
+    memcpy(out->xyz.data(), in + 32, 3 * sizeof(float));
+    out++;
+    in += 48;
+  }
+}
+
+u32 read_u32(const u8* data, u32 offset) {
+  u32 value;
+  memcpy(&value, data + offset, sizeof(value));
+  return value;
+}
+
+constexpr u32 lightning_prim_control(GsPrim::Kind kind) {
+  const u32 prim = static_cast<u32>(kind) | (1u << 3) | (1u << 4) | (1u << 6);
+  return (1u << 14) | (prim << 15) | (3u << 28);
+}
+
+bool is_source_lightning_gcf_header(const u8* data, u32 vertex_count) {
+  constexpr u32 kRegs = static_cast<u32>(GifTag::RegisterDescriptor::ST) |
+                        (static_cast<u32>(GifTag::RegisterDescriptor::RGBAQ) << 4) |
+                        (static_cast<u32>(GifTag::RegisterDescriptor::XYZF2) << 8);
+  return read_u32(data, 64) == lightning_prim_control(GsPrim::Kind::TRI_FAN) &&
+         read_u32(data, 68) == lightning_prim_control(GsPrim::Kind::TRI_STRIP) &&
+         read_u32(data, 72) == kRegs && read_u32(data, 76) == 1 && read_u32(data, 80) == 0 &&
+         read_u32(data, 84) == 0 && read_u32(data, 88) == 0x7f &&
+         read_u32(data, 92) == vertex_count && read_u32(data, 96) == 0 &&
+         read_u32(data, 100) == 0 && read_u32(data, 104) == 0x7f && read_u32(data, 108) == 0;
+}
+
+bool is_source_lightning_adgif(const AdGifData& adgif, u32 vertex_count) {
+  constexpr u64 kAlpha = (2ull << 2) | (1ull << 6) | (0x80ull << 32);
+  const GsTex0 tex0(adgif.tex0_data);
+  const GsTex1 tex1(adgif.tex1_data);
+  return adgif.tex0_addr == static_cast<u64>(GsRegisterAddress::TEX0_1) && tex0.tcc() &&
+         tex0.tfx() == GsTex0::TextureFunction::MODULATE &&
+         adgif.tex1_addr == (static_cast<u64>(GsRegisterAddress::TEX1_1) |
+                             (static_cast<u64>(0x8000u | vertex_count) << 32)) &&
+         tex1.mmag() && tex1.mmin() == 1 &&
+         adgif.mip_addr == static_cast<u64>(GsRegisterAddress::MIPTBP1_1) &&
+         adgif.clamp_data == 0b0101 &&
+         adgif.clamp_addr == static_cast<u64>(GsRegisterAddress::CLAMP_1) &&
+         adgif.alpha_data == kAlpha &&
+         adgif.alpha_addr == static_cast<u64>(GsRegisterAddress::ALPHA_1);
+}
+
+bool is_source_lightning_direct(const DmaTransfer& transfer) {
+  if (transfer.size_bytes != 32 || transfer.vif0() != 0) {
+    return false;
+  }
+  const auto direct = transfer.vifcode1();
+  if (direct.kind != VifCode::Kind::DIRECT || direct.immediate != 2) {
+    return false;
+  }
+  const GifTag tag(transfer.data);
+  u64 address;
+  memcpy(&address, transfer.data + 24, sizeof(address));
+  return tag.nloop() == 1 && tag.eop() && !tag.pre() && tag.flg() == GifTag::Format::PACKED &&
+         tag.nreg() == 1 && tag.reg(0) == GifTag::RegisterDescriptor::AD &&
+         address == static_cast<u64>(GsRegisterAddress::ZBUF_1);
+}
+
+bool is_source_lightning_unpack(const DmaTransfer& transfer,
+                                u32 payload_bytes,
+                                u16 address,
+                                u16 count) {
+  const auto unpack = transfer.vifcode1();
+  const VifCodeUnpack unpack_fields(unpack);
+  return transfer.size_bytes == payload_bytes && transfer.vif0() == 0 &&
+         unpack.kind == VifCode::Kind::UNPACK_V4_32 && !unpack.interrupt && unpack.num == count &&
+         unpack_fields.addr_qw == address && !unpack_fields.is_unsigned &&
+         !unpack_fields.use_tops_flag;
+}
+
 }  // namespace
 
 void MetalGeneric2::Stats::add(const Stats& o) {
@@ -96,6 +185,7 @@ void MetalGeneric2::Stats::add(const Stats& o) {
   draw_calls += o.draw_calls;
   triangles += o.triangles;
   missing_textures += o.missing_textures;
+  placeholder_draws += o.placeholder_draws;
   unsupported_blends += o.unsupported_blends;
   unexpected_dma += o.unexpected_dma;
   overflow += o.overflow;
@@ -673,6 +763,180 @@ void MetalGeneric2::process_dma_jak2(DmaFollower& dma, u32 next_bucket) {
          "the final Jak 2 generic NOP and bucket boundary");
 }
 
+void MetalGeneric2::process_dma_lightning(DmaFollower& dma, u32 next_bucket) {
+  reset_buffers();
+
+  const auto read_before_boundary = [&](DmaTransfer* transfer, const char* description) {
+    if (!expect(dma.current_tag_offset() != next_bucket, description)) {
+      return false;
+    }
+    *transfer = dma.read_and_advance();
+    return true;
+  };
+
+  DmaTransfer first;
+  if (!read_before_boundary(&first, "the Jak 2 Lightning bucket marker before the boundary")) {
+    return;
+  }
+  if (is_nop_zero(first) && dma.current_tag_offset() == next_bucket) {
+    return;
+  }
+  const auto first_kind = first.vifcode0().kind;
+  if (!expect(first.size_bytes == 0 &&
+                  (first_kind == VifCode::Kind::MARK || first_kind == VifCode::Kind::NOP) &&
+                  first.vifcode1().kind == VifCode::Kind::NOP,
+              "the Jak 2 Lightning bucket marker")) {
+    return;
+  }
+
+  DmaTransfer direct;
+  if (!read_before_boundary(&direct, "the Jak 2 Lightning DIRECT setup before the boundary") ||
+      !expect(is_source_lightning_direct(direct),
+              "the Jak 2 Lightning 32-byte ZBUF_1 DIRECT setup")) {
+    return;
+  }
+  u64 zbuf_value;
+  memcpy(&zbuf_value, direct.data + 16, sizeof(zbuf_value));
+  if (!expect(GsZbuf(zbuf_value).zmsk(), "masked Jak 2 Lightning depth writes")) {
+    return;
+  }
+  m_drawing_config.zmsk = true;
+
+  DmaTransfer constants;
+  if (!read_before_boundary(&constants, "the Jak 2 Lightning constants before the boundary")) {
+    return;
+  }
+  const auto constants_stcycl = constants.vifcode0();
+  const auto constants_unpack = constants.vifcode1();
+  const VifCodeUnpack constants_unpack_fields(constants_unpack);
+  if (!expect(constants.size_bytes == 128 && constants_stcycl.kind == VifCode::Kind::STCYCL &&
+                  constants_stcycl.immediate == 0x404 && !constants_stcycl.interrupt &&
+                  constants_unpack.kind == VifCode::Kind::UNPACK_V4_32 &&
+                  constants_unpack.num == 8 && !constants_unpack.interrupt &&
+                  constants_unpack_fields.addr_qw == 897 && !constants_unpack_fields.is_unsigned &&
+                  !constants_unpack_fields.use_tops_flag,
+              "the Jak 2 Lightning 128-byte constants unpack at VU address 897")) {
+    return;
+  }
+  memcpy(&m_drawing_config.pfog0, constants.data, sizeof(float));
+  memcpy(&m_drawing_config.fog_min, constants.data + 4, sizeof(float));
+  memcpy(&m_drawing_config.fog_max, constants.data + 8, sizeof(float));
+  memcpy(m_drawing_config.hvdf_offset.data(), constants.data + 32, 16);
+
+  DmaTransfer vu_setup;
+  if (!read_before_boundary(&vu_setup, "the Jak 2 Lightning VU setup before the boundary") ||
+      !expect(vu_setup.size_bytes == 32 && vu_setup.vifcode0().kind == VifCode::Kind::MSCALF &&
+                  vu_setup.vifcode0().immediate == 0 &&
+                  vu_setup.vifcode1().kind == VifCode::Kind::STMOD &&
+                  vu_setup.vifcode1().immediate == 0,
+              "the Jak 2 Lightning 32-byte MSCALF/STMOD setup")) {
+    return;
+  }
+
+  DmaTransfer setup_end;
+  if (!read_before_boundary(&setup_end, "the Jak 2 Lightning setup NOP before the boundary") ||
+      !expect(is_nop_zero(setup_end), "the Jak 2 Lightning setup NOP")) {
+    return;
+  }
+
+  u16 expected_header_address = 837;
+  u16 expected_vertex_address = 9;
+  DmaTransfer transfer;
+  if (!read_before_boundary(&transfer,
+                            "the Jak 2 Lightning header or linker before the boundary")) {
+    return;
+  }
+  while (transfer.vifcode1().kind == VifCode::Kind::UNPACK_V4_32) {
+    if (!expect(is_source_lightning_unpack(transfer, FRAG_HEADER_SIZE + sizeof(AdGifData),
+                                           expected_header_address, 12),
+                "a Jak 2 Lightning 192-byte GCF header/adgif unpack")) {
+      return;
+    }
+
+    DmaTransfer vertices;
+    if (!read_before_boundary(&vertices, "Jak 2 Lightning vertices after the GCF header")) {
+      return;
+    }
+    const u32 vertex_count = vertices.size_bytes / 48;
+    if (!expect(
+            vertices.size_bytes % 48 == 0 && vertex_count >= 4 && vertex_count <= 82 &&
+                (vertex_count & 1) == 0 &&
+                is_source_lightning_unpack(vertices, vertices.size_bytes, expected_vertex_address,
+                                           static_cast<u16>(vertices.size_bytes / 16)),
+            "Jak 2 Lightning 48-byte packed vertices")) {
+      return;
+    }
+
+    AdGifData source_adgif;
+    memcpy(&source_adgif, transfer.data + FRAG_HEADER_SIZE, sizeof(source_adgif));
+    if (!expect(is_source_lightning_gcf_header(transfer.data, vertex_count),
+                "the exact 112-byte Jak 2 Lightning GCF header") ||
+        !expect(is_source_lightning_adgif(source_adgif, vertex_count),
+                "the source Jak 2 Lightning ALPHA/TEX0/TEX1/MIP/CLAMP state")) {
+      return;
+    }
+
+    DmaTransfer mscal;
+    if (!read_before_boundary(&mscal, "Jak 2 Lightning MSCAL 6 after the vertices") ||
+        !expect(mscal.size_bytes == 0 && mscal.vifcode0().kind == VifCode::Kind::NOP &&
+                    mscal.vifcode1().kind == VifCode::Kind::MSCAL &&
+                    mscal.vifcode1().immediate == 6,
+                "Jak 2 Lightning MSCAL 6")) {
+      return;
+    }
+
+    auto* fragment = next_frag();
+    auto* adgif = next_adgif();
+    if (!fragment || !adgif || !alloc_vtx(vertex_count)) {
+      return;
+    }
+    memcpy(fragment->header, transfer.data, FRAG_HEADER_SIZE);
+    fragment->adgif_idx = m_next_free_adgif - 1;
+    fragment->adgif_count = 1;
+    fragment->vtx_idx = m_next_free_vert - vertex_count;
+    fragment->vtx_count = vertex_count;
+    fragment->mscal_addr = 6;
+    fragment->uses_hud = false;
+    adgif->data = source_adgif;
+    unpack_lightning_vertices(&m_verts[fragment->vtx_idx], vertices.data, vertex_count);
+
+    expected_header_address = 1704 - expected_header_address;
+    expected_vertex_address += 279;
+    if (expected_vertex_address > 567) {
+      expected_vertex_address = 9;
+    }
+    if (!read_before_boundary(&transfer,
+                              "the Jak 2 Lightning next header or linker before the boundary")) {
+      return;
+    }
+  }
+
+  if (!expect(is_nop_zero(transfer),
+              "the required Jak 2 Lightning NOP linker before the trailer")) {
+    return;
+  }
+
+  DmaTransfer trailer;
+  if (!read_before_boundary(&trailer,
+                            "the Jak 2 Lightning FLUSHA/DIRECT trailer before the boundary")) {
+    return;
+  }
+  const auto flusha = trailer.vifcode0();
+  const auto final_direct = trailer.vifcode1();
+  if (!expect(trailer.size_bytes == 160 && flusha.kind == VifCode::Kind::FLUSHA &&
+                  final_direct.kind == VifCode::Kind::DIRECT && final_direct.immediate == 10,
+              "the Jak 2 Lightning 160-byte FLUSHA/DIRECT trailer")) {
+    return;
+  }
+
+  DmaTransfer end;
+  if (!read_before_boundary(&end, "the final Jak 2 Lightning NOP before the boundary")) {
+    return;
+  }
+  expect(is_nop_zero(end) && dma.current_tag_offset() == next_bucket,
+         "the final Jak 2 Lightning NOP and bucket boundary");
+}
+
 // ---------------------------------------------------------------------------
 // Build - mirror of Generic2_Build.cpp
 // ---------------------------------------------------------------------------
@@ -1220,6 +1484,7 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
   // mirror of setup_opengl_tex
   const u32 tbp_to_lookup = first.tbp & 0x7fff;
   const bool use_mt4hh = first.tbp & 0x8000;
+  bool uses_placeholder = false;
   auto tex_handle = use_mt4hh ? render_state->texture_pool->lookup_mt4hh(tbp_to_lookup)
                               : render_state->texture_pool->lookup(tbp_to_lookup);
   if (!tex_handle) {
@@ -1231,10 +1496,12 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
       lg::warn("Metal generic2: no texture at VRAM slot {}, using the placeholder (logged once)",
                tbp_to_lookup);
     }
+    uses_placeholder = true;
     tex_handle = render_state->texture_pool->get_placeholder_texture();
   }
   id<MTLTexture> tex = metal_texture_lookup(*tex_handle);
   if (!tex) {
+    uses_placeholder = true;
     tex = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
   }
   if (!tex) {
@@ -1270,6 +1537,9 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
                    indexType:MTLIndexTypeUInt32
                  indexBuffer:index_buffer
            indexBufferOffset:(index_base + bucket.idx_idx) * sizeof(u32)];
+  if (uses_placeholder && m_stats) {
+    m_stats->placeholder_draws++;
+  }
   ctx.draw_calls++;
   ctx.triangles += bucket.tri_count;
   if (m_stats) {
@@ -1362,20 +1632,38 @@ void MetalGeneric2::render(DmaFollower& dma,
                            MetalSharedRenderState* render_state,
                            MetalFrameContext& ctx,
                            Stats* stats) {
+  render_in_mode(dma, render_state, ctx, Mode::NORMAL, stats);
+}
+
+void MetalGeneric2::render_in_mode(DmaFollower& dma,
+                                   MetalSharedRenderState* render_state,
+                                   MetalFrameContext& ctx,
+                                   Mode mode,
+                                   Stats* stats) {
   m_stats = stats;
   m_failed = false;
 
-  if (render_state->version == GameVersion::Jak1) {
-    process_dma_jak1(dma, render_state->next_bucket);
-  } else if (render_state->version == GameVersion::Jak2) {
-    process_dma_jak2(dma, render_state->next_bucket);
-  } else {
-    expect(false, "a supported Generic2 game version");
+  switch (mode) {
+    case Mode::NORMAL:
+      if (render_state->version == GameVersion::Jak1) {
+        process_dma_jak1(dma, render_state->next_bucket);
+      } else if (render_state->version == GameVersion::Jak2) {
+        process_dma_jak2(dma, render_state->next_bucket);
+      } else {
+        expect(false, "a supported Generic2 game version");
+      }
+      break;
+    case Mode::LIGHTNING:
+      if (render_state->version == GameVersion::Jak2) {
+        process_dma_lightning(dma, render_state->next_bucket);
+      } else {
+        expect(false, "Jak 2 for the Generic2 Lightning mode");
+      }
+      break;
   }
 
   if (!m_failed) {
-    // Both bound paths use Mode::NORMAL.
-    setup_draws(true, true);
+    setup_draws(mode == Mode::NORMAL, true);
   }
   if (!m_failed) {
     do_draws(render_state, ctx);
@@ -1399,5 +1687,5 @@ void MetalGeneric2BucketRenderer::render(DmaFollower& dma,
                                          MetalSharedRenderState* render_state,
                                          MetalFrameContext& ctx) {
   m_stats = MetalGeneric2::Stats();
-  m_generic->render(dma, render_state, ctx, &m_stats);
+  m_generic->render_in_mode(dma, render_state, ctx, m_mode, &m_stats);
 }

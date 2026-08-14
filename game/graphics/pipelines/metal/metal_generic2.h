@@ -12,8 +12,9 @@
  * and sampler keys, and the vertex/index data goes into the frame's stream
  * buffer instead of a re-uploaded GL_STREAM_DRAW buffer.
  *
- * Mode::NORMAL is ported for Jak 1 and Jak 2. The LIGHTNING / WARP / PRIM modes
- * and the Jak 3 DMA layout are not.
+ * Mode::NORMAL is ported for Jak 1 and Jak 2. Jak 2 LIGHTNING is retained as an
+ * internal proof path; no production bucket selects it yet. WARP / PRIM and the
+ * Jak 3 DMA layout are not ported.
  */
 
 #include <memory>
@@ -38,6 +39,7 @@ class MetalGeneric2 {
     int draw_calls = 0;
     int triangles = 0;
     int missing_textures = 0;
+    int placeholder_draws = 0;
     int unsupported_blends = 0;
     int unexpected_dma = 0;  // a bucket did not match: consumed and reported
     int overflow = 0;        // more data than the fixed buffers hold: reported
@@ -50,11 +52,20 @@ class MetalGeneric2 {
                 u32 num_adgif = 10000,
                 u32 num_buckets = 800);
 
-  // Mirror of Generic2::render_in_mode with Mode::NORMAL.
+  enum class Mode { NORMAL, LIGHTNING };
+
+  // Normal production entry point.
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx,
               Stats* stats);
+
+  // Internal mode-selecting seam. LIGHTNING stays proof-only until bucket 315 is promoted.
+  void render_in_mode(DmaFollower& dma,
+                      MetalSharedRenderState* render_state,
+                      MetalFrameContext& ctx,
+                      Mode mode,
+                      Stats* stats);
 
   // Must match GenericVertexIn in shaders/generic.metal (and Generic2::Vertex).
   struct Vertex {
@@ -146,6 +157,7 @@ class MetalGeneric2 {
   bool handle_bucket_setup_dma(DmaFollower& dma, u32 next_bucket);
   void process_dma_jak1(DmaFollower& dma, u32 next_bucket);
   void process_dma_jak2(DmaFollower& dma, u32 next_bucket);
+  void process_dma_lightning(DmaFollower& dma, u32 next_bucket);
   u32 handle_fragments_after_unpack_v4_32(const u8* data,
                                           u32 off,
                                           u32 first_unpack_bytes,
@@ -203,8 +215,9 @@ class MetalGeneric2BucketRenderer : public MetalBucketRenderer {
  public:
   MetalGeneric2BucketRenderer(const std::string& name,
                               int my_id,
-                              std::shared_ptr<MetalGeneric2> generic)
-      : MetalBucketRenderer(name, my_id), m_generic(std::move(generic)) {}
+                              std::shared_ptr<MetalGeneric2> generic,
+                              MetalGeneric2::Mode mode = MetalGeneric2::Mode::NORMAL)
+      : MetalBucketRenderer(name, my_id), m_generic(std::move(generic)), m_mode(mode) {}
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
@@ -212,5 +225,6 @@ class MetalGeneric2BucketRenderer : public MetalBucketRenderer {
 
  private:
   std::shared_ptr<MetalGeneric2> m_generic;
+  MetalGeneric2::Mode m_mode;
   MetalGeneric2::Stats m_stats;
 };
