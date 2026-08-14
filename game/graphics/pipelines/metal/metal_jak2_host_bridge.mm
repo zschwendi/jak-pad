@@ -272,6 +272,17 @@ bool load_level_art_pair(goal_jak2_metal_host* host,
       return false;
     }
     if (is_common) {
+      if (!host->dark_jak_clut_executor ||
+          !host->dark_jak_clut_executor->initialize_defaults(*level->level)) {
+        metal_merc_models().remove_level(level_key);
+        metal_level_data::unload(host->textures, level_key);
+        *error = "Dark Jak default texture initialization failed: ";
+        *error += host->dark_jak_clut_executor
+                      ? host->dark_jak_clut_executor->last_error()
+                      : "executor is unavailable";
+        return false;
+      }
+      merge_animated_texture_slots(host);
       host->common_level = level;
     }
     host->loaded_level_keys.push_back(level_key);

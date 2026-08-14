@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "common/custom_data/Tfrag3Data.h"
@@ -1094,6 +1095,39 @@ bool texture_capture_is_empty(const goal_jak2_tfrag_texture_upload_metrics& uplo
          upload.malformed_transfers == 0;
 }
 
+tfrag3::IndexTexture synthetic_dark_jak_index_texture(std::string_view name, u8 bias) {
+  tfrag3::IndexTexture texture;
+  texture.w = 2;
+  texture.h = 2;
+  texture.index_data = {0, 1, 2, 3};
+  texture.level_names = {"GAME.DGO"};
+  texture.name = name;
+  texture.tpage_name = "synthetic-dark-jak-clut";
+  for (std::size_t entry = 0; entry < texture.color_table.size(); ++entry) {
+    texture.color_table[entry][0] = static_cast<u8>(entry + bias);
+    texture.color_table[entry][1] = static_cast<u8>(entry + bias + 1);
+    texture.color_table[entry][2] = static_cast<u8>(entry + bias + 2);
+    texture.color_table[entry][3] = static_cast<u8>(255 - entry);
+  }
+  return texture;
+}
+
+void add_dark_jak_sources(tfrag3::Level* level) {
+  constexpr std::array<std::array<std::string_view, 3>, 4> kNames = {{
+      {"jakbsmall-eyebrow", "jakbsmall-eyebrow-norm", "jakbsmall-eyebrow-dark"},
+      {"jakbsmall-face", "jakbsmall-face-norm", "jakbsmall-face-dark"},
+      {"jakbsmall-finger", "jakbsmall-finger-norm", "jakbsmall-finger-dark"},
+      {"jakbsmall-hair", "jakbsmall-hair-norm", "jakbsmall-hair-dark"},
+  }};
+  for (std::size_t slot = 0; slot < kNames.size(); ++slot) {
+    level->index_textures.push_back(synthetic_dark_jak_index_texture(kNames[slot][0], 0));
+    level->index_textures.push_back(
+        synthetic_dark_jak_index_texture(kNames[slot][1], static_cast<u8>(slot * 8 + 4)));
+    level->index_textures.push_back(
+        synthetic_dark_jak_index_texture(kNames[slot][2], static_cast<u8>(slot * 8 + 20)));
+  }
+}
+
 bool write_synthetic_fr3(const std::filesystem::path& path,
                          const std::string& level_name,
                          bool with_texture) {
@@ -1109,6 +1143,7 @@ bool write_synthetic_fr3(const std::filesystem::path& path,
     texture.debug_tpage_name = "host-residency-page";
     texture.load_to_pool = true;
     level.textures.push_back(std::move(texture));
+    add_dark_jak_sources(&level);
   }
 
   Serializer serializer;
@@ -1203,6 +1238,7 @@ bool write_security_fr3(const std::filesystem::path& path,
   level.level_name = level_name;
   if (common) {
     level.textures.push_back(synthetic_source_texture("common-white", 0xffffffff));
+    add_dark_jak_sources(&level);
   } else {
     level.textures.push_back(synthetic_source_texture("security-env-dest", 0xff000000));
     level.textures.push_back(synthetic_source_texture("security-env-uscroll", 0xff102030));
@@ -1522,8 +1558,9 @@ int main() {
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
             metal_merc_models().model_count() == initial_merc_model_count &&
             configured_texture_count ==
-                initial_texture_count + 6 + METAL_NUM_EYE_PAIRS * 2,
-        "common art, placeholder, OCEAN targets, and detached eye targets are resident");
+                initial_texture_count + 10 + METAL_NUM_EYE_PAIRS * 2,
+        "common art, Dark Jak defaults, placeholder, OCEAN targets, and detached eye targets are "
+        "resident");
   check(goal_jak2_metal_host_configure_level_art(host, fr3_directory.c_str()) &&
             metal_level_data::level_count() == initial_level_count + 1 &&
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
@@ -3128,8 +3165,8 @@ int main() {
             common_pris.opcode_counts[13] == 1 && common_pris.opcode_counts[22] == 1 &&
             common_pris.other_transfers == 0 && common_pris.malformed_transfers == 0 &&
             common_pris_capture_metrics.texture_uploads == 0 &&
-            metal_texture_live_count() == common_pris_textures_before + 4,
-        "common PRIS executes the exact nine-transfer form and publishes four outputs");
+            metal_texture_live_count() == common_pris_textures_before,
+        "common PRIS updates the four defaults through their stable handles");
   make_common_pris_opcode22_capture_chain();
   common_pris_capture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(common_pris_capture_host,
@@ -3138,7 +3175,7 @@ int main() {
             common_pris_capture_metrics.completed_chains == 2 &&
             common_pris_capture_metrics.failed_chains == 0 &&
             common_pris_capture_metrics.common_pris_texture_upload.executions == 2 &&
-            metal_texture_live_count() == common_pris_textures_before + 4,
+            metal_texture_live_count() == common_pris_textures_before,
         "a later common PRIS frame updates the same four stable registry textures");
   goal_jak2_metal_host_destroy(common_pris_capture_host);
   check(metal_texture_live_count() == initial_texture_count,
