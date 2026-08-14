@@ -941,8 +941,8 @@
   (define *host-real-integral-time-remainder* 0.0)
 
   (defun goalpad-set-target-frame-rate ((requested-rate int))
-    "Select the host-managed 60 or 120 Hz clock without exposing the PC menu setting."
-    (let ((rate (if (= requested-rate 120) 120 60)))
+    "Select a supported host-managed clock without exposing the PC menu setting."
+    (let ((rate (if (= requested-rate 120) 120 (if (= requested-rate 90) 90 60))))
       (set! *host-game-scaled-time-remainder* 0.0)
       (set! *host-non-movie-scaled-time-remainder* 0.0)
       (set! *host-real-scaled-time-remainder* 0.0)

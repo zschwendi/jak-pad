@@ -304,12 +304,12 @@
            (set! (-> pad button0-abs 1) (-> pad button0-shadow-abs 0))
            (set! (-> pad button0-rel 2) (-> pad button0-rel 1))
            (set! (-> pad button0-rel 1) (-> pad button0-rel 0))
-           ;; og:preserve-this high fps fix. The host-managed 120 Hz path ages history by the
-           ;; integral virtual-frame delta, so a 60/40/30/24 Hz ProMotion fallback keeps the same
+           ;; og:preserve-this high fps fix. Host-managed high-refresh paths age history by the
+           ;; integral virtual-frame delta, so adaptive fallback keeps the same
            ;; 50 ms recent-press window. Skipped absolute samples hold their previous value, while
            ;; a relative edge is inserted only once.
            (cond
-             ((and (= (-> *pc-settings* target-fps) 120)
+             ((and (> (-> *pc-settings* target-fps) 60)
                    (> *host-display-time-ratio* 0.0))
               (let ((previous-abs (-> pad button0-shadow-abs 0))
                     (carried-rel (-> pad button0-rel 0)))
