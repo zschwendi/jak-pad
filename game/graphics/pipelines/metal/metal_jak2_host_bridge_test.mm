@@ -550,7 +550,7 @@ void make_common_water_environment_chain(bool dot_only) {
     std::memcpy(ee + body_offset, &environment, sizeof(environment));
   }
   const u32 finish_offset = body_offset + body_bytes;
-  put_tag(finish_offset, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, 0);
+  put_tag(finish_offset, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, kPcPort);
   put_tag(finish_offset + 16, DmaTag::Kind::NEXT, 0, kCommonWaterDirectOffset);
   put_tag(kCommonWaterDirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   put_tag(kCommonWaterDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
@@ -2431,7 +2431,7 @@ int main() {
             common_water_metrics.common_water_texture_upload.executions == 1 &&
             common_water_metrics.texture_uploads == 0 &&
             metal_texture_live_count() == common_water_textures_before + 1,
-        "common GAME art executes the exact startup bucket-306 environment form without ctywide");
+        "common GAME art executes the source-finish bucket-306 environment form without ctywide");
 
   make_common_water_environment_chain(true);
   common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);

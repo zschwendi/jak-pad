@@ -608,7 +608,7 @@ std::vector<u8> make_ordinary_and_animator_fixture() {
 
 void put_layer_values(std::vector<u8>* packet, u32 offset, float base, u8 padding);
 
-std::vector<u8> make_common_water_execution_fixture(u32 dma_relocation = 0) {
+std::vector<u8> make_common_water_execution_fixture(u32 dma_relocation = 0, u32 finish_vif1 = 0) {
   constexpr u32 bucket_id = metal_renderer::kJak2CommonWaterTextureUploadBucket;
   std::vector<u8> packet(kMemorySize);
   const u32 ordinary_offset = kOrdinaryOffset + dma_relocation;
@@ -637,7 +637,7 @@ std::vector<u8> make_common_water_execution_fixture(u32 dma_relocation = 0) {
                      static_cast<u8>(0xc0 + i));
   }
   put_tag(&packet, animator_finish_offset, DmaTag::Kind::CNT, 0, 0,
-          kPcPortVif | 13, 0);
+          kPcPortVif | 13, finish_vif1);
   put_tag(&packet, animator_next_offset, DmaTag::Kind::NEXT, 0,
           direct_setup_offset, 0, 0);
 
@@ -979,6 +979,26 @@ void test_common_water_execution_plan() {
             result.eye_markers == 0 && result.other_transfers == 0 &&
             result.malformed_transfers == 0,
         "common-water bucket 306 owns the exact descriptor/environment/reset plan");
+
+  auto legacy_finish_packet = make_common_water_execution_fixture(0, kPcPortVif);
+  const auto legacy_finish_plan = metal_renderer::plan_jak2_common_water_texture_upload(
+      legacy_finish_packet.data(), legacy_finish_packet.size(), kChainOffset,
+      legacy_finish_packet.data(), legacy_finish_packet.size(), &result);
+  check(legacy_finish_plan.has_value() && legacy_finish_plan->present && result.valid &&
+            result.transfers[5].vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+            result.transfers[5].vif0_immediate == 13 &&
+            result.transfers[5].vif1_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+            result.transfers[5].vif1_immediate == 0,
+        "common-water bucket 306 accepts the source-defined legacy PC_PORT finish VIF");
+
+  auto unsupported_finish_packet = make_common_water_execution_fixture();
+  put_u32(&unsupported_finish_packet, kSecurityEnvironmentAnimatorFinishOffset + 12,
+          kPcPortVif | 1);
+  const auto unsupported_finish_plan = metal_renderer::plan_jak2_common_water_texture_upload(
+      unsupported_finish_packet.data(), unsupported_finish_packet.size(), kChainOffset,
+      unsupported_finish_packet.data(), unsupported_finish_packet.size(), &result);
+  check(!unsupported_finish_plan.has_value() && !result.valid && result.malformed_transfers == 1,
+        "common-water bucket 306 rejects any other finish VIF1 encoding");
 
   auto relocated_packet = make_common_water_execution_fixture(0x200);
   auto relocated = metal_renderer::plan_jak2_common_water_texture_upload(

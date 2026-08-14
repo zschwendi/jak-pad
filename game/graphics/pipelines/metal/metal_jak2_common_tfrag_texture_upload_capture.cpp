@@ -388,6 +388,16 @@ bool metadata_is_animator_finish(const Jak2CommonTfragTransferMetadata& transfer
          transfer.vif1_immediate == 0;
 }
 
+bool metadata_is_common_water_animator_finish(const Jak2CommonTfragTransferMetadata& transfer) {
+  return metadata_is_animator_finish(transfer) ||
+         (transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 0 &&
+          transfer.payload_bytes == 0 &&
+          transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+          transfer.vif0_immediate == kFinishAnimatorArray &&
+          transfer.vif1_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+          transfer.vif1_immediate == 0);
+}
+
 bool has_exact_opcode27_counts(const Jak2CommonTfragTextureUploadCapture& capture) {
   for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
     const u32 expected =
@@ -1867,7 +1877,7 @@ std::optional<Jak2CommonWaterTextureUploadPlan> plan_jak2_common_water_texture_u
       metadata_is_inert_next(capture.transfers[2]) &&
       metadata_is_animator_start(capture.transfers[3]) &&
       metadata_is_opcode30_security_environment_body(capture.transfers[4]) &&
-      metadata_is_animator_finish(capture.transfers[5]) &&
+      metadata_is_common_water_animator_finish(capture.transfers[5]) &&
       metadata_is_inert_next(capture.transfers[6]) &&
       metadata_is_direct_setup(capture.transfers[7]) &&
       metadata_is_inert_next(capture.transfers[8]);
