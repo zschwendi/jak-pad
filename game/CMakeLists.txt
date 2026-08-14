@@ -1379,6 +1379,12 @@ if(APPLE)
         add_test(NAME jak2-shadow-bucket195-capture-test
             COMMAND jak2-shadow-bucket195-capture-test)
 
+        add_executable(jak2-shadow-bucket195-plan-test
+            graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.cpp
+            graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan_test.cpp)
+        add_test(NAME jak2-shadow-bucket195-plan-test
+            COMMAND jak2-shadow-bucket195-plan-test)
+
         add_executable(jak2-gmerc-warp-bucket317-plan-test
             graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan.cpp
             graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan_test.cpp)
