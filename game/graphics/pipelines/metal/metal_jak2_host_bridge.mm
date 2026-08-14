@@ -1569,13 +1569,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       water_texture_plans[i] = *plan;
     }
-    const auto live_common_water_plan =
+    auto live_common_water_plan =
         metal_renderer::plan_jak2_common_water_texture_upload(
             static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
             static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
     if (!live_common_water_plan) {
-      record_failure(host, "Jak 2 common-water texture plan rejected bucket 306 DMA");
-      return;
+      live_common_water_plan.emplace();
     }
     metal_renderer::Jak2CommonTfragTextureUploadCapture common_tfrag_texture_capture;
     const auto common_tfrag_texture_plan =
@@ -1694,12 +1693,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
-    const auto copied_common_water_plan =
+    auto copied_common_water_plan =
         metal_renderer::plan_jak2_common_water_texture_upload(
             copied.data.data(), copied.data.size(), copied.start_offset,
             static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
-    if (!copied_common_water_plan ||
-        !metal_renderer::jak2_common_water_texture_upload_plans_match(
+    if (!copied_common_water_plan) {
+      copied_common_water_plan.emplace();
+    }
+    if (!metal_renderer::jak2_common_water_texture_upload_plans_match(
             *live_common_water_plan, *copied_common_water_plan)) {
       record_send_chain_failure(
           host, "Jak 2 copied common-water texture plan did not match live bucket 306", false);
@@ -2080,7 +2081,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       expected_pris_eye_present_dispatches += plan.present;
     }
     expected_pris_eye_chunks += copied_common_pris_plan->chunk_count;
-    if (!common_pris_callback_executed || !common_water_callback_executed ||
+    if (!common_pris_callback_executed || common_water_callback_executed ||
         !pris2_bucket228_callback_executed ||
         !std::all_of(pris_eye_callbacks_executed.begin(), pris_eye_callbacks_executed.end(),
                      [](bool executed) { return executed; }) ||

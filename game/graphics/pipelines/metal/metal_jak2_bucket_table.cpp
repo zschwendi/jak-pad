@@ -160,7 +160,7 @@ constexpr Table make_table() {
   common_pris(BucketId::TEX_LCOM_PRIS);
   merc(BucketId::MERC_LCOM_PRIS);
   generic2(BucketId::GMERC_LCOM_PRIS);
-  host_texture_upload(BucketId::TEX_LCOM_WATER);
+  defer(BucketId::TEX_LCOM_WATER);
   merc_water(BucketId::MERC_LCOM_WATER);
   host_texture_upload(BucketId::TEX_LCOM_SKY_POST);
   ocean_near(BucketId::OCEAN_NEAR);
@@ -211,10 +211,10 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 27);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 28);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 31);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 30);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUploadDirect) == 2);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Visibility) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Sprite) == 1);
