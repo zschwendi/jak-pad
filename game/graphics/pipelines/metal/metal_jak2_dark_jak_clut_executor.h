@@ -44,6 +44,7 @@ class Jak2DarkJakClutExecutor {
   Jak2DarkJakClutExecutor(const Jak2DarkJakClutExecutor&) = delete;
   Jak2DarkJakClutExecutor& operator=(const Jak2DarkJakClutExecutor&) = delete;
 
+  bool initialize_defaults(const tfrag3::Level& common_level);
   bool prepare(const Jak2CommonPrisDarkJakAnimatorPlan& plan,
                const tfrag3::Level& common_level,
                Prepared* out);
@@ -56,6 +57,11 @@ class Jak2DarkJakClutExecutor {
 
  private:
   bool fail(const char* message);
+  bool prepare_outputs(
+      float morph,
+      const std::array<u32, kJak2CommonPrisDarkJakAnimatorTbpCount>& destination_tbps,
+      const tfrag3::Level& common_level,
+      Prepared* out);
   void release_textures();
 
   id<MTLDevice> m_device = nil;

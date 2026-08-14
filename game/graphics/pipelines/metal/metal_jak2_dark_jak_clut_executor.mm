@@ -108,20 +108,16 @@ bool Jak2DarkJakClutExecutor::fail(const char* message) {
   return false;
 }
 
-bool Jak2DarkJakClutExecutor::prepare(const Jak2CommonPrisDarkJakAnimatorPlan& plan,
-                                      const tfrag3::Level& common_level,
-                                      Prepared* out) {
-  m_error.clear();
-  if (!out || !m_device || !m_queue || !m_slot_contract_valid ||
-      plan.semantic_fingerprint == 0) {
-    return fail("invalid Dark Jak CLUT preparation state");
-  }
-
+bool Jak2DarkJakClutExecutor::prepare_outputs(
+    float morph,
+    const std::array<u32, kJak2CommonPrisDarkJakAnimatorTbpCount>& destination_tbps,
+    const tfrag3::Level& common_level,
+    Prepared* out) {
   std::array<Jak2ClutBlendInput, kJak2DarkJakClutBlendSlotCount> inputs;
   Prepared prepared;
   for (std::size_t i = 0; i < kSourceSpecs.size(); ++i) {
     const auto& spec = kSourceSpecs[i];
-    const u32 destination_tbp = plan.destination_tbps[i];
+    const u32 destination_tbp = destination_tbps[i];
     if (!valid_registry_only_tbp(destination_tbp)) {
       return fail("invalid Dark Jak CLUT destination TBP contract");
     }
@@ -142,7 +138,7 @@ bool Jak2DarkJakClutExecutor::prepare(const Jak2CommonPrisDarkJakAnimatorPlan& p
   }
 
   std::array<std::vector<u8>, kJak2DarkJakClutBlendSlotCount> rgba;
-  if (!blend_jak2_dark_jak_clut_group_cpu(plan.morph, inputs, rgba)) {
+  if (!blend_jak2_dark_jak_clut_group_cpu(morph, inputs, rgba)) {
     return fail("Dark Jak CLUT CPU composition rejected its inputs");
   }
   for (std::size_t i = 0; i < prepared.size(); ++i) {
@@ -151,6 +147,28 @@ bool Jak2DarkJakClutExecutor::prepare(const Jak2CommonPrisDarkJakAnimatorPlan& p
   *out = std::move(prepared);
   m_stats.preparations++;
   return true;
+}
+
+bool Jak2DarkJakClutExecutor::initialize_defaults(const tfrag3::Level& common_level) {
+  m_error.clear();
+  if (!m_device || !m_queue || !m_slot_contract_valid) {
+    return fail("invalid Dark Jak CLUT default initialization state");
+  }
+
+  std::array<u32, kJak2CommonPrisDarkJakAnimatorTbpCount> destination_tbps;
+  destination_tbps.fill(kJak2PrisPrisonJakAnimatorMissingTbp);
+  Prepared prepared;
+  return prepare_outputs(0.f, destination_tbps, common_level, &prepared) && publish(prepared);
+}
+
+bool Jak2DarkJakClutExecutor::prepare(const Jak2CommonPrisDarkJakAnimatorPlan& plan,
+                                      const tfrag3::Level& common_level,
+                                      Prepared* out) {
+  m_error.clear();
+  if (!out || !m_device || !m_queue || !m_slot_contract_valid || plan.semantic_fingerprint == 0) {
+    return fail("invalid Dark Jak CLUT preparation state");
+  }
+  return prepare_outputs(plan.morph, plan.destination_tbps, common_level, out);
 }
 
 bool Jak2DarkJakClutExecutor::publish(const Prepared& prepared) {
