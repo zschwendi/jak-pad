@@ -132,6 +132,25 @@ typedef struct goal_jak2_effects_bucket315_metrics {
   uint8_t last_classification;
 } goal_jak2_effects_bucket315_metrics;
 
+typedef struct goal_jak2_effects_bucket315_execution_metrics {
+  uint64_t callback_dispatches;
+  uint64_t completed_executions;
+  uint32_t last_expected_fragments;
+  uint32_t last_expected_vertices;
+  uint32_t last_expected_adgifs;
+  uint32_t last_expected_draws;
+  uint32_t last_actual_fragments;
+  uint32_t last_actual_vertices;
+  uint32_t last_actual_adgifs;
+  uint32_t last_actual_draw_buckets;
+  uint32_t last_actual_draws;
+  uint32_t last_actual_missing_textures;
+  uint32_t last_actual_placeholder_draws;
+  uint32_t last_actual_unsupported_blends;
+  uint32_t last_actual_unexpected_dma;
+  uint32_t last_actual_overflow;
+} goal_jak2_effects_bucket315_execution_metrics;
+
 typedef struct goal_jak2_warp_texture_upload_metrics {
   uint64_t observations;
   uint64_t absent;
@@ -364,7 +383,7 @@ typedef struct goal_jak2_metal_host_metrics {
       [GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT];
   uint64_t last_merc_anim_slot_first_model_hashes
       [GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT];
-  // Append-only passive capture telemetry. No execution counter is exposed for deferred bucket 315.
+  // Append-only live preflight telemetry for exact bucket 315.
   goal_jak2_effects_bucket315_metrics effects_bucket315;
   // Append-only execution telemetry for exact typed bucket 309 sky-post uploads.
   uint64_t sky_post_texture_upload_executions;
@@ -387,6 +406,8 @@ typedef struct goal_jak2_metal_host_metrics {
   uint32_t last_blit_display_used_placeholder;
   // Append-only execution count for source-ordered bucket 316 ordinary uploads.
   uint64_t warp_texture_upload_executions;
+  // Append-only exact execution telemetry for source Lightning bucket 315.
+  goal_jak2_effects_bucket315_execution_metrics effects_bucket315_execution;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

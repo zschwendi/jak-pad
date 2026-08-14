@@ -653,6 +653,17 @@ void MetalRenderer::init_bucket_renderers_jak2() {
       m_bucket_renderers[bucket_id] = std::make_unique<MetalGeneric2BucketRenderer>(
           *name, descriptor.id, generic2);
     } else if (descriptor.behavior ==
+               metal_renderer::Jak2MetalBucketBehavior::EffectsLightning) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::EFFECTS));
+      ASSERT(batch_size == 0);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalGeneric2BucketRenderer>(
+            "effects-lightning", descriptor.id, generic2, MetalGeneric2::Mode::LIGHTNING);
+      } else {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+            "jak2-effects-lightning-unavailable", descriptor.id);
+      }
+    } else if (descriptor.behavior ==
                metal_renderer::Jak2MetalBucketBehavior::HostTextureUploadDirect) {
       ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1) ||
              bucket_id == static_cast<std::size_t>(jak2::BucketId::TEX_ALL_MAP));
@@ -1670,6 +1681,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.eye_texture = 0;
     MetalMerc2::Stats merc_stats;
     MetalGeneric2::Stats generic_stats;
+    MetalGeneric2::Stats effects315_stats;
     const auto aggregate_eye_stats = [this](const MetalEyeRenderer::Stats& stats) {
       m_chain_stats.eyes_composed += stats.eyes;
       m_chain_stats.eye_draws += stats.draw_calls;
@@ -1847,7 +1859,11 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         m_chain_stats.shadow_triangles = ss.triangles;
         m_chain_stats.shadow_unexpected_dma = ss.unexpected_dma;
       } else if (auto* gn = dynamic_cast<MetalGeneric2BucketRenderer*>(r.get())) {
-        generic_stats.add(gn->stats());
+        if (gn->mode() == MetalGeneric2::Mode::LIGHTNING) {
+          effects315_stats.add(gn->stats());
+        } else {
+          generic_stats.add(gn->stats());
+        }
       } else if (auto* ey = dynamic_cast<MetalEyeRenderer*>(r.get())) {
         aggregate_eye_stats(ey->stats());
       }
@@ -1865,6 +1881,17 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.generic_unsupported_blends = generic_stats.unsupported_blends;
     m_chain_stats.generic_unexpected_dma = generic_stats.unexpected_dma;
     m_chain_stats.generic_overflow = generic_stats.overflow;
+    m_chain_stats.effects315_fragments = effects315_stats.fragments;
+    m_chain_stats.effects315_vertices = effects315_stats.vertices;
+    m_chain_stats.effects315_adgifs = effects315_stats.adgifs;
+    m_chain_stats.effects315_draw_buckets = effects315_stats.draw_buckets;
+    m_chain_stats.effects315_draws = effects315_stats.draw_calls;
+    m_chain_stats.effects315_triangles = effects315_stats.triangles;
+    m_chain_stats.effects315_missing_textures = effects315_stats.missing_textures;
+    m_chain_stats.effects315_placeholder_draws = effects315_stats.placeholder_draws;
+    m_chain_stats.effects315_unsupported_blends = effects315_stats.unsupported_blends;
+    m_chain_stats.effects315_unexpected_dma = effects315_stats.unexpected_dma;
+    m_chain_stats.effects315_overflow = effects315_stats.overflow;
     m_chain_stats.merc_models = merc_stats.models;
     m_chain_stats.merc_missing_models = merc_stats.missing_models;
     m_chain_stats.merc_malformed_dma = merc_stats.malformed_dma;

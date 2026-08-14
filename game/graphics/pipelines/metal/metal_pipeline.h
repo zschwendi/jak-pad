@@ -359,6 +359,18 @@ struct ChainStats {
   int generic_unsupported_blends = 0;
   int generic_unexpected_dma = 0;
   int generic_overflow = 0;
+  // Exact Jak II EFFECTS bucket 315, kept separate from normal Generic2 buckets.
+  int effects315_fragments = 0;
+  int effects315_vertices = 0;
+  int effects315_adgifs = 0;
+  int effects315_draw_buckets = 0;
+  int effects315_draws = 0;
+  int effects315_triangles = 0;
+  int effects315_missing_textures = 0;
+  int effects315_placeholder_draws = 0;
+  int effects315_unsupported_blends = 0;
+  int effects315_unexpected_dma = 0;
+  int effects315_overflow = 0;
   // shadow renderer, from the last chain frame
   int shadow_volumes = 0;
   int shadow_vertices = 0;

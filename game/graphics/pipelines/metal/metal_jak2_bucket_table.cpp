@@ -98,6 +98,9 @@ constexpr Table make_table() {
   const auto common_pris = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::CommonPris;
   };
+  const auto effects_lightning = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::EffectsLightning;
+  };
   // Mirror every renderer explicitly installed by OpenGLRenderer::init_bucket_renderers_jak2.
   visibility(BucketId::BUCKET_2);
   blit_display(BucketId::BUCKET_3);
@@ -161,7 +164,7 @@ constexpr Table make_table() {
   host_texture_upload(BucketId::TEX_ALL_SPRITE);
   sprite(BucketId::PARTICLES);
   defer(BucketId::SHADOW2);
-  defer(BucketId::EFFECTS);
+  effects_lightning(BucketId::EFFECTS);
   host_texture_upload(BucketId::TEX_ALL_WARP);
   defer(BucketId::GMERC_WARP);
   host_texture_upload_direct(BucketId::DEBUG_NO_ZBUF1);
@@ -205,7 +208,7 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 29);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 28);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 31);
@@ -231,6 +234,7 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanMidFar) == 1)
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanNear) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::PrisEye) == 7);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::CommonPris) == 1);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::EffectsLightning) == 1);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);
 
 }  // namespace

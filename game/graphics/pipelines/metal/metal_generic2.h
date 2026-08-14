@@ -12,9 +12,9 @@
  * and sampler keys, and the vertex/index data goes into the frame's stream
  * buffer instead of a re-uploaded GL_STREAM_DRAW buffer.
  *
- * Mode::NORMAL is ported for Jak 1 and Jak 2. Jak 2 LIGHTNING is retained as an
- * internal proof path; no production bucket selects it yet. WARP / PRIM and the
- * Jak 3 DMA layout are not ported.
+ * Mode::NORMAL is ported for Jak 1 and Jak 2. Jak 2 LIGHTNING is selected only
+ * by its exact bucket-315 host-gated route. WARP / PRIM and the Jak 3 DMA layout
+ * are not ported.
  */
 
 #include <memory>
@@ -60,7 +60,7 @@ class MetalGeneric2 {
               MetalFrameContext& ctx,
               Stats* stats);
 
-  // Internal mode-selecting seam. LIGHTNING stays proof-only until bucket 315 is promoted.
+  // Mode-selecting seam. Production LIGHTNING is restricted to exact bucket 315.
   void render_in_mode(DmaFollower& dma,
                       MetalSharedRenderState* render_state,
                       MetalFrameContext& ctx,
@@ -205,6 +205,7 @@ class MetalGeneric2 {
   bool alloc_vtx(u32 count);
 
   Stats* m_stats = nullptr;
+  Mode m_current_mode = Mode::NORMAL;
   std::unordered_map<std::string, bool> m_logged;
 };
 
@@ -222,6 +223,7 @@ class MetalGeneric2BucketRenderer : public MetalBucketRenderer {
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
   const MetalGeneric2::Stats& stats() const { return m_stats; }
+  MetalGeneric2::Mode mode() const { return m_mode; }
 
  private:
   std::shared_ptr<MetalGeneric2> m_generic;

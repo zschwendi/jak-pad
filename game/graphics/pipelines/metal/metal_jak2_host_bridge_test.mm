@@ -38,8 +38,8 @@
 
 namespace {
 
-static_assert(offsetof(goal_jak2_metal_host_metrics, warp_texture_upload_executions) +
-                  sizeof(uint64_t) ==
+static_assert(offsetof(goal_jak2_metal_host_metrics, effects_bucket315_execution) +
+                  sizeof(goal_jak2_effects_bucket315_execution_metrics) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -217,31 +217,101 @@ void make_empty_chain() {
   put_tag(kChainOffset + kBucketCount * 16, DmaTag::Kind::END);
 }
 
-void make_effects_lightning_chain() {
+u32 effects_vif(VifCode::Kind kind,
+                u16 immediate = 0,
+                u8 count = 0,
+                bool interrupt = false) {
+  return (static_cast<u32>(interrupt) << 31) | (static_cast<u32>(kind) << 24) |
+         (static_cast<u32>(count) << 16) | immediate;
+}
+
+void make_effects_lightning_chain(u32 fragments = 0,
+                                  u32 texture_tbp = kTextureVram,
+                                  bool malformed_direct = false) {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
-  constexpr u32 kMark = static_cast<u32>(VifCode::Kind::MARK) << 24;
-  constexpr u32 kStcycl = static_cast<u32>(VifCode::Kind::STCYCL) << 24;
-  constexpr u32 kUnpackV432 = static_cast<u32>(VifCode::Kind::UNPACK_V4_32) << 24;
-  constexpr u32 kMscalf = static_cast<u32>(VifCode::Kind::MSCALF) << 24;
-  constexpr u32 kStmod = static_cast<u32>(VifCode::Kind::STMOD) << 24;
-  constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
-  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
   const u32 bucket_offset = kChainOffset + kEffectsBucket * 16;
   std::memset(ee + kEffectsLightningPayloadOffset, 0, 0x400);
-  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kEffectsLightningPayloadOffset, kMark);
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kEffectsLightningPayloadOffset,
+          effects_vif(VifCode::Kind::MARK));
   u32 cursor = kEffectsLightningPayloadOffset;
-  put_tag(cursor, DmaTag::Kind::CNT, 2, 0, 0, kDirect | 2);
+  put_tag(cursor, DmaTag::Kind::CNT, 2, 0, 0,
+          malformed_direct ? effects_vif(VifCode::Kind::NOP)
+                           : effects_vif(VifCode::Kind::DIRECT, 2, 0, true));
+  const u64 gif_tag = 1ull | (1ull << 15) | (1ull << 60);
+  const u64 zbuf = 0x130ull | (1ull << 24) | (1ull << 32);
+  const u64 zbuf_address = static_cast<u64>(GsRegisterAddress::ZBUF_1);
+  const u64 ad_register = static_cast<u64>(GifTag::RegisterDescriptor::AD);
+  std::memcpy(ee + cursor + 16, &gif_tag, sizeof(gif_tag));
+  std::memcpy(ee + cursor + 24, &ad_register, sizeof(ad_register));
+  std::memcpy(ee + cursor + 32, &zbuf, sizeof(zbuf));
+  std::memcpy(ee + cursor + 40, &zbuf_address, sizeof(zbuf_address));
   cursor += 48;
-  put_tag(cursor, DmaTag::Kind::CNT, 8, 0, kStcycl, kUnpackV432);
+  put_tag(cursor, DmaTag::Kind::CNT, 8, 0, effects_vif(VifCode::Kind::STCYCL, 0x404),
+          effects_vif(VifCode::Kind::UNPACK_V4_32, 897, 8));
   cursor += 144;
-  put_tag(cursor, DmaTag::Kind::CNT, 2, 0, kMscalf, kStmod);
+  put_tag(cursor, DmaTag::Kind::CNT, 2, 0,
+          effects_vif(VifCode::Kind::MSCALF, 0, 0, true),
+          effects_vif(VifCode::Kind::STMOD));
   cursor += 48;
   put_tag(cursor, DmaTag::Kind::CNT);
   cursor += 16;
+  u16 header_address = 837;
+  u16 vertex_address = 9;
+  for (u32 fragment = 0; fragment < fragments; ++fragment) {
+    constexpr u32 kVertexCount = 4;
+    put_tag(cursor, DmaTag::Kind::CNT, 12, 0, 0,
+            effects_vif(VifCode::Kind::UNPACK_V4_32, header_address, 12));
+    auto* header = ee + cursor + 16;
+    const auto prim_control = [](GsPrim::Kind kind) {
+      const u32 prim = static_cast<u32>(kind) | (1u << 3) | (1u << 4) | (1u << 6);
+      return (1u << 14) | (prim << 15) | (3u << 28);
+    };
+    const u32 fan = prim_control(GsPrim::Kind::TRI_FAN);
+    const u32 strip = prim_control(GsPrim::Kind::TRI_STRIP);
+    const u32 regs = static_cast<u32>(GifTag::RegisterDescriptor::ST) |
+                     (static_cast<u32>(GifTag::RegisterDescriptor::RGBAQ) << 4) |
+                     (static_cast<u32>(GifTag::RegisterDescriptor::XYZF2) << 8);
+    const u32 one = 1;
+    const u32 limit = 0x7f;
+    std::memcpy(header + 64, &fan, sizeof(fan));
+    std::memcpy(header + 68, &strip, sizeof(strip));
+    std::memcpy(header + 72, &regs, sizeof(regs));
+    std::memcpy(header + 76, &one, sizeof(one));
+    std::memcpy(header + 88, &limit, sizeof(limit));
+    std::memcpy(header + 92, &kVertexCount, sizeof(kVertexCount));
+    std::memcpy(header + 104, &limit, sizeof(limit));
+    AdGifData adgif = {};
+    adgif.tex0_data = texture_tbp | (1ull << 14) | (2ull << 26) | (2ull << 30) |
+                      (1ull << 34) | (1ull << 61);
+    adgif.tex0_addr = static_cast<u64>(GsRegisterAddress::TEX0_1);
+    adgif.tex1_data = (1ull << 5) | (1ull << 6);
+    adgif.tex1_addr = static_cast<u64>(GsRegisterAddress::TEX1_1) |
+                      (static_cast<u64>(0x8000u | kVertexCount) << 32);
+    adgif.mip_addr = static_cast<u64>(GsRegisterAddress::MIPTBP1_1);
+    adgif.clamp_data = 0b0101;
+    adgif.clamp_addr = static_cast<u64>(GsRegisterAddress::CLAMP_1);
+    adgif.alpha_data = (2ull << 2) | (1ull << 6) | (0x80ull << 32);
+    adgif.alpha_addr = static_cast<u64>(GsRegisterAddress::ALPHA_1);
+    std::memcpy(header + 112, &adgif, sizeof(adgif));
+    cursor += 208;
+    put_tag(cursor, DmaTag::Kind::CNT, 12, 0, 0,
+            effects_vif(VifCode::Kind::UNPACK_V4_32, vertex_address, 12));
+    cursor += 208;
+    put_tag(cursor, DmaTag::Kind::CNT, 0, 0, 0,
+            effects_vif(VifCode::Kind::MSCAL, 6, 0, true));
+    cursor += 16;
+    header_address = 1704 - header_address;
+    vertex_address += 279;
+    if (vertex_address > 567) {
+      vertex_address = 9;
+    }
+  }
   put_tag(cursor, DmaTag::Kind::CNT);
   cursor += 16;
-  put_tag(cursor, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  put_tag(cursor, DmaTag::Kind::CNT, 10, 0,
+          effects_vif(VifCode::Kind::FLUSHA, 0, 0, true),
+          effects_vif(VifCode::Kind::DIRECT, 10, 0, true));
   cursor += 176;
   put_tag(cursor, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
@@ -1222,11 +1292,15 @@ int main() {
             host_policy_table[static_cast<std::size_t>(jak2::BucketId::GMERC_L5_WATER)].behavior ==
                 metal_renderer::Jak2MetalBucketBehavior::Generic2 &&
             host_policy_table[kEffectsBucket].behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::EffectsLightning &&
+            host_policy_table[kWarpTextureUploadBucket].behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload &&
+            host_policy_table[kGmercWarpBucket].behavior ==
                 metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
             host_policy_table[kCommonWaterBucket].behavior ==
                 metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload &&
             metal_renderer::jak2_metal_host_policy_table_is_audited(),
-        "exact bucket 306 is host-planned while unrelated bucket 315 remains deferred");
+        "b315 Lightning execution preserves b316 upload and b317 deferred policy");
 
   goal_jak2_metal_host_metrics frame_gate = {};
   frame_gate.chains = 1;
@@ -1670,22 +1744,102 @@ int main() {
   goal_gfx_host effects_callbacks = {};
   check(effects_host && goal_jak2_metal_host_configure_level_art(effects_host, fr3_directory.c_str()) &&
             goal_jak2_metal_host_copy_gfx_host(effects_host, &effects_callbacks),
-        "created a host for the passive bucket-315 live capture");
-  make_effects_lightning_chain();
-  effects_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+        "created a host for exact bucket-315 Lightning execution");
   goal_jak2_metal_host_metrics effects_metrics = {};
+  make_empty_chain();
+  effects_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(effects_host, &effects_metrics) &&
             effects_metrics.chains == 1 && effects_metrics.completed_chains == 1 &&
-            effects_metrics.failed_chains == 0 && effects_metrics.effects_bucket315.captures == 1 &&
-            effects_metrics.effects_bucket315.valid_captures == 1 &&
+            effects_metrics.failed_chains == 0 &&
+            effects_metrics.effects_bucket315.absent_captures == 1 &&
+            effects_metrics.effects_bucket315_execution.callback_dispatches == 1 &&
+            effects_metrics.effects_bucket315_execution.completed_executions == 1 &&
+            effects_metrics.effects_bucket315_execution.last_expected_fragments == 0 &&
+            effects_metrics.effects_bucket315_execution.last_expected_vertices == 0 &&
+            effects_metrics.effects_bucket315_execution.last_expected_adgifs == 0 &&
+            effects_metrics.effects_bucket315_execution.last_expected_draws == 0 &&
+            effects_metrics.effects_bucket315_execution.last_actual_draws == 0,
+        "absent bucket 315 dispatches its callback once with an exact zero-draw gate");
+
+  make_effects_lightning_chain();
+  effects_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(effects_host, &effects_metrics) &&
+            effects_metrics.chains == 2 && effects_metrics.completed_chains == 2 &&
+            effects_metrics.failed_chains == 0 && effects_metrics.effects_bucket315.captures == 2 &&
+            effects_metrics.effects_bucket315.valid_captures == 2 &&
             effects_metrics.effects_bucket315.lightning_captures == 1 &&
             effects_metrics.effects_bucket315.malformed_captures == 0 &&
             effects_metrics.effects_bucket315.other_captures == 0 &&
             effects_metrics.effects_bucket315.last_transfer_count == 8 &&
             effects_metrics.effects_bucket315.last_payload_bytes == 352 &&
             effects_metrics.effects_bucket315.last_classification ==
-                static_cast<uint8_t>(metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning),
-        "bucket 315 is captured from live DMA before copy without execution or promotion");
+                static_cast<uint8_t>(metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning) &&
+            effects_metrics.effects_bucket315_execution.callback_dispatches == 2 &&
+            effects_metrics.effects_bucket315_execution.completed_executions == 2 &&
+            effects_metrics.effects_bucket315_execution.last_actual_fragments == 0 &&
+            effects_metrics.effects_bucket315_execution.last_actual_draw_buckets == 0 &&
+            effects_metrics.effects_bucket315_execution.last_actual_draws == 0,
+        "the exact 8-transfer, 352-byte setup-only packet executes without a draw");
+
+  write_texture_page();
+  effects_callbacks.texture_upload_now(static_cast<u8*>(g_ee_main_mem) + kTexturePageOffset, -1,
+                                       kSyntheticS7);
+  make_effects_lightning_chain(1, kTextureVram);
+  effects_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(effects_host, &effects_metrics) &&
+            effects_metrics.chains == 3 && effects_metrics.completed_chains == 3 &&
+            effects_metrics.failed_chains == 0 &&
+            effects_metrics.effects_bucket315_execution.callback_dispatches == 3 &&
+            effects_metrics.effects_bucket315_execution.completed_executions == 3 &&
+            effects_metrics.effects_bucket315_execution.last_expected_fragments == 1 &&
+            effects_metrics.effects_bucket315_execution.last_expected_vertices == 4 &&
+            effects_metrics.effects_bucket315_execution.last_expected_adgifs == 1 &&
+            effects_metrics.effects_bucket315_execution.last_expected_draws == 1 &&
+            effects_metrics.effects_bucket315_execution.last_actual_fragments == 1 &&
+            effects_metrics.effects_bucket315_execution.last_actual_vertices == 4 &&
+            effects_metrics.effects_bucket315_execution.last_actual_adgifs == 1 &&
+            effects_metrics.effects_bucket315_execution.last_actual_draw_buckets == 1 &&
+            effects_metrics.effects_bucket315_execution.last_actual_draws == 1 &&
+            effects_metrics.effects_bucket315_execution.last_actual_missing_textures == 0 &&
+            effects_metrics.effects_bucket315_execution.last_actual_placeholder_draws == 0 &&
+            effects_metrics.effects_bucket315_execution.last_actual_unsupported_blends == 0 &&
+            effects_metrics.effects_bucket315_execution.last_actual_unexpected_dma == 0 &&
+            effects_metrics.effects_bucket315_execution.last_actual_overflow == 0,
+        "one exact active fragment passes callback, parser, draw, and error-count gates");
+
+  const u32 copied_before_malformed = effects_metrics.last_copied_bytes;
+  const u64 callbacks_before_malformed =
+      effects_metrics.effects_bucket315_execution.callback_dispatches;
+  const std::size_t textures_before_malformed = metal_texture_live_count();
+  make_effects_lightning_chain(0, kTextureVram, true);
+  put_tag(kChainOffset + kEffectsBucket * 16, DmaTag::Kind::NEXT, 0, 0xfffffff0,
+          effects_vif(VifCode::Kind::MARK));
+  effects_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(effects_host, &effects_metrics) &&
+            effects_metrics.chains == 4 && effects_metrics.completed_chains == 3 &&
+            effects_metrics.failed_chains == 1 &&
+            effects_metrics.effects_bucket315.malformed_captures == 1 &&
+            effects_metrics.last_copied_bytes == copied_before_malformed &&
+            effects_metrics.effects_bucket315_execution.callback_dispatches ==
+                callbacks_before_malformed &&
+            metal_texture_live_count() == textures_before_malformed,
+        "malformed live bucket 315 is rejected before copy, callback, or texture mutation");
+
+  constexpr u32 kMissingEffectsTextureTbp = 0x7e1;
+  make_effects_lightning_chain(1, kMissingEffectsTextureTbp);
+  effects_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(effects_host, &effects_metrics) &&
+            effects_metrics.chains == 5 && effects_metrics.completed_chains == 3 &&
+            effects_metrics.failed_chains == 2 &&
+            effects_metrics.effects_bucket315_execution.callback_dispatches == 4 &&
+            effects_metrics.effects_bucket315_execution.completed_executions == 3 &&
+            effects_metrics.effects_bucket315_execution.last_actual_fragments == 1 &&
+            effects_metrics.effects_bucket315_execution.last_actual_draw_buckets == 1 &&
+            effects_metrics.effects_bucket315_execution.last_actual_draws == 0 &&
+            effects_metrics.effects_bucket315_execution.last_actual_missing_textures == 1 &&
+            effects_metrics.effects_bucket315_execution.last_actual_placeholder_draws == 0 &&
+            metal_texture_live_count() == textures_before_malformed,
+        "a missing Lightning texture records no visible draw and fails the host execution gate");
   goal_jak2_metal_host_destroy(effects_host);
 
   goal_jak2_metal_host* shadow_host = goal_jak2_metal_host_create();

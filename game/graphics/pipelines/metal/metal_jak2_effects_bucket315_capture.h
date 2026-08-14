@@ -33,9 +33,8 @@ struct Jak2EffectsBucket315TransferMetadata {
 /*
  * Fixed-size, payload-free observation of one live Jak II EFFECTS bucket. Every payload is hashed
  * while the source chain is still stable; no source bytes, pointers, strings, or paths survive.
- * `Other` means that traversal was well-formed but did not satisfy the source Lightning shape.
- * Every classification is diagnostic-only: a later exact typed parser must separately prove any
- * execution eligibility.
+ * `Other` means that traversal was well-formed but did not satisfy the exact source Lightning
+ * grammar and state. The host accepts only Absent or Lightning before copying the chain.
  */
 struct Jak2EffectsBucket315Capture {
   bool valid = false;
@@ -47,6 +46,8 @@ struct Jak2EffectsBucket315Capture {
   u32 transfer_count = 0;
   u32 fragment_count = 0;
   u32 vertex_count = 0;
+  u32 adgif_count = 0;
+  u32 draw_count = 0;
   u64 total_payload_bytes = 0;
   u64 semantic_fingerprint = 0;
 };

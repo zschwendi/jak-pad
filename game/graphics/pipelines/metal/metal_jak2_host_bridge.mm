@@ -111,7 +111,8 @@ bool jak2_metal_host_policy_table_is_audited() {
         descriptor.behavior != Jak2MetalBucketBehavior::OceanMidFar &&
         descriptor.behavior != Jak2MetalBucketBehavior::OceanNear &&
         descriptor.behavior != Jak2MetalBucketBehavior::PrisEye &&
-        descriptor.behavior != Jak2MetalBucketBehavior::CommonPris) {
+        descriptor.behavior != Jak2MetalBucketBehavior::CommonPris &&
+        descriptor.behavior != Jak2MetalBucketBehavior::EffectsLightning) {
       return false;
     }
   }
@@ -339,6 +340,17 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_generic_triangles = stats.generic_triangles;
   host->metrics.last_generic_missing_textures = stats.generic_missing_textures;
   host->metrics.last_generic_unexpected_dma = stats.generic_unexpected_dma;
+  auto& effects = host->metrics.effects_bucket315_execution;
+  effects.last_actual_fragments = stats.effects315_fragments;
+  effects.last_actual_vertices = stats.effects315_vertices;
+  effects.last_actual_adgifs = stats.effects315_adgifs;
+  effects.last_actual_draw_buckets = stats.effects315_draw_buckets;
+  effects.last_actual_draws = stats.effects315_draws;
+  effects.last_actual_missing_textures = stats.effects315_missing_textures;
+  effects.last_actual_placeholder_draws = stats.effects315_placeholder_draws;
+  effects.last_actual_unsupported_blends = stats.effects315_unsupported_blends;
+  effects.last_actual_unexpected_dma = stats.effects315_unexpected_dma;
+  effects.last_actual_overflow = stats.effects315_overflow;
   host->metrics.last_eye_composed = stats.eyes_composed;
   host->metrics.last_eye_draws = stats.eye_draws;
   host->metrics.last_eye_triangles = stats.eye_triangles;
@@ -858,10 +870,30 @@ struct Jak2TextureUploadDispatch {
   bool* sky_post_callback_executed = nullptr;
   std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
       pris_eye_callbacks_executed = nullptr;
+  const metal_renderer::Jak2EffectsBucket315Capture* effects_bucket315_capture = nullptr;
+  bool* effects_bucket315_callback_executed = nullptr;
 };
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  if (bucket_id == metal_renderer::kJak2EffectsBucket) {
+    if (!dispatch->effects_bucket315_capture ||
+        !dispatch->effects_bucket315_callback_executed) {
+      throw std::runtime_error("Jak 2 effects bucket 315 dispatch is incomplete");
+    }
+    if (*dispatch->effects_bucket315_callback_executed) {
+      throw std::runtime_error("Jak 2 effects bucket 315 callback repeated");
+    }
+    *dispatch->effects_bucket315_callback_executed = true;
+    const auto& capture = *dispatch->effects_bucket315_capture;
+    if (capture.bucket_id != bucket_id || !capture.valid ||
+        (capture.classification != metal_renderer::Jak2EffectsBucket315CaptureClass::Absent &&
+         capture.classification != metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning)) {
+      throw std::runtime_error("Jak 2 effects bucket 315 dispatch plan is inconsistent");
+    }
+    dispatch->host->metrics.effects_bucket315_execution.callback_dispatches++;
+    return;
+  }
   if (bucket_id == metal_renderer::kJak2WarpTextureUploadBucket) {
     if (!dispatch->warp_texture_upload_plan ||
         !dispatch->warp_texture_upload_callback_executed) {
@@ -1317,6 +1349,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2EffectsBucket);
     record_effects_bucket315_metrics(&host->metrics.effects_bucket315, effects_bucket315_capture);
+    if (!effects_bucket315_capture.valid ||
+        (effects_bucket315_capture.classification !=
+             metal_renderer::Jak2EffectsBucket315CaptureClass::Absent &&
+         effects_bucket315_capture.classification !=
+             metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning)) {
+      record_failure(host, "Jak 2 effects bucket 315 live DMA failed exact preflight");
+      return;
+    }
     const auto live_warp_texture_upload_plan = metal_renderer::plan_jak2_warp_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2WarpTextureUploadBucket, static_cast<const u8*>(ee_base),
@@ -1576,6 +1616,22 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
+    const auto copied_effects_bucket315_capture =
+        metal_renderer::capture_jak2_effects_bucket315(
+            copied.data.data(), copied.data.size(), copied.start_offset,
+            metal_renderer::kJak2EffectsBucket);
+    if (!copied_effects_bucket315_capture.valid ||
+        (copied_effects_bucket315_capture.classification !=
+             metal_renderer::Jak2EffectsBucket315CaptureClass::Absent &&
+         copied_effects_bucket315_capture.classification !=
+             metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning) ||
+        !metal_renderer::jak2_effects_bucket315_captures_match(
+            effects_bucket315_capture, copied_effects_bucket315_capture)) {
+      record_send_chain_failure(
+          host, "Jak 2 copied effects bucket 315 did not match exact live DMA", false);
+      return;
+    }
+
     const auto copied_warp_texture_upload_plan =
         metal_renderer::plan_jak2_warp_texture_upload(
             copied.data.data(), copied.data.size(), copied.start_offset,
@@ -1816,6 +1872,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     bool warp_texture_upload_callback_executed = false;
     bool pris2_bucket228_callback_executed = false;
     bool sky_post_callback_executed = false;
+    bool effects_bucket315_callback_executed = false;
     std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>
         pris_eye_callbacks_executed = {};
     host->metrics.last_pris_eye_dispatches = 0;
@@ -1851,7 +1908,9 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &warp_texture_upload_callback_executed,
         &pris2_bucket228_callback_executed,
         &sky_post_callback_executed,
-        &pris_eye_callbacks_executed};
+        &pris_eye_callbacks_executed,
+        &copied_effects_bucket315_capture,
+        &effects_bucket315_callback_executed};
     auto render_options = host->options;
     merge_animated_texture_slots(host);
     render_options.animated_texture_slots = host->animated_texture_slots.data();
@@ -1863,11 +1922,37 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.jak2_common_pris_plan = &*copied_common_pris_plan;
     const u64 warp_texture_upload_executions_before =
         host->metrics.warp_texture_upload_executions;
+    const u64 effects_bucket315_callbacks_before =
+        host->metrics.effects_bucket315_execution.callback_dispatches;
+    auto& effects_execution = host->metrics.effects_bucket315_execution;
+    effects_execution.last_expected_fragments = copied_effects_bucket315_capture.fragment_count;
+    effects_execution.last_expected_vertices = copied_effects_bucket315_capture.vertex_count;
+    effects_execution.last_expected_adgifs = copied_effects_bucket315_capture.adgif_count;
+    effects_execution.last_expected_draws = copied_effects_bucket315_capture.draw_count;
     const auto renderer_before = host->renderer.chain_stats();
     const bool acquired = host->renderer.render_chain_frame(
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
     const auto renderer_after = host->renderer.chain_stats();
     copy_renderer_metrics(host);
+    if (!effects_bucket315_callback_executed ||
+        !counter_advanced_by(effects_bucket315_callbacks_before,
+                             effects_execution.callback_dispatches, 1) ||
+        effects_execution.last_actual_fragments != effects_execution.last_expected_fragments ||
+        effects_execution.last_actual_vertices != effects_execution.last_expected_vertices ||
+        effects_execution.last_actual_adgifs != effects_execution.last_expected_adgifs ||
+        effects_execution.last_actual_draw_buckets != effects_execution.last_expected_draws ||
+        effects_execution.last_actual_draws != effects_execution.last_expected_draws ||
+        effects_execution.last_actual_missing_textures != 0 ||
+        effects_execution.last_actual_placeholder_draws != 0 ||
+        effects_execution.last_actual_unsupported_blends != 0 ||
+        effects_execution.last_actual_unexpected_dma != 0 ||
+        effects_execution.last_actual_overflow != 0) {
+      record_send_chain_failure(
+          host, "Jak 2 effects bucket 315 violated its exact execution gate",
+          host_texture_mutated);
+      return;
+    }
+    effects_execution.completed_executions++;
     if (!warp_texture_upload_callback_executed ||
         !counter_advanced_by(warp_texture_upload_executions_before,
                              host->metrics.warp_texture_upload_executions,

@@ -572,8 +572,8 @@ int main() {
 
     const auto& effects_policy = metal_renderer::jak2_metal_bucket_table().at(
         static_cast<std::size_t>(jak2::BucketId::EFFECTS));
-    check(effects_policy.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
-          "bucket 315 remains deferred while the private Lightning proof runs");
+    check(effects_policy.behavior == metal_renderer::Jak2MetalBucketBehavior::EffectsLightning,
+          "bucket 315 alone selects the source-exact Lightning renderer");
 
     auto shared = std::make_shared<MetalGeneric2>();
     MetalGeneric2BucketRenderer renderer("effects-lightning-proof",
@@ -665,12 +665,15 @@ int main() {
                                 &missing_chain, kPassingDepth);
     check(missing.completed && missing.final_offset == missing_chain.next_bucket &&
               missing.stats.fragments == 1 && missing.stats.vertices == 4 &&
-              missing.stats.adgifs == 1 && missing.stats.missing_textures == 1 &&
-              missing.stats.placeholder_draws == 1 && missing.stats.unexpected_dma == 0 &&
+              missing.stats.adgifs == 1 && missing.stats.draw_buckets == 1 &&
+              missing.stats.missing_textures == 1 && missing.stats.placeholder_draws == 0 &&
+              missing.stats.draw_calls == 0 && missing.stats.triangles == 0 &&
+              missing.stats.unexpected_dma == 0 &&
               missing.stats.unsupported_blends == 0 && missing.stats.overflow == 0 &&
-              missing.draw_calls == 1 && missing.triangles == 2 &&
+              missing.draw_calls == 0 && missing.triangles == 0 &&
+              changed_pixel_count(missing.pixels) == 0 &&
               all_depths_equal(missing.depths, kPassingDepth),
-          "a missing Lightning TBP is explicit and uses one depth-masked placeholder draw");
+          "a missing Lightning TBP is explicit and produces no visible placeholder draw");
 
     if (texture_registered) {
       std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
@@ -690,7 +693,7 @@ int main() {
       return 1;
     }
     std::printf(
-        "PASS: Jak 2 bucket-315 Lightning rendered source-exact DMA while remaining deferred\n");
+        "PASS: Jak 2 bucket-315 Lightning rendered source-exact DMA through its explicit route\n");
     return 0;
   }
 }

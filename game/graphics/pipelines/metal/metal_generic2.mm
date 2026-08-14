@@ -1491,6 +1491,15 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
     if (m_stats) {
       m_stats->missing_textures++;
     }
+    if (m_current_mode == Mode::LIGHTNING) {
+      if (!m_logged["missing Lightning texture"]) {
+        m_logged["missing Lightning texture"] = true;
+        lg::warn("Metal generic2: no Lightning texture at VRAM slot {}; skipping the draw "
+                 "(logged once)",
+                 tbp_to_lookup);
+      }
+      return;
+    }
     if (!m_logged["missing texture"]) {
       m_logged["missing texture"] = true;
       lg::warn("Metal generic2: no texture at VRAM slot {}, using the placeholder (logged once)",
@@ -1501,6 +1510,12 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
   }
   id<MTLTexture> tex = metal_texture_lookup(*tex_handle);
   if (!tex) {
+    if (m_current_mode == Mode::LIGHTNING) {
+      if (m_stats) {
+        m_stats->missing_textures++;
+      }
+      return;
+    }
     uses_placeholder = true;
     tex = metal_texture_lookup(render_state->texture_pool->get_placeholder_texture());
   }
@@ -1641,6 +1656,7 @@ void MetalGeneric2::render_in_mode(DmaFollower& dma,
                                    Mode mode,
                                    Stats* stats) {
   m_stats = stats;
+  m_current_mode = mode;
   m_failed = false;
 
   switch (mode) {
@@ -1687,5 +1703,9 @@ void MetalGeneric2BucketRenderer::render(DmaFollower& dma,
                                          MetalSharedRenderState* render_state,
                                          MetalFrameContext& ctx) {
   m_stats = MetalGeneric2::Stats();
+  if (m_mode == MetalGeneric2::Mode::LIGHTNING && render_state->host_bucket_callback) {
+    render_state->host_bucket_callback(render_state->host_bucket_context,
+                                       static_cast<u32>(m_my_id));
+  }
   m_generic->render_in_mode(dma, render_state, ctx, m_mode, &m_stats);
 }
