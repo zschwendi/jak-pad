@@ -1635,12 +1635,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       water_texture_plans[i] = *plan;
     }
-    auto live_common_water_plan =
+    const auto live_common_water_plan =
         metal_renderer::plan_jak2_common_water_texture_upload(
             static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
             static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
     if (!live_common_water_plan) {
-      live_common_water_plan.emplace();
+      record_failure(host, "Jak 2 common-water texture plan rejected bucket 306 DMA");
+      return;
     }
     metal_renderer::Jak2CommonTfragTextureUploadCapture common_tfrag_texture_capture;
     const auto common_tfrag_texture_plan =
@@ -1770,14 +1771,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
-    auto copied_common_water_plan =
+    const auto copied_common_water_plan =
         metal_renderer::plan_jak2_common_water_texture_upload(
             copied.data.data(), copied.data.size(), copied.start_offset,
             static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
-    if (!copied_common_water_plan) {
-      copied_common_water_plan.emplace();
-    }
-    if (!metal_renderer::jak2_common_water_texture_upload_plans_match(
+    if (!copied_common_water_plan ||
+        !metal_renderer::jak2_common_water_texture_upload_plans_match(
             *live_common_water_plan, *copied_common_water_plan)) {
       record_send_chain_failure(
           host, "Jak 2 copied common-water texture plan did not match live bucket 306", false);
@@ -1952,10 +1951,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       security_plan = &water_plan;
     }
-    auto* ctywide_level =
-        security_plan || copied_common_water_plan->present
-            ? metal_level_data::get("ctywide")
-            : nullptr;
+    auto* ctywide_level = security_plan ? metal_level_data::get("ctywide") : nullptr;
     if (security_plan &&
         (!host->common_level || !host->common_level->level || !ctywide_level ||
          !ctywide_level->level || !host->skull_gem_executor ||
@@ -1975,13 +1971,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
     if (copied_common_water_plan->present &&
-        (!ctywide_level || !ctywide_level->level || !host->skull_gem_executor ||
+        (!host->common_level || !host->common_level->level || !host->skull_gem_executor ||
          !host->skull_gem_executor->prepare_security_environment(
-             copied_common_water_plan->security_environment, *ctywide_level->level,
+             copied_common_water_plan->security_environment, *host->common_level->level,
              &common_water_environment_prepared))) {
       const char* detail =
-          !ctywide_level || !ctywide_level->level
-              ? "ctywide level art is unavailable"
+          !host->common_level || !host->common_level->level
+              ? "common level art is unavailable"
               : host->skull_gem_executor ? host->skull_gem_executor->last_error()
                                          : "executor is unavailable";
       record_failure(
@@ -2238,7 +2234,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           counter_advanced_by(pris2_texture_upload_executions_before[i],
                               host->pris2_texture_upload_executions[i], expected_delta);
     }
-    if (!common_pris_callback_executed || common_water_callback_executed ||
+    if (!common_pris_callback_executed || !common_water_callback_executed ||
         !std::all_of(pris2_callbacks_executed.begin(), pris2_callbacks_executed.end(),
                      [](bool executed) { return executed; }) ||
         !pris2_execution_counts_match ||

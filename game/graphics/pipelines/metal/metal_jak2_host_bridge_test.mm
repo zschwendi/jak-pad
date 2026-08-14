@@ -1189,6 +1189,8 @@ void add_dark_jak_sources(tfrag3::Level* level) {
   }
 }
 
+tfrag3::Texture synthetic_source_texture(const char* name, u32 color);
+
 bool write_synthetic_fr3(const std::filesystem::path& path,
                          const std::string& level_name,
                          bool with_texture) {
@@ -1204,6 +1206,8 @@ bool write_synthetic_fr3(const std::filesystem::path& path,
     texture.debug_tpage_name = "host-residency-page";
     texture.load_to_pool = true;
     level.textures.push_back(std::move(texture));
+    level.textures.push_back(synthetic_source_texture("security-env-dest", 0xff000000));
+    level.textures.push_back(synthetic_source_texture("security-env-uscroll", 0xff102030));
     add_dark_jak_sources(&level);
   }
 
@@ -1299,6 +1303,8 @@ bool write_security_fr3(const std::filesystem::path& path,
   level.level_name = level_name;
   if (common) {
     level.textures.push_back(synthetic_source_texture("common-white", 0xffffffff));
+    level.textures.push_back(synthetic_source_texture("security-env-dest", 0xff000000));
+    level.textures.push_back(synthetic_source_texture("security-env-uscroll", 0xff102030));
     add_dark_jak_sources(&level);
   } else {
     level.textures.push_back(synthetic_source_texture("security-env-dest", 0xff000000));
@@ -1489,9 +1495,9 @@ int main() {
             host_policy_table[kGmercWarpBucket].behavior ==
                 metal_renderer::Jak2MetalBucketBehavior::Warp &&
             host_policy_table[kCommonWaterBucket].behavior ==
-                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
+                metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload &&
             metal_renderer::jak2_metal_host_policy_table_is_audited(),
-        "b315 Lightning, b316 upload, and b317 framebuffer warp keep distinct policies");
+        "b306 upload, b315 Lightning, b316 upload, and b317 framebuffer warp keep distinct policies");
 
   goal_jak2_metal_host_metrics frame_gate = {};
   frame_gate.chains = 1;
@@ -1619,7 +1625,7 @@ int main() {
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
             metal_merc_models().model_count() == initial_merc_model_count &&
             configured_texture_count ==
-                initial_texture_count + 10 + METAL_NUM_EYE_PAIRS * 2,
+                initial_texture_count + 14 + METAL_NUM_EYE_PAIRS * 2,
         "common art, Dark Jak defaults, placeholder, OCEAN targets, and detached eye targets are "
         "resident");
   check(goal_jak2_metal_host_configure_level_art(host, fr3_directory.c_str()) &&
@@ -2389,14 +2395,15 @@ int main() {
   check(metal_texture_live_count() == gmerc_warp_global_live_count,
         "destroying the host releases the stable bucket-317 snapshot texture");
 
+  const std::size_t common_water_global_live_count = metal_texture_live_count();
   goal_jak2_metal_host* common_water_host = goal_jak2_metal_host_create();
   goal_gfx_host common_water_callbacks = {};
   check(common_water_host &&
             goal_jak2_metal_host_configure_level_art(common_water_host, fr3_directory.c_str()) &&
             goal_jak2_metal_host_copy_gfx_host(common_water_host, &common_water_callbacks) &&
             metal_renderer::jak2_metal_bucket_table()[kCommonWaterBucket].behavior ==
-                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
-        "created a host while common-water bucket 306 remains passive");
+                metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload,
+        "created a host for planned common-water bucket-306 execution");
   const std::size_t common_water_textures_before = metal_texture_live_count();
   make_empty_chain();
   common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);
@@ -2411,7 +2418,7 @@ int main() {
         "empty bucket 306 dispatches its exact absent plan without texture mutation");
 
   write_empty_texture_page(kTexturePageOffset, kTexturePageId);
-  make_common_water_environment_chain(true);
+  make_common_water_environment_chain(false);
   common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(common_water_host, &common_water_metrics) &&
             common_water_metrics.chains == 2 && common_water_metrics.completed_chains == 2 &&
@@ -2419,13 +2426,29 @@ int main() {
             common_water_metrics.common_water_texture_upload.captures == 2 &&
             common_water_metrics.common_water_texture_upload.present_captures == 1 &&
             common_water_metrics.common_water_texture_upload.transfers == 10 &&
-            common_water_metrics.common_water_texture_upload.payload_bytes == 672 &&
-            common_water_metrics.common_water_texture_upload.animator_payload_bytes == 496 &&
-            common_water_metrics.common_water_texture_upload.executions == 0 &&
+            common_water_metrics.common_water_texture_upload.payload_bytes == 512 &&
+            common_water_metrics.common_water_texture_upload.animator_payload_bytes == 336 &&
+            common_water_metrics.common_water_texture_upload.executions == 1 &&
             common_water_metrics.texture_uploads == 0 &&
-            metal_texture_live_count() == common_water_textures_before,
-        "dot-only opcode 30 remains passive without common-water texture mutation");
+            metal_texture_live_count() == common_water_textures_before + 1,
+        "common GAME art executes the exact startup bucket-306 environment form without ctywide");
+
+  make_common_water_environment_chain(true);
+  common_water_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  const char* common_water_error = goal_jak2_metal_host_last_error(common_water_host);
+  check(goal_jak2_metal_host_get_metrics(common_water_host, &common_water_metrics) &&
+            common_water_metrics.chains == 3 && common_water_metrics.completed_chains == 2 &&
+            common_water_metrics.failed_chains == 1 &&
+            common_water_metrics.common_water_texture_upload.captures == 3 &&
+            common_water_metrics.common_water_texture_upload.present_captures == 2 &&
+            common_water_metrics.common_water_texture_upload.executions == 1 &&
+            common_water_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == common_water_textures_before + 1 && common_water_error &&
+            std::strstr(common_water_error, "common-water texture plan rejected bucket 306"),
+        "dot-only opcode 30 fails closed before additional common-water texture mutation");
   goal_jak2_metal_host_destroy(common_water_host);
+  check(metal_texture_live_count() == common_water_global_live_count,
+        "common-water host teardown releases its environment publication");
 
   goal_jak2_metal_host* subtitle_host = goal_jak2_metal_host_create();
   goal_gfx_host subtitle_callbacks = {};
@@ -2542,8 +2565,8 @@ int main() {
             security_metrics.common_water_texture_upload.opcode_counts[12] == 1 &&
             security_metrics.common_water_texture_upload.opcode_counts[13] == 1 &&
             security_metrics.common_water_texture_upload.opcode_counts[30] == 1 &&
-            security_metrics.common_water_texture_upload.executions == 0,
-        "bucket 306 records the security-environment prefix without executing it");
+            security_metrics.common_water_texture_upload.executions == 1,
+        "bucket 306 executes one ordinary upload and only the security-environment prefix");
   goal_jak2_metal_host_destroy(security_host);
   check(metal_level_data::level_count() == initial_level_count &&
             metal_merc_models().level_count() == initial_merc_level_count &&

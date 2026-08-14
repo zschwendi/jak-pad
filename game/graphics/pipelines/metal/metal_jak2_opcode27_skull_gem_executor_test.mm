@@ -161,8 +161,8 @@ int main() {
               environment_prepared.width == 2 && environment_prepared.height == 2 &&
               environment_prepared.destination_tbp == 132 &&
               environment_prepared.rgba == common_environment_prepared.rgba,
-          "the qwc-21 prefix prepares only the exact ctywide environment output");
-    check(executor.publish_security_environment(environment_prepared),
+          "common GAME and ctywide contain source-equivalent environment inputs");
+    check(executor.publish_security_environment(common_environment_prepared),
           "the prepared environment-only output publishes to Metal and TexturePool");
     const u64 environment_only_handle = executor.animated_texture_slots().at(
         metal_renderer::kJak2SecurityEnvironmentAnimatedTextureSlot);

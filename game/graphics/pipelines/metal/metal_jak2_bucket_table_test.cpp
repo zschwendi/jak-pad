@@ -96,11 +96,11 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 17, "17 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 16, "16 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
-  check(host_texture_upload == 30,
-        "30 exact texture/setup buckets are handled synchronously by the host");
+  check(host_texture_upload == 31,
+        "31 exact texture/setup buckets are handled synchronously by the host");
   check(host_texture_upload_direct == 2,
         "two exact texture/setup buckets also retain their Direct payloads");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
@@ -348,10 +348,10 @@ int main() {
         "SHRUB setup stays host-owned while its Merc and normal GMerc draws are implemented");
   check(has_behavior(jak2::BucketId::OCEAN_MID_FAR, Behavior::OceanMidFar) &&
             has_behavior(jak2::BucketId::OCEAN_NEAR, Behavior::OceanNear) &&
-            has_behavior(jak2::BucketId::TEX_LCOM_WATER, Behavior::DeferredSkip) &&
+            has_behavior(jak2::BucketId::TEX_LCOM_WATER, Behavior::HostTextureUpload) &&
             has_behavior(jak2::BucketId::TEX_L5_PRIS, Behavior::PrisEye) &&
             has_behavior(jak2::BucketId::TEX_L5_PRIS2, Behavior::PrisEye),
-        "the paired OCEAN buckets and all planned PRIS producers route while common-water defers");
+        "the paired OCEAN buckets, common-water upload, and all PRIS producers route");
   check(has_behavior(jak2::BucketId::TEX_LCOM_SKY_PRE, Behavior::HostTextureUpload),
         "TEX_LCOM_SKY_PRE is the explicit host texture-upload bucket");
   check(has_behavior(jak2::BucketId::TEX_LCOM_SKY_POST, Behavior::HostTextureUpload) &&
