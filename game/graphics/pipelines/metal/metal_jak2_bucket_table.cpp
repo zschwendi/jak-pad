@@ -135,8 +135,8 @@ constexpr Table make_table() {
     merc(level_bucket(BucketId::MERC_L0_PRIS, BucketId::MERC_L1_PRIS, level));
     defer(level_bucket(BucketId::GMERC_L0_PRIS, BucketId::GMERC_L1_PRIS, level));
 
-    defer(level_bucket(BucketId::TEX_L0_PRIS2, BucketId::TEX_L1_PRIS2, level));
-    defer(level_bucket(BucketId::MERC_L0_PRIS2, BucketId::MERC_L1_PRIS2, level));
+    pris_eye(level_bucket(BucketId::TEX_L0_PRIS2, BucketId::TEX_L1_PRIS2, level));
+    merc(level_bucket(BucketId::MERC_L0_PRIS2, BucketId::MERC_L1_PRIS2, level));
     defer(level_bucket(BucketId::GMERC_L0_PRIS2, BucketId::GMERC_L1_PRIS2, level));
 
     host_texture_upload(level_bucket(BucketId::TEX_L0_WATER, BucketId::TEX_L1_WATER, level));
@@ -147,10 +147,6 @@ constexpr Table make_table() {
     tie_water_envmap(
         level_bucket(BucketId::ETIE_W_L0_WATER, BucketId::ETIE_W_L1_WATER, level));
   }
-  // Only the audited Samos-hut bucket pair has typed PRIS2 execution plans.
-  pris_eye(BucketId::TEX_L1_PRIS2);
-  merc(BucketId::MERC_L1_PRIS2);
-
   host_texture_upload(BucketId::TEX_LCOM_TFRAG);
   merc(BucketId::MERC_LCOM_TFRAG);
   host_texture_upload(BucketId::TEX_LCOM_SHRUB);
@@ -211,7 +207,7 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 28);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 18);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 30);
@@ -228,14 +224,14 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTrans) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieTransEnvmap) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWater) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::TieWaterEnvmap) == 6);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 22);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Merc) == 27);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::BlitDisplay) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercAlpha) == 6);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::MercWater) == 7);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Generic2) == 26);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanMidFar) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::OceanNear) == 1);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::PrisEye) == 7);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::PrisEye) == 12);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::CommonPris) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::EffectsLightning) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Warp) == 1);

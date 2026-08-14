@@ -739,7 +739,9 @@ void MetalRenderer::init_bucket_renderers_jak2() {
           std::find(metal_renderer::kJak2PrisTextureUploadBuckets.begin(),
                     metal_renderer::kJak2PrisTextureUploadBuckets.end(), bucket_id) !=
               metal_renderer::kJak2PrisTextureUploadBuckets.end() ||
-          bucket_id == metal_renderer::kJak2Pris2TextureUploadBucket;
+          std::find(metal_renderer::kJak2Pris2TextureUploadBuckets.begin(),
+                    metal_renderer::kJak2Pris2TextureUploadBuckets.end(), bucket_id) !=
+              metal_renderer::kJak2Pris2TextureUploadBuckets.end();
       ASSERT(exact_pris_eye_bucket);
       ASSERT(batch_size == 0);
       if (m_host_texture_uploads) {

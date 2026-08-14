@@ -285,16 +285,17 @@ PrisFixture make_pris_fixture(std::size_t chunk_count,
   return fixture;
 }
 
-metal_renderer::Jak2Pris2Bucket228Plan make_pris2_bucket228_plan(
-    const PrisFixture& fixture) {
+metal_renderer::Jak2Pris2Bucket228Plan make_pris2_plan(const PrisFixture& fixture) {
   metal_renderer::Jak2Pris2Bucket228Plan plan;
+  plan.bucket_id = fixture.plan.bucket_id;
   plan.variant = fixture.plan.chunk_count == 0
                      ? metal_renderer::Jak2Pris2Bucket228Variant::OrdinaryOnly
-                     : metal_renderer::Jak2Pris2Bucket228Variant::OneEyeChunk;
+                     : fixture.plan.chunk_count == 1
+                           ? metal_renderer::Jak2Pris2Bucket228Variant::OneEyeChunk
+                           : metal_renderer::Jak2Pris2Bucket228Variant::TwoEyeChunks;
   plan.ordinary = fixture.plan.ordinary;
-  if (fixture.plan.chunk_count == 1) {
-    plan.eye_chunk = fixture.plan.chunks[0];
-  }
+  plan.chunks = fixture.plan.chunks;
+  plan.chunk_count = fixture.plan.chunk_count;
   plan.direct_reset_transfer_index = fixture.plan.direct_reset_transfer_index;
   plan.direct_reset_relative_tag_offset = fixture.plan.direct_reset_relative_tag_offset;
   plan.terminal_transfer_index = fixture.plan.terminal_transfer_index;
@@ -587,7 +588,7 @@ int main() {
       state.next_bucket = kPris2BucketOffset + 16;
 
       auto pris2_ordinary = make_pris_fixture(0, false, kPris2Bucket);
-      const auto pris2_ordinary_source = make_pris2_bucket228_plan(pris2_ordinary);
+      const auto pris2_ordinary_source = make_pris2_plan(pris2_ordinary);
       const auto pris2_ordinary_plan =
           metal_renderer::adapt_jak2_pris2_bucket228_to_pris_eye_plan(
               pris2_ordinary_source);
@@ -608,7 +609,7 @@ int main() {
             "adapted bucket 228 ordinary-only form calls back once and reaches its boundary");
 
       auto pris2_eye = make_pris_fixture(1, false, kPris2Bucket);
-      const auto pris2_eye_source = make_pris2_bucket228_plan(pris2_eye);
+      const auto pris2_eye_source = make_pris2_plan(pris2_eye);
       const auto pris2_eye_plan =
           metal_renderer::adapt_jak2_pris2_bucket228_to_pris_eye_plan(pris2_eye_source);
       host_counter = {};
@@ -628,6 +629,34 @@ int main() {
                 pris2_eye_stats.command_buffers_completed == 1 &&
                 pris2_eye_stats.command_buffer_errors == 0,
             "adapted bucket 228 one-eye form executes 2 eyes, 8 draws, and 16 triangles once");
+
+      constexpr u32 kNonL1Pris2Bucket = metal_renderer::kJak2Pris2TextureUploadBuckets.back();
+      constexpr u32 kNonL1Pris2BucketOffset = kNonL1Pris2Bucket * 16;
+      MetalJak2PrisEyeBucketRenderer non_l1_pris2_renderer("jak2-pris2-eye-244",
+                                                           kNonL1Pris2Bucket);
+      auto non_l1_pris2 = make_pris_fixture(2, false, kNonL1Pris2Bucket);
+      const auto non_l1_pris2_source = make_pris2_plan(non_l1_pris2);
+      const auto non_l1_pris2_plan =
+          metal_renderer::adapt_jak2_pris2_to_pris_eye_plan(non_l1_pris2_source);
+      host_counter = {};
+      state.next_bucket = kNonL1Pris2BucketOffset + 16;
+      state.jak2_pris_eye_plans = &non_l1_pris2_plan;
+      renderer.start_frame();
+      DmaFollower non_l1_pris2_dma(non_l1_pris2.data.data(), kNonL1Pris2BucketOffset,
+                                   non_l1_pris2.data.size());
+      non_l1_pris2_renderer.render(non_l1_pris2_dma, &state, context);
+      const auto non_l1_pris2_stats = renderer.stats();
+      check(host_counter.calls == 1 && host_counter.bucket_id == kNonL1Pris2Bucket &&
+                non_l1_pris2_dma.current_tag_offset() == state.next_bucket &&
+                non_l1_pris2_stats.eyes == 4 && non_l1_pris2_stats.draw_calls == 16 &&
+                non_l1_pris2_stats.triangles == 32 &&
+                non_l1_pris2_stats.missing_textures == 0 &&
+                non_l1_pris2_stats.unexpected_dma == 0 &&
+                non_l1_pris2_stats.duplicate_slot_writes == 0 &&
+                non_l1_pris2_stats.command_buffers_committed == 2 &&
+                non_l1_pris2_stats.command_buffers_completed == 2 &&
+                non_l1_pris2_stats.command_buffer_errors == 0,
+            "adapted non-L1 PRIS2 two-eye form executes both chunks through its exact boundary");
 
       MetalJak2CommonPrisBucketRenderer common_pris_renderer(
           "jak2-common-pris", kCommonPrisBucket);

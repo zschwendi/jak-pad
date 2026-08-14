@@ -302,15 +302,16 @@ struct Fixture {
 };
 
 Fixture make_fixture(const std::vector<EyeChunkSpec>& chunks,
-                     u32 dma_relocation = 0) {
+                     u32 dma_relocation = 0,
+                     u32 bucket_id = metal_renderer::kJak2Pris2TextureUploadBucket) {
   Fixture fixture{std::vector<u8>(kMemorySize), kFirstEyeOffset + dma_relocation, 0};
   const u32 ordinary_offset = kOrdinaryOffset + dma_relocation;
   const u32 first_offset = kFirstEyeOffset + dma_relocation;
   const u32 second_offset = kSecondEyeOffset + dma_relocation;
   const u32 direct_offset = kDirectOffset + dma_relocation;
-  const u32 end_offset = bucket_offset() + 16;
+  const u32 end_offset = bucket_offset(bucket_id) + 16;
 
-  put_tag(&fixture.packet, bucket_offset(), DmaTag::Kind::NEXT, 0,
+  put_tag(&fixture.packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0,
           ordinary_offset, 0, 0);
   put_tag(&fixture.packet, ordinary_offset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
   put_u64(&fixture.packet, ordinary_offset + 16, kPageOffset);
@@ -339,11 +340,11 @@ Fixture make_fixture(const std::vector<EyeChunkSpec>& chunks,
 std::optional<metal_renderer::Jak2Pris2Bucket228Plan> plan(
     const Fixture& fixture,
     Capture* capture = nullptr,
-    metal_renderer::Jak2PrisEyeTextureUploadRejection* rejection = nullptr) {
-  return metal_renderer::plan_jak2_pris2_bucket228(
-      fixture.packet.data(), fixture.packet.size(), kChainOffset,
-      metal_renderer::kJak2Pris2TextureUploadBucket, fixture.packet.data(),
-      fixture.packet.size(), capture, rejection);
+    metal_renderer::Jak2PrisEyeTextureUploadRejection* rejection = nullptr,
+    u32 bucket_id = metal_renderer::kJak2Pris2TextureUploadBucket) {
+  return metal_renderer::plan_jak2_pris2_texture_upload(
+      fixture.packet.data(), fixture.packet.size(), kChainOffset, bucket_id,
+      fixture.packet.data(), fixture.packet.size(), capture, rejection);
 }
 
 void test_observed_forms() {
@@ -392,13 +393,14 @@ void test_observed_forms() {
   check(eye_plan && eye_plan->bucket_id == 228 &&
             eye_plan->variant == Variant::OneEyeChunk &&
             eye_plan->ordinary.page_offset == kPageOffset &&
-            eye_plan->eye_chunk.resolution == metal_renderer::Jak2PrisEyeResolution::Eye32 &&
-            eye_plan->eye_chunk.pair_index == 2 && eye_plan->eye_slot_mask == 0x30 &&
-            eye_plan->eye_chunk.transfer_count ==
+            eye_plan->chunk_count == 1 &&
+            eye_plan->chunks[0].resolution == metal_renderer::Jak2PrisEyeResolution::Eye32 &&
+            eye_plan->chunks[0].pair_index == 2 && eye_plan->eye_slot_mask == 0x30 &&
+            eye_plan->chunks[0].transfer_count ==
                 metal_renderer::kJak2PrisEyeChunkTransferCount &&
-            eye_plan->eye_chunk.payload_bytes ==
+            eye_plan->chunks[0].payload_bytes ==
                 metal_renderer::kJak2PrisEyeChunkPayloadBytes &&
-            eye_plan->eye_chunk.semantic_fingerprint != 0 &&
+            eye_plan->chunks[0].semantic_fingerprint != 0 &&
             eye_plan->direct_reset_transfer_index == 30 &&
             eye_plan->terminal_transfer_index == 31 &&
             eye_plan->semantic_fingerprint != 0 && capture.valid &&
@@ -412,10 +414,19 @@ void test_observed_forms() {
       metal_renderer::adapt_jak2_pris2_bucket228_to_pris_eye_plan(*eye_plan);
   check(eye_renderer_plan.present && eye_renderer_plan.bucket_id == 228 &&
             eye_renderer_plan.chunk_count == 1 &&
-            eye_renderer_plan.chunks[0].pair_index == eye_plan->eye_chunk.pair_index &&
+            eye_renderer_plan.chunks[0].pair_index == eye_plan->chunks[0].pair_index &&
             eye_renderer_plan.eye_slot_mask == eye_plan->eye_slot_mask &&
             eye_renderer_plan.semantic_fingerprint == eye_plan->semantic_fingerprint,
         "the one-eye bucket-228 plan adapts exactly to the shared PRIS eye renderer");
+
+  auto two_eyes = make_fixture({{false, 0}, {true, 4}});
+  const auto two_eye_plan = plan(two_eyes, &capture);
+  check(two_eye_plan && two_eye_plan->variant == Variant::TwoEyeChunks &&
+            two_eye_plan->chunk_count == 2 && two_eye_plan->chunks[0].pair_index == 0 &&
+            two_eye_plan->chunks[1].pair_index == 4 &&
+            two_eye_plan->eye_slot_mask == ((3ull << 0) | (3ull << 8)) &&
+            capture.transfer_count == 59 && capture.total_payload_bytes == 3888,
+        "PRIS2 accepts the source-valid two-eye-chunk envelope");
 }
 
 void test_live_copy_matching() {
@@ -424,9 +435,9 @@ void test_live_copy_matching() {
   const auto live_plan = plan(live);
   auto copied_plan = plan(copied);
   check(live_plan && copied_plan &&
-            live_plan->eye_chunk.start_relative_tag_offset !=
-                copied_plan->eye_chunk.start_relative_tag_offset &&
-            metal_renderer::jak2_pris2_bucket228_plans_match(*live_plan, *copied_plan),
+            live_plan->chunks[0].start_relative_tag_offset !=
+                copied_plan->chunks[0].start_relative_tag_offset &&
+            metal_renderer::jak2_pris2_texture_upload_plans_match(*live_plan, *copied_plan),
         "relocated bucket-228 plans match by owned semantics");
 
   const u64 copied_tex0 = get_u64(copied.packet, copied.first_eye_offset + 224);
@@ -435,7 +446,7 @@ void test_live_copy_matching() {
   copied_plan = plan(copied);
   check(copied_plan && copied_plan->semantic_fingerprint !=
                              live_plan->semantic_fingerprint &&
-            !metal_renderer::jak2_pris2_bucket228_plans_match(*live_plan, *copied_plan),
+            !metal_renderer::jak2_pris2_texture_upload_plans_match(*live_plan, *copied_plan),
         "a valid source mutation between live and copied plans fails matching");
 }
 
@@ -445,20 +456,26 @@ void test_cross_plan_eye_slot_ownership() {
   per_level[1].eye_slot_mask = 0xc;
   metal_renderer::Jak2CommonPrisTextureUploadPlan common;
   common.eye_slot_mask = 0x30;
-  metal_renderer::Jak2Pris2Bucket228Plan pris2;
-  pris2.eye_slot_mask = 0xc0;
+  std::array<metal_renderer::Jak2Pris2Bucket228Plan, 2> pris2;
+  pris2[0].eye_slot_mask = 0xc0;
+  pris2[1].eye_slot_mask = 0x300;
   check(metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
-            per_level.data(), per_level.size(), common, pris2),
-        "per-level, common, and bucket-228 disjoint eye slots are accepted");
+            per_level.data(), per_level.size(), common, pris2.data(), pris2.size()),
+        "per-level, common, and all PRIS2 disjoint eye slots are accepted");
 
-  pris2.eye_slot_mask = 0x20;
+  pris2[0].eye_slot_mask = 0x20;
   check(!metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
-             per_level.data(), per_level.size(), common, pris2),
-        "bucket 228 cannot overlap a common-PRIS eye slot");
-  pris2.eye_slot_mask = 0;
+             per_level.data(), per_level.size(), common, pris2.data(), pris2.size()),
+        "a PRIS2 producer cannot overlap a common-PRIS eye slot");
+  pris2[0].eye_slot_mask = 0;
+  pris2[1].eye_slot_mask = 0xc;
+  check(!metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
+             per_level.data(), per_level.size(), common, pris2.data(), pris2.size()),
+        "PRIS2 producers cannot overlap ordinary PRIS producers");
+  pris2[1].eye_slot_mask = 0;
   per_level[1].eye_slot_mask = 0x2;
   check(!metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
-             per_level.data(), per_level.size(), common, pris2),
+             per_level.data(), per_level.size(), common, pris2.data(), pris2.size()),
         "per-level PRIS producers cannot overlap each other before mutation");
 }
 
@@ -491,9 +508,6 @@ void test_source_grammar_and_rejections() {
             rejection.body_index == 0,
         "an A+D selector with the wrong low byte is rejected");
 
-  auto two_chunks = make_fixture({{false, 0}, {false, 1}});
-  check(!plan(two_chunks).has_value(), "the common two-eye-chunk variant is rejected");
-
   auto extra = make_fixture({{false, 2}});
   put_tag(&extra.packet, extra.linker_offset, DmaTag::Kind::NEXT, 0, kExtraOffset, 0, 0);
   put_tag(&extra.packet, kExtraOffset, DmaTag::Kind::CNT, 0, 0, 0, 0);
@@ -516,6 +530,27 @@ void test_source_grammar_and_rejections() {
              valid.packet.data(), valid.packet.size(), kChainOffset, 220,
              valid.packet.data(), valid.packet.size()),
         "common PRIS bucket 220 is rejected before alias parsing");
+
+  for (std::size_t i = 0; i < metal_renderer::kJak2Pris2TextureUploadBuckets.size(); ++i) {
+    const u32 bucket_id = metal_renderer::kJak2Pris2TextureUploadBuckets[i];
+    std::vector<EyeChunkSpec> chunks;
+    if (i % 3 == 1) {
+      chunks.push_back({false, 2});
+    } else if (i % 3 == 2) {
+      chunks.push_back({false, 0});
+      chunks.push_back({true, 4});
+    }
+    auto slot_fixture = make_fixture(chunks, 0, bucket_id);
+    const auto slot_plan = plan(slot_fixture, nullptr, nullptr, bucket_id);
+    check(slot_plan && slot_plan->bucket_id == bucket_id &&
+              slot_plan->chunk_count == chunks.size(),
+          "all six dynamic PRIS2 texture slots accept their exact zero/one/two-chunk grammar");
+  }
+  for (const u32 bucket_id : metal_renderer::kJak2Pris2MercBuckets) {
+    auto wrong_consumer = make_fixture({}, 0, metal_renderer::kJak2Pris2TextureUploadBucket);
+    check(!plan(wrong_consumer, nullptr, nullptr, bucket_id),
+          "PRIS2 Merc consumers cannot be parsed as texture producers");
+  }
 }
 
 }  // namespace

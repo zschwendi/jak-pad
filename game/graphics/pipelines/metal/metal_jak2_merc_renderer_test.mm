@@ -15,6 +15,7 @@
 #include "game/graphics/opengl_renderer/buckets.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
+#include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -54,7 +55,7 @@ constexpr u32 kMercShrubBucket = static_cast<u32>(jak2::BucketId::MERC_L0_SHRUB)
 constexpr u32 kMercCommonTfragBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_TFRAG);
 constexpr u32 kMercCommonPrisBucket = static_cast<u32>(jak2::BucketId::MERC_LCOM_PRIS);
 constexpr u32 kMercPrisBucket = static_cast<u32>(jak2::BucketId::MERC_L0_PRIS);
-constexpr u32 kMercPris2Bucket = static_cast<u32>(jak2::BucketId::MERC_L1_PRIS2);
+constexpr const auto& kMercPris2Buckets = metal_renderer::kJak2Pris2MercBuckets;
 constexpr u32 kOpening = 0x100;
 constexpr u32 kBoundary = 0x200;
 constexpr u32 kSetup = 0x400;
@@ -72,7 +73,7 @@ constexpr float kMercZ = 8388608.f;
 
 static_assert(kMercBucket == 14);
 static_assert(kMercCommonShrubBucket == 192);
-static_assert(kMercPris2Bucket == 229);
+static_assert(kMercPris2Buckets[1] == 229);
 
 int failures = 0;
 
@@ -560,8 +561,13 @@ int main() {
         "merc-lcom-pris", static_cast<int>(kMercCommonPrisBucket), shared);
     MetalMercBucketRenderer pris_renderer("merc-l0-pris", static_cast<int>(kMercPrisBucket),
                                           shared);
-    MetalMercBucketRenderer pris2_renderer("merc-l1-pris2", static_cast<int>(kMercPris2Bucket),
-                                           shared);
+    std::array<std::unique_ptr<MetalMercBucketRenderer>, kMercPris2Buckets.size()>
+        pris2_renderers;
+    for (std::size_t i = 0; i < kMercPris2Buckets.size(); ++i) {
+      const u32 bucket_id = kMercPris2Buckets[i];
+      pris2_renderers[i] = std::make_unique<MetalMercBucketRenderer>(
+          fmt::format("merc-pris2-{}", bucket_id), static_cast<int>(bucket_id), shared);
+    }
     MetalMercModelPool::LoadResult load;
     std::string load_error;
     check(metal_merc_models().add_level(make_level(), false, &load, &load_error) &&
@@ -635,19 +641,22 @@ int main() {
     const auto routed_merc = [&policy](u32 bucket_id) {
       return policy.at(bucket_id).behavior == metal_renderer::Jak2MetalBucketBehavior::Merc;
     };
+    bool all_pris2_merc_routed = true;
+    for (const u32 bucket_id : kMercPris2Buckets) {
+      all_pris2_merc_routed &= routed_merc(bucket_id);
+    }
     check(routed_merc(kMercShrubBucket) && routed_merc(kMercPrisBucket) &&
-              routed_merc(kMercPris2Bucket) &&
-              routed_merc(kMercCommonTfragBucket) && routed_merc(kMercCommonPrisBucket),
-          "the GPU fixtures select the routed SHRUB, PRIS, exact PRIS2, and common policies");
+              all_pris2_merc_routed && routed_merc(kMercCommonTfragBucket) &&
+              routed_merc(kMercCommonPrisBucket),
+          "the GPU fixtures select the routed SHRUB, PRIS, all-six PRIS2, and common policies");
     struct RoutedMercFixture {
       const char* category;
       MetalMercBucketRenderer* renderer;
       bool exact_pris2_shape;
     };
-    const std::array<RoutedMercFixture, 5> routed_fixtures = {{
+    const std::array<RoutedMercFixture, 4> routed_fixtures = {{
         {"per-level SHRUB", &shrub_renderer, false},
         {"per-level PRIS", &pris_renderer, false},
-        {"exact bucket-229 PRIS2", &pris2_renderer, true},
         {"common TFRAG", &common_tfrag_renderer, false},
         {"common PRIS", &common_pris_renderer, false},
     }};
@@ -664,6 +673,21 @@ int main() {
                             count_non_black(result.pixels) > 0;
       check(rendered,
             fmt::format("the routed {} Merc policy produces GPU pixels", fixture.category)
+                .c_str());
+    }
+    for (std::size_t i = 0; i < kMercPris2Buckets.size(); ++i) {
+      auto memory = make_source_chain(kNormalModelName, false, true);
+      const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 pris2_renderers[i].get(), &memory, routed_frame++);
+      const bool rendered = result.completed && result.final_offset == kBoundary &&
+                            result.stats.models == 1 && result.stats.draws == 1 &&
+                            result.stats.triangles == 2 && result.draw_calls == 1 &&
+                            result.triangles == 2 && result.stats.malformed_dma == 0 &&
+                            result.stats.missing_models == 0 &&
+                            count_non_black(result.pixels) > 0;
+      check(rendered,
+            fmt::format("routed PRIS2 Merc bucket {} produces GPU pixels",
+                        kMercPris2Buckets[i])
                 .c_str());
     }
 

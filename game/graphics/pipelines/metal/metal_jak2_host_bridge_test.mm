@@ -86,8 +86,8 @@ constexpr u32 kCommonPrisDescriptorOffset = kChainOffset + 0x16800;
 constexpr u32 kCommonPrisAnimatorOffset = kChainOffset + 0x16a00;
 constexpr u32 kCommonPrisDirectOffset = kChainOffset + 0x16b00;
 constexpr u32 kPris2Bucket228 = metal_renderer::kJak2Pris2TextureUploadBucket;
-constexpr u32 kPris2Bucket228DescriptorOffset = kChainOffset + 0x16c00;
-constexpr u32 kPris2Bucket228DirectOffset = kChainOffset + 0x16d00;
+constexpr u32 kPris2DescriptorOffset = kChainOffset + 0x16c00;
+constexpr u32 kPris2DirectOffset = kChainOffset + 0x16d00;
 constexpr u32 kEffectsLightningPayloadOffset = kChainOffset + 0x17000;
 constexpr u32 kCommonWaterDescriptorOffset = kChainOffset + 0x17100;
 constexpr u32 kCommonWaterAnimatorOffset = kChainOffset + 0x17200;
@@ -568,7 +568,7 @@ void make_pris_ordinary_only_chain() {
   put_tag(kPrisOrdinaryDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
-void make_pris2_bucket228_ordinary_only_chain() {
+void make_pris2_ordinary_only_chain(u32 bucket_id) {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
   constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
@@ -576,17 +576,16 @@ void make_pris2_bucket228_ordinary_only_chain() {
   constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
   constexpr s64 kMode = -1;
   constexpr u64 kPageOffset = kTexturePageOffset;
-  const u32 bucket_offset = kChainOffset + kPris2Bucket228 * 16;
+  const u32 bucket_offset = kChainOffset + bucket_id * 16;
 
-  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kPris2Bucket228DescriptorOffset);
-  put_tag(kPris2Bucket228DescriptorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
-  std::memcpy(ee + kPris2Bucket228DescriptorOffset + 16, &kPageOffset, sizeof(kPageOffset));
-  std::memcpy(ee + kPris2Bucket228DescriptorOffset + 24, &kMode, sizeof(kMode));
-  put_tag(kPris2Bucket228DescriptorOffset + 32, DmaTag::Kind::NEXT, 0,
-          kPris2Bucket228DirectOffset);
-  put_tag(kPris2Bucket228DirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
-  std::memset(ee + kPris2Bucket228DirectOffset + 16, 0x52, 160);
-  put_tag(kPris2Bucket228DirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kPris2DescriptorOffset);
+  put_tag(kPris2DescriptorOffset, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
+  std::memcpy(ee + kPris2DescriptorOffset + 16, &kPageOffset, sizeof(kPageOffset));
+  std::memcpy(ee + kPris2DescriptorOffset + 24, &kMode, sizeof(kMode));
+  put_tag(kPris2DescriptorOffset + 32, DmaTag::Kind::NEXT, 0, kPris2DirectOffset);
+  put_tag(kPris2DirectOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
+  std::memset(ee + kPris2DirectOffset + 16, 0x52, 160);
+  put_tag(kPris2DirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
 void make_sky_post_texture_upload_chain(s64 mode = -1) {
@@ -1604,13 +1603,14 @@ int main() {
             metrics.pris2_bucket_captures[0].executions == 0 &&
             metrics.pris2_bucket_captures[1].executions == 0,
         "empty bucket 228 is a structural no-op while bucket 229 stays diagnostic-only");
-  check(metrics.last_pris_eye_dispatches == kPrisBuckets.size() + 1 &&
+  check(metrics.last_pris_eye_dispatches ==
+            kPrisBuckets.size() + metal_renderer::kJak2Pris2TextureUploadBuckets.size() &&
             metrics.last_pris_eye_present_dispatches == 0 &&
             metrics.last_pris_eye_chunks == 0 && metrics.last_eye_composed == 0 &&
             metrics.last_eye_command_buffers_committed == 0 &&
             metrics.last_eye_command_buffers_completed == 0 &&
             metrics.last_eye_command_buffer_errors == 0,
-        "all six per-level PRIS callbacks plus empty bucket 228 run once without eye execution");
+        "all six PRIS and six PRIS2 callbacks run once without eye execution");
   check(texture_captures_are_empty(metrics.water_texture_uploads, kWaterBuckets),
         "the host records all six empty source-identical water texture upload buckets");
   check(texture_capture_is_empty(metrics.common_water_texture_upload, kCommonWaterBucket) &&
@@ -2554,7 +2554,8 @@ int main() {
             pris_upload_metrics.failed_chains == 0 &&
             pris_upload_metrics.last_buckets_dispatched == kBucketCount &&
             pris_upload_metrics.last_pris_eye_dispatches ==
-                GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT + 1 &&
+                GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT +
+                    metal_renderer::kJak2Pris2TextureUploadBuckets.size() &&
             pris_upload_metrics.last_pris_eye_present_dispatches == 1 &&
             pris_upload_metrics.last_pris_eye_chunks == 0 &&
             pris_upload_metrics.pris_texture_uploads[1].bucket_id == kPrisOrdinaryBucket &&
@@ -2574,42 +2575,44 @@ int main() {
             pris_upload_metrics.last_eye_command_buffers_completed == 0 &&
             pris_upload_metrics.last_eye_command_buffer_errors == 0 &&
             pris_upload_metrics.skipped_bucket_bytes == 0,
-        "all six PRIS callbacks and empty bucket 228 run, with one ordinary upload and no eyes");
+        "all six PRIS and six empty PRIS2 callbacks run, with one ordinary upload and no eyes");
   goal_jak2_metal_host_destroy(pris_upload_host);
 
-  goal_jak2_metal_host* pris2_bucket228_host = goal_jak2_metal_host_create();
-  goal_gfx_host pris2_bucket228_callbacks = {};
-  check(pris2_bucket228_host &&
-            goal_jak2_metal_host_copy_gfx_host(pris2_bucket228_host,
-                                               &pris2_bucket228_callbacks),
-        "created a host for typed PRIS2 bucket 228 execution");
+  goal_jak2_metal_host* pris2_host = goal_jak2_metal_host_create();
+  goal_gfx_host pris2_callbacks = {};
+  check(pris2_host && goal_jak2_metal_host_copy_gfx_host(pris2_host, &pris2_callbacks),
+        "created a host for all six typed PRIS2 texture buckets");
   write_empty_texture_page(kTexturePageOffset, kTexturePageId);
-  make_pris2_bucket228_ordinary_only_chain();
-  pris2_bucket228_callbacks.send_chain(g_ee_main_mem, kChainOffset);
-  goal_jak2_metal_host_metrics pris2_bucket228_metrics = {};
-  check(goal_jak2_metal_host_get_metrics(pris2_bucket228_host,
-                                         &pris2_bucket228_metrics) &&
-            pris2_bucket228_metrics.chains == 1 &&
-            pris2_bucket228_metrics.completed_chains == 1 &&
-            pris2_bucket228_metrics.failed_chains == 0 &&
-            pris2_bucket228_metrics.last_buckets_dispatched == kBucketCount &&
-            pris2_bucket228_metrics.last_pris_eye_dispatches ==
-                GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT + 1 &&
-            pris2_bucket228_metrics.last_pris_eye_present_dispatches == 1 &&
-            pris2_bucket228_metrics.last_pris_eye_chunks == 0 &&
-            pris2_bucket228_metrics.pris2_bucket_captures[0].bucket_id == kPris2Bucket228 &&
-            pris2_bucket228_metrics.pris2_bucket_captures[0].present_captures == 1 &&
-            pris2_bucket228_metrics.pris2_bucket_captures[0].transfers == 5 &&
-            pris2_bucket228_metrics.pris2_bucket_captures[0].payload_bytes == 176 &&
-            pris2_bucket228_metrics.pris2_bucket_captures[0].executions == 1 &&
-            pris2_bucket228_metrics.pris2_bucket_captures[1].bucket_id == 229 &&
-            pris2_bucket228_metrics.pris2_bucket_captures[1].executions == 0 &&
-            pris2_bucket228_metrics.last_eye_composed == 0 &&
-            pris2_bucket228_metrics.last_eye_command_buffers_committed == 0 &&
-            pris2_bucket228_metrics.last_eye_command_buffer_errors == 0 &&
-            pris2_bucket228_metrics.skipped_bucket_bytes == 0,
-        "bucket 228 ordinary form uploads once while bucket 229 executes zero times");
-  goal_jak2_metal_host_destroy(pris2_bucket228_host);
+  for (const u32 bucket_id : metal_renderer::kJak2Pris2TextureUploadBuckets) {
+    make_pris2_ordinary_only_chain(bucket_id);
+    pris2_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  }
+  goal_jak2_metal_host_metrics pris2_metrics = {};
+  check(goal_jak2_metal_host_get_metrics(pris2_host, &pris2_metrics) &&
+            pris2_metrics.chains == metal_renderer::kJak2Pris2TextureUploadBuckets.size() &&
+            pris2_metrics.completed_chains ==
+                metal_renderer::kJak2Pris2TextureUploadBuckets.size() &&
+            pris2_metrics.failed_chains == 0 &&
+            pris2_metrics.last_buckets_dispatched == kBucketCount &&
+            pris2_metrics.last_pris_eye_dispatches ==
+                GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT +
+                    metal_renderer::kJak2Pris2TextureUploadBuckets.size() &&
+            pris2_metrics.last_pris_eye_present_dispatches == 1 &&
+            pris2_metrics.last_pris_eye_chunks == 0 &&
+            pris2_metrics.pris2_bucket_captures[0].bucket_id == kPris2Bucket228 &&
+            pris2_metrics.pris2_bucket_captures[0].captures ==
+                metal_renderer::kJak2Pris2TextureUploadBuckets.size() &&
+            pris2_metrics.pris2_bucket_captures[0].present_captures == 1 &&
+            pris2_metrics.pris2_bucket_captures[0].executions == 1 &&
+            pris2_metrics.pris2_bucket_captures[1].bucket_id == 229 &&
+            pris2_metrics.pris2_bucket_captures[1].executions == 0 &&
+            pris2_metrics.last_eye_composed == 0 &&
+            pris2_metrics.last_eye_command_buffers_committed == 0 &&
+            pris2_metrics.last_eye_command_buffer_errors == 0 &&
+            pris2_metrics.skipped_bucket_bytes == 0,
+        "all six PRIS2 texture slots execute their ordinary form without resizing passive ABI "
+        "metrics");
+  goal_jak2_metal_host_destroy(pris2_host);
 
   goal_jak2_metal_host* missing_prison_host = goal_jak2_metal_host_create();
   goal_gfx_host missing_prison_callbacks = {};
@@ -2664,7 +2667,8 @@ int main() {
   check(prison_metrics.chains == 1 && prison_metrics.completed_chains == 1 &&
             prison_metrics.failed_chains == 0 &&
             prison_metrics.last_pris_eye_dispatches ==
-                GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT + 1 &&
+                GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT +
+                    metal_renderer::kJak2Pris2TextureUploadBuckets.size() &&
             prison_metrics.last_pris_eye_present_dispatches == 1 &&
             prison_metrics.pris_texture_uploads[2].bucket_id == kPrisonClutBucket &&
             prison_metrics.pris_texture_uploads[2].transfers == 9 &&
