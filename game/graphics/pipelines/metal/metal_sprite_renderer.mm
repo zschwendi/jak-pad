@@ -12,6 +12,7 @@
 #include "common/util/fnv.h"
 
 #include "game/graphics/opengl_renderer/dma_helpers.h"
+#include "game/graphics/pipelines/metal/metal_jak2_mech_flame_identity.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/texture/TexturePool.h"
 
@@ -120,6 +121,59 @@ struct SpriteTextureDiagnosticLogState {
 SpriteTextureDiagnosticLogState& sprite_texture_diagnostic_log_state() {
   static SpriteTextureDiagnosticLogState state;
   return state;
+}
+
+struct MechFlameIdentityLogState {
+  std::mutex mutex;
+  std::array<metal_renderer::Jak2MechFlameIdentityObservation, 8> observations = {};
+  std::size_t count = 0;
+};
+
+MechFlameIdentityLogState& mech_flame_identity_log_state() {
+  static MechFlameIdentityLogState state;
+  return state;
+}
+
+void log_mech_flame_identity(u32 tbp, TexturePool* texture_pool) {
+  metal_renderer::Jak2MechFlameIdentityObservation observation;
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool->mutex());
+    const GpuTexture* gpu_texture = texture_pool->lookup_gpu_texture(tbp);
+    observation = metal_renderer::observe_jak2_mech_flame_identity(
+        true, tbp, gpu_texture != nullptr,
+        gpu_texture ? gpu_texture->tex_id.page : metal_renderer::kJak2MissingTextureIdentity,
+        gpu_texture ? gpu_texture->tex_id.tex : metal_renderer::kJak2MissingTextureIdentity,
+        gpu_texture && gpu_texture->is_placeholder);
+  }
+  if (!observation.capture) {
+    return;
+  }
+
+  std::size_t index = 0;
+  {
+    auto& log_state = mech_flame_identity_log_state();
+    std::lock_guard<std::mutex> log_lock(log_state.mutex);
+    for (std::size_t i = 0; i < log_state.count; i++) {
+      if (log_state.observations[i] == observation) {
+        return;
+      }
+    }
+    if (log_state.count >= log_state.observations.size()) {
+      return;
+    }
+    index = log_state.count;
+    log_state.observations[log_state.count++] = observation;
+  }
+
+  lg::info(
+      "GOALPAD_JAK2_MECH_FLAME_TEXTURE_IDENTITY index={} target_tbp={} target_page={} "
+      "target_tex={} target_combo={} actual_present={} actual_page={} actual_tex={} "
+      "actual_combo={} actual_placeholder={} state={}",
+      index, metal_renderer::kJak2MechFlameTextureTbp,
+      metal_renderer::kJak2MechFlameTexturePage, metal_renderer::kJak2MechFlameTextureIndex,
+      metal_renderer::kJak2MechFlameTextureComboId, observation.actual_present,
+      observation.actual_page, observation.actual_texture, observation.actual_combo_id,
+      observation.actual_placeholder, static_cast<u32>(observation.state));
 }
 
 void log_sprite_texture_diagnostic(u32 tbp,
@@ -519,6 +573,8 @@ MetalSpriteRenderer::MetalSpriteRenderer(const std::string& name, int my_id)
   m_default_mode.set_ab(true);
   m_current_mode = m_default_mode;
   m_log_sprite_textures = diagnostic_flag("GOALPAD_JAK2_DEBUG_LOG_SPRITE_TEXTURES");
+  m_log_mech_flame_identity =
+      diagnostic_flag("GOALPAD_JAK2_DEBUG_LOG_MECH_FLAME_IDENTITY");
 }
 
 void MetalSpriteRenderer::render(DmaFollower& dma,
@@ -1511,6 +1567,10 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
     }
     if (m_log_sprite_textures && render_state->version == GameVersion::Jak2) {
       log_sprite_texture_diagnostic(tbp, mode, *tex, used_placeholder, render_state->texture_pool);
+    }
+    if (m_log_mech_flame_identity && render_state->version == GameVersion::Jak2 &&
+        tbp == metal_renderer::kJak2MechFlameTextureTbp) {
+      log_mech_flame_identity(tbp, render_state->texture_pool);
     }
 
     id<MTLRenderPipelineState> pso = ctx.pso_cache->get_pipeline(settings.pso);

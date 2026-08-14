@@ -218,6 +218,7 @@ class MetalSpriteRenderer : public MetalBucketRenderer {
   Stats m_stats;
   u64 m_unsupported_bytes_total = 0;
   bool m_log_sprite_textures = false;
+  bool m_log_mech_flame_identity = false;
   bool m_warned_distort_overflow = false;
   bool m_warned_unsupported_glow = false;
   bool m_warned_rejected_glow_math = false;

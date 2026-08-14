@@ -1193,6 +1193,10 @@ if(APPLE)
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak2-metal-sprite-renderer-test COMMAND jak2-metal-sprite-renderer-test)
 
+        add_executable(jak2-mech-flame-identity-test
+            graphics/pipelines/metal/metal_jak2_mech_flame_identity_test.cpp)
+        add_test(NAME jak2-mech-flame-identity-test COMMAND jak2-mech-flame-identity-test)
+
         add_executable(jak2-metal-tfrag-renderer-test
             graphics/pipelines/metal/metal_jak2_tfrag_renderer_test.mm)
         set_source_files_properties(
