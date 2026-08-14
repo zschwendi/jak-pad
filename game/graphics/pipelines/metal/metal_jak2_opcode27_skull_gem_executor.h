@@ -66,6 +66,10 @@ class Jak2Opcode27SkullGemExecutor {
                         const tfrag3::Level& ctywide_level,
                         PreparedSecurity* out);
   bool publish_security(const PreparedSecurity& prepared);
+  bool prepare_security_environment(const Jak2Opcode30SecurityEnvironmentPlan& plan,
+                                    const tfrag3::Level& ctywide_level,
+                                    PreparedSecurityOutput* out);
+  bool publish_security_environment(const PreparedSecurityOutput& prepared);
   void detach_pool();
 
   const std::vector<u64>& animated_texture_slots() const { return m_animated_texture_slots; }

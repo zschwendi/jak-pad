@@ -825,6 +825,7 @@ struct Jak2TextureUploadDispatch {
   const metal_renderer::Jak2Pris2Bucket228Plan* pris2_bucket228_plan = nullptr;
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* common_pris_plan = nullptr;
   const Jak2WaterTextureUploadPlans* water_plans = nullptr;
+  const metal_renderer::Jak2CommonWaterTextureUploadPlan* common_water_plan = nullptr;
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
   const metal_renderer::Jak2SpriteTextureUploadPlan* sprite_plan = nullptr;
   const metal_renderer::Jak2MapTextureUploadPlan* map_plan = nullptr;
@@ -832,6 +833,8 @@ struct Jak2TextureUploadDispatch {
   const metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared* skull_gem_prepared = nullptr;
   const metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity* security_prepared =
       nullptr;
+  const metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurityOutput*
+      common_water_environment_prepared = nullptr;
   const std::array<std::optional<metal_renderer::Jak2PrisonClutExecutor::Prepared>,
                    metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
       prison_clut_prepared = nullptr;
@@ -841,6 +844,7 @@ struct Jak2TextureUploadDispatch {
   bool* sprite_callback_executed = nullptr;
   bool* raw_image_callback_executed = nullptr;
   bool* common_pris_callback_executed = nullptr;
+  bool* common_water_callback_executed = nullptr;
   bool* pris2_bucket228_callback_executed = nullptr;
   bool* sky_post_callback_executed = nullptr;
   std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
@@ -849,6 +853,38 @@ struct Jak2TextureUploadDispatch {
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  if (bucket_id == metal_renderer::kJak2CommonWaterTextureUploadBucket) {
+    if (!dispatch->common_water_plan || !dispatch->common_water_callback_executed) {
+      throw std::runtime_error("Jak 2 common-water texture dispatch is incomplete");
+    }
+    if (*dispatch->common_water_callback_executed) {
+      throw std::runtime_error("Jak 2 common-water bucket callback repeated");
+    }
+    *dispatch->common_water_callback_executed = true;
+    const auto& plan = *dispatch->common_water_plan;
+    if (plan.bucket_id != bucket_id) {
+      throw std::runtime_error("Jak 2 common-water texture dispatch order is inconsistent");
+    }
+    if (!plan.present) {
+      return;
+    }
+    if (!dispatch->common_water_environment_prepared ||
+        !dispatch->host->skull_gem_executor) {
+      throw std::runtime_error("Jak 2 common-water environment dispatch is incomplete");
+    }
+    execute_ordinary_texture_upload_or_throw(
+        dispatch->host, plan.ordinary, dispatch->live_ee_memory,
+        &dispatch->host->metrics.common_water_texture_upload.executions,
+        "Jak 2 common-water ordinary texture upload", dispatch->host_texture_mutated);
+    if (!dispatch->host->skull_gem_executor->publish_security_environment(
+            *dispatch->common_water_environment_prepared)) {
+      throw std::runtime_error(
+          std::string("Jak 2 common-water environment publication failed: ") +
+          dispatch->host->skull_gem_executor->last_error());
+    }
+    merge_animated_texture_slots(dispatch->host);
+    return;
+  }
   if (bucket_id == metal_renderer::kJak2SkyPostTextureUploadBucket) {
     if (!dispatch->sky_post_plan || !dispatch->sky_post_callback_executed) {
       throw std::runtime_error("Jak 2 sky-post texture dispatch is incomplete");
@@ -1408,6 +1444,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       water_texture_plans[i] = *plan;
     }
+    const auto live_common_water_plan =
+        metal_renderer::plan_jak2_common_water_texture_upload(
+            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+    if (!live_common_water_plan) {
+      record_failure(host, "Jak 2 common-water texture plan rejected bucket 306 DMA");
+      return;
+    }
     metal_renderer::Jak2CommonTfragTextureUploadCapture common_tfrag_texture_capture;
     const auto common_tfrag_texture_plan =
         metal_renderer::plan_jak2_common_tfrag_texture_upload(
@@ -1423,6 +1467,8 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     }
     metal_renderer::Jak2Opcode27SkullGemExecutor::Prepared skull_gem_prepared;
     metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurity security_prepared;
+    metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurityOutput
+        common_water_environment_prepared;
     const metal_renderer::Jak2WaterTextureUploadPlan* security_plan = nullptr;
     metal_renderer::Jak2Bucket4TextureUploadCapture bucket4_capture;
     const auto bucket4_plan = metal_renderer::plan_jak2_bucket4_texture_upload(
@@ -1479,6 +1525,18 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                   copied_chain_validation.error) +
               " (" + dma_chain_validation_error_message(copied_chain_validation.dma.error) + ")",
           host_texture_mutated);
+      return;
+    }
+
+    const auto copied_common_water_plan =
+        metal_renderer::plan_jak2_common_water_texture_upload(
+            copied.data.data(), copied.data.size(), copied.start_offset,
+            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+    if (!copied_common_water_plan ||
+        !metal_renderer::jak2_common_water_texture_upload_plans_match(
+            *live_common_water_plan, *copied_common_water_plan)) {
+      record_send_chain_failure(
+          host, "Jak 2 copied common-water texture plan did not match live bucket 306", false);
       return;
     }
 
@@ -1646,7 +1704,10 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       security_plan = &water_plan;
     }
-    auto* ctywide_level = security_plan ? metal_level_data::get("ctywide") : nullptr;
+    auto* ctywide_level =
+        security_plan || copied_common_water_plan->present
+            ? metal_level_data::get("ctywide")
+            : nullptr;
     if (security_plan &&
         (!host->common_level || !host->common_level->level || !ctywide_level ||
          !ctywide_level->level || !host->skull_gem_executor ||
@@ -1665,6 +1726,22 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                      (std::string("Jak 2 security preparation failed: ") + detail).c_str());
       return;
     }
+    if (copied_common_water_plan->present &&
+        (!ctywide_level || !ctywide_level->level || !host->skull_gem_executor ||
+         !host->skull_gem_executor->prepare_security_environment(
+             copied_common_water_plan->security_environment, *ctywide_level->level,
+             &common_water_environment_prepared))) {
+      const char* detail =
+          !ctywide_level || !ctywide_level->level
+              ? "ctywide level art is unavailable"
+              : host->skull_gem_executor ? host->skull_gem_executor->last_error()
+                                         : "executor is unavailable";
+      record_failure(
+          host,
+          (std::string("Jak 2 common-water environment preparation failed: ") + detail)
+              .c_str());
+      return;
+    }
     if (!execute_bucket4_plan(host, *bucket4_plan, static_cast<const u8*>(ee_base))) {
       return;
     }
@@ -1674,6 +1751,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     bool sprite_callback_executed = false;
     bool raw_image_callback_executed = false;
     bool common_pris_callback_executed = false;
+    bool common_water_callback_executed = false;
     bool pris2_bucket228_callback_executed = false;
     bool sky_post_callback_executed = false;
     std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>
@@ -1691,12 +1769,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &*copied_pris2_bucket228_plan,
         &*copied_common_pris_plan,
         &water_texture_plans,
+        &*copied_common_water_plan,
         &*common_tfrag_texture_plan,
         &*sprite_texture_plan,
         &*map_texture_plan,
         &*copied_sky_post_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         security_plan ? &security_prepared : nullptr,
+        copied_common_water_plan->present ? &common_water_environment_prepared : nullptr,
         &prison_clut_prepared,
         copied_common_pris_plan->present ? &dark_jak_clut_prepared : nullptr,
         static_cast<const u8*>(ee_base),
@@ -1704,6 +1784,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &sprite_callback_executed,
         &raw_image_callback_executed,
         &common_pris_callback_executed,
+        &common_water_callback_executed,
         &pris2_bucket228_callback_executed,
         &sky_post_callback_executed,
         &pris_eye_callbacks_executed};
@@ -1728,14 +1809,14 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       expected_pris_eye_present_dispatches += plan.present;
     }
     expected_pris_eye_chunks += copied_common_pris_plan->chunk_count;
-    if (!common_pris_callback_executed ||
+    if (!common_pris_callback_executed || !common_water_callback_executed ||
         !pris2_bucket228_callback_executed ||
         !std::all_of(pris_eye_callbacks_executed.begin(), pris_eye_callbacks_executed.end(),
                      [](bool executed) { return executed; }) ||
         host->metrics.last_pris_eye_dispatches != copied_pris_eye_renderer_plans.size() ||
         host->metrics.last_pris_eye_present_dispatches !=
             expected_pris_eye_present_dispatches) {
-      record_send_chain_failure(host, "Jak 2 PRIS eye bucket callback dispatch was incomplete",
+      record_send_chain_failure(host, "Jak 2 planned texture bucket callback dispatch was incomplete",
                                 host_texture_mutated);
       return;
     }

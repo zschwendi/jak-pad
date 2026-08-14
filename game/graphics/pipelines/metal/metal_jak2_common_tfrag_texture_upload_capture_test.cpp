@@ -23,6 +23,9 @@ constexpr u32 kAnimatorBodyTagOffset = kAnimatorOffset + 16;
 constexpr u32 kAnimatorBodyOffset = kAnimatorBodyTagOffset + 16;
 constexpr u32 kAnimatorFinishOffset = kAnimatorBodyOffset + 496;
 constexpr u32 kAnimatorNextOffset = kAnimatorFinishOffset + 16;
+constexpr u32 kSecurityEnvironmentAnimatorFinishOffset = kAnimatorBodyOffset + 336;
+constexpr u32 kSecurityEnvironmentAnimatorNextOffset =
+    kSecurityEnvironmentAnimatorFinishOffset + 16;
 constexpr u32 kSecurityAnimatorFinishOffset = kAnimatorBodyOffset + 832;
 constexpr u32 kSecurityAnimatorNextOffset = kSecurityAnimatorFinishOffset + 16;
 constexpr u32 kEyeOrdinaryOffset = 0x8000;
@@ -603,13 +606,47 @@ std::vector<u8> make_ordinary_and_animator_fixture() {
   return packet;
 }
 
-std::vector<u8> make_common_water_capture_fixture() {
+void put_layer_values(std::vector<u8>* packet, u32 offset, float base, u8 padding);
+
+std::vector<u8> make_common_water_execution_fixture(u32 dma_relocation = 0) {
   constexpr u32 bucket_id = metal_renderer::kJak2CommonWaterTextureUploadBucket;
-  auto packet = make_ordinary_fixture(bucket_id);
-  const u32 ordinary_boundary = kOrdinaryOffset + 32;
+  std::vector<u8> packet(kMemorySize);
+  const u32 ordinary_offset = kOrdinaryOffset + dma_relocation;
+  const u32 animator_offset = kAnimatorOffset + dma_relocation;
+  const u32 animator_body_tag_offset = animator_offset + 16;
+  const u32 animator_body_offset = animator_body_tag_offset + 16;
+  const u32 animator_finish_offset = animator_body_offset + 336;
+  const u32 animator_next_offset = animator_finish_offset + 16;
+  const u32 direct_setup_offset = kDirectSetupOffset + dma_relocation;
   const u32 end_offset = bucket_offset(bucket_id) + 16;
-  put_tag(&packet, ordinary_boundary, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
-  put_animator_array(&packet, kAnimatorOffset, 16, 1, end_offset);
+
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, ordinary_offset, 0, 0);
+  put_tag(&packet, ordinary_offset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&packet, ordinary_offset + 16, kTexturePageOffset);
+  put_u64(&packet, ordinary_offset + 24, static_cast<u64>(-1));
+  put_tag(&packet, ordinary_offset + 32, DmaTag::Kind::NEXT, 0, animator_offset, 0, 0);
+
+  put_tag(&packet, animator_offset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 12, 0);
+  put_tag(&packet, animator_body_tag_offset, DmaTag::Kind::CNT, 21, 0,
+          kPcPortVif | 30, 0);
+  put_float(&packet, animator_body_offset, 1200.f);
+  put_u32(&packet, animator_body_offset + 4, 0x2345);
+  for (u32 i = 0; i < 4; ++i) {
+    put_layer_values(&packet, animator_body_offset + 16 + i * 80,
+                     20.f + static_cast<float>(i) * 20.f,
+                     static_cast<u8>(0xc0 + i));
+  }
+  put_tag(&packet, animator_finish_offset, DmaTag::Kind::CNT, 0, 0,
+          kPcPortVif | 13, 0);
+  put_tag(&packet, animator_next_offset, DmaTag::Kind::NEXT, 0,
+          direct_setup_offset, 0, 0);
+
+  put_tag(&packet, direct_setup_offset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(packet.begin() + direct_setup_offset + 16, 160, 0x52);
+  put_tag(&packet, direct_setup_offset + 176, DmaTag::Kind::NEXT, 0,
+          end_offset, 0, 0);
+  packet[kTexturePageOffset + 8] = 0x44;
   return packet;
 }
 
@@ -629,6 +666,27 @@ void put_layer_values(std::vector<u8>* packet, u32 offset, float base, u8 paddin
     put_float(packet, offset + i * sizeof(float), base + static_cast<float>(i) * 0.25f);
   }
   std::fill_n(packet->begin() + offset + 72, 8, padding);
+}
+
+std::vector<u8> make_common_water_dot_only_fixture() {
+  constexpr u32 bucket_id = metal_renderer::kJak2CommonWaterTextureUploadBucket;
+  auto packet = make_common_water_execution_fixture();
+  const u32 dot_finish_offset = kAnimatorBodyOffset + 496;
+  const u32 dot_next_offset = dot_finish_offset + 16;
+  put_tag(&packet, kAnimatorBodyTagOffset, DmaTag::Kind::CNT, 31, 0,
+          kPcPortVif | 30, 0);
+  put_float(&packet, kAnimatorBodyOffset, 300.f);
+  put_u32(&packet, kAnimatorBodyOffset + 4, 0x3456);
+  for (u32 i = 0; i < 6; ++i) {
+    put_layer_values(&packet, kAnimatorBodyOffset + 16 + i * 80,
+                     100.f + static_cast<float>(i) * 20.f,
+                     static_cast<u8>(0xd0 + i));
+  }
+  put_tag(&packet, dot_finish_offset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 13, 0);
+  put_tag(&packet, dot_next_offset, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  put_tag(&packet, kDirectSetupOffset + 176, DmaTag::Kind::NEXT, 0,
+          bucket_offset(bucket_id) + 16, 0, 0);
+  return packet;
 }
 
 std::vector<u8> make_common_execution_fixture() {
@@ -884,32 +942,116 @@ void test_pris2_diagnostic_capture() {
   }
 }
 
-void test_common_water_diagnostic_capture() {
+void test_common_water_execution_plan() {
   constexpr u32 bucket_id = metal_renderer::kJak2CommonWaterTextureUploadBucket;
   static_assert(bucket_id == 306);
 
-  auto result = capture(make_empty_fixture(bucket_id), bucket_id);
+  auto packet = make_empty_fixture(bucket_id);
+  auto result = capture(packet, bucket_id);
+  const auto absent = metal_renderer::plan_jak2_common_water_texture_upload(
+      packet.data(), packet.size(), kChainOffset, packet.data(), packet.size());
   check(result.valid && !result.present && result.classification == Classification::Absent &&
-            result.transfer_count == 1 && result.inert_transfers == 1,
-        "common-water bucket 306 accepts the exact empty metadata envelope");
+            result.transfer_count == 1 && result.inert_transfers == 1 && absent.has_value() &&
+            !absent->present &&
+            absent->variant == metal_renderer::Jak2CommonWaterTextureUploadVariant::Absent,
+        "common-water bucket 306 accepts the exact empty plan");
 
-  result = capture(make_common_water_capture_fixture(), bucket_id);
-  check(result.valid && result.present &&
+  packet = make_common_water_execution_fixture();
+  const auto plan = metal_renderer::plan_jak2_common_water_texture_upload(
+      packet.data(), packet.size(), kChainOffset, packet.data(), packet.size(), &result);
+  check(plan.has_value() && plan->present &&
+            plan->variant == metal_renderer::Jak2CommonWaterTextureUploadVariant::
+                                 DescriptorSecurityEnvironmentAndStandardReset &&
+            plan->ordinary.page_offset == kTexturePageOffset && plan->ordinary.mode == -1 &&
+            plan->ordinary.page_header[8] == 0x44 &&
+            plan->security_environment.time == 1200.f &&
+            plan->security_environment.destination_tbp == 0x2345 &&
+            plan->security_environment.layers[0].start.color[0] == 20.f &&
+            plan->security_environment.layers[1].end.st_rot == 84.25f && result.valid &&
+            result.present &&
             result.classification == Classification::OrdinaryAndAnimator &&
-            result.transfer_count == 7 && result.total_payload_bytes == 32 &&
-            result.inert_transfers == 3 && result.ordinary_descriptors == 1 &&
+            result.transfer_count == 9 && result.total_payload_bytes == 512 &&
+            result.inert_transfers == 4 && result.ordinary_descriptors == 1 &&
+            result.direct_setup_transfers == 1 &&
             result.animator_arrays == 1 && result.animator_body_transfers == 1 &&
-            result.animator_payload_bytes == 16 && result.opcode_counts[12] == 1 &&
-            result.opcode_counts[13] == 1 && result.opcode_counts[16] == 1 &&
+            result.animator_payload_bytes == 336 && result.opcode_counts[12] == 1 &&
+            result.opcode_counts[13] == 1 && result.opcode_counts[30] == 1 &&
             result.eye_markers == 0 && result.other_transfers == 0 &&
             result.malformed_transfers == 0,
-        "common-water bucket 306 passively records generic descriptor and animator metadata");
+        "common-water bucket 306 owns the exact descriptor/environment/reset plan");
+
+  auto relocated_packet = make_common_water_execution_fixture(0x200);
+  auto relocated = metal_renderer::plan_jak2_common_water_texture_upload(
+      relocated_packet.data(), relocated_packet.size(), kChainOffset,
+      relocated_packet.data(), relocated_packet.size());
+  check(relocated.has_value() &&
+            metal_renderer::jak2_common_water_texture_upload_plans_match(*plan, *relocated),
+        "live and relocated copied common-water plans match by owned semantics");
+
+  put_float(&relocated_packet, kAnimatorBodyOffset + 0x200, 1201.f);
+  relocated = metal_renderer::plan_jak2_common_water_texture_upload(
+      relocated_packet.data(), relocated_packet.size(), kChainOffset,
+      relocated_packet.data(), relocated_packet.size());
+  check(relocated.has_value() &&
+            !metal_renderer::jak2_common_water_texture_upload_plans_match(*plan, *relocated),
+        "live/copy matching rejects a changed security-environment scalar");
+
+  auto changed_page_packet = make_common_water_execution_fixture();
+  changed_page_packet[kTexturePageOffset + 8] = 0x45;
+  const auto changed_page = metal_renderer::plan_jak2_common_water_texture_upload(
+      changed_page_packet.data(), changed_page_packet.size(), kChainOffset,
+      changed_page_packet.data(), changed_page_packet.size());
+  check(changed_page.has_value() &&
+            !metal_renderer::jak2_common_water_texture_upload_plans_match(*plan, *changed_page),
+        "live/copy matching rejects a changed owned texture-page header");
+
+  std::fill(packet.begin(), packet.end(), 0xa5);
+  check(plan->ordinary.page_header[8] == 0x44 &&
+            plan->security_environment.time == 1200.f &&
+            plan->security_environment.layers[1].end.source_padding.back() == 0xc3,
+        "snapshot reuse cannot change owned common-water page or animator data");
+
+  packet = make_water_security_fixture(bucket_id);
+  check(!metal_renderer::plan_jak2_common_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size()),
+        "bucket 306 rejects the qwc-52 environment-plus-dot water variant");
+
+  packet = make_common_water_dot_only_fixture();
+  check(!metal_renderer::plan_jak2_common_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size()),
+        "bucket 306 rejects a qwc-31 dot-only opcode-30 body");
+
+  packet = make_water_ordinary_fixture(bucket_id);
+  check(!metal_renderer::plan_jak2_common_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size()),
+        "bucket 306 rejects an unobserved descriptor-only form");
+
+  packet = make_common_water_execution_fixture();
+  put_tag(&packet, bucket_offset(bucket_id), DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+  put_tag(&packet, kSecurityEnvironmentAnimatorNextOffset, DmaTag::Kind::NEXT, 0,
+          kOrdinaryOffset, 0, 0);
+  put_tag(&packet, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  check(!metal_renderer::plan_jak2_common_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size()),
+        "bucket 306 rejects an animator before its ordinary page descriptor");
+
+  packet = make_common_water_execution_fixture();
+  put_float(&packet, kAnimatorBodyOffset, std::numeric_limits<float>::quiet_NaN());
+  check(!metal_renderer::plan_jak2_common_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size()),
+        "bucket 306 rejects a nonfinite security-environment time");
+
+  packet = make_common_water_execution_fixture();
+  put_u32(&packet, kAnimatorBodyOffset + 4, 0x40000);
+  check(!metal_renderer::plan_jak2_common_water_texture_upload(
+             packet.data(), packet.size(), kChainOffset, packet.data(), packet.size()),
+        "bucket 306 rejects an out-of-VRAM security-environment destination");
 
   result = capture(make_malformed_common_water_capture_fixture(), bucket_id);
   check(!result.valid && !result.present && result.classification == Classification::Malformed &&
             result.transfer_count == 2 && result.total_payload_bytes == 16 &&
             result.malformed_transfers == 1,
-        "common-water bucket 306 bounds malformed animator metadata without a plan");
+        "common-water bucket 306 bounds malformed animator metadata before planning");
 }
 
 void test_pris_eye_execution_plan() {
@@ -2178,7 +2320,7 @@ int main() {
   test_exact_empty_and_ordinary_metadata();
   test_texture_bucket_allowlist();
   test_pris2_diagnostic_capture();
-  test_common_water_diagnostic_capture();
+  test_common_water_execution_plan();
   test_pris_eye_execution_plan();
   test_pris_eye_live_copy_semantics();
   test_pris_prison_jak_animator_variants();

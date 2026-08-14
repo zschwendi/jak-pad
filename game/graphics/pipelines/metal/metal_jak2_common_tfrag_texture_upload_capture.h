@@ -283,6 +283,19 @@ struct Jak2WaterTextureUploadPlan {
   Jak2Opcode30SecurityPlan security;
 };
 
+enum class Jak2CommonWaterTextureUploadVariant : u8 {
+  Absent,
+  DescriptorSecurityEnvironmentAndStandardReset,
+};
+
+struct Jak2CommonWaterTextureUploadPlan {
+  u32 bucket_id = kJak2CommonWaterTextureUploadBucket;
+  bool present = false;
+  Jak2CommonWaterTextureUploadVariant variant = Jak2CommonWaterTextureUploadVariant::Absent;
+  Jak2Bucket4OrdinaryUploadPlan ordinary;
+  Jak2Opcode30SecurityEnvironmentPlan security_environment;
+};
+
 struct Jak2CommonTfragTextureUploadPlan {
   bool present = false;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
@@ -297,8 +310,8 @@ struct Jak2CommonTfragTextureUploadPlan {
  * after the source snapshot is reused. Tag locations are relative to the bucket-table entry. Eye
  * DMA and otherwise unclassified work are reported as EyeOrOther rather than treated as executable
  * texture uploads. A valid result means only that the bounded metadata envelope was traversed
- * safely; execution still requires a separate typed plan. Bucket 228 has one; PRIS2 Merc and
- * common-water bucket 306 remain deferred.
+ * safely; execution still requires a separate typed plan. Buckets 228 and 306 have one; PRIS2
+ * Merc remains a separate deferred diagnostic.
  */
 Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
     const u8* dma_packet_snapshot,
@@ -385,6 +398,29 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+/*!
+ * Plan the exact common-water bucket-306 form emitted when the resolved security fixed-animation
+ * array contains only its first entry: ordinary page descriptor, opcode-30 qwc-21 environment
+ * body, and the standard inert Direct reset. pc-update-fixed-anim serializes resolved entries as a
+ * prefix, so this is specifically the two-layer security-environment output, never a dot-only
+ * substitute. The plan owns both the page header and every animator scalar.
+ */
+std::optional<Jak2CommonWaterTextureUploadPlan> plan_jak2_common_water_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr);
+
+/*!
+ * Compare independently planned live and copied bucket-306 semantics. DMA relocation is ignored;
+ * the owned page header and complete typed animator contents must remain equal.
+ */
+bool jak2_common_water_texture_upload_plans_match(
+    const Jak2CommonWaterTextureUploadPlan& live,
+    const Jak2CommonWaterTextureUploadPlan& copied);
 
 /*!
  * Plan the exact Direct-only normal/common SHRUB setup written by Jak II. Both GS payloads are

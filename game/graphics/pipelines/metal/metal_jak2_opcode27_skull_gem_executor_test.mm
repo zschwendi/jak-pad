@@ -134,6 +134,33 @@ int main() {
     check(!executor.prepare_security(security_plan, common_level, malformed_ctywide_level,
                                      &security_prepared),
           "malformed ctywide security sources fail before publication");
+    auto environment_plan = security_plan.environment;
+    environment_plan.destination_tbp = 132;
+    metal_renderer::Jak2Opcode27SkullGemExecutor::PreparedSecurityOutput
+        environment_prepared;
+    check(!executor.prepare_security_environment(environment_plan, missing_level,
+                                                 &environment_prepared),
+          "missing environment-only sources fail before publication");
+    check(!executor.prepare_security_environment(environment_plan,
+                                                 conflicting_ctywide_level,
+                                                 &environment_prepared),
+          "conflicting environment-only destinations fail before publication");
+    check(executor.prepare_security_environment(environment_plan, ctywide_level,
+                                                &environment_prepared) &&
+              environment_prepared.width == 2 && environment_prepared.height == 2 &&
+              environment_prepared.destination_tbp == 132,
+          "the qwc-21 prefix prepares only the exact ctywide environment output");
+    check(executor.publish_security_environment(environment_prepared),
+          "the prepared environment-only output publishes to Metal and TexturePool");
+    const u64 environment_only_handle = executor.animated_texture_slots().at(
+        metal_renderer::kJak2SecurityEnvironmentAnimatedTextureSlot);
+    check(environment_only_handle != 0 &&
+              pool.lookup(132).value_or(0) == environment_only_handle &&
+              executor.animated_texture_slots().at(
+                  metal_renderer::kJak2SecurityDotAnimatedTextureSlot) == 0 &&
+              executor.stats().security_preparations == 1 &&
+              executor.stats().security_publications == 1,
+          "environment-only publication owns slot 20 without manufacturing slot 21");
     tfrag3::Level repeated_common_level = common_level;
     repeated_common_level.textures.push_back(source_texture("common-white", 0xffffffff));
     tfrag3::Level repeated_ctywide_level = ctywide_level;
@@ -157,13 +184,13 @@ int main() {
         metal_renderer::kJak2SecurityEnvironmentAnimatedTextureSlot);
     const u64 security_dot_handle = executor.animated_texture_slots().at(
         metal_renderer::kJak2SecurityDotAnimatedTextureSlot);
-    check(security_environment_handle != 0 && security_dot_handle != 0 &&
+    check(security_environment_handle == environment_only_handle && security_dot_handle != 0 &&
               security_environment_handle != security_dot_handle &&
               pool.lookup(130).value_or(0) == security_environment_handle &&
               pool.lookup(131).value_or(0) == security_dot_handle &&
-              executor.stats().security_preparations == 1 &&
-              executor.stats().security_publications == 1,
-          "security publication owns both packet TBPs and animated slots 20 and 21");
+              executor.stats().security_preparations == 2 &&
+              executor.stats().security_publications == 2,
+          "full security publication reuses slot 20 and adds packet-owned slot 21");
 
     MetalLevelData level;
     MetalSharedRenderState render_state;

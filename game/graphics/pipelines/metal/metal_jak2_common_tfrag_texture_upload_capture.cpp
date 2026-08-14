@@ -368,6 +368,17 @@ bool metadata_is_opcode30_security_body(
          transfer.vif1_immediate == 0;
 }
 
+bool metadata_is_opcode30_security_environment_body(
+    const Jak2CommonTfragTransferMetadata& transfer) {
+  return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) &&
+         transfer.qwc == sizeof(Jak2Opcode30SecurityEnvironmentPlan) / 16 &&
+         transfer.payload_bytes == sizeof(Jak2Opcode30SecurityEnvironmentPlan) &&
+         transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT) &&
+         transfer.vif0_immediate == kSecurityOpcode &&
+         transfer.vif1_kind == static_cast<u8>(VifCode::Kind::NOP) &&
+         transfer.vif1_immediate == 0;
+}
+
 bool metadata_is_animator_finish(const Jak2CommonTfragTransferMetadata& transfer) {
   return transfer.tag_kind == static_cast<u8>(DmaTag::Kind::CNT) && transfer.qwc == 0 &&
          transfer.payload_bytes == 0 &&
@@ -509,6 +520,30 @@ bool parse_fixed_animation(const u8* source, Plan* out) {
 bool parse_opcode30_security(const u8* source, Jak2Opcode30SecurityPlan* out) {
   return parse_fixed_animation(source, &out->environment) &&
          parse_fixed_animation(source + sizeof(out->environment), &out->dot);
+}
+
+bool layer_values_match(const Jak2Opcode27LayerValues& live,
+                        const Jak2Opcode27LayerValues& copied) {
+  return live.color == copied.color && live.scale == copied.scale &&
+         live.offset == copied.offset && live.st_scale == copied.st_scale &&
+         live.st_offset == copied.st_offset && live.qs == copied.qs &&
+         live.rot == copied.rot && live.st_rot == copied.st_rot &&
+         live.source_padding == copied.source_padding;
+}
+
+bool security_environment_plans_match(const Jak2Opcode30SecurityEnvironmentPlan& live,
+                                      const Jak2Opcode30SecurityEnvironmentPlan& copied) {
+  if (live.time != copied.time || live.destination_tbp != copied.destination_tbp ||
+      live.source_header_tail != copied.source_header_tail) {
+    return false;
+  }
+  for (std::size_t i = 0; i < live.layers.size(); ++i) {
+    if (!layer_values_match(live.layers[i].start, copied.layers[i].start) ||
+        !layer_values_match(live.layers[i].end, copied.layers[i].end)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 constexpr u64 kFnvOffsetBasis = 14695981039346656037ull;
@@ -1789,6 +1824,119 @@ std::optional<Jak2WaterTextureUploadPlan> plan_jak2_water_texture_upload(
     plan.has_security_animator = true;
   }
   return plan;
+}
+
+std::optional<Jak2CommonWaterTextureUploadPlan> plan_jak2_common_water_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture) {
+  const auto capture = capture_jak2_tfrag_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+      kJak2CommonWaterTextureUploadBucket);
+  if (out_capture) {
+    *out_capture = capture;
+  }
+  if (!capture.valid) {
+    return std::nullopt;
+  }
+
+  Jak2CommonWaterTextureUploadPlan plan;
+  if (!capture.present) {
+    if (capture.classification != Jak2CommonTfragTextureUploadClass::Absent ||
+        capture.transfer_count != 1 || capture.total_payload_bytes != 0 ||
+        capture.inert_transfers != 1 || !metadata_is_strict_empty(capture.transfers[0])) {
+      return std::nullopt;
+    }
+    return plan;
+  }
+
+  const bool security_environment_composite =
+      capture.classification == Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator &&
+      capture.transfer_count == 9 && capture.total_payload_bytes == 512 &&
+      capture.inert_transfers == 4 && capture.ordinary_descriptors == 1 &&
+      capture.direct_setup_transfers == 1 && capture.gs_setup_transfers == 0 &&
+      capture.animator_arrays == 1 && capture.animator_body_transfers == 1 &&
+      capture.animator_payload_bytes == sizeof(Jak2Opcode30SecurityEnvironmentPlan) &&
+      capture.eye_markers == 0 && capture.other_transfers == 0 &&
+      capture.malformed_transfers == 0 && has_exact_security_counts(capture) &&
+      metadata_is_inert_next(capture.transfers[0]) &&
+      metadata_is_ordinary_descriptor(capture.transfers[1]) &&
+      metadata_is_inert_next(capture.transfers[2]) &&
+      metadata_is_animator_start(capture.transfers[3]) &&
+      metadata_is_opcode30_security_environment_body(capture.transfers[4]) &&
+      metadata_is_animator_finish(capture.transfers[5]) &&
+      metadata_is_inert_next(capture.transfers[6]) &&
+      metadata_is_direct_setup(capture.transfers[7]) &&
+      metadata_is_inert_next(capture.transfers[8]);
+  if (!security_environment_composite) {
+    return std::nullopt;
+  }
+
+  const std::size_t checked_snapshot_size =
+      std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
+  const auto& descriptor = capture.transfers[1];
+  const u64 descriptor_tag_offset =
+      static_cast<u64>(chain_offset) + kJak2CommonWaterTextureUploadBucket * 16 +
+      descriptor.relative_tag_offset;
+  const u64 descriptor_data_offset = descriptor_tag_offset + 16;
+  if (!range_is_valid(descriptor_data_offset, 16, checked_snapshot_size)) {
+    return std::nullopt;
+  }
+  const u64 page_offset = read_unaligned<u64>(dma_packet_snapshot + descriptor_data_offset);
+  const s64 mode =
+      read_unaligned<s64>(dma_packet_snapshot + descriptor_data_offset + sizeof(u64));
+  if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
+    return std::nullopt;
+  }
+
+  u64 animator_data_offset = 0;
+  if (!transfer_data_offset(chain_offset, kJak2CommonWaterTextureUploadBucket,
+                            capture.transfers[4], checked_snapshot_size,
+                            &animator_data_offset)) {
+    return std::nullopt;
+  }
+  constexpr u64 kExactOpcode30EnvironmentBodyTag =
+      (sizeof(Jak2Opcode30SecurityEnvironmentPlan) / 16) |
+      (static_cast<u64>(DmaTag::Kind::CNT) << 28);
+  const u64 animator_tag_offset = animator_data_offset - 16;
+  if (read_unaligned<u64>(dma_packet_snapshot + animator_tag_offset) !=
+          kExactOpcode30EnvironmentBodyTag ||
+      read_unaligned<u32>(dma_packet_snapshot + animator_tag_offset + 8) !=
+          (kPcPortVif | kSecurityOpcode) ||
+      read_unaligned<u32>(dma_packet_snapshot + animator_tag_offset + 12) != 0 ||
+      !parse_fixed_animation(dma_packet_snapshot + animator_data_offset,
+                             &plan.security_environment)) {
+    return std::nullopt;
+  }
+
+  plan.present = true;
+  plan.variant =
+      Jak2CommonWaterTextureUploadVariant::DescriptorSecurityEnvironmentAndStandardReset;
+  plan.ordinary.page_offset = page_offset;
+  plan.ordinary.mode = mode;
+  std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
+              plan.ordinary.page_header.size());
+  return plan;
+}
+
+bool jak2_common_water_texture_upload_plans_match(
+    const Jak2CommonWaterTextureUploadPlan& live,
+    const Jak2CommonWaterTextureUploadPlan& copied) {
+  if (live.bucket_id != copied.bucket_id || live.present != copied.present ||
+      live.variant != copied.variant) {
+    return false;
+  }
+  if (!live.present) {
+    return true;
+  }
+  return live.ordinary.page_offset == copied.ordinary.page_offset &&
+         live.ordinary.mode == copied.ordinary.mode &&
+         live.ordinary.page_header == copied.ordinary.page_header &&
+         security_environment_plans_match(live.security_environment,
+                                          copied.security_environment);
 }
 
 std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upload(

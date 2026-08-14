@@ -223,6 +223,30 @@ bool Jak2Opcode27SkullGemExecutor::prepare_security(
   return true;
 }
 
+bool Jak2Opcode27SkullGemExecutor::prepare_security_environment(
+    const Jak2Opcode30SecurityEnvironmentPlan& plan,
+    const tfrag3::Level& ctywide_level,
+    PreparedSecurityOutput* out) {
+  m_error.clear();
+  if (!m_pool || !out || !m_slot_contract_valid ||
+      plan.destination_tbp >= static_cast<u32>(m_pool->all_textures().size())) {
+    return fail("invalid security-environment preparation destination");
+  }
+
+  const std::array<const tfrag3::Level*, 2> source_levels = {
+      &ctywide_level, &ctywide_level};
+  PreparedSecurityOutput prepared;
+  if (!prepare_security_output(plan, ctywide_level, "security-env-dest", source_levels,
+                               kSecurityEnvironmentSourceTextureNames,
+                               kSecurityEnvironmentEndTimes, &prepared)) {
+    return fail(
+        "required security-environment textures are unavailable, duplicated, or malformed");
+  }
+  *out = std::move(prepared);
+  m_stats.security_preparations++;
+  return true;
+}
+
 bool Jak2Opcode27SkullGemExecutor::publish_security_output(
     const PreparedSecurityOutput& prepared,
     std::size_t slot,
@@ -264,6 +288,18 @@ bool Jak2Opcode27SkullGemExecutor::publish_security(
                                "jak2-opcode30-security-dot",
                                &m_security_dot_publication)) {
     return fail("security Metal publication failed");
+  }
+  m_stats.security_publications++;
+  return true;
+}
+
+bool Jak2Opcode27SkullGemExecutor::publish_security_environment(
+    const PreparedSecurityOutput& prepared) {
+  m_error.clear();
+  if (!publish_security_output(prepared, kJak2SecurityEnvironmentAnimatedTextureSlot,
+                               "jak2-opcode30-security-environment",
+                               &m_security_environment_publication)) {
+    return fail("security-environment Metal publication failed");
   }
   m_stats.security_publications++;
   return true;
