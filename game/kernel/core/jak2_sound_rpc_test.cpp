@@ -210,6 +210,24 @@ int find_stream(const jak2::SoundIopInfo& info, const char* name, s32 id) {
   return -1;
 }
 
+struct LoaderStreamSample {
+  s32 position = -1;
+  bool id_is_playing = false;
+  bool rpc_is_playing = false;
+};
+
+LoaderStreamSample sample_loader_stream(const jak2::SoundIopInfo& info, s32 id) {
+  // Match the no-skip reads in current-str-pos and str-id-is-playing? from Jak 2's gsound.gc.
+  for (size_t i = 0; i < 4; i++) {
+    if (info.stream_id[i] == id) {
+      return {static_cast<s32>(info.stream_position[i]),
+              (info.stream_status[i] & (kStreamBuffered | kStreamQueuedWithoutAudio)) != 0,
+              (info.stream_status[i] & kStreamPlaying) != 0};
+    }
+  }
+  return {};
+}
+
 bool same_stream_state(const jak2::SoundIopInfo& lhs, const jak2::SoundIopInfo& rhs) {
   return memcmp(lhs.stream_position, rhs.stream_position, sizeof(lhs.stream_position)) == 0 &&
          memcmp(lhs.stream_status, rhs.stream_status, sizeof(lhs.stream_status)) == 0 &&
@@ -1432,10 +1450,12 @@ int main() {
             position_after_audio,
         "CONTINUE resumes both VAG output and its published clock");
   check_guards(stream_control, "ordinary VAG control commands preserve their canaries");
+  const auto loader_sample_before_queue = sample_loader_stream(published_info, 0x10002);
 
   reset_play_request(play, 2);
   set_play_stream(play, 0, "queue-replacement", 0x10008);
   rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  goal_game_sound_pull_audio(streamed_audio.data(), streamed_audio.size() / 2);
   goal_jak2_sound_frame();
   published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
   check(find_stream(published_info, "audioone", 0x10002) >= 0 &&
@@ -1444,6 +1464,11 @@ int main() {
   check(find_stream(published_info, "queued-no-audio", 0x10007) < 0 &&
             find_stream(published_info, "queue-replacement", 0x10008) >= 0,
         "replacing the pending queue removes only omitted unplayed streams");
+  const auto loader_sample_after_queue = sample_loader_stream(published_info, 0x10002);
+  check(loader_sample_before_queue.id_is_playing && loader_sample_after_queue.id_is_playing &&
+            loader_sample_after_queue.rpc_is_playing &&
+            loader_sample_after_queue.position > loader_sample_before_queue.position,
+        "the loader-facing VAG clock advances across a pending-queue replacement");
 
   reset_play_request(play, 2, 1u << 0 | 1u << 5);
   set_play_stream(play, 0, "art-no-audio", 0x10001);
@@ -1578,6 +1603,60 @@ int main() {
             "valid mono, duplicate, and stereo play requests are counted");
   check_u32(stats.stream_stop_requests, 2, "valid mono and stereo stops are counted exactly");
   check_u32(stats.stream_failures, 1, "the out-of-range VAG sector fails closed once");
+
+  std::printf("\n== scene-independent spooled progression contract ==\n");
+  reset_play_request(play, 1);
+  set_play_stream(play, 0, "art-no-audio", 0x10001);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  goal_jak2_sound_frame();
+
+  struct SyntheticScene {
+    const char* name;
+    u32 id;
+  };
+  constexpr std::array<SyntheticScene, 4> scenes = {{{"synthetic-a", 0x20001},
+                                                     {"synthetic-b", 0x20002},
+                                                     {"synthetic-c", 0x20003},
+                                                     {"synthetic-d", 0x20004}}};
+  bool every_scene_advanced = true;
+  for (size_t scene = 0; scene + 1 < scenes.size(); scene++) {
+    reset_play_request(play, 2, 1u << 0 | 1u << 1 | 1u << 4);
+    set_play_stream(play, 0, scenes[scene].name, scenes[scene].id);
+    set_play_stream(play, 1, scenes[scene + 1].name, scenes[scene + 1].id);
+    rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+
+    reset_play_request(play, 0);
+    set_play_stream(play, 0, scenes[scene].name, scenes[scene].id);
+    rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+    goal_jak2_sound_frame();
+    published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+    const auto before_replacement = sample_loader_stream(published_info, scenes[scene].id);
+
+    reset_play_request(play, 2, 1u << 0);
+    set_play_stream(play, 0, scenes[scene + 1].name, scenes[scene + 1].id);
+    if (scene + 2 < scenes.size()) {
+      set_play_stream(play, 1, scenes[scene + 2].name, scenes[scene + 2].id);
+    }
+    rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+    goal_jak2_sound_frame();
+    published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+    const auto after_replacement = sample_loader_stream(published_info, scenes[scene].id);
+    every_scene_advanced &= before_replacement.id_is_playing &&
+                            before_replacement.rpc_is_playing &&
+                            after_replacement.id_is_playing && after_replacement.rpc_is_playing &&
+                            before_replacement.position > 0 &&
+                            after_replacement.position > before_replacement.position;
+
+    reset_play_request(play, 1);
+    set_play_stream(play, 0, scenes[scene].name, scenes[scene].id);
+    rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+    goal_jak2_sound_frame();
+    published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+    every_scene_advanced &=
+        sample_loader_stream(published_info, scenes[scene].id).position == -1;
+  }
+  check(every_scene_advanced,
+        "every synthetic scene keeps its loader clock through queue handoff and then stops");
 
   std::printf("\n== exact-buffer no-reply sound-bank loads ==\n");
   reset_bank_command(send, bank_name("valid"));
