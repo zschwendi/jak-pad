@@ -2097,6 +2097,9 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &effects_bucket315_callback_executed,
         &*copied_gmerc_warp_bucket317_plan,
         &gmerc_warp_bucket317_callback_executed};
+    const bool execute_shadow_bucket195 =
+        metal_renderer::jak2_metal_bucket_table()[metal_renderer::kJak2ShadowBucket195PlanBucket]
+            .behavior == metal_renderer::Jak2MetalBucketBehavior::Shadow2;
     auto render_options = host->options;
     merge_animated_texture_slots(host);
     render_options.animated_texture_slots = host->animated_texture_slots.data();
@@ -2107,7 +2110,8 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.jak2_pris_eye_plan_count = copied_pris_eye_renderer_plans.size();
     render_options.jak2_common_pris_plan = &*copied_common_pris_plan;
     render_options.jak2_gmerc_warp_bucket317_plan = &*copied_gmerc_warp_bucket317_plan;
-    render_options.jak2_shadow_bucket195_plan = &*copied_shadow_bucket195_plan;
+    render_options.jak2_shadow_bucket195_plan =
+        execute_shadow_bucket195 ? &*copied_shadow_bucket195_plan : nullptr;
     const u64 warp_texture_upload_executions_before =
         host->metrics.warp_texture_upload_executions;
     const auto pris2_texture_upload_executions_before =
@@ -2208,6 +2212,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
     warp_execution.completed_executions++;
+    if (execute_shadow_bucket195) {
     const auto expected_shadow_disposition = copied_shadow_bucket195_plan->disposition;
     const bool shadow_ready = expected_shadow_disposition ==
                               metal_renderer::Jak2ShadowBucket195PlanDisposition::Ready;
@@ -2263,6 +2268,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
     shadow_execution.completed_executions++;
+    }
     if (!warp_texture_upload_callback_executed ||
         !counter_advanced_by(warp_texture_upload_executions_before,
                              host->metrics.warp_texture_upload_executions,
