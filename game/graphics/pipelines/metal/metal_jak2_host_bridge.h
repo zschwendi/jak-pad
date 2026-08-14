@@ -487,6 +487,10 @@ goal_jak2_metal_host* goal_jak2_metal_host_create(void);
 goal_jak2_metal_host* goal_jak2_metal_host_create_presenting(
     goal_jak2_metal_host_layer layer);
 
+/*! Rebind a running presenting host to a replacement app-owned layer after view recreation. */
+int goal_jak2_metal_host_rebind_presenting_layer(goal_jak2_metal_host* host,
+                                                 goal_jak2_metal_host_layer layer);
+
 /*! Set the minimum on-screen duration for future drawables. Zero disables presentation pacing. */
 int goal_jak2_metal_host_set_present_pacing(goal_jak2_metal_host* host, double seconds);
 

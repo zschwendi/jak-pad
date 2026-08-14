@@ -2676,6 +2676,19 @@ int main() {
           "error");
     check(!goal_jak2_metal_host_metrics_pass_frame_gate(&recovery_metrics, 0),
           "recovery does not weaken the cumulative no-error frame gate");
+
+    CAMetalLayer* rotated_layer = [CAMetalLayer layer];
+    rotated_layer.drawableSize = CGSizeMake(96, 64);
+    check(goal_jak2_metal_host_rebind_presenting_layer(recovery_host, rotated_layer),
+          "a presenting host accepts a replacement layer during rotation");
+    make_empty_chain();
+    recovery_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+    check(goal_jak2_metal_host_get_metrics(recovery_host, &recovery_metrics) &&
+              recovery_metrics.chains == 4 && recovery_metrics.completed_chains == 3 &&
+              recovery_metrics.failed_chains == 1 &&
+              recovery_metrics.command_buffers_committed == 3 &&
+              recovery_metrics.drawables_acquired == 3 && recovery_metrics.submissions == 3,
+          "the replacement layer resumes drawing without recreating runtime state");
     goal_jak2_metal_host_destroy(recovery_host);
   }
   check(metal_texture_live_count() == initial_texture_count,
