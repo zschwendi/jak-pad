@@ -27,6 +27,7 @@ constexpr u32 kDirectVif = 80u << 24;
 
 using Plan = metal_renderer::Jak2WarpTextureUploadPlan;
 using Variant = metal_renderer::Jak2WarpTextureUploadVariant;
+static_assert(metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes == 124);
 
 enum class AbsentForm {
   ZeroCnt,
@@ -169,6 +170,13 @@ void test_exact_present_and_absent_envelopes() {
             "source-memory reuse cannot change an owned warp-upload plan");
     }
   }
+
+  const auto one_group = parse(make_present_fixture(1));
+  check(one_group && one_group->variant == Variant::Ordinary &&
+            one_group->transfer_count == 6 && one_group->total_payload_bytes == 208 &&
+            one_group->upload_count == 1 && one_group->uploads[0].mode == -1 &&
+            one_group->uploads[0].page_header.size() == 124,
+        "the production one-group form is exactly six transfers and 208 payload bytes");
 
   const auto absent_cnt = parse(make_absent_fixture(AbsentForm::ZeroCnt));
   check(absent_cnt && absent_cnt->variant == Variant::Absent && absent_cnt->transfer_count == 1 &&

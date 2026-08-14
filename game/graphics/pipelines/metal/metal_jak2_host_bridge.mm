@@ -756,6 +756,18 @@ void record_gmerc_warp_bucket317_metrics(
   }
 }
 
+void prevalidate_ordinary_texture_upload_or_throw(
+    const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
+    const u8* live_ee_memory,
+    const char* label) {
+  if (ordinary.page_offset > EE_MAIN_MEM_SIZE - ordinary.page_header.size() ||
+      ordinary.mode != -1 ||
+      std::memcmp(live_ee_memory + ordinary.page_offset, ordinary.page_header.data(),
+                  ordinary.page_header.size()) != 0) {
+    throw std::runtime_error(std::string(label) + " changed after planning");
+  }
+}
+
 void execute_ordinary_texture_upload_or_throw(
     goal_jak2_metal_host* host,
     const metal_renderer::Jak2Bucket4OrdinaryUploadPlan& ordinary,
@@ -763,12 +775,7 @@ void execute_ordinary_texture_upload_or_throw(
     uint64_t* execution_count,
     const char* label,
     bool* mutation_started = nullptr) {
-  if (ordinary.page_offset > EE_MAIN_MEM_SIZE - ordinary.page_header.size() ||
-      ordinary.mode != -1 ||
-      std::memcmp(live_ee_memory + ordinary.page_offset, ordinary.page_header.data(),
-                  ordinary.page_header.size()) != 0) {
-    throw std::runtime_error(std::string(label) + " changed after planning");
-  }
+  prevalidate_ordinary_texture_upload_or_throw(ordinary, live_ee_memory, label);
   if (mutation_started) {
     *mutation_started = true;
   }
@@ -826,6 +833,7 @@ struct Jak2TextureUploadDispatch {
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* common_pris_plan = nullptr;
   const Jak2WaterTextureUploadPlans* water_plans = nullptr;
   const metal_renderer::Jak2CommonWaterTextureUploadPlan* common_water_plan = nullptr;
+  const metal_renderer::Jak2WarpTextureUploadPlan* warp_texture_upload_plan = nullptr;
   const metal_renderer::Jak2CommonTfragTextureUploadPlan* common_tfrag_plan = nullptr;
   const metal_renderer::Jak2SpriteTextureUploadPlan* sprite_plan = nullptr;
   const metal_renderer::Jak2MapTextureUploadPlan* map_plan = nullptr;
@@ -845,6 +853,7 @@ struct Jak2TextureUploadDispatch {
   bool* raw_image_callback_executed = nullptr;
   bool* common_pris_callback_executed = nullptr;
   bool* common_water_callback_executed = nullptr;
+  bool* warp_texture_upload_callback_executed = nullptr;
   bool* pris2_bucket228_callback_executed = nullptr;
   bool* sky_post_callback_executed = nullptr;
   std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
@@ -853,6 +862,41 @@ struct Jak2TextureUploadDispatch {
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
+  if (bucket_id == metal_renderer::kJak2WarpTextureUploadBucket) {
+    if (!dispatch->warp_texture_upload_plan ||
+        !dispatch->warp_texture_upload_callback_executed) {
+      throw std::runtime_error("Jak 2 warp texture-upload dispatch is incomplete");
+    }
+    if (*dispatch->warp_texture_upload_callback_executed) {
+      throw std::runtime_error("Jak 2 warp texture-upload bucket callback repeated");
+    }
+    *dispatch->warp_texture_upload_callback_executed = true;
+    const auto& plan = *dispatch->warp_texture_upload_plan;
+    if (plan.bucket_id != bucket_id) {
+      throw std::runtime_error("Jak 2 warp texture-upload dispatch order is inconsistent");
+    }
+    if (plan.variant == metal_renderer::Jak2WarpTextureUploadVariant::Absent) {
+      return;
+    }
+    if (plan.variant != metal_renderer::Jak2WarpTextureUploadVariant::Ordinary ||
+        plan.upload_count == 0 ||
+        plan.upload_count > metal_renderer::kJak2WarpTextureUploadMaximumGroups) {
+      throw std::runtime_error("Jak 2 warp texture-upload plan is inconsistent");
+    }
+    for (std::size_t i = 0; i < plan.upload_count; ++i) {
+      const std::string label = fmt::format("Jak 2 warp texture upload {}", i);
+      prevalidate_ordinary_texture_upload_or_throw(plan.uploads[i], dispatch->live_ee_memory,
+                                                   label.c_str());
+    }
+    for (std::size_t i = 0; i < plan.upload_count; ++i) {
+      const std::string label = fmt::format("Jak 2 warp texture upload {}", i);
+      execute_ordinary_texture_upload_or_throw(
+          dispatch->host, plan.uploads[i], dispatch->live_ee_memory,
+          &dispatch->host->metrics.warp_texture_upload_executions, label.c_str(),
+          dispatch->host_texture_mutated);
+    }
+    return;
+  }
   if (bucket_id == metal_renderer::kJak2CommonWaterTextureUploadBucket) {
     if (!dispatch->common_water_plan || !dispatch->common_water_callback_executed) {
       throw std::runtime_error("Jak 2 common-water texture dispatch is incomplete");
@@ -1273,12 +1317,12 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2EffectsBucket);
     record_effects_bucket315_metrics(&host->metrics.effects_bucket315, effects_bucket315_capture);
-    const auto warp_texture_upload_plan = metal_renderer::plan_jak2_warp_texture_upload(
+    const auto live_warp_texture_upload_plan = metal_renderer::plan_jak2_warp_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2WarpTextureUploadBucket, static_cast<const u8*>(ee_base),
         EE_MAIN_MEM_SIZE);
     record_warp_texture_upload_metrics(&host->metrics.warp_texture_upload,
-                                       warp_texture_upload_plan);
+                                       live_warp_texture_upload_plan);
     const auto common_water_capture = metal_renderer::capture_jak2_tfrag_texture_upload(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2CommonWaterTextureUploadBucket);
@@ -1312,6 +1356,10 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           metal_renderer::jak2_metal_chain_validation_error_message(live_chain_validation.error) +
           " (" + dma_chain_validation_error_message(live_chain_validation.dma.error) + ")";
       record_failure(host, error.c_str());
+      return;
+    }
+    if (!live_warp_texture_upload_plan) {
+      record_failure(host, "Jak 2 warp texture-upload plan rejected bucket 316 live DMA");
       return;
     }
     const auto raw_image_plan = metal_renderer::plan_jak2_raw_image_upload(
@@ -1525,6 +1573,19 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                   copied_chain_validation.error) +
               " (" + dma_chain_validation_error_message(copied_chain_validation.dma.error) + ")",
           host_texture_mutated);
+      return;
+    }
+
+    const auto copied_warp_texture_upload_plan =
+        metal_renderer::plan_jak2_warp_texture_upload(
+            copied.data.data(), copied.data.size(), copied.start_offset,
+            metal_renderer::kJak2WarpTextureUploadBucket,
+            static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+    if (!copied_warp_texture_upload_plan ||
+        !metal_renderer::jak2_warp_texture_upload_plans_match(
+            *live_warp_texture_upload_plan, *copied_warp_texture_upload_plan)) {
+      record_send_chain_failure(
+          host, "Jak 2 copied warp texture-upload plan did not match live bucket 316", false);
       return;
     }
 
@@ -1752,6 +1813,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     bool raw_image_callback_executed = false;
     bool common_pris_callback_executed = false;
     bool common_water_callback_executed = false;
+    bool warp_texture_upload_callback_executed = false;
     bool pris2_bucket228_callback_executed = false;
     bool sky_post_callback_executed = false;
     std::array<bool, metal_renderer::kJak2PrisTextureUploadBuckets.size()>
@@ -1770,6 +1832,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &*copied_common_pris_plan,
         &water_texture_plans,
         &*copied_common_water_plan,
+        &*copied_warp_texture_upload_plan,
         &*common_tfrag_texture_plan,
         &*sprite_texture_plan,
         &*map_texture_plan,
@@ -1785,6 +1848,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &raw_image_callback_executed,
         &common_pris_callback_executed,
         &common_water_callback_executed,
+        &warp_texture_upload_callback_executed,
         &pris2_bucket228_callback_executed,
         &sky_post_callback_executed,
         &pris_eye_callbacks_executed};
@@ -1797,11 +1861,22 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.jak2_pris_eye_plans = copied_pris_eye_renderer_plans.data();
     render_options.jak2_pris_eye_plan_count = copied_pris_eye_renderer_plans.size();
     render_options.jak2_common_pris_plan = &*copied_common_pris_plan;
+    const u64 warp_texture_upload_executions_before =
+        host->metrics.warp_texture_upload_executions;
     const auto renderer_before = host->renderer.chain_stats();
     const bool acquired = host->renderer.render_chain_frame(
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
     const auto renderer_after = host->renderer.chain_stats();
     copy_renderer_metrics(host);
+    if (!warp_texture_upload_callback_executed ||
+        !counter_advanced_by(warp_texture_upload_executions_before,
+                             host->metrics.warp_texture_upload_executions,
+                             copied_warp_texture_upload_plan->upload_count)) {
+      record_send_chain_failure(
+          host, "Jak 2 warp texture-upload callback violated its exact execution gate",
+          host_texture_mutated);
+      return;
+    }
     std::size_t expected_pris_eye_chunks = 0;
     std::size_t expected_pris_eye_present_dispatches = 0;
     for (const auto& plan : copied_pris_eye_renderer_plans) {

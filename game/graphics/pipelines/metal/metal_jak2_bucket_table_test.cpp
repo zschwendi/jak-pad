@@ -90,11 +90,11 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 30, "30 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 29, "29 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
-  check(host_texture_upload == 30,
-        "thirty exact texture/setup buckets are handled synchronously by the host");
+  check(host_texture_upload == 31,
+        "31 exact texture/setup buckets are handled synchronously by the host");
   check(host_texture_upload_direct == 2,
         "two exact texture/setup buckets also retain their Direct payloads");
   check(visibility == 1, "one non-draw visibility bucket owns shared frame data");
@@ -354,6 +354,9 @@ int main() {
   check(has_behavior(jak2::BucketId::TEX_ALL_SPRITE, Behavior::HostTextureUpload) &&
             has_behavior(jak2::BucketId::PARTICLES, Behavior::Sprite),
         "the title sprite texture upload and Sprite3 draw buckets are explicit");
+  check(has_behavior(jak2::BucketId::TEX_ALL_WARP, Behavior::HostTextureUpload) &&
+            has_behavior(jak2::BucketId::GMERC_WARP, Behavior::DeferredSkip),
+        "the typed warp upload executes while its snapshot-dependent GMerc draw stays deferred");
   check(has_behavior(jak2::BucketId::DEBUG_NO_ZBUF1, Behavior::HostTextureUploadDirect) &&
             has_behavior(jak2::BucketId::TEX_ALL_MAP, Behavior::HostTextureUploadDirect),
         "DEBUG_NO_ZBUF1 and TEX_ALL_MAP preserve their reference upload-plus-Direct behavior");

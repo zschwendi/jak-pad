@@ -38,8 +38,8 @@
 
 namespace {
 
-static_assert(offsetof(goal_jak2_metal_host_metrics, last_blit_display_used_placeholder) +
-                  sizeof(uint32_t) ==
+static_assert(offsetof(goal_jak2_metal_host_metrics, warp_texture_upload_executions) +
+                  sizeof(uint64_t) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -451,13 +451,14 @@ void make_sky_post_texture_upload_chain(s64 mode = -1) {
   put_tag(kSkyPostDirectOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
-void make_warp_texture_upload_chain(u32 upload_count) {
+void write_empty_texture_page(u32 offset, u32 id);
+
+void make_warp_texture_upload_chain(u32 upload_count, s64 mode = -1) {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
   constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
   constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
   constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
-  constexpr s64 kMode = -1;
   const u32 bucket_offset = kChainOffset + kWarpTextureUploadBucket * 16;
   put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kWarpTextureUploadGroupOffset);
   for (u32 i = 0; i < upload_count; ++i) {
@@ -470,22 +471,23 @@ void make_warp_texture_upload_chain(u32 upload_count) {
     const u64 page_offset = kTexturePageOffset + i * kTexturePageStride;
     put_tag(descriptor, DmaTag::Kind::CNT, 1, 0, kPcPort, 3);
     std::memcpy(ee + descriptor + 16, &page_offset, sizeof(page_offset));
-    std::memcpy(ee + descriptor + 24, &kMode, sizeof(kMode));
+    std::memcpy(ee + descriptor + 24, &mode, sizeof(mode));
     put_tag(group + 80, DmaTag::Kind::NEXT, 0, next);
-    std::memset(ee + page_offset, 0, metal_renderer::kJak2Bucket4OrdinaryPageHeaderBytes);
+    write_empty_texture_page(static_cast<u32>(page_offset), kTexturePageId + i);
   }
   put_tag(kWarpTextureUploadTailOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   std::memset(ee + kWarpTextureUploadTailOffset + 16, 0x9a, 160);
   put_tag(kWarpTextureUploadTailOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
 }
 
-void make_warp_texture_animator_chain() {
-  make_empty_chain();
+void make_warp_texture_mixed_chain() {
+  make_warp_texture_upload_chain(1);
   constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
-  const u32 bucket_offset = kChainOffset + kWarpTextureUploadBucket * 16;
-  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kWarpTextureUploadAnimatorOffset);
+  put_tag(kWarpTextureUploadGroupOffset + 80, DmaTag::Kind::NEXT, 0,
+          kWarpTextureUploadAnimatorOffset);
   put_tag(kWarpTextureUploadAnimatorOffset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
-  put_tag(kWarpTextureUploadAnimatorOffset + 16, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+  put_tag(kWarpTextureUploadAnimatorOffset + 16, DmaTag::Kind::NEXT, 0,
+          kWarpTextureUploadTailOffset);
 }
 
 void make_gmerc_warp_chain(u32 fragments, bool short_setup = false) {
@@ -1737,8 +1739,8 @@ int main() {
   check(warp_texture_host &&
             goal_jak2_metal_host_copy_gfx_host(warp_texture_host, &warp_texture_callbacks) &&
             metal_renderer::jak2_metal_bucket_table()[kWarpTextureUploadBucket].behavior ==
-                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
-        "created a host while bucket 316 remains deferred");
+                metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload,
+        "created a host for typed bucket-316 ordinary upload execution");
   goal_jak2_metal_host_metrics warp_texture_metrics = {};
   make_empty_chain();
   warp_texture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
@@ -1751,38 +1753,54 @@ int main() {
             warp_texture_metrics.warp_texture_upload.unclassified == 0 &&
             warp_texture_metrics.warp_texture_upload.last_transfer_count == 1 &&
             warp_texture_metrics.warp_texture_upload.last_upload_count == 0 &&
-            warp_texture_metrics.warp_texture_upload.last_payload_bytes == 0,
-        "bucket 316 observes its canonical empty form without execution");
+            warp_texture_metrics.warp_texture_upload.last_payload_bytes == 0 &&
+            warp_texture_metrics.warp_texture_upload_executions == 0,
+        "bucket 316 dispatches its canonical empty plan without execution");
 
   make_warp_texture_upload_chain(1);
   warp_texture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
-  make_warp_texture_upload_chain(7);
-  warp_texture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(warp_texture_host, &warp_texture_metrics) &&
-            warp_texture_metrics.chains == 3 && warp_texture_metrics.completed_chains == 3 &&
+            warp_texture_metrics.chains == 2 && warp_texture_metrics.completed_chains == 2 &&
             warp_texture_metrics.failed_chains == 0 &&
-            warp_texture_metrics.warp_texture_upload.observations == 3 &&
+            warp_texture_metrics.warp_texture_upload.observations == 2 &&
             warp_texture_metrics.warp_texture_upload.absent == 1 &&
-            warp_texture_metrics.warp_texture_upload.ordinary == 2 &&
+            warp_texture_metrics.warp_texture_upload.ordinary == 1 &&
             warp_texture_metrics.warp_texture_upload.unclassified == 0 &&
-            warp_texture_metrics.warp_texture_upload.last_upload_count == 7 &&
-            warp_texture_metrics.warp_texture_upload.last_transfer_count == 24 &&
-            warp_texture_metrics.warp_texture_upload.last_payload_bytes == 496 &&
+            warp_texture_metrics.warp_texture_upload.last_upload_count == 1 &&
+            warp_texture_metrics.warp_texture_upload.last_transfer_count == 6 &&
+            warp_texture_metrics.warp_texture_upload.last_payload_bytes == 208 &&
             warp_texture_metrics.warp_texture_upload.last_semantic_fingerprint != 0 &&
+            warp_texture_metrics.warp_texture_upload_executions == 1 &&
             warp_texture_metrics.texture_uploads == 0 &&
             metal_texture_live_count() == warp_texture_initial_live_count,
-        "bucket 316 passively observes one and seven groups without texture mutation");
+        "bucket 316 executes its exact one-group six-transfer plan once");
+  const uint32_t warp_texture_valid_copied_bytes = warp_texture_metrics.last_copied_bytes;
 
-  make_warp_texture_animator_chain();
+  make_warp_texture_upload_chain(1, -2);
   warp_texture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(warp_texture_host, &warp_texture_metrics) &&
-            warp_texture_metrics.chains == 4 && warp_texture_metrics.completed_chains == 4 &&
-            warp_texture_metrics.failed_chains == 0 &&
-            warp_texture_metrics.warp_texture_upload.observations == 4 &&
+            warp_texture_metrics.chains == 3 && warp_texture_metrics.completed_chains == 2 &&
+            warp_texture_metrics.failed_chains == 1 &&
+            warp_texture_metrics.warp_texture_upload.observations == 3 &&
             warp_texture_metrics.warp_texture_upload.unclassified == 1 &&
+            warp_texture_metrics.warp_texture_upload_executions == 1 &&
+            warp_texture_metrics.last_copied_bytes == warp_texture_valid_copied_bytes &&
             warp_texture_metrics.texture_uploads == 0 &&
             metal_texture_live_count() == warp_texture_initial_live_count,
-        "an unsupported bucket-316 animator stays deferred and does not fail the chain");
+        "a malformed bucket-316 descriptor rejects before copying or a second upload");
+
+  make_warp_texture_mixed_chain();
+  warp_texture_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(warp_texture_host, &warp_texture_metrics) &&
+            warp_texture_metrics.chains == 4 && warp_texture_metrics.completed_chains == 2 &&
+            warp_texture_metrics.failed_chains == 2 &&
+            warp_texture_metrics.warp_texture_upload.observations == 4 &&
+            warp_texture_metrics.warp_texture_upload.unclassified == 2 &&
+            warp_texture_metrics.warp_texture_upload_executions == 1 &&
+            warp_texture_metrics.last_copied_bytes == warp_texture_valid_copied_bytes &&
+            warp_texture_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == warp_texture_initial_live_count,
+        "a mixed bucket-316 animator form fails closed before texture mutation");
   goal_jak2_metal_host_destroy(warp_texture_host);
 
   goal_jak2_metal_host* gmerc_warp_host = goal_jak2_metal_host_create();
@@ -1791,10 +1809,10 @@ int main() {
   check(gmerc_warp_host &&
             goal_jak2_metal_host_copy_gfx_host(gmerc_warp_host, &gmerc_warp_callbacks) &&
             metal_renderer::jak2_metal_bucket_table()[kWarpTextureUploadBucket].behavior ==
-                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
+                metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload &&
             metal_renderer::jak2_metal_bucket_table()[kGmercWarpBucket].behavior ==
                 metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
-        "created a host while buckets 316 and 317 remain DeferredSkip");
+        "created a host with bucket 316 routed and bucket 317 still deferred");
   goal_jak2_metal_host_metrics gmerc_warp_metrics = {};
   make_empty_chain();
   gmerc_warp_callbacks.send_chain(g_ee_main_mem, kChainOffset);

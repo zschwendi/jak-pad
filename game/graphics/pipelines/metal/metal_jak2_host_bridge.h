@@ -368,7 +368,7 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_effects_bucket315_metrics effects_bucket315;
   // Append-only execution telemetry for exact typed bucket 309 sky-post uploads.
   uint64_t sky_post_texture_upload_executions;
-  // Append-only passive telemetry. Bucket 316 remains deferred and has no execution counter.
+  // Append-only capture telemetry for exact bucket 316 ordinary upload plans.
   goal_jak2_warp_texture_upload_metrics warp_texture_upload;
   // Append-only capture and execution telemetry for exact common-water bucket 306.
   goal_jak2_tfrag_texture_upload_metrics common_water_texture_upload;
@@ -385,6 +385,8 @@ typedef struct goal_jak2_metal_host_metrics {
   uint32_t last_blit_display_texture_tbp;
   uint32_t last_blit_display_texture_lookup_hit;
   uint32_t last_blit_display_used_placeholder;
+  // Append-only execution count for source-ordered bucket 316 ordinary uploads.
+  uint64_t warp_texture_upload_executions;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {
