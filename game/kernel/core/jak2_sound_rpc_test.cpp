@@ -1179,7 +1179,8 @@ int main() {
   reset_play_request(play, 2, 1u << 0 | 1u << 5);
   set_play_stream(play, 0, "art-no-audio", 0x10001);
   set_play_stream(play, 1, "audioone", 0x10002);
-  set_play_stream(play, 2, "ignored-zero-id", 0);
+  set_play_stream(play, 2, "queued-no-audio", 0x10007);
+  set_play_stream(play, 3, "ignored-zero-id", 0);
   auto* play_commands = play.data.cast<RPC_Play_Cmd_Jak2>().c();
   play_commands[1] = play_commands[0];
   const auto queued_batch = snapshot(play);
@@ -1192,8 +1193,11 @@ int main() {
   auto published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
   int no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
   int audio_slot = find_stream(published_info, "audioone", 0x10002);
+  int queued_no_audio_slot = find_stream(published_info, "queued-no-audio", 0x10007);
   check(no_audio_slot >= 0, "queue publishes the exact no-audio stream name and id");
   check(audio_slot >= 0, "queue publishes the exact bounded-VAG stream name and id");
+  check(queued_no_audio_slot >= 0,
+        "queue publishes a second no-audio stream without implicitly playing it");
   check(find_stream(published_info, "ignored-zero-id", 0) < 0,
         "queue ignores a named entry whose source ID is zero");
   check_u32(no_audio_slot >= 0 ? published_info.stream_status[no_audio_slot] : UINT32_MAX,
@@ -1204,10 +1208,20 @@ int main() {
             "a nonzero-sector VAG reports source-equivalent buffered bits 1 and 5");
   check_u32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : UINT32_MAX, 0,
             "the output-free buffered stream keeps an explicit silent position");
+  check_u32(queued_no_audio_slot >= 0
+                ? published_info.stream_status[queued_no_audio_slot]
+                : UINT32_MAX,
+            kStreamQueuedWithoutAudio,
+            "an unplayed no-audio stream retains only its queued status");
+  check_u32(queued_no_audio_slot >= 0
+                ? published_info.stream_position[queued_no_audio_slot]
+                : UINT32_MAX,
+            0, "an unplayed no-audio stream keeps a zero synthetic clock");
   check_guards(sound_info, "stream-state publication remains inside the 0x250-byte info block");
 
   reset_play_request(play, 0);
   set_play_stream(play, 0, "audioone", 0x10002);
+  set_play_stream(play, 1, "art-no-audio", 0x10001);
   const auto play_request = snapshot(play);
   rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
   check(snapshot(play) == play_request, "play leaves the EE request untouched");
@@ -1219,6 +1233,112 @@ int main() {
             "play adds bit 4 without discarding buffered or GUI queue state");
   check_u32(audio_slot >= 0 ? published_info.stream_position[audio_slot] : UINT32_MAX, 0,
             "the stream clock remains zero before the mixer consumes ADPCM");
+  no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
+  check_u32(no_audio_slot >= 0 ? published_info.stream_status[no_audio_slot] : UINT32_MAX,
+            kStreamQueuedWithoutAudio | kStreamPlaying | kStreamArtLoad,
+            "play retains the source no-audio status while marking the art stream active");
+  const s32 no_audio_position =
+      no_audio_slot >= 0 ? published_info.stream_position[no_audio_slot] : -1;
+  check_s32(no_audio_position, 0x400 / 60,
+            "a playing no-audio stream advances by the source synthetic clock");
+
+  auto stream_control = guarded_buffer(kCommandSize, "jak2-stream-player-control");
+  auto* stream_control_command =
+      reset_player_command(stream_control, 0, jak2::Jak2SoundCommand::pause_sound);
+  stream_control_command->sound_id.sound_id = 0x10001;
+  rpc_call(0, 0, 1, stream_control.data.offset, stream_control.size, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
+  check_s32(no_audio_slot >= 0 ? published_info.stream_position[no_audio_slot] : -1,
+            no_audio_position, "a paused no-audio stream retains its exact synthetic clock");
+
+  reset_play_request(play, 0);
+  set_play_stream(play, 0, "art-no-audio", 0x10001);
+  rpc_call(5, 0, 1, play.data.offset, kPlayRequestSize, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
+  check_s32(no_audio_slot >= 0 ? published_info.stream_position[no_audio_slot] : -1,
+            no_audio_position,
+            "duplicate PLAY does not resume a source-paused no-audio stream");
+
+  stream_control_command =
+      reset_player_command(stream_control, 0, jak2::Jak2SoundCommand::continue_sound);
+  stream_control_command->sound_id.sound_id = 0x10001;
+  rpc_call(0, 0, 1, stream_control.data.offset, stream_control.size, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
+  check_s32(no_audio_slot >= 0 ? published_info.stream_position[no_audio_slot] : -1,
+            no_audio_position + 0x400 / 60,
+            "CONTINUE resumes the source synthetic no-audio clock");
+
+  const s32 no_audio_position_after_continue =
+      no_audio_slot >= 0 ? published_info.stream_position[no_audio_slot] : -1;
+  stream_control_command =
+      reset_player_command(stream_control, 0, jak2::Jak2SoundCommand::pause_group);
+  stream_control_command->group.group = 4;
+  rpc_call(0, 0, 1, stream_control.data.offset, stream_control.size, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
+  check_s32(no_audio_slot >= 0 ? published_info.stream_position[no_audio_slot] : -1,
+            no_audio_position_after_continue,
+            "dialog-group pause retains the no-audio synthetic clock");
+
+  stream_control_command =
+      reset_player_command(stream_control, 0, jak2::Jak2SoundCommand::continue_group);
+  stream_control_command->group.group = 4;
+  rpc_call(0, 0, 1, stream_control.data.offset, stream_control.size, 0, 0, 0);
+  goal_jak2_sound_frame();
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
+  check_s32(no_audio_slot >= 0 ? published_info.stream_position[no_audio_slot] : -1,
+            no_audio_position_after_continue + 0x400 / 60,
+            "dialog-group CONTINUE resumes the no-audio synthetic clock");
+  queued_no_audio_slot = find_stream(published_info, "queued-no-audio", 0x10007);
+  check_u32(queued_no_audio_slot >= 0
+                ? published_info.stream_status[queued_no_audio_slot]
+                : UINT32_MAX,
+            kStreamQueuedWithoutAudio,
+            "dialog-group CONTINUE does not start a queued no-audio stream");
+  check_u32(queued_no_audio_slot >= 0
+                ? published_info.stream_position[queued_no_audio_slot]
+                : UINT32_MAX,
+            0, "dialog-group CONTINUE leaves an unplayed stream clock at zero");
+
+  goal_jak2_sound_stream_state stream_state{};
+  goal_jak2_sound_stream_state_get(&stream_state);
+  const auto no_audio_state = std::find_if(
+      std::begin(stream_state.slots), std::end(stream_state.slots),
+      [](const auto& slot) { return slot.active && slot.id == 0x10001; });
+  check(no_audio_state != std::end(stream_state.slots),
+        "stream telemetry exposes an active no-audio art stream");
+  if (no_audio_state != std::end(stream_state.slots)) {
+    check_s32(no_audio_state->published_position,
+              no_audio_position_after_continue + 0x400 / 60,
+              "stream telemetry publishes the synthetic no-audio clock");
+    check_u32(no_audio_state->published_status,
+              kStreamQueuedWithoutAudio | kStreamPlaying | kStreamArtLoad,
+              "stream telemetry publishes the active no-audio status");
+    check(no_audio_state->primary_voice == -1 && no_audio_state->secondary_voice == -1 &&
+              no_audio_state->playing && !no_audio_state->paused,
+          "no-audio telemetry distinguishes its synthetic clock from raw voices");
+  }
+  const auto queued_no_audio_state = std::find_if(
+      std::begin(stream_state.slots), std::end(stream_state.slots),
+      [](const auto& slot) { return slot.active && slot.id == 0x10007; });
+  check(queued_no_audio_state != std::end(stream_state.slots),
+        "stream telemetry exposes the queued no-audio stream");
+  if (queued_no_audio_state != std::end(stream_state.slots)) {
+    check_u32(queued_no_audio_state->published_status, kStreamQueuedWithoutAudio,
+              "stream telemetry preserves the queued-only no-audio status");
+    check_s32(queued_no_audio_state->published_position, 0,
+              "stream telemetry preserves the queued-only zero clock");
+    check(!queued_no_audio_state->playing && queued_no_audio_state->paused,
+          "stream telemetry distinguishes queued no-audio from active playback");
+  }
 
   goal_jak2_sound_stream_state pulls_before{};
   goal_jak2_sound_stream_state_get(&pulls_before);
@@ -1255,7 +1375,6 @@ int main() {
   check(long_stream_clock_advanced,
         "a long VAG retains playing status and advances across repeated SPU half-buffer wraps");
 
-  goal_jak2_sound_stream_state stream_state{};
   goal_jak2_sound_stream_state_get(&stream_state);
   check(stream_state.pull_calls == pulls_before.pull_calls + 9 &&
             stream_state.pulled_frames ==
@@ -1284,8 +1403,7 @@ int main() {
           "stream telemetry distinguishes healthy wraps, transitions, and clock advances");
   }
 
-  auto stream_control = guarded_buffer(kCommandSize, "jak2-stream-player-control");
-  auto* stream_control_command =
+  stream_control_command =
       reset_player_command(stream_control, 0, jak2::Jak2SoundCommand::pause_sound);
   stream_control_command->sound_id.sound_id = 0x10002;
   rpc_call(0, 0, 1, stream_control.data.offset, stream_control.size, 0, 0, 0);
@@ -1330,8 +1448,8 @@ int main() {
         "stop removes the exact matching stream from published state");
   no_audio_slot = find_stream(published_info, "art-no-audio", 0x10001);
   check_u32(no_audio_slot >= 0 ? published_info.stream_status[no_audio_slot] : UINT32_MAX,
-            kStreamQueuedWithoutAudio | kStreamArtLoad,
-            "stop preserves unrelated queued stream state");
+            kStreamQueuedWithoutAudio | kStreamPlaying | kStreamArtLoad,
+            "stop preserves the unrelated active no-audio stream state");
 
   reset_play_request(play, 2, 1u << 0 | 1u << 1);
   set_play_stream(play, 0, "stereot", 0x10005);
@@ -1431,10 +1549,11 @@ int main() {
   }
   check(cleared_streams, "an empty queue removes every retained stream slot");
   goal_jak2_sound_rpc_stats_get(&stats);
-  check_u32(stats.stream_batches, 8, "only valid PLAY batches are counted");
-  check_u32(stats.stream_commands, 9, "exact 0x100-multiple command counts are retained");
+  check_u32(stats.stream_batches, 9, "only valid PLAY batches are counted");
+  check_u32(stats.stream_commands, 10, "exact 0x100-multiple command counts are retained");
   check_u32(stats.stream_queue_requests, 5, "valid queue commands are counted exactly");
-  check_u32(stats.stream_play_requests, 2, "valid mono and stereo play transitions are counted");
+  check_u32(stats.stream_play_requests, 3,
+            "valid mono, duplicate, and stereo play requests are counted");
   check_u32(stats.stream_stop_requests, 2, "valid mono and stereo stops are counted exactly");
   check_u32(stats.stream_failures, 1, "the out-of-range VAG sector fails closed once");
 

@@ -212,6 +212,7 @@ struct StreamState {
   s16 fo_max = 30;
   s8 fo_curve = 1;
   bool positioned = false;
+  bool paused = true;
 };
 
 struct FalloffOverride {
@@ -1055,13 +1056,18 @@ u32 vag_voice_reg(s32 voice, u32 reg) {
   return reg | SD_VOICE(0, voice);
 }
 
-s32 vag_pitch(const VagPlayback& playback) {
-  s32 pitch = static_cast<s32>((u64(playback.sample_rate) << 12) / 48000);
-  if (playback.pitch_mod > 0) {
-    pitch = pitch * (playback.pitch_mod + 0x5f4) / 0x5f4;
-  } else if (playback.pitch_mod < 0 && playback.pitch_mod > -0x5f4) {
-    pitch = 0x5f4 * pitch / (0x5f4 - playback.pitch_mod);
+s32 calculate_vag_pitch(s32 pitch, s16 pitch_mod) {
+  if (pitch_mod > 0) {
+    pitch = pitch * (pitch_mod + 0x5f4) / 0x5f4;
+  } else if (pitch_mod < 0) {
+    pitch = 0x5f4 * pitch / (0x5f4 - pitch_mod);
   }
+  return pitch;
+}
+
+s32 vag_pitch(const VagPlayback& playback) {
+  const s32 pitch = calculate_vag_pitch(
+      static_cast<s32>((u64(playback.sample_rate) << 12) / 48000), playback.pitch_mod);
   return std::clamp(pitch, 0, 0x3fff);
 }
 
@@ -1576,9 +1582,10 @@ void apply_play_command(const RPC_Play_Cmd_Jak2& command) {
     const auto stream = std::find_if(g_streams.begin(), g_streams.end(), [&](const auto& state) {
       return same_stream(state, name, static_cast<s32>(command.id[i]));
     });
-    if (stream != g_streams.end()) {
+    if (stream != g_streams.end() && !(stream->status & kStreamPlaying)) {
       stream->status |= kStreamPlaying;
       stream->status &= ~kStreamStopping;
+      stream->paused = false;
       play_vag(stream->name, stream->id);
     }
   }
@@ -1835,6 +1842,7 @@ void apply_player_command(const jak2::SoundRpcCommand& command) {
       if (Sound* sound = LookupSound(command.sound_id.sound_id)) {
         snd_PauseSound(sound->sound_handle);
       } else if (StreamState* stream = find_stream_id(command.sound_id.sound_id)) {
+        stream->paused = true;
         pause_vag(stream->id, true);
       }
       break;
@@ -1850,7 +1858,7 @@ void apply_player_command(const jak2::SoundRpcCommand& command) {
       if (Sound* sound = LookupSound(command.sound_id.sound_id)) {
         snd_ContinueSound(sound->sound_handle);
       } else if (StreamState* stream = find_stream_id(command.sound_id.sound_id)) {
-        stream->status |= kStreamPlaying;
+        stream->paused = false;
         pause_vag(stream->id, false);
       }
       break;
@@ -1887,7 +1895,12 @@ void apply_player_command(const jak2::SoundRpcCommand& command) {
         gMusicPause = 1;
       }
       if (command.group.group & 4) {
-        pause_vag(0, true);
+        for (auto& stream : g_streams) {
+          if (stream.id && (stream.status & kStreamPlaying)) {
+            stream.paused = true;
+            pause_vag(stream.id, true);
+          }
+        }
       }
       break;
     case jak2::Jak2SoundCommand::stop_group:
@@ -1904,11 +1917,11 @@ void apply_player_command(const jak2::SoundRpcCommand& command) {
       }
       if (command.group.group & 4) {
         for (auto& stream : g_streams) {
-          if (stream.id) {
-            stream.status |= kStreamPlaying;
+          if (stream.id && (stream.status & kStreamPlaying)) {
+            stream.paused = false;
+            pause_vag(stream.id, false);
           }
         }
-        pause_vag(0, false);
       }
       break;
     case jak2::Jak2SoundCommand::set_falloff_curve:
@@ -2605,6 +2618,13 @@ void goal_jak2_sound_frame(void) {
     }
   }
   set_music_volume();
+
+  for (auto& stream : g_streams) {
+    // Upstream advances bit-6 art-only streams so spooled animation still has a movie clock.
+    if ((stream.status & kStreamQueuedWithoutAudio) && !stream.paused) {
+      stream.position += calculate_vag_pitch(0x400, stream.pitch_mod) / gFPS;
+    }
+  }
   frame_vag_playbacks();
 
   for (auto& stream : g_streams) {
@@ -2665,40 +2685,41 @@ void goal_jak2_sound_stream_state_get(goal_jak2_sound_stream_state* out) {
   *out = {};
   out->pull_calls = g_audio_pull_calls.load(std::memory_order_relaxed);
   out->pulled_frames = g_audio_pulled_frames.load(std::memory_order_relaxed);
-  for (size_t i = 0; i < g_vag_playbacks.size(); i++) {
-    const VagPlayback& playback = g_vag_playbacks[i];
+  for (size_t i = 0; i < g_streams.size(); i++) {
+    const StreamState& stream = g_streams[i];
     goal_jak2_sound_stream_slot_state& state = out->slots[i];
-    memcpy(state.name, playback.name.data(), playback.name.size());
-    state.id = playback.id;
-    state.primary_voice = playback.primary_voice;
-    state.secondary_voice = playback.secondary_voice;
-    state.ring_base = playback.primary_voice >= 0 ? kVagSram[playback.primary_voice] : 0;
-    state.sampled_nax = playback.sampled_nax;
-    state.last_nax = playback.last_nax;
-    state.total_bytes = playback.total_bytes;
-    state.bytes_read = playback.bytes_read;
-    state.sample_rate = playback.sample_rate;
-    state.chunks_loaded = playback.chunks_loaded;
-    state.played_bytes = playback.played_bytes;
-    state.clock_samples = playback.clock_samples;
-    state.invalid_nax_samples = playback.invalid_nax_samples;
-    state.ring_wraps = playback.ring_wraps;
-    state.position_advances = playback.position_advances;
-    state.position_stalls = playback.position_stalls;
-    state.half_transitions = playback.half_transitions;
-    state.active = playback.id != 0;
-    state.playing = playback.playing;
-    state.paused = playback.paused;
-    state.finished = playback.finished;
-    state.current_half = playback.current_half;
+    memcpy(state.name, stream.name.data(), stream.name.size());
+    state.id = stream.id;
+    state.published_position = stream.position;
+    state.published_status = stream.status;
+    state.active = stream.id != 0;
+    state.playing = (stream.status & kStreamPlaying) != 0;
+    state.paused = stream.paused;
+    state.primary_voice = -1;
+    state.secondary_voice = -1;
 
-    const auto stream = std::find_if(g_streams.begin(), g_streams.end(), [&](const auto& entry) {
-      return entry.id == playback.id && entry.name == playback.name;
-    });
-    if (stream != g_streams.end()) {
-      state.published_position = stream->position;
-      state.published_status = stream->status;
+    const VagPlayback* playback = find_vag_playback(stream.name, stream.id);
+    if (!playback) {
+      continue;
     }
+    state.primary_voice = playback->primary_voice;
+    state.secondary_voice = playback->secondary_voice;
+    state.ring_base = playback->primary_voice >= 0 ? kVagSram[playback->primary_voice] : 0;
+    state.sampled_nax = playback->sampled_nax;
+    state.last_nax = playback->last_nax;
+    state.total_bytes = playback->total_bytes;
+    state.bytes_read = playback->bytes_read;
+    state.sample_rate = playback->sample_rate;
+    state.chunks_loaded = playback->chunks_loaded;
+    state.played_bytes = playback->played_bytes;
+    state.clock_samples = playback->clock_samples;
+    state.invalid_nax_samples = playback->invalid_nax_samples;
+    state.ring_wraps = playback->ring_wraps;
+    state.position_advances = playback->position_advances;
+    state.position_stalls = playback->position_stalls;
+    state.half_transitions = playback->half_transitions;
+    state.finished = playback->finished;
+    state.current_half = playback->current_half;
   }
 }
 
