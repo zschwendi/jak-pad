@@ -426,6 +426,37 @@
     (#when PC_SUBTITLE_DEBUG
       (draw-debug-text-box (-> self font)))))
 
+(defun goalpad-subtitle-notice-text ((id text-id))
+  (aif (lookup-text! *common-text* id #t)
+    it
+    (case id
+      (((text-id subtitle-hint))
+       (case (-> *common-text* language-id)
+         ((1) "APPUYER SUR ~Y~22L<~Z~Y~24L#~Z~Y~1L>~Z~Y~23L[~Z~+26H POUR ACTIVER LES SOUS-TITRES")
+         ((2) "DRU~Y~-22H~-3V\c15~ZCKE ~Y~22L<~Z~Y~24L#~Z~Y~1L>~Z~Y~23L[~Z~+26H ZUM EIN-/AUSSCHALTEN DER UNTERTITEL")
+         ((3) "PULSA ~Y~22L<~Z~Y~24L#~Z~Y~1L>~Z~Y~23L[~Z~+26H PARA ACTIVAR/DESACTIVAR LOS SUBTI~Y~-19H~-5V\c12~ZTULOS")
+         ((4) "PREMI ~Y~22L<~Z~Y~24L#~Z~Y~1L>~Z~Y~23L[~Z~+26H PER ATTIVARE O DISATTIVARE I SOTTOTITOLI")
+         ((5) "~Y~22L<~Z~Y~24L#~Z~Y~1L>~Z~Y~23L[~Z~+26H \ccc\c9f\ca7\caf~Y\ca6~Z\c91\cba\ca2\ccc\ce7~Y\cda~Z\c91\cff\ca7\cc7")
+         (else "PRESS ~Y~22L<~Z~Y~24L#~Z~Y~1L>~Z~Y~23L[~Z~+26H TO TOGGLE SUBTITLES")))
+      (((text-id subtitle-enabled))
+       (case (-> *common-text* language-id)
+         ((1) "SOUS-TITRES ACTIVE~Y~-22H~-5V\c12~ZS")
+         ((2) "UNTERTITEL EINGESCHALTET")
+         ((3) "SUBTI~Y~-19H~-5V\c12~ZTULOS ACTIVADOS")
+         ((4) "SOTTOTITOLI ATTIVATI")
+         ((5) "~Y\ca6~Z\c91\cba\ca2\c97\cc6")
+         (else "SUBTITLES ENABLED")))
+      (((text-id subtitle-disabled))
+       (case (-> *common-text* language-id)
+         ((1) "SOUS-TITRES DE~Y~-22H~-5V\c12~ZSACTIVE~Y~-22H~-5V\c12~ZS")
+         ((2) "UNTERTITEL AUSGESCHALTET")
+         ((3) "SUBTI~Y~-19H~-5V\c12~ZTULOS DESACTIVADOS")
+         ((4) "SOTTOTITOLI DISATTIVATI")
+         ((5) "~Y\ca6~Z\c91\cba\ca2\cb0\ca6")
+         (else "SUBTITLES DISABLED")))
+      (else
+       (lookup-text! *common-text* id #f)))))
+
 (defstate subtitle-process (subtitle)
   :event
     (behavior ((from process) (argc int) (msg symbol) (block event-message-block))
@@ -535,7 +566,7 @@
          (cond
            ((not (-> *pc-settings* subtitles?))
             (set-scale! (-> self font) (* (-> *SUBTITLE-bank* scale) 1.5))
-            (print-game-subtitle (lookup-text! *common-text* (-> self notice-id) #f) (-> self font) #f 128 22)
+            (print-game-subtitle (goalpad-subtitle-notice-text (-> self notice-id)) (-> self font) #f 128 22)
             (goalpad-face-prompt-touch-publish! self (pad-buttons square)))
            (else
             (goalpad-face-prompt-touch-clear! self))))
@@ -544,7 +575,7 @@
               (< (mod (time-passed) (seconds 1)) (seconds 0.8)))
          (goalpad-face-prompt-touch-clear! self)
          (set! (-> self font origin y) (* (-> *SUBTITLE-bank* notice-height) 224))
-         (print-game-subtitle (lookup-text! *common-text* (-> self notice-id) #f) (-> self font) #f 128 22))
+         (print-game-subtitle (goalpad-subtitle-notice-text (-> self notice-id)) (-> self font) #f 128 22))
         (else
          (goalpad-face-prompt-touch-clear! self)))
       0))

@@ -316,9 +316,17 @@ class Jak1FacePromptTouchContractTest(unittest.TestCase):
 
     def test_first_intro_subtitle_square_only_tracks_drawn_notice(self) -> None:
         subtitle = extract_form(self.subtitle, "(defstate subtitle-process (subtitle)")
+        notice_lookup = extract_form(self.subtitle, "(defun goalpad-subtitle-notice-text")
+        self.assertIn("(lookup-text! *common-text* id #t)", notice_lookup)
+        self.assertIn("(text-id subtitle-hint)", notice_lookup)
+        self.assertIn("(text-id subtitle-enabled)", notice_lookup)
+        self.assertIn("(text-id subtitle-disabled)", notice_lookup)
+        self.assertIn("(lookup-text! *common-text* id #f)", notice_lookup)
+        self.assertIn("~Y~22L<~Z~Y~24L#~Z~Y~1L>~Z~Y~23L[~Z~+26H", notice_lookup)
         self.assertIn("(= (-> self notice-id) (text-id subtitle-hint))", subtitle)
         self.assertIn("(not (-> *pc-settings* subtitles?))", subtitle)
         self.assertIn("(goalpad-face-prompt-touch-publish! self (pad-buttons square))", subtitle)
+        self.assertEqual(subtitle.count("(goalpad-subtitle-notice-text (-> self notice-id))"), 2)
         first_notice = subtitle.index("(text-id subtitle-hint)", subtitle.index(":post"))
         draw = subtitle.index("(print-game-subtitle", first_notice)
         publish = subtitle.index("(goalpad-face-prompt-touch-publish! self (pad-buttons square))", draw)

@@ -25,6 +25,7 @@
 #include "common/custom_data/Jak1PublicGeneratedArtifacts.h"
 #include "common/custom_data/Jak1PublicOutputGraph.h"
 #include "common/custom_data/Jak1SourceObjectPack.h"
+#include "common/util/font/font_utils.h"
 
 #include "decompiler/extractor/jak1_extracted_generated_inputs.h"
 #include "decompiler/extractor/jak1_fr3_preparer.h"
@@ -317,6 +318,48 @@ std::optional<Error> persist_generated_artifacts(const artifacts::Build& build,
 
 }  // namespace
 
+namespace internal {
+
+jak1_extracted_generated_inputs::PublicAdditions required_public_additions() {
+  struct SubtitleNoticeText {
+    std::string_view hint;
+    std::string_view enabled;
+    std::string_view disabled;
+  };
+  constexpr std::array<SubtitleNoticeText, 7> kSubtitleNotices = {
+      SubtitleNoticeText{"PRESS <PAD_SQUARE> TO TOGGLE SUBTITLES", "SUBTITLES ENABLED",
+                         "SUBTITLES DISABLED"},
+      SubtitleNoticeText{"APPUYER SUR <PAD_SQUARE> POUR ACTIVER LES SOUS-TITRES",
+                         "SOUS-TITRES ACTIVÉS", "SOUS-TITRES DÉSACTIVÉS"},
+      SubtitleNoticeText{"DRÜCKE <PAD_SQUARE> ZUM EIN-/AUSSCHALTEN DER UNTERTITEL",
+                         "UNTERTITEL EINGESCHALTET", "UNTERTITEL AUSGESCHALTET"},
+      SubtitleNoticeText{"PULSA <PAD_SQUARE> PARA ACTIVAR/DESACTIVAR LOS SUBTÍTULOS",
+                         "SUBTÍTULOS ACTIVADOS", "SUBTÍTULOS DESACTIVADOS"},
+      SubtitleNoticeText{"PREMI <PAD_SQUARE> PER ATTIVARE O DISATTIVARE I SOTTOTITOLI",
+                         "SOTTOTITOLI ATTIVATI", "SOTTOTITOLI DISATTIVATI"},
+      SubtitleNoticeText{"<PAD_SQUARE> をおすとじまくをトグルする", "じまくあり", "じまくなし"},
+      SubtitleNoticeText{"PRESS <PAD_SQUARE> TO TOGGLE SUBTITLES", "SUBTITLES ENABLED",
+                         "SUBTITLES DISABLED"},
+  };
+
+  const auto* font = get_font_bank(GameTextVersion::JAK1_V2);
+  jak1_extracted_generated_inputs::PublicAdditions additions;
+  additions.game_text.reserve(kSubtitleNotices.size());
+  for (std::size_t language = 0; language < kSubtitleNotices.size(); ++language) {
+    const auto& notice = kSubtitleNotices[language];
+    additions.game_text.push_back(
+        {std::to_string(language) + "COMMON.TXT",
+         static_cast<std::uint32_t>(language),
+         "common",
+         {{0x103f, font->convert_utf8_to_game(std::string(notice.hint))},
+          {0x1040, font->convert_utf8_to_game(std::string(notice.enabled))},
+          {0x1041, font->convert_utf8_to_game(std::string(notice.disabled))}}});
+  }
+  return additions;
+}
+
+}  // namespace internal
+
 namespace {
 
 std::optional<Error> generate_data_stage(const Request&,
@@ -336,8 +379,8 @@ std::optional<Error> generate_data_stage(const Request&,
                       progress.source_relative_path});
   };
   auto inputs = jak1_extracted_generated_inputs::build(
-      {state->extraction->staging_directory, state->extraction->match.revision}, {},
-      input_options);
+      {state->extraction->staging_directory, state->extraction->match.revision},
+      internal::required_public_additions(), input_options);
   if (!inputs) {
     const bool cancelled =
         inputs.error().code == jak1_extracted_generated_inputs::ErrorCode::cancelled;

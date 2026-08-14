@@ -5,6 +5,7 @@
 #include <optional>
 #include <span>
 
+#include "decompiler/extractor/jak1_extracted_generated_inputs.h"
 #include "decompiler/extractor/jak1_import_composer.h"
 
 namespace jak1_import_composer::internal {
@@ -19,6 +20,8 @@ struct StageAction {
   Phase phase = Phase::extracting_iso;
   std::function<std::optional<Error>(const WorkPaths&)> run;
 };
+
+jak1_extracted_generated_inputs::PublicAdditions required_public_additions();
 
 Result<Summary> compose_in_fresh_candidate(const std::filesystem::path& candidate_root,
                                            const Options& options,

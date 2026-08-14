@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "common/util/font/font_utils.h"
+
 #include "decompiler/extractor/jak1_import_composer_internal.h"
 
 namespace {
@@ -70,6 +72,44 @@ bool has_partial(const fs::path& root) {
     }
   }
   return false;
+}
+
+void test_required_public_text_includes_subtitle_notices() {
+  const std::array<std::array<std::string, 3>, 7> expected = {
+      std::array<std::string, 3>{"PRESS <PAD_SQUARE> TO TOGGLE SUBTITLES", "SUBTITLES ENABLED",
+                                 "SUBTITLES DISABLED"},
+      std::array<std::string, 3>{"APPUYER SUR <PAD_SQUARE> POUR ACTIVER LES SOUS-TITRES",
+                                 "SOUS-TITRES ACTIVÉS", "SOUS-TITRES DÉSACTIVÉS"},
+      std::array<std::string, 3>{"DRÜCKE <PAD_SQUARE> ZUM EIN-/AUSSCHALTEN DER UNTERTITEL",
+                                 "UNTERTITEL EINGESCHALTET", "UNTERTITEL AUSGESCHALTET"},
+      std::array<std::string, 3>{"PULSA <PAD_SQUARE> PARA ACTIVAR/DESACTIVAR LOS SUBTÍTULOS",
+                                 "SUBTÍTULOS ACTIVADOS", "SUBTÍTULOS DESACTIVADOS"},
+      std::array<std::string, 3>{"PREMI <PAD_SQUARE> PER ATTIVARE O DISATTIVARE I SOTTOTITOLI",
+                                 "SOTTOTITOLI ATTIVATI", "SOTTOTITOLI DISATTIVATI"},
+      std::array<std::string, 3>{"<PAD_SQUARE> をおすとじまくをトグルする", "じまくあり",
+                                 "じまくなし"},
+      std::array<std::string, 3>{"PRESS <PAD_SQUARE> TO TOGGLE SUBTITLES", "SUBTITLES ENABLED",
+                                 "SUBTITLES DISABLED"},
+  };
+  const auto additions = composer::internal::required_public_additions();
+  const auto* font = get_font_bank(GameTextVersion::JAK1_V2);
+
+  CHECK(additions.game_text.size() == expected.size());
+  CHECK(additions.subtitles.empty());
+  for (std::size_t language = 0; language < expected.size(); ++language) {
+    const auto& bank = additions.game_text[language];
+    CHECK(bank.destination_basename == std::to_string(language) + "COMMON.TXT");
+    CHECK(bank.language_id == language);
+    CHECK(bank.group_name == "common");
+    CHECK(bank.lines.size() == expected[language].size());
+    if (bank.lines.size() == expected[language].size()) {
+      for (std::size_t line = 0; line < expected[language].size(); ++line) {
+        CHECK(bank.lines[line].id == 0x103f + static_cast<std::uint32_t>(line));
+        CHECK(font->convert_game_to_utf8(bank.lines[line].encoded_text.c_str()) ==
+              expected[language][line]);
+      }
+    }
+  }
 }
 
 void test_happy_path_composes_and_cleans() {
@@ -262,6 +302,7 @@ void test_public_compose_rejects_candidate_inside_source_pack() {
 }  // namespace
 
 int main() {
+  test_required_public_text_includes_subtitle_notices();
   test_happy_path_composes_and_cleans();
   test_failure_preserves_candidate_and_active_output();
   test_cancellation_preserves_completed_stages();
