@@ -73,6 +73,7 @@ std::vector<u8> make_chain(u32 fragments,
     append(vertices * 3, 0, vif(VifCode::Kind::UNPACK_V4_32), static_cast<u8>(0x70 + i));
     append(0, 0, vif(VifCode::Kind::MSCAL));
   }
+  append(0, 0, 0);
   append(10, vif(VifCode::Kind::FLUSHA), kDirect | 10, 0xaa);
   put_tag(&memory, cursor, DmaTag::Kind::NEXT, 0,
           chain_offset + (metal_renderer::kJak2EffectsBucket + 1) * 16, 0, 0);
@@ -94,13 +95,13 @@ void test_capture_and_telemetry() {
   const auto city_capture = capture(city);
   check(city_capture.valid && city_capture.present &&
             city_capture.classification == metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning &&
-            city_capture.transfer_count == 7 && city_capture.total_payload_bytes == 352 &&
+            city_capture.transfer_count == 8 && city_capture.total_payload_bytes == 352 &&
             city_capture.fragment_count == 0 && city_capture.semantic_fingerprint != 0,
         "the 352-byte source-shaped Lightning envelope is captured before execution");
 
   auto active = make_chain(2, 32);
   const auto active_capture = capture(active);
-  check(active_capture.valid && active_capture.transfer_count == 13 &&
+  check(active_capture.valid && active_capture.transfer_count == 14 &&
             active_capture.total_payload_bytes == 3808 && active_capture.fragment_count == 2 &&
             active_capture.vertex_count == 64 &&
             active_capture.transfers[6].payload_fingerprint != 0,

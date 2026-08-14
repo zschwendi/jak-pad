@@ -50,9 +50,9 @@ struct Jak2EffectsBucket315Plan {
  * Preflight an immutable transfer summary for Jak II's EFFECTS bucket. This is a passive,
  * non-executing diagnostic seam: it owns only source-visible counts and no DMA, EE, Metal, or
  * renderer pointers. It accepts the exact unused NOP slot or the Lightning-mode grammar read by
- * Generic2::process_dma_lightning: fixed setup, zero or more header/vertex/MSCAL triples, then
- * the fixed FLUSHA/DIRECT terminator. Unknown VIF kinds, malformed sizes, excess source limits,
- * and trailing transfers fail closed.
+ * Generic2::process_dma_lightning: fixed setup, zero or more header/vertex/MSCAL triples, the
+ * source bucket-link NOP, then the fixed FLUSHA/DIRECT terminator. Unknown VIF kinds, malformed
+ * sizes, excess source limits, and trailing transfers fail closed.
  */
 std::optional<Jak2EffectsBucket315Plan> plan_jak2_effects_bucket315(
     const Jak2EffectsBucket315Transfer* transfers,

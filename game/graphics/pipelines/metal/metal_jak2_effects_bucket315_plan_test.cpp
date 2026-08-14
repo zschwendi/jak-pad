@@ -37,6 +37,7 @@ std::vector<Transfer> make_lightning(u32 fragment_count, u32 vertices_per_fragme
                               VifKind::Nop, VifKind::UnpackV4_32));
     result.push_back(transfer(0, VifKind::Nop, VifKind::Mscal));
   }
+  result.push_back(transfer(0, VifKind::Nop, VifKind::Nop));
   result.push_back(transfer(160, VifKind::Flusha, VifKind::Direct));
   result.push_back(transfer(0, VifKind::Nop, VifKind::Nop));
   return result;
@@ -56,13 +57,13 @@ void test_observed_envelopes() {
         "the exact unused bucket slot remains a passive no-op");
 
   const auto baseline = plan(make_lightning(0, 0));
-  check(baseline && baseline->variant == Variant::Lightning && baseline->transfer_count == 7 &&
+  check(baseline && baseline->variant == Variant::Lightning && baseline->transfer_count == 8 &&
             baseline->fragment_count == 0 && baseline->vertex_count == 0 &&
             baseline->payload_bytes == 352 && baseline->semantic_fingerprint != 0,
         "the observed 352-byte city envelope is accepted without execution");
 
   const auto active = plan(make_lightning(2, 32));
-  check(active && active->transfer_count == 13 && active->fragment_count == 2 &&
+  check(active && active->transfer_count == 14 && active->fragment_count == 2 &&
             active->vertex_count == 64 && active->payload_bytes == 3808 &&
             active->semantic_fingerprint != baseline->semantic_fingerprint,
         "the observed 3808-byte active envelope records two bounded Lightning fragments");
@@ -89,6 +90,10 @@ void test_rejections() {
   malformed = make_lightning(0, 0);
   malformed.back().vif0 = VifKind::Mark;
   check(!plan(malformed), "a non-NOP bucket terminator is rejected");
+
+  malformed = make_lightning(0, 0);
+  malformed.erase(malformed.end() - 3);
+  check(!plan(malformed), "the source bucket-link NOP before the trailer is required");
 
   const auto valid = make_lightning(0, 0);
   check(!plan(valid, metal_renderer::kJak2EffectsBucket + 1),

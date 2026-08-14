@@ -46,7 +46,7 @@ std::optional<Jak2EffectsBucket315Plan> plan_jak2_effects_bucket315(
     return Jak2EffectsBucket315Plan{};
   }
 
-  constexpr std::size_t kFixedTransferCount = 7;
+  constexpr std::size_t kFixedTransferCount = 8;
   const std::size_t max_transfer_count =
       kFixedTransferCount + static_cast<std::size_t>(kJak2EffectsLightningMaxFragments) * 3;
   if (transfer_count < kFixedTransferCount || transfer_count > max_transfer_count ||
@@ -56,6 +56,7 @@ std::optional<Jak2EffectsBucket315Plan> plan_jak2_effects_bucket315(
       !matches(transfers[2], 128, VifKind::Stcycl, VifKind::UnpackV4_32) ||
       !matches(transfers[3], 32, VifKind::Mscalf, VifKind::Stmod) ||
       !matches(transfers[4], 0, VifKind::Nop, VifKind::Nop) ||
+      !matches(transfers[transfer_count - 3], 0, VifKind::Nop, VifKind::Nop) ||
       !matches(transfers[transfer_count - 2], 160, VifKind::Flusha, VifKind::Direct) ||
       !matches(transfers[transfer_count - 1], 0, VifKind::Nop, VifKind::Nop) ||
       (transfer_count - kFixedTransferCount) % 3 != 0) {
@@ -71,7 +72,7 @@ std::optional<Jak2EffectsBucket315Plan> plan_jak2_effects_bucket315(
     result.payload_bytes += transfers[i].payload_bytes;
   }
 
-  for (std::size_t i = 5; i + 2 < transfer_count; i += 3) {
+  for (std::size_t i = 5; i + 3 < transfer_count; i += 3) {
     const auto& header = transfers[i];
     const auto& vertices = transfers[i + 1];
     const auto& mscal = transfers[i + 2];
@@ -94,7 +95,7 @@ std::optional<Jak2EffectsBucket315Plan> plan_jak2_effects_bucket315(
     result.payload_bytes += header.payload_bytes + vertices.payload_bytes + mscal.payload_bytes;
   }
 
-  for (std::size_t i = transfer_count - 2; i < transfer_count; ++i) {
+  for (std::size_t i = transfer_count - 3; i < transfer_count; ++i) {
     hash_transfer(&fingerprint, transfers[i]);
     result.payload_bytes += transfers[i].payload_bytes;
   }

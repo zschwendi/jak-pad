@@ -1373,6 +1373,12 @@ if(APPLE)
         add_test(NAME jak2-effects-bucket315-capture-test
             COMMAND jak2-effects-bucket315-capture-test)
 
+        add_executable(jak2-effects-bucket315-plan-test
+            graphics/pipelines/metal/metal_jak2_effects_bucket315_plan.cpp
+            graphics/pipelines/metal/metal_jak2_effects_bucket315_plan_test.cpp)
+        add_test(NAME jak2-effects-bucket315-plan-test
+            COMMAND jak2-effects-bucket315-plan-test)
+
         add_executable(jak2-shadow-bucket195-capture-test
             graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.cpp
             graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture_test.cpp)
