@@ -22,6 +22,7 @@ set(OPENGOAL_METAL_RENDERER_SOURCES
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_dark_jak_clut_executor.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_prison_clut_executor.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_raw_image_upload_executor.mm"
+    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_warp_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_shadow_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_level_data.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_merc.mm"

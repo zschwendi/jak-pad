@@ -25,6 +25,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_blit_display_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
+#include "game/graphics/pipelines/metal/metal_jak2_warp_renderer.h"
 #include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
@@ -663,6 +664,17 @@ void MetalRenderer::init_bucket_renderers_jak2() {
         m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
             "jak2-effects-lightning-unavailable", descriptor.id);
       }
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Warp) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::GMERC_WARP));
+      ASSERT(batch_size == 0);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] =
+            std::make_unique<metal_renderer::MetalJak2WarpBucketRenderer>(
+                "gmerc-warp", descriptor.id, generic2, m_texture_pool);
+      } else {
+        m_bucket_renderers[bucket_id] =
+            std::make_unique<MetalSkipRenderer>("jak2-gmerc-warp-unavailable", descriptor.id);
+      }
     } else if (descriptor.behavior ==
                metal_renderer::Jak2MetalBucketBehavior::HostTextureUploadDirect) {
       ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1) ||
@@ -1243,6 +1255,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.jak2_pris_eye_plans = opts.jak2_pris_eye_plans;
     m_shared_state.jak2_pris_eye_plan_count = opts.jak2_pris_eye_plan_count;
     m_shared_state.jak2_common_pris_plan = opts.jak2_common_pris_plan;
+    m_shared_state.jak2_gmerc_warp_bucket317_plan = opts.jak2_gmerc_warp_bucket317_plan;
     struct HostBucketCallbackScope {
       MetalSharedRenderState* state;
       ~HostBucketCallbackScope() {
@@ -1253,6 +1266,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         state->jak2_pris_eye_plans = nullptr;
         state->jak2_pris_eye_plan_count = 0;
         state->jak2_common_pris_plan = nullptr;
+        state->jak2_gmerc_warp_bucket317_plan = nullptr;
       }
     } host_bucket_callback_scope{&m_shared_state};
 
@@ -1864,6 +1878,29 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         } else {
           generic_stats.add(gn->stats());
         }
+      } else if (auto* warp =
+                     dynamic_cast<metal_renderer::MetalJak2WarpBucketRenderer*>(r.get())) {
+        const auto& generic = warp->generic_stats();
+        const auto& snapshot = warp->snapshot_stats();
+        m_chain_stats.warp317_fragments = generic.fragments;
+        m_chain_stats.warp317_continued_fragments = generic.continued_fragments;
+        m_chain_stats.warp317_vertices = generic.vertices;
+        m_chain_stats.warp317_adgifs = generic.adgifs;
+        m_chain_stats.warp317_draw_buckets = generic.draw_buckets;
+        m_chain_stats.warp317_draws = generic.draw_calls;
+        m_chain_stats.warp317_triangles = generic.triangles;
+        m_chain_stats.warp317_missing_textures = generic.missing_textures;
+        m_chain_stats.warp317_placeholder_draws = generic.placeholder_draws;
+        m_chain_stats.warp317_missing_publications = generic.missing_warp_publications;
+        m_chain_stats.warp317_unsupported_blends = generic.unsupported_blends;
+        m_chain_stats.warp317_unexpected_dma = generic.unexpected_dma;
+        m_chain_stats.warp317_overflow = generic.overflow;
+        m_chain_stats.warp317_snapshot_publications = snapshot.publications;
+        m_chain_stats.warp317_snapshot_copies = snapshot.copies;
+        m_chain_stats.warp317_snapshot_allocations = snapshot.allocations;
+        m_chain_stats.warp317_snapshot_replacements = snapshot.replacements;
+        m_chain_stats.warp317_snapshot_failures = snapshot.failures;
+        m_chain_stats.warp317_snapshot_texture = warp->texture_handle();
       } else if (auto* ey = dynamic_cast<MetalEyeRenderer*>(r.get())) {
         aggregate_eye_stats(ey->stats());
       }

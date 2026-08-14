@@ -12,8 +12,8 @@
  * and sampler keys, and the vertex/index data goes into the frame's stream
  * buffer instead of a re-uploaded GL_STREAM_DRAW buffer.
  *
- * Mode::NORMAL is ported for Jak 1 and Jak 2. Jak 2 LIGHTNING is selected only
- * by its exact bucket-315 host-gated route. WARP / PRIM and the Jak 3 DMA layout
+ * Mode::NORMAL is ported for Jak 1 and Jak 2. Jak 2 LIGHTNING and WARP are
+ * selected only by their exact host-gated routes. PRIM and the Jak 3 DMA layout
  * are not ported.
  */
 
@@ -33,6 +33,7 @@ class MetalGeneric2 {
  public:
   struct Stats {
     int fragments = 0;
+    int continued_fragments = 0;
     int vertices = 0;
     int adgifs = 0;
     int draw_buckets = 0;
@@ -40,6 +41,7 @@ class MetalGeneric2 {
     int triangles = 0;
     int missing_textures = 0;
     int placeholder_draws = 0;
+    int missing_warp_publications = 0;
     int unsupported_blends = 0;
     int unexpected_dma = 0;  // a bucket did not match: consumed and reported
     int overflow = 0;        // more data than the fixed buffers hold: reported
@@ -52,7 +54,7 @@ class MetalGeneric2 {
                 u32 num_adgif = 10000,
                 u32 num_buckets = 800);
 
-  enum class Mode { NORMAL, LIGHTNING };
+  enum class Mode { NORMAL, LIGHTNING, WARP };
 
   // Normal production entry point.
   void render(DmaFollower& dma,
@@ -60,7 +62,7 @@ class MetalGeneric2 {
               MetalFrameContext& ctx,
               Stats* stats);
 
-  // Mode-selecting seam. Production LIGHTNING is restricted to exact bucket 315.
+  // Mode-selecting seam. Production special modes are restricted to exact host-gated buckets.
   void render_in_mode(DmaFollower& dma,
                       MetalSharedRenderState* render_state,
                       MetalFrameContext& ctx,

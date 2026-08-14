@@ -59,6 +59,7 @@ int main() {
   std::size_t pris_eye = 0;
   std::size_t common_pris = 0;
   std::size_t effects_lightning = 0;
+  std::size_t warp = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -89,10 +90,11 @@ int main() {
     pris_eye += table[i].behavior == Behavior::PrisEye;
     common_pris += table[i].behavior == Behavior::CommonPris;
     effects_lightning += table[i].behavior == Behavior::EffectsLightning;
+    warp += table[i].behavior == Behavior::Warp;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 28, "28 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 27, "27 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 31,
@@ -124,6 +126,7 @@ int main() {
   check(common_pris == 1, "one common PRIS texture bucket has a dedicated exact renderer");
   check(effects_lightning == 1,
         "one source-exact EFFECTS bucket has a dedicated Lightning renderer");
+  check(warp == 1, "one source-exact GMERC_WARP bucket owns framebuffer warp rendering");
   check(generic2 == 26,
         "26 source-proven normal GMerc buckets are implemented by Metal Generic2");
   check(ocean_mid_far == 1 && ocean_near == 1,
@@ -140,8 +143,8 @@ int main() {
         "BUCKET_3 owns the Jak II framebuffer snapshot and clear semantics");
   check(has_behavior(jak2::BucketId::EFFECTS, Behavior::EffectsLightning) &&
             has_behavior(jak2::BucketId::TEX_ALL_WARP, Behavior::HostTextureUpload) &&
-            has_behavior(jak2::BucketId::GMERC_WARP, Behavior::DeferredSkip),
-        "b315 Lightning execution leaves b316 upload and b317 deferred policies unchanged");
+            has_behavior(jak2::BucketId::GMERC_WARP, Behavior::Warp),
+        "b315 Lightning, b316 upload, and b317 framebuffer warp are independently routed");
   check(has_behavior(jak2::BucketId::TFRAG_L0_TFRAG, Behavior::TFragment) &&
             has_behavior(jak2::BucketId::TFRAG_L1_TFRAG, Behavior::TFragment) &&
             has_behavior(jak2::BucketId::TFRAG_L2_TFRAG, Behavior::TFragment) &&
@@ -363,8 +366,8 @@ int main() {
             has_behavior(jak2::BucketId::PARTICLES, Behavior::Sprite),
         "the title sprite texture upload and Sprite3 draw buckets are explicit");
   check(has_behavior(jak2::BucketId::TEX_ALL_WARP, Behavior::HostTextureUpload) &&
-            has_behavior(jak2::BucketId::GMERC_WARP, Behavior::DeferredSkip),
-        "the typed warp upload executes while its snapshot-dependent GMerc draw stays deferred");
+            has_behavior(jak2::BucketId::GMERC_WARP, Behavior::Warp),
+        "the typed warp upload precedes its snapshot-dependent GMerc draw");
   check(has_behavior(jak2::BucketId::DEBUG_NO_ZBUF1, Behavior::HostTextureUploadDirect) &&
             has_behavior(jak2::BucketId::TEX_ALL_MAP, Behavior::HostTextureUploadDirect),
         "DEBUG_NO_ZBUF1 and TEX_ALL_MAP preserve their reference upload-plus-Direct behavior");

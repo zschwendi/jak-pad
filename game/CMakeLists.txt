@@ -1249,6 +1249,16 @@ if(APPLE)
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak2-metal-generic2-renderer-test COMMAND jak2-metal-generic2-renderer-test)
 
+        add_executable(jak2-metal-gmerc-warp317-renderer-test
+            graphics/pipelines/metal/metal_jak2_gmerc_warp317_renderer_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_gmerc_warp317_renderer_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-metal-gmerc-warp317-renderer-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-metal-gmerc-warp317-renderer-test
+            COMMAND jak2-metal-gmerc-warp317-renderer-test)
+
         add_executable(jak2-metal-effects315-lightning-proof
             graphics/pipelines/metal/metal_jak2_effects315_lightning_proof.mm)
         set_source_files_properties(

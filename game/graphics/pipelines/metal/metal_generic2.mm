@@ -5,6 +5,7 @@
 #include "common/log/log.h"
 
 #include "game/graphics/pipelines/metal/metal_level_data.h"
+#include "game/graphics/pipelines/metal/metal_jak2_warp_renderer.h"
 #include "game/graphics/texture/TexturePool.h"
 
 namespace {
@@ -179,6 +180,7 @@ bool is_source_lightning_unpack(const DmaTransfer& transfer,
 
 void MetalGeneric2::Stats::add(const Stats& o) {
   fragments += o.fragments;
+  continued_fragments += o.continued_fragments;
   vertices += o.vertices;
   adgifs += o.adgifs;
   draw_buckets += o.draw_buckets;
@@ -186,6 +188,7 @@ void MetalGeneric2::Stats::add(const Stats& o) {
   triangles += o.triangles;
   missing_textures += o.missing_textures;
   placeholder_draws += o.placeholder_draws;
+  missing_warp_publications += o.missing_warp_publications;
   unsupported_blends += o.unsupported_blends;
   unexpected_dma += o.unexpected_dma;
   overflow += o.overflow;
@@ -729,6 +732,9 @@ void MetalGeneric2::process_dma_jak2(DmaFollower& dma, u32 next_bucket) {
                                                   next_unpack.num * 16,
                                                   vif_transfer.size_bytes, continue_frag, true);
         continued_fragment = continue_frag;
+        if (m_stats) {
+          m_stats->continued_fragments++;
+        }
         if (!expect(off == vif_transfer.size_bytes,
                     "the second Jak 2 fragment to end the transfer")) {
           return;
@@ -1484,9 +1490,30 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
   // mirror of setup_opengl_tex
   const u32 tbp_to_lookup = first.tbp & 0x7fff;
   const bool use_mt4hh = first.tbp & 0x8000;
+  const bool warp_sample = m_current_mode == Mode::WARP &&
+                           render_state->version == GameVersion::Jak2 &&
+                           tbp_to_lookup == metal_renderer::kJak2WarpTextureTbp;
+  if (warp_sample) {
+    settings.sampler.wrap_s = MTLSamplerAddressModeClampToEdge;
+    settings.sampler.wrap_t = MTLSamplerAddressModeClampToEdge;
+  }
   bool uses_placeholder = false;
   auto tex_handle = use_mt4hh ? render_state->texture_pool->lookup_mt4hh(tbp_to_lookup)
                               : render_state->texture_pool->lookup(tbp_to_lookup);
+  if (warp_sample &&
+      (!tex_handle || *tex_handle == render_state->texture_pool->get_placeholder_texture())) {
+    if (m_stats) {
+      m_stats->missing_textures++;
+      m_stats->missing_warp_publications++;
+    }
+    if (!m_logged["missing warp publication"]) {
+      m_logged["missing warp publication"] = true;
+      lg::warn("Metal generic2: no framebuffer snapshot at VRAM slot {}; skipping the warp draw "
+               "(logged once)",
+               tbp_to_lookup);
+    }
+    return;
+  }
   if (!tex_handle) {
     if (m_stats) {
       m_stats->missing_textures++;
@@ -1509,6 +1536,13 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
     tex_handle = render_state->texture_pool->get_placeholder_texture();
   }
   id<MTLTexture> tex = metal_texture_lookup(*tex_handle);
+  if (warp_sample && !tex) {
+    if (m_stats) {
+      m_stats->missing_textures++;
+      m_stats->missing_warp_publications++;
+    }
+    return;
+  }
   if (!tex) {
     if (m_current_mode == Mode::LIGHTNING) {
       if (m_stats) {
@@ -1536,6 +1570,26 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
   [enc setFragmentTexture:tex atIndex:0];
   [enc setFragmentSamplerState:ctx.sampler_cache->get(settings.sampler) atIndex:0];
 
+  GenericVsParams vs = {};
+  const bool uses_hud = first.uses_hud;
+  const auto& scale = uses_hud ? m_drawing_config.hud_scale : m_drawing_config.proj_scale;
+  vs.scale[0] = scale[0];
+  vs.scale[1] = scale[1];
+  vs.scale[2] = scale[2];
+  vs.mat_23 = uses_hud ? m_drawing_config.hud_mat_23 : m_drawing_config.proj_mat_23;
+  vs.mat_32 = uses_hud ? m_drawing_config.hud_mat_32 : m_drawing_config.proj_mat_32;
+  vs.mat_33 = uses_hud ? m_drawing_config.hud_mat_33 : 0.f;
+  vs.fog_constants[0] = m_drawing_config.pfog0;
+  vs.fog_constants[1] = m_drawing_config.fog_min;
+  vs.fog_constants[2] = m_drawing_config.fog_max;
+  memcpy(vs.hvdf_offset, m_drawing_config.hvdf_offset.data(), sizeof(vs.hvdf_offset));
+  vs.use_full_matrix = 0;
+  vs.warp_sample_mode = warp_sample;
+  vs.height_scale = metal_height_scale(render_state->version);
+  vs.scissor_adjust = metal_scissor_adjust(render_state->version);
+  vs.warp_off = warp_sample ? (1.f - 416.f / 512.f) : 0.f;
+  [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
+
   GenericFsParams fs = {};
   fs.fog_color[0] = render_state->fog_color[0] / 255.f;
   fs.fog_color[1] = render_state->fog_color[1] / 255.f;
@@ -1544,7 +1598,7 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
   fs.alpha_reject = settings.alpha_reject;
   fs.color_mult = settings.color_mult;
   fs.gfx_hack_no_tex = 0;
-  fs.warp_sample_mode = 0;
+  fs.warp_sample_mode = warp_sample;
   [enc setFragmentBytes:&fs length:sizeof(fs) atIndex:0];
 
   [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangleStrip
@@ -1586,24 +1640,6 @@ void MetalGeneric2::do_draws(MetalSharedRenderState* render_state, MetalFrameCon
   id<MTLRenderCommandEncoder> enc = ctx.enc;
   [enc setVertexBuffer:vertex_buffer offset:vertex_offset atIndex:0];
 
-  GenericVsParams vs = {};
-  vs.scale[0] = m_drawing_config.proj_scale[0];
-  vs.scale[1] = m_drawing_config.proj_scale[1];
-  vs.scale[2] = m_drawing_config.proj_scale[2];
-  vs.mat_23 = m_drawing_config.proj_mat_23;
-  vs.mat_32 = m_drawing_config.proj_mat_32;
-  vs.mat_33 = 0.f;
-  vs.fog_constants[0] = m_drawing_config.pfog0;
-  vs.fog_constants[1] = m_drawing_config.fog_min;
-  vs.fog_constants[2] = m_drawing_config.fog_max;
-  memcpy(vs.hvdf_offset, m_drawing_config.hvdf_offset.data(), sizeof(vs.hvdf_offset));
-  vs.use_full_matrix = 0;  // NORMAL mode never sets one
-  vs.warp_sample_mode = 0;
-  vs.height_scale = metal_height_scale(render_state->version);
-  vs.scissor_adjust = metal_scissor_adjust(render_state->version);
-  vs.warp_off = 0.f;
-  [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
-
   // The GL renderer draws in a fixed alpha-mode order so translucent content
   // lands consistently; the order is copied exactly.
   constexpr DrawMode::AlphaBlend alpha_order[7] = {
@@ -1625,14 +1661,6 @@ void MetalGeneric2::do_draws(MetalSharedRenderState* render_state, MetalFrameCon
   }
 
   if (m_drawing_config.uses_hud) {
-    vs.scale[0] = m_drawing_config.hud_scale[0];
-    vs.scale[1] = m_drawing_config.hud_scale[1];
-    vs.scale[2] = m_drawing_config.hud_scale[2];
-    vs.mat_23 = m_drawing_config.hud_mat_23;
-    vs.mat_32 = m_drawing_config.hud_mat_32;
-    vs.mat_33 = m_drawing_config.hud_mat_33;
-    [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
-
     for (u32 i = 0; i < m_next_free_bucket; i++) {
       auto& bucket = m_buckets[i];
       auto& first = m_adgifs[bucket.start];
@@ -1661,8 +1689,13 @@ void MetalGeneric2::render_in_mode(DmaFollower& dma,
 
   switch (mode) {
     case Mode::NORMAL:
+    case Mode::WARP:
       if (render_state->version == GameVersion::Jak1) {
-        process_dma_jak1(dma, render_state->next_bucket);
+        if (mode == Mode::WARP) {
+          expect(false, "Jak 2 for the Generic2 WARP mode");
+        } else {
+          process_dma_jak1(dma, render_state->next_bucket);
+        }
       } else if (render_state->version == GameVersion::Jak2) {
         process_dma_jak2(dma, render_state->next_bucket);
       } else {
@@ -1679,7 +1712,7 @@ void MetalGeneric2::render_in_mode(DmaFollower& dma,
   }
 
   if (!m_failed) {
-    setup_draws(mode == Mode::NORMAL, true);
+    setup_draws(mode != Mode::LIGHTNING, mode != Mode::WARP);
   }
   if (!m_failed) {
     do_draws(render_state, ctx);
@@ -1692,6 +1725,7 @@ void MetalGeneric2::render_in_mode(DmaFollower& dma,
     stats->draw_buckets += (int)m_next_free_bucket;
   }
   m_stats = nullptr;
+  m_current_mode = Mode::NORMAL;
 
   // whatever happened, leave the follower at the next bucket
   while (dma.current_tag_offset() != render_state->next_bucket) {

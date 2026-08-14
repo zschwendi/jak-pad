@@ -36,6 +36,7 @@ enum class Jak2MetalBucketBehavior : std::uint8_t {
   PrisEye,
   CommonPris,
   EffectsLightning,
+  Warp,
 };
 
 struct Jak2MetalBucketDescriptor {
@@ -45,7 +46,7 @@ struct Jak2MetalBucketDescriptor {
 
 inline constexpr std::size_t kJak2MetalBucketCount =
     static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS);
-inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0xd245cf1f0505b5bcull;
+inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0x8e04cb7f08e6efaf;
 
 const std::array<Jak2MetalBucketDescriptor, kJak2MetalBucketCount>& jak2_metal_bucket_table();
 

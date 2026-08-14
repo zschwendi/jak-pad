@@ -202,6 +202,34 @@ typedef struct goal_jak2_gmerc_warp_bucket317_metrics {
   uint8_t last_variant;
 } goal_jak2_gmerc_warp_bucket317_metrics;
 
+typedef struct goal_jak2_gmerc_warp_bucket317_execution_metrics {
+  uint64_t callback_dispatches;
+  uint64_t completed_executions;
+  uint32_t last_expected_fragments;
+  uint32_t last_expected_continued_fragments;
+  uint32_t last_expected_vertices;
+  uint32_t last_expected_adgifs;
+  uint32_t last_actual_fragments;
+  uint32_t last_actual_continued_fragments;
+  uint32_t last_actual_vertices;
+  uint32_t last_actual_adgifs;
+  uint32_t last_actual_draw_buckets;
+  uint32_t last_actual_draws;
+  uint32_t last_actual_triangles;
+  uint32_t last_actual_missing_textures;
+  uint32_t last_actual_placeholder_draws;
+  uint32_t last_actual_missing_publications;
+  uint32_t last_actual_unsupported_blends;
+  uint32_t last_actual_unexpected_dma;
+  uint32_t last_actual_overflow;
+  uint32_t last_snapshot_publications;
+  uint32_t last_snapshot_copies;
+  uint32_t last_snapshot_allocations;
+  uint32_t last_snapshot_replacements;
+  uint32_t last_snapshot_failures;
+  uint64_t last_snapshot_texture;
+} goal_jak2_gmerc_warp_bucket317_execution_metrics;
+
 typedef struct goal_jak2_metal_host_metrics {
   uint64_t chains;
   uint64_t completed_chains;
@@ -408,6 +436,8 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t warp_texture_upload_executions;
   // Append-only exact execution telemetry for source Lightning bucket 315.
   goal_jak2_effects_bucket315_execution_metrics effects_bucket315_execution;
+  // Append-only exact execution telemetry for source framebuffer-warp bucket 317.
+  goal_jak2_gmerc_warp_bucket317_execution_metrics gmerc_warp_bucket317_execution;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

@@ -371,6 +371,26 @@ struct ChainStats {
   int effects315_unsupported_blends = 0;
   int effects315_unexpected_dma = 0;
   int effects315_overflow = 0;
+  // Exact Jak II GMERC_WARP bucket 317, kept separate from normal Generic2 buckets.
+  int warp317_fragments = 0;
+  int warp317_continued_fragments = 0;
+  int warp317_vertices = 0;
+  int warp317_adgifs = 0;
+  int warp317_draw_buckets = 0;
+  int warp317_draws = 0;
+  int warp317_triangles = 0;
+  int warp317_missing_textures = 0;
+  int warp317_placeholder_draws = 0;
+  int warp317_missing_publications = 0;
+  int warp317_unsupported_blends = 0;
+  int warp317_unexpected_dma = 0;
+  int warp317_overflow = 0;
+  u64 warp317_snapshot_publications = 0;
+  u64 warp317_snapshot_copies = 0;
+  u64 warp317_snapshot_allocations = 0;
+  u64 warp317_snapshot_replacements = 0;
+  u64 warp317_snapshot_failures = 0;
+  u64 warp317_snapshot_texture = 0;
   // shadow renderer, from the last chain frame
   int shadow_volumes = 0;
   int shadow_vertices = 0;

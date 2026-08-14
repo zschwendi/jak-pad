@@ -43,6 +43,10 @@ u64 metal_texture_register(id<MTLTexture> tex);
 // Returns nil if the handle is unknown.
 id<MTLTexture> metal_texture_lookup(u64 handle);
 
+// Atomically replaces the texture behind an existing handle. The caller owns
+// any TexturePool dimension bookkeeping associated with the handle.
+bool metal_texture_replace(u64 handle, id<MTLTexture> replacement);
+
 // Drops the registry's reference (the Metal analog of glDeleteTextures).
 void metal_texture_release(u64 handle);
 
