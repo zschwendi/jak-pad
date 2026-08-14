@@ -59,6 +59,8 @@ u32 bucket_offset(u32 chain_offset = kChainOffset) {
 
 std::vector<u8> make_chain(u32 fragments,
                            u32 vertices,
+                           u32 tex1_mmin = 1,
+                           u32 tex1_mxl = 0,
                            u32 chain_offset = kChainOffset,
                            u32 data_offset = kDataOffset) {
   std::vector<u8> memory(kMemorySize);
@@ -107,7 +109,8 @@ std::vector<u8> make_chain(u32 fragments,
     adgif.tex0_data = 0x700ull | (1ull << 14) | (2ull << 26) | (2ull << 30) |
                       (1ull << 34) | (1ull << 61);
     adgif.tex0_addr = static_cast<u64>(GsRegisterAddress::TEX0_1);
-    adgif.tex1_data = (1ull << 5) | (1ull << 6);
+    adgif.tex1_data = (static_cast<u64>(tex1_mxl) << 2) | (1ull << 5) |
+                      (static_cast<u64>(tex1_mmin) << 6);
     adgif.tex1_addr = static_cast<u64>(GsRegisterAddress::TEX1_1) |
                       (static_cast<u64>(0x8000u | vertices) << 32);
     adgif.mip_addr = static_cast<u64>(GsRegisterAddress::MIPTBP1_1);
@@ -165,7 +168,7 @@ void test_capture_and_telemetry() {
   const auto active_copy = capture(active);
   check(metal_renderer::jak2_effects_bucket315_captures_match(active_capture, active_copy),
         "independent equivalent captures compare without retaining packets");
-  const auto relocated_capture = capture(make_chain(2, 4, kChainOffset + 0x1000,
+  const auto relocated_capture = capture(make_chain(2, 4, 1, 0, kChainOffset + 0x1000,
                                                      kDataOffset + 0x2000),
                                          kChainOffset + 0x1000);
   check(active_capture.transfers[1].relative_tag_offset !=
@@ -191,6 +194,13 @@ void test_capture_and_telemetry() {
   check(!over_budget_capture.valid && over_budget_capture.classification ==
              metal_renderer::Jak2EffectsBucket315CaptureClass::Malformed,
         "the 256-transfer telemetry budget rejects an over-budget source envelope");
+
+  const auto title_capture = capture(make_chain(1, 4, 4, 0));
+  check(title_capture.valid && title_capture.classification ==
+                                    metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning &&
+            title_capture.fragment_count == 1 && title_capture.vertex_count == 4 &&
+            title_capture.adgif_count == 1 && title_capture.draw_count == 1,
+        "an active title Lightning fragment accepts source MMAG=1 MMIN=4 MXL=0");
 
   metal_renderer::Jak2EffectsBucket315Telemetry telemetry;
   metal_renderer::observe_jak2_effects_bucket315_capture(&telemetry, absent_capture);
@@ -221,6 +231,15 @@ void test_absent_and_rejections() {
         "a structurally safe but non-Lightning VIF form stays non-executable");
   check(absent_capture.valid && capture(malformed).valid,
         "Absent and Other remain diagnostic observations, not execution authorization");
+
+  const auto wrong_mmin = capture(make_chain(1, 4, 2, 0));
+  check(wrong_mmin.valid &&
+            wrong_mmin.classification == metal_renderer::Jak2EffectsBucket315CaptureClass::Other,
+        "an active Lightning fragment with non-source MMIN fails closed");
+  const auto wrong_mxl = capture(make_chain(1, 4, 4, 1));
+  check(wrong_mxl.valid &&
+            wrong_mxl.classification == metal_renderer::Jak2EffectsBucket315CaptureClass::Other,
+        "MMIN=4 Lightning with nonzero MXL fails closed");
   check(!metal_renderer::capture_jak2_effects_bucket315(malformed.data(), malformed.size(),
                                                          kChainOffset,
                                                          metal_renderer::kJak2EffectsBucket + 1)

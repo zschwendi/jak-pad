@@ -134,7 +134,10 @@ u64 tex0(u32 tbp) {
   return tbp | (1ull << 14) | (2ull << 26) | (2ull << 30) | (1ull << 34) | (1ull << 61);
 }
 
-std::vector<u8> make_lightning_header(u32 tbp, u32 vertex_count) {
+std::vector<u8> make_lightning_header(u32 tbp,
+                                      u32 vertex_count,
+                                      u32 tex1_mmin = 1,
+                                      u32 tex1_mxl = 0) {
   std::vector<u8> data(192, 0);
 
   float matrix[16] = {};
@@ -159,7 +162,8 @@ std::vector<u8> make_lightning_header(u32 tbp, u32 vertex_count) {
   AdGifData adgif = {};
   adgif.tex0_data = tex0(tbp);
   adgif.tex0_addr = static_cast<u64>(GsRegisterAddress::TEX0_1);
-  adgif.tex1_data = (1ull << 5) | (1ull << 6);
+  adgif.tex1_data = (static_cast<u64>(tex1_mxl) << 2) | (1ull << 5) |
+                    (static_cast<u64>(tex1_mmin) << 6);
   adgif.tex1_addr = static_cast<u64>(GsRegisterAddress::TEX1_1) |
                     (static_cast<u64>(0x8000u | vertex_count) << 32);
   adgif.mip_addr = static_cast<u64>(GsRegisterAddress::MIPTBP1_1);
@@ -205,7 +209,8 @@ enum class Malformation {
   ADGIF_ADDRESS,
   ADGIF_VERTEX_COUNT,
   TEX0_STATE,
-  TEX1_STATE,
+  TEX1_MMIN,
+  TEX1_MMIN4_MXL,
   CLAMP_STATE,
   UNSUPPORTED_ALPHA,
   VERTEX,
@@ -236,7 +241,10 @@ struct SyntheticChain {
   u32 next_bucket = 0;
 };
 
-SyntheticChain make_lightning_chain(u32 tbp, Malformation malformation = Malformation::NONE) {
+SyntheticChain make_lightning_chain(u32 tbp,
+                                    Malformation malformation = Malformation::NONE,
+                                    u32 tex1_mmin = 1,
+                                    u32 tex1_mxl = 0) {
   LinearChain chain;
   SyntheticChain result;
   const auto record = [&](TransferSlot slot, u32 offset) {
@@ -260,7 +268,8 @@ SyntheticChain make_lightning_chain(u32 tbp, Malformation malformation = Malform
   record(TransferSlot::SETUP_NOP, chain.transfer(0, 0));
 
   const u32 header_tag =
-      chain.transfer(0, vif_unpack_v4_32(837, 12), make_lightning_header(tbp, 4));
+      chain.transfer(0, vif_unpack_v4_32(837, 12),
+                     make_lightning_header(tbp, 4, tex1_mmin, tex1_mxl));
   record(TransferSlot::HEADER, header_tag);
   const std::size_t vertex_bytes = malformation == Malformation::VERTEX ? 176 : 192;
   record(TransferSlot::VERTICES,
@@ -299,8 +308,11 @@ SyntheticChain make_lightning_chain(u32 tbp, Malformation malformation = Malform
               static_cast<u64>(GsRegisterAddress::TEX1_1) | (0x8006ull << 32));
   } else if (malformation == Malformation::TEX0_STATE) {
     write_u64(&chain.bytes, header_tag + 16 + 112, tex0(tbp) & ~(1ull << 34));
-  } else if (malformation == Malformation::TEX1_STATE) {
-    write_u64(&chain.bytes, header_tag + 16 + 112 + 16, 1ull << 5);
+  } else if (malformation == Malformation::TEX1_MMIN) {
+    write_u64(&chain.bytes, header_tag + 16 + 112 + 16, (1ull << 5) | (2ull << 6));
+  } else if (malformation == Malformation::TEX1_MMIN4_MXL) {
+    write_u64(&chain.bytes, header_tag + 16 + 112 + 16,
+              (1ull << 2) | (1ull << 5) | (4ull << 6));
   } else if (malformation == Malformation::CLAMP_STATE) {
     write_u64(&chain.bytes, header_tag + 16 + 112 + 48, 0b0100);
   } else if (malformation == Malformation::UNSUPPORTED_ALPHA) {
@@ -595,6 +607,16 @@ int main() {
     check(all_depths_equal(result.depths, kPassingDepth),
           "source ZMSK preserves passing destination depth across the visible strip");
 
+    auto title_chain = make_lightning_chain(kLightningTextureTbp, Malformation::NONE, 4, 0);
+    const auto title_result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                     &renderer, &title_chain, kPassingDepth);
+    check(is_exact_lightning_draw(title_result) &&
+              title_result.final_offset == title_chain.next_bucket &&
+              changed_pixel_count(title_result.pixels) == 1280 &&
+              near(pixel_at(title_result.pixels, kTargetSize / 2, kTargetSize / 2),
+                   {48, 64, 80, 255}, 2),
+          "active title Lightning renders with source MMAG=1 MMIN=4 MXL=0");
+
     auto depth_reject_chain = make_lightning_chain(kLightningTextureTbp);
     const auto depth_reject = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                                      &renderer, &depth_reject_chain, kRejectingDepth);
@@ -608,7 +630,7 @@ int main() {
       Malformation kind;
       const char* description;
     };
-    constexpr std::array<MalformedCase, 17> malformed_cases = {{
+    constexpr std::array<MalformedCase, 18> malformed_cases = {{
         {Malformation::DIRECT, "a malformed Lightning DIRECT setup fails closed"},
         {Malformation::CONSTANTS_ADDRESS, "a malformed constants address fails closed"},
         {Malformation::HEADER_ADDRESS, "a malformed GCF unpack address fails closed"},
@@ -618,7 +640,8 @@ int main() {
         {Malformation::ADGIF_ADDRESS, "a malformed source TEX0 address fails closed"},
         {Malformation::ADGIF_VERTEX_COUNT, "a mismatched adgif vertex count fails closed"},
         {Malformation::TEX0_STATE, "a non-source Lightning TEX0 state fails closed"},
-        {Malformation::TEX1_STATE, "a non-source Lightning TEX1 state fails closed"},
+        {Malformation::TEX1_MMIN, "a non-source Lightning MMIN fails closed"},
+        {Malformation::TEX1_MMIN4_MXL, "MMIN=4 Lightning with nonzero MXL fails closed"},
         {Malformation::CLAMP_STATE, "a non-source Lightning clamp state fails closed"},
         {Malformation::UNSUPPORTED_ALPHA, "an unsupported Lightning ALPHA tuple fails closed"},
         {Malformation::VERTEX, "a truncated Lightning vertex record fails closed"},

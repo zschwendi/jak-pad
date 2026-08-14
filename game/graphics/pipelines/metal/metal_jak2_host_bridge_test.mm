@@ -317,7 +317,9 @@ u32 effects_vif(VifCode::Kind kind,
 
 void make_effects_lightning_chain(u32 fragments = 0,
                                   u32 texture_tbp = kTextureVram,
-                                  bool malformed_direct = false) {
+                                  bool malformed_direct = false,
+                                  u32 tex1_mmin = 1,
+                                  u32 tex1_mxl = 0) {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
   const u32 bucket_offset = kChainOffset + kEffectsBucket * 16;
@@ -375,7 +377,8 @@ void make_effects_lightning_chain(u32 fragments = 0,
     adgif.tex0_data = texture_tbp | (1ull << 14) | (2ull << 26) | (2ull << 30) |
                       (1ull << 34) | (1ull << 61);
     adgif.tex0_addr = static_cast<u64>(GsRegisterAddress::TEX0_1);
-    adgif.tex1_data = (1ull << 5) | (1ull << 6);
+    adgif.tex1_data = (static_cast<u64>(tex1_mxl) << 2) | (1ull << 5) |
+                      (static_cast<u64>(tex1_mmin) << 6);
     adgif.tex1_addr = static_cast<u64>(GsRegisterAddress::TEX1_1) |
                       (static_cast<u64>(0x8000u | kVertexCount) << 32);
     adgif.mip_addr = static_cast<u64>(GsRegisterAddress::MIPTBP1_1);
@@ -2021,7 +2024,7 @@ int main() {
   write_texture_page();
   effects_callbacks.texture_upload_now(static_cast<u8*>(g_ee_main_mem) + kTexturePageOffset, -1,
                                        kSyntheticS7);
-  make_effects_lightning_chain(1, kTextureVram);
+  make_effects_lightning_chain(1, kTextureVram, false, 4, 0);
   effects_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(effects_host, &effects_metrics) &&
             effects_metrics.chains == 3 && effects_metrics.completed_chains == 3 &&
@@ -2042,7 +2045,7 @@ int main() {
             effects_metrics.effects_bucket315_execution.last_actual_unsupported_blends == 0 &&
             effects_metrics.effects_bucket315_execution.last_actual_unexpected_dma == 0 &&
             effects_metrics.effects_bucket315_execution.last_actual_overflow == 0,
-        "one exact active fragment passes callback, parser, draw, and error-count gates");
+        "one active title MMIN=4 MXL=0 fragment passes callback, parser, draw, and error-count gates");
 
   const u32 copied_before_malformed = effects_metrics.last_copied_bytes;
   const u64 callbacks_before_malformed =

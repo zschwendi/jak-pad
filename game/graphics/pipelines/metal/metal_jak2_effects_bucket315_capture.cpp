@@ -161,6 +161,11 @@ bool is_source_lightning_gcf_header(const CheckedTransfer& transfer, u32 vertex_
          read_unaligned<u32>(data + 104) == 0x7f && read_unaligned<u32>(data + 108) == 0;
 }
 
+bool is_source_lightning_tex1(const GsTex1& tex1) {
+  const u32 mmin = tex1.mmin();
+  return tex1.mmag() && (mmin == 1 || (mmin == 4 && tex1.mxl() == 0));
+}
+
 bool is_source_lightning_adgif(const CheckedTransfer& transfer,
                                u32 vertex_count,
                                u32* effective_tbp) {
@@ -175,7 +180,7 @@ bool is_source_lightning_adgif(const CheckedTransfer& transfer,
       tex0.tfx() != GsTex0::TextureFunction::MODULATE ||
       adgif.tex1_addr != (static_cast<u64>(GsRegisterAddress::TEX1_1) |
                           (static_cast<u64>(0x8000u | vertex_count) << 32)) ||
-      !tex1.mmag() || tex1.mmin() != 1 ||
+      !is_source_lightning_tex1(tex1) ||
       adgif.mip_addr != static_cast<u64>(GsRegisterAddress::MIPTBP1_1) ||
       adgif.clamp_data != 0b0101 ||
       adgif.clamp_addr != static_cast<u64>(GsRegisterAddress::CLAMP_1) ||

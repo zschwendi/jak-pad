@@ -132,6 +132,11 @@ bool is_source_lightning_gcf_header(const u8* data, u32 vertex_count) {
          read_u32(data, 100) == 0 && read_u32(data, 104) == 0x7f && read_u32(data, 108) == 0;
 }
 
+bool is_source_lightning_tex1(const GsTex1& tex1) {
+  const u32 mmin = tex1.mmin();
+  return tex1.mmag() && (mmin == 1 || (mmin == 4 && tex1.mxl() == 0));
+}
+
 bool is_source_lightning_adgif(const AdGifData& adgif, u32 vertex_count) {
   constexpr u64 kAlpha = (2ull << 2) | (1ull << 6) | (0x80ull << 32);
   const GsTex0 tex0(adgif.tex0_data);
@@ -140,7 +145,7 @@ bool is_source_lightning_adgif(const AdGifData& adgif, u32 vertex_count) {
          tex0.tfx() == GsTex0::TextureFunction::MODULATE &&
          adgif.tex1_addr == (static_cast<u64>(GsRegisterAddress::TEX1_1) |
                              (static_cast<u64>(0x8000u | vertex_count) << 32)) &&
-         tex1.mmag() && tex1.mmin() == 1 &&
+         is_source_lightning_tex1(tex1) &&
          adgif.mip_addr == static_cast<u64>(GsRegisterAddress::MIPTBP1_1) &&
          adgif.clamp_data == 0b0101 &&
          adgif.clamp_addr == static_cast<u64>(GsRegisterAddress::CLAMP_1) &&
