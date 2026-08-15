@@ -93,4 +93,10 @@ bool blend_jak2_dark_jak_clut_group_cpu(float morph,
   return blend_group(morph, inputs, outputs, kJak2DarkJakClutBlendSlotCount);
 }
 
+bool blend_jak2_highres_jak_clut_group_cpu(float morph,
+                                           std::span<const Jak2ClutBlendInput> inputs,
+                                           std::span<std::vector<u8>> outputs) {
+  return blend_group(morph, inputs, outputs, kJak2HighresJakClutBlendSlotCount);
+}
+
 }  // namespace metal_renderer

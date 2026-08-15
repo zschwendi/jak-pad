@@ -24,6 +24,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_dark_jak_clut_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_effects_bucket315_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_highres_jak_clut_defaults.h"
 #include "game/graphics/pipelines/metal/metal_jak2_opcode27_skull_gem_executor.h"
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_prison_clut_executor.h"
@@ -56,6 +57,7 @@ struct goal_jak2_metal_host {
   std::unique_ptr<metal_renderer::Jak2Opcode27SkullGemExecutor> skull_gem_executor;
   std::unique_ptr<metal_renderer::Jak2PrisonClutExecutor> prison_clut_executor;
   std::unique_ptr<metal_renderer::Jak2DarkJakClutExecutor> dark_jak_clut_executor;
+  std::unique_ptr<metal_renderer::Jak2HighresJakClutDefaults> highres_jak_clut_defaults;
   std::unique_ptr<metal_renderer::Jak2RawImageUploadExecutor> raw_image_upload_executor;
   FixedChunkDmaCopier copier{EE_MAIN_MEM_SIZE};
   goal_gfx_host callbacks = {};
@@ -142,6 +144,9 @@ goal_jak2_metal_host* active_host() {
 void merge_animated_texture_slots(goal_jak2_metal_host* host) {
   if (!host || host->animated_texture_slots.size() != jak2_animated_texture_slots().size()) {
     return;
+  }
+  if (host->highres_jak_clut_defaults) {
+    host->highres_jak_clut_defaults->merge_animated_texture_slots(host->animated_texture_slots);
   }
   if (host->skull_gem_executor) {
     const auto& source = host->skull_gem_executor->animated_texture_slots();
@@ -311,6 +316,16 @@ bool load_level_art_pair(goal_jak2_metal_host* host,
         *error += host->dark_jak_clut_executor
                       ? host->dark_jak_clut_executor->last_error()
                       : "executor is unavailable";
+        return false;
+      }
+      if (!host->highres_jak_clut_defaults ||
+          !host->highres_jak_clut_defaults->initialize(*level->level)) {
+        metal_merc_models().remove_level(level_key);
+        metal_level_data::unload(host->textures, level_key);
+        *error = "high-resolution Jak default texture initialization failed: ";
+        *error += host->highres_jak_clut_defaults
+                      ? host->highres_jak_clut_defaults->last_error()
+                      : "publisher is unavailable";
         return false;
       }
       merge_animated_texture_slots(host);
@@ -2598,6 +2613,9 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
       host->renderer.device(), host->renderer.queue());
   host->dark_jak_clut_executor = std::make_unique<metal_renderer::Jak2DarkJakClutExecutor>(
       host->renderer.device(), host->renderer.queue());
+  host->highres_jak_clut_defaults =
+      std::make_unique<metal_renderer::Jak2HighresJakClutDefaults>(
+          host->renderer.device(), host->renderer.queue());
   host->animated_texture_slots.assign(jak2_animated_texture_slots().size(), 0);
   host->raw_image_upload_executor =
       std::make_unique<metal_renderer::Jak2RawImageUploadExecutor>(

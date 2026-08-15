@@ -1505,6 +1505,16 @@ if(APPLE)
         add_test(NAME jak2-dark-jak-clut-executor-test
             COMMAND jak2-dark-jak-clut-executor-test)
 
+        add_executable(jak2-highres-jak-clut-defaults-test
+            graphics/pipelines/metal/metal_jak2_highres_jak_clut_defaults_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_highres_jak_clut_defaults_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-highres-jak-clut-defaults-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-highres-jak-clut-defaults-test
+            COMMAND jak2-highres-jak-clut-defaults-test)
+
         add_executable(jak2-bucket4-mixed-executor-test
             graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor_test.mm)
         set_source_files_properties(
