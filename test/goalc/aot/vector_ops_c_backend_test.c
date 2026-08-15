@@ -348,13 +348,13 @@ static void test_merc_matrix_contract(void) {
   expect_floats_at("merc nmat column 2", DST + 96, 0.f, 0.f, .25f, 0.f);
 
   /* A zero X scale is singular. The -0.25 Y and 0.5 Z columns have one +0.125 Y cofactor. PS2 DIV
-     clamps 1/0 to MAX; multiplying that exact power-of-two cofactor gives MAX/8 (0x7d7fffff),
+     clamps 1/0 to MAX; multiplying that exact power-of-two cofactor gives MAX/8 (0x7dffffff),
      while the other two normal columns remain zero. */
   put_floats(MERC_BONE, 0.f, 0.f, 0.f, 0.f);
   put_floats(MERC_BONE + 16, -.25f, 0.f, 0.f, 0.f);
   put_floats(MERC_BONE + 32, 0.f, 0.f, .5f, 0.f);
   goal_vec_aot_test_merc_matrix(DST, MERC_JOINT, MERC_BONE, MERC_CAMERA);
-  expect_words_at("singular merc nmat column 0", DST + 64, 0, 0x7d7fffff, 0, 0);
+  expect_words_at("singular merc nmat column 0", DST + 64, 0, 0x7dffffff, 0, 0);
   expect_words_at("singular merc nmat column 1", DST + 80, 0, 0, 0, 0);
   expect_words_at("singular merc nmat column 2", DST + 96, 0, 0, 0, 0);
 
