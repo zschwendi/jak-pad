@@ -117,6 +117,24 @@ bool MetalJak2Shadow2Renderer::build_geometry(const Jak2ShadowBucket195Plan& pla
     vertex.z = read_unaligned<float>(source.bytes.data() + 8);
     return vertex;
   };
+  const auto append_classified_triangle = [&](const Vertex& a,
+                                              const Vertex& b,
+                                              const Vertex& c,
+                                              bool back) {
+    if (!finite_vertex(a) || !finite_vertex(b) || !finite_vertex(c)) {
+      ++m_stats.nonfinite_projection;
+      return false;
+    }
+    auto& output = back ? geometry->back : geometry->front;
+    if (geometry->front.size() + geometry->back.size() > kMaximumOutputVertices - 3) {
+      ++m_stats.overflow;
+      return false;
+    }
+    output.push_back(a);
+    output.push_back(b);
+    output.push_back(c);
+    return true;
+  };
   const auto append_triangle = [&](Vertex a, Vertex b, Vertex c, bool swap_winding) {
     if (!finite_vertex(a) || !finite_vertex(b) || !finite_vertex(c)) {
       ++m_stats.nonfinite_projection;
@@ -130,15 +148,7 @@ bool MetalJak2Shadow2Renderer::build_geometry(const Jak2ShadowBucket195Plan& pla
       ++m_stats.nonfinite_projection;
       return false;
     }
-    auto& output = facing > 0.f ? geometry->back : geometry->front;
-    if (geometry->front.size() + geometry->back.size() > kMaximumOutputVertices - 3) {
-      ++m_stats.overflow;
-      return false;
-    }
-    output.push_back(a);
-    output.push_back(b);
-    output.push_back(c);
-    return true;
+    return append_classified_triangle(a, b, c, facing > 0.f);
   };
 
   for (const auto& batch : plan.batches) {
@@ -168,8 +178,18 @@ bool MetalJak2Shadow2Renderer::build_geometry(const Jak2ShadowBucket195Plan& pla
           } else {
             quad = {top0, top1, bottom1, bottom0};
           }
-          if (!append_triangle(quad[1], quad[0], quad[2], false) ||
-              !append_triangle(quad[0], quad[2], quad[3], false)) {
+          if (!std::all_of(quad.begin(), quad.end(), finite_vertex<Vertex>)) {
+            ++m_stats.nonfinite_projection;
+            return false;
+          }
+          const float facing = normal_dot_eye(quad[0], quad[1], quad[2]);
+          if (!std::isfinite(facing)) {
+            ++m_stats.nonfinite_projection;
+            return false;
+          }
+          const bool back = facing > 0.f;
+          if (!append_classified_triangle(quad[1], quad[0], quad[2], back) ||
+              !append_classified_triangle(quad[0], quad[2], quad[3], back)) {
             return false;
           }
           continue;

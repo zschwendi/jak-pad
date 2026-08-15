@@ -78,6 +78,24 @@ metal_renderer::Jak2ShadowBucket195Plan ready_plan() {
   return plan;
 }
 
+metal_renderer::Jak2ShadowBucket195Plan wall_plan() {
+  using namespace metal_renderer;
+  auto plan = ready_plan();
+  plan.record_count = 1;
+  auto& batch = plan.batches[0];
+  batch.top_vertices = {
+      vertex(0.46875f, 0.484375f, 0.75f), vertex(0.53125f, 0.484375f, 0.75f)};
+  batch.bottom_vertices = {
+      vertex(0.46875f, 0.515625f, 0.75f), vertex(0.53125f, 0.515625f, 0.75f)};
+  batch.commands.clear();
+  Jak2ShadowBucket195Command walls;
+  walls.kind = Jak2ShadowBucket195CommandKind::Walls;
+  walls.records = {{{{0, 1, 0, 0xa5}}}};
+  batch.commands.push_back(std::move(walls));
+  plan.vertex_count = static_cast<u32>(batch.top_vertices.size() + batch.bottom_vertices.size());
+  return plan;
+}
+
 std::vector<u8> one_transfer_chain() {
   std::vector<u8> chain(kNextBucket + 16, 0);
   const u64 next = static_cast<u64>(DmaTag::Kind::NEXT) << 28 |
@@ -88,10 +106,11 @@ std::vector<u8> one_transfer_chain() {
   return chain;
 }
 
-std::vector<u8> render_ready(id<MTLDevice> device,
-                             id<MTLCommandQueue> queue,
-                             id<MTLLibrary> library,
-                             metal_renderer::MetalJak2Shadow2Renderer::Stats* out_stats) {
+std::vector<u8> render_plan(id<MTLDevice> device,
+                            id<MTLCommandQueue> queue,
+                            id<MTLLibrary> library,
+                            const metal_renderer::Jak2ShadowBucket195Plan& plan,
+                            metal_renderer::MetalJak2Shadow2Renderer::Stats* out_stats) {
   MetalPsoCache pso_cache;
   MetalStreamBuffer stream;
   check(pso_cache.init(device, library), "initialized the Shadow2 pipeline cache");
@@ -137,7 +156,6 @@ std::vector<u8> render_ready(id<MTLDevice> device,
   pass.stencilAttachment.clearStencil = 0;
   id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 
-  auto plan = ready_plan();
   auto chain = one_transfer_chain();
   DmaFollower dma(chain.data(), kBucketOffset, chain.size());
   MetalSharedRenderState state;
@@ -227,8 +245,9 @@ int main() {
 
     metal_renderer::MetalJak2Shadow2Renderer::Stats first_stats;
     metal_renderer::MetalJak2Shadow2Renderer::Stats second_stats;
-    const auto first = render_ready(device, queue, library, &first_stats);
-    const auto second = render_ready(device, queue, library, &second_stats);
+    const auto first_plan = ready_plan();
+    const auto first = render_plan(device, queue, library, first_plan, &first_stats);
+    const auto second = render_plan(device, queue, library, first_plan, &second_stats);
     const std::array<u8, 4> changed = {100, 132, 68, 255};
     std::size_t exact_changed = 0;
     std::size_t background = 0;
@@ -258,6 +277,23 @@ int main() {
               second_stats.lighten_draws == first_stats.lighten_draws &&
               second_stats.reached_boundary == first_stats.reached_boundary,
           "repeated Shadow2 GPU executions report identical telemetry");
+    metal_renderer::MetalJak2Shadow2Renderer::Stats wall_stats;
+    const auto wall = render_plan(device, queue, library, wall_plan(), &wall_stats);
+    std::size_t wall_changed = 0;
+    std::size_t wall_background = 0;
+    for (std::size_t offset = 0; offset < wall.size(); offset += 4) {
+      const bool is_background = wall[offset] == 100 && wall[offset + 1] == 100 &&
+                                 wall[offset + 2] == 100 && wall[offset + 3] == 255;
+      wall_changed += !is_background;
+      wall_background += is_background;
+    }
+    check(wall_changed > 0 && wall_background > 0 && wall_stats.input_records == 1 &&
+              wall_stats.output_vertices == 6 &&
+              wall_stats.front_triangles == 2 && wall_stats.back_triangles == 0 &&
+              wall_stats.draw_calls == 3 && wall_stats.triangles == 6 &&
+              wall_stats.darken_draws == 1 && wall_stats.lighten_draws == 1 &&
+              wall_stats.invalid_plan == 0 && wall_stats.reached_boundary,
+          "a wall quad uses one desktop-equivalent stencil-side classification for both triangles");
     check_no_draw_disposition(
         metal_renderer::Jak2ShadowBucket195PlanDisposition::Absent,
         "an Absent plan consumes exactly to the follower boundary without drawing");

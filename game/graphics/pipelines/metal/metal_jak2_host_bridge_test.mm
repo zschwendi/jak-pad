@@ -2087,8 +2087,8 @@ int main() {
   const std::size_t shadow_initial_live_count = metal_texture_live_count();
   check(shadow_host && goal_jak2_metal_host_copy_gfx_host(shadow_host, &shadow_callbacks) &&
             metal_renderer::jak2_metal_bucket_table()[kShadowBucket].behavior ==
-                metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
-        "created a host with physically rejected Shadow2 bucket 195 deferred");
+                metal_renderer::Jak2MetalBucketBehavior::Shadow2,
+        "created a host with the exact Shadow2 bucket-195 route");
   goal_jak2_metal_host_metrics shadow_metrics = {};
   make_empty_chain();
   shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
@@ -2101,12 +2101,12 @@ int main() {
             shadow_metrics.shadow_bucket195.last_transfer_count == 1 &&
             shadow_metrics.shadow_bucket195.last_total_payload_bytes == 0 &&
             shadow_metrics.shadow_bucket195.last_reached_boundary == 1 &&
-            shadow_metrics.shadow_bucket195_execution.completed_executions == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_executions == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_absent == 0 &&
+            shadow_metrics.shadow_bucket195_execution.completed_executions == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_executions == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_absent == 1 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_draws == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 0,
-        "deferred bucket 195 still captures its exact Absent form without drawing");
+            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 1,
+        "bucket 195 parses live/copy and executes its exact Absent form without drawing");
 
   make_shadow_bucket195_chain();
   shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
@@ -2132,42 +2132,42 @@ int main() {
             shadow_metrics.shadow_bucket195.last_terminal_tag_kind ==
                 static_cast<uint8_t>(DmaTag::Kind::NEXT) &&
             shadow_metrics.shadow_bucket195.last_reached_boundary == 1 &&
-            shadow_metrics.shadow_bucket195_execution.completed_executions == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_executions == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_deferred_no_draw == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_input_batches == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_input_vertices == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_input_records == 0 &&
+            shadow_metrics.shadow_bucket195_execution.completed_executions == 2 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_executions == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_deferred_no_draw == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_batches == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_vertices == 3 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_records == 1 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_output_vertices == 0 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_draws == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 0 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 1 &&
             metal_texture_live_count() == shadow_initial_live_count,
-        "top-only MSCALF6 remains captured while bucket 195 stays deferred and no-draw");
+        "top-only MSCALF6 remains accepted, exact-boundary, and no-draw without bottom access");
 
   make_shadow_bucket195_chain(true);
   shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(shadow_host, &shadow_metrics) &&
             shadow_metrics.chains == 3 && shadow_metrics.completed_chains == 3 &&
             shadow_metrics.failed_chains == 0 &&
-            shadow_metrics.shadow_bucket195_execution.completed_executions == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_ready == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_input_batches == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_input_vertices == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_input_records == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_output_vertices == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_front_triangles == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_back_triangles == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_draws == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_triangles == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_darken_draws == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_lighten_draws == 0 &&
+            shadow_metrics.shadow_bucket195_execution.completed_executions == 3 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_ready == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_batches == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_vertices == 8 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_input_records == 2 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_output_vertices == 12 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_front_triangles == 2 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_back_triangles == 2 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_draws == 4 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_triangles == 8 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_darken_draws == 1 &&
+            shadow_metrics.shadow_bucket195_execution.last_actual_lighten_draws == 1 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_unexpected_dma == 0 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_invalid_plan == 0 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_nonfinite_projection == 0 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_overflow == 0 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_pipeline_failures == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 0,
-        "a Ready bucket-195 plan remains capture-only after physical rejection");
+            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 1,
+        "a Ready bucket-195 plan passes the exact host geometry, draw, and error gate");
 
   const uint32_t shadow_copied_before_malformed = shadow_metrics.last_copied_bytes;
   make_shadow_bucket195_chain();
@@ -2178,7 +2178,7 @@ int main() {
             shadow_metrics.chains == 4 && shadow_metrics.completed_chains == 3 &&
             shadow_metrics.failed_chains == 1 &&
             shadow_metrics.last_copied_bytes == shadow_copied_before_malformed &&
-            shadow_metrics.shadow_bucket195_execution.completed_executions == 0,
+            shadow_metrics.shadow_bucket195_execution.completed_executions == 3,
         "malformed live bucket 195 is rejected before copy or renderer mutation");
   goal_jak2_metal_host_destroy(shadow_host);
 
