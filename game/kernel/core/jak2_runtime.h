@@ -24,6 +24,7 @@ typedef enum goal_jak2_runtime_status {
   GOAL_JAK2_RUNTIME_INVALID_ARGUMENT = 3,
   GOAL_JAK2_RUNTIME_START_FAILED = 4,
   GOAL_JAK2_RUNTIME_EXITED = 5,
+  GOAL_JAK2_RUNTIME_REQUEST_FAILED = 6,
 } goal_jak2_runtime_status;
 
 typedef enum goal_jak2_runtime_state {
@@ -148,6 +149,8 @@ typedef enum goal_jak2_scene_wait_gate {
   GOAL_JAK2_SCENE_WAIT_ART_GUI = 7,
   GOAL_JAK2_SCENE_WAIT_READY = 8,
 } goal_jak2_scene_wait_gate;
+
+#define GOAL_JAK2_SCENE_PREVIEW_NAME_MAX 63
 
 #define GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX 8
 
@@ -320,6 +323,14 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
  */
 goal_jak2_runtime_status goal_jak2_runtime_probe_thread_suspend(
     goal_jak2_thread_suspend_probe* out);
+
+/*
+ * Copy and queue one authored scene name for the release Scene Player preview path. The request is
+ * consumed only after a dispatcher frame leaves the source-validated title menu stable. It does
+ * not persist the temporary in-memory Scene Player unlock, select a save, or evaluate arbitrary
+ * GOAL text.
+ */
+goal_jak2_runtime_status goal_jak2_runtime_request_scene_preview(const char* scene_name);
 
 /*! Run exactly one `kernel-dispatcher` call. This function has no loop, sleep, or clock input. */
 goal_jak2_runtime_status goal_jak2_runtime_tick(void);

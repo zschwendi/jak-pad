@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+
+from pathlib import Path
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+PROGRESS = ROOT / "goal_src/jak2/engine/ui/progress/progress.gc"
+PROGRESS_STATIC = ROOT / "goal_src/jak2/engine/ui/progress/progress-static.gc"
+CITY_SCENES = ROOT / "goal_src/jak2/levels/city/ctywide-scenes.gc"
+RUNTIME = ROOT / "game/kernel/core/jak2_runtime.cpp"
+RUNTIME_HEADER = ROOT / "game/kernel/core/jak2_runtime.h"
+BOOT_TEST = ROOT / "game/kernel/core/jak2_boot_test.cpp"
+
+
+def extract_goal_form(source: str, marker: str) -> str:
+    start = source.index(marker)
+    depth = 0
+    in_string = False
+    escaped = False
+    in_comment = False
+    for index in range(start, len(source)):
+        char = source[index]
+        if in_comment:
+            if char == "\n":
+                in_comment = False
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == ";":
+            in_comment = True
+        elif char == '"':
+            in_string = True
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"unterminated form: {marker}")
+
+
+class Jak2ScenePreviewContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.progress = PROGRESS.read_text()
+        cls.progress_static = PROGRESS_STATIC.read_text()
+        cls.city_scenes = CITY_SCENES.read_text()
+        cls.runtime = RUNTIME.read_text()
+        cls.runtime_header = RUNTIME_HEADER.read_text()
+        cls.boot = BOOT_TEST.read_text()
+
+    def test_release_helper_reuses_scene_players_no_save_setup(self) -> None:
+        helper = extract_goal_form(self.progress, "(defun scene-player-preview")
+        self.assertIn("(play-clean 'debug)", helper)
+        self.assertIn("(-> *game-info* demo-state)", helper)
+        self.assertIn("(the-as uint 100)", helper)
+        self.assertIn("(-> *game-info* secrets)", helper)
+        self.assertIn("(game-secrets scene-player-1)", helper)
+        self.assertIn(
+            "(process-spawn scene-player :init scene-player-init info #t continue)", helper
+        )
+        self.assertIn("(set-master-mode 'game)", helper)
+        for persistent_write in (
+            "purchase-secrets",
+            "auto-save",
+            "save-user",
+            "memcard",
+            "task-node-open",
+        ):
+            self.assertNotIn(persistent_write, helper)
+
+    def test_exact_name_lookup_uses_all_authored_scene_player_acts(self) -> None:
+        lookup = extract_goal_form(self.progress, "(defun pc-preview-scene-by-name")
+        for act in (
+            "*hud-select-scene-act1*",
+            "*hud-select-scene-act2*",
+            "*hud-select-scene-act3*",
+        ):
+            self.assertIn(act, lookup)
+        self.assertIn("(string? (-> scene-info info))", lookup)
+        self.assertIn("(pair? (-> scene-info info))", lookup)
+        self.assertIn(
+            "(scene-player-preview name (-> (the hud-scene-info scene-info) continue))",
+            lookup,
+        )
+
+    def test_menu_and_host_helper_share_one_preview_path(self) -> None:
+        responder = extract_goal_form(
+            self.progress,
+            "(defmethod respond-progress ((this menu-select-scene-option)",
+        )
+        self.assertIn("(scene-player-preview (-> s5-1 info) (-> s5-1 continue))", responder)
+        self.assertNotIn("(play-clean 'debug)", responder)
+
+    def test_city_help_kid_authored_contract_is_exact(self) -> None:
+        selection = extract_goal_form(
+            self.progress_static,
+            "(new 'static 'hud-scene-info\n"
+            '                                    :name "city-help-kid-intro"',
+        )
+        self.assertIn(':continue "ctyslumb-fort"', selection)
+        self.assertIn(':info "city-help-kid-intro"', selection)
+
+        scene = extract_goal_form(
+            self.city_scenes,
+            "(scene-method-16\n  (new 'static 'scene\n    :name \"city-help-kid-intro\"",
+        )
+        self.assertIn(':entity "hal-help-kid-1"', scene)
+        self.assertIn(':anim "city-help-kid-intro"', scene)
+        self.assertIn(':load-point-obj "ctyslumb-fort"', scene)
+        for level in ("ctyslumb", "ctywide", "ctykora"):
+            self.assertIn(f":name '{level}", scene)
+        for actor in (
+            "sidekick-highres",
+            "jak-highres",
+            "kor-highres",
+            "kid-highres",
+        ):
+            actor_form = extract_goal_form(
+                scene, f"(new 'static 'scene-actor\n        :name \"{actor}\""
+            )
+            self.assertIn(":level 'ctykora", actor_form)
+
+    def test_runtime_request_is_bounded_and_consumed_at_stable_title(self) -> None:
+        self.assertIn("GOAL_JAK2_SCENE_PREVIEW_NAME_MAX 63", self.runtime_header)
+        self.assertIn("GOAL_JAK2_RUNTIME_REQUEST_FAILED = 6", self.runtime_header)
+        self.assertIn("goal_jak2_runtime_request_scene_preview", self.runtime_header)
+        self.assertIn("while (length <= GOAL_JAK2_SCENE_PREVIEW_NAME_MAX", self.runtime)
+        self.assertNotIn("std::strnlen", self.runtime)
+        self.assertIn("read_progress_menu(nullptr)", self.runtime)
+        self.assertIn("title.navigation_available && !title.selected_option", self.runtime)
+        self.assertIn(
+            'goal_aot_call_symbol("pc-preview-scene-by-name", name, 0, 0, &result)',
+            self.runtime,
+        )
+        tick = self.runtime.index("goal_jak2_runtime_status goal_jak2_runtime_tick")
+        dispatch = self.runtime.index("call_goal_on_stack(Ptr<Function>(g_dispatcher)", tick)
+        preview = self.runtime.index("run_pending_scene_preview()", dispatch)
+        self.assertLess(dispatch, preview)
+        self.assertIn("had_pending_preview && !g_scene_preview_pending", self.runtime[preview:])
+
+    def test_boot_cli_uses_a_unique_temp_save_and_detects_any_persistence(self) -> None:
+        self.assertIn('arg == "--preview-scene"', self.boot)
+        self.assertIn("goal_jak2_runtime_request_scene_preview", self.boot)
+        self.assertIn("std::filesystem::temp_directory_path()", self.boot)
+        self.assertIn("snapshot_save_tree(saves_path, &saves_before_preview", self.boot)
+        self.assertIn("snapshot_save_tree(saves_path, &saves_after_preview", self.boot)
+        self.assertIn("saves_after_preview != saves_before_preview", self.boot)
+        self.assertIn("std::filesystem::last_write_time", self.boot)
+        self.assertIn('preview_scene == "city-help-kid-intro"', self.boot)
+        self.assertIn('metrics.scene_entity, "hal-help-kid-1"', self.boot)
+        self.assertIn("metrics.animation_diagnostics_valid", self.boot)
+        self.assertIn("preview_first_aframe = metrics.animation_aframe", self.boot)
+        self.assertIn(
+            "std::fabs(metrics.animation_aframe - preview_first_aframe) > 0.001f",
+            self.boot,
+        )
+        self.assertIn("for (int index = 1; index <= 4; ++index)", self.boot)
+        self.assertIn("actor.level_index != 2", self.boot)
+        self.assertIn("actor.merc_pris_bucket != 205", self.boot)
+        self.assertIn("!actor.merc_joint_count", self.boot)
+        for flag in (
+            "SPAWN_ATTEMPTED",
+            "POOL_ALLOCATED",
+            "DRAW_CONTROL",
+            "JOINT_CONTROL",
+            "MERC_GEOMETRY",
+        ):
+            self.assertIn(f"GOAL_JAK2_SCENE_ACTOR_{flag}", self.boot)
+        for level in ("ctyslumb", "ctywide", "ctykora"):
+            self.assertIn(f'level == "{level}"', self.boot)
+
+
+if __name__ == "__main__":
+    unittest.main()

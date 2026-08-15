@@ -65,6 +65,8 @@ std::string g_saves_directory;
 uint32_t g_dispatcher = 0;
 uint64_t g_current_tick = 0;
 bool g_owns_kernel = false;
+char g_pending_scene_preview[GOAL_JAK2_SCENE_PREVIEW_NAME_MAX + 1] = {};
+bool g_scene_preview_pending = false;
 goal_gfx_dma_stats g_dma_before = {};
 goal_gfx_host g_external_host = {};
 
@@ -567,12 +569,51 @@ goal_jak2_runtime_status fail_start(std::string message) {
   }
   g_dispatcher = 0;
   g_current_tick = 0;
+  g_pending_scene_preview[0] = '\0';
+  g_scene_preview_pending = false;
   g_dma_before = {};
   g_host_observations = {};
   g_host_before = {};
   g_external_host = {};
   g_metrics.state = GOAL_JAK2_RUNTIME_FAILED;
   return GOAL_JAK2_RUNTIME_START_FAILED;
+}
+
+bool stable_title_for_scene_preview() {
+  if (!g_metrics.title_ready) {
+    return false;
+  }
+  const auto title = read_progress_menu(nullptr);
+  return title.available && title.screen == GOAL_JAK2_PROGRESS_SCREEN_TITLE &&
+         title.navigation_available && !title.selected_option;
+}
+
+goal_jak2_runtime_status run_pending_scene_preview() {
+  if (!g_scene_preview_pending || !stable_title_for_scene_preview()) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  const std::string requested = g_pending_scene_preview;
+  g_pending_scene_preview[0] = '\0';
+  g_scene_preview_pending = false;
+
+  // The dispatcher has returned, so there is no active GOAL frame on the shared GOAL stack.
+  // make_string_from_c retains this copied name on the global heap for the complete synchronous
+  // goal_aot_call_symbol call, which enters through the same call_goal trampoline used by play-boot.
+  const uint64_t name = jak2::make_string_from_c(requested.c_str());
+  uint64_t result = goal_game_false_offset();
+  if (!name || goal_aot_call_symbol("pc-preview-scene-by-name", name, 0, 0, &result) !=
+                   GOAL_KERNEL_CORE_OK) {
+    g_error = std::string("Jak 2 scene preview helper failed: ") +
+              goal_kernel_core_last_error();
+    return GOAL_JAK2_RUNTIME_REQUEST_FAILED;
+  }
+  if (result != goal_game_true_offset()) {
+    g_error = std::string("Jak 2 scene preview was not found: ") + requested;
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  drain_goal_print_buffer();
+  return GOAL_JAK2_RUNTIME_OK;
 }
 
 }  // namespace
@@ -609,6 +650,8 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     g_saves_directory = config->saves_directory ? config->saves_directory : "";
     g_dispatcher = 0;
     g_current_tick = 0;
+    g_pending_scene_preview[0] = '\0';
+    g_scene_preview_pending = false;
     g_dma_before = {};
     g_host_observations = {};
     g_host_before = {};
@@ -789,6 +832,34 @@ goal_jak2_runtime_status goal_jak2_runtime_probe_thread_suspend(
   return GOAL_JAK2_RUNTIME_OK;
 }
 
+goal_jak2_runtime_status goal_jak2_runtime_request_scene_preview(const char* scene_name) {
+  if (!scene_name) {
+    g_error = "goal_jak2_runtime_request_scene_preview: scene_name is null";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING) {
+    g_error = "goal_jak2_runtime_request_scene_preview: runtime is not running";
+    return GOAL_JAK2_RUNTIME_NOT_RUNNING;
+  }
+  size_t length = 0;
+  while (length <= GOAL_JAK2_SCENE_PREVIEW_NAME_MAX && scene_name[length]) {
+    length++;
+  }
+  if (!length || length > GOAL_JAK2_SCENE_PREVIEW_NAME_MAX) {
+    g_error = "goal_jak2_runtime_request_scene_preview: scene name is empty or too long";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  if (g_scene_preview_pending) {
+    g_error = "goal_jak2_runtime_request_scene_preview: another request is pending";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  std::memcpy(g_pending_scene_preview, scene_name, length + 1);
+  g_scene_preview_pending = true;
+  g_error.clear();
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
 goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
   if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
       g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_dispatcher) {
@@ -822,6 +893,14 @@ goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
     if (MasterExit != RuntimeExitStatus::RUNNING) {
       g_metrics.state = GOAL_JAK2_RUNTIME_STOPPED_BY_GAME;
       return GOAL_JAK2_RUNTIME_EXITED;
+    }
+    const bool had_pending_preview = g_scene_preview_pending;
+    const auto preview_status = run_pending_scene_preview();
+    if (preview_status != GOAL_JAK2_RUNTIME_OK) {
+      return preview_status;
+    }
+    if (had_pending_preview && !g_scene_preview_pending) {
+      update_metrics();
     }
     return GOAL_JAK2_RUNTIME_OK;
   } catch (const std::exception& e) {
@@ -973,6 +1052,8 @@ void goal_jak2_runtime_shutdown(void) {
   }
   g_dispatcher = 0;
   g_current_tick = 0;
+  g_pending_scene_preview[0] = '\0';
+  g_scene_preview_pending = false;
   g_dma_before = {};
   g_host_observations = {};
   g_host_before = {};
