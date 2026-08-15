@@ -81,11 +81,6 @@ bool g_scene_preview_pending = false;
 ScenePreviewPhase g_scene_preview_phase = ScenePreviewPhase::kAwaitStableTitle;
 int g_scene_preview_start_press_frames = 0;
 int g_scene_preview_pad_read_baseline = 0;
-struct ScenePreviewGoalCall {
-  uint32_t function = 0;
-  uint64_t name = 0;
-};
-ScenePreviewGoalCall g_scene_preview_goal_call = {};
 goal_gfx_dma_stats g_dma_before = {};
 goal_gfx_host g_external_host = {};
 
@@ -586,12 +581,6 @@ void reset_scene_preview_request() {
   g_scene_preview_phase = ScenePreviewPhase::kAwaitStableTitle;
   g_scene_preview_start_press_frames = 0;
   g_scene_preview_pad_read_baseline = 0;
-  g_scene_preview_goal_call = {};
-}
-
-uint64_t scene_preview_on_goal_stack() {
-  return call_goal(Ptr<Function>(g_scene_preview_goal_call.function),
-                   g_scene_preview_goal_call.name, 0, 0, s7.offset, g_ee_main_mem);
 }
 
 goal_jak2_runtime_status fail_start(std::string message) {
@@ -679,29 +668,12 @@ goal_jak2_runtime_status run_pending_scene_preview() {
   const std::string requested = g_pending_scene_preview;
   reset_scene_preview_request();
 
-  // The dispatcher has returned, so there is no active GOAL frame on the shared GOAL stack.
-  // call_goal_on_stack takes no GOAL arguments; this retained name crosses its no-argument native
-  // trampoline, then call_goal passes it to the helper without leaving the GOAL stack.
-  const uint64_t name = jak2::make_string_from_c(requested.c_str());
-  uint32_t function = 0;
-  if (!name || goal_kernel_core_lookup("pc-preview-scene-by-name", nullptr, &function) !=
-                   GOAL_KERNEL_CORE_OK ||
-      !function) {
-    g_error = std::string("Jak 2 scene preview helper failed: ") +
-              goal_kernel_core_last_error();
+  const uint32_t name = static_cast<uint32_t>(jak2::make_string_from_c(requested.c_str()));
+  if (!name || !goal_game_find_symbol("*pc-scene-preview-request*", nullptr)) {
+    g_error = "Jak 2 scene preview queue is unavailable";
     return GOAL_JAK2_RUNTIME_REQUEST_FAILED;
   }
-  g_scene_preview_goal_call.function = function;
-  g_scene_preview_goal_call.name = name;
-  const uint64_t result = call_goal_on_stack(
-      jak2::make_function_from_native((void*)scene_preview_on_goal_stack), goal_kernel_stack_top(),
-      s7.offset, g_ee_main_mem);
-  g_scene_preview_goal_call = {};
-  if (result != goal_game_true_offset()) {
-    g_error = std::string("Jak 2 scene preview was not found: ") + requested;
-    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
-  }
-  drain_goal_print_buffer();
+  goal_game_set_symbol_value("*pc-scene-preview-request*", name);
   return GOAL_JAK2_RUNTIME_OK;
 }
 

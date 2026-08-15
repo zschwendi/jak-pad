@@ -65,6 +65,8 @@
 
 (define *progress-state* (new 'static 'progress-global-state :which-slot -1 :last-slot-saved -1))
 
+(define *pc-scene-preview-request* (the-as string #f))
+
 (kmemopen global "mc-slot-info")
 
 (define *progress-save-info* (new 'global 'mc-slot-info))
@@ -1057,6 +1059,8 @@
   (none)
   )
 
+(define-extern pc-preview-scene-by-name (function string object))
+
 (defbehavior progress-trans progress ()
   ;; og:preserve-this pc port note : added variable
   (let ((speed-mod (if (-> *pc-settings* fast-progress?) (-> *pc-cheat-state* progress-speed) 1.0)))
@@ -1114,7 +1118,13 @@
       )
     )
   (if (= (-> self ring-angle) (-> self ring-want-angle))
-      (respond-to-cpad self)
+      (if *pc-scene-preview-request*
+          (let ((name *pc-scene-preview-request*))
+            (set! *pc-scene-preview-request* (the-as string #f))
+            (pc-preview-scene-by-name name)
+            )
+          (respond-to-cpad self)
+          )
       )
   (let ((f30-0 (* 0.005 (-> self clock time-adjust-ratio))))
     (cond

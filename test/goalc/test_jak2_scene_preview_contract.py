@@ -211,38 +211,52 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
             "g_scene_preview_phase != ScenePreviewPhase::kAwaitProgress", run_preview
         )
         self.assertIn("!progress_ready_for_scene_preview()", run_preview)
-        stack_trampoline_start = self.runtime.index(
-            "uint64_t scene_preview_on_goal_stack()"
-        )
-        stack_trampoline_end = self.runtime.index(
-            "\ngoal_jak2_runtime_status fail_start", stack_trampoline_start
-        )
-        stack_trampoline = self.runtime[stack_trampoline_start:stack_trampoline_end]
         self.assertIn(
-            "call_goal(Ptr<Function>(g_scene_preview_goal_call.function),",
-            stack_trampoline,
+            'goal_game_find_symbol("*pc-scene-preview-request*", nullptr)', run_preview
         )
         self.assertIn(
-            "g_scene_preview_goal_call.name, 0, 0, s7.offset, g_ee_main_mem",
-            stack_trampoline,
-        )
-        self.assertNotIn("goal_aot_call_symbol", run_preview)
-        self.assertIn(
-            'goal_kernel_core_lookup("pc-preview-scene-by-name", nullptr, &function)',
+            'goal_game_set_symbol_value("*pc-scene-preview-request*", name);',
             run_preview,
         )
-        self.assertIn("g_scene_preview_goal_call.function = function;", run_preview)
-        self.assertIn("g_scene_preview_goal_call.name = name;", run_preview)
+        for direct_call in (
+            "goal_aot_call_symbol",
+            "call_goal(",
+            "call_goal_on_stack(",
+            "scene_preview_on_goal_stack",
+        ):
+            self.assertNotIn(direct_call, run_preview)
+        self.assertNotIn("scene_preview_on_goal_stack", self.runtime)
+
         self.assertIn(
-            "call_goal_on_stack(\n"
-            "      jak2::make_function_from_native((void*)scene_preview_on_goal_stack), "
-            "goal_kernel_stack_top(),\n"
-            "      s7.offset, g_ee_main_mem)",
-            run_preview,
+            "(define *pc-scene-preview-request* (the-as string #f))", self.progress
+        )
+        self.assertIn(
+            "(define-extern pc-preview-scene-by-name (function string object))",
+            self.progress,
+        )
+        progress_trans = extract_goal_form(self.progress, "(defbehavior progress-trans")
+        self.assertIn("(if *pc-scene-preview-request*", progress_trans)
+        self.assertIn("(let ((name *pc-scene-preview-request*))", progress_trans)
+        self.assertIn(
+            "(set! *pc-scene-preview-request* (the-as string #f))", progress_trans
+        )
+        self.assertIn("(pc-preview-scene-by-name name)", progress_trans)
+        self.assertIn("(respond-to-cpad self)", progress_trans)
+        self.assertLess(
+            progress_trans.index(
+                "(if (= (-> self ring-angle) (-> self ring-want-angle))"
+            ),
+            progress_trans.index("(if *pc-scene-preview-request*"),
         )
         self.assertLess(
-            run_preview.index("call_goal_on_stack("),
-            run_preview.index("g_scene_preview_goal_call = {};"),
+            progress_trans.index(
+                "(set! *pc-scene-preview-request* (the-as string #f))"
+            ),
+            progress_trans.index("(pc-preview-scene-by-name name)"),
+        )
+        self.assertLess(
+            progress_trans.index("(pc-preview-scene-by-name name)"),
+            progress_trans.index("(respond-to-cpad self)"),
         )
         tick = self.runtime.index("goal_jak2_runtime_status goal_jak2_runtime_tick")
         dispatch = self.runtime.index("call_goal_on_stack(Ptr<Function>(g_dispatcher)", tick)
