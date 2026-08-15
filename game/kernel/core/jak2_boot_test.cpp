@@ -530,13 +530,12 @@ int run_play_runtime(const std::string& data_dir,
     }
     goal_jak2_runtime_get_metrics(&metrics);
     if (!preview_scene.empty() && !preview_requested) {
-      goal_jak2_progress_menu_snapshot title = {};
-      if (goal_jak2_runtime_get_progress_menu_snapshot(&title) != GOAL_JAK2_RUNTIME_OK) {
-        say("FAILED: %s\n", goal_jak2_runtime_last_error());
-        return 1;
-      }
-      if (title.available && title.screen == GOAL_JAK2_PROGRESS_SCREEN_TITLE &&
-          title.navigation_available && !title.selected_option) {
+      const bool stable_title =
+          metrics.title_ready && metrics.title_control_process &&
+          std::strcmp(metrics.master_mode, "game") == 0 &&
+          std::strcmp(metrics.title_control_state, "wait") == 0 &&
+          !metrics.progress_process;
+      if (stable_title) {
         if (!snapshot_save_tree(saves_path, &saves_before_preview, &save_snapshot_error)) {
           say("FAILED: could not snapshot the temporary save tree: %s\n",
               save_snapshot_error.c_str());

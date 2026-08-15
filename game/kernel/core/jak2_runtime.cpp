@@ -580,12 +580,10 @@ goal_jak2_runtime_status fail_start(std::string message) {
 }
 
 bool stable_title_for_scene_preview() {
-  if (!g_metrics.title_ready) {
-    return false;
-  }
-  const auto title = read_progress_menu(nullptr);
-  return title.available && title.screen == GOAL_JAK2_PROGRESS_SCREEN_TITLE &&
-         title.navigation_available && !title.selected_option;
+  return g_metrics.title_ready && g_metrics.title_control_process &&
+         std::strcmp(g_metrics.master_mode, "game") == 0 &&
+         std::strcmp(g_metrics.title_control_state, "wait") == 0 &&
+         !g_metrics.progress_process;
 }
 
 goal_jak2_runtime_status run_pending_scene_preview() {

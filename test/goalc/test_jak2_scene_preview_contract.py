@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROGRESS = ROOT / "goal_src/jak2/engine/ui/progress/progress.gc"
 PROGRESS_STATIC = ROOT / "goal_src/jak2/engine/ui/progress/progress-static.gc"
 CITY_SCENES = ROOT / "goal_src/jak2/levels/city/ctywide-scenes.gc"
+TITLE_OBS = ROOT / "goal_src/jak2/levels/title/title-obs.gc"
 RUNTIME = ROOT / "game/kernel/core/jak2_runtime.cpp"
 RUNTIME_HEADER = ROOT / "game/kernel/core/jak2_runtime.h"
 BOOT_TEST = ROOT / "game/kernel/core/jak2_boot_test.cpp"
@@ -52,6 +53,7 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         cls.progress = PROGRESS.read_text()
         cls.progress_static = PROGRESS_STATIC.read_text()
         cls.city_scenes = CITY_SCENES.read_text()
+        cls.title_obs = TITLE_OBS.read_text()
         cls.runtime = RUNTIME.read_text()
         cls.runtime_header = RUNTIME_HEADER.read_text()
         cls.boot = BOOT_TEST.read_text()
@@ -134,8 +136,18 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         self.assertIn("goal_jak2_runtime_request_scene_preview", self.runtime_header)
         self.assertIn("while (length <= GOAL_JAK2_SCENE_PREVIEW_NAME_MAX", self.runtime)
         self.assertNotIn("std::strnlen", self.runtime)
-        self.assertIn("read_progress_menu(nullptr)", self.runtime)
-        self.assertIn("title.navigation_available && !title.selected_option", self.runtime)
+        stable_title_start = self.runtime.index("bool stable_title_for_scene_preview()")
+        stable_title_end = self.runtime.index(
+            "\ngoal_jak2_runtime_status run_pending_scene_preview()", stable_title_start
+        )
+        stable_title = self.runtime[stable_title_start:stable_title_end]
+        self.assertIn("g_metrics.title_control_process", stable_title)
+        self.assertIn('std::strcmp(g_metrics.master_mode, "game") == 0', stable_title)
+        self.assertIn('std::strcmp(g_metrics.title_control_state, "wait") == 0', stable_title)
+        self.assertIn("!g_metrics.progress_process", stable_title)
+        self.assertNotIn("read_progress_menu", stable_title)
+        title_wait = extract_goal_form(self.title_obs, "(defstate wait (title-control)")
+        self.assertIn("(title-menu)", title_wait)
         self.assertIn(
             'goal_aot_call_symbol("pc-preview-scene-by-name", name, 0, 0, &result)',
             self.runtime,
@@ -154,6 +166,10 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         self.assertIn("snapshot_save_tree(saves_path, &saves_after_preview", self.boot)
         self.assertIn("saves_after_preview != saves_before_preview", self.boot)
         self.assertIn("std::filesystem::last_write_time", self.boot)
+        self.assertIn("metrics.title_control_process", self.boot)
+        self.assertIn('std::strcmp(metrics.master_mode, "game") == 0', self.boot)
+        self.assertIn('std::strcmp(metrics.title_control_state, "wait") == 0', self.boot)
+        self.assertIn("!metrics.progress_process", self.boot)
         self.assertIn('preview_scene == "city-help-kid-intro"', self.boot)
         self.assertIn('metrics.scene_entity, "hal-help-kid-1"', self.boot)
         self.assertIn("metrics.animation_diagnostics_valid", self.boot)
