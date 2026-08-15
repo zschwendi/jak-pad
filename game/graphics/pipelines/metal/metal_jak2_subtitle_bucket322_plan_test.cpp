@@ -24,9 +24,12 @@ void check(bool condition, const char* message) {
   }
 }
 
-std::optional<Plan> plan(const Fixture& fixture, RejectReason* rejection = nullptr) {
+std::optional<Plan> plan(const Fixture& fixture,
+                         RejectReason* rejection = nullptr,
+                         u32* rejection_transfer_index = nullptr) {
   return metal_renderer::plan_jak2_subtitle_bucket322(
-      fixture.ee_memory.data(), fixture.ee_memory.size(), fixture.chain_offset, rejection);
+      fixture.ee_memory.data(), fixture.ee_memory.size(), fixture.chain_offset, rejection,
+      rejection_transfer_index);
 }
 
 void test_policy_stays_deferred() {
@@ -106,6 +109,22 @@ void test_mixed_source_families() {
         "linked text, image, and intro-sprite producers compose only as passive metadata");
 }
 
+void test_semantic_match() {
+  const auto fixture = metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::Mixed);
+  const auto live = plan(fixture);
+  check(live && metal_renderer::jak2_subtitle_bucket322_plans_match(*live, *live),
+        "an identical typed subtitle plan has matching semantics");
+
+  auto copied = *live;
+  copied.semantic_fingerprint++;
+  check(metal_renderer::jak2_subtitle_bucket322_plans_match(*live, copied),
+        "a relocation-sensitive packet fingerprint does not change typed semantics");
+
+  copied.image_uploads[0].image_source_offset++;
+  check(!metal_renderer::jak2_subtitle_bucket322_plans_match(*live, copied),
+        "a typed subtitle image-source change fails semantic matching");
+}
+
 void test_rejections() {
   {
     auto fixture = metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::SubtitleImage);
@@ -175,6 +194,7 @@ int main() {
   test_intro_hud_sprite_family();
   test_subtitle_image_family();
   test_mixed_source_families();
+  test_semantic_match();
   test_rejections();
   std::puts("PASS: Jak II bucket-322 passive subtitle planner");
   return 0;

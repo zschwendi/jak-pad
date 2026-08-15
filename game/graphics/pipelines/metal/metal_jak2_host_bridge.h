@@ -87,6 +87,15 @@ enum {
   GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT = 4,
   GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT = 4,
   GOAL_JAK2_MERC_MODEL_DIAGNOSTIC_COUNT = 16,
+  GOAL_JAK2_SUBTITLE322_VARIANT_COUNT = 5,
+  GOAL_JAK2_SUBTITLE322_REJECT_REASON_COUNT = 7,
+};
+
+enum {
+  GOAL_JAK2_SUBTITLE322_STATUS_MATCHED = 0,
+  GOAL_JAK2_SUBTITLE322_STATUS_REJECTED = 1,
+  GOAL_JAK2_SUBTITLE322_STATUS_SEMANTIC_MISMATCH = 2,
+  GOAL_JAK2_SUBTITLE322_NO_TRANSFER_INDEX = UINT32_MAX,
 };
 
 typedef struct goal_jak2_merc_model_diagnostic_metrics {
@@ -280,6 +289,27 @@ typedef struct goal_jak2_gmerc_warp_bucket317_execution_metrics {
   uint32_t last_snapshot_failures;
   uint64_t last_snapshot_texture;
 } goal_jak2_gmerc_warp_bucket317_execution_metrics;
+
+typedef struct goal_jak2_subtitle_bucket322_typed_metrics {
+  uint64_t observations;
+  uint64_t matched;
+  uint64_t rejected;
+  uint64_t semantic_mismatches;
+  uint64_t variants[GOAL_JAK2_SUBTITLE322_VARIANT_COUNT];
+  uint64_t reject_reasons[GOAL_JAK2_SUBTITLE322_REJECT_REASON_COUNT];
+  uint32_t last_status;
+  uint32_t last_variant;
+  uint32_t last_reject_reason;
+  uint32_t last_reject_transfer_index;
+  uint32_t last_transfer_count;
+  uint32_t last_linker_transfers;
+  uint32_t last_direct_transfers;
+  uint32_t last_opaque_direct_transfers;
+  uint32_t last_hud_sprite_pairs;
+  uint32_t last_image_upload_count;
+  uint64_t last_direct_payload_bytes;
+  uint64_t last_semantic_fingerprint;
+} goal_jak2_subtitle_bucket322_typed_metrics;
 
 typedef struct goal_jak2_metal_host_metrics {
   uint64_t chains;
@@ -499,6 +529,8 @@ typedef struct goal_jak2_metal_host_metrics {
   // Append-only retained identities for the first and latest palette-health events.
   goal_jak2_merc_palette_health_event first_merc_palette_health_event;
   goal_jak2_merc_palette_health_event last_merc_palette_health_event;
+  // Append-only passive typed telemetry. Bucket 322 remains DeferredSkip with no execution route.
+  goal_jak2_subtitle_bucket322_typed_metrics subtitle_bucket322_typed;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

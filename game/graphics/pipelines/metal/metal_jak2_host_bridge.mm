@@ -37,6 +37,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_shadow195_frame_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_subtitle_bucket322_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
@@ -780,6 +781,75 @@ void record_texture_upload_metrics(
       out->last_nonordinary_vif1_immediate = transfer.vif1_immediate;
     }
   }
+}
+
+void record_subtitle_bucket322_typed_metrics(
+    goal_jak2_subtitle_bucket322_typed_metrics* out,
+    const std::optional<metal_renderer::Jak2SubtitleBucket322Plan>& live,
+    metal_renderer::Jak2SubtitleBucket322RejectReason live_rejection,
+    u32 live_rejection_transfer_index,
+    const std::optional<metal_renderer::Jak2SubtitleBucket322Plan>& copied,
+    metal_renderer::Jak2SubtitleBucket322RejectReason copied_rejection,
+    u32 copied_rejection_transfer_index) {
+  ++out->observations;
+  out->last_variant = UINT32_MAX;
+  out->last_reject_reason = static_cast<u32>(metal_renderer::Jak2SubtitleBucket322RejectReason::None);
+  out->last_reject_transfer_index = GOAL_JAK2_SUBTITLE322_NO_TRANSFER_INDEX;
+  out->last_transfer_count = 0;
+  out->last_linker_transfers = 0;
+  out->last_direct_transfers = 0;
+  out->last_opaque_direct_transfers = 0;
+  out->last_hud_sprite_pairs = 0;
+  out->last_image_upload_count = 0;
+  out->last_direct_payload_bytes = 0;
+  out->last_semantic_fingerprint = 0;
+
+  if (!live || !copied) {
+    if (!live && !copied && live_rejection == copied_rejection &&
+        live_rejection_transfer_index == copied_rejection_transfer_index) {
+      ++out->rejected;
+      out->last_status = GOAL_JAK2_SUBTITLE322_STATUS_REJECTED;
+      out->last_reject_reason = static_cast<u32>(live_rejection);
+      out->last_reject_transfer_index = live_rejection_transfer_index;
+      const auto rejection_index = static_cast<std::size_t>(live_rejection);
+      if (rejection_index < GOAL_JAK2_SUBTITLE322_REJECT_REASON_COUNT) {
+        ++out->reject_reasons[rejection_index];
+      }
+      return;
+    }
+    ++out->semantic_mismatches;
+    out->last_status = GOAL_JAK2_SUBTITLE322_STATUS_SEMANTIC_MISMATCH;
+    if (!live) {
+      out->last_reject_reason = static_cast<u32>(live_rejection);
+      out->last_reject_transfer_index = live_rejection_transfer_index;
+    } else {
+      out->last_reject_reason = static_cast<u32>(copied_rejection);
+      out->last_reject_transfer_index = copied_rejection_transfer_index;
+    }
+    return;
+  }
+
+  if (!metal_renderer::jak2_subtitle_bucket322_plans_match(*live, *copied)) {
+    ++out->semantic_mismatches;
+    out->last_status = GOAL_JAK2_SUBTITLE322_STATUS_SEMANTIC_MISMATCH;
+    return;
+  }
+
+  ++out->matched;
+  out->last_status = GOAL_JAK2_SUBTITLE322_STATUS_MATCHED;
+  out->last_variant = static_cast<u32>(live->variant);
+  const auto variant_index = static_cast<std::size_t>(live->variant);
+  if (variant_index < GOAL_JAK2_SUBTITLE322_VARIANT_COUNT) {
+    ++out->variants[variant_index];
+  }
+  out->last_transfer_count = live->transfer_count;
+  out->last_linker_transfers = live->linker_transfers;
+  out->last_direct_transfers = live->direct_transfers;
+  out->last_opaque_direct_transfers = live->opaque_direct_transfers;
+  out->last_hud_sprite_pairs = live->hud_sprite_pairs;
+  out->last_image_upload_count = static_cast<u32>(live->image_upload_count);
+  out->last_direct_payload_bytes = live->direct_payload_bytes;
+  out->last_semantic_fingerprint = live->semantic_fingerprint;
 }
 
 void record_effects_bucket315_metrics(
@@ -1570,6 +1640,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         metal_renderer::kJak2SubtitleBucket);
     record_texture_upload_metrics(&host->metrics.subtitle_capture,
                                   metal_renderer::kJak2SubtitleBucket, subtitle_capture);
+    metal_renderer::Jak2SubtitleBucket322RejectReason live_subtitle_rejection =
+        metal_renderer::Jak2SubtitleBucket322RejectReason::None;
+    u32 live_subtitle_rejection_transfer_index =
+        metal_renderer::kJak2SubtitleNoTransferIndex;
+    const auto live_subtitle_plan = metal_renderer::plan_jak2_subtitle_bucket322(
+        static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, &live_subtitle_rejection,
+        &live_subtitle_rejection_transfer_index);
     const auto shadow_bucket195_capture = metal_renderer::capture_jak2_shadow_bucket195(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2ShadowBucket195);
@@ -1829,6 +1906,18 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           host_texture_mutated);
       return;
     }
+
+    metal_renderer::Jak2SubtitleBucket322RejectReason copied_subtitle_rejection =
+        metal_renderer::Jak2SubtitleBucket322RejectReason::None;
+    u32 copied_subtitle_rejection_transfer_index =
+        metal_renderer::kJak2SubtitleNoTransferIndex;
+    const auto copied_subtitle_plan = metal_renderer::plan_jak2_subtitle_bucket322(
+        copied.data.data(), copied.data.size(), copied.start_offset, &copied_subtitle_rejection,
+        &copied_subtitle_rejection_transfer_index);
+    record_subtitle_bucket322_typed_metrics(
+        &host->metrics.subtitle_bucket322_typed, live_subtitle_plan, live_subtitle_rejection,
+        live_subtitle_rejection_transfer_index, copied_subtitle_plan, copied_subtitle_rejection,
+        copied_subtitle_rejection_transfer_index);
 
     const auto copied_shadow_bucket195_plan = metal_renderer::plan_jak2_shadow_bucket195(
         copied.data.data(), copied.data.size(), copied.start_offset,

@@ -29,6 +29,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_subtitle_bucket322_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_renderer.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
@@ -75,6 +76,9 @@ static_assert(offsetof(goal_jak2_metal_host_metrics, first_merc_palette_health_e
               offsetof(goal_jak2_metal_host_metrics, last_merc_palette_health_event));
 static_assert(offsetof(goal_jak2_metal_host_metrics, last_merc_palette_health_event) +
                   sizeof(goal_jak2_merc_palette_health_event) ==
+              offsetof(goal_jak2_metal_host_metrics, subtitle_bucket322_typed));
+static_assert(offsetof(goal_jak2_metal_host_metrics, subtitle_bucket322_typed) +
+                  sizeof(goal_jak2_subtitle_bucket322_typed_metrics) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -879,6 +883,17 @@ void make_subtitle_direct_only_chain() {
   put_tag(kSubtitleCaptureOffset, DmaTag::Kind::CNT, 10, 0, kFlusha, kDirect | 10);
   put_tag(kSubtitleCaptureOffset + 176, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
   std::memset(ee + kSubtitleCaptureOffset + 16, 0, 160);
+}
+
+void make_subtitle_opaque_direct_chain() {
+  make_empty_chain();
+  auto* ee = static_cast<u8*>(g_ee_main_mem);
+  constexpr u32 kDirect = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
+  const u32 bucket_offset = kChainOffset + kSubtitleBucket * 16;
+  put_tag(bucket_offset, DmaTag::Kind::NEXT, 0, kSubtitleCaptureOffset);
+  put_tag(kSubtitleCaptureOffset, DmaTag::Kind::CNT, 3, 0, 0, kDirect | 3);
+  put_tag(kSubtitleCaptureOffset + 64, DmaTag::Kind::NEXT, 0, bucket_offset + 16);
+  std::memset(ee + kSubtitleCaptureOffset + 16, 0, 48);
 }
 
 void make_subtitle_capture_malformed_chain() {
@@ -2688,17 +2703,47 @@ int main() {
             subtitle_metrics.subtitle_capture.captures == 1 &&
             subtitle_metrics.subtitle_capture.present_captures == 0 &&
             subtitle_metrics.subtitle_capture.executions == 0 &&
+            subtitle_metrics.subtitle_bucket322_typed.observations == 1 &&
+            subtitle_metrics.subtitle_bucket322_typed.matched == 1 &&
+            subtitle_metrics.subtitle_bucket322_typed.variants[static_cast<std::size_t>(
+                metal_renderer::Jak2SubtitleBucket322Variant::Absent)] == 1 &&
+            subtitle_metrics.subtitle_bucket322_typed.last_status ==
+                GOAL_JAK2_SUBTITLE322_STATUS_MATCHED &&
             subtitle_metrics.subtitle_capture.classifications[static_cast<std::size_t>(
                 metal_renderer::Jak2CommonTfragTextureUploadClass::Absent)] == 1,
         "bucket 322 observes the exact empty form without execution");
 
-  make_subtitle_mixed_capture_chain();
+  make_subtitle_opaque_direct_chain();
   subtitle_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(subtitle_host, &subtitle_metrics) &&
             subtitle_metrics.chains == 2 && subtitle_metrics.completed_chains == 2 &&
-            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.captures == 2 &&
-            subtitle_metrics.subtitle_capture.present_captures == 1 &&
+            subtitle_metrics.failed_chains == 0 &&
+            subtitle_metrics.subtitle_bucket322_typed.observations == 2 &&
+            subtitle_metrics.subtitle_bucket322_typed.matched == 2 &&
+            subtitle_metrics.subtitle_bucket322_typed.variants[static_cast<std::size_t>(
+                metal_renderer::Jak2SubtitleBucket322Variant::OpaqueDirect)] == 1 &&
+            subtitle_metrics.subtitle_bucket322_typed.last_transfer_count == 3 &&
+            subtitle_metrics.subtitle_bucket322_typed.last_direct_transfers == 1 &&
+            subtitle_metrics.subtitle_bucket322_typed.last_direct_payload_bytes == 48 &&
             subtitle_metrics.subtitle_capture.executions == 0 &&
+            subtitle_metrics.texture_uploads == 0 &&
+            metal_texture_live_count() == subtitle_initial_live_count,
+        "a copied opaque Direct subtitle plan matches without rendering or mutation");
+
+  make_subtitle_mixed_capture_chain();
+  subtitle_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(subtitle_host, &subtitle_metrics) &&
+            subtitle_metrics.chains == 3 && subtitle_metrics.completed_chains == 3 &&
+            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.captures == 3 &&
+            subtitle_metrics.subtitle_capture.present_captures == 2 &&
+            subtitle_metrics.subtitle_capture.executions == 0 &&
+            subtitle_metrics.subtitle_bucket322_typed.observations == 3 &&
+            subtitle_metrics.subtitle_bucket322_typed.rejected == 1 &&
+            subtitle_metrics.subtitle_bucket322_typed.last_status ==
+                GOAL_JAK2_SUBTITLE322_STATUS_REJECTED &&
+            subtitle_metrics.subtitle_bucket322_typed.last_reject_reason == static_cast<u32>(
+                metal_renderer::Jak2SubtitleBucket322RejectReason::UploadGrammar) &&
+            subtitle_metrics.subtitle_bucket322_typed.last_reject_transfer_index == 1 &&
             subtitle_metrics.subtitle_capture.ordinary_descriptors == 1 &&
             subtitle_metrics.subtitle_capture.animator_arrays == 1 &&
             subtitle_metrics.subtitle_capture.animator_body_transfers == 1 &&
@@ -2712,13 +2757,18 @@ int main() {
   make_subtitle_direct_only_chain();
   subtitle_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(subtitle_host, &subtitle_metrics) &&
-            subtitle_metrics.chains == 3 && subtitle_metrics.completed_chains == 3 &&
-            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.captures == 3 &&
-            subtitle_metrics.subtitle_capture.present_captures == 2 &&
+            subtitle_metrics.chains == 4 && subtitle_metrics.completed_chains == 4 &&
+            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.captures == 4 &&
+            subtitle_metrics.subtitle_capture.present_captures == 3 &&
             subtitle_metrics.subtitle_capture.executions == 0 &&
+            subtitle_metrics.subtitle_bucket322_typed.observations == 4 &&
+            subtitle_metrics.subtitle_bucket322_typed.rejected == 2 &&
+            subtitle_metrics.subtitle_bucket322_typed.last_reject_reason == static_cast<u32>(
+                metal_renderer::Jak2SubtitleBucket322RejectReason::TransferEnvelope) &&
+            subtitle_metrics.subtitle_bucket322_typed.last_reject_transfer_index == 1 &&
             subtitle_metrics.subtitle_capture.direct_setup_transfers == 2 &&
             subtitle_metrics.subtitle_capture.classifications[static_cast<std::size_t>(
-                metal_renderer::Jak2CommonTfragTextureUploadClass::EyeOrOther)] == 1 &&
+                metal_renderer::Jak2CommonTfragTextureUploadClass::EyeOrOther)] == 2 &&
             subtitle_metrics.texture_uploads == 0 &&
             metal_texture_live_count() == subtitle_initial_live_count,
         "unclassified bucket-322 Direct-like metadata stays passive and non-fatal");
@@ -2726,9 +2776,14 @@ int main() {
   make_subtitle_capture_malformed_chain();
   subtitle_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(subtitle_host, &subtitle_metrics) &&
-            subtitle_metrics.chains == 4 && subtitle_metrics.completed_chains == 4 &&
-            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.captures == 4 &&
+            subtitle_metrics.chains == 5 && subtitle_metrics.completed_chains == 5 &&
+            subtitle_metrics.failed_chains == 0 && subtitle_metrics.subtitle_capture.captures == 5 &&
             subtitle_metrics.subtitle_capture.executions == 0 &&
+            subtitle_metrics.subtitle_bucket322_typed.observations == 5 &&
+            subtitle_metrics.subtitle_bucket322_typed.rejected == 3 &&
+            subtitle_metrics.subtitle_bucket322_typed.last_reject_reason == static_cast<u32>(
+                metal_renderer::Jak2SubtitleBucket322RejectReason::TransferEnvelope) &&
+            subtitle_metrics.subtitle_bucket322_typed.last_reject_transfer_index == 0 &&
             subtitle_metrics.subtitle_capture.malformed_transfers == 1 &&
             subtitle_metrics.subtitle_capture.classifications[static_cast<std::size_t>(
                 metal_renderer::Jak2CommonTfragTextureUploadClass::Malformed)] == 1 &&

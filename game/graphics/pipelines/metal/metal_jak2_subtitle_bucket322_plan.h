@@ -11,6 +11,7 @@ namespace metal_renderer {
 constexpr u32 kJak2SubtitleBucket322 = 322;
 constexpr std::size_t kJak2SubtitleMaximumTransfers = 4096;
 constexpr std::size_t kJak2SubtitleMaximumImageUploads = 64;
+constexpr u32 kJak2SubtitleNoTransferIndex = 0xffffffff;
 
 enum class Jak2SubtitleBucket322Variant : u8 {
   Absent,
@@ -69,6 +70,10 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
     const u8* dma_packet_snapshot,
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
-    Jak2SubtitleBucket322RejectReason* out_rejection = nullptr);
+    Jak2SubtitleBucket322RejectReason* out_rejection = nullptr,
+    u32* out_rejection_transfer_index = nullptr);
+
+bool jak2_subtitle_bucket322_plans_match(const Jak2SubtitleBucket322Plan& live,
+                                          const Jak2SubtitleBucket322Plan& copied);
 
 }  // namespace metal_renderer

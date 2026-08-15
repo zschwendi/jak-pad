@@ -82,6 +82,7 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_subtitle_bucket322_plan.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.cpp")

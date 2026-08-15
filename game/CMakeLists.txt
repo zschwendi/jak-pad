@@ -1329,6 +1329,7 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan.cpp
             graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.cpp
             graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.cpp
+            graphics/pipelines/metal/metal_jak2_subtitle_bucket322_plan.cpp
             graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.cpp

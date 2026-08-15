@@ -47,9 +47,14 @@ T read_unaligned(const u8* data) {
 }
 
 void set_rejection(Jak2SubtitleBucket322RejectReason* out,
-                   Jak2SubtitleBucket322RejectReason reason) {
+                   u32* out_transfer_index,
+                   Jak2SubtitleBucket322RejectReason reason,
+                   u32 transfer_index = kJak2SubtitleNoTransferIndex) {
   if (out) {
     *out = reason;
+  }
+  if (out_transfer_index) {
+    *out_transfer_index = transfer_index;
   }
 }
 
@@ -235,8 +240,10 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
     const u8* dma_packet_snapshot,
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
-    Jak2SubtitleBucket322RejectReason* out_rejection) {
-  set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::None);
+    Jak2SubtitleBucket322RejectReason* out_rejection,
+    u32* out_rejection_transfer_index) {
+  set_rejection(out_rejection, out_rejection_transfer_index,
+                Jak2SubtitleBucket322RejectReason::None);
   const std::size_t packet_size = std::min<std::size_t>(dma_packet_snapshot_size, EE_MAIN_MEM_SIZE);
   const u64 bucket_offset64 =
       static_cast<u64>(chain_offset) + static_cast<u64>(kJak2SubtitleBucket322) * 16;
@@ -244,7 +251,8 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
   if (!dma_packet_snapshot || bucket_end64 > packet_size ||
       bucket_end64 > std::numeric_limits<u32>::max() ||
       !validate_jak2_metal_dma_chain(dma_packet_snapshot, packet_size, chain_offset)) {
-    set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::Chain);
+    set_rejection(out_rejection, out_rejection_transfer_index,
+                  Jak2SubtitleBucket322RejectReason::Chain);
     return std::nullopt;
   }
 
@@ -256,11 +264,15 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
     std::size_t transfer_count = 0;
     while (dma.current_tag_offset() != bucket_end) {
       if (dma.ended()) {
-        set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::Chain);
+        set_rejection(out_rejection, out_rejection_transfer_index,
+                      Jak2SubtitleBucket322RejectReason::Chain,
+                      static_cast<u32>(transfer_count));
         return std::nullopt;
       }
       if (transfer_count == transfers.size()) {
-        set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::TransferLimit);
+        set_rejection(out_rejection, out_rejection_transfer_index,
+                      Jak2SubtitleBucket322RejectReason::TransferLimit,
+                      static_cast<u32>(transfer_count));
         return std::nullopt;
       }
       auto& transfer = transfers[transfer_count++];
@@ -290,7 +302,9 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
           is_cnt(transfer, 0, VifCode::Kind::PC_PORT, kStartAnimatorArray, VifCode::Kind::NOP, 0);
       if (image_start) {
         if (plan.image_upload_count == plan.image_uploads.size()) {
-          set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::TransferLimit);
+          set_rejection(out_rejection, out_rejection_transfer_index,
+                        Jak2SubtitleBucket322RejectReason::TransferLimit,
+                        static_cast<u32>(index));
           return std::nullopt;
         }
         if (index + 7 > transfer_count ||
@@ -300,7 +314,9 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
                     VifCode::Kind::NOP, 0) ||
             !is_cnt(transfers[index + 3], 0, VifCode::Kind::PC_PORT, kFinishAnimatorArray,
                     VifCode::Kind::NOP, 0)) {
-          set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::UploadGrammar);
+          set_rejection(out_rejection, out_rejection_transfer_index,
+                        Jak2SubtitleBucket322RejectReason::UploadGrammar,
+                        static_cast<u32>(index));
           return std::nullopt;
         }
         const auto clut = read_upload_record(transfers[index + 1]);
@@ -309,13 +325,17 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
             clut.format != kPsmct32 || clut.force_to_gpu != 0 || image.width == 0 ||
             image.height == 0 || image.destination != 1 || image.format != kPsmt4 ||
             image.force_to_gpu != 1) {
-          set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::UploadMetadata);
+          set_rejection(out_rejection, out_rejection_transfer_index,
+                        Jak2SubtitleBucket322RejectReason::UploadMetadata,
+                        static_cast<u32>(index));
           return std::nullopt;
         }
         if (!image_setup_matches(transfers[index + 4], image.width, image.height) ||
             !image_sprite_matches(transfers[index + 5], image.width, image.height, false) ||
             !image_sprite_matches(transfers[index + 6], image.width, image.height, true)) {
-          set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::ImageDrawGrammar);
+          set_rejection(out_rejection, out_rejection_transfer_index,
+                        Jak2SubtitleBucket322RejectReason::ImageDrawGrammar,
+                        static_cast<u32>(index));
           return std::nullopt;
         }
         auto& image_plan = plan.image_uploads[plan.image_upload_count++];
@@ -334,7 +354,9 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
       }
 
       if (contains_pc_port(transfer)) {
-        set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::UploadGrammar);
+        set_rejection(out_rejection, out_rejection_transfer_index,
+                      Jak2SubtitleBucket322RejectReason::UploadGrammar,
+                      static_cast<u32>(index));
         return std::nullopt;
       }
 
@@ -348,7 +370,9 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
       }
 
       if (!is_direct(transfer, transfer.tag.qwc)) {
-        set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::TransferEnvelope);
+        set_rejection(out_rejection, out_rejection_transfer_index,
+                      Jak2SubtitleBucket322RejectReason::TransferEnvelope,
+                      static_cast<u32>(index));
         return std::nullopt;
       }
       plan.direct_transfers++;
@@ -374,11 +398,39 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
     plan.semantic_fingerprint = fingerprint;
     return plan;
   } catch (const std::exception&) {
-    set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::Chain);
+    set_rejection(out_rejection, out_rejection_transfer_index,
+                  Jak2SubtitleBucket322RejectReason::Chain);
   } catch (...) {
-    set_rejection(out_rejection, Jak2SubtitleBucket322RejectReason::Chain);
+    set_rejection(out_rejection, out_rejection_transfer_index,
+                  Jak2SubtitleBucket322RejectReason::Chain);
   }
   return std::nullopt;
+}
+
+bool jak2_subtitle_bucket322_plans_match(const Jak2SubtitleBucket322Plan& live,
+                                          const Jak2SubtitleBucket322Plan& copied) {
+  // FixedChunkDmaCopier rewrites DMA tag addresses while compacting chunks. The fingerprint keeps
+  // the immutable live packet identity for telemetry, but cannot prove copied semantic equality.
+  if (live.variant != copied.variant || live.image_upload_count != copied.image_upload_count ||
+      live.transfer_count != copied.transfer_count ||
+      live.linker_transfers != copied.linker_transfers ||
+      live.direct_transfers != copied.direct_transfers ||
+      live.opaque_direct_transfers != copied.opaque_direct_transfers ||
+      live.hud_sprite_pairs != copied.hud_sprite_pairs ||
+      live.direct_payload_bytes != copied.direct_payload_bytes) {
+    return false;
+  }
+  for (std::size_t i = 0; i < live.image_upload_count; ++i) {
+    const auto& a = live.image_uploads[i];
+    const auto& b = copied.image_uploads[i];
+    if (a.clut_source_offset != b.clut_source_offset || a.image_source_offset != b.image_source_offset ||
+        a.width != b.width || a.height != b.height ||
+        a.start_transfer_index != b.start_transfer_index ||
+        a.start_relative_tag_offset != b.start_relative_tag_offset) {
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace metal_renderer
