@@ -426,6 +426,13 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan_test.cpp)
     add_test(NAME jak2-raw-image-upload-plan-test COMMAND jak2-raw-image-upload-plan-test)
 
+    add_executable(jak2-subtitle-bucket322-plan-test
+            graphics/pipelines/metal/metal_jak2_bucket_table.cpp
+            graphics/pipelines/metal/metal_jak2_subtitle_bucket322_plan.cpp
+            graphics/pipelines/metal/metal_jak2_subtitle_bucket322_plan_test.cpp)
+    add_test(NAME jak2-subtitle-bucket322-plan-test
+            COMMAND jak2-subtitle-bucket322-plan-test)
+
     add_executable(jak2-str-load-size-test
             overlord/jak2/str_load_size_test.cpp)
     add_test(NAME jak2-str-load-size-test COMMAND jak2-str-load-size-test)
