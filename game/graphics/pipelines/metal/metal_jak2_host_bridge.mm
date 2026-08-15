@@ -2343,8 +2343,16 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         renderer_before.command_buffers_committed, renderer_after.command_buffers_committed, 1);
     const bool exact_drawable_acquisition_count = counter_advanced_by(
         renderer_before.drawables_acquired, renderer_after.drawables_acquired, 1);
+    const bool no_drawable_acquisition = counter_advanced_by(
+        renderer_before.drawables_acquired, renderer_after.drawables_acquired, 0);
+    const bool exact_drawable_miss_count = counter_advanced_by(
+        renderer_before.drawable_misses, renderer_after.drawable_misses, 1);
+    const bool no_drawable_miss = counter_advanced_by(
+        renderer_before.drawable_misses, renderer_after.drawable_misses, 0);
     const bool exact_submission_count =
         counter_advanced_by(renderer_before.submissions, renderer_after.submissions, 1);
+    const bool no_submission =
+        counter_advanced_by(renderer_before.submissions, renderer_after.submissions, 0);
     const bool ocean_buffers_completed = host->metrics.ocean_command_buffers_committed ==
                                              host->metrics.ocean_command_buffers_completed &&
                                          host->metrics.ocean_command_buffer_errors == 0;
@@ -2365,14 +2373,28 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
             host_texture_mutated);
         return;
       }
-    } else if (!acquired || host->metrics.unsupported_blends != 0 || !exact_render_attempt ||
+    } else if (!acquired) {
+      if (host->metrics.unsupported_blends != 0 || !exact_render_attempt ||
+          !exact_presenting_commit_count || !no_drawable_acquisition ||
+          !exact_drawable_miss_count || !no_submission ||
+          host->metrics.late_present_submissions != 0 ||
+          host->metrics.command_buffer_errors != 0) {
+        record_send_chain_failure(
+            host, "Jak 2 drawable-miss counters violated their recoverable drop gate",
+            host_texture_mutated);
+        return;
+      }
+      // CAMetalLayer may transiently withhold a drawable while resizing. Renderer work and host
+      // texture publications are already committed, so drop only this presentation attempt.
+      record_failure(host, "Jak 2 CAMetalLayer did not provide a drawable");
+      return;
+    } else if (host->metrics.unsupported_blends != 0 || !exact_render_attempt ||
                !exact_presenting_commit_count || !exact_drawable_acquisition_count ||
-               host->metrics.drawable_misses != 0 || !exact_submission_count ||
+               !no_drawable_miss || !exact_submission_count ||
                host->metrics.late_present_submissions != 0 ||
                host->metrics.command_buffer_errors != 0) {
       record_send_chain_failure(
-          host, acquired ? "Jak 2 layer-backed submission counters violated their gate"
-                         : "Jak 2 CAMetalLayer did not provide a drawable",
+          host, "Jak 2 layer-backed submission counters violated their gate",
           host_texture_mutated);
       return;
     }

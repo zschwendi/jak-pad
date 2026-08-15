@@ -39,6 +39,26 @@
 
 #import <QuartzCore/CAMetalLayer.h>
 
+@interface GoalJak2TransientDrawableLayer : CAMetalLayer {
+  BOOL _withholdNextDrawable;
+}
+- (void)withholdNextDrawable;
+@end
+
+@implementation GoalJak2TransientDrawableLayer
+- (void)withholdNextDrawable {
+  _withholdNextDrawable = YES;
+}
+
+- (id<CAMetalDrawable>)nextDrawable {
+  if (_withholdNextDrawable) {
+    _withholdNextDrawable = NO;
+    return nil;
+  }
+  return [super nextDrawable];
+}
+@end
+
 namespace {
 
 static_assert(offsetof(goal_jak2_metal_host_metrics, shadow_bucket195_execution) +
@@ -2677,7 +2697,7 @@ int main() {
     check(!goal_jak2_metal_host_metrics_pass_frame_gate(&recovery_metrics, 0),
           "recovery does not weaken the cumulative no-error frame gate");
 
-    CAMetalLayer* rotated_layer = [CAMetalLayer layer];
+    GoalJak2TransientDrawableLayer* rotated_layer = [GoalJak2TransientDrawableLayer layer];
     rotated_layer.drawableSize = CGSizeMake(96, 64);
     check(goal_jak2_metal_host_rebind_presenting_layer(recovery_host, rotated_layer),
           "a presenting host accepts a replacement layer during rotation");
@@ -2689,6 +2709,31 @@ int main() {
               recovery_metrics.command_buffers_committed == 3 &&
               recovery_metrics.drawables_acquired == 3 && recovery_metrics.submissions == 3,
           "the replacement layer resumes drawing without recreating runtime state");
+
+    rotated_layer.drawableSize = CGSizeMake(64, 96);
+    [rotated_layer withholdNextDrawable];
+    write_texture_page();
+    make_sprite_texture_upload_chain();
+    recovery_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+    check(goal_jak2_metal_host_get_metrics(recovery_host, &recovery_metrics) &&
+              recovery_metrics.chains == 5 && recovery_metrics.completed_chains == 3 &&
+              recovery_metrics.failed_chains == 2 &&
+              recovery_metrics.command_buffers_committed == 4 &&
+              recovery_metrics.drawables_acquired == 3 && recovery_metrics.drawable_misses == 1 &&
+              recovery_metrics.submissions == 3 && recovery_metrics.sprite_texture_uploads == 2,
+          "a same-layer resize records one recoverable drawable miss after host texture mutation");
+
+    make_empty_chain();
+    recovery_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+    check(goal_jak2_metal_host_get_metrics(recovery_host, &recovery_metrics) &&
+              recovery_metrics.chains == 6 && recovery_metrics.completed_chains == 4 &&
+              recovery_metrics.failed_chains == 2 &&
+              recovery_metrics.command_buffers_committed == 5 &&
+              recovery_metrics.drawables_acquired == 4 && recovery_metrics.drawable_misses == 1 &&
+              recovery_metrics.submissions == 4,
+          "the next frame presents on the same resized layer after a transient drawable miss");
+    check(!goal_jak2_metal_host_metrics_pass_frame_gate(&recovery_metrics, 0),
+          "recovering presentation does not erase the cumulative drawable-miss diagnostic");
     goal_jak2_metal_host_destroy(recovery_host);
   }
   check(metal_texture_live_count() == initial_texture_count,
