@@ -608,8 +608,12 @@ bool stable_title_for_scene_preview_start() {
 }
 
 bool progress_ready_for_scene_preview() {
-  return std::strcmp(g_metrics.master_mode, "progress") == 0 &&
-         g_metrics.progress_process;
+  if (std::strcmp(g_metrics.master_mode, "progress") != 0 ||
+      !g_metrics.progress_process) {
+    return false;
+  }
+  const auto snapshot = read_progress_menu(nullptr);
+  return snapshot.available && snapshot.navigation_available;
 }
 
 goal_jak2_runtime_status prepare_pending_scene_preview_input() {

@@ -153,8 +153,12 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
             progress_ready_start,
         )
         progress_ready = self.runtime[progress_ready_start:progress_ready_end]
-        self.assertIn('std::strcmp(g_metrics.master_mode, "progress") == 0', progress_ready)
+        self.assertIn('std::strcmp(g_metrics.master_mode, "progress") != 0', progress_ready)
         self.assertIn("g_metrics.progress_process", progress_ready)
+        self.assertIn("const auto snapshot = read_progress_menu(nullptr);", progress_ready)
+        self.assertIn(
+            "return snapshot.available && snapshot.navigation_available;", progress_ready
+        )
 
         title_wait = extract_goal_form(self.title_obs, "(defstate wait (title-control)")
         self.assertIn("(title-menu)", title_wait)
