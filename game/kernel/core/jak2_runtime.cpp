@@ -65,8 +65,22 @@ std::string g_saves_directory;
 uint32_t g_dispatcher = 0;
 uint64_t g_current_tick = 0;
 bool g_owns_kernel = false;
+
+enum class ScenePreviewPhase {
+  kAwaitStableTitle,
+  kAwaitPadReady,
+  kPressStart,
+  kReleaseStart,
+  kAwaitProgress,
+};
+
+constexpr int kScenePreviewNeutralWarmupReads = 4;
+constexpr int kScenePreviewStartPressFrames = 2;
 char g_pending_scene_preview[GOAL_JAK2_SCENE_PREVIEW_NAME_MAX + 1] = {};
 bool g_scene_preview_pending = false;
+ScenePreviewPhase g_scene_preview_phase = ScenePreviewPhase::kAwaitStableTitle;
+int g_scene_preview_start_press_frames = 0;
+int g_scene_preview_pad_read_baseline = 0;
 goal_gfx_dma_stats g_dma_before = {};
 goal_gfx_host g_external_host = {};
 
@@ -561,6 +575,14 @@ goal_jak2_progress_menu_semantic_snapshot unavailable_progress_menu_semantic_sna
   return out;
 }
 
+void reset_scene_preview_request() {
+  g_pending_scene_preview[0] = '\0';
+  g_scene_preview_pending = false;
+  g_scene_preview_phase = ScenePreviewPhase::kAwaitStableTitle;
+  g_scene_preview_start_press_frames = 0;
+  g_scene_preview_pad_read_baseline = 0;
+}
+
 goal_jak2_runtime_status fail_start(std::string message) {
   g_error = std::move(message);
   if (g_owns_kernel) {
@@ -569,8 +591,7 @@ goal_jak2_runtime_status fail_start(std::string message) {
   }
   g_dispatcher = 0;
   g_current_tick = 0;
-  g_pending_scene_preview[0] = '\0';
-  g_scene_preview_pending = false;
+  reset_scene_preview_request();
   g_dma_before = {};
   g_host_observations = {};
   g_host_before = {};
@@ -579,21 +600,69 @@ goal_jak2_runtime_status fail_start(std::string message) {
   return GOAL_JAK2_RUNTIME_START_FAILED;
 }
 
-bool stable_title_for_scene_preview() {
+bool stable_title_for_scene_preview_start() {
   return g_metrics.title_ready && g_metrics.title_control_process &&
          std::strcmp(g_metrics.master_mode, "game") == 0 &&
          std::strcmp(g_metrics.title_control_state, "wait") == 0 &&
          !g_metrics.progress_process;
 }
 
+bool progress_ready_for_scene_preview() {
+  return std::strcmp(g_metrics.master_mode, "progress") == 0 &&
+         g_metrics.progress_process;
+}
+
+goal_jak2_runtime_status prepare_pending_scene_preview_input() {
+  if (!g_scene_preview_pending) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  if (g_scene_preview_phase == ScenePreviewPhase::kAwaitStableTitle) {
+    if (!stable_title_for_scene_preview_start()) {
+      return GOAL_JAK2_RUNTIME_OK;
+    }
+    g_scene_preview_pad_read_baseline = goal_pad_read_count(0);
+    g_scene_preview_phase = ScenePreviewPhase::kAwaitPadReady;
+  } else if (g_scene_preview_phase == ScenePreviewPhase::kAwaitPadReady &&
+             !stable_title_for_scene_preview_start()) {
+    g_scene_preview_phase = ScenePreviewPhase::kAwaitStableTitle;
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  goal_pad_state pad = {};
+  goal_pad_state_neutral(&pad);
+  if (g_scene_preview_phase == ScenePreviewPhase::kAwaitPadReady &&
+      goal_pad_read_count(0) - g_scene_preview_pad_read_baseline >=
+          kScenePreviewNeutralWarmupReads) {
+    g_scene_preview_phase = ScenePreviewPhase::kPressStart;
+  }
+  if (g_scene_preview_phase == ScenePreviewPhase::kPressStart) {
+    pad.buttons = GOAL_PAD_START;
+    g_scene_preview_start_press_frames++;
+    if (g_scene_preview_start_press_frames == kScenePreviewStartPressFrames) {
+      g_scene_preview_phase = ScenePreviewPhase::kReleaseStart;
+    }
+  } else if (g_scene_preview_phase == ScenePreviewPhase::kReleaseStart) {
+    g_scene_preview_phase = ScenePreviewPhase::kAwaitProgress;
+  }
+
+  if (goal_pad_set_state(0, &pad) != GOAL_KERNEL_CORE_OK) {
+    g_error = "Jak 2 scene preview could not override controller port 0";
+    reset_scene_preview_request();
+    return GOAL_JAK2_RUNTIME_REQUEST_FAILED;
+  }
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
 goal_jak2_runtime_status run_pending_scene_preview() {
-  if (!g_scene_preview_pending || !stable_title_for_scene_preview()) {
+  if (!g_scene_preview_pending ||
+      g_scene_preview_phase != ScenePreviewPhase::kAwaitProgress ||
+      !progress_ready_for_scene_preview()) {
     return GOAL_JAK2_RUNTIME_OK;
   }
 
   const std::string requested = g_pending_scene_preview;
-  g_pending_scene_preview[0] = '\0';
-  g_scene_preview_pending = false;
+  reset_scene_preview_request();
 
   // The dispatcher has returned, so there is no active GOAL frame on the shared GOAL stack.
   // make_string_from_c retains this copied name on the global heap for the complete synchronous
@@ -648,8 +717,7 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     g_saves_directory = config->saves_directory ? config->saves_directory : "";
     g_dispatcher = 0;
     g_current_tick = 0;
-    g_pending_scene_preview[0] = '\0';
-    g_scene_preview_pending = false;
+    reset_scene_preview_request();
     g_dma_before = {};
     g_host_observations = {};
     g_host_before = {};
@@ -854,6 +922,9 @@ goal_jak2_runtime_status goal_jak2_runtime_request_scene_preview(const char* sce
   }
   std::memcpy(g_pending_scene_preview, scene_name, length + 1);
   g_scene_preview_pending = true;
+  g_scene_preview_phase = ScenePreviewPhase::kAwaitStableTitle;
+  g_scene_preview_start_press_frames = 0;
+  g_scene_preview_pad_read_baseline = 0;
   g_error.clear();
   return GOAL_JAK2_RUNTIME_OK;
 }
@@ -882,6 +953,10 @@ goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
     // Jak 2's overlord publishes sound/stream state from its vblank handler. The portable runtime
     // has no IOP vblank, so publish the previous dispatcher frame before GOAL consumes it.
     goal_jak2_sound_frame();
+    const auto preview_input_status = prepare_pending_scene_preview_input();
+    if (preview_input_status != GOAL_JAK2_RUNTIME_OK) {
+      return preview_input_status;
+    }
     g_metrics.last_dispatch_result =
         call_goal_on_stack(Ptr<Function>(g_dispatcher), goal_kernel_stack_top(), s7.offset,
                            g_ee_main_mem);
@@ -1050,8 +1125,7 @@ void goal_jak2_runtime_shutdown(void) {
   }
   g_dispatcher = 0;
   g_current_tick = 0;
-  g_pending_scene_preview[0] = '\0';
-  g_scene_preview_pending = false;
+  reset_scene_preview_request();
   g_dma_before = {};
   g_host_observations = {};
   g_host_before = {};

@@ -325,10 +325,11 @@ goal_jak2_runtime_status goal_jak2_runtime_probe_thread_suspend(
     goal_jak2_thread_suspend_probe* out);
 
 /*
- * Copy and queue one authored scene name for the release Scene Player preview path. The request is
- * consumed only after a dispatcher frame leaves the source-validated title menu stable. It does
- * not persist the temporary in-memory Scene Player unlock, select a save, or evaluate arbitrary
- * GOAL text.
+ * Copy and queue one authored scene name for the debug-only Scene Player preview path. At the
+ * source-validated title menu, the pending request transiently drives the normal port-zero START
+ * path into the authored progress process. The helper is called only after progress owns the
+ * master mode. This does not persist the temporary in-memory Scene Player unlock, select a save,
+ * or evaluate arbitrary GOAL text.
  */
 goal_jak2_runtime_status goal_jak2_runtime_request_scene_preview(const char* scene_name);
 

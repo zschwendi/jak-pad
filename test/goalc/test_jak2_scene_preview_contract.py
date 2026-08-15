@@ -130,15 +130,15 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
             )
             self.assertIn(":level 'ctykora", actor_form)
 
-    def test_runtime_request_is_bounded_and_consumed_at_stable_title(self) -> None:
+    def test_runtime_request_uses_authored_title_start_then_consumes_in_progress(self) -> None:
         self.assertIn("GOAL_JAK2_SCENE_PREVIEW_NAME_MAX 63", self.runtime_header)
         self.assertIn("GOAL_JAK2_RUNTIME_REQUEST_FAILED = 6", self.runtime_header)
         self.assertIn("goal_jak2_runtime_request_scene_preview", self.runtime_header)
         self.assertIn("while (length <= GOAL_JAK2_SCENE_PREVIEW_NAME_MAX", self.runtime)
         self.assertNotIn("std::strnlen", self.runtime)
-        stable_title_start = self.runtime.index("bool stable_title_for_scene_preview()")
+        stable_title_start = self.runtime.index("bool stable_title_for_scene_preview_start()")
         stable_title_end = self.runtime.index(
-            "\ngoal_jak2_runtime_status run_pending_scene_preview()", stable_title_start
+            "\nbool progress_ready_for_scene_preview()", stable_title_start
         )
         stable_title = self.runtime[stable_title_start:stable_title_end]
         self.assertIn("g_metrics.title_control_process", stable_title)
@@ -146,15 +146,76 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         self.assertIn('std::strcmp(g_metrics.title_control_state, "wait") == 0', stable_title)
         self.assertIn("!g_metrics.progress_process", stable_title)
         self.assertNotIn("read_progress_menu", stable_title)
+
+        progress_ready_start = self.runtime.index("bool progress_ready_for_scene_preview()")
+        progress_ready_end = self.runtime.index(
+            "\ngoal_jak2_runtime_status prepare_pending_scene_preview_input()",
+            progress_ready_start,
+        )
+        progress_ready = self.runtime[progress_ready_start:progress_ready_end]
+        self.assertIn('std::strcmp(g_metrics.master_mode, "progress") == 0', progress_ready)
+        self.assertIn("g_metrics.progress_process", progress_ready)
+
         title_wait = extract_goal_form(self.title_obs, "(defstate wait (title-control)")
         self.assertIn("(title-menu)", title_wait)
+        title_idle = extract_goal_form(self.title_obs, "(defstate idle (title-control)")
+        self.assertIn("(title-progress 'title)", title_idle)
+
+        prepare_start = self.runtime.index(
+            "goal_jak2_runtime_status prepare_pending_scene_preview_input()"
+        )
+        prepare_end = self.runtime.index(
+            "\ngoal_jak2_runtime_status run_pending_scene_preview()", prepare_start
+        )
+        prepare = self.runtime[prepare_start:prepare_end]
+        self.assertIn("if (!g_scene_preview_pending)", prepare)
+        self.assertIn("ScenePreviewPhase::kAwaitPadReady", prepare)
+        self.assertIn("goal_pad_state_neutral(&pad)", prepare)
+        self.assertIn("goal_pad_read_count(0)", prepare)
+        self.assertIn("pad.buttons = GOAL_PAD_START", prepare)
+        self.assertIn("kScenePreviewNeutralWarmupReads = 4", self.runtime)
+        self.assertIn(
+            "goal_pad_read_count(0) - g_scene_preview_pad_read_baseline >=\n"
+            "          kScenePreviewNeutralWarmupReads",
+            prepare,
+        )
+        self.assertIn("kScenePreviewStartPressFrames = 2", self.runtime)
+        self.assertIn(
+            "g_scene_preview_start_press_frames == kScenePreviewStartPressFrames", prepare
+        )
+        self.assertIn("ScenePreviewPhase::kReleaseStart", prepare)
+        self.assertIn("ScenePreviewPhase::kAwaitProgress", prepare)
+        self.assertIn("goal_pad_set_state(0, &pad)", prepare)
+        self.assertLess(
+            prepare.index("if (!g_scene_preview_pending)"),
+            prepare.index("goal_pad_set_state(0, &pad)"),
+        )
+        self.assertLess(
+            prepare.index("goal_pad_read_count(0) -"),
+            prepare.index("pad.buttons = GOAL_PAD_START"),
+        )
+        self.assertIn(
+            'g_error = "Jak 2 scene preview could not override controller port 0";\n'
+            "    reset_scene_preview_request();",
+            prepare,
+        )
+
+        run_start = self.runtime.index("goal_jak2_runtime_status run_pending_scene_preview()")
+        run_end = self.runtime.index("\n}\n\n}  // namespace", run_start)
+        run_preview = self.runtime[run_start:run_end]
+        self.assertIn(
+            "g_scene_preview_phase != ScenePreviewPhase::kAwaitProgress", run_preview
+        )
+        self.assertIn("!progress_ready_for_scene_preview()", run_preview)
         self.assertIn(
             'goal_aot_call_symbol("pc-preview-scene-by-name", name, 0, 0, &result)',
             self.runtime,
         )
         tick = self.runtime.index("goal_jak2_runtime_status goal_jak2_runtime_tick")
         dispatch = self.runtime.index("call_goal_on_stack(Ptr<Function>(g_dispatcher)", tick)
+        input_override = self.runtime.index("prepare_pending_scene_preview_input()", tick)
         preview = self.runtime.index("run_pending_scene_preview()", dispatch)
+        self.assertLess(input_override, dispatch)
         self.assertLess(dispatch, preview)
         self.assertIn("had_pending_preview && !g_scene_preview_pending", self.runtime[preview:])
 
