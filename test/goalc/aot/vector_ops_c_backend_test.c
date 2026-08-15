@@ -70,6 +70,17 @@ static void expect_words(const char* what, uint32_t w0, uint32_t w1, uint32_t w2
   }
 }
 
+static void expect_words_at(
+    const char* what, uint64_t at, uint32_t w0, uint32_t w1, uint32_t w2, uint32_t w3) {
+  const uint32_t want[4] = {w0, w1, w2, w3};
+  if (memcmp(host(at), want, 16) != 0) {
+    const uint32_t* got = (const uint32_t*)host(at);
+    printf("FAIL %s: got %08x %08x %08x %08x\n", what, got[0], got[1], got[2], got[3]);
+    printf("     wanted %08x %08x %08x %08x\n", w0, w1, w2, w3);
+    g_failures++;
+  }
+}
+
 static void expect_halfwords(const char* what, const uint16_t want[8]) {
   if (memcmp(host(DST), want, 16) != 0) {
     report(what);
@@ -284,6 +295,23 @@ static void test_outer_product(void) {
                 a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0], 1.f);
 }
 
+static void test_div_q_exceptional_values(void) {
+  put_words(SRC_A, 0x3f800000, 0, 0, 0);
+  put_words(SRC_B, 0x80000000, 0, 0, 0);
+  goal_vec_aot_test_div_q(DST, SRC_A, SRC_B);
+  expect_words("div Q +1 / -0", 0xff7fffff, 0xff7fffff, 0xff7fffff, 0xff7fffff);
+
+  put_words(SRC_A, 0x80000000, 0, 0, 0);
+  put_words(SRC_B, 0x00000000, 0, 0, 0);
+  goal_vec_aot_test_div_q(DST, SRC_A, SRC_B);
+  expect_words("div Q -0 / +0", 0xff7fffff, 0xff7fffff, 0xff7fffff, 0xff7fffff);
+
+  put_words(SRC_A, 0x00000001, 0, 0, 0);
+  put_words(SRC_B, 0x3f800000, 0, 0, 0);
+  goal_vec_aot_test_div_q(DST, SRC_A, SRC_B);
+  expect_words("div Q denormal numerator flush", 0, 0, 0, 0);
+}
+
 static void test_merc_matrix_contract(void) {
   /* Identity bind pose and camera, with a 90-degree Z rotation and nonuniform 2x3x4 scale. */
   put_floats(MERC_JOINT, 1.f, 0.f, 0.f, 0.f);
@@ -318,6 +346,26 @@ static void test_merc_matrix_contract(void) {
   expect_floats_at("merc nmat column 0", DST + 64, 0.f, .5f, 0.f, 0.f);
   expect_floats_at("merc nmat column 1", DST + 80, -1.f / 3.f, 0.f, 0.f, 0.f);
   expect_floats_at("merc nmat column 2", DST + 96, 0.f, 0.f, .25f, 0.f);
+
+  /* A zero X scale is singular. The -0.25 Y and 0.5 Z columns have one +0.125 Y cofactor. PS2 DIV
+     clamps 1/0 to MAX; multiplying that exact power-of-two cofactor gives MAX/8 (0x7d7fffff),
+     while the other two normal columns remain zero. */
+  put_floats(MERC_BONE, 0.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 16, -.25f, 0.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 32, 0.f, 0.f, .5f, 0.f);
+  goal_vec_aot_test_merc_matrix(DST, MERC_JOINT, MERC_BONE, MERC_CAMERA);
+  expect_words_at("singular merc nmat column 0", DST + 64, 0, 0x7d7fffff, 0, 0);
+  expect_words_at("singular merc nmat column 1", DST + 80, 0, 0, 0, 0);
+  expect_words_at("singular merc nmat column 2", DST + 96, 0, 0, 0, 0);
+
+  /* A fully collapsed hide transform has no surviving cofactors, so finite MAX Q still produces a
+     zero normal matrix instead of IEEE 0 * infinity NaNs. */
+  put_floats(MERC_BONE + 16, 0.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 32, 0.f, 0.f, 0.f, 0.f);
+  goal_vec_aot_test_merc_matrix(DST, MERC_JOINT, MERC_BONE, MERC_CAMERA);
+  expect_words_at("collapsed merc nmat column 0", DST + 64, 0, 0, 0, 0);
+  expect_words_at("collapsed merc nmat column 1", DST + 80, 0, 0, 0, 0);
+  expect_words_at("collapsed merc nmat column 2", DST + 96, 0, 0, 0, 0);
 }
 
 static void test_vu_sync_barriers(void) {
@@ -355,6 +403,7 @@ int main(void) {
   test_ppach();
   test_blend();
   test_outer_product();
+  test_div_q_exceptional_values();
   test_merc_matrix_contract();
   test_vu_sync_barriers();
   test_scalar_vu_sqrt_results_are_broadcast();

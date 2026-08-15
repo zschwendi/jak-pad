@@ -1563,6 +1563,115 @@ void IR_VFMath3Asm::do_codegen_x86(emitter::ObjectGenerator* gen,
 }
 
 ///////////////////////
+// PS2 VU DIV Q
+///////////////////////
+
+IR_PS2VUDivQ::IR_PS2VUDivQ(bool use_color,
+                           const RegVal* dst,
+                           const RegVal* numerator,
+                           const RegVal* denominator,
+                           const RegVal* scratch_gpr1,
+                           const RegVal* scratch_gpr2,
+                           const RegVal* scratch_vf)
+    : IR_Asm(use_color),
+      m_dst(dst),
+      m_numerator(numerator),
+      m_denominator(denominator),
+      m_scratch_gpr1(scratch_gpr1),
+      m_scratch_gpr2(scratch_gpr2),
+      m_scratch_vf(scratch_vf) {}
+
+std::string IR_PS2VUDivQ::print() {
+  return fmt::format(".div.vf{} {}, {}, {}", get_color_suffix_string(), m_dst->print(),
+                     m_numerator->print(), m_denominator->print());
+}
+
+RegAllocInstr IR_PS2VUDivQ::to_rai() {
+  RegAllocInstr rai;
+  if (m_use_coloring) {
+    rai.write.push_back(m_dst->ireg());
+    rai.write.push_back(m_scratch_gpr1->ireg());
+    rai.write.push_back(m_scratch_gpr2->ireg());
+    rai.write.push_back(m_scratch_vf->ireg());
+    rai.read.push_back(m_numerator->ireg());
+    rai.read.push_back(m_denominator->ireg());
+  }
+  return rai;
+}
+
+void IR_PS2VUDivQ::do_codegen_x86(emitter::ObjectGenerator* gen,
+                                  const AllocationResult& allocs,
+                                  emitter::IR_Record irec) {
+  const auto dst = get_reg_asm(m_dst, allocs, irec, m_use_coloring);
+  const auto numerator = get_reg_asm(m_numerator, allocs, irec, m_use_coloring);
+  const auto denominator = get_reg_asm(m_denominator, allocs, irec, m_use_coloring);
+  const auto scratch1 = get_reg_asm(m_scratch_gpr1, allocs, irec, m_use_coloring);
+  const auto scratch2 = get_reg_asm(m_scratch_gpr2, allocs, irec, m_use_coloring);
+  const auto scratch_vf = get_reg_asm(m_scratch_vf, allocs, irec, m_use_coloring);
+
+  const auto normalize = [&](Register bits, Register temp) {
+    gen->add_instr(IGen::mov_gpr64_gpr64(*gen, temp, bits), irec);
+    gen->add_instr(IGen::shl_gpr64_u8(*gen, temp, 33), irec);
+    gen->add_instr(IGen::shr_gpr64_u8(*gen, temp, 56), irec);
+    gen->add_instr(IGen::sub_gpr64_imm8s(*gen, temp, 1), irec);
+    const auto denormal_jump = gen->add_instr(IGen::jl_imm(*gen), irec);
+    gen->add_instr(IGen::sub_gpr64_imm32s(*gen, temp, 254), irec);
+    const auto exponent_255_jump = gen->add_instr(IGen::je_imm(*gen), irec);
+    const auto normal_jump = gen->add_instr(IGen::jmp_imm(*gen), irec);
+
+    const auto denormal = gen->add_instr(IGen::shr_gpr64_u8(*gen, bits, 31), irec);
+    gen->add_instr(IGen::shl_gpr64_u8(*gen, bits, 31), irec);
+    const auto denormal_done_jump = gen->add_instr(IGen::jmp_imm(*gen), irec);
+
+    const auto exponent_255 = gen->add_instr(IGen::shr_gpr64_u8(*gen, bits, 31), irec);
+    gen->add_instr(IGen::shl_gpr64_u8(*gen, bits, 31), irec);
+    gen->add_instr(IGen::mov_gpr64_u32(*gen, temp, 0x7f7fffff), irec);
+    gen->add_instr(IGen::or_gpr64_gpr64(*gen, bits, temp), irec);
+    const auto done = gen->add_instr(IGen::nop(*gen), irec);
+
+    gen->link_instruction_jump(denormal_jump, denormal);
+    gen->link_instruction_jump(exponent_255_jump, exponent_255);
+    gen->link_instruction_jump(normal_jump, done);
+    gen->link_instruction_jump(denormal_done_jump, done);
+  };
+
+  gen->add_instr(IGen::movd_gpr32_f32(*gen, scratch1, numerator), irec);
+  normalize(scratch1, scratch2);
+  gen->add_instr(IGen::movd_gpr32_f32(*gen, scratch2, denominator), irec);
+  gen->add_instr(IGen::movd_f32_gpr32(*gen, dst, scratch1), irec);
+  normalize(scratch2, scratch1);
+
+  gen->add_instr(IGen::mov_gpr64_gpr64(*gen, scratch1, scratch2), irec);
+  gen->add_instr(IGen::shl_gpr64_u8(*gen, scratch1, 33), irec);
+  gen->add_instr(IGen::shr_gpr64_u8(*gen, scratch1, 33), irec);
+  gen->add_instr(IGen::sub_gpr64_imm8s(*gen, scratch1, 1), irec);
+  const auto zero_denominator_jump = gen->add_instr(IGen::jl_imm(*gen), irec);
+
+  gen->add_instr(IGen::movd_f32_gpr32(*gen, scratch_vf, scratch2), irec);
+  gen->add_instr(IGen::splat_vf(*gen, dst, dst, Register::VF_ELEMENT::X), irec);
+  gen->add_instr(IGen::splat_vf(*gen, scratch_vf, scratch_vf, Register::VF_ELEMENT::X), irec);
+  gen->add_instr(IGen::div_vf(*gen, dst, dst, scratch_vf), irec);
+  gen->add_instr(IGen::movd_gpr32_f32(*gen, scratch1, dst), irec);
+  normalize(scratch1, scratch2);
+  gen->add_instr(IGen::movd_f32_gpr32(*gen, dst, scratch1), irec);
+  gen->add_instr(IGen::splat_vf(*gen, dst, dst, Register::VF_ELEMENT::X), irec);
+  const auto ordinary_done_jump = gen->add_instr(IGen::jmp_imm(*gen), irec);
+
+  const auto zero_denominator = gen->add_instr(IGen::movd_gpr32_f32(*gen, scratch1, dst), irec);
+  gen->add_instr(IGen::xor_gpr64_gpr64(*gen, scratch1, scratch2), irec);
+  gen->add_instr(IGen::shr_gpr64_u8(*gen, scratch1, 31), irec);
+  gen->add_instr(IGen::shl_gpr64_u8(*gen, scratch1, 31), irec);
+  gen->add_instr(IGen::mov_gpr64_u32(*gen, scratch2, 0x7f7fffff), irec);
+  gen->add_instr(IGen::or_gpr64_gpr64(*gen, scratch1, scratch2), irec);
+  gen->add_instr(IGen::movd_f32_gpr32(*gen, dst, scratch1), irec);
+  gen->add_instr(IGen::splat_vf(*gen, dst, dst, Register::VF_ELEMENT::X), irec);
+  const auto done = gen->add_instr(IGen::nop(*gen), irec);
+
+  gen->link_instruction_jump(zero_denominator_jump, zero_denominator);
+  gen->link_instruction_jump(ordinary_done_jump, done);
+}
+
+///////////////////////
 // IR_Int128Math3Asm
 ///////////////////////
 

@@ -79,6 +79,7 @@ class ObjectGenerator {
   StaticRecord add_static_to_seg(int seg, int min_align = 16);
   std::vector<u8>& get_static_data(const StaticRecord& rec);
   void link_instruction_jump(InstructionRecord jump_instr, IR_Record destination);
+  void link_instruction_jump(InstructionRecord jump_instr, InstructionRecord destination);
   void link_static_type_ptr(StaticRecord rec, int offset, const std::string& type_name);
 
   void link_instruction_symbol_mem(const InstructionRecord& rec, const std::string& name);
@@ -200,6 +201,11 @@ class ObjectGenerator {
     IR_Record dest;
   };
 
+  struct InstructionJumpLink {
+    InstructionRecord jump_instr;
+    InstructionRecord dest;
+  };
+
   struct PointerLink {
     int segment = -1;
     // both in bytes.
@@ -226,6 +232,7 @@ class ObjectGenerator {
   // temp link stuff
   seg_map<StaticTypeLink> m_static_type_temp_links_by_seg;
   seg_vector<JumpLink> m_jump_temp_links_by_seg;
+  seg_vector<InstructionJumpLink> m_instruction_jump_temp_links_by_seg;
   seg_map<SymbolInstrLink> m_symbol_instr_temp_links_by_seg;
   seg_map<StaticSymbolLink> m_static_sym_temp_links_by_seg;
   seg_vector<StaticDataPointerLink> m_static_data_temp_ptr_links_by_seg;

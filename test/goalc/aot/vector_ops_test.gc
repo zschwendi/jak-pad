@@ -157,6 +157,16 @@
      (.outer.product.a.vf acc ,a ,b)
      (.outer.product.b.vf ,out ,b ,a acc)))
 
+(defun aot-test-div-q ((dst (pointer uint128)) (numerator (pointer uint128)) (denominator (pointer uint128)))
+  (rlet ((vf1 :class vf)
+         (vf2 :class vf)
+         (vf3 :class vf))
+    (.lvf vf1 numerator)
+    (.lvf vf2 denominator)
+    (.div.vf vf3 vf1 vf2 :fsf #b0 :ftf #b0)
+    (.svf dst vf3))
+  (none))
+
 (defun aot-test-merc-matrix
     ((dst pointer) (joint pointer) (bone pointer) (camera pointer))
   "The vector-assembly core of Jak II's new-bones-mtx-calc-asm. This keeps its split outer

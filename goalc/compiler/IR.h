@@ -637,6 +637,34 @@ class IR_VFMath3Asm : public IR_Asm {
   Kind m_kind;
 };
 
+class IR_PS2VUDivQ : public IR_Asm {
+ public:
+  IR_PS2VUDivQ(bool use_color,
+               const RegVal* dst,
+               const RegVal* numerator,
+               const RegVal* denominator,
+               const RegVal* scratch_gpr1,
+               const RegVal* scratch_gpr2,
+               const RegVal* scratch_vf);
+  std::string print() override;
+  RegAllocInstr to_rai() override;
+  void do_codegen_x86(emitter::ObjectGenerator* gen,
+                      const AllocationResult& allocs,
+                      emitter::IR_Record irec) override;
+
+  const RegVal* destination() const { return m_dst; }
+  const RegVal* numerator() const { return m_numerator; }
+  const RegVal* denominator() const { return m_denominator; }
+
+ protected:
+  const RegVal* m_dst = nullptr;
+  const RegVal* m_numerator = nullptr;
+  const RegVal* m_denominator = nullptr;
+  const RegVal* m_scratch_gpr1 = nullptr;
+  const RegVal* m_scratch_gpr2 = nullptr;
+  const RegVal* m_scratch_vf = nullptr;
+};
+
 class IR_Int128Math3Asm : public IR_Asm {
  public:
   // these are MIPS names, not x86 names.
