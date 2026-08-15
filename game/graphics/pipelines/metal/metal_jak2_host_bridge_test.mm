@@ -62,7 +62,11 @@
 namespace {
 
 static_assert(offsetof(goal_jak2_metal_host_metrics, shadow_bucket195_execution) +
-                  sizeof(goal_jak2_shadow_bucket195_execution_metrics) ==
+                  sizeof(goal_jak2_shadow_bucket195_execution_metrics) <=
+              offsetof(goal_jak2_metal_host_metrics, last_merc_model_diagnostic_count));
+static_assert(offsetof(goal_jak2_metal_host_metrics, last_merc_model_diagnostics) +
+                  sizeof(((goal_jak2_metal_host_metrics*)nullptr)
+                             ->last_merc_model_diagnostics) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -1811,6 +1815,14 @@ int main() {
             metrics.last_merc_models == 0 && metrics.last_merc_draws == 0 &&
             metrics.last_merc_triangles == 0 && metrics.last_merc_malformed_dma == 0 &&
             metrics.last_merc_missing_models == 0 &&
+            metrics.last_merc_model_diagnostic_count == 0 &&
+            metrics.last_merc_model_diagnostic_overflow_packets == 0 &&
+            metrics.last_merc_model_diagnostics[0].bucket_id == 0 &&
+            metrics.last_merc_model_diagnostics[0].model_name_hash == 0 &&
+            metrics.last_merc_model_diagnostics[0].packets == 0 &&
+            metrics.last_merc_model_diagnostics[0].draws == 0 &&
+            metrics.last_merc_model_diagnostics[0].triangles == 0 &&
+            metrics.last_merc_model_diagnostics[0].missing_models == 0 &&
             metrics.last_merc_bad_bone_pointers == 0 &&
             metrics.last_merc_missing_bone_slots == 0 &&
             metrics.last_merc_nonfinite_bone_matrices == 0 &&

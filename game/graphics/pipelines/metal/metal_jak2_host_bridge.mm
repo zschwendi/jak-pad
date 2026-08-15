@@ -325,6 +325,22 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_merc_models = stats.merc_models;
   host->metrics.last_merc_draws = stats.merc_draws;
   host->metrics.last_merc_triangles = stats.merc_triangles;
+  static_assert(GOAL_JAK2_MERC_MODEL_DIAGNOSTIC_COUNT ==
+                std::tuple_size_v<decltype(stats.merc_model_diagnostics)>);
+  host->metrics.last_merc_model_diagnostic_count =
+      static_cast<uint32_t>(stats.merc_model_diagnostic_count);
+  host->metrics.last_merc_model_diagnostic_overflow_packets =
+      stats.merc_model_diagnostic_overflow_packets;
+  for (std::size_t i = 0; i < stats.merc_model_diagnostics.size(); ++i) {
+    const auto& source = stats.merc_model_diagnostics[i];
+    auto& destination = host->metrics.last_merc_model_diagnostics[i];
+    destination.bucket_id = source.bucket_id;
+    destination.model_name_hash = source.model_name_hash;
+    destination.packets = source.packets;
+    destination.draws = source.draws;
+    destination.triangles = source.triangles;
+    destination.missing_models = source.missing_models;
+  }
   host->metrics.last_merc_anim_slot_draws = stats.merc_anim_slot_draws;
   host->metrics.last_merc_anim_slot_placeholder_draws =
       stats.merc_anim_slot_placeholder_draws;

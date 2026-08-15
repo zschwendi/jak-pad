@@ -86,7 +86,17 @@ enum {
   GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT = 7,
   GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT = 4,
   GOAL_JAK2_MERC_ANIM_SLOT_DIAGNOSTIC_COUNT = 4,
+  GOAL_JAK2_MERC_MODEL_DIAGNOSTIC_COUNT = 16,
 };
+
+typedef struct goal_jak2_merc_model_diagnostic_metrics {
+  uint32_t bucket_id;
+  uint64_t model_name_hash;
+  uint64_t packets;
+  uint64_t draws;
+  uint64_t triangles;
+  uint64_t missing_models;
+} goal_jak2_merc_model_diagnostic_metrics;
 
 typedef struct goal_jak2_tfrag_texture_upload_metrics {
   uint32_t bucket_id;
@@ -468,6 +478,11 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_gmerc_warp_bucket317_execution_metrics gmerc_warp_bucket317_execution;
   // Append-only exact execution telemetry for source Shadow2 bucket 195.
   goal_jak2_shadow_bucket195_execution_metrics shadow_bucket195_execution;
+  // Append-only bounded standard-Merc packet and encoded-draw identity for the last chain.
+  uint32_t last_merc_model_diagnostic_count;
+  uint64_t last_merc_model_diagnostic_overflow_packets;
+  goal_jak2_merc_model_diagnostic_metrics
+      last_merc_model_diagnostics[GOAL_JAK2_MERC_MODEL_DIAGNOSTIC_COUNT];
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

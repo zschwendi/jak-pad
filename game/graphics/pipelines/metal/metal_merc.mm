@@ -390,9 +390,62 @@ void blerc_vertices(const u32* i_data,
 
 }  // namespace
 
+void MetalMerc2::Stats::record_model_packet(u64 model_name_hash, bool missing) {
+  for (std::size_t i = 0; i < model_diagnostic_count; ++i) {
+    auto& diagnostic = model_diagnostics[i];
+    if (diagnostic.model_name_hash == model_name_hash) {
+      diagnostic.packets++;
+      diagnostic.missing_models += missing ? 1 : 0;
+      return;
+    }
+  }
+  if (model_diagnostic_count == model_diagnostics.size()) {
+    model_diagnostic_overflow_packets++;
+    return;
+  }
+  auto& diagnostic = model_diagnostics[model_diagnostic_count++];
+  diagnostic.model_name_hash = model_name_hash;
+  diagnostic.packets = 1;
+  diagnostic.missing_models = missing ? 1 : 0;
+}
+
+void MetalMerc2::Stats::record_model_draw(u64 model_name_hash, u64 draw_triangles) {
+  for (std::size_t i = 0; i < model_diagnostic_count; ++i) {
+    auto& diagnostic = model_diagnostics[i];
+    if (diagnostic.model_name_hash == model_name_hash) {
+      diagnostic.draws++;
+      diagnostic.triangles += draw_triangles;
+      return;
+    }
+  }
+}
+
 void MetalMerc2::Stats::add(const Stats& o) {
   models += o.models;
   missing_models += o.missing_models;
+  for (std::size_t i = 0; i < o.model_diagnostic_count; ++i) {
+    const auto& source = o.model_diagnostics[i];
+    metal_renderer::MercModelDiagnostic* destination = nullptr;
+    for (std::size_t j = 0; j < model_diagnostic_count; ++j) {
+      if (model_diagnostics[j].model_name_hash == source.model_name_hash) {
+        destination = &model_diagnostics[j];
+        break;
+      }
+    }
+    if (!destination && model_diagnostic_count < model_diagnostics.size()) {
+      destination = &model_diagnostics[model_diagnostic_count++];
+      destination->model_name_hash = source.model_name_hash;
+    }
+    if (destination) {
+      destination->packets += source.packets;
+      destination->draws += source.draws;
+      destination->triangles += source.triangles;
+      destination->missing_models += source.missing_models;
+    } else {
+      model_diagnostic_overflow_packets += source.packets;
+    }
+  }
+  model_diagnostic_overflow_packets += o.model_diagnostic_overflow_packets;
   effects += o.effects;
   draws += o.draws;
   triangles += o.triangles;
@@ -936,6 +989,8 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   input_data += 128;
 
   auto model_ref = metal_merc_models().get_merc_model(name);
+  const u64 model_name_hash = fnv64(std::string(name));
+  stats->record_model_packet(model_name_hash, !model_ref);
   if (!model_ref) {
     // the level holding this model is not loaded: don't draw, and say so.
     stats->missing_models++;
@@ -1857,6 +1912,7 @@ void MetalMerc2::do_draws(const Draw* draw_array,
 
     stats->draws++;
     stats->triangles += draw.num_triangles;
+    stats->record_model_draw(draw.model_name_hash, draw.num_triangles);
     if (envmap) {
       stats->envmap_draws++;
     }

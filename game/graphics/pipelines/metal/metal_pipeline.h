@@ -41,6 +41,16 @@ struct Level;
 namespace metal_renderer {
 
 inline constexpr std::size_t kTrackedDeferredBuckets = 4;
+inline constexpr std::size_t kMercModelDiagnosticCapacity = 16;
+
+struct MercModelDiagnostic {
+  u32 bucket_id = 0;
+  u64 model_name_hash = 0;
+  u64 packets = 0;
+  u64 draws = 0;
+  u64 triangles = 0;
+  u64 missing_models = 0;
+};
 
 // RGBA8 copy of a rendered frame, used by tests to verify that rendering
 // actually happened. Origin is the top-left corner.
@@ -279,6 +289,9 @@ struct ChainStats {
   // merc buckets, from the last chain frame
   int merc_models = 0;
   int merc_missing_models = 0;  // the model's level is not loaded
+  std::array<MercModelDiagnostic, kMercModelDiagnosticCapacity> merc_model_diagnostics = {};
+  std::size_t merc_model_diagnostic_count = 0;
+  u64 merc_model_diagnostic_overflow_packets = 0;
   int merc_malformed_dma = 0;
   u32 merc_preflight_rejection_reason = 0;
   int merc_draws = 0;

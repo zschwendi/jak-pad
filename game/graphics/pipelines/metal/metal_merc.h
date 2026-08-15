@@ -43,6 +43,11 @@ class MetalMerc2 {
   struct Stats {
     int models = 0;
     int missing_models = 0;
+    std::array<metal_renderer::MercModelDiagnostic,
+               metal_renderer::kMercModelDiagnosticCapacity>
+        model_diagnostics = {};
+    std::size_t model_diagnostic_count = 0;
+    u64 model_diagnostic_overflow_packets = 0;
     int effects = 0;
     int draws = 0;
     int triangles = 0;
@@ -101,6 +106,8 @@ class MetalMerc2 {
     metal_merc_transform_trace::TargetControlEvent first_eichar_target_control_event;
     metal_merc_transform_trace::TargetControlEvent last_eichar_target_control_event;
 
+    void record_model_packet(u64 model_name_hash, bool missing);
+    void record_model_draw(u64 model_name_hash, u64 draw_triangles);
     void add(const Stats& o);
   };
 

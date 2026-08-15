@@ -1704,6 +1704,9 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.eye_command_buffer_errors = 0;
     m_chain_stats.eye_last_command_buffer_status = 0;
     m_chain_stats.eye_texture = 0;
+    m_chain_stats.merc_model_diagnostics = {};
+    m_chain_stats.merc_model_diagnostic_count = 0;
+    m_chain_stats.merc_model_diagnostic_overflow_packets = 0;
     MetalMerc2::Stats merc_stats;
     MetalGeneric2::Stats generic_stats;
     MetalGeneric2::Stats effects315_stats;
@@ -1875,6 +1878,22 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         m_chain_stats.sprite_unsupported_bytes = ss.unsupported_bytes;
         skipped += sp->unsupported_bytes_total();
       } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {
+        const auto& bucket_stats = mc->stats();
+        for (std::size_t i = 0; i < bucket_stats.model_diagnostic_count; ++i) {
+          const auto& source = bucket_stats.model_diagnostics[i];
+          if (m_chain_stats.merc_model_diagnostic_count ==
+              m_chain_stats.merc_model_diagnostics.size()) {
+            m_chain_stats.merc_model_diagnostic_overflow_packets += source.packets;
+            continue;
+          }
+          auto& destination =
+              m_chain_stats
+                  .merc_model_diagnostics[m_chain_stats.merc_model_diagnostic_count++];
+          destination = source;
+          destination.bucket_id = static_cast<u32>(bucket_id);
+        }
+        m_chain_stats.merc_model_diagnostic_overflow_packets +=
+            bucket_stats.model_diagnostic_overflow_packets;
         merc_stats.add(mc->stats());
       } else if (auto* sh = dynamic_cast<MetalShadowRenderer*>(r.get())) {
         const auto& ss = sh->stats();

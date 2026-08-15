@@ -624,6 +624,26 @@ int main() {
           "one source-shaped Jak 2 Merc packet draws one two-triangle model without gaps");
     check(count_non_black(positive.pixels) > 0,
           "the source-shaped Jak 2 Merc model produces non-black GPU pixels");
+    check(positive.stats.model_diagnostic_count == 1 &&
+              positive.stats.model_diagnostic_overflow_packets == 0 &&
+              positive.stats.model_diagnostics[0].model_name_hash ==
+                  fnv64(std::string(kNormalModelName)) &&
+              positive.stats.model_diagnostics[0].packets == 1 &&
+              positive.stats.model_diagnostics[0].draws == 1 &&
+              positive.stats.model_diagnostics[0].triangles == 2 &&
+              positive.stats.model_diagnostics[0].missing_models == 0,
+          "Merc retains bounded numeric model identity from packet through encoded draw");
+
+    MetalMerc2::Stats bounded_diagnostics;
+    for (std::size_t i = 0; i < metal_renderer::kMercModelDiagnosticCapacity; ++i) {
+      bounded_diagnostics.record_model_packet(static_cast<u64>(i + 1), false);
+    }
+    bounded_diagnostics.record_model_packet(
+        static_cast<u64>(metal_renderer::kMercModelDiagnosticCapacity + 1), false);
+    check(bounded_diagnostics.model_diagnostic_count ==
+                  metal_renderer::kMercModelDiagnosticCapacity &&
+              bounded_diagnostics.model_diagnostic_overflow_packets == 1,
+          "Merc model identity telemetry stays bounded and counts overflow packets");
 
     auto common_shrub_memory = make_source_chain(kNormalModelName);
     const auto common_shrub = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
@@ -701,6 +721,34 @@ int main() {
               spliced_pris.stats.missing_models == 0 &&
               count_non_black(spliced_pris.pixels) > 0,
           "the per-level PRIS Merc path draws two logical chains separated by a padding NEXT");
+    check(spliced_pris.stats.model_diagnostic_count == 1 &&
+              spliced_pris.stats.model_diagnostic_overflow_packets == 0 &&
+              spliced_pris.stats.model_diagnostics[0].model_name_hash ==
+                  fnv64(std::string(kNormalModelName)) &&
+              spliced_pris.stats.model_diagnostics[0].packets == 2 &&
+              spliced_pris.stats.model_diagnostics[0].draws == 2 &&
+              spliced_pris.stats.model_diagnostics[0].triangles == 4 &&
+              spliced_pris.stats.model_diagnostics[0].missing_models == 0,
+          "Merc folds repeated packets for one model into one bounded diagnostic record");
+
+    constexpr const char* kMissingDiagnosticModel = "missing-title-model-lod0";
+    auto missing_diagnostic_memory = make_source_chain(kMissingDiagnosticModel);
+    const auto missing_diagnostic =
+        render(device, queue, &pso_cache, &sampler_cache, &texture_pool, &pris_renderer,
+               &missing_diagnostic_memory, routed_frame++);
+    check(missing_diagnostic.completed && missing_diagnostic.final_offset == kBoundary &&
+              missing_diagnostic.stats.models == 0 && missing_diagnostic.stats.draws == 0 &&
+              missing_diagnostic.stats.triangles == 0 &&
+              missing_diagnostic.stats.missing_models == 1 &&
+              missing_diagnostic.stats.model_diagnostic_count == 1 &&
+              missing_diagnostic.stats.model_diagnostic_overflow_packets == 0 &&
+              missing_diagnostic.stats.model_diagnostics[0].model_name_hash ==
+                  fnv64(std::string(kMissingDiagnosticModel)) &&
+              missing_diagnostic.stats.model_diagnostics[0].packets == 1 &&
+              missing_diagnostic.stats.model_diagnostics[0].draws == 0 &&
+              missing_diagnostic.stats.model_diagnostics[0].triangles == 0 &&
+              missing_diagnostic.stats.model_diagnostics[0].missing_models == 1,
+          "Merc identifies a packet whose named model never reached the loaded pool");
 
     auto filtered_memory = make_source_chain(kFilteredModelName);
     const auto filtered = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
