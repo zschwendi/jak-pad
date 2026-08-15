@@ -27,6 +27,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_raw_image_upload_fixture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_renderer.h"
@@ -157,6 +158,17 @@ void check(bool condition, const char* message) {
   if (!condition) {
     failures++;
   }
+}
+
+u64 fingerprint_serialized_bytes(const std::vector<u8>& bytes) {
+  constexpr u64 kFnvOffsetBasis = 14695981039346656037ull;
+  constexpr u64 kFnvPrime = 1099511628211ull;
+  u64 fingerprint = kFnvOffsetBasis;
+  for (const u8 byte : bytes) {
+    fingerprint ^= byte;
+    fingerprint *= kFnvPrime;
+  }
+  return fingerprint;
 }
 
 std::array<u8, 4> first_pixel(u64 handle) {
@@ -2121,6 +2133,12 @@ int main() {
             metal_renderer::jak2_metal_bucket_table()[kShadowBucket].behavior ==
                 metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
         "created a host with physically rejected Shadow2 bucket 195 deferred");
+  uint64_t shadow_capture_size = 1;
+  uint64_t shadow_capture_fingerprint = 1;
+  check(!goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(
+            shadow_host, nullptr, 0, &shadow_capture_size, &shadow_capture_fingerprint) &&
+            shadow_capture_size == 0 && shadow_capture_fingerprint == 0,
+        "a new host reports no retained bucket-195 plan capture");
   goal_jak2_metal_host_metrics shadow_metrics = {};
   make_empty_chain();
   shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
@@ -2137,7 +2155,10 @@ int main() {
             shadow_metrics.shadow_bucket195_execution.last_actual_executions == 0 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_absent == 0 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_draws == 0 &&
-            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 0,
+            shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 0 &&
+            !goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(
+                shadow_host, nullptr, 0, &shadow_capture_size, &shadow_capture_fingerprint) &&
+            shadow_capture_size == 0 && shadow_capture_fingerprint == 0,
         "deferred bucket 195 still captures its exact Absent form without drawing");
 
   make_shadow_bucket195_chain();
@@ -2176,10 +2197,52 @@ int main() {
             metal_texture_live_count() == shadow_initial_live_count,
         "top-only MSCALF6 remains captured while bucket 195 stays deferred and no-draw");
 
+  check(goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(
+            shadow_host, nullptr, 0, &shadow_capture_size, &shadow_capture_fingerprint) &&
+            shadow_capture_size > 0 &&
+            shadow_capture_size <= metal_renderer::kJak2ShadowBucket195PlanMaximumSerializedBytes &&
+            shadow_capture_fingerprint != 0,
+        "the first matched non-absent bucket-195 plan exposes a bounded size query");
+  std::vector<u8> undersized_shadow_capture(shadow_capture_size - 1, 0xa5);
+  const auto untouched_undersized_shadow_capture = undersized_shadow_capture;
+  uint64_t reported_shadow_capture_size = 0;
+  uint64_t reported_shadow_capture_fingerprint = 0;
+  check(!goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(
+            shadow_host, undersized_shadow_capture.data(), undersized_shadow_capture.size(),
+            &reported_shadow_capture_size, &reported_shadow_capture_fingerprint) &&
+            reported_shadow_capture_size == shadow_capture_size &&
+            reported_shadow_capture_fingerprint == shadow_capture_fingerprint &&
+            undersized_shadow_capture == untouched_undersized_shadow_capture,
+        "an undersized bucket-195 capture buffer reports capacity without a partial copy");
+  std::vector<u8> first_shadow_capture(shadow_capture_size);
+  check(
+      goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(
+          shadow_host, first_shadow_capture.data(), first_shadow_capture.size(),
+          &reported_shadow_capture_size, &reported_shadow_capture_fingerprint) &&
+          reported_shadow_capture_size == first_shadow_capture.size() &&
+          reported_shadow_capture_fingerprint == fingerprint_serialized_bytes(first_shadow_capture),
+      "an exact-capacity query copies the complete stable versioned capture");
+  const auto decoded_shadow_capture = metal_renderer::deserialize_jak2_shadow_bucket195_plan(
+      first_shadow_capture.data(), first_shadow_capture.size());
+  check(decoded_shadow_capture &&
+            decoded_shadow_capture->disposition ==
+                metal_renderer::Jak2ShadowBucket195PlanDisposition::AcceptedDeferredNoDraw,
+        "the retained host bytes decode to the first top-only typed plan without authorizing draw");
+
+  make_empty_chain();
+  shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  std::vector<u8> retained_shadow_capture(first_shadow_capture.size());
+  check(goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(
+            shadow_host, retained_shadow_capture.data(), retained_shadow_capture.size(),
+            &reported_shadow_capture_size, &reported_shadow_capture_fingerprint) &&
+            retained_shadow_capture == first_shadow_capture &&
+            reported_shadow_capture_fingerprint == shadow_capture_fingerprint,
+        "a later Absent bucket does not replace the first non-absent plan capture");
+
   make_shadow_bucket195_chain(true);
   shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(shadow_host, &shadow_metrics) &&
-            shadow_metrics.chains == 3 && shadow_metrics.completed_chains == 3 &&
+            shadow_metrics.chains == 4 && shadow_metrics.completed_chains == 4 &&
             shadow_metrics.failed_chains == 0 &&
             shadow_metrics.shadow_bucket195_execution.completed_executions == 0 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_ready == 0 &&
@@ -2200,6 +2263,12 @@ int main() {
             shadow_metrics.shadow_bucket195_execution.last_actual_pipeline_failures == 0 &&
             shadow_metrics.shadow_bucket195_execution.last_actual_reached_boundary == 0,
         "a Ready bucket-195 plan remains capture-only after physical rejection");
+  check(goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(
+            shadow_host, retained_shadow_capture.data(), retained_shadow_capture.size(),
+            &reported_shadow_capture_size, &reported_shadow_capture_fingerprint) &&
+            retained_shadow_capture == first_shadow_capture &&
+            reported_shadow_capture_fingerprint == shadow_capture_fingerprint,
+        "a later Ready plan does not replace the host's first valid capture");
 
   const uint32_t shadow_copied_before_malformed = shadow_metrics.last_copied_bytes;
   make_shadow_bucket195_chain();
@@ -2207,12 +2276,26 @@ int main() {
   static_cast<u8*>(g_ee_main_mem)[kTopOnlyIndexHeaderOffset] = 0;
   shadow_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(shadow_host, &shadow_metrics) &&
-            shadow_metrics.chains == 4 && shadow_metrics.completed_chains == 3 &&
+            shadow_metrics.chains == 5 && shadow_metrics.completed_chains == 4 &&
             shadow_metrics.failed_chains == 1 &&
             shadow_metrics.last_copied_bytes == shadow_copied_before_malformed &&
-            shadow_metrics.shadow_bucket195_execution.completed_executions == 0,
+            shadow_metrics.shadow_bucket195_execution.completed_executions == 0 &&
+            goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(
+                shadow_host, retained_shadow_capture.data(), retained_shadow_capture.size(),
+                &reported_shadow_capture_size, &reported_shadow_capture_fingerprint) &&
+            retained_shadow_capture == first_shadow_capture &&
+            reported_shadow_capture_fingerprint == shadow_capture_fingerprint,
         "malformed live bucket 195 is rejected before copy or renderer mutation");
   goal_jak2_metal_host_destroy(shadow_host);
+  goal_jak2_metal_host* reset_shadow_host = goal_jak2_metal_host_create();
+  shadow_capture_size = 1;
+  shadow_capture_fingerprint = 1;
+  check(reset_shadow_host &&
+            !goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(
+                reset_shadow_host, nullptr, 0, &shadow_capture_size, &shadow_capture_fingerprint) &&
+            shadow_capture_size == 0 && shadow_capture_fingerprint == 0,
+        "a new host lifetime starts with no bucket-195 plan capture");
+  goal_jak2_metal_host_destroy(reset_shadow_host);
 
   goal_jak2_metal_host* warp_texture_host = goal_jak2_metal_host_create();
   goal_gfx_host warp_texture_callbacks = {};

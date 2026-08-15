@@ -69,6 +69,8 @@ struct goal_jak2_metal_host {
   std::vector<u64> animated_texture_slots;
   std::vector<std::string> requested_level_names;
   std::vector<std::string> loaded_level_keys;
+  std::optional<std::vector<u8>> shadow_bucket195_plan_capture;
+  u64 shadow_bucket195_plan_capture_fingerprint = 0;
   std::array<u64, metal_renderer::kJak2Pris2TextureUploadBuckets.size()>
       pris2_texture_upload_executions = {};
   u64 placeholder_handle = 0;
@@ -181,6 +183,33 @@ bool counter_advanced_by(u64 before, u64 after, u64 expected) {
 void record_failure(goal_jak2_metal_host* host, const char* message) {
   host->metrics.failed_chains++;
   host->error = message;
+}
+
+u64 serialized_fingerprint(const u8* bytes, std::size_t size) {
+  constexpr u64 kFnvOffsetBasis = 14695981039346656037ull;
+  constexpr u64 kFnvPrime = 1099511628211ull;
+  u64 fingerprint = kFnvOffsetBasis;
+  for (std::size_t i = 0; i < size; ++i) {
+    fingerprint ^= bytes[i];
+    fingerprint *= kFnvPrime;
+  }
+  return fingerprint;
+}
+
+void retain_first_shadow_bucket195_plan(goal_jak2_metal_host* host,
+                                        const metal_renderer::Jak2ShadowBucket195Plan& plan) {
+  if (!host || host->shadow_bucket195_plan_capture ||
+      plan.disposition == metal_renderer::Jak2ShadowBucket195PlanDisposition::Absent) {
+    return;
+  }
+  auto serialized = metal_renderer::serialize_jak2_shadow_bucket195_plan(plan);
+  if (!serialized || serialized->empty() ||
+      serialized->size() > metal_renderer::kJak2ShadowBucket195PlanMaximumSerializedBytes) {
+    return;
+  }
+  host->shadow_bucket195_plan_capture_fingerprint =
+      serialized_fingerprint(serialized->data(), serialized->size());
+  host->shadow_bucket195_plan_capture = std::move(*serialized);
 }
 
 void fail_closed(goal_jak2_metal_host* host, const std::string& message) {
@@ -1769,6 +1798,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
           host, "Jak 2 copied shadow bucket 195 did not match exact live DMA", false);
       return;
     }
+    retain_first_shadow_bucket195_plan(host, *copied_shadow_bucket195_plan);
 
     const auto copied_effects_bucket315_capture =
         metal_renderer::capture_jak2_effects_bucket315(
@@ -2689,6 +2719,36 @@ int goal_jak2_metal_host_get_metrics(goal_jak2_metal_host* host,
   }
   copy_renderer_metrics(host);
   *out = host->metrics;
+  return 1;
+}
+
+int goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(goal_jak2_metal_host* host,
+                                                            uint8_t* out_bytes,
+                                                            uint64_t capacity,
+                                                            uint64_t* required_size,
+                                                            uint64_t* serialized_fingerprint_out) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (required_size) {
+    *required_size = 0;
+  }
+  if (serialized_fingerprint_out) {
+    *serialized_fingerprint_out = 0;
+  }
+  if (!required_size || !serialized_fingerprint_out || !host || host != g_active_host ||
+      host->inactive || !host->shadow_bucket195_plan_capture) {
+    return 0;
+  }
+
+  const auto& capture = *host->shadow_bucket195_plan_capture;
+  *required_size = capture.size();
+  *serialized_fingerprint_out = host->shadow_bucket195_plan_capture_fingerprint;
+  if (!out_bytes) {
+    return capacity == 0;
+  }
+  if (capacity < capture.size()) {
+    return 0;
+  }
+  std::memcpy(out_bytes, capture.data(), capture.size());
   return 1;
 }
 

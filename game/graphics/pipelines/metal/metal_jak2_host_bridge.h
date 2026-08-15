@@ -524,6 +524,20 @@ int goal_jak2_metal_host_get_metrics(goal_jak2_metal_host* host,
                                      goal_jak2_metal_host_metrics* out);
 
 /*!
+ * Query or copy the first non-absent, source-exact Shadow2 bucket-195 plan retained by this host.
+ * A null `out_bytes` with zero capacity queries availability and required size. An undersized
+ * buffer is not modified, but `required_size` and `serialized_fingerprint` are still reported.
+ * The fingerprint is FNV-1a over the complete versioned serialization. Returns one only for an
+ * available size query or a complete copy; no capture, invalid arguments, and insufficient
+ * capacity return zero. Output metadata is cleared when no capture is available.
+ */
+int goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(goal_jak2_metal_host* host,
+                                                            uint8_t* out_bytes,
+                                                            uint64_t capacity,
+                                                            uint64_t* required_size,
+                                                            uint64_t* serialized_fingerprint);
+
+/*!
  * Pure counter gate shared by the host wait and standalone proof. Drawable callbacks, drops, and
  * ordering decide the result only when `require_presentation` is nonzero.
  */
