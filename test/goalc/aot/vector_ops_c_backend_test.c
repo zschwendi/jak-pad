@@ -13,6 +13,7 @@
  * where OpenGOAL's hand-translated PS2 assembly gets them.
  */
 
+#include <math.h>
 #include <string.h>
 
 #include "vec_generated.h"
@@ -23,6 +24,9 @@
 #define DST 0x600000ull
 #define SRC_A 0x600010ull
 #define SRC_B 0x600020ull
+#define MERC_JOINT 0x600100ull
+#define MERC_BONE 0x600140ull
+#define MERC_CAMERA 0x600180ull
 
 static int g_failures = 0;
 
@@ -88,10 +92,15 @@ static void expect_bytes(const char* what, const uint8_t want[16]) {
   }
 }
 
-static void expect_floats(const char* what, float f0, float f1, float f2, float f3) {
+static void expect_floats_at(const char* what,
+                             uint64_t at,
+                             float f0,
+                             float f1,
+                             float f2,
+                             float f3) {
   const float want[4] = {f0, f1, f2, f3};
   float got[4];
-  memcpy(got, host(DST), 16);
+  memcpy(got, host(at), 16);
   for (int i = 0; i < 4; i++) {
     if (got[i] != want[i]) {
       printf("FAIL %s: got %f %f %f %f, wanted %f %f %f %f\n", what, (double)got[0], (double)got[1],
@@ -101,6 +110,10 @@ static void expect_floats(const char* what, float f0, float f1, float f2, float 
       return;
     }
   }
+}
+
+static void expect_floats(const char* what, float f0, float f1, float f2, float f3) {
+  expect_floats_at(what, DST, f0, f1, f2, f3);
 }
 
 static void test_quadword_copies(void) {
@@ -271,6 +284,42 @@ static void test_outer_product(void) {
                 a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0], 1.f);
 }
 
+static void test_merc_matrix_contract(void) {
+  /* Identity bind pose and camera, with a 90-degree Z rotation and nonuniform 2x3x4 scale. */
+  put_floats(MERC_JOINT, 1.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_JOINT + 16, 0.f, 1.f, 0.f, 0.f);
+  put_floats(MERC_JOINT + 32, 0.f, 0.f, 1.f, 0.f);
+  put_floats(MERC_JOINT + 48, 0.f, 0.f, 0.f, 1.f);
+  put_floats(MERC_BONE, 0.f, 2.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 16, -3.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 32, 0.f, 0.f, 4.f, 0.f);
+  put_floats(MERC_BONE + 48, 10.f, 20.f, 30.f, 1.f);
+  put_floats(MERC_CAMERA, 1.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_CAMERA + 16, 0.f, 1.f, 0.f, 0.f);
+  put_floats(MERC_CAMERA + 32, 0.f, 0.f, 1.f, 0.f);
+  put_floats(MERC_CAMERA + 48, 0.f, 0.f, 0.f, 1.f);
+
+  goal_vec_aot_test_merc_matrix(DST, MERC_JOINT, MERC_BONE, MERC_CAMERA);
+
+  int all_finite = 1;
+  const float* lanes = (const float*)host(DST);
+  for (int lane = 0; lane < 28; lane++) {
+    all_finite &= isfinite(lanes[lane]);
+  }
+  if (!all_finite) {
+    printf("FAIL merc matrix: a required transform or normal lane is non-finite\n");
+    g_failures++;
+  }
+
+  expect_floats_at("merc tmat column 0", DST, 0.f, 2.f, 0.f, 0.f);
+  expect_floats_at("merc tmat column 1", DST + 16, -3.f, 0.f, 0.f, 0.f);
+  expect_floats_at("merc tmat column 2", DST + 32, 0.f, 0.f, 4.f, 0.f);
+  expect_floats_at("merc tmat translation", DST + 48, 10.f, 20.f, 30.f, 1.f);
+  expect_floats_at("merc nmat column 0", DST + 64, 0.f, .5f, 0.f, 0.f);
+  expect_floats_at("merc nmat column 1", DST + 80, -1.f / 3.f, 0.f, 0.f, 0.f);
+  expect_floats_at("merc nmat column 2", DST + 96, 0.f, 0.f, .25f, 0.f);
+}
+
 static void test_vu_sync_barriers(void) {
   /* .nop.vf and .wait.vf emit nothing, so the add around them must still happen */
   put_floats(SRC_A, 1.f, 2.f, 3.f, 4.f);
@@ -306,6 +355,7 @@ int main(void) {
   test_ppach();
   test_blend();
   test_outer_product();
+  test_merc_matrix_contract();
   test_vu_sync_barriers();
   test_scalar_vu_sqrt_results_are_broadcast();
 
