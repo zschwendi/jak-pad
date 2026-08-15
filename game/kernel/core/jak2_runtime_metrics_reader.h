@@ -54,7 +54,7 @@ constexpr std::size_t kSceneAnimation = live_basic_offset(44);
 // Built-in array/string layouts come from common/type_system/TypeSystem.cpp and
 // game/kernel/common/kscheme.h. Their live pointers are also past the basic-object type tag.
 constexpr std::size_t kArrayLength = live_basic_offset(4);
-constexpr std::size_t kArrayData = sizeof(uint32_t);
+constexpr std::size_t kArrayData = live_basic_offset(16);
 constexpr std::size_t kStringLength = 0;
 constexpr std::size_t kStringData = sizeof(uint32_t);
 
@@ -76,6 +76,7 @@ constexpr std::size_t kAnimationArtistStep = live_basic_offset(28);
 
 static_assert(kProcessState == 60);
 static_assert(kClockFrameCounter == 20);
+static_assert(kArrayData == 12);
 static_assert(kDisplayBaseClock == 44);
 static_assert(kGameInfoBlackoutTime == 388);
 static_assert(kSettingUserCurrent + kUserBackgroundAlpha == 100);
