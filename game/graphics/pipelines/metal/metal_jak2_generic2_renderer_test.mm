@@ -648,6 +648,69 @@ int main() {
                 .c_str());
     }
 
+    struct DeferredPrismaticFixture {
+      const char* name;
+      jak2::BucketId bucket_id;
+    };
+    const std::array<DeferredPrismaticFixture, 12> deferred_prismatic_fixtures = {{
+        {"gmerc-l0-pris", jak2::BucketId::GMERC_L0_PRIS},
+        {"gmerc-l1-pris", jak2::BucketId::GMERC_L1_PRIS},
+        {"gmerc-l2-pris", jak2::BucketId::GMERC_L2_PRIS},
+        {"gmerc-l3-pris", jak2::BucketId::GMERC_L3_PRIS},
+        {"gmerc-l4-pris", jak2::BucketId::GMERC_L4_PRIS},
+        {"gmerc-l5-pris", jak2::BucketId::GMERC_L5_PRIS},
+        {"gmerc-l0-pris2", jak2::BucketId::GMERC_L0_PRIS2},
+        {"gmerc-l1-pris2", jak2::BucketId::GMERC_L1_PRIS2},
+        {"gmerc-l2-pris2", jak2::BucketId::GMERC_L2_PRIS2},
+        {"gmerc-l3-pris2", jak2::BucketId::GMERC_L3_PRIS2},
+        {"gmerc-l4-pris2", jak2::BucketId::GMERC_L4_PRIS2},
+        {"gmerc-l5-pris2", jak2::BucketId::GMERC_L5_PRIS2},
+    }};
+    static_assert(static_cast<u32>(jak2::BucketId::GMERC_L0_PRIS) == 199 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L1_PRIS) == 203 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L2_PRIS) == 207 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L3_PRIS) == 211 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L4_PRIS) == 215 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L5_PRIS) == 219 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L0_PRIS2) == 227 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L1_PRIS2) == 231 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L2_PRIS2) == 235 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L3_PRIS2) == 239 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L4_PRIS2) == 243 &&
+                  static_cast<u32>(jak2::BucketId::GMERC_L5_PRIS2) == 247);
+    for (const auto& fixture : deferred_prismatic_fixtures) {
+      const auto bucket_id = static_cast<std::size_t>(fixture.bucket_id);
+      check(policy.at(bucket_id).behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip,
+            fmt::format("{} bucket {} stays deferred while its NORMAL parser is tested",
+                        fixture.name, bucket_id)
+                .c_str());
+
+      MetalGeneric2BucketRenderer renderer(fixture.name, static_cast<int>(bucket_id), shared);
+      auto chain = make_jak2_chain(false, false, true);
+      const auto result = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 &renderer, &chain, GameVersion::Jak2);
+      check(
+          renderer.mode() == MetalGeneric2::Mode::NORMAL && is_one_quad(result) &&
+              result.final_offset == chain.next_bucket &&
+              changed_pixel_bounds(result.pixels) == jak2_bounds &&
+              near(pixel_at(result.pixels, kTargetSize / 2, kTargetSize / 2), filtered_pixel, 2) &&
+              result.stats.missing_textures == 0 && result.stats.placeholder_draws == 0,
+          fmt::format("{} bucket {} consumes NORMAL DMA to its follower with textured GPU pixels",
+                      fixture.name, bucket_id)
+              .c_str());
+
+      auto malformed_chain = make_jak2_chain(false, true, true);
+      const auto malformed = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                    &renderer, &malformed_chain, GameVersion::Jak2);
+      check(malformed.completed && malformed.final_offset == malformed_chain.next_bucket &&
+                malformed.stats.unexpected_dma == 1 && malformed.stats.draw_calls == 0 &&
+                malformed.stats.triangles == 0 && malformed.draw_calls == 0 &&
+                malformed.triangles == 0 && changed_pixel_bounds(malformed.pixels).count == 0 &&
+                count_written_depth(malformed.depths) == 0,
+            fmt::format("{} bucket {} fails malformed NORMAL DMA closed", fixture.name, bucket_id)
+                .c_str());
+    }
+
     auto empty_chain = make_empty_jak2_chain();
     const auto empty = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
                               &alpha_renderer, &empty_chain, GameVersion::Jak2);
@@ -693,8 +756,8 @@ int main() {
       return 1;
     }
     std::printf(
-        "PASS: Jak 2 routed TFRAG/SHRUB/common-PRIS and alpha/water Generic2 rendered "
-        "asset-free source-shaped DMA\n");
+        "PASS: Jak 2 routed and deferred PRIS/PRIS2 Generic2 fixtures rendered asset-free "
+        "source-shaped NORMAL DMA\n");
     return 0;
   }
 }
