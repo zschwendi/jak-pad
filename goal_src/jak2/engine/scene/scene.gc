@@ -30,6 +30,104 @@
 (define *pc-scene-wait-art-gui-action* (gui-action none))
 (define *pc-scene-wait-art-gui-status* (gui-status unknown))
 
+(defconstant PC_SCENE_ACTOR_DIAGNOSTIC_MAX 8)
+(defconstant PC_SCENE_ACTOR_DIAGNOSTIC_FIELDS 4)
+(defconstant PC_SCENE_ACTOR_DIAGNOSTIC_CAPACITY 32)
+(defconstant PC_SCENE_ACTOR_FLAGS 0)
+(defconstant PC_SCENE_ACTOR_LEVEL_INDEX 1)
+(defconstant PC_SCENE_ACTOR_SKELETON_STATUS 2)
+(defconstant PC_SCENE_ACTOR_MERC_JOINT_COUNT 3)
+
+(defenum pc-scene-actor-diagnostic-flag
+  :type uint32
+  :bitfield #t
+  (spawn-attempted 0)
+  (pool-allocated 1)
+  (draw-control 2)
+  (joint-control 3)
+  (merc-geometry 4)
+  )
+
+(define *pc-scene-actor-sequence* 0)
+(define *pc-scene-actor-scene-name* (the-as string #f))
+(define *pc-scene-actor-count* 0)
+(define *pc-scene-actor-total-count* 0)
+(define *pc-scene-actor-current-index* -1)
+(define *pc-scene-actor-data* (new 'global 'boxed-array uint32 PC_SCENE_ACTOR_DIAGNOSTIC_CAPACITY))
+
+(defun pc-scene-actor-diagnostic-slot ((index int) (field int))
+  (+ (* index PC_SCENE_ACTOR_DIAGNOSTIC_FIELDS) field)
+  )
+
+(defun pc-scene-actor-diagnostic-index? ((index int))
+  (and (>= index 0) (< index *pc-scene-actor-count*))
+  )
+
+(defun pc-scene-actor-note ((index int) (flag pc-scene-actor-diagnostic-flag))
+  (when (pc-scene-actor-diagnostic-index? index)
+    (let ((slot (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_FLAGS)))
+      (set! (-> *pc-scene-actor-data* slot)
+            (logior (-> *pc-scene-actor-data* slot) (the-as uint flag))
+            )
+      )
+    )
+  (none)
+  )
+
+(defun pc-scene-actor-note-process ((index int) (proc process-drawable))
+  (when (and (pc-scene-actor-diagnostic-index? index) proc)
+    (let ((draw (-> proc draw))
+          (skel (-> proc skel))
+          )
+      (when draw
+        (pc-scene-actor-note index (pc-scene-actor-diagnostic-flag draw-control))
+        (set! (-> *pc-scene-actor-data*
+                   (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_LEVEL_INDEX))
+              (the-as uint (-> draw level-index))
+              )
+        (when (-> draw mgeo)
+          (pc-scene-actor-note index (pc-scene-actor-diagnostic-flag merc-geometry))
+          (set! (-> *pc-scene-actor-data*
+                     (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_MERC_JOINT_COUNT))
+                (the-as uint (-> draw mgeo num-joints))
+                )
+          )
+        )
+      (when skel
+        (pc-scene-actor-note index (pc-scene-actor-diagnostic-flag joint-control))
+        (set! (-> *pc-scene-actor-data*
+                   (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_SKELETON_STATUS))
+              (the-as uint (-> skel status))
+              )
+        )
+      )
+    )
+  (none)
+  )
+
+(defun pc-scene-actor-diagnostics-reset ((current-scene scene))
+  (+! *pc-scene-actor-sequence* 1)
+  (set! *pc-scene-actor-scene-name* (-> current-scene anim))
+  (set! *pc-scene-actor-total-count* (-> current-scene actor length))
+  (set! *pc-scene-actor-count*
+        (if (< *pc-scene-actor-total-count* PC_SCENE_ACTOR_DIAGNOSTIC_MAX)
+            *pc-scene-actor-total-count*
+            PC_SCENE_ACTOR_DIAGNOSTIC_MAX
+            )
+        )
+  (set! *pc-scene-actor-current-index* -1)
+  (dotimes (slot PC_SCENE_ACTOR_DIAGNOSTIC_CAPACITY)
+    (set! (-> *pc-scene-actor-data* slot) 0)
+    )
+  (dotimes (index PC_SCENE_ACTOR_DIAGNOSTIC_MAX)
+    (set! (-> *pc-scene-actor-data*
+               (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_LEVEL_INDEX))
+          #xffffffff
+          )
+    )
+  (none)
+  )
+
 (deftype scene-stage (process-hidden)
   ()
   )
@@ -112,6 +210,10 @@
                 (let ((sv-96 (get-process *default-dead-pool* manipy #x4000)))
                   (set! s4-0
                         (when sv-96
+                          (pc-scene-actor-note
+                            *pc-scene-actor-current-index*
+                            (pc-scene-actor-diagnostic-flag pool-allocated)
+                            )
                           ((method-of-type manipy activate) (the-as manipy sv-96) arg0 (-> this name) (the-as pointer #x70004000))
                           (run-now-in-process
                             sv-96
@@ -124,6 +226,10 @@
                                 1
                                 0
                                 )
+                            )
+                          (pc-scene-actor-note-process
+                            *pc-scene-actor-current-index*
+                            (the-as process-drawable sv-96)
                             )
                           (-> sv-96 ppointer)
                           )
@@ -312,9 +418,17 @@
       (cond
         (v1-11
           (if (not (handle->process (-> s3-0 process)))
-              (set! (-> s3-0 process) (ppointer->handle (scene-actor-method-9 s3-0 this)))
+              (begin
+                (pc-scene-actor-note s4-0 (pc-scene-actor-diagnostic-flag spawn-attempted))
+                (set! *pc-scene-actor-current-index* s4-0)
+                (set! (-> s3-0 process) (ppointer->handle (scene-actor-method-9 s3-0 this)))
+                (set! *pc-scene-actor-current-index* -1)
+                )
               )
           (let ((s2-1 (handle->process (-> s3-0 process))))
+            (when s2-1
+              (pc-scene-actor-note-process s4-0 (the-as process-drawable s2-1))
+              )
             (when (and s2-1 (nonzero? (-> (the-as process-drawable s2-1) draw)))
               (let* ((s3-1 (-> s3-0 scissor-frames))
                      (s1-1 (car s3-1))
@@ -420,6 +534,7 @@
 
 (defmethod scene-player-method-23 ((this scene-player) (arg0 string) (arg1 symbol))
   (let ((gp-0 (scene-player-method-24 this arg0 #t)))
+    (pc-scene-actor-diagnostics-reset gp-0)
     (when (-> gp-0 peaceful)
       (let ((s3-0 *traffic-manager*))
         (send-event s3-0 'decrease-alert-level 0)

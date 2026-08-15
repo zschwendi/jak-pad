@@ -58,6 +58,7 @@ bool copy_goal_bytes(uint32_t object, int offset, void* out, size_t size) {
 }
 
 goal_jak2_runtime_metrics g_metrics = {};
+jak2_runtime_metrics_reader::SceneActorDiagnostics g_scene_actor_diagnostics = {};
 std::string g_error;
 std::string g_data_directory;
 std::string g_saves_directory;
@@ -277,9 +278,16 @@ void update_scene_diagnostic_metrics() {
   using namespace jak2_runtime_metrics_reader;
   const MemoryView memory = {reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE,
                              goal_game_false_offset()};
-  const Inputs inputs = {
-      symbol_value_if_present("*display*"), symbol_value_if_present("*game-info*"),
-      symbol_value_if_present("*setting-control*"), g_metrics.scene_player_process};
+  Inputs inputs;
+  inputs.display = symbol_value_if_present("*display*");
+  inputs.game_info = symbol_value_if_present("*game-info*");
+  inputs.setting_control = symbol_value_if_present("*setting-control*");
+  inputs.scene_player = g_metrics.scene_player_process;
+  inputs.scene_actor_sequence = symbol_value_if_present("*pc-scene-actor-sequence*");
+  inputs.scene_actor_scene_name = symbol_value_if_present("*pc-scene-actor-scene-name*");
+  inputs.scene_actor_count = symbol_value_if_present("*pc-scene-actor-count*");
+  inputs.scene_actor_total_count = symbol_value_if_present("*pc-scene-actor-total-count*");
+  inputs.scene_actor_data = symbol_value_if_present("*pc-scene-actor-data*");
   const Snapshot scene = read(memory, inputs);
 
   g_metrics.display_timing_valid = scene.display_timing_valid;
@@ -318,6 +326,17 @@ void update_scene_diagnostic_metrics() {
   g_metrics.animation_frame_group = scene.animation_frame_group;
   g_metrics.animation_frame = scene.animation_frame;
   g_metrics.animation_aframe = scene.animation_aframe;
+
+  retain_scene_actor_diagnostics(&g_scene_actor_diagnostics, scene.scene_actors);
+  g_metrics.scene_actor_diagnostics_valid = g_scene_actor_diagnostics.valid;
+  g_metrics.scene_actor_sequence = g_scene_actor_diagnostics.sequence;
+  g_metrics.scene_actor_scene_name_hash = g_scene_actor_diagnostics.scene_name_hash;
+  g_metrics.scene_actor_count = g_scene_actor_diagnostics.count;
+  g_metrics.scene_actor_total_count = g_scene_actor_diagnostics.total_count;
+  g_metrics.scene_actor_overflow = g_scene_actor_diagnostics.overflow;
+  g_metrics.scene_actor_reserved = 0;
+  std::memcpy(g_metrics.scene_actors, g_scene_actor_diagnostics.actors.data(),
+              sizeof(g_metrics.scene_actors));
 
   uint32_t wait_gate = 0;
   uint32_t entry_gui_id = 0;
@@ -582,6 +601,7 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
 
   try {
     g_metrics = {};
+    g_scene_actor_diagnostics = {};
     g_metrics.state = GOAL_JAK2_RUNTIME_STARTING;
     g_metrics.graphics = config->graphics;
     g_error.clear();
@@ -960,6 +980,7 @@ void goal_jak2_runtime_shutdown(void) {
   g_data_directory.clear();
   g_saves_directory.clear();
   g_metrics = {};
+  g_scene_actor_diagnostics = {};
   g_metrics.state = GOAL_JAK2_RUNTIME_STOPPED;
   g_error.clear();
 }

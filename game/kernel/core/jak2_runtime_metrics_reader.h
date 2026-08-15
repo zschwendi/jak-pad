@@ -9,6 +9,8 @@
 #include <limits>
 
 #include "common/goal_constants.h"
+#include "common/util/fnv.h"
+#include "game/kernel/core/jak2_runtime.h"
 
 namespace jak2_runtime_metrics_reader {
 
@@ -52,8 +54,15 @@ constexpr std::size_t kSceneAnimation = live_basic_offset(44);
 // Built-in array/string layouts come from common/type_system/TypeSystem.cpp and
 // game/kernel/common/kscheme.h. Their live pointers are also past the basic-object type tag.
 constexpr std::size_t kArrayLength = live_basic_offset(4);
+constexpr std::size_t kArrayData = sizeof(uint32_t);
 constexpr std::size_t kStringLength = 0;
 constexpr std::size_t kStringData = sizeof(uint32_t);
+
+constexpr uint32_t kSceneActorFields = 4;
+constexpr uint32_t kSceneActorFlags = 0;
+constexpr uint32_t kSceneActorLevelIndex = 1;
+constexpr uint32_t kSceneActorSkeletonStatus = 2;
+constexpr uint32_t kSceneActorMercJointCount = 3;
 
 // joint-control is basic; joint-control-channel is a structure. The art-joint-anim artist values
 // are the tracked floats at offsets 24 and 28 in all-types.gc.
@@ -118,6 +127,37 @@ struct MemoryView {
     out[copied] = '\0';
     return true;
   }
+
+  bool hash_string(uint32_t string, uint64_t* out) const {
+    if (!out) {
+      return false;
+    }
+    *out = 0;
+    uint32_t length = 0;
+    if (!read(string, layout::kStringLength, &length)) {
+      return false;
+    }
+    const uint64_t data_address = static_cast<uint64_t>(string) + layout::kStringData;
+    if (!span_fits(data_address, length)) {
+      return false;
+    }
+    *out = fnv64(data + data_address, length);
+    return true;
+  }
+
+  bool array_has_length(uint32_t array, uint32_t required) const {
+    uint32_t length = 0;
+    return read(array, layout::kArrayLength, &length) && length >= required;
+  }
+
+  template <typename T>
+  bool read_array(uint32_t array, uint32_t index, T* out) const {
+    uint32_t length = 0;
+    if (!read(array, layout::kArrayLength, &length) || index >= length) {
+      return false;
+    }
+    return read(array, layout::kArrayData + static_cast<std::size_t>(index) * sizeof(T), out);
+  }
 };
 
 struct Inputs {
@@ -125,6 +165,21 @@ struct Inputs {
   uint32_t game_info = 0;
   uint32_t setting_control = 0;
   uint32_t scene_player = 0;
+  uint32_t scene_actor_sequence = 0;
+  uint32_t scene_actor_scene_name = 0;
+  uint32_t scene_actor_count = 0;
+  uint32_t scene_actor_total_count = 0;
+  uint32_t scene_actor_data = 0;
+};
+
+struct SceneActorDiagnostics {
+  bool valid = false;
+  uint32_t sequence = 0;
+  uint64_t scene_name_hash = 0;
+  int32_t count = 0;
+  int32_t total_count = 0;
+  bool overflow = false;
+  std::array<goal_jak2_scene_actor_diagnostic, GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX> actors = {};
 };
 
 struct Snapshot {
@@ -161,7 +216,40 @@ struct Snapshot {
   uint32_t animation_frame_group = 0;
   float animation_frame = 0.f;
   float animation_aframe = 0.f;
+
+  SceneActorDiagnostics scene_actors;
 };
+
+constexpr uint32_t kMercPrisLevel0Bucket = 197;
+constexpr uint32_t kMercPrisLevelStride = 4;
+constexpr uint32_t kMercPrisLevelCount = 7;
+
+constexpr uint32_t merc_pris_bucket(uint32_t level_index) {
+  if (level_index >= kMercPrisLevelCount) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+  return kMercPrisLevel0Bucket + kMercPrisLevelStride * level_index;
+}
+
+static_assert(kMercPrisLevelCount == jak2::LEVEL_TOTAL);
+static_assert(merc_pris_bucket(0) == 197);
+static_assert(merc_pris_bucket(1) == 201);
+static_assert(merc_pris_bucket(6) == 221);
+static_assert(merc_pris_bucket(7) == std::numeric_limits<uint32_t>::max());
+
+inline void retain_scene_actor_diagnostics(SceneActorDiagnostics* retained,
+                                           const SceneActorDiagnostics& sample) {
+  if (!retained || sample.sequence == 0) {
+    return;
+  }
+  if (sample.sequence != retained->sequence) {
+    *retained = {};
+    retained->sequence = sample.sequence;
+  }
+  if (sample.valid) {
+    *retained = sample;
+  }
+}
 
 inline int64_t saturating_subtract(int64_t left, int64_t right) {
   if (right > 0 && left < std::numeric_limits<int64_t>::min() + right) {
@@ -243,6 +331,50 @@ inline Snapshot read(const MemoryView& memory, const Inputs& inputs) {
           out.animation_aframe = aframe;
         }
       }
+    }
+  }
+
+  out.scene_actors.sequence = inputs.scene_actor_sequence;
+  constexpr uint32_t kActorDataCount =
+      GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX * layout::kSceneActorFields;
+  const bool actor_array_valid = memory.array_has_length(inputs.scene_actor_data, kActorDataCount);
+  const bool actor_counts_valid =
+      inputs.scene_actor_sequence != 0 &&
+      inputs.scene_actor_count <= GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX &&
+      inputs.scene_actor_total_count >= inputs.scene_actor_count;
+  uint64_t scene_name_hash = 0;
+  if (actor_array_valid && actor_counts_valid &&
+      memory.hash_string(inputs.scene_actor_scene_name, &scene_name_hash)) {
+    SceneActorDiagnostics diagnostics;
+    diagnostics.sequence = inputs.scene_actor_sequence;
+    diagnostics.scene_name_hash = scene_name_hash;
+    diagnostics.count = static_cast<int32_t>(inputs.scene_actor_count);
+    diagnostics.total_count = static_cast<int32_t>(inputs.scene_actor_total_count);
+    diagnostics.overflow = inputs.scene_actor_total_count > inputs.scene_actor_count;
+    bool actors_valid = true;
+    for (uint32_t index = 0; index < inputs.scene_actor_count; ++index) {
+      auto& actor = diagnostics.actors[index];
+      const uint32_t data = index * layout::kSceneActorFields;
+      actors_valid =
+          actors_valid &&
+          memory.read_array(inputs.scene_actor_data, data + layout::kSceneActorFlags,
+                            &actor.flags) &&
+          memory.read_array(inputs.scene_actor_data, data + layout::kSceneActorLevelIndex,
+                            &actor.level_index) &&
+          memory.read_array(inputs.scene_actor_data, data + layout::kSceneActorSkeletonStatus,
+                            &actor.skeleton_status) &&
+          memory.read_array(inputs.scene_actor_data, data + layout::kSceneActorMercJointCount,
+                            &actor.merc_joint_count);
+      const uint32_t bucket_flags = GOAL_JAK2_SCENE_ACTOR_DRAW_CONTROL |
+                                    GOAL_JAK2_SCENE_ACTOR_MERC_GEOMETRY;
+      actor.merc_pris_bucket =
+          (actor.flags & bucket_flags) == bucket_flags
+              ? merc_pris_bucket(actor.level_index)
+              : std::numeric_limits<uint32_t>::max();
+    }
+    if (actors_valid) {
+      diagnostics.valid = true;
+      out.scene_actors = diagnostics;
     }
   }
 

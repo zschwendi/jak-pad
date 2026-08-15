@@ -149,6 +149,25 @@ typedef enum goal_jak2_scene_wait_gate {
   GOAL_JAK2_SCENE_WAIT_READY = 8,
 } goal_jak2_scene_wait_gate;
 
+#define GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX 8
+
+typedef enum goal_jak2_scene_actor_diagnostic_flag {
+  GOAL_JAK2_SCENE_ACTOR_SPAWN_ATTEMPTED = 1u << 0,
+  GOAL_JAK2_SCENE_ACTOR_POOL_ALLOCATED = 1u << 1,
+  GOAL_JAK2_SCENE_ACTOR_DRAW_CONTROL = 1u << 2,
+  GOAL_JAK2_SCENE_ACTOR_JOINT_CONTROL = 1u << 3,
+  GOAL_JAK2_SCENE_ACTOR_MERC_GEOMETRY = 1u << 4,
+} goal_jak2_scene_actor_diagnostic_flag;
+
+/*! Sticky numeric facts for one bounded actor in the most recently initialized scene. */
+typedef struct goal_jak2_scene_actor_diagnostic {
+  uint32_t flags;
+  uint32_t level_index;
+  uint32_t merc_pris_bucket;
+  uint32_t skeleton_status;
+  uint32_t merc_joint_count;
+} goal_jak2_scene_actor_diagnostic;
+
 /*! A copied snapshot. It owns no pointers into the GOAL heap or graphics host. */
 typedef struct goal_jak2_runtime_metrics {
   goal_jak2_runtime_state state;
@@ -276,6 +295,16 @@ typedef struct goal_jak2_runtime_metrics {
   int32_t scene_wait_art_gui_channel;
   int32_t scene_wait_art_gui_action;
   int32_t scene_wait_art_gui_status;
+
+  int32_t scene_actor_diagnostics_valid;
+  uint32_t scene_actor_sequence;
+  uint64_t scene_actor_scene_name_hash;
+  int32_t scene_actor_count;
+  int32_t scene_actor_total_count;
+  int32_t scene_actor_overflow;
+  uint32_t scene_actor_reserved;
+  goal_jak2_scene_actor_diagnostic
+      scene_actors[GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX];
 } goal_jak2_runtime_metrics;
 
 /*!

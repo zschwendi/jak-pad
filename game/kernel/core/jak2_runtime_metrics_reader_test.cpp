@@ -1,13 +1,25 @@
 #include "game/kernel/core/jak2_runtime_metrics_reader.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <string>
 
 namespace {
 
 using namespace jak2_runtime_metrics_reader;
+
+static_assert(sizeof(goal_jak2_scene_actor_diagnostic) == 20);
+static_assert(offsetof(goal_jak2_runtime_metrics, scene_wait_art_gui_status) +
+                  sizeof(goal_jak2_runtime_metrics::scene_wait_art_gui_status) <=
+              offsetof(goal_jak2_runtime_metrics, scene_actor_diagnostics_valid));
+static_assert(offsetof(goal_jak2_runtime_metrics, scene_actor_reserved) + sizeof(uint32_t) <=
+              offsetof(goal_jak2_runtime_metrics, scene_actors));
+static_assert(offsetof(goal_jak2_runtime_metrics, scene_actors) +
+                  sizeof(goal_jak2_runtime_metrics::scene_actors) ==
+              sizeof(goal_jak2_runtime_metrics));
 
 int g_failures = 0;
 
@@ -28,6 +40,21 @@ void write_string(std::array<uint8_t, Size>& memory, uint32_t address, const cha
   const uint32_t length = static_cast<uint32_t>(std::strlen(value));
   write(memory, address, length);
   std::memcpy(memory.data() + address + sizeof(length), value, length);
+}
+
+template <std::size_t Size>
+void initialize_boxed_array(std::array<uint8_t, Size>& memory,
+                            uint32_t address,
+                            uint32_t length) {
+  write(memory, address + layout::kArrayLength, length);
+}
+
+template <typename T, std::size_t Size>
+void write_boxed_array(std::array<uint8_t, Size>& memory,
+                       uint32_t address,
+                       uint32_t index,
+                       T value) {
+  write(memory, address + layout::kArrayData + index * sizeof(T), value);
 }
 
 void reads_asserted_jak2_scene_layout() {
@@ -113,6 +140,82 @@ void reads_asserted_jak2_scene_layout() {
          "expired blackout time has no remaining duration");
 }
 
+void reads_bounded_scene_actor_lifecycle() {
+  std::array<uint8_t, 0x4000> bytes = {};
+  constexpr uint32_t kFalse = 4;
+  constexpr uint32_t kData = 0x200;
+  constexpr uint32_t kSceneName = 0x1000;
+  constexpr uint32_t kFields = layout::kSceneActorFields;
+
+  initialize_boxed_array(bytes, kData,
+                         GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX * kFields);
+  write_string(bytes, kSceneName, "title-disk-intro");
+
+  const uint32_t complete_flags = GOAL_JAK2_SCENE_ACTOR_SPAWN_ATTEMPTED |
+                                  GOAL_JAK2_SCENE_ACTOR_POOL_ALLOCATED |
+                                  GOAL_JAK2_SCENE_ACTOR_DRAW_CONTROL |
+                                  GOAL_JAK2_SCENE_ACTOR_JOINT_CONTROL |
+                                  GOAL_JAK2_SCENE_ACTOR_MERC_GEOMETRY;
+  write_boxed_array(bytes, kData, layout::kSceneActorFlags, complete_flags);
+  write_boxed_array(bytes, kData, layout::kSceneActorLevelIndex, uint32_t{1});
+  write_boxed_array(bytes, kData, layout::kSceneActorSkeletonStatus, uint32_t{0x23});
+  write_boxed_array(bytes, kData, layout::kSceneActorMercJointCount, uint32_t{42});
+
+  const uint32_t actor1 = kFields;
+  write_boxed_array(bytes, kData, actor1 + layout::kSceneActorFlags, complete_flags);
+  write_boxed_array(bytes, kData, actor1 + layout::kSceneActorLevelIndex, uint32_t{6});
+  write_boxed_array(bytes, kData, actor1 + layout::kSceneActorMercJointCount, uint32_t{18});
+
+  const uint32_t actor2 = kFields * 2;
+  write_boxed_array(bytes, kData, actor2 + layout::kSceneActorFlags,
+                    uint32_t{GOAL_JAK2_SCENE_ACTOR_SPAWN_ATTEMPTED});
+  write_boxed_array(bytes, kData, actor2 + layout::kSceneActorLevelIndex,
+                    std::numeric_limits<uint32_t>::max());
+
+  Inputs inputs;
+  inputs.scene_actor_sequence = 7;
+  inputs.scene_actor_scene_name = kSceneName;
+  inputs.scene_actor_count = 3;
+  inputs.scene_actor_total_count = 10;
+  inputs.scene_actor_data = kData;
+  const Snapshot snapshot = read({bytes.data(), bytes.size(), kFalse}, inputs);
+
+  expect(snapshot.scene_actors.valid && snapshot.scene_actors.sequence == 7 &&
+             snapshot.scene_actors.scene_name_hash == fnv64(std::string("title-disk-intro")) &&
+             snapshot.scene_actors.count == 3 && snapshot.scene_actors.total_count == 10 &&
+             snapshot.scene_actors.overflow,
+         "scene actor diagnostics are bounded, identified and report overflow");
+  expect(snapshot.scene_actors.actors[0].flags == complete_flags &&
+             snapshot.scene_actors.actors[0].level_index == 1 &&
+             snapshot.scene_actors.actors[0].merc_pris_bucket == 201 &&
+             snapshot.scene_actors.actors[0].skeleton_status == 0x23 &&
+             snapshot.scene_actors.actors[0].merc_joint_count == 42,
+         "actor lifecycle preserves pool, draw, level, skeleton and joint palette facts");
+  expect(snapshot.scene_actors.actors[1].merc_pris_bucket == 221 &&
+             snapshot.scene_actors.actors[2].merc_pris_bucket ==
+                 std::numeric_limits<uint32_t>::max(),
+         "standard Merc PRIS buckets cover common level and fail closed without Merc geometry");
+
+  SceneActorDiagnostics retained;
+  retain_scene_actor_diagnostics(&retained, snapshot.scene_actors);
+  SceneActorDiagnostics missing_same_sequence;
+  missing_same_sequence.sequence = 7;
+  retain_scene_actor_diagnostics(&retained, missing_same_sequence);
+  expect(retained.valid && retained.actors[0].merc_pris_bucket == 201,
+         "last valid actor facts survive the short-scene sampling gap");
+  SceneActorDiagnostics next_scene;
+  next_scene.sequence = 8;
+  retain_scene_actor_diagnostics(&retained, next_scene);
+  expect(!retained.valid && retained.sequence == 8 && retained.count == 0,
+         "a new incomplete scene sequence cannot inherit prior actor facts");
+
+  Inputs malformed = inputs;
+  malformed.scene_actor_count = GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX + 1;
+  const Snapshot rejected = read({bytes.data(), bytes.size(), kFalse}, malformed);
+  expect(!rejected.scene_actors.valid && rejected.scene_actors.sequence == 7,
+         "out-of-range actor counts fail closed while retaining the sequence boundary");
+}
+
 void malformed_memory_fails_closed() {
   std::array<uint8_t, 512> bytes = {};
   constexpr uint32_t kFalse = 4;
@@ -158,6 +261,7 @@ void remaining_time_saturates() {
 
 int main() {
   reads_asserted_jak2_scene_layout();
+  reads_bounded_scene_actor_lifecycle();
   malformed_memory_fails_closed();
   remaining_time_saturates();
   std::printf("%s: jak2 runtime metrics reader\n", g_failures ? "FAILED" : "PASSED");
