@@ -44,6 +44,7 @@ constexpr u32 kStreamBuffered = 1u << 1;
 constexpr u32 kStreamPlaying = 1u << 4;
 constexpr u32 kStreamLoadingAudio = 1u << 5;
 constexpr u32 kStreamQueuedWithoutAudio = 1u << 6;
+constexpr u32 kStreamStopping = 1u << 9;
 constexpr u32 kStreamArtLoad = 1u << 10;
 constexpr u32 kStreamCurrentMovie = 1u << 24;
 constexpr u32 kGuardSize = 16;
@@ -1480,6 +1481,40 @@ int main() {
   check_u32(audio_slot >= 0 ? published_info.stream_status[audio_slot] : UINT32_MAX,
             kStreamBuffered | kStreamPlaying | kStreamLoadingAudio | kStreamCurrentMovie,
             "a repeated queue preserves the matching stream's play state");
+
+  const s32 last_advancing_position =
+      audio_slot >= 0 ? published_info.stream_position[audio_slot] : -1;
+  bool audio_finished = false;
+  for (int pull = 0; pull < 64 && !audio_finished; pull++) {
+    streamed_audio.fill(0);
+    goal_game_sound_pull_audio(streamed_audio.data(), streamed_audio.size() / 2);
+    goal_jak2_sound_frame();
+    goal_jak2_sound_stream_state_get(&stream_state);
+    const auto finished_audio = std::find_if(
+        std::begin(stream_state.slots), std::end(stream_state.slots),
+        [](const auto& slot) { return slot.active && slot.id == 0x10002; });
+    audio_finished =
+        finished_audio != std::end(stream_state.slots) && finished_audio->finished;
+  }
+  published_info = *sound_info.data.cast<jak2::SoundIopInfo>().c();
+  audio_slot = find_stream(published_info, "audioone", 0x10002);
+  const auto terminal_loader_sample = sample_loader_stream(published_info, 0x10002);
+  check(audio_finished, "the bounded synthetic VAG drains to natural completion");
+  check(audio_slot >= 0 && published_info.stream_id[audio_slot] == 0x10002,
+        "natural completion retains the exact stream ID");
+  check_u32(audio_slot >= 0 ? published_info.stream_status[audio_slot] : UINT32_MAX,
+            kStreamBuffered | kStreamLoadingAudio | kStreamStopping | kStreamCurrentMovie,
+            "natural completion clears playing and publishes stopping");
+  check(terminal_loader_sample.position == 0 && terminal_loader_sample.id_is_playing &&
+            !terminal_loader_sample.rpc_is_playing,
+        "natural completion publishes the loader's zero-position terminal signal");
+  const auto loader_should_abort = [](s32 position, bool four_seconds_elapsed, s32 good_count) {
+    return position <= 0 && (four_seconds_elapsed || good_count > 300);
+  };
+  check(last_advancing_position > 0 &&
+            !loader_should_abort(last_advancing_position, true, 301) &&
+            loader_should_abort(terminal_loader_sample.position, true, 0),
+        "terminal zero opens the loader's existing dead-stream timeout exit");
 
   reset_play_request(play, 1);
   set_play_stream(play, 0, "audioone", 0x10002);

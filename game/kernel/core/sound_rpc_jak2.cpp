@@ -2637,7 +2637,9 @@ void goal_jak2_sound_frame(void) {
 
   for (auto& stream : g_streams) {
     if (VagPlayback* playback = find_vag_playback(stream.name, stream.id)) {
-      stream.position = playback->position;
+      stream.position = playback->finished && (stream.status & kStreamLoadingAudio)
+                            ? 0
+                            : playback->position;
       if (playback->finished) {
         stream.status &= ~kStreamPlaying;
         stream.status |= kStreamStopping;
