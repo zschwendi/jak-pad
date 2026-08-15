@@ -411,6 +411,23 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_merc_nonfinite_bone_matrices = stats.merc_nonfinite_bone_matrices;
   host->metrics.last_merc_degenerate_bone_matrices = stats.merc_degenerate_bone_matrices;
   host->metrics.last_merc_incoherent_bone_sources = stats.merc_incoherent_bone_sources;
+  const auto copy_palette_health_event = [](const metal_renderer::MercPaletteHealthEvent& source,
+                                            goal_jak2_merc_palette_health_event* destination) {
+    *destination = {};
+    if (!source.valid()) {
+      return;
+    }
+    destination->issue_mask = source.issue_mask;
+    destination->nonfinite_lane_mask = source.nonfinite_lane_mask;
+    destination->bone_slot = source.bone_slot;
+    destination->source_address = source.source_address;
+    destination->model_name_hash = source.model_name_hash;
+    destination->matrix_hash = source.matrix_hash;
+  };
+  copy_palette_health_event(stats.first_merc_palette_health_event,
+                            &host->metrics.first_merc_palette_health_event);
+  copy_palette_health_event(stats.last_merc_palette_health_event,
+                            &host->metrics.last_merc_palette_health_event);
   host->metrics.last_generic_draw_buckets = stats.generic_draw_buckets;
   host->metrics.last_generic_draws = stats.generic_draws;
   host->metrics.last_generic_triangles = stats.generic_triangles;

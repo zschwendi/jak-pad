@@ -295,7 +295,11 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
   std::printf(
       "background: tie=%llu/%llu missing-levels=%llu missing-textures=%llu anim-slots=%llu; "
       "merc: models=%llu draws=%llu tris=%llu malformed=%llu missing-models=%llu "
-      "bones=(bad-ptr=%llu missing=%llu nonfinite=%llu degenerate=%llu incoherent=%llu)\n",
+      "bones=(bad-ptr=%llu missing=%llu nonfinite=%llu degenerate=%llu incoherent=%llu) "
+      "palette-first=(issue=0x%x model=%016llx slot=%d lanes=0x%08x matrix=%016llx "
+      "source=0x%08x) "
+      "palette-last=(issue=0x%x model=%016llx slot=%d lanes=0x%08x matrix=%016llx "
+      "source=0x%08x)\n",
       static_cast<unsigned long long>(metal.last_tie_draws),
       static_cast<unsigned long long>(metal.last_tie_triangles),
       static_cast<unsigned long long>(metal.last_background_missing_levels),
@@ -310,7 +314,21 @@ void print_metal_metrics(const goal_jak2_metal_host_metrics& metal) {
       static_cast<unsigned long long>(metal.last_merc_missing_bone_slots),
       static_cast<unsigned long long>(metal.last_merc_nonfinite_bone_matrices),
       static_cast<unsigned long long>(metal.last_merc_degenerate_bone_matrices),
-      static_cast<unsigned long long>(metal.last_merc_incoherent_bone_sources));
+      static_cast<unsigned long long>(metal.last_merc_incoherent_bone_sources),
+      metal.first_merc_palette_health_event.issue_mask,
+      static_cast<unsigned long long>(
+          metal.first_merc_palette_health_event.model_name_hash),
+      metal.first_merc_palette_health_event.bone_slot,
+      metal.first_merc_palette_health_event.nonfinite_lane_mask,
+      static_cast<unsigned long long>(metal.first_merc_palette_health_event.matrix_hash),
+      metal.first_merc_palette_health_event.source_address,
+      metal.last_merc_palette_health_event.issue_mask,
+      static_cast<unsigned long long>(
+          metal.last_merc_palette_health_event.model_name_hash),
+      metal.last_merc_palette_health_event.bone_slot,
+      metal.last_merc_palette_health_event.nonfinite_lane_mask,
+      static_cast<unsigned long long>(metal.last_merc_palette_health_event.matrix_hash),
+      metal.last_merc_palette_health_event.source_address);
   const auto print_texture_capture = [](const char* family,
                                         const goal_jak2_tfrag_texture_upload_metrics& upload) {
     std::printf(

@@ -98,6 +98,19 @@ typedef struct goal_jak2_merc_model_diagnostic_metrics {
   uint64_t missing_models;
 } goal_jak2_merc_model_diagnostic_metrics;
 
+// Numeric identity for a retained unhealthy required Merc palette slot.
+// issue_mask zero means no event has been observed in this host session.
+// Lane bits 0..15 are the transform and 16..27 are the three padded normal vectors;
+// normal-vector W lanes 19, 23, and 27 are not consumed by either Merc shader.
+typedef struct goal_jak2_merc_palette_health_event {
+  uint32_t issue_mask;
+  uint32_t nonfinite_lane_mask;
+  int32_t bone_slot;
+  uint32_t source_address;
+  uint64_t model_name_hash;
+  uint64_t matrix_hash;
+} goal_jak2_merc_palette_health_event;
+
 typedef struct goal_jak2_tfrag_texture_upload_metrics {
   uint32_t bucket_id;
   uint64_t captures;
@@ -483,6 +496,9 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_merc_model_diagnostic_overflow_packets;
   goal_jak2_merc_model_diagnostic_metrics
       last_merc_model_diagnostics[GOAL_JAK2_MERC_MODEL_DIAGNOSTIC_COUNT];
+  // Append-only retained identities for the first and latest palette-health events.
+  goal_jak2_merc_palette_health_event first_merc_palette_health_event;
+  goal_jak2_merc_palette_health_event last_merc_palette_health_event;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

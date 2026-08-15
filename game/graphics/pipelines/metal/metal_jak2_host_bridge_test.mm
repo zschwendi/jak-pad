@@ -65,9 +65,16 @@ namespace {
 static_assert(offsetof(goal_jak2_metal_host_metrics, shadow_bucket195_execution) +
                   sizeof(goal_jak2_shadow_bucket195_execution_metrics) <=
               offsetof(goal_jak2_metal_host_metrics, last_merc_model_diagnostic_count));
+static_assert(sizeof(goal_jak2_merc_palette_health_event) == 32);
 static_assert(offsetof(goal_jak2_metal_host_metrics, last_merc_model_diagnostics) +
                   sizeof(((goal_jak2_metal_host_metrics*)nullptr)
                              ->last_merc_model_diagnostics) ==
+              offsetof(goal_jak2_metal_host_metrics, first_merc_palette_health_event));
+static_assert(offsetof(goal_jak2_metal_host_metrics, first_merc_palette_health_event) +
+                  sizeof(goal_jak2_merc_palette_health_event) ==
+              offsetof(goal_jak2_metal_host_metrics, last_merc_palette_health_event));
+static_assert(offsetof(goal_jak2_metal_host_metrics, last_merc_palette_health_event) +
+                  sizeof(goal_jak2_merc_palette_health_event) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -1867,6 +1874,18 @@ int main() {
             metrics.last_merc_nonfinite_bone_matrices == 0 &&
             metrics.last_merc_degenerate_bone_matrices == 0 &&
             metrics.last_merc_incoherent_bone_sources == 0 &&
+            metrics.first_merc_palette_health_event.issue_mask == 0 &&
+            metrics.first_merc_palette_health_event.nonfinite_lane_mask == 0 &&
+            metrics.first_merc_palette_health_event.bone_slot == 0 &&
+            metrics.first_merc_palette_health_event.source_address == 0 &&
+            metrics.first_merc_palette_health_event.model_name_hash == 0 &&
+            metrics.first_merc_palette_health_event.matrix_hash == 0 &&
+            metrics.last_merc_palette_health_event.issue_mask == 0 &&
+            metrics.last_merc_palette_health_event.nonfinite_lane_mask == 0 &&
+            metrics.last_merc_palette_health_event.bone_slot == 0 &&
+            metrics.last_merc_palette_health_event.source_address == 0 &&
+            metrics.last_merc_palette_health_event.model_name_hash == 0 &&
+            metrics.last_merc_palette_health_event.matrix_hash == 0 &&
             metrics.last_generic_draw_buckets == 0 && metrics.last_generic_draws == 0 &&
             metrics.last_generic_triangles == 0 && metrics.last_generic_missing_textures == 0 &&
             metrics.last_generic_unexpected_dma == 0 &&
