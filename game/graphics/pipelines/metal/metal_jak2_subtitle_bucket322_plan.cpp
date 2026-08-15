@@ -210,6 +210,29 @@ bool hud_sprite_pair_matches(const CheckedTransfer& adgif, const CheckedTransfer
                              GifTag::RegisterDescriptor::ST, GifTag::RegisterDescriptor::XYZ2});
 }
 
+bool source_exact_font_glyph_matches(const CheckedTransfer& transfer) {
+  if (!is_direct(transfer, 14) || !transfer.data.data) {
+    return false;
+  }
+  // font-h.gc fixes this char-tmpl header; draw-string-asm fills only the register values.
+  const u8* payload = transfer.data.data;
+  if (!gif_header_matches(
+          payload, 1, true, GsPrim::Kind::TRI_STRIP, true, true, false, 13,
+          {GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::ST,
+           GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2,
+           GifTag::RegisterDescriptor::ST, GifTag::RegisterDescriptor::RGBAQ,
+           GifTag::RegisterDescriptor::XYZF2, GifTag::RegisterDescriptor::ST,
+           GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2,
+           GifTag::RegisterDescriptor::ST, GifTag::RegisterDescriptor::RGBAQ,
+           GifTag::RegisterDescriptor::XYZF2})) {
+    return false;
+  }
+  const GifTag gif(payload);
+  const GsPrim actual_prim(gif.prim());
+  return actual_prim.gouraud() &&
+         read_unaligned<u64>(payload + 24) == static_cast<u64>(GsRegisterAddress::TEX0_1);
+}
+
 UploadRecord read_upload_record(const CheckedTransfer& transfer) {
   UploadRecord result;
   result.source_offset = read_unaligned<u32>(transfer.data.data);
@@ -377,6 +400,7 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
       }
       plan.direct_transfers++;
       plan.opaque_direct_transfers++;
+      plan.source_exact_font_glyph_transfers += source_exact_font_glyph_matches(transfer);
       plan.direct_payload_bytes += transfer.data.size_bytes;
       index++;
     }
@@ -416,6 +440,7 @@ bool jak2_subtitle_bucket322_plans_match(const Jak2SubtitleBucket322Plan& live,
       live.linker_transfers != copied.linker_transfers ||
       live.direct_transfers != copied.direct_transfers ||
       live.opaque_direct_transfers != copied.opaque_direct_transfers ||
+      live.source_exact_font_glyph_transfers != copied.source_exact_font_glyph_transfers ||
       live.hud_sprite_pairs != copied.hud_sprite_pairs ||
       live.direct_payload_bytes != copied.direct_payload_bytes) {
     return false;

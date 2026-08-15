@@ -48,6 +48,7 @@ struct Jak2SubtitleBucket322Plan {
   u32 linker_transfers = 0;
   u32 direct_transfers = 0;
   u32 opaque_direct_transfers = 0;
+  u32 source_exact_font_glyph_transfers = 0;
   u32 hud_sprite_pairs = 0;
   u64 direct_payload_bytes = 0;
   u64 semantic_fingerprint = 0;
@@ -57,7 +58,7 @@ struct Jak2SubtitleBucket322Plan {
  * Passively classify bucket 322 without mutating textures or rendering. The bounded grammar is
  * sourced from the Jak II GOAL producers:
  *
- * - arbitrary Direct packets from the dynamic MIPS2C draw-string-asm text output,
+ * - arbitrary Direct packets, with exact draw-string-asm glyph packets counted separately,
  * - the exact hud-sprite qwc-6/qwc-13 pair used by the intro, and
  * - the exact PC_PORT 12/16/16/13 subtitle-image upload followed by its qwc-7/qwc-6/qwc-6 draw.
  *

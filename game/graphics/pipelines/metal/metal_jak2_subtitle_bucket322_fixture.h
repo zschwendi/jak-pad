@@ -13,6 +13,7 @@ namespace metal_renderer {
 
 enum class Jak2SubtitleBucket322FixtureLayout {
   OpaqueDirect,
+  SourceExactFontGlyph,
   IntroHudSprite,
   IntroTwoHudSprites,
   SubtitleImage,
@@ -118,6 +119,33 @@ inline void emit_opaque_direct(std::vector<u8>& memory, u32* cursor) {
           registers({GifTag::RegisterDescriptor::PRIM, GifTag::RegisterDescriptor::RGBAQ,
                      GifTag::RegisterDescriptor::XYZF2, GifTag::RegisterDescriptor::XYZF2}));
   *cursor += 64;
+}
+
+inline void emit_source_exact_font_glyph(std::vector<u8>& memory, u32* cursor) {
+  put_tag(memory, *cursor, DmaTag::Kind::CNT, 14, 0, 0, vif(VifCode::Kind::DIRECT, 14));
+  const u32 payload = *cursor + 16;
+  const GsPrim prim(static_cast<u64>(GsPrim::Kind::TRI_STRIP) | (1ull << 3) | (1ull << 4) |
+                    (1ull << 6));
+  put_u64(memory, payload, gif_tag(1, true, true, prim, GifTag::Format::PACKED, 13));
+  put_u64(memory, payload + 8,
+          registers({GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::ST,
+                     GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2,
+                     GifTag::RegisterDescriptor::ST, GifTag::RegisterDescriptor::RGBAQ,
+                     GifTag::RegisterDescriptor::XYZF2, GifTag::RegisterDescriptor::ST,
+                     GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2,
+                     GifTag::RegisterDescriptor::ST, GifTag::RegisterDescriptor::RGBAQ,
+                     GifTag::RegisterDescriptor::XYZF2}));
+  put_u64(memory, payload + 16, 1);
+  put_u64(memory, payload + 24, static_cast<u64>(GsRegisterAddress::TEX0_1));
+  for (u32 vertex = 0; vertex < 4; ++vertex) {
+    const u32 vertex_offset = payload + 32 + vertex * 48;
+    const float stq[3] = {static_cast<float>(vertex & 1), static_cast<float>(vertex >> 1), 1.f};
+    std::memcpy(memory.data() + vertex_offset, stq, sizeof(stq));
+    put_packed_rgba(memory, vertex_offset + 16, 128, 128, 128, 128);
+    put_packed_xy(memory, vertex_offset + 32, 0x7000 + vertex * 0x100,
+                  0x7300 + vertex * 0x100);
+  }
+  *cursor += 240;
 }
 
 inline void emit_hud_sprite(std::vector<u8>& memory, u32* cursor) {
@@ -259,6 +287,9 @@ inline Jak2SubtitleBucket322Fixture make_jak2_subtitle_bucket322_fixture(
   switch (layout) {
     case Jak2SubtitleBucket322FixtureLayout::OpaqueDirect:
       emit_opaque_direct(fixture.ee_memory, &cursor);
+      break;
+    case Jak2SubtitleBucket322FixtureLayout::SourceExactFontGlyph:
+      emit_source_exact_font_glyph(fixture.ee_memory, &cursor);
       break;
     case Jak2SubtitleBucket322FixtureLayout::IntroHudSprite:
       emit_hud_sprite(fixture.ee_memory, &cursor);

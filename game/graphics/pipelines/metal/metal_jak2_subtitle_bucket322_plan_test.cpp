@@ -68,7 +68,33 @@ void test_opaque_direct_family() {
             result->opaque_direct_transfers == 1 && result->direct_transfers == 1 &&
             result->direct_payload_bytes == 48 && result->hud_sprite_pairs == 0 &&
             result->image_upload_count == 0,
-        "an unresolved draw-string-style Direct envelope stays typed but passive");
+        "an unresolved Direct envelope stays typed but passive");
+}
+
+void test_source_exact_font_glyph_family() {
+  auto fixture =
+      metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::SourceExactFontGlyph);
+  auto result = plan(fixture);
+  check(result && result->variant == Variant::OpaqueDirect &&
+            result->opaque_direct_transfers == 1 &&
+            result->source_exact_font_glyph_transfers == 1 && result->direct_transfers == 1 &&
+            result->direct_payload_bytes == 224,
+        "the exact draw-string-asm qwc-14 glyph template is distinguished inside opaque Direct");
+
+  metal_renderer::jak2_subtitle_bucket322_fixture_detail::put_u64(
+      fixture.ee_memory, fixture.payload_offset + 24,
+      metal_renderer::jak2_subtitle_bucket322_fixture_detail::registers(
+          {GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::ST,
+           GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2,
+           GifTag::RegisterDescriptor::ST, GifTag::RegisterDescriptor::RGBAQ,
+           GifTag::RegisterDescriptor::XYZF2, GifTag::RegisterDescriptor::ST,
+           GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::XYZF2,
+           GifTag::RegisterDescriptor::ST, GifTag::RegisterDescriptor::RGBAQ,
+           GifTag::RegisterDescriptor::XYZ2}));
+  result = plan(fixture);
+  check(result && result->variant == Variant::OpaqueDirect &&
+            result->source_exact_font_glyph_transfers == 0,
+        "a non-source glyph descriptor remains visibly unresolved instead of receiving exact proof");
 }
 
 void test_intro_hud_sprite_family() {
@@ -123,6 +149,15 @@ void test_semantic_match() {
   copied.image_uploads[0].image_source_offset++;
   check(!metal_renderer::jak2_subtitle_bucket322_plans_match(*live, copied),
         "a typed subtitle image-source change fails semantic matching");
+
+  const auto font_fixture =
+      metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::SourceExactFontGlyph);
+  const auto font_live = plan(font_fixture);
+  check(font_live.has_value(), "the source-exact font fixture produces a plan for matching");
+  auto font_copied = *font_live;
+  font_copied.source_exact_font_glyph_transfers = 0;
+  check(!metal_renderer::jak2_subtitle_bucket322_plans_match(*font_live, font_copied),
+        "a copied packet cannot lose source-exact font grammar without a semantic mismatch");
 }
 
 void test_rejections() {
@@ -191,6 +226,7 @@ int main() {
   test_policy_stays_deferred();
   test_empty_forms();
   test_opaque_direct_family();
+  test_source_exact_font_glyph_family();
   test_intro_hud_sprite_family();
   test_subtitle_image_family();
   test_mixed_source_families();
