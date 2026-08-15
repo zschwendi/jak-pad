@@ -61,6 +61,16 @@ class MetalTFragment : public MetalBucketRenderer {
     int draws = 0;
     int runs = 0;
     int triangles = 0;
+    int level_id = -1;
+    bool occlusion_valid = false;
+    bool all_visible_override = false;
+    int bvh_nodes = 0;
+    int frustum_visible_nodes = 0;
+    int occlusion_visible_nodes = 0;
+    int visible_nodes = 0;
+    int vis_groups = 0;
+    int visible_vis_groups = 0;
+    int always_visible_vis_groups = 0;
     bool level_missing = false;
     std::string level_name;
   };
@@ -109,4 +119,6 @@ class MetalTFragment : public MetalBucketRenderer {
   std::vector<math::Vector<u8, 4>> m_color_result;
   Stats m_stats;
   bool m_warned_missing_level = false;
+  bool m_log_bucket19_visibility = false;
+  int m_bucket19_visibility_logs = 0;
 };

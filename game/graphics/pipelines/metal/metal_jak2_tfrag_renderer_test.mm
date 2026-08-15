@@ -1,5 +1,6 @@
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -28,9 +29,11 @@ namespace {
 constexpr int kTargetSize = 64;
 constexpr char kLevelName[] = "tfrag-test";
 constexpr u32 kTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_L0_TFRAG);
+constexpr u32 kLevel1TfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_L1_TFRAG);
 constexpr u32 kAlphaTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_T_L0_ALPHA);
 constexpr u32 kWaterTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_W_L0_WATER);
-static_assert(kTfragBucket == 8 && kAlphaTfragBucket == 128 && kWaterTfragBucket == 255);
+static_assert(kTfragBucket == 8 && kLevel1TfragBucket == 19 && kAlphaTfragBucket == 128 &&
+              kWaterTfragBucket == 255);
 
 int failures = 0;
 
@@ -210,9 +213,14 @@ bool write_synthetic_fr3(const std::filesystem::path& path) {
     draw.mode.set_clamp_t_enable(true);
     draw.tree_tex_id = texture_id;
     draw.plain_indices = {0, 1, 2, 2, 1, 3};
-    draw.vis_groups.push_back({6, 2, UINT16_MAX, 0});
+    draw.vis_groups.push_back({6, 2, 0, 0});
     draw.num_triangles = 2;
     tree.draws.push_back(std::move(draw));
+
+    tfrag3::VisNode node = {};
+    node.bsphere = math::Vector4f(0.f, 0.f, 0.f, 100.f);
+    node.my_id = 0;
+    tree.bvh.vis_nodes.push_back(node);
 
     tree.colors.color_count = 4;
     tree.colors.data.assign(128, 0);
@@ -263,13 +271,20 @@ struct RenderResult {
   std::vector<float> depths;
 };
 
+struct VisibilityFixture {
+  bool all_visible = true;
+  int valid_level = -1;
+  bool first_bit_visible = false;
+};
+
 RenderResult render_chain(id<MTLDevice> device,
                           id<MTLCommandQueue> queue,
                           MetalPsoCache* pso_cache,
                           MetalSamplerCache* sampler_cache,
                           TexturePool* texture_pool,
                           MetalTFragment* renderer,
-                          const SyntheticTfragChain& chain) {
+                          const SyntheticTfragChain& chain,
+                          VisibilityFixture visibility = {}) {
   RenderResult result;
 
   auto* color_desc = [MTLTextureDescriptor
@@ -329,7 +344,12 @@ RenderResult render_chain(id<MTLDevice> device,
 
   MetalBackgroundState background;
   background.reset_frame();
-  background.debug_all_visible = true;
+  background.debug_all_visible = visibility.all_visible;
+  if (visibility.valid_level >= 0) {
+    auto& level_visibility = background.visibility.levels.at(visibility.valid_level);
+    level_visibility.valid = true;
+    level_visibility.data[0] = visibility.first_bit_visible ? 0x80 : 0;
+  }
 
   MetalSharedRenderState state;
   state.next_bucket = chain.next_bucket;
@@ -489,6 +509,40 @@ int main() {
           "readback is the exact centered 32x32 green mask over transparent black");
     check(good.depths[32 * kTargetSize + 32] > 0.f && good.depths[2 * kTargetSize + 2] == 0.f,
           "normal TFRAG writes depth only under its exact centered mask");
+
+    check(setenv("GOALPAD_JAK2_DEBUG_LOG_TFRAG_BUCKET19_VISIBILITY", "1", 1) == 0,
+          "enabled the bounded bucket-19 visibility diagnostic for its synthetic fixture");
+    MetalTFragment level1_renderer("tfrag-l1-tfrag", static_cast<int>(kLevel1TfragBucket),
+                                   {tfrag3::TFragmentTreeKind::NORMAL}, 1, false);
+    const auto hidden = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                     &level1_renderer, make_tfrag_chain(false),
+                                     {.all_visible = false,
+                                      .valid_level = 1,
+                                      .first_bit_visible = false});
+    check(hidden.completed && hidden.finished_bucket && hidden.renderer.level_id == 1 &&
+              hidden.renderer.occlusion_valid && !hidden.renderer.all_visible_override &&
+              hidden.renderer.bvh_nodes == 1 && hidden.renderer.frustum_visible_nodes == 1 &&
+              hidden.renderer.occlusion_visible_nodes == 0 &&
+              hidden.renderer.visible_nodes == 0 && hidden.renderer.vis_groups == 1 &&
+              hidden.renderer.visible_vis_groups == 0 &&
+              hidden.renderer.always_visible_vis_groups == 0 && hidden.renderer.draws == 0 &&
+              hidden.renderer.runs == 0 && hidden.renderer.triangles == 0,
+          "bucket 19 reports a slot-1 occlusion bit hiding its one in-frustum visibility group");
+
+    const auto visible = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                      &level1_renderer, make_tfrag_chain(false),
+                                      {.all_visible = false,
+                                       .valid_level = 1,
+                                       .first_bit_visible = true});
+    check(visible.completed && visible.finished_bucket && visible.renderer.level_id == 1 &&
+              visible.renderer.occlusion_valid && visible.renderer.bvh_nodes == 1 &&
+              visible.renderer.frustum_visible_nodes == 1 &&
+              visible.renderer.occlusion_visible_nodes == 1 &&
+              visible.renderer.visible_nodes == 1 && visible.renderer.vis_groups == 1 &&
+              visible.renderer.visible_vis_groups == 1 && visible.renderer.draws == 1 &&
+              visible.renderer.runs == 1 && visible.renderer.triangles == 2,
+          "bucket 19 reports the same slot-1 group becoming visible when its exact bit is set");
+    unsetenv("GOALPAD_JAK2_DEBUG_LOG_TFRAG_BUCKET19_VISIBILITY");
 
     MetalTFragment alpha_renderer("tfrag-t-l0-alpha", static_cast<int>(kAlphaTfragBucket),
                                   {tfrag3::TFragmentTreeKind::TRANS}, 0, false);
