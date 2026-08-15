@@ -219,7 +219,10 @@
                 (when v1-8
                   (countdown (a0-5 (-> v1-8 length))
                     (if (= (-> v1-8 data a0-5) s4-0)
-                        (goto cfg-24)
+                        (begin
+                          (set! s2-0 #t)
+                          (goto cfg-24)
+                          )
                         )
                     )
                   (cond
