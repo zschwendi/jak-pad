@@ -119,6 +119,6 @@ class MetalTFragment : public MetalBucketRenderer {
   std::vector<math::Vector<u8, 4>> m_color_result;
   Stats m_stats;
   bool m_warned_missing_level = false;
-  bool m_log_bucket19_visibility = false;
-  int m_bucket19_visibility_logs = 0;
+  bool m_log_bucket8_visibility = false;
+  int m_bucket8_visibility_logs = 0;
 };

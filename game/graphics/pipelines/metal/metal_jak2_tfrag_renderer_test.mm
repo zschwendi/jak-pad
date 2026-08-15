@@ -29,11 +29,9 @@ namespace {
 constexpr int kTargetSize = 64;
 constexpr char kLevelName[] = "tfrag-test";
 constexpr u32 kTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_L0_TFRAG);
-constexpr u32 kLevel1TfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_L1_TFRAG);
 constexpr u32 kAlphaTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_T_L0_ALPHA);
 constexpr u32 kWaterTfragBucket = static_cast<u32>(jak2::BucketId::TFRAG_W_L0_WATER);
-static_assert(kTfragBucket == 8 && kLevel1TfragBucket == 19 && kAlphaTfragBucket == 128 &&
-              kWaterTfragBucket == 255);
+static_assert(kTfragBucket == 8 && kAlphaTfragBucket == 128 && kWaterTfragBucket == 255);
 
 int failures = 0;
 
@@ -510,39 +508,36 @@ int main() {
     check(good.depths[32 * kTargetSize + 32] > 0.f && good.depths[2 * kTargetSize + 2] == 0.f,
           "normal TFRAG writes depth only under its exact centered mask");
 
-    check(setenv("GOALPAD_JAK2_DEBUG_LOG_TFRAG_BUCKET19_VISIBILITY", "1", 1) == 0,
-          "enabled the bounded bucket-19 visibility diagnostic for its synthetic fixture");
-    MetalTFragment level1_renderer("tfrag-l1-tfrag", static_cast<int>(kLevel1TfragBucket),
-                                   {tfrag3::TFragmentTreeKind::NORMAL}, 1, false);
-    const auto hidden = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                     &level1_renderer, make_tfrag_chain(false),
-                                     {.all_visible = false,
-                                      .valid_level = 1,
-                                      .first_bit_visible = false});
-    check(hidden.completed && hidden.finished_bucket && hidden.renderer.level_id == 1 &&
+    check(setenv("GOALPAD_JAK2_DEBUG_LOG_TFRAG_BUCKET8_VISIBILITY", "1", 1) == 0,
+          "enabled the bounded bucket-8 visibility diagnostic for its synthetic fixture");
+    MetalTFragment slot0_renderer("tfrag-l0-tfrag", static_cast<int>(kTfragBucket),
+                                  {tfrag3::TFragmentTreeKind::NORMAL}, 0, false);
+    const auto hidden =
+        render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool, &slot0_renderer,
+                     make_tfrag_chain(false),
+                     {.all_visible = false, .valid_level = 0, .first_bit_visible = false});
+    check(hidden.completed && hidden.finished_bucket && hidden.renderer.level_id == 0 &&
               hidden.renderer.occlusion_valid && !hidden.renderer.all_visible_override &&
               hidden.renderer.bvh_nodes == 1 && hidden.renderer.frustum_visible_nodes == 1 &&
-              hidden.renderer.occlusion_visible_nodes == 0 &&
-              hidden.renderer.visible_nodes == 0 && hidden.renderer.vis_groups == 1 &&
-              hidden.renderer.visible_vis_groups == 0 &&
+              hidden.renderer.occlusion_visible_nodes == 0 && hidden.renderer.visible_nodes == 0 &&
+              hidden.renderer.vis_groups == 1 && hidden.renderer.visible_vis_groups == 0 &&
               hidden.renderer.always_visible_vis_groups == 0 && hidden.renderer.draws == 0 &&
               hidden.renderer.runs == 0 && hidden.renderer.triangles == 0,
-          "bucket 19 reports a slot-1 occlusion bit hiding its one in-frustum visibility group");
+          "bucket 8 reports a slot-0 occlusion bit hiding its one in-frustum visibility group");
 
-    const auto visible = render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                      &level1_renderer, make_tfrag_chain(false),
-                                      {.all_visible = false,
-                                       .valid_level = 1,
-                                       .first_bit_visible = true});
-    check(visible.completed && visible.finished_bucket && visible.renderer.level_id == 1 &&
+    const auto visible =
+        render_chain(device, queue, &pso_cache, &sampler_cache, &texture_pool, &slot0_renderer,
+                     make_tfrag_chain(false),
+                     {.all_visible = false, .valid_level = 0, .first_bit_visible = true});
+    check(visible.completed && visible.finished_bucket && visible.renderer.level_id == 0 &&
               visible.renderer.occlusion_valid && visible.renderer.bvh_nodes == 1 &&
               visible.renderer.frustum_visible_nodes == 1 &&
               visible.renderer.occlusion_visible_nodes == 1 &&
               visible.renderer.visible_nodes == 1 && visible.renderer.vis_groups == 1 &&
               visible.renderer.visible_vis_groups == 1 && visible.renderer.draws == 1 &&
               visible.renderer.runs == 1 && visible.renderer.triangles == 2,
-          "bucket 19 reports the same slot-1 group becoming visible when its exact bit is set");
-    unsetenv("GOALPAD_JAK2_DEBUG_LOG_TFRAG_BUCKET19_VISIBILITY");
+          "bucket 8 reports the same slot-0 group becoming visible when its exact bit is set");
+    unsetenv("GOALPAD_JAK2_DEBUG_LOG_TFRAG_BUCKET8_VISIBILITY");
 
     MetalTFragment alpha_renderer("tfrag-t-l0-alpha", static_cast<int>(kAlphaTfragBucket),
                                   {tfrag3::TFragmentTreeKind::TRANS}, 0, false);

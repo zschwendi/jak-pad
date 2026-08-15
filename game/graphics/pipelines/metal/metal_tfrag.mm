@@ -49,9 +49,8 @@ MetalTFragment::MetalTFragment(const std::string& name,
   // Fixed maximum so the shaders' color indices line up regardless of how many
   // colors a level actually has (same as the GL renderer).
   m_color_result.resize(kMetalTimeOfDayColorCount);
-  const char* log_visibility = std::getenv("GOALPAD_JAK2_DEBUG_LOG_TFRAG_BUCKET19_VISIBILITY");
-  m_log_bucket19_visibility =
-      my_id == 19 && log_visibility && std::strcmp(log_visibility, "1") == 0;
+  const char* log_visibility = std::getenv("GOALPAD_JAK2_DEBUG_LOG_TFRAG_BUCKET8_VISIBILITY");
+  m_log_bucket8_visibility = my_id == 8 && log_visibility && std::strcmp(log_visibility, "1") == 0;
 }
 
 /*!
@@ -209,16 +208,15 @@ void MetalTFragment::render(DmaFollower& dma,
 
   // lod: the GL renderer exposes lod_tfrag as a debug setting, default 0.
   render_matching_trees(0, settings, render_state, ctx);
-  if (m_log_bucket19_visibility && m_bucket19_visibility_logs < 8) {
-    lg::info(
-        "GOALPAD_JAK2_TFRAG_BUCKET19_VIS sample={} level={} occ={} override={} "
-        "nodes=v{}/f{}/o{}/t{} groups=v{}/a{}/t{} trees={} draws={} runs={} tris={}",
-        m_bucket19_visibility_logs, m_stats.level_id, m_stats.occlusion_valid,
-        m_stats.all_visible_override, m_stats.visible_nodes, m_stats.frustum_visible_nodes,
-        m_stats.occlusion_visible_nodes, m_stats.bvh_nodes, m_stats.visible_vis_groups,
-        m_stats.always_visible_vis_groups, m_stats.vis_groups, m_stats.trees_rendered,
-        m_stats.draws, m_stats.runs, m_stats.triangles);
-    m_bucket19_visibility_logs++;
+  if (m_log_bucket8_visibility && m_bucket8_visibility_logs < 8) {
+    lg::info("GOALPAD_JAK2_TFRAG_BUCKET8_VIS sample={} name={} level={} occ={} override={} "
+             "nodes=v{}/f{}/o{}/t{} groups=v{}/a{}/t{} trees={} draws={} runs={} tris={}",
+             m_bucket8_visibility_logs, m_stats.level_name, m_stats.level_id,
+             m_stats.occlusion_valid, m_stats.all_visible_override, m_stats.visible_nodes,
+             m_stats.frustum_visible_nodes, m_stats.occlusion_visible_nodes, m_stats.bvh_nodes,
+             m_stats.visible_vis_groups, m_stats.always_visible_vis_groups, m_stats.vis_groups,
+             m_stats.trees_rendered, m_stats.draws, m_stats.runs, m_stats.triangles);
+    m_bucket8_visibility_logs++;
   }
 }
 
@@ -318,11 +316,11 @@ void MetalTFragment::render_tree(int geom,
                                    tree.colors->color_count);
 
   const bool all_visible_override = bg && bg->debug_all_visible;
-  if (!all_visible_override || m_log_bucket19_visibility) {
+  if (!all_visible_override || m_log_bucket8_visibility) {
     metal_cull_check_all_slow(settings.camera.planes, tree.vis->vis_nodes,
                               settings.occlusion_culling, m_cache.vis_temp.data());
   }
-  if (m_log_bucket19_visibility) {
+  if (m_log_bucket8_visibility) {
     // Keep the natural cull result even when the all-visible debug override is
     // active so this diagnostic can distinguish visibility data from frustum
     // rejection without changing the rendered result.
