@@ -67,7 +67,7 @@ const tfrag3::IndexTexture* find_consistent_index_texture(const tfrag3::Level& l
 
 void copy_palette(const tfrag3::IndexTexture& source, Jak2ClutBlendPalette* out) {
   for (std::size_t entry = 0; entry < out->size(); ++entry) {
-    for (std::size_t channel = 0; channel < (*out)[entry].size(); ++channel) {
+    for (int channel = 0; channel < static_cast<int>((*out)[entry].size()); ++channel) {
       (*out)[entry][channel] = source.color_table[entry][channel];
     }
   }

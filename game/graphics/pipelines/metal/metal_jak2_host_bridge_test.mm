@@ -1263,6 +1263,30 @@ void add_dark_jak_sources(tfrag3::Level* level) {
   }
 }
 
+tfrag3::IndexTexture synthetic_highres_jak_index_texture(std::string_view name, u8 bias) {
+  auto texture = synthetic_dark_jak_index_texture(name, bias);
+  texture.level_names = {"NEB.DGO"};
+  texture.tpage_name = "synthetic-highres-jak-clut";
+  return texture;
+}
+
+void add_highres_jak_sources(tfrag3::Level* level) {
+  constexpr std::array<std::array<std::string_view, 3>, 5> kNames = {{
+      {"jakb-eyebrow", "jakb-eyebrow-norm", "jakb-eyebrow-dark"},
+      {"jakb-eyelid", "jakb-eyelid-norm", "jakb-eyelid-dark"},
+      {"jakb-facelft", "jakb-facelft-norm", "jakb-facelft-dark"},
+      {"jakb-facert", "jakb-facert-norm", "jakb-facert-dark"},
+      {"jakb-hairtrans", "jakb-hairtrans-norm", "jakb-hairtrans-dark"},
+  }};
+  for (std::size_t slot = 0; slot < kNames.size(); ++slot) {
+    level->index_textures.push_back(synthetic_highres_jak_index_texture(kNames[slot][0], 0));
+    level->index_textures.push_back(
+        synthetic_highres_jak_index_texture(kNames[slot][1], static_cast<u8>(slot * 8 + 4)));
+    level->index_textures.push_back(
+        synthetic_highres_jak_index_texture(kNames[slot][2], static_cast<u8>(slot * 8 + 20)));
+  }
+}
+
 tfrag3::Texture synthetic_source_texture(const char* name, u32 color);
 
 bool write_synthetic_fr3(const std::filesystem::path& path,
@@ -1286,6 +1310,7 @@ bool write_synthetic_fr3(const std::filesystem::path& path,
     level.textures.push_back(synthetic_source_texture("security-env-dest", 0xff000000));
     level.textures.push_back(synthetic_source_texture("security-env-uscroll", 0xff102030));
     add_dark_jak_sources(&level);
+    add_highres_jak_sources(&level);
   }
 
   Serializer serializer;
@@ -1361,6 +1386,7 @@ bool write_prison_clut_fr3(const std::filesystem::path& path) {
     level.index_textures.push_back(synthetic_prison_index_texture(
         kDarkJakNames[slot][2], static_cast<u8>(slot * 8 + 20)));
   }
+  add_highres_jak_sources(&level);
 
   Serializer serializer;
   level.serialize(serializer);
@@ -1383,6 +1409,7 @@ bool write_security_fr3(const std::filesystem::path& path,
     level.textures.push_back(synthetic_source_texture("security-env-dest", 0xff000000));
     level.textures.push_back(synthetic_source_texture("security-env-uscroll", 0xff102030));
     add_dark_jak_sources(&level);
+    add_highres_jak_sources(&level);
   } else {
     level.textures.push_back(synthetic_source_texture("security-env-dest", 0xff000000));
     level.textures.push_back(synthetic_source_texture("security-env-uscroll", 0xff102030));
@@ -1702,9 +1729,9 @@ int main() {
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
             metal_merc_models().model_count() == initial_merc_model_count &&
             configured_texture_count ==
-                initial_texture_count + 20 + METAL_NUM_EYE_PAIRS * 2,
-        "common art, Bomb and Dark Jak sources/defaults, placeholder, OCEAN targets, and detached "
-        "eye targets are resident");
+                initial_texture_count + 25 + METAL_NUM_EYE_PAIRS * 2,
+        "common art, Bomb, Dark Jak, and high-resolution Jak defaults, placeholder, OCEAN "
+        "targets, and detached eye targets are resident");
   check(goal_jak2_metal_host_configure_level_art(host, fr3_directory.c_str()) &&
             metal_level_data::level_count() == initial_level_count + 1 &&
             metal_merc_models().level_count() == initial_merc_level_count + 1 &&
