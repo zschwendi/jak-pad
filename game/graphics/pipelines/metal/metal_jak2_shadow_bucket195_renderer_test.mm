@@ -7,6 +7,8 @@
 #include "common/dma/dma.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow2_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow195_frame_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow195_frame_capture_metal.h"
 
 #import <Metal/Metal.h>
 #import <TargetConditionals.h>
@@ -110,7 +112,11 @@ std::vector<u8> render_plan(id<MTLDevice> device,
                             id<MTLCommandQueue> queue,
                             id<MTLLibrary> library,
                             const metal_renderer::Jak2ShadowBucket195Plan& plan,
-                            metal_renderer::MetalJak2Shadow2Renderer::Stats* out_stats) {
+                            metal_renderer::MetalJak2Shadow2Renderer::Stats* out_stats,
+                            metal_renderer::Jak2Shadow195FrameCaptureResult* out_capture =
+                                nullptr,
+                            double entry_depth = 0.0,
+                            u32 entry_stencil = 0) {
   MetalPsoCache pso_cache;
   MetalStreamBuffer stream;
   check(pso_cache.init(device, library), "initialized the Shadow2 pipeline cache");
@@ -149,12 +155,13 @@ std::vector<u8> render_plan(id<MTLDevice> device,
   pass.depthAttachment.texture = depth;
   pass.depthAttachment.loadAction = MTLLoadActionClear;
   pass.depthAttachment.storeAction = MTLStoreActionStore;
-  pass.depthAttachment.clearDepth = 0.0;
+  pass.depthAttachment.clearDepth = entry_depth;
   pass.stencilAttachment.texture = depth;
   pass.stencilAttachment.loadAction = MTLLoadActionClear;
   pass.stencilAttachment.storeAction = MTLStoreActionStore;
-  pass.stencilAttachment.clearStencil = 0;
+  pass.stencilAttachment.clearStencil = entry_stencil;
   id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+  [encoder setScissorRect:MTLScissorRect{0, 0, kTargetSize, kTargetSize}];
 
   auto chain = one_transfer_chain();
   DmaFollower dma(chain.data(), kBucketOffset, chain.size());
@@ -163,17 +170,48 @@ std::vector<u8> render_plan(id<MTLDevice> device,
   state.buckets_base = 0;
   state.next_bucket = kNextBucket;
   state.jak2_shadow_bucket195_plan = &plan;
+  state.game_res_w = 1280;
+  state.game_res_h = 960;
+  std::shared_ptr<metal_renderer::Jak2Shadow195FrameCapture> capture;
+  if (out_capture) {
+    capture = std::make_shared<metal_renderer::Jak2Shadow195FrameCapture>();
+    metal_renderer::Jak2Shadow195FrameCaptureSelector selector;
+    selector.match = metal_renderer::Jak2Shadow195MatchHostTick |
+                     metal_renderer::Jak2Shadow195MatchEngineFrame |
+                     metal_renderer::Jak2Shadow195MatchPlanFingerprint;
+    selector.host_tick_id = 195;
+    selector.engine_frame_id = 65;
+    selector.plan_fingerprint = 0x195195195ull;
+    check(capture->arm(selector) && capture->try_select({195, 195, 65, 0x195195195ull}),
+          "armed the exact synthetic Shadow195 attachment selector");
+    state.jak2_shadow195_frame_capture = capture.get();
+    state.render_target_view_id = 77;
+    state.render_target_external = true;
+  }
   MetalFrameContext context;
   context.enc = encoder;
   context.pso_cache = &pso_cache;
   context.stream = &stream;
   context.color_format = MTLPixelFormatBGRA8Unorm;
   context.depth_format = MTLPixelFormatDepth32Float_Stencil8;
+  context.cmds = commands;
+  context.game_color = color;
+  context.game_depth = depth;
+  context.game_viewport = {0.0, 0.0, (double)kTargetSize, (double)kTargetSize, 0.0, 1.0};
+  context.game_scissor = {0, 0, kTargetSize, kTargetSize};
+  context.game_scissor_valid = true;
+  context.game_scissor_explicit = true;
+  context.color_load_action = static_cast<u32>(pass.colorAttachments[0].loadAction);
+  context.color_store_action = static_cast<u32>(pass.colorAttachments[0].storeAction);
+  context.depth_load_action = static_cast<u32>(pass.depthAttachment.loadAction);
+  context.depth_store_action = static_cast<u32>(pass.depthAttachment.storeAction);
+  context.stencil_load_action = static_cast<u32>(pass.stencilAttachment.loadAction);
+  context.stencil_store_action = static_cast<u32>(pass.stencilAttachment.storeAction);
 
   metal_renderer::MetalJak2Shadow2Renderer renderer("shadow2-proof", plan.bucket_id);
   renderer.render(dma, &state, context);
   *out_stats = renderer.stats();
-  [encoder endEncoding];
+  [context.enc endEncoding];
 #if TARGET_OS_OSX
   id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
   [blit synchronizeResource:color];
@@ -183,6 +221,11 @@ std::vector<u8> render_plan(id<MTLDevice> device,
   [commands waitUntilCompleted];
   check(commands.status == MTLCommandBufferStatusCompleted,
         "completed the deterministic Shadow2 GPU command buffer");
+  if (out_capture) {
+    check(capture->wait_for_terminal(1.0),
+          "completed the same-command-buffer Shadow195 attachment reduction");
+    *out_capture = capture->result();
+  }
 
   std::vector<u8> pixels(kTargetSize * kTargetSize * 4);
   [color getBytes:pixels.data()
@@ -223,10 +266,48 @@ void check_no_draw_disposition(metal_renderer::Jak2ShadowBucket195PlanDispositio
         what);
 }
 
+class UnsupportedCaptureRenderer final : public MetalBucketRenderer {
+ public:
+  UnsupportedCaptureRenderer() : MetalBucketRenderer("unsupported-capture-route", 195) {}
+  void render(DmaFollower&, MetalSharedRenderState*, MetalFrameContext&) override {}
+};
+
+void check_capture_dispatch_routes() {
+  using namespace metal_renderer;
+  MetalSkipRenderer deferred("deferred-shadow195", 195);
+  MetalJak2Shadow2Renderer private_renderer("private-shadow195", 195);
+  MetalJak2Shadow2Renderer production_renderer("production-shadow195", 195);
+  UnsupportedCaptureRenderer unsupported;
+  MetalBucketRenderer* selected = nullptr;
+
+  const auto deferred_route =
+      route_jak2_shadow195_frame_capture(&deferred, &private_renderer, &selected);
+  const bool deferred_ok = deferred_route == Jak2Shadow195CaptureDispatchRoute::DeferredPrivate &&
+                           selected == &private_renderer;
+  const auto production_route =
+      route_jak2_shadow195_frame_capture(&production_renderer, &private_renderer, &selected);
+  const bool production_ok =
+      production_route == Jak2Shadow195CaptureDispatchRoute::ProductionDirect &&
+      selected == &production_renderer;
+  const auto unsupported_route =
+      route_jak2_shadow195_frame_capture(&unsupported, &private_renderer, &selected);
+  const bool unsupported_ok =
+      unsupported_route == Jak2Shadow195CaptureDispatchRoute::Unsupported &&
+      selected == &unsupported;
+  const auto missing_private_route =
+      route_jak2_shadow195_frame_capture(&deferred, nullptr, &selected);
+  const bool missing_private_ok =
+      missing_private_route == Jak2Shadow195CaptureDispatchRoute::Unsupported &&
+      selected == &deferred;
+  check(deferred_ok && production_ok && unsupported_ok && missing_private_ok,
+        "Shadow195 capture routes deferred privately, production directly, and others safely");
+}
+
 }  // namespace
 
 int main() {
   @autoreleasepool {
+    check_capture_dispatch_routes();
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     id<MTLCommandQueue> queue = [device newCommandQueue];
     dispatch_data_t library_data = dispatch_data_create(
@@ -245,8 +326,10 @@ int main() {
 
     metal_renderer::MetalJak2Shadow2Renderer::Stats first_stats;
     metal_renderer::MetalJak2Shadow2Renderer::Stats second_stats;
+    metal_renderer::Jak2Shadow195FrameCaptureResult attachment_capture;
     const auto first_plan = ready_plan();
-    const auto first = render_plan(device, queue, library, first_plan, &first_stats);
+    const auto first =
+        render_plan(device, queue, library, first_plan, &first_stats, &attachment_capture);
     const auto second = render_plan(device, queue, library, first_plan, &second_stats);
     const std::array<u8, 4> changed = {100, 132, 68, 255};
     std::size_t exact_changed = 0;
@@ -277,6 +360,83 @@ int main() {
               second_stats.lighten_draws == first_stats.lighten_draws &&
               second_stats.reached_boundary == first_stats.reached_boundary,
           "repeated Shadow2 GPU executions report identical telemetry");
+    check(attachment_capture.status ==
+                  metal_renderer::Jak2Shadow195FrameCaptureStatus::Complete &&
+              attachment_capture.selected.host_tick_id == 195 &&
+              attachment_capture.selected.engine_frame_id == 65 &&
+              attachment_capture.target.view_id == 77 &&
+              attachment_capture.target.external_target == 1 &&
+              attachment_capture.target.width == kTargetSize &&
+              attachment_capture.target.height == kTargetSize &&
+              attachment_capture.target.pixel_format == MTLPixelFormatBGRA8Unorm &&
+              attachment_capture.target.depth_pixel_format ==
+                  MTLPixelFormatDepth32Float_Stencil8 &&
+              attachment_capture.target.stencil_pixel_format ==
+                  MTLPixelFormatDepth32Float_Stencil8 &&
+              attachment_capture.target.color_load_action == MTLLoadActionClear &&
+              attachment_capture.target.depth_load_action == MTLLoadActionClear &&
+              attachment_capture.target.stencil_load_action == MTLLoadActionClear &&
+              attachment_capture.target.color_store_action == MTLStoreActionStore &&
+              attachment_capture.target.depth_store_action == MTLStoreActionStore &&
+              attachment_capture.target.stencil_store_action == MTLStoreActionStore &&
+              attachment_capture.target.scissor_width == kTargetSize &&
+              attachment_capture.target.scissor_height == kTargetSize &&
+              attachment_capture.target.scissor_explicit == 1 &&
+              attachment_capture.target.render_scale_x == 2.0 &&
+              attachment_capture.target.render_scale_y == 2.0 &&
+              attachment_capture.before.hash != attachment_capture.after.hash &&
+              attachment_capture.before.nonzero_pixels == kTargetSize * kTargetSize &&
+              attachment_capture.after.nonzero_pixels == kTargetSize * kTargetSize &&
+              attachment_capture.difference.changed_pixels > 0 &&
+              attachment_capture.difference.changed_bounds.valid &&
+              attachment_capture.before_depth.hash == attachment_capture.after_depth.hash &&
+              attachment_capture.before_depth.finite_pixels ==
+                  kTargetSize * kTargetSize &&
+              attachment_capture.before_depth.nonfinite_pixels == 0 &&
+              attachment_capture.before_depth.min_finite == 0.f &&
+              attachment_capture.before_depth.max_finite == 0.f &&
+              attachment_capture.depth_difference.changed_pixels == 0 &&
+              attachment_capture.before_stencil.nonzero_pixels == 0 &&
+              attachment_capture.volume_stencil.nonzero_pixels > 0 &&
+              attachment_capture.volume_stencil_difference.changed_pixels > 0 &&
+              attachment_capture.volume_stencil_difference.changed_bounds.valid &&
+              attachment_capture.after_stencil.hash ==
+                  attachment_capture.volume_stencil.hash &&
+              attachment_capture.final_stencil_difference.changed_pixels == 0 &&
+              attachment_capture.renderer.draw_calls == first_stats.draw_calls &&
+              attachment_capture.renderer.triangles == first_stats.triangles &&
+              attachment_capture.renderer.reached_boundary == 1,
+          "same-frame capture retains pass metadata, color/depth/stencil checkpoints, and stats");
+
+    metal_renderer::MetalJak2Shadow2Renderer::Stats blocked_stats;
+    metal_renderer::Jak2Shadow195FrameCaptureResult blocked_capture;
+    const auto blocked =
+        render_plan(device, queue, library, first_plan, &blocked_stats, &blocked_capture, 1.0, 0);
+    check(blocked_capture.status ==
+                  metal_renderer::Jak2Shadow195FrameCaptureStatus::Complete &&
+              blocked_capture.before_depth.min_finite == 1.f &&
+              blocked_capture.before_depth.max_finite == 1.f &&
+              blocked_capture.before_depth.hash == blocked_capture.after_depth.hash &&
+              blocked_capture.depth_difference.changed_pixels == 0 &&
+              blocked_capture.before_stencil.nonzero_pixels == 0 &&
+              blocked_capture.volume_stencil.nonzero_pixels == 0 &&
+              blocked_capture.volume_stencil_difference.changed_pixels == 0 &&
+              blocked_capture.before.hash == blocked_capture.after.hash && blocked != first,
+          "entry depth deterministically rejects the volume without changing depth or stencil");
+
+    metal_renderer::MetalJak2Shadow2Renderer::Stats seeded_stats;
+    metal_renderer::Jak2Shadow195FrameCaptureResult seeded_capture;
+    const auto seeded =
+        render_plan(device, queue, library, first_plan, &seeded_stats, &seeded_capture, 1.0, 7);
+    check(seeded_capture.status ==
+                  metal_renderer::Jak2Shadow195FrameCaptureStatus::Complete &&
+              seeded_capture.before_stencil.nonzero_pixels == kTargetSize * kTargetSize &&
+              seeded_capture.before_stencil.hash == seeded_capture.volume_stencil.hash &&
+              seeded_capture.volume_stencil_difference.changed_pixels == 0 &&
+              seeded_capture.volume_stencil.hash == seeded_capture.after_stencil.hash &&
+              seeded_capture.final_stencil_difference.changed_pixels == 0 &&
+              seeded_capture.before.hash != seeded_capture.after.hash && seeded != blocked,
+          "entry stencil deterministically shades without a volume-generated stencil delta");
     metal_renderer::MetalJak2Shadow2Renderer::Stats wall_stats;
     const auto wall = render_plan(device, queue, library, wall_plan(), &wall_stats);
     std::size_t wall_changed = 0;

@@ -1413,6 +1413,12 @@ if(APPLE)
         add_test(NAME jak2-shadow-bucket195-plan-test
             COMMAND jak2-shadow-bucket195-plan-test)
 
+        add_executable(jak2-shadow195-frame-capture-test
+            graphics/pipelines/metal/metal_jak2_shadow195_frame_capture.cpp
+            graphics/pipelines/metal/metal_jak2_shadow195_frame_capture_test.cpp)
+        add_test(NAME jak2-shadow195-frame-capture-test
+            COMMAND jak2-shadow195-frame-capture-test)
+
         add_executable(jak2-shadow-bucket195-renderer-test
             graphics/pipelines/metal/metal_jak2_shadow_bucket195_renderer_test.mm)
         set_source_files_properties(

@@ -511,6 +511,125 @@ typedef struct goal_jak2_metal_frame_summary {
   uint32_t max_alpha;
 } goal_jak2_metal_frame_summary;
 
+enum {
+  GOAL_JAK2_SHADOW195_CAPTURE_MATCH_HOST_TICK = 1u << 0,
+  GOAL_JAK2_SHADOW195_CAPTURE_MATCH_ENGINE_FRAME = 1u << 1,
+  GOAL_JAK2_SHADOW195_CAPTURE_MATCH_PLAN_FINGERPRINT = 1u << 2,
+};
+
+enum {
+  GOAL_JAK2_SHADOW195_CAPTURE_IDLE = 0,
+  GOAL_JAK2_SHADOW195_CAPTURE_ARMED = 1,
+  GOAL_JAK2_SHADOW195_CAPTURE_SELECTED = 2,
+  GOAL_JAK2_SHADOW195_CAPTURE_COMPLETE = 3,
+  GOAL_JAK2_SHADOW195_CAPTURE_FAILED = 4,
+};
+
+enum {
+  GOAL_JAK2_SHADOW195_CAPTURE_FAILURE_NONE = 0,
+  GOAL_JAK2_SHADOW195_CAPTURE_FAILURE_INVALID_CONTEXT = 1,
+  GOAL_JAK2_SHADOW195_CAPTURE_FAILURE_UNSUPPORTED_TARGET = 2,
+  GOAL_JAK2_SHADOW195_CAPTURE_FAILURE_ALLOCATION = 3,
+  GOAL_JAK2_SHADOW195_CAPTURE_FAILURE_RENDERER = 4,
+  GOAL_JAK2_SHADOW195_CAPTURE_FAILURE_COMMAND_BUFFER = 5,
+  GOAL_JAK2_SHADOW195_CAPTURE_FAILURE_READBACK = 6,
+  GOAL_JAK2_SHADOW195_CAPTURE_FAILURE_PLAN_NOT_READY = 7,
+};
+
+typedef struct goal_jak2_shadow195_frame_capture_selector {
+  uint32_t match;
+  uint64_t host_tick_id;
+  uint64_t engine_frame_id;
+  uint64_t plan_fingerprint;
+} goal_jak2_shadow195_frame_capture_selector;
+
+typedef struct goal_jak2_shadow195_pixel_bounds {
+  uint32_t valid;
+  uint32_t min_x;
+  uint32_t min_y;
+  uint32_t max_x_exclusive;
+  uint32_t max_y_exclusive;
+} goal_jak2_shadow195_pixel_bounds;
+
+typedef struct goal_jak2_shadow195_depth_summary {
+  uint64_t hash;
+  uint64_t finite_pixels;
+  uint64_t nonfinite_pixels;
+  uint32_t finite_range_valid;
+  float min_finite;
+  float max_finite;
+} goal_jak2_shadow195_depth_summary;
+
+typedef struct goal_jak2_shadow195_stencil_summary {
+  uint64_t hash;
+  uint64_t nonzero_pixels;
+  goal_jak2_shadow195_pixel_bounds nonzero_bounds;
+} goal_jak2_shadow195_stencil_summary;
+
+typedef struct goal_jak2_shadow195_frame_capture_result {
+  uint32_t status;
+  uint32_t failure_reason;
+  goal_jak2_shadow195_frame_capture_selector selector;
+  uint64_t selected_host_tick_id;
+  uint64_t selected_chain_ordinal;
+  uint64_t selected_engine_frame_id;
+  uint64_t selected_plan_fingerprint;
+  uint64_t target_view_id;
+  uint32_t target_external;
+  uint32_t target_width;
+  uint32_t target_height;
+  uint32_t target_pixel_format;
+  uint32_t target_color_slice;
+  uint32_t target_depth_pixel_format;
+  uint32_t target_depth_slice;
+  uint32_t target_stencil_pixel_format;
+  uint32_t target_stencil_slice;
+  uint32_t target_texture_type;
+  uint32_t target_storage_mode;
+  uint32_t target_sample_count;
+  uint32_t target_array_length;
+  uint32_t target_mipmap_level_count;
+  double target_viewport_origin_x;
+  double target_viewport_origin_y;
+  double target_viewport_width;
+  double target_viewport_height;
+  double target_viewport_znear;
+  double target_viewport_zfar;
+  uint32_t target_scissor_x;
+  uint32_t target_scissor_y;
+  uint32_t target_scissor_width;
+  uint32_t target_scissor_height;
+  uint32_t target_scissor_explicit;
+  uint32_t target_color_load_action;
+  uint32_t target_color_store_action;
+  uint32_t target_depth_load_action;
+  uint32_t target_depth_store_action;
+  uint32_t target_stencil_load_action;
+  uint32_t target_stencil_store_action;
+  double target_render_scale_x;
+  double target_render_scale_y;
+  uint64_t before_hash;
+  uint64_t before_nonzero_pixels;
+  goal_jak2_shadow195_pixel_bounds before_nonzero_bounds;
+  uint64_t after_hash;
+  uint64_t after_nonzero_pixels;
+  goal_jak2_shadow195_pixel_bounds after_nonzero_bounds;
+  uint64_t changed_pixels;
+  goal_jak2_shadow195_pixel_bounds changed_bounds;
+  goal_jak2_shadow195_depth_summary before_depth;
+  goal_jak2_shadow195_depth_summary after_depth;
+  uint64_t changed_depth_pixels;
+  goal_jak2_shadow195_pixel_bounds changed_depth_bounds;
+  goal_jak2_shadow195_stencil_summary before_stencil;
+  goal_jak2_shadow195_stencil_summary volume_stencil;
+  goal_jak2_shadow195_stencil_summary after_stencil;
+  uint64_t volume_stencil_changed_pixels;
+  goal_jak2_shadow195_pixel_bounds volume_stencil_changed_bounds;
+  uint64_t final_stencil_changed_pixels;
+  goal_jak2_shadow195_pixel_bounds final_stencil_changed_bounds;
+  goal_jak2_shadow_bucket195_execution_metrics renderer;
+} goal_jak2_shadow195_frame_capture_result;
+
 /*! Create the process-singleton, nil-layer Jak 2 policy-dispatch host. */
 goal_jak2_metal_host* goal_jak2_metal_host_create(void);
 
@@ -552,6 +671,20 @@ int goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(goal_jak2_metal_host
                                                             uint64_t capacity,
                                                             uint64_t* required_size,
                                                             uint64_t* serialized_fingerprint);
+
+/*!
+ * Arm one private, in-memory Shadow195 comparison. At least one exact selector field is required.
+ * A matching Ready plan executes through the existing renderer without changing bucket policy;
+ * its color, depth, and stencil checkpoints are reduced to numeric summaries, then discarded.
+ */
+int goal_jak2_metal_host_arm_shadow195_frame_capture(
+    goal_jak2_metal_host* host,
+    const goal_jak2_shadow195_frame_capture_selector* selector);
+
+/*! Copy the current fixed-size numeric result. Raw attachment pixels are never exposed. */
+int goal_jak2_metal_host_get_shadow195_frame_capture(
+    goal_jak2_metal_host* host,
+    goal_jak2_shadow195_frame_capture_result* out);
 
 /*!
  * Pure counter gate shared by the host wait and standalone proof. Drawable callbacks, drops, and

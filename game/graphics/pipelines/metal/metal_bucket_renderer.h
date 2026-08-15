@@ -38,6 +38,7 @@ struct Jak2PrisEyeTextureUploadPlan;
 struct Jak2CommonPrisTextureUploadPlan;
 struct Jak2GmercWarpBucket317Plan;
 struct Jak2ShadowBucket195Plan;
+class Jak2Shadow195FrameCapture;
 }
 
 using MetalHostBucketCallback = void (*)(void* context, u32 bucket_id);
@@ -108,6 +109,9 @@ struct MetalSharedRenderState {
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;
   const metal_renderer::Jak2GmercWarpBucket317Plan* jak2_gmerc_warp_bucket317_plan = nullptr;
   const metal_renderer::Jak2ShadowBucket195Plan* jak2_shadow_bucket195_plan = nullptr;
+  metal_renderer::Jak2Shadow195FrameCapture* jak2_shadow195_frame_capture = nullptr;
+  u64 render_target_view_id = 0;
+  bool render_target_external = false;
   float target_fps = 60.f;
 };
 
@@ -133,6 +137,15 @@ struct MetalFrameContext {
   NSUInteger game_depth_slice = 0;
   // Full-target viewport for the selected attachments. Restored after a bucket splits the pass.
   MTLViewport game_viewport = {0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+  MTLScissorRect game_scissor = {0, 0, 0, 0};
+  bool game_scissor_valid = false;
+  bool game_scissor_explicit = false;
+  u32 color_load_action = 0;
+  u32 color_store_action = 0;
+  u32 depth_load_action = 0;
+  u32 depth_store_action = 0;
+  u32 stencil_load_action = 0;
+  u32 stencil_store_action = 0;
   // frame stats (mirror of the GL profiler counters the tests read)
   int draw_calls = 0;
   int triangles = 0;
@@ -187,6 +200,7 @@ class MetalSkipRenderer : public MetalBucketRenderer {
               MetalFrameContext& ctx) override;
   u64 skipped_bytes() const { return m_skipped_bytes; }
   u64 last_skipped_bytes() const { return m_last_skipped_bytes; }
+  void reset_last_skipped_bytes() { m_last_skipped_bytes = 0; }
 
  private:
   u64 m_skipped_bytes = 0;

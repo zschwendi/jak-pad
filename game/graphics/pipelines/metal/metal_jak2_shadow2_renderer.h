@@ -7,6 +7,7 @@
 namespace metal_renderer {
 
 struct Jak2ShadowBucket195Plan;
+class Jak2Shadow195AttachmentCapture;
 
 class MetalJak2Shadow2Renderer final : public MetalBucketRenderer {
  public:
@@ -63,7 +64,8 @@ class MetalJak2Shadow2Renderer final : public MetalBucketRenderer {
                             const Geometry& geometry) const;
   void draw(const Jak2ShadowBucket195Plan& plan,
             const Geometry& geometry,
-            MetalFrameContext& ctx);
+            MetalFrameContext& ctx,
+            Jak2Shadow195AttachmentCapture* attachment_capture);
 
   Stats m_stats;
 };

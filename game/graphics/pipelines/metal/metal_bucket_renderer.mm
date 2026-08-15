@@ -68,6 +68,15 @@ void MetalFrameContext::resume_pass_with_framebuffer_copy(id<MTLTexture> snapsho
   enc = [cmds renderCommandEncoderWithDescriptor:pass];
   [enc setCullMode:MTLCullModeNone];
   [enc setViewport:game_viewport];
+  if (game_scissor_valid) {
+    [enc setScissorRect:game_scissor];
+  }
+  color_load_action = static_cast<u32>(MTLLoadActionLoad);
+  color_store_action = static_cast<u32>(MTLStoreActionStore);
+  depth_load_action = static_cast<u32>(MTLLoadActionLoad);
+  depth_store_action = static_cast<u32>(MTLStoreActionStore);
+  stencil_load_action = static_cast<u32>(MTLLoadActionLoad);
+  stencil_store_action = static_cast<u32>(MTLStoreActionStore);
 }
 
 /*!

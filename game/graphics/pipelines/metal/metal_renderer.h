@@ -37,6 +37,11 @@ class MetalSkyBlendHandler;
 class MetalJak2BlitDisplayRenderer;
 struct MetalPresentationState;
 
+namespace metal_renderer {
+class Jak2Shadow195FrameCapture;
+class MetalJak2Shadow2Renderer;
+}
+
 // Backs metal_renderer::set_s7_override (see metal_pipeline.h).
 void metal_set_s7_override(u32 s7_ptr);
 
@@ -88,6 +93,7 @@ struct MetalRenderOptions {
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;
   const metal_renderer::Jak2GmercWarpBucket317Plan* jak2_gmerc_warp_bucket317_plan = nullptr;
   const metal_renderer::Jak2ShadowBucket195Plan* jak2_shadow_bucket195_plan = nullptr;
+  metal_renderer::Jak2Shadow195FrameCapture* jak2_shadow195_frame_capture = nullptr;
   float target_fps = 60.f;
 };
 
@@ -248,6 +254,8 @@ class MetalRenderer {
   MetalStreamBuffer m_stream;
   MetalSharedRenderState m_shared_state;
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
+  std::unique_ptr<metal_renderer::MetalJak2Shadow2Renderer>
+      m_jak2_shadow195_capture_renderer;
   std::unique_ptr<MetalEyeRenderer> m_jak2_eye_renderer;
   TexturePool* m_texture_pool = nullptr;
   bool m_host_texture_uploads = false;

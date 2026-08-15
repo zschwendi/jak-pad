@@ -26,6 +26,8 @@
 #include "game/graphics/pipelines/metal/metal_jak2_blit_display_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow2_renderer.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow195_frame_capture_metal.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_renderer.h"
 #include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
@@ -518,6 +520,9 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   std::array<MetalTie3*, jak2::LEVEL_MAX> normal_ties = {};
   auto merc = std::make_shared<MetalMerc2>(m_device, m_queue, m_texture_pool);
   auto generic2 = std::make_shared<MetalGeneric2>();
+  m_jak2_shadow195_capture_renderer =
+      std::make_unique<metal_renderer::MetalJak2Shadow2Renderer>(
+          "shadow195-private-capture", metal_renderer::kJak2ShadowBucket195PlanBucket);
 
   for (const auto& descriptor : table) {
     const auto bucket_id = static_cast<std::size_t>(descriptor.id);
@@ -798,6 +803,7 @@ void MetalRenderer::init_bucket_renderers(TexturePool* pool,
   m_shared_state.eye_renderer = nullptr;
   m_bucket_renderers.clear();
   m_jak2_eye_renderer.reset();
+  m_jak2_shadow195_capture_renderer.reset();
   m_texture_pool = pool;
   m_host_texture_uploads = host_texture_uploads;
   m_jak2_blit_display = nullptr;
@@ -1129,7 +1135,16 @@ void MetalRenderer::dispatch_buckets_jak2(DmaFollower dma, MetalFrameContext& ct
   m_shared_state.default_regs_buffer = 0;
 
   for (size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
-    auto& renderer = m_bucket_renderers[bucket_id];
+    auto* renderer = m_bucket_renderers[bucket_id].get();
+    if (bucket_id == metal_renderer::kJak2ShadowBucket195PlanBucket &&
+        m_shared_state.jak2_shadow195_frame_capture) {
+      const auto route = metal_renderer::route_jak2_shadow195_frame_capture(
+          renderer, m_jak2_shadow195_capture_renderer.get(), &renderer);
+      if (route == metal_renderer::Jak2Shadow195CaptureDispatchRoute::Unsupported) {
+        m_shared_state.jak2_shadow195_frame_capture->fail(static_cast<u32>(
+            metal_renderer::Jak2Shadow195FrameCaptureFailure::RendererFailed));
+      }
+    }
     renderer->render(dma, &m_shared_state, ctx);
     ASSERT(dma.current_tag_offset() == m_shared_state.next_bucket);
     m_shared_state.next_bucket += 16;
@@ -1266,6 +1281,9 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.jak2_common_pris_plan = opts.jak2_common_pris_plan;
     m_shared_state.jak2_gmerc_warp_bucket317_plan = opts.jak2_gmerc_warp_bucket317_plan;
     m_shared_state.jak2_shadow_bucket195_plan = opts.jak2_shadow_bucket195_plan;
+    m_shared_state.jak2_shadow195_frame_capture = opts.jak2_shadow195_frame_capture;
+    m_shared_state.render_target_view_id = view_id;
+    m_shared_state.render_target_external = external_target;
     struct HostBucketCallbackScope {
       MetalSharedRenderState* state;
       ~HostBucketCallbackScope() {
@@ -1278,6 +1296,9 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         state->jak2_common_pris_plan = nullptr;
         state->jak2_gmerc_warp_bucket317_plan = nullptr;
         state->jak2_shadow_bucket195_plan = nullptr;
+        state->jak2_shadow195_frame_capture = nullptr;
+        state->render_target_view_id = 0;
+        state->render_target_external = false;
       }
     } host_bucket_callback_scope{&m_shared_state};
 
@@ -1334,6 +1355,14 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     ctx.game_depth = game_depth;
     ctx.game_depth_slice = depth_slice;
     ctx.game_viewport = frame_viewport;
+    ctx.game_scissor = {0, 0, game_color.width, game_color.height};
+    ctx.game_scissor_valid = true;
+    ctx.color_load_action = static_cast<u32>(pass.colorAttachments[0].loadAction);
+    ctx.color_store_action = static_cast<u32>(pass.colorAttachments[0].storeAction);
+    ctx.depth_load_action = static_cast<u32>(pass.depthAttachment.loadAction);
+    ctx.depth_store_action = static_cast<u32>(pass.depthAttachment.storeAction);
+    ctx.stencil_load_action = static_cast<u32>(pass.stencilAttachment.loadAction);
+    ctx.stencil_store_action = static_cast<u32>(pass.stencilAttachment.storeAction);
 
     m_chain_stats.last_buckets_dispatched = 0;
     switch (m_shared_state.version) {
@@ -1704,6 +1733,26 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_chain_stats.eye_command_buffer_errors = 0;
     m_chain_stats.eye_last_command_buffer_status = 0;
     m_chain_stats.eye_texture = 0;
+    m_chain_stats.shadow195_executions = 0;
+    m_chain_stats.shadow195_absent = 0;
+    m_chain_stats.shadow195_ready = 0;
+    m_chain_stats.shadow195_deferred_no_draw = 0;
+    m_chain_stats.shadow195_input_batches = 0;
+    m_chain_stats.shadow195_input_vertices = 0;
+    m_chain_stats.shadow195_input_records = 0;
+    m_chain_stats.shadow195_output_vertices = 0;
+    m_chain_stats.shadow195_front_triangles = 0;
+    m_chain_stats.shadow195_back_triangles = 0;
+    m_chain_stats.shadow195_draws = 0;
+    m_chain_stats.shadow195_triangles = 0;
+    m_chain_stats.shadow195_darken_draws = 0;
+    m_chain_stats.shadow195_lighten_draws = 0;
+    m_chain_stats.shadow195_unexpected_dma = 0;
+    m_chain_stats.shadow195_invalid_plan = 0;
+    m_chain_stats.shadow195_nonfinite_projection = 0;
+    m_chain_stats.shadow195_overflow = 0;
+    m_chain_stats.shadow195_pipeline_failures = 0;
+    m_chain_stats.shadow195_reached_boundary = false;
     m_chain_stats.merc_model_diagnostics = {};
     m_chain_stats.merc_model_diagnostic_count = 0;
     m_chain_stats.merc_model_diagnostic_overflow_packets = 0;
@@ -1960,6 +2009,29 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     }
     if (m_jak2_eye_renderer) {
       aggregate_eye_stats(m_jak2_eye_renderer->stats());
+    }
+    if (opts.jak2_shadow195_frame_capture && m_jak2_shadow195_capture_renderer) {
+      const auto& ss = m_jak2_shadow195_capture_renderer->stats();
+      m_chain_stats.shadow195_executions = ss.executions;
+      m_chain_stats.shadow195_absent = ss.absent;
+      m_chain_stats.shadow195_ready = ss.ready;
+      m_chain_stats.shadow195_deferred_no_draw = ss.accepted_deferred_no_draw;
+      m_chain_stats.shadow195_input_batches = ss.input_batches;
+      m_chain_stats.shadow195_input_vertices = ss.input_vertices;
+      m_chain_stats.shadow195_input_records = ss.input_records;
+      m_chain_stats.shadow195_output_vertices = ss.output_vertices;
+      m_chain_stats.shadow195_front_triangles = ss.front_triangles;
+      m_chain_stats.shadow195_back_triangles = ss.back_triangles;
+      m_chain_stats.shadow195_draws = ss.draw_calls;
+      m_chain_stats.shadow195_triangles = ss.triangles;
+      m_chain_stats.shadow195_darken_draws = ss.darken_draws;
+      m_chain_stats.shadow195_lighten_draws = ss.lighten_draws;
+      m_chain_stats.shadow195_unexpected_dma = ss.unexpected_dma;
+      m_chain_stats.shadow195_invalid_plan = ss.invalid_plan;
+      m_chain_stats.shadow195_nonfinite_projection = ss.nonfinite_projection;
+      m_chain_stats.shadow195_overflow = ss.overflow;
+      m_chain_stats.shadow195_pipeline_failures = ss.pipeline_failures;
+      m_chain_stats.shadow195_reached_boundary = ss.reached_boundary;
     }
     m_chain_stats.generic_fragments = generic_stats.fragments;
     m_chain_stats.generic_vertices = generic_stats.vertices;

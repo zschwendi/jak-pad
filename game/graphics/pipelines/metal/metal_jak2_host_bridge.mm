@@ -34,6 +34,7 @@
 #include "game/graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow195_frame_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.h"
@@ -73,6 +74,8 @@ struct goal_jak2_metal_host {
   std::vector<std::string> loaded_level_keys;
   std::optional<std::vector<u8>> shadow_bucket195_plan_capture;
   u64 shadow_bucket195_plan_capture_fingerprint = 0;
+  std::shared_ptr<metal_renderer::Jak2Shadow195FrameCapture> shadow195_frame_capture =
+      std::make_shared<metal_renderer::Jak2Shadow195FrameCapture>();
   std::array<u64, metal_renderer::kJak2Pris2TextureUploadBuckets.size()>
       pris2_texture_upload_executions = {};
   u64 placeholder_handle = 0;
@@ -85,6 +88,12 @@ struct goal_jak2_metal_host {
 namespace metal_renderer {
 
 static_assert(GOAL_JAK2_TRACKED_DEFERRED_BUCKET_COUNT == kTrackedDeferredBuckets);
+static_assert(GOAL_JAK2_SHADOW195_CAPTURE_IDLE ==
+              static_cast<u32>(Jak2Shadow195FrameCaptureStatus::Idle));
+static_assert(GOAL_JAK2_SHADOW195_CAPTURE_FAILED ==
+              static_cast<u32>(Jak2Shadow195FrameCaptureStatus::Failed));
+static_assert(GOAL_JAK2_SHADOW195_CAPTURE_FAILURE_PLAN_NOT_READY ==
+              static_cast<u32>(Jak2Shadow195FrameCaptureFailure::PlanNotReady));
 
 bool jak2_metal_host_policy_table_is_audited() {
   const auto& table = jak2_metal_bucket_table();
@@ -1526,6 +1535,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     return;
   }
   bool host_texture_mutated = false;
+  bool shadow195_frame_capture_selected = false;
   try {
     host->options.host_tick_id = host->metrics.chains;
     host->options.chain_ordinal = host->metrics.chains;
@@ -2175,9 +2185,23 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &effects_bucket315_callback_executed,
         &*copied_gmerc_warp_bucket317_plan,
         &gmerc_warp_bucket317_callback_executed};
-    const bool execute_shadow_bucket195 =
+    const bool production_shadow_bucket195 =
         metal_renderer::jak2_metal_bucket_table()[metal_renderer::kJak2ShadowBucket195PlanBucket]
             .behavior == metal_renderer::Jak2MetalBucketBehavior::Shadow2;
+    const metal_renderer::Jak2Shadow195FrameIdentity shadow_identity = {
+        host->options.host_tick_id, host->options.chain_ordinal, host->options.engine_frame_id,
+        shadow_bucket195_capture.semantic_fingerprint};
+    if (host->shadow195_frame_capture->try_select(shadow_identity)) {
+      if (copied_shadow_bucket195_plan->disposition ==
+          metal_renderer::Jak2ShadowBucket195PlanDisposition::Ready) {
+        shadow195_frame_capture_selected = true;
+      } else {
+        host->shadow195_frame_capture->fail(static_cast<u32>(
+            metal_renderer::Jak2Shadow195FrameCaptureFailure::PlanNotReady));
+      }
+    }
+    const bool execute_shadow_bucket195 =
+        production_shadow_bucket195 || shadow195_frame_capture_selected;
     auto render_options = host->options;
     merge_animated_texture_slots(host);
     render_options.animated_texture_slots = host->animated_texture_slots.data();
@@ -2190,6 +2214,8 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.jak2_gmerc_warp_bucket317_plan = &*copied_gmerc_warp_bucket317_plan;
     render_options.jak2_shadow_bucket195_plan =
         execute_shadow_bucket195 ? &*copied_shadow_bucket195_plan : nullptr;
+    render_options.jak2_shadow195_frame_capture =
+        shadow195_frame_capture_selected ? host->shadow195_frame_capture.get() : nullptr;
     const u64 warp_texture_upload_executions_before =
         host->metrics.warp_texture_upload_executions;
     const auto pris2_texture_upload_executions_before =
@@ -2482,8 +2508,16 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     }
     host->metrics.completed_chains++;
   } catch (const std::exception& error) {
+    if (shadow195_frame_capture_selected) {
+      host->shadow195_frame_capture->fail(static_cast<u32>(
+          metal_renderer::Jak2Shadow195FrameCaptureFailure::RendererFailed));
+    }
     record_send_chain_failure(host, error.what(), host_texture_mutated);
   } catch (...) {
+    if (shadow195_frame_capture_selected) {
+      host->shadow195_frame_capture->fail(static_cast<u32>(
+          metal_renderer::Jak2Shadow195FrameCaptureFailure::RendererFailed));
+    }
     record_send_chain_failure(host, "Jak 2 Metal send-chain threw an unknown exception",
                               host_texture_mutated);
   }
@@ -2784,6 +2818,176 @@ int goal_jak2_metal_host_copy_shadow_bucket195_plan_capture(goal_jak2_metal_host
     return 0;
   }
   std::memcpy(out_bytes, capture.data(), capture.size());
+  return 1;
+}
+
+int goal_jak2_metal_host_arm_shadow195_frame_capture(
+    goal_jak2_metal_host* host,
+    const goal_jak2_shadow195_frame_capture_selector* selector) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (!host || host != g_active_host || host->inactive || !host->layer || !selector) {
+    return 0;
+  }
+  metal_renderer::Jak2Shadow195FrameCaptureSelector internal;
+  internal.match = selector->match;
+  internal.host_tick_id = selector->host_tick_id;
+  internal.engine_frame_id = selector->engine_frame_id;
+  internal.plan_fingerprint = selector->plan_fingerprint;
+  return host->shadow195_frame_capture->arm(internal) ? 1 : 0;
+}
+
+int goal_jak2_metal_host_get_shadow195_frame_capture(
+    goal_jak2_metal_host* host,
+    goal_jak2_shadow195_frame_capture_result* out) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (out) {
+    *out = {};
+  }
+  if (!host || host != g_active_host || host->inactive || !out) {
+    return 0;
+  }
+  const auto source = host->shadow195_frame_capture->result();
+  out->status = static_cast<u32>(source.status);
+  out->failure_reason = source.failure_reason;
+  out->selector.match = source.selector.match;
+  out->selector.host_tick_id = source.selector.host_tick_id;
+  out->selector.engine_frame_id = source.selector.engine_frame_id;
+  out->selector.plan_fingerprint = source.selector.plan_fingerprint;
+  out->selected_host_tick_id = source.selected.host_tick_id;
+  out->selected_chain_ordinal = source.selected.chain_ordinal;
+  out->selected_engine_frame_id = source.selected.engine_frame_id;
+  out->selected_plan_fingerprint = source.selected.plan_fingerprint;
+  out->target_view_id = source.target.view_id;
+  out->target_external = source.target.external_target;
+  out->target_width = source.target.width;
+  out->target_height = source.target.height;
+  out->target_pixel_format = source.target.pixel_format;
+  out->target_color_slice = source.target.color_slice;
+  out->target_depth_pixel_format = source.target.depth_pixel_format;
+  out->target_depth_slice = source.target.depth_slice;
+  out->target_stencil_pixel_format = source.target.stencil_pixel_format;
+  out->target_stencil_slice = source.target.stencil_slice;
+  out->target_texture_type = source.target.texture_type;
+  out->target_storage_mode = source.target.storage_mode;
+  out->target_sample_count = source.target.sample_count;
+  out->target_array_length = source.target.array_length;
+  out->target_mipmap_level_count = source.target.mipmap_level_count;
+  out->target_viewport_origin_x = source.target.viewport_origin_x;
+  out->target_viewport_origin_y = source.target.viewport_origin_y;
+  out->target_viewport_width = source.target.viewport_width;
+  out->target_viewport_height = source.target.viewport_height;
+  out->target_viewport_znear = source.target.viewport_znear;
+  out->target_viewport_zfar = source.target.viewport_zfar;
+  out->target_scissor_x = source.target.scissor_x;
+  out->target_scissor_y = source.target.scissor_y;
+  out->target_scissor_width = source.target.scissor_width;
+  out->target_scissor_height = source.target.scissor_height;
+  out->target_scissor_explicit = source.target.scissor_explicit;
+  out->target_color_load_action = source.target.color_load_action;
+  out->target_color_store_action = source.target.color_store_action;
+  out->target_depth_load_action = source.target.depth_load_action;
+  out->target_depth_store_action = source.target.depth_store_action;
+  out->target_stencil_load_action = source.target.stencil_load_action;
+  out->target_stencil_store_action = source.target.stencil_store_action;
+  out->target_render_scale_x = source.target.render_scale_x;
+  out->target_render_scale_y = source.target.render_scale_y;
+  out->before_hash = source.before.hash;
+  out->before_nonzero_pixels = source.before.nonzero_pixels;
+  out->before_nonzero_bounds = {source.before.nonzero_bounds.valid,
+                                source.before.nonzero_bounds.min_x,
+                                source.before.nonzero_bounds.min_y,
+                                source.before.nonzero_bounds.max_x_exclusive,
+                                source.before.nonzero_bounds.max_y_exclusive};
+  out->after_hash = source.after.hash;
+  out->after_nonzero_pixels = source.after.nonzero_pixels;
+  out->after_nonzero_bounds = {source.after.nonzero_bounds.valid,
+                               source.after.nonzero_bounds.min_x,
+                               source.after.nonzero_bounds.min_y,
+                               source.after.nonzero_bounds.max_x_exclusive,
+                               source.after.nonzero_bounds.max_y_exclusive};
+  out->changed_pixels = source.difference.changed_pixels;
+  out->changed_bounds = {source.difference.changed_bounds.valid,
+                         source.difference.changed_bounds.min_x,
+                         source.difference.changed_bounds.min_y,
+                         source.difference.changed_bounds.max_x_exclusive,
+                         source.difference.changed_bounds.max_y_exclusive};
+  out->before_depth = {source.before_depth.hash,
+                       source.before_depth.finite_pixels,
+                       source.before_depth.nonfinite_pixels,
+                       source.before_depth.finite_range_valid,
+                       source.before_depth.min_finite,
+                       source.before_depth.max_finite};
+  out->after_depth = {source.after_depth.hash,
+                      source.after_depth.finite_pixels,
+                      source.after_depth.nonfinite_pixels,
+                      source.after_depth.finite_range_valid,
+                      source.after_depth.min_finite,
+                      source.after_depth.max_finite};
+  out->changed_depth_pixels = source.depth_difference.changed_pixels;
+  out->changed_depth_bounds = {source.depth_difference.changed_bounds.valid,
+                               source.depth_difference.changed_bounds.min_x,
+                               source.depth_difference.changed_bounds.min_y,
+                               source.depth_difference.changed_bounds.max_x_exclusive,
+                               source.depth_difference.changed_bounds.max_y_exclusive};
+  out->before_stencil = {source.before_stencil.hash,
+                         source.before_stencil.nonzero_pixels,
+                         {source.before_stencil.nonzero_bounds.valid,
+                          source.before_stencil.nonzero_bounds.min_x,
+                          source.before_stencil.nonzero_bounds.min_y,
+                          source.before_stencil.nonzero_bounds.max_x_exclusive,
+                          source.before_stencil.nonzero_bounds.max_y_exclusive}};
+  out->volume_stencil = {source.volume_stencil.hash,
+                         source.volume_stencil.nonzero_pixels,
+                         {source.volume_stencil.nonzero_bounds.valid,
+                          source.volume_stencil.nonzero_bounds.min_x,
+                          source.volume_stencil.nonzero_bounds.min_y,
+                          source.volume_stencil.nonzero_bounds.max_x_exclusive,
+                          source.volume_stencil.nonzero_bounds.max_y_exclusive}};
+  out->after_stencil = {source.after_stencil.hash,
+                        source.after_stencil.nonzero_pixels,
+                        {source.after_stencil.nonzero_bounds.valid,
+                         source.after_stencil.nonzero_bounds.min_x,
+                         source.after_stencil.nonzero_bounds.min_y,
+                         source.after_stencil.nonzero_bounds.max_x_exclusive,
+                         source.after_stencil.nonzero_bounds.max_y_exclusive}};
+  out->volume_stencil_changed_pixels = source.volume_stencil_difference.changed_pixels;
+  out->volume_stencil_changed_bounds = {
+      source.volume_stencil_difference.changed_bounds.valid,
+      source.volume_stencil_difference.changed_bounds.min_x,
+      source.volume_stencil_difference.changed_bounds.min_y,
+      source.volume_stencil_difference.changed_bounds.max_x_exclusive,
+      source.volume_stencil_difference.changed_bounds.max_y_exclusive};
+  out->final_stencil_changed_pixels = source.final_stencil_difference.changed_pixels;
+  out->final_stencil_changed_bounds = {
+      source.final_stencil_difference.changed_bounds.valid,
+      source.final_stencil_difference.changed_bounds.min_x,
+      source.final_stencil_difference.changed_bounds.min_y,
+      source.final_stencil_difference.changed_bounds.max_x_exclusive,
+      source.final_stencil_difference.changed_bounds.max_y_exclusive};
+  out->renderer.completed_executions = source.renderer.executions;
+  out->renderer.last_expected_disposition = static_cast<u32>(
+      metal_renderer::Jak2ShadowBucket195PlanDisposition::Ready);
+  out->renderer.last_expected_batches = source.renderer.input_batches;
+  out->renderer.last_expected_vertices = source.renderer.input_vertices;
+  out->renderer.last_expected_records = source.renderer.input_records;
+  out->renderer.last_actual_executions = source.renderer.executions;
+  out->renderer.last_actual_ready = source.renderer.ready;
+  out->renderer.last_actual_input_batches = source.renderer.input_batches;
+  out->renderer.last_actual_input_vertices = source.renderer.input_vertices;
+  out->renderer.last_actual_input_records = source.renderer.input_records;
+  out->renderer.last_actual_output_vertices = source.renderer.output_vertices;
+  out->renderer.last_actual_front_triangles = source.renderer.front_triangles;
+  out->renderer.last_actual_back_triangles = source.renderer.back_triangles;
+  out->renderer.last_actual_draws = source.renderer.draw_calls;
+  out->renderer.last_actual_triangles = source.renderer.triangles;
+  out->renderer.last_actual_darken_draws = source.renderer.darken_draws;
+  out->renderer.last_actual_lighten_draws = source.renderer.lighten_draws;
+  out->renderer.last_actual_unexpected_dma = source.renderer.unexpected_dma;
+  out->renderer.last_actual_invalid_plan = source.renderer.invalid_plan;
+  out->renderer.last_actual_nonfinite_projection = source.renderer.nonfinite_projection;
+  out->renderer.last_actual_overflow = source.renderer.overflow;
+  out->renderer.last_actual_pipeline_failures = source.renderer.pipeline_failures;
+  out->renderer.last_actual_reached_boundary = source.renderer.reached_boundary;
   return 1;
 }
 

@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow195_frame_capture_metal.h"
 
 namespace metal_renderer {
 namespace {
@@ -52,6 +53,30 @@ float normal_dot_eye(const Vertex& a, const Vertex& b, const Vertex& c) {
   const float ny = abz * acx - abx * acz;
   const float nz = abx * acy - aby * acx;
   return nx * a.x + ny * a.y + nz * a.z;
+}
+
+Jak2Shadow195CapturedRendererStats captured_stats(
+    const MetalJak2Shadow2Renderer::Stats& source) {
+  Jak2Shadow195CapturedRendererStats result;
+  result.executions = source.executions;
+  result.ready = source.ready;
+  result.input_batches = source.input_batches;
+  result.input_vertices = source.input_vertices;
+  result.input_records = source.input_records;
+  result.output_vertices = source.output_vertices;
+  result.front_triangles = source.front_triangles;
+  result.back_triangles = source.back_triangles;
+  result.draw_calls = source.draw_calls;
+  result.triangles = source.triangles;
+  result.darken_draws = source.darken_draws;
+  result.lighten_draws = source.lighten_draws;
+  result.unexpected_dma = source.unexpected_dma;
+  result.invalid_plan = source.invalid_plan;
+  result.nonfinite_projection = source.nonfinite_projection;
+  result.overflow = source.overflow;
+  result.pipeline_failures = source.pipeline_failures;
+  result.reached_boundary = source.reached_boundary ? 1 : 0;
+  return result;
 }
 
 }  // namespace
@@ -273,8 +298,12 @@ bool MetalJak2Shadow2Renderer::projection_is_finite(
 
 void MetalJak2Shadow2Renderer::draw(const Jak2ShadowBucket195Plan& plan,
                                     const Geometry& geometry,
-                                    MetalFrameContext& ctx) {
+                                    MetalFrameContext& ctx,
+                                    Jak2Shadow195AttachmentCapture* attachment_capture) {
   if (geometry.front.empty() && geometry.back.empty()) {
+    if (attachment_capture) {
+      attachment_capture->record_post_volume(ctx);
+    }
     return;
   }
   if (!ctx.enc || !ctx.pso_cache || !ctx.stream) {
@@ -375,6 +404,9 @@ void MetalJak2Shadow2Renderer::draw(const Jak2ShadowBucket195Plan& plan,
   };
   draw_volume(geometry.front, MTLStencilOperationIncrementClamp);
   draw_volume(geometry.back, MTLStencilOperationDecrementClamp);
+  if (attachment_capture) {
+    attachment_capture->record_post_volume(ctx);
+  }
 
   constexpr std::array<Vertex, 6> clear_quad = {{
       {0.3f, 0.3f, 0.f, 0},
@@ -462,7 +494,22 @@ void MetalJak2Shadow2Renderer::render(DmaFollower& dma,
     ++m_stats.nonfinite_projection;
     throw std::runtime_error("Jak 2 Shadow2 projection produced a non-finite vertex");
   }
-  draw(plan, geometry, ctx);
+  std::unique_ptr<Jak2Shadow195AttachmentCapture> attachment_capture;
+  if (render_state->jak2_shadow195_frame_capture) {
+    attachment_capture = Jak2Shadow195AttachmentCapture::begin(
+        render_state->jak2_shadow195_frame_capture, ctx, render_state->render_target_view_id,
+        render_state->render_target_external,
+        static_cast<double>(render_state->game_res_w) / 640.0,
+        static_cast<double>(render_state->game_res_h) / 480.0);
+    if (!attachment_capture) {
+      ++m_stats.pipeline_failures;
+      throw std::runtime_error("Jak 2 Shadow2 same-frame attachment capture could not start");
+    }
+  }
+  draw(plan, geometry, ctx, attachment_capture.get());
+  if (attachment_capture) {
+    attachment_capture->finish(ctx, captured_stats(m_stats));
+  }
 }
 
 }  // namespace metal_renderer
