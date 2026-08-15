@@ -943,7 +943,8 @@ void write_prison_clut_bucket(float morph,
                               u32 descriptor_offset,
                               u32 animator_offset,
                               u32 direct_offset,
-                              u32 destination_tbp_bias) {
+                              u32 destination_tbp_bias,
+                              u16 opcode = metal_renderer::kJak2PrisPrisonJakAnimatorOpcode) {
   auto* ee = static_cast<u8*>(g_ee_main_mem);
   constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
   constexpr u32 kFlusha = static_cast<u32>(VifCode::Kind::FLUSHA) << 24;
@@ -965,10 +966,12 @@ void write_prison_clut_bucket(float morph,
 
   put_tag(animator_offset, DmaTag::Kind::CNT, 0, 0, kPcPort | 12, 0);
   const u32 body_tag = animator_offset + 16;
-  put_tag(body_tag, DmaTag::Kind::CNT, 3, 0, kPcPort | 23, 0);
+  put_tag(body_tag, DmaTag::Kind::CNT, 3, 0, kPcPort | opcode, 0);
   std::memset(ee + body_tag + 16, 0, 48);
   std::memcpy(ee + body_tag + 16, &morph, sizeof(morph));
-  std::memcpy(ee + body_tag + 32, destination_tbps.data(), sizeof(destination_tbps));
+  const std::size_t destination_count =
+      opcode == metal_renderer::kJak2PrisPrisonJakAnimatorOpcode ? 7 : 5;
+  std::memcpy(ee + body_tag + 32, destination_tbps.data(), destination_count * sizeof(u32));
   const u32 finish_tag = body_tag + 16 + 48;
   put_tag(finish_tag, DmaTag::Kind::CNT, 0, 0, kPcPort | 13, 0);
   put_tag(finish_tag + 16, DmaTag::Kind::NEXT, 0, direct_offset);
@@ -980,11 +983,23 @@ void write_prison_clut_bucket(float morph,
 
 void make_prison_clut_chain(float morph,
                             u32 bucket_id = kPrisonClutBucket,
-                            u32 destination_tbp_bias = 0) {
+                            u32 destination_tbp_bias = 0,
+                            u16 opcode = metal_renderer::kJak2PrisPrisonJakAnimatorOpcode) {
   make_empty_chain();
-  write_prison_clut_bucket(morph, bucket_id, kPrisonClutDescriptorOffset,
-                           kPrisonClutAnimatorOffset, kPrisonClutDirectOffset,
-                           destination_tbp_bias);
+  write_prison_clut_bucket(morph, bucket_id, kPrisonClutDescriptorOffset, kPrisonClutAnimatorOffset,
+                           kPrisonClutDirectOffset, destination_tbp_bias, opcode);
+}
+
+void make_oracle_then_nest_clut_chain() {
+  make_empty_chain();
+  write_prison_clut_bucket(0.25f, metal_renderer::kJak2PrisTextureUploadBuckets[0],
+                           kPrisonClutDescriptorOffset, kPrisonClutAnimatorOffset,
+                           kPrisonClutDirectOffset, 0,
+                           metal_renderer::kJak2PrisOracleJakAnimatorOpcode);
+  write_prison_clut_bucket(0.75f, metal_renderer::kJak2PrisTextureUploadBuckets[1],
+                           kDuplicatePrisonClutDescriptorOffset, kDuplicatePrisonClutAnimatorOffset,
+                           kDuplicatePrisonClutDirectOffset, 0x100,
+                           metal_renderer::kJak2PrisNestJakAnimatorOpcode);
 }
 
 void make_duplicate_prison_clut_chain() {
@@ -1285,9 +1300,11 @@ void add_dark_jak_sources(tfrag3::Level* level) {
   }
 }
 
-tfrag3::IndexTexture synthetic_highres_jak_index_texture(std::string_view name, u8 bias) {
+tfrag3::IndexTexture synthetic_highres_jak_index_texture(std::string_view name,
+                                                         u8 bias,
+                                                         std::string_view provenance) {
   auto texture = synthetic_dark_jak_index_texture(name, bias);
-  texture.level_names = {"NEB.DGO"};
+  texture.level_names = {std::string(provenance)};
   texture.tpage_name = "synthetic-highres-jak-clut";
   return texture;
 }
@@ -1300,12 +1317,16 @@ void add_highres_jak_sources(tfrag3::Level* level) {
       {"jakb-facert", "jakb-facert-norm", "jakb-facert-dark"},
       {"jakb-hairtrans", "jakb-hairtrans-norm", "jakb-hairtrans-dark"},
   }};
-  for (std::size_t slot = 0; slot < kNames.size(); ++slot) {
-    level->index_textures.push_back(synthetic_highres_jak_index_texture(kNames[slot][0], 0));
-    level->index_textures.push_back(
-        synthetic_highres_jak_index_texture(kNames[slot][1], static_cast<u8>(slot * 8 + 4)));
-    level->index_textures.push_back(
-        synthetic_highres_jak_index_texture(kNames[slot][2], static_cast<u8>(slot * 8 + 20)));
+  for (const std::string_view provenance :
+       {std::string_view("NEB.DGO"), std::string_view("ORACLE.DGO")}) {
+    for (std::size_t slot = 0; slot < kNames.size(); ++slot) {
+      level->index_textures.push_back(
+          synthetic_highres_jak_index_texture(kNames[slot][0], 0, provenance));
+      level->index_textures.push_back(synthetic_highres_jak_index_texture(
+          kNames[slot][1], static_cast<u8>(slot * 8 + 4), provenance));
+      level->index_textures.push_back(synthetic_highres_jak_index_texture(
+          kNames[slot][2], static_cast<u8>(slot * 8 + 20), provenance));
+    }
   }
 }
 
@@ -3214,26 +3235,50 @@ int main() {
   const auto first_pixel_before_duplicate = first_pixel(first_prison_handles[0]);
   make_duplicate_prison_clut_chain();
   prison_callbacks.send_chain(g_ee_main_mem, kChainOffset);
-  const char* duplicate_prison_error = goal_jak2_metal_host_last_error(prison_host);
   check(goal_jak2_metal_host_get_metrics(prison_host, &prison_metrics),
-        "copied metrics after duplicate prison animators");
-  check(prison_metrics.chains == 4 && prison_metrics.completed_chains == 3 &&
-            prison_metrics.failed_chains == 1 &&
-            prison_metrics.prison_clut_preparations == 3 &&
-            prison_metrics.prison_clut_publications == 3 &&
-            prison_metrics.pris_texture_uploads[2].executions == 2 &&
-            prison_metrics.pris_texture_uploads[3].executions == 1 &&
+        "copied metrics after two ordered prison animators");
+  check(prison_metrics.chains == 4 && prison_metrics.completed_chains == 4 &&
+            prison_metrics.failed_chains == 0 && prison_metrics.prison_clut_preparations == 5 &&
+            prison_metrics.prison_clut_publications == 5 &&
+            prison_metrics.pris_texture_uploads[2].executions == 3 &&
+            prison_metrics.pris_texture_uploads[3].executions == 2 &&
             metal_texture_live_count() == live_textures_before_duplicate &&
-            first_pixel(first_prison_handles[0]) == first_pixel_before_duplicate &&
-            duplicate_prison_error &&
-            std::strstr(duplicate_prison_error, "multiple PRIS buckets"),
-        "duplicate prison animators fail before preparation, render, or texture mutation");
+            first_pixel(first_prison_handles[0]) == first_pixel_before_duplicate,
+        "multiple source-valid prison animators execute in bucket order through stable handles");
   goal_jak2_metal_host_destroy(prison_host);
   check(metal_level_data::level_count() == initial_level_count &&
             metal_merc_models().level_count() == initial_merc_level_count &&
             metal_merc_models().model_count() == initial_merc_model_count &&
             metal_texture_live_count() == initial_texture_count,
         "prison CLUT host teardown releases GAME.fr3 and all six publications");
+
+  goal_jak2_metal_host* highres_clut_host = goal_jak2_metal_host_create();
+  goal_gfx_host highres_clut_callbacks = {};
+  check(highres_clut_host &&
+            goal_jak2_metal_host_configure_level_art(highres_clut_host, prison_directory.c_str()) &&
+            goal_jak2_metal_host_copy_gfx_host(highres_clut_host, &highres_clut_callbacks),
+        "created a host with synthetic Oracle and Nest high-resolution Jak CLUT inputs");
+  const std::size_t highres_defaults_texture_count = metal_texture_live_count();
+  write_empty_texture_page(kTexturePageOffset, kTexturePageId);
+  make_oracle_then_nest_clut_chain();
+  highres_clut_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  goal_jak2_metal_host_metrics highres_clut_metrics = {};
+  check(goal_jak2_metal_host_get_metrics(highres_clut_host, &highres_clut_metrics),
+        "copied metrics after ordered Oracle and Nest CLUT animation");
+  check(highres_clut_metrics.chains == 1 && highres_clut_metrics.completed_chains == 1 &&
+            highres_clut_metrics.failed_chains == 0 &&
+            highres_clut_metrics.pris_texture_uploads[0].opcode_counts[24] == 1 &&
+            highres_clut_metrics.pris_texture_uploads[0].executions == 1 &&
+            highres_clut_metrics.pris_texture_uploads[1].opcode_counts[25] == 1 &&
+            highres_clut_metrics.pris_texture_uploads[1].executions == 1 &&
+            metal_texture_live_count() == highres_defaults_texture_count + 5,
+        "one chain executes Oracle then Nest in bucket order without rejecting shared CLUT slots");
+  goal_jak2_metal_host_destroy(highres_clut_host);
+  check(metal_level_data::level_count() == initial_level_count &&
+            metal_merc_models().level_count() == initial_merc_level_count &&
+            metal_merc_models().model_count() == initial_merc_model_count &&
+            metal_texture_live_count() == initial_texture_count,
+        "high-resolution Jak CLUT teardown releases both groups and their pool publications");
 
   goal_jak2_metal_host* sprite_upload_host = goal_jak2_metal_host_create();
   goal_gfx_host sprite_upload_callbacks = {};

@@ -101,6 +101,7 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_texture_upload(
       kPrisGrammarAliasBucket, live_ee_memory, live_ee_memory_size, out_capture,
       out_rejection);
   if (!source_plan || source_plan->has_prison_jak_animator ||
+      source_plan->has_highres_jak_animator ||
       source_plan->chunk_count > kJak2PrisEyeMaximumChunks) {
     if (source_plan && out_rejection &&
         out_rejection->reason == Jak2PrisEyeTextureUploadRejectReason::None) {

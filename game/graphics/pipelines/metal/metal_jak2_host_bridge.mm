@@ -71,6 +71,7 @@ struct goal_jak2_metal_host {
   std::string fatal_chain_error;
   MetalLevelData* common_level = nullptr;
   std::vector<u64> animated_texture_slots;
+  bool highres_jak_owns_overlapping_slots = true;
   std::vector<std::string> requested_level_names;
   std::vector<std::string> loaded_level_keys;
   std::optional<std::vector<u8>> shadow_bucket195_plan_capture;
@@ -155,8 +156,22 @@ void merge_animated_texture_slots(goal_jak2_metal_host* host) {
   if (!host || host->animated_texture_slots.size() != jak2_animated_texture_slots().size()) {
     return;
   }
-  if (host->highres_jak_clut_defaults) {
-    host->highres_jak_clut_defaults->merge_animated_texture_slots(host->animated_texture_slots);
+  const auto merge_highres_jak = [&]() {
+    if (host->highres_jak_clut_defaults) {
+      host->highres_jak_clut_defaults->merge_animated_texture_slots(host->animated_texture_slots);
+    }
+  };
+  const auto merge_prison_jak = [&]() {
+    if (host->prison_clut_executor) {
+      host->prison_clut_executor->merge_animated_texture_slots(host->animated_texture_slots);
+    }
+  };
+  if (host->highres_jak_owns_overlapping_slots) {
+    merge_prison_jak();
+    merge_highres_jak();
+  } else {
+    merge_highres_jak();
+    merge_prison_jak();
   }
   if (host->skull_gem_executor) {
     const auto& source = host->skull_gem_executor->animated_texture_slots();
@@ -165,9 +180,6 @@ void merge_animated_texture_slots(goal_jak2_metal_host* host) {
         host->animated_texture_slots[i] = source[i];
       }
     }
-  }
-  if (host->prison_clut_executor) {
-    host->prison_clut_executor->merge_animated_texture_slots(host->animated_texture_slots);
   }
   if (host->dark_jak_clut_executor) {
     host->dark_jak_clut_executor->merge_animated_texture_slots(host->animated_texture_slots);
@@ -1072,6 +1084,9 @@ struct Jak2TextureUploadDispatch {
   const std::array<std::optional<metal_renderer::Jak2PrisonClutExecutor::Prepared>,
                    metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
       prison_clut_prepared = nullptr;
+  const std::array<std::optional<metal_renderer::Jak2HighresJakClutDefaults::Prepared>,
+                   metal_renderer::kJak2PrisTextureUploadBuckets.size()>*
+      highres_jak_clut_prepared = nullptr;
   const metal_renderer::Jak2DarkJakClutExecutor::Prepared* dark_jak_clut_prepared = nullptr;
   const u8* live_ee_memory = nullptr;
   bool* host_texture_mutated = nullptr;
@@ -1342,8 +1357,24 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
               std::string("Jak 2 prison CLUT publication failed: ") +
               dispatch->host->prison_clut_executor->last_error());
         }
+        dispatch->host->highres_jak_owns_overlapping_slots = false;
         merge_animated_texture_slots(dispatch->host);
         copy_prison_clut_metrics(dispatch->host);
+      } else if (plan.has_highres_jak_animator) {
+        if (!dispatch->highres_jak_clut_prepared ||
+            !(*dispatch->highres_jak_clut_prepared)[index].has_value() ||
+            !dispatch->host->highres_jak_clut_defaults) {
+          throw std::runtime_error("Jak 2 high-resolution Jak CLUT dispatch is incomplete");
+        }
+        *dispatch->host_texture_mutated = true;
+        if (!dispatch->host->highres_jak_clut_defaults->publish(
+                *(*dispatch->highres_jak_clut_prepared)[index], plan.prison_jak_animator.opcode)) {
+          throw std::runtime_error(
+              std::string("Jak 2 high-resolution Jak CLUT publication failed: ") +
+              dispatch->host->highres_jak_clut_defaults->last_error());
+        }
+        dispatch->host->highres_jak_owns_overlapping_slots = true;
+        merge_animated_texture_slots(dispatch->host);
       }
       dispatch->host->metrics.last_pris_eye_present_dispatches++;
     }
@@ -2071,36 +2102,45 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     std::array<std::optional<metal_renderer::Jak2PrisonClutExecutor::Prepared>,
                metal_renderer::kJak2PrisTextureUploadBuckets.size()>
         prison_clut_prepared;
-    std::optional<std::size_t> prison_clut_plan_index;
+    std::array<std::optional<metal_renderer::Jak2HighresJakClutDefaults::Prepared>,
+               metal_renderer::kJak2PrisTextureUploadBuckets.size()>
+        highres_jak_clut_prepared;
     for (std::size_t i = 0; i < copied_pris_eye_plans.size(); ++i) {
       const auto& plan = copied_pris_eye_plans[i];
-      if (!plan.has_prison_jak_animator) {
+      if (!plan.has_prison_jak_animator && !plan.has_highres_jak_animator) {
         continue;
       }
-      if (prison_clut_plan_index) {
-        record_failure(host, "Jak 2 prison CLUT animator appeared in multiple PRIS buckets");
-        return;
+      if (plan.has_prison_jak_animator) {
+        metal_renderer::Jak2PrisonClutExecutor::Prepared prepared;
+        if (!host->common_level || !host->common_level->level || !host->prison_clut_executor ||
+            !host->prison_clut_executor->prepare(plan.prison_jak_animator,
+                                                 *host->common_level->level, &prepared)) {
+          const char* detail =
+              !host->common_level || !host->common_level->level ? "common level art is unavailable"
+              : host->prison_clut_executor ? host->prison_clut_executor->last_error()
+                                           : "executor is unavailable";
+          record_failure(host,
+                         (std::string("Jak 2 prison CLUT preparation failed: ") + detail).c_str());
+          return;
+        }
+        prison_clut_prepared[i] = std::move(prepared);
+        copy_prison_clut_metrics(host);
+      } else {
+        metal_renderer::Jak2HighresJakClutDefaults::Prepared prepared;
+        if (!host->common_level || !host->common_level->level || !host->highres_jak_clut_defaults ||
+            !host->highres_jak_clut_defaults->prepare(plan.prison_jak_animator,
+                                                      *host->common_level->level, &prepared)) {
+          const char* detail =
+              !host->common_level || !host->common_level->level ? "common level art is unavailable"
+              : host->highres_jak_clut_defaults ? host->highres_jak_clut_defaults->last_error()
+                                                : "executor is unavailable";
+          record_failure(
+              host, (std::string("Jak 2 high-resolution Jak CLUT preparation failed: ") + detail)
+                        .c_str());
+          return;
+        }
+        highres_jak_clut_prepared[i] = std::move(prepared);
       }
-      prison_clut_plan_index = i;
-    }
-    if (prison_clut_plan_index) {
-      const std::size_t i = *prison_clut_plan_index;
-      const auto& plan = copied_pris_eye_plans[i];
-      metal_renderer::Jak2PrisonClutExecutor::Prepared prepared;
-      if (!host->common_level || !host->common_level->level || !host->prison_clut_executor ||
-          !host->prison_clut_executor->prepare(plan.prison_jak_animator,
-                                               *host->common_level->level, &prepared)) {
-        const char* detail =
-            !host->common_level || !host->common_level->level
-                ? "common level art is unavailable"
-                : host->prison_clut_executor ? host->prison_clut_executor->last_error()
-                                             : "executor is unavailable";
-        record_failure(host,
-                       (std::string("Jak 2 prison CLUT preparation failed: ") + detail).c_str());
-        return;
-      }
-      prison_clut_prepared[i] = std::move(prepared);
-      copy_prison_clut_metrics(host);
     }
 
     metal_renderer::Jak2DarkJakClutExecutor::Prepared dark_jak_clut_prepared;
@@ -2248,17 +2288,16 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &*copied_sky_post_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         security_plan ? &security_prepared : nullptr,
-        copied_common_water_plan->variant ==
-                metal_renderer::Jak2CommonWaterTextureUploadVariant::
-                    DescriptorSecurityEnvironmentAndStandardReset
+        copied_common_water_plan->variant == metal_renderer::Jak2CommonWaterTextureUploadVariant::
+                                                 DescriptorSecurityEnvironmentAndStandardReset
             ? &common_water_environment_prepared
             : nullptr,
         copied_common_water_plan->variant ==
-                metal_renderer::Jak2CommonWaterTextureUploadVariant::
-                    DescriptorBombAndStandardReset
+                metal_renderer::Jak2CommonWaterTextureUploadVariant::DescriptorBombAndStandardReset
             ? &common_water_bomb_prepared
             : nullptr,
         &prison_clut_prepared,
+        &highres_jak_clut_prepared,
         copied_common_pris_plan->present ? &dark_jak_clut_prepared : nullptr,
         static_cast<const u8*>(ee_base),
         &host_texture_mutated,
@@ -2753,9 +2792,8 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
       host->renderer.device(), host->renderer.queue());
   host->dark_jak_clut_executor = std::make_unique<metal_renderer::Jak2DarkJakClutExecutor>(
       host->renderer.device(), host->renderer.queue());
-  host->highres_jak_clut_defaults =
-      std::make_unique<metal_renderer::Jak2HighresJakClutDefaults>(
-          host->renderer.device(), host->renderer.queue());
+  host->highres_jak_clut_defaults = std::make_unique<metal_renderer::Jak2HighresJakClutDefaults>(
+      host->renderer.device(), host->renderer.queue(), &host->textures);
   host->animated_texture_slots.assign(jak2_animated_texture_slots().size(), 0);
   host->raw_image_upload_executor =
       std::make_unique<metal_renderer::Jak2RawImageUploadExecutor>(
@@ -3212,6 +3250,9 @@ void goal_jak2_metal_host_destroy(goal_jak2_metal_host* host) {
   }
   if (host->raw_image_upload_executor) {
     host->raw_image_upload_executor->detach_pool();
+  }
+  if (host->highres_jak_clut_defaults) {
+    host->highres_jak_clut_defaults->detach_pool();
   }
   if (host->placeholder_handle) {
     metal_texture_release(host->placeholder_handle);

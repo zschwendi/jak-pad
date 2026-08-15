@@ -482,8 +482,10 @@ u32 put_different_eyes_chunk(std::vector<u8>* packet,
   return put_gs_set(packet, cursor, GsRegisterAddress::ALPHA_1, 0x44);
 }
 
-void put_pris_prison_jak_animator(std::vector<u8>* packet, u32 dma_relocation,
-                                  u32 next_offset) {
+void put_pris_prison_jak_animator(std::vector<u8>* packet,
+                                  u32 dma_relocation,
+                                  u32 next_offset,
+                                  u16 opcode = metal_renderer::kJak2PrisPrisonJakAnimatorOpcode) {
   constexpr std::array<u32, metal_renderer::kJak2PrisPrisonJakAnimatorTbpCount> kTbps = {
       0x1000, metal_renderer::kJak2PrisPrisonJakAnimatorMissingTbp, 0x1020, 0x1030,
       0x1040, 0x1050, 0x1060};
@@ -494,27 +496,31 @@ void put_pris_prison_jak_animator(std::vector<u8>* packet, u32 dma_relocation,
   const u32 linker_offset = kPrisAnimatorLinkerOffset + dma_relocation;
   put_tag(packet, animator_offset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 12, 0);
   put_tag(packet, body_tag_offset, DmaTag::Kind::CNT,
-          metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes / 16, 0,
-          kPcPortVif | metal_renderer::kJak2PrisPrisonJakAnimatorOpcode, 0);
+          metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes / 16, 0, kPcPortVif | opcode, 0);
   put_float(packet, body_offset, 0.5f);
-  for (std::size_t i = 0; i < kTbps.size(); ++i) {
+  const std::size_t destination_count =
+      opcode == metal_renderer::kJak2PrisPrisonJakAnimatorOpcode ? 7 : 5;
+  for (std::size_t i = 0; i < destination_count; ++i) {
     put_u32(packet, body_offset + 16 + static_cast<u32>(i) * sizeof(u32), kTbps[i]);
   }
-  // pc-clut-blender leaves morph.yzw and the final four bytes unspecified.
+  // pc-clut-blender leaves morph.yzw and the body tail after its live destinations unspecified.
   for (u32 i = 0; i < 12; ++i) {
     (*packet)[body_offset + 4 + i] = static_cast<u8>(0xc0 + i);
   }
-  for (u32 i = 0; i < 4; ++i) {
-    (*packet)[body_offset + 44 + i] = static_cast<u8>(0xd0 + i);
+  const u32 trailing_offset = body_offset + 16 + static_cast<u32>(destination_count) * 4;
+  for (u32 i = trailing_offset; i < body_offset + 48; ++i) {
+    (*packet)[i] = static_cast<u8>(0xd0 + i - trailing_offset);
   }
   put_tag(packet, finish_offset, DmaTag::Kind::CNT, 0, 0, kPcPortVif | 13, 0);
   put_tag(packet, linker_offset, DmaTag::Kind::NEXT, 0, next_offset, 0, 0);
 }
 
-PrisEyeFixture make_pris_eye_fixture(u32 bucket_id,
-                                     const std::vector<EyeChunkSpec>& chunks,
-                                     u32 dma_relocation = 0,
-                                     bool prison_jak_animator = false) {
+PrisEyeFixture make_pris_eye_fixture(
+    u32 bucket_id,
+    const std::vector<EyeChunkSpec>& chunks,
+    u32 dma_relocation = 0,
+    bool prison_jak_animator = false,
+    u16 animator_opcode = metal_renderer::kJak2PrisPrisonJakAnimatorOpcode) {
   PrisEyeFixture fixture{std::vector<u8>(kMemorySize), kEyeFirstOffset + dma_relocation};
   const u32 ordinary_offset = kEyeOrdinaryOffset + dma_relocation;
   const u32 first_offset = kEyeFirstOffset + dma_relocation;
@@ -534,7 +540,7 @@ PrisEyeFixture make_pris_eye_fixture(u32 bucket_id,
           first_chain_offset, 0, 0);
   if (prison_jak_animator) {
     put_pris_prison_jak_animator(&fixture.packet, dma_relocation,
-                                 chunks.empty() ? direct_offset : first_offset);
+                                 chunks.empty() ? direct_offset : first_offset, animator_opcode);
   }
 
   u32 linker_offset = 0;
@@ -1273,6 +1279,27 @@ void test_pris_prison_jak_animator_variants() {
               capture.opcode_counts[metal_renderer::kJak2PrisPrisonJakAnimatorOpcode] == 1 &&
               capture.eye_markers == 0 && capture.other_transfers == 0,
           "all six per-level PRIS buckets accept the exact animator-only prison-Jak composite");
+  }
+
+  for (const u16 opcode : {metal_renderer::kJak2PrisOracleJakAnimatorOpcode,
+                           metal_renderer::kJak2PrisNestJakAnimatorOpcode}) {
+    auto highres = make_pris_eye_fixture(196, {{false, 0}}, 0, true, opcode);
+    Capture capture;
+    const auto plan = metal_renderer::plan_jak2_pris_eye_texture_upload(
+        highres.packet.data(), highres.packet.size(), kChainOffset, 196, highres.packet.data(),
+        highres.packet.size(), &capture);
+    check(plan.has_value() && plan->present && !plan->has_prison_jak_animator &&
+              plan->has_highres_jak_animator && plan->prison_jak_animator.opcode == opcode &&
+              plan->prison_jak_animator.destination_tbp_count == 5 &&
+              plan->prison_jak_animator.source_padding_size == 24 &&
+              plan->prison_jak_animator.source_padding[12] == 0xd0 &&
+              plan->prison_jak_animator.source_padding[23] == 0xdb &&
+              plan->prison_jak_animator.destination_tbps[5] ==
+                  metal_renderer::kJak2PrisPrisonJakAnimatorMissingTbp &&
+              plan->chunk_count == 1 && capture.transfer_count == 36 &&
+              capture.opcode_counts[opcode] == 1,
+          "Oracle and Nest high-resolution Jak CLUT animators share the exact bounded PRIS "
+          "envelope without treating unwritten padding as TBPs");
   }
 
   auto one = make_pris_eye_fixture(204, {{false, 2}}, 0, true);

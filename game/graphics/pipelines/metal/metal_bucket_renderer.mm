@@ -227,7 +227,11 @@ bool prison_jak_animator_body_matches(
       std::memcmp(&morph, &plan.morph, sizeof(morph)) != 0) {
     return false;
   }
-  for (std::size_t i = 0; i < plan.destination_tbps.size(); ++i) {
+  if (plan.destination_tbp_count == 0 ||
+      plan.destination_tbp_count > plan.destination_tbps.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < plan.destination_tbp_count; ++i) {
     u32 tbp = 0;
     std::memcpy(&tbp, transfer.data + 16 + i * sizeof(tbp), sizeof(tbp));
     if (tbp != metal_renderer::kJak2PrisPrisonJakAnimatorMissingTbp &&
@@ -238,8 +242,21 @@ bool prison_jak_animator_body_matches(
       return false;
     }
   }
-  return std::memcmp(transfer.data + 4, plan.source_padding.data(), 12) == 0 &&
-         std::memcmp(transfer.data + 44, plan.source_padding.data() + 12, 4) == 0;
+  for (std::size_t i = plan.destination_tbp_count; i < plan.destination_tbps.size(); ++i) {
+    if (plan.destination_tbps[i] != metal_renderer::kJak2PrisPrisonJakAnimatorMissingTbp) {
+      return false;
+    }
+  }
+  constexpr std::size_t kLeadingPaddingBytes = 12;
+  const std::size_t destination_end =
+      16 + static_cast<std::size_t>(plan.destination_tbp_count) * sizeof(u32);
+  const std::size_t trailing_padding = transfer.size_bytes - destination_end;
+  if (plan.source_padding_size != kLeadingPaddingBytes + trailing_padding) {
+    return false;
+  }
+  return std::memcmp(transfer.data + 4, plan.source_padding.data(), kLeadingPaddingBytes) == 0 &&
+         std::memcmp(transfer.data + destination_end,
+                     plan.source_padding.data() + kLeadingPaddingBytes, trailing_padding) == 0;
 }
 
 bool dark_jak_animator_body_matches(
@@ -305,41 +322,37 @@ void MetalJak2PrisEyeBucketRenderer::render(DmaFollower& dma,
   pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
             "ordinary linker");
 
-  if (plan.has_prison_jak_animator) {
+  if (plan.has_prison_jak_animator || plan.has_highres_jak_animator) {
     const auto& animator = plan.prison_jak_animator;
     if (animator.semantic_fingerprint == 0) {
-      throw std::runtime_error("Jak 2 PRIS prison-Jak animator plan is not fingerprinted");
+      throw std::runtime_error("Jak 2 PRIS Jak CLUT animator plan is not fingerprinted");
     }
-    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
-                                                 animator.start_relative_tag_offset),
-                       "prison-Jak animator start");
+    pris_expect_offset(
+        dma, pris_expected_offset(*render_state, bucket_id, animator.start_relative_tag_offset),
+        "Jak CLUT animator start");
     pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::PC_PORT,
               metal_renderer::kJak2PrisPrisonJakAnimatorStartOpcode, VifCode::Kind::NOP, 0,
-              "prison-Jak animator start");
-    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
-                                                 animator.body_relative_tag_offset),
-                       "prison-Jak animator body");
+              "Jak CLUT animator start");
+    pris_expect_offset(
+        dma, pris_expected_offset(*render_state, bucket_id, animator.body_relative_tag_offset),
+        "Jak CLUT animator body");
     const auto body = pris_take(
-        dma, DmaTag::Kind::CNT,
-        metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes / 16, VifCode::Kind::PC_PORT,
-        metal_renderer::kJak2PrisPrisonJakAnimatorOpcode, VifCode::Kind::NOP, 0,
-        "prison-Jak animator body");
+        dma, DmaTag::Kind::CNT, metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes / 16,
+        VifCode::Kind::PC_PORT, animator.opcode, VifCode::Kind::NOP, 0, "Jak CLUT animator body");
     if (!prison_jak_animator_body_matches(body, animator)) {
-      throw std::runtime_error("Jak 2 PRIS prison-Jak animator body changed after copied preflight");
+      throw std::runtime_error("Jak 2 PRIS Jak CLUT animator body changed after copied preflight");
     }
-    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
-                                                 animator.finish_relative_tag_offset),
-                       "prison-Jak animator finish");
+    pris_expect_offset(
+        dma, pris_expected_offset(*render_state, bucket_id, animator.finish_relative_tag_offset),
+        "Jak CLUT animator finish");
     pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::PC_PORT,
-              metal_renderer::kJak2PrisPrisonJakAnimatorFinishOpcode,
-              VifCode::Kind::NOP, 0, "prison-Jak animator finish");
-    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
-                                                 animator.linker_relative_tag_offset),
-                       "prison-Jak animator linker");
+              metal_renderer::kJak2PrisPrisonJakAnimatorFinishOpcode, VifCode::Kind::NOP, 0,
+              "Jak CLUT animator finish");
+    pris_expect_offset(
+        dma, pris_expected_offset(*render_state, bucket_id, animator.linker_relative_tag_offset),
+        "Jak CLUT animator linker");
     pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
-              "prison-Jak animator linker");
-    // The typed plan is consumed and validated, but the Metal backend does not yet
-    // execute the source clut blend. Ordinary publication and eye composition continue.
+              "Jak CLUT animator linker");
   }
 
   for (std::size_t i = 0; i < plan.chunk_count; ++i) {

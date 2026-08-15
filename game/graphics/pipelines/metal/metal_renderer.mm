@@ -1365,24 +1365,31 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     ctx.stencil_store_action = static_cast<u32>(pass.stencilAttachment.storeAction);
 
     m_chain_stats.last_buckets_dispatched = 0;
-    switch (m_shared_state.version) {
-      case GameVersion::Jak1:
-        dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset, chain_size), ctx);
-        break;
-      case GameVersion::Jak2:
-        dispatch_buckets_jak2(DmaFollower(chain_data, chain_offset, chain_size), ctx);
-        break;
-      default:
-        ASSERT_MSG(false, "Metal DMA dispatch only supports Jak 1 and Jak 2");
-    }
-    if (m_shared_state.version == GameVersion::Jak2) {
-      ASSERT(m_jak2_blit_display);
-      // OpenGLRenderer::render calls BlitDisplays::do_copy_back only after
-      // dispatch_buckets, so opcode 0x11 intentionally restores over every
-      // later bucket before the frame is presented.
-      m_jak2_blit_display->finish_frame(ctx);
+    try {
+      switch (m_shared_state.version) {
+        case GameVersion::Jak1:
+          dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset, chain_size), ctx);
+          break;
+        case GameVersion::Jak2:
+          dispatch_buckets_jak2(DmaFollower(chain_data, chain_offset, chain_size), ctx);
+          break;
+        default:
+          ASSERT_MSG(false, "Metal DMA dispatch only supports Jak 1 and Jak 2");
+      }
+      if (m_shared_state.version == GameVersion::Jak2) {
+        ASSERT(m_jak2_blit_display);
+        // OpenGLRenderer::render calls BlitDisplays::do_copy_back only after
+        // dispatch_buckets, so opcode 0x11 intentionally restores over every
+        // later bucket before the frame is presented.
+        m_jak2_blit_display->finish_frame(ctx);
+      }
+    } catch (...) {
+      [ctx.enc endEncoding];
+      ctx.enc = nil;
+      throw;
     }
     [ctx.enc endEncoding];
+    ctx.enc = nil;
 
     m_chain_stats.last_host_tick_id = opts.host_tick_id;
     m_chain_stats.last_chain_ordinal = opts.chain_ordinal;

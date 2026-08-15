@@ -31,11 +31,13 @@ constexpr u16 kJak2CommonPrisDarkJakAnimatorOpcode = 22;
 constexpr u32 kJak2CommonPrisDarkJakAnimatorBodyBytes = 32;
 constexpr std::size_t kJak2CommonPrisDarkJakAnimatorTbpCount = 4;
 constexpr u16 kJak2PrisPrisonJakAnimatorOpcode = 23;
+constexpr u16 kJak2PrisOracleJakAnimatorOpcode = 24;
+constexpr u16 kJak2PrisNestJakAnimatorOpcode = 25;
 constexpr u16 kJak2PrisPrisonJakAnimatorStartOpcode = 12;
 constexpr u16 kJak2PrisPrisonJakAnimatorFinishOpcode = 13;
 constexpr u32 kJak2PrisPrisonJakAnimatorBodyBytes = 48;
 constexpr std::size_t kJak2PrisPrisonJakAnimatorTbpCount = 7;
-constexpr std::size_t kJak2PrisPrisonJakAnimatorSourcePaddingBytes = 16;
+constexpr std::size_t kJak2PrisPrisonJakAnimatorSourcePaddingBytes = 24;
 constexpr u32 kJak2PrisPrisonJakAnimatorTbpUpperBound = 0x40000;
 constexpr u32 kJak2PrisPrisonJakAnimatorMissingTbp = 0xffffffff;
 
@@ -179,10 +181,13 @@ struct Jak2CommonPrisTextureUploadPlan {
 };
 
 struct Jak2PrisPrisonJakAnimatorPlan {
+  u16 opcode = 0;
+  u8 destination_tbp_count = 0;
+  u8 source_padding_size = 0;
   float morph = 0.f;
   std::array<u32, kJak2PrisPrisonJakAnimatorTbpCount> destination_tbps = {};
-  // The source writes only morph.x and the seven TBPs. Keep the unspecified
-  // vector tail/final four bytes opaque, but include them in semantic matching.
+  // The source writes only morph.x and destination_tbp_count TBPs. Keep the remaining body bytes
+  // opaque, but include them in semantic matching.
   std::array<u8, kJak2PrisPrisonJakAnimatorSourcePaddingBytes> source_padding = {};
   u32 start_transfer_index = 0;
   u32 start_relative_tag_offset = 0;
@@ -200,6 +205,7 @@ struct Jak2PrisEyeTextureUploadPlan {
   bool present = false;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
   bool has_prison_jak_animator = false;
+  bool has_highres_jak_animator = false;
   Jak2PrisPrisonJakAnimatorPlan prison_jak_animator;
   std::array<Jak2PrisEyeChunkPlan, kJak2PrisEyeMaximumChunks> chunks = {};
   std::size_t chunk_count = 0;

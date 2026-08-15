@@ -10,6 +10,7 @@
 #include "common/texture/texture_slots.h"
 
 #include "game/graphics/pipelines/metal/metal_texture.h"
+#include "game/graphics/texture/TexturePool.h"
 
 namespace {
 
@@ -22,12 +23,19 @@ void check(bool condition, const char* message) {
   }
 }
 
-tfrag3::IndexTexture make_index_texture(std::string_view name, u8 bias) {
+tfrag3::IndexTexture make_index_texture(std::string_view name,
+                                        u8 bias,
+                                        std::string_view provenance,
+                                        u16 width,
+                                        u16 height) {
   tfrag3::IndexTexture texture;
-  texture.w = 2;
-  texture.h = 2;
-  texture.index_data = {0, 1, 2, 3};
-  texture.level_names = {"NEB.DGO"};
+  texture.w = width;
+  texture.h = height;
+  texture.index_data.resize(static_cast<std::size_t>(width) * height);
+  for (std::size_t i = 0; i < texture.index_data.size(); ++i) {
+    texture.index_data[i] = static_cast<u8>(i % 4);
+  }
+  texture.level_names = {std::string(provenance)};
   texture.name = name;
   texture.tpage_name = "synthetic-highres-jak-default";
   for (std::size_t entry = 0; entry < texture.color_table.size(); ++entry) {
@@ -39,7 +47,11 @@ tfrag3::IndexTexture make_index_texture(std::string_view name, u8 bias) {
   return texture;
 }
 
-void add_highres_jak_sources(tfrag3::Level* level) {
+void add_highres_jak_sources(tfrag3::Level* level,
+                             std::string_view provenance,
+                             u8 provenance_bias,
+                             u16 width,
+                             u16 height) {
   constexpr std::array<std::array<std::string_view, 3>, 5> kNames = {{
       {"jakb-eyebrow", "jakb-eyebrow-norm", "jakb-eyebrow-dark"},
       {"jakb-eyelid", "jakb-eyelid-norm", "jakb-eyelid-dark"},
@@ -48,12 +60,30 @@ void add_highres_jak_sources(tfrag3::Level* level) {
       {"jakb-hairtrans", "jakb-hairtrans-norm", "jakb-hairtrans-dark"},
   }};
   for (std::size_t output = 0; output < kNames.size(); ++output) {
-    level->index_textures.push_back(make_index_texture(kNames[output][0], 0));
     level->index_textures.push_back(
-        make_index_texture(kNames[output][1], static_cast<u8>(output * 8 + 4)));
+        make_index_texture(kNames[output][0], 0, provenance, width, height));
     level->index_textures.push_back(
-        make_index_texture(kNames[output][2], static_cast<u8>(output * 8 + 20)));
+        make_index_texture(kNames[output][1], static_cast<u8>(provenance_bias + output * 8 + 4),
+                           provenance, width, height));
+    level->index_textures.push_back(
+        make_index_texture(kNames[output][2], static_cast<u8>(provenance_bias + output * 8 + 20),
+                           provenance, width, height));
   }
+}
+
+metal_renderer::Jak2PrisPrisonJakAnimatorPlan make_runtime_plan(u16 opcode,
+                                                                float morph,
+                                                                u32 tbp_base) {
+  metal_renderer::Jak2PrisPrisonJakAnimatorPlan plan;
+  plan.opcode = opcode;
+  plan.destination_tbp_count = 5;
+  plan.morph = morph;
+  plan.destination_tbps.fill(metal_renderer::kJak2PrisPrisonJakAnimatorMissingTbp);
+  for (u32 i = 0; i < 5; ++i) {
+    plan.destination_tbps[i] = tbp_base + i * 0x10;
+  }
+  plan.semantic_fingerprint = 1;
+  return plan;
 }
 
 std::array<u8, 4> first_pixel(u64 handle) {
@@ -82,14 +112,16 @@ int main() {
     const std::size_t initial_live = metal_texture_live_count();
     tfrag3::Level common_level;
     common_level.level_name = "synthetic-common";
-    add_highres_jak_sources(&common_level);
+    add_highres_jak_sources(&common_level, "NEB.DGO", 0, 2, 2);
+    add_highres_jak_sources(&common_level, "ORACLE.DGO", 40, 4, 2);
 
     {
       auto missing_source = common_level;
       std::erase_if(missing_source.index_textures, [](const tfrag3::IndexTexture& texture) {
         return texture.name == "jakb-eyebrow-dark";
       });
-      metal_renderer::Jak2HighresJakClutDefaults defaults(device, queue);
+      TexturePool pool(GameVersion::Jak2);
+      metal_renderer::Jak2HighresJakClutDefaults defaults(device, queue, &pool);
       check(!defaults.initialize(missing_source) &&
                 std::all_of(defaults.animated_texture_slots().begin(),
                             defaults.animated_texture_slots().end(),
@@ -105,13 +137,15 @@ int main() {
           texture.level_names = {"ORACLE.DGO"};
         }
       }
-      metal_renderer::Jak2HighresJakClutDefaults defaults(device, queue);
+      TexturePool pool(GameVersion::Jak2);
+      metal_renderer::Jak2HighresJakClutDefaults defaults(device, queue, &pool);
       check(!defaults.initialize(wrong_provenance) && metal_texture_live_count() == initial_live,
             "an Oracle source cannot replace the final GL Nest default");
     }
 
     {
-      metal_renderer::Jak2HighresJakClutDefaults defaults(device, queue);
+      TexturePool pool(GameVersion::Jak2);
+      metal_renderer::Jak2HighresJakClutDefaults defaults(device, queue, &pool);
       check(defaults.initialize(common_level) && metal_texture_live_count() == initial_live + 5,
             "five morph-zero Nest defaults publish exactly once");
 
@@ -137,6 +171,43 @@ int main() {
       }
       check(normal_palette_pixels, "morph-zero defaults use each Nest -norm palette");
 
+      const auto nest_handles = defaults.stats().texture_handles;
+      const auto oracle_plan =
+          make_runtime_plan(metal_renderer::kJak2PrisOracleJakAnimatorOpcode, 1.f, 0x120);
+      metal_renderer::Jak2HighresJakClutDefaults::Prepared oracle_prepared;
+      check(defaults.prepare(oracle_plan, common_level, &oracle_prepared) &&
+                defaults.publish(oracle_prepared, oracle_plan.opcode) &&
+                metal_texture_live_count() == initial_live + 10,
+            "Oracle runtime animation publishes a separate five-texture group");
+      const auto oracle_handles = defaults.stats().texture_handles;
+      bool exact_oracle_publication = true;
+      for (std::size_t i = 0; i < oracle_handles.size(); ++i) {
+        id<MTLTexture> texture = metal_texture_lookup(oracle_handles[i]);
+        exact_oracle_publication =
+            exact_oracle_publication && oracle_handles[i] != 0 &&
+            oracle_handles[i] != nest_handles[i] && texture && texture.width == 4 &&
+            texture.height == 2 &&
+            pool.lookup(oracle_plan.destination_tbps[i]).value_or(0) == oracle_handles[i];
+      }
+      check(exact_oracle_publication &&
+                first_pixel(oracle_handles[0]) == std::array<u8, 4>{60, 61, 62, 255},
+            "opcode 24 selects ORACLE.DGO pixels and publishes every destination TBP");
+
+      const auto nest_plan =
+          make_runtime_plan(metal_renderer::kJak2PrisNestJakAnimatorOpcode, 1.f, 0x220);
+      metal_renderer::Jak2HighresJakClutDefaults::Prepared nest_prepared;
+      check(defaults.prepare(nest_plan, common_level, &nest_prepared) &&
+                defaults.publish(nest_prepared, nest_plan.opcode),
+            "Nest runtime animation can reclaim the public high-resolution Jak slots");
+      bool stable_nest_publication = true;
+      for (std::size_t i = 0; i < nest_handles.size(); ++i) {
+        stable_nest_publication =
+            stable_nest_publication && defaults.stats().texture_handles[i] == nest_handles[i] &&
+            pool.lookup(nest_plan.destination_tbps[i]).value_or(0) == nest_handles[i];
+      }
+      check(stable_nest_publication && metal_texture_live_count() == initial_live + 10,
+            "opcode 25 preserves Nest identities while moving all five destination TBPs");
+
       std::vector<u64> merged(jak2_animated_texture_slots().size(), 0);
       merged[0] = 0xaaaa;
       merged[4] = 0xbbbb;
@@ -148,12 +219,12 @@ int main() {
                 merged[12] == 0xcccc && merged[14] == 0xdddd,
             "slot merging preserves Dark Jak, prison, missing finger, and skull-gem owners");
 
-      check(!defaults.initialize(common_level) && metal_texture_live_count() == initial_live + 5,
-            "a repeated initialization preserves the five live default textures");
+      check(!defaults.initialize(common_level) && metal_texture_live_count() == initial_live + 10,
+            "a repeated initialization preserves both live high-resolution Jak groups");
     }
 
     check(metal_texture_live_count() == initial_live,
-          "default publisher destruction releases all five registry textures");
+          "publisher destruction releases both five-texture registry groups");
   }
 
   if (failures) {
