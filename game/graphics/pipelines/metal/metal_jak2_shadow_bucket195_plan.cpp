@@ -382,6 +382,239 @@ bool is_tail_start(const CheckedTransfer& transfer) {
   return is_direct(transfer, 6, VifCode::Kind::FLUSHA);
 }
 
+constexpr std::array<u8, 8> kSerializedPlanMagic = {'J', '2', 'S', '1', '9', '5', 'P', 0};
+constexpr u16 kSerializedPlanHeaderBytes = 32;
+constexpr u64 kSerializedPlanHashOffset = 14695981039346656037ull;
+constexpr u64 kSerializedPlanHashPrime = 1099511628211ull;
+
+class BlobWriter {
+ public:
+  explicit BlobWriter(std::size_t maximum_size) : m_maximum_size(maximum_size) {}
+
+  bool write_u8(u8 value) { return write_bytes(&value, sizeof(value)); }
+
+  bool write_u16(u16 value) {
+    const std::array<u8, 2> bytes = {
+        static_cast<u8>(value),
+        static_cast<u8>(value >> 8),
+    };
+    return write_bytes(bytes.data(), bytes.size());
+  }
+
+  bool write_u32(u32 value) {
+    const std::array<u8, 4> bytes = {
+        static_cast<u8>(value),
+        static_cast<u8>(value >> 8),
+        static_cast<u8>(value >> 16),
+        static_cast<u8>(value >> 24),
+    };
+    return write_bytes(bytes.data(), bytes.size());
+  }
+
+  bool write_u64(u64 value) {
+    std::array<u8, 8> bytes;
+    for (u32 i = 0; i < bytes.size(); ++i) {
+      bytes[i] = static_cast<u8>(value >> (i * 8));
+    }
+    return write_bytes(bytes.data(), bytes.size());
+  }
+
+  bool write_bytes(const u8* data, std::size_t size) {
+    if ((!data && size != 0) || size > m_maximum_size - m_data.size()) {
+      return false;
+    }
+    if (size == 0) {
+      return true;
+    }
+    m_data.insert(m_data.end(), data, data + size);
+    return true;
+  }
+
+  const std::vector<u8>& data() const { return m_data; }
+  std::vector<u8> take() { return std::move(m_data); }
+
+ private:
+  std::size_t m_maximum_size = 0;
+  std::vector<u8> m_data;
+};
+
+class BlobReader {
+ public:
+  BlobReader(const u8* data, std::size_t size) : m_data(data), m_size(size) {}
+
+  bool read_u8(u8* value) { return read_bytes(value, sizeof(*value)); }
+
+  bool read_u16(u16* value) {
+    std::array<u8, 2> bytes;
+    if (!read_bytes(bytes.data(), bytes.size())) {
+      return false;
+    }
+    *value = static_cast<u16>(bytes[0]) | (static_cast<u16>(bytes[1]) << 8);
+    return true;
+  }
+
+  bool read_u32(u32* value) {
+    std::array<u8, 4> bytes;
+    if (!read_bytes(bytes.data(), bytes.size())) {
+      return false;
+    }
+    *value = static_cast<u32>(bytes[0]) | (static_cast<u32>(bytes[1]) << 8) |
+             (static_cast<u32>(bytes[2]) << 16) | (static_cast<u32>(bytes[3]) << 24);
+    return true;
+  }
+
+  bool read_u64(u64* value) {
+    std::array<u8, 8> bytes;
+    if (!read_bytes(bytes.data(), bytes.size())) {
+      return false;
+    }
+    *value = 0;
+    for (u32 i = 0; i < bytes.size(); ++i) {
+      *value |= static_cast<u64>(bytes[i]) << (i * 8);
+    }
+    return true;
+  }
+
+  bool read_bytes(u8* output, std::size_t size) {
+    if ((!output && size != 0) || !m_data || size > m_size - m_offset) {
+      return false;
+    }
+    std::memcpy(output, m_data + m_offset, size);
+    m_offset += size;
+    return true;
+  }
+
+  bool empty() const { return m_offset == m_size; }
+
+ private:
+  const u8* m_data = nullptr;
+  std::size_t m_size = 0;
+  std::size_t m_offset = 0;
+};
+
+u64 serialized_plan_hash(const u8* data, std::size_t size) {
+  u64 hash = kSerializedPlanHashOffset;
+  for (std::size_t i = 0; i < size; ++i) {
+    hash ^= data[i];
+    hash *= kSerializedPlanHashPrime;
+  }
+  return hash;
+}
+
+template <std::size_t Size>
+bool bytes_are_zero(const std::array<u8, Size>& bytes) {
+  return std::all_of(bytes.begin(), bytes.end(), [](u8 byte) { return byte == 0; });
+}
+
+bool serialized_plan_is_valid(const Jak2ShadowBucket195Plan& plan) {
+  if (plan.bucket_id != kJak2ShadowBucket195PlanBucket ||
+      static_cast<u8>(plan.disposition) >
+          static_cast<u8>(Jak2ShadowBucket195PlanDisposition::AcceptedDeferredNoDraw) ||
+      plan.transfer_count > kJak2ShadowBucket195PlanMaximumTransfers ||
+      plan.direct_transfer_count > plan.transfer_count ||
+      plan.v4_32_transfer_count > plan.transfer_count ||
+      plan.v4_8_transfer_count > plan.transfer_count ||
+      plan.vertex_count > kJak2ShadowBucket195PlanMaximumVertices ||
+      plan.record_count > kJak2ShadowBucket195PlanMaximumRecords ||
+      plan.payload_bytes > kJak2ShadowBucket195PlanMaximumPayloadBytes ||
+      plan.direct_payload_bytes > plan.payload_bytes ||
+      plan.batches.size() > kJak2ShadowBucket195PlanMaximumBatches) {
+    return false;
+  }
+
+  if (plan.disposition == Jak2ShadowBucket195PlanDisposition::Absent) {
+    return plan.transfer_count == 1 && plan.direct_transfer_count == 0 &&
+           plan.direct_payload_bytes == 0 && plan.v4_32_transfer_count == 0 &&
+           plan.v4_8_transfer_count == 0 && plan.vertex_count == 0 && plan.record_count == 0 &&
+           plan.payload_bytes == 0 && plan.batches.empty() && !plan.has_initial_direct35 &&
+           !plan.has_direct6_state && !plan.has_color_direct35 && !plan.has_reset_display_state &&
+           !plan.has_default_end_state && bytes_are_zero(plan.constants) &&
+           bytes_are_zero(plan.vu_data) && bytes_are_zero(plan.perspective_matrix) &&
+           bytes_are_zero(plan.color);
+  }
+
+  if (!plan.has_direct6_state || !plan.has_color_direct35 || !plan.has_reset_display_state ||
+      !plan.has_default_end_state ||
+      plan.direct_transfer_count != (plan.has_initial_direct35 ? 5 : 4) ||
+      plan.direct_payload_bytes != (plan.has_initial_direct35 ? 1504 : 944)) {
+    return false;
+  }
+
+  std::size_t total_vertices = 0;
+  std::size_t total_commands = 0;
+  std::size_t executable_records = 0;
+  std::size_t upload_count = 0;
+  bool has_top_only = false;
+  for (const auto& batch : plan.batches) {
+    if (!batch.has_top_upload || batch.top_only == batch.has_bottom_upload ||
+        (!batch.has_bottom_upload && !batch.bottom_vertices.empty()) ||
+        (batch.has_bottom_upload && batch.top_vertices.size() != batch.bottom_vertices.size()) ||
+        !command_order_is_source_emittable(batch)) {
+      return false;
+    }
+    has_top_only |= batch.top_only;
+    upload_count += 1 + (batch.has_bottom_upload ? 1 : 0);
+    if (batch.top_vertices.size() > kJak2ShadowBucket195PlanMaximumVertices - total_vertices) {
+      return false;
+    }
+    total_vertices += batch.top_vertices.size();
+    if (batch.bottom_vertices.size() > kJak2ShadowBucket195PlanMaximumVertices - total_vertices) {
+      return false;
+    }
+    total_vertices += batch.bottom_vertices.size();
+
+    if (batch.commands.size() > kJak2ShadowBucket195PlanMaximumTransfers - total_commands) {
+      return false;
+    }
+    total_commands += batch.commands.size();
+    for (const auto& command : batch.commands) {
+      if (static_cast<u8>(command.kind) >
+              static_cast<u8>(Jak2ShadowBucket195CommandKind::FlippableCaps) ||
+          command.records.size() > kJak2ShadowBucket195PlanMaximumRecords - executable_records) {
+        return false;
+      }
+      executable_records += command.records.size();
+      for (const auto& record : command.records) {
+        if (record_is_zero(record) ||
+            !record_indices_fit(record, command.kind, batch.top_vertices.size(),
+                                batch.bottom_vertices.size(), batch.top_only) ||
+            (command.kind == Jak2ShadowBucket195CommandKind::Caps && record.bytes[3] != 1) ||
+            (command.kind == Jak2ShadowBucket195CommandKind::FlippableCaps &&
+             record.bytes[3] > 1)) {
+          return false;
+        }
+      }
+    }
+  }
+
+  const bool accepted_deferred =
+      plan.disposition == Jak2ShadowBucket195PlanDisposition::AcceptedDeferredNoDraw;
+  if (accepted_deferred != has_top_only || total_vertices != plan.vertex_count ||
+      total_commands != plan.v4_8_transfer_count || executable_records > plan.record_count ||
+      total_commands > plan.record_count || plan.v4_32_transfer_count != 3 + upload_count ||
+      plan.transfer_count !=
+          12 + (plan.has_initial_direct35 ? 1 : 0) + upload_count + total_commands) {
+    return false;
+  }
+
+  const u64 minimum_payload_bytes =
+      336 + plan.direct_payload_bytes + static_cast<u64>(plan.vertex_count) * 16 +
+      static_cast<u64>(plan.record_count) * 4 + static_cast<u64>(total_commands) * 20;
+  return plan.payload_bytes >= minimum_payload_bytes;
+}
+
+u8 serialized_plan_flags(const Jak2ShadowBucket195Plan& plan) {
+  return static_cast<u8>(
+      (plan.has_initial_direct35 ? 1 << 0 : 0) | (plan.has_direct6_state ? 1 << 1 : 0) |
+      (plan.has_color_direct35 ? 1 << 2 : 0) | (plan.has_reset_display_state ? 1 << 3 : 0) |
+      (plan.has_default_end_state ? 1 << 4 : 0));
+}
+
+u8 serialized_batch_flags(const Jak2ShadowBucket195Batch& batch) {
+  return static_cast<u8>((batch.has_top_upload ? 1 << 0 : 0) |
+                         (batch.has_bottom_upload ? 1 << 1 : 0) | (batch.top_only ? 1 << 2 : 0));
+}
+
 }  // namespace
 
 std::optional<Jak2ShadowBucket195Plan> plan_jak2_shadow_bucket195(
@@ -513,6 +746,198 @@ std::optional<Jak2ShadowBucket195Plan> plan_jak2_shadow_bucket195(
 bool jak2_shadow_bucket195_plans_match(const Jak2ShadowBucket195Plan& live,
                                        const Jak2ShadowBucket195Plan& copied) {
   return live == copied;
+}
+
+std::optional<std::vector<u8>> serialize_jak2_shadow_bucket195_plan(
+    const Jak2ShadowBucket195Plan& plan) {
+  if (!serialized_plan_is_valid(plan)) {
+    return std::nullopt;
+  }
+
+  BlobWriter payload(kJak2ShadowBucket195PlanMaximumSerializedBytes - kSerializedPlanHeaderBytes);
+  if (!payload.write_u32(plan.bucket_id) || !payload.write_u8(static_cast<u8>(plan.disposition)) ||
+      !payload.write_u8(serialized_plan_flags(plan)) || !payload.write_u16(0) ||
+      !payload.write_u32(plan.transfer_count) || !payload.write_u32(plan.direct_transfer_count) ||
+      !payload.write_u64(plan.direct_payload_bytes) ||
+      !payload.write_u32(plan.v4_32_transfer_count) ||
+      !payload.write_u32(plan.v4_8_transfer_count) || !payload.write_u32(plan.vertex_count) ||
+      !payload.write_u32(plan.record_count) || !payload.write_u64(plan.payload_bytes) ||
+      !payload.write_u32(static_cast<u32>(plan.batches.size())) ||
+      !payload.write_bytes(plan.constants.data(), plan.constants.size()) ||
+      !payload.write_bytes(plan.vu_data.data(), plan.vu_data.size()) ||
+      !payload.write_bytes(plan.perspective_matrix.data(), plan.perspective_matrix.size()) ||
+      !payload.write_bytes(plan.color.data(), plan.color.size())) {
+    return std::nullopt;
+  }
+
+  for (const auto& batch : plan.batches) {
+    if (!payload.write_u32(static_cast<u32>(batch.top_vertices.size())) ||
+        !payload.write_u32(static_cast<u32>(batch.bottom_vertices.size())) ||
+        !payload.write_u32(static_cast<u32>(batch.commands.size())) ||
+        !payload.write_u8(serialized_batch_flags(batch)) || !payload.write_u8(0) ||
+        !payload.write_u16(0)) {
+      return std::nullopt;
+    }
+    for (const auto& vertex : batch.top_vertices) {
+      if (!payload.write_bytes(vertex.bytes.data(), vertex.bytes.size())) {
+        return std::nullopt;
+      }
+    }
+    for (const auto& vertex : batch.bottom_vertices) {
+      if (!payload.write_bytes(vertex.bytes.data(), vertex.bytes.size())) {
+        return std::nullopt;
+      }
+    }
+    for (const auto& command : batch.commands) {
+      if (!payload.write_u8(static_cast<u8>(command.kind)) || !payload.write_u8(0) ||
+          !payload.write_u16(0) || !payload.write_u32(static_cast<u32>(command.records.size()))) {
+        return std::nullopt;
+      }
+      for (const auto& record : command.records) {
+        if (!payload.write_bytes(record.bytes.data(), record.bytes.size())) {
+          return std::nullopt;
+        }
+      }
+    }
+  }
+
+  const auto& payload_bytes = payload.data();
+  const std::size_t total_size = kSerializedPlanHeaderBytes + payload_bytes.size();
+  if (total_size > kJak2ShadowBucket195PlanMaximumSerializedBytes ||
+      total_size > std::numeric_limits<u32>::max()) {
+    return std::nullopt;
+  }
+  BlobWriter output(kJak2ShadowBucket195PlanMaximumSerializedBytes);
+  if (!output.write_bytes(kSerializedPlanMagic.data(), kSerializedPlanMagic.size()) ||
+      !output.write_u16(kJak2ShadowBucket195PlanSerializationVersion) ||
+      !output.write_u16(kSerializedPlanHeaderBytes) ||
+      !output.write_u32(static_cast<u32>(total_size)) ||
+      !output.write_u32(static_cast<u32>(payload_bytes.size())) || !output.write_u32(0) ||
+      !output.write_u64(serialized_plan_hash(payload_bytes.data(), payload_bytes.size())) ||
+      !output.write_bytes(payload_bytes.data(), payload_bytes.size())) {
+    return std::nullopt;
+  }
+  return output.take();
+}
+
+std::optional<Jak2ShadowBucket195Plan> deserialize_jak2_shadow_bucket195_plan(const u8* data,
+                                                                              std::size_t size) {
+  if (!data || size < kSerializedPlanHeaderBytes ||
+      size > kJak2ShadowBucket195PlanMaximumSerializedBytes) {
+    return std::nullopt;
+  }
+
+  BlobReader header(data, kSerializedPlanHeaderBytes);
+  std::array<u8, 8> magic;
+  u16 version = 0;
+  u16 header_bytes = 0;
+  u32 total_bytes = 0;
+  u32 payload_bytes = 0;
+  u32 reserved = 0;
+  u64 expected_hash = 0;
+  if (!header.read_bytes(magic.data(), magic.size()) || !header.read_u16(&version) ||
+      !header.read_u16(&header_bytes) || !header.read_u32(&total_bytes) ||
+      !header.read_u32(&payload_bytes) || !header.read_u32(&reserved) ||
+      !header.read_u64(&expected_hash) || !header.empty() || magic != kSerializedPlanMagic ||
+      version != kJak2ShadowBucket195PlanSerializationVersion ||
+      header_bytes != kSerializedPlanHeaderBytes || total_bytes != size ||
+      payload_bytes != size - kSerializedPlanHeaderBytes || reserved != 0 ||
+      expected_hash != serialized_plan_hash(data + kSerializedPlanHeaderBytes, payload_bytes)) {
+    return std::nullopt;
+  }
+
+  BlobReader input(data + kSerializedPlanHeaderBytes, payload_bytes);
+  Jak2ShadowBucket195Plan plan;
+  u8 disposition = 0;
+  u8 flags = 0;
+  u16 payload_reserved = 0;
+  u32 batch_count = 0;
+  if (!input.read_u32(&plan.bucket_id) || !input.read_u8(&disposition) || !input.read_u8(&flags) ||
+      !input.read_u16(&payload_reserved) || !input.read_u32(&plan.transfer_count) ||
+      !input.read_u32(&plan.direct_transfer_count) || !input.read_u64(&plan.direct_payload_bytes) ||
+      !input.read_u32(&plan.v4_32_transfer_count) || !input.read_u32(&plan.v4_8_transfer_count) ||
+      !input.read_u32(&plan.vertex_count) || !input.read_u32(&plan.record_count) ||
+      !input.read_u64(&plan.payload_bytes) || !input.read_u32(&batch_count) ||
+      !input.read_bytes(plan.constants.data(), plan.constants.size()) ||
+      !input.read_bytes(plan.vu_data.data(), plan.vu_data.size()) ||
+      !input.read_bytes(plan.perspective_matrix.data(), plan.perspective_matrix.size()) ||
+      !input.read_bytes(plan.color.data(), plan.color.size()) || payload_reserved != 0 ||
+      (flags & ~0x1f) != 0 || batch_count > kJak2ShadowBucket195PlanMaximumBatches) {
+    return std::nullopt;
+  }
+  plan.disposition = static_cast<Jak2ShadowBucket195PlanDisposition>(disposition);
+  plan.has_initial_direct35 = flags & (1 << 0);
+  plan.has_direct6_state = flags & (1 << 1);
+  plan.has_color_direct35 = flags & (1 << 2);
+  plan.has_reset_display_state = flags & (1 << 3);
+  plan.has_default_end_state = flags & (1 << 4);
+
+  std::size_t decoded_vertices = 0;
+  std::size_t decoded_commands = 0;
+  std::size_t decoded_records = 0;
+  plan.batches.resize(batch_count);
+  for (auto& batch : plan.batches) {
+    u32 top_count = 0;
+    u32 bottom_count = 0;
+    u32 command_count = 0;
+    u8 batch_flags = 0;
+    u8 batch_reserved8 = 0;
+    u16 batch_reserved16 = 0;
+    if (!input.read_u32(&top_count) || !input.read_u32(&bottom_count) ||
+        !input.read_u32(&command_count) || !input.read_u8(&batch_flags) ||
+        !input.read_u8(&batch_reserved8) || !input.read_u16(&batch_reserved16) ||
+        (batch_flags & ~0x07) != 0 || batch_reserved8 != 0 || batch_reserved16 != 0 ||
+        top_count > kJak2ShadowBucket195PlanMaximumVertices - decoded_vertices) {
+      return std::nullopt;
+    }
+    decoded_vertices += top_count;
+    if (bottom_count > kJak2ShadowBucket195PlanMaximumVertices - decoded_vertices ||
+        command_count > kJak2ShadowBucket195PlanMaximumTransfers - decoded_commands) {
+      return std::nullopt;
+    }
+    decoded_vertices += bottom_count;
+    decoded_commands += command_count;
+    batch.has_top_upload = batch_flags & (1 << 0);
+    batch.has_bottom_upload = batch_flags & (1 << 1);
+    batch.top_only = batch_flags & (1 << 2);
+    batch.top_vertices.resize(top_count);
+    batch.bottom_vertices.resize(bottom_count);
+    batch.commands.resize(command_count);
+    for (auto& vertex : batch.top_vertices) {
+      if (!input.read_bytes(vertex.bytes.data(), vertex.bytes.size())) {
+        return std::nullopt;
+      }
+    }
+    for (auto& vertex : batch.bottom_vertices) {
+      if (!input.read_bytes(vertex.bytes.data(), vertex.bytes.size())) {
+        return std::nullopt;
+      }
+    }
+    for (auto& command : batch.commands) {
+      u8 kind = 0;
+      u8 command_reserved8 = 0;
+      u16 command_reserved16 = 0;
+      u32 record_count = 0;
+      if (!input.read_u8(&kind) || !input.read_u8(&command_reserved8) ||
+          !input.read_u16(&command_reserved16) || !input.read_u32(&record_count) ||
+          command_reserved8 != 0 || command_reserved16 != 0 ||
+          record_count > kJak2ShadowBucket195PlanMaximumRecords - decoded_records) {
+        return std::nullopt;
+      }
+      decoded_records += record_count;
+      command.kind = static_cast<Jak2ShadowBucket195CommandKind>(kind);
+      command.records.resize(record_count);
+      for (auto& record : command.records) {
+        if (!input.read_bytes(record.bytes.data(), record.bytes.size())) {
+          return std::nullopt;
+        }
+      }
+    }
+  }
+  if (!input.empty() || !serialized_plan_is_valid(plan)) {
+    return std::nullopt;
+  }
+  return plan;
 }
 
 }  // namespace metal_renderer

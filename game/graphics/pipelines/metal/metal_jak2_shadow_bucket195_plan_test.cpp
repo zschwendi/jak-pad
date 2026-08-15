@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include "common/dma/dma.h"
@@ -16,6 +17,10 @@ constexpr std::size_t kMemorySize = 2 << 20;
 using CommandKind = metal_renderer::Jak2ShadowBucket195CommandKind;
 using Disposition = metal_renderer::Jak2ShadowBucket195PlanDisposition;
 using Plan = metal_renderer::Jak2ShadowBucket195Plan;
+
+constexpr u64 kSerializedHashOffset = 14695981039346656037ull;
+constexpr u64 kSerializedHashPrime = 1099511628211ull;
+constexpr std::size_t kSerializedHeaderBytes = 32;
 
 void check(bool condition, const char* message) {
   if (!condition) {
@@ -34,6 +39,23 @@ void put_u32(std::vector<u8>* memory, u32 offset, u32 value) {
 
 void put_u64(std::vector<u8>* memory, u32 offset, u64 value) {
   std::memcpy(memory->data() + offset, &value, sizeof(value));
+}
+
+void put_little_u32(std::vector<u8>* bytes, std::size_t offset, u32 value) {
+  for (u32 i = 0; i < 4; ++i) {
+    (*bytes)[offset + i] = static_cast<u8>(value >> (i * 8));
+  }
+}
+
+void rewrite_serialized_hash(std::vector<u8>* bytes) {
+  u64 hash = kSerializedHashOffset;
+  for (std::size_t i = kSerializedHeaderBytes; i < bytes->size(); ++i) {
+    hash ^= (*bytes)[i];
+    hash *= kSerializedHashPrime;
+  }
+  for (u32 i = 0; i < 8; ++i) {
+    (*bytes)[24 + i] = static_cast<u8>(hash >> (i * 8));
+  }
 }
 
 void put_tag(std::vector<u8>* memory,
@@ -376,6 +398,168 @@ void test_bounded_snapshot_rejections() {
   check(!plan(loop), "a cyclic DMA chain is rejected within the transfer bound");
 }
 
+std::vector<u8> serialize(const Plan& plan) {
+  auto bytes = metal_renderer::serialize_jak2_shadow_bucket195_plan(plan);
+  check(bytes.has_value(), "a valid owned Shadow2 plan serializes");
+  return std::move(*bytes);
+}
+
+void check_codec_round_trip(const Plan& plan, const char* message) {
+  const auto first = serialize(plan);
+  const auto second = serialize(plan);
+  const auto decoded =
+      metal_renderer::deserialize_jak2_shadow_bucket195_plan(first.data(), first.size());
+  check(first == second &&
+            first.size() <= metal_renderer::kJak2ShadowBucket195PlanMaximumSerializedBytes &&
+            decoded && *decoded == plan &&
+            metal_renderer::jak2_shadow_bucket195_plans_match(plan, *decoded),
+        message);
+}
+
+void test_plan_codec_round_trips() {
+  Fixture absent;
+  put_tag(&absent.memory, bucket_offset(), DmaTag::Kind::CNT, 0, 0, 0, 0);
+  const auto absent_plan = plan(absent);
+  check(absent_plan.has_value(), "the codec absent fixture parses");
+  check_codec_round_trip(*absent_plan, "an absent plan has one deterministic versioned round trip");
+
+  const auto ready_plan = plan(normal_fixture());
+  check(ready_plan.has_value(), "the codec ready fixture parses");
+  check_codec_round_trip(*ready_plan,
+                         "a ready plan retains every fixed field, batch, command, and byte");
+
+  Fixture top_only;
+  top_only.fixed_prefix(false);
+  top_only.vertices(4, 3, VifCode::Kind::NOP, 0x41);
+  top_only.indices(344, 6, {{{0, 1, 2, 1}}}, true);
+  top_only.tail();
+  const auto deferred_plan = plan(top_only);
+  check(deferred_plan.has_value(), "the codec top-only fixture parses");
+  check_codec_round_trip(*deferred_plan,
+                         "a retained top-only plan round trips without authorizing a draw");
+
+  Fixture retained;
+  retained.fixed_prefix(true);
+  retained.vertices(4, 128, VifCode::Kind::FLUSH, 0x21);
+  retained.vertices(174, 128, VifCode::Kind::NOP, 0x22);
+  retained.indices(344, 2, std::vector<std::array<u8, 4>>(108, {0, 1, 2, 1}));
+  retained.tail();
+  const auto retained_plan = plan(retained);
+  check(retained_plan.has_value(), "the codec retained-envelope fixture parses");
+  check_codec_round_trip(*retained_plan,
+                         "the retained gameplay-sized owned plan remains bounded and exact");
+}
+
+void test_plan_codec_rejects_truncation_and_corruption() {
+  const auto ready_plan = plan(normal_fixture());
+  check(ready_plan.has_value(), "the codec corruption fixture parses");
+  const auto bytes = serialize(*ready_plan);
+
+  check(!metal_renderer::deserialize_jak2_shadow_bucket195_plan(nullptr, bytes.size()),
+        "the codec rejects a null input");
+  for (std::size_t size = 0; size < bytes.size(); ++size) {
+    check(!metal_renderer::deserialize_jak2_shadow_bucket195_plan(bytes.data(), size),
+          "every truncated serialization is rejected");
+  }
+
+  auto trailing = bytes;
+  trailing.push_back(0);
+  check(!metal_renderer::deserialize_jak2_shadow_bucket195_plan(trailing.data(), trailing.size()),
+        "trailing bytes are rejected instead of silently ignored");
+  check(!metal_renderer::deserialize_jak2_shadow_bucket195_plan(
+            bytes.data(), metal_renderer::kJak2ShadowBucket195PlanMaximumSerializedBytes + 1),
+        "an oversized declared input is rejected before it is read");
+
+  for (std::size_t offset = 0; offset < bytes.size(); ++offset) {
+    auto corrupted = bytes;
+    corrupted[offset] ^= 0x80;
+    check(
+        !metal_renderer::deserialize_jak2_shadow_bucket195_plan(corrupted.data(), corrupted.size()),
+        "every single-byte corruption is detected");
+  }
+
+  auto unsupported_version = bytes;
+  unsupported_version[8] =
+      static_cast<u8>(metal_renderer::kJak2ShadowBucket195PlanSerializationVersion + 1);
+  check(!metal_renderer::deserialize_jak2_shadow_bucket195_plan(unsupported_version.data(),
+                                                                unsupported_version.size()),
+        "an unsupported serialization version is rejected");
+
+  auto invalid_disposition = bytes;
+  invalid_disposition[kSerializedHeaderBytes + 4] = 3;
+  rewrite_serialized_hash(&invalid_disposition);
+  check(!metal_renderer::deserialize_jak2_shadow_bucket195_plan(invalid_disposition.data(),
+                                                                invalid_disposition.size()),
+        "a checksum-valid invalid disposition is rejected");
+
+  auto invalid_flags = bytes;
+  invalid_flags[kSerializedHeaderBytes + 5] |= 0x80;
+  rewrite_serialized_hash(&invalid_flags);
+  check(!metal_renderer::deserialize_jak2_shadow_bucket195_plan(invalid_flags.data(),
+                                                                invalid_flags.size()),
+        "checksum-valid reserved plan flags are rejected");
+
+  auto excessive_batches = bytes;
+  put_little_u32(&excessive_batches, kSerializedHeaderBytes + 48,
+                 metal_renderer::kJak2ShadowBucket195PlanMaximumBatches + 1);
+  rewrite_serialized_hash(&excessive_batches);
+  check(!metal_renderer::deserialize_jak2_shadow_bucket195_plan(excessive_batches.data(),
+                                                                excessive_batches.size()),
+        "a checksum-valid excessive batch count is rejected before allocation");
+}
+
+void test_plan_codec_rejects_invalid_owned_limits() {
+  const auto parsed = plan(normal_fixture());
+  check(parsed.has_value(), "the codec limit fixture parses");
+
+  auto invalid = *parsed;
+  invalid.bucket_id = 314;
+  check(!metal_renderer::serialize_jak2_shadow_bucket195_plan(invalid),
+        "the codec cannot serialize a sibling bucket plan");
+
+  invalid = *parsed;
+  invalid.transfer_count = metal_renderer::kJak2ShadowBucket195PlanMaximumTransfers + 1;
+  check(!metal_renderer::serialize_jak2_shadow_bucket195_plan(invalid),
+        "the codec rejects transfer counts above the parser limit");
+
+  invalid = *parsed;
+  invalid.payload_bytes = metal_renderer::kJak2ShadowBucket195PlanMaximumPayloadBytes + 1;
+  check(!metal_renderer::serialize_jak2_shadow_bucket195_plan(invalid),
+        "the codec rejects payload counts above the parser limit");
+
+  invalid = *parsed;
+  invalid.batches.resize(metal_renderer::kJak2ShadowBucket195PlanMaximumBatches + 1);
+  check(!metal_renderer::serialize_jak2_shadow_bucket195_plan(invalid),
+        "the codec rejects batch counts above the parser limit");
+
+  invalid = *parsed;
+  invalid.batches[0].top_vertices.resize(metal_renderer::kJak2ShadowBucket195PlanMaximumVertices +
+                                         1);
+  check(!metal_renderer::serialize_jak2_shadow_bucket195_plan(invalid),
+        "the codec rejects owned vertices above the parser limit");
+
+  invalid = *parsed;
+  invalid.batches[0].commands[0].records.resize(
+      metal_renderer::kJak2ShadowBucket195PlanMaximumRecords + 1);
+  check(!metal_renderer::serialize_jak2_shadow_bucket195_plan(invalid),
+        "the codec rejects owned records above the parser limit");
+
+  invalid = *parsed;
+  invalid.batches[0].commands.resize(metal_renderer::kJak2ShadowBucket195PlanMaximumTransfers + 1);
+  check(!metal_renderer::serialize_jak2_shadow_bucket195_plan(invalid),
+        "the codec rejects command counts above the transfer limit");
+
+  invalid = *parsed;
+  invalid.vertex_count = 0;
+  check(!metal_renderer::serialize_jak2_shadow_bucket195_plan(invalid),
+        "the codec rejects scalar and owned-graph count disagreement");
+
+  invalid = *parsed;
+  invalid.batches[0].commands[0].records[0].bytes[0] = 0xff;
+  check(!metal_renderer::serialize_jak2_shadow_bucket195_plan(invalid),
+        "the codec rejects an owned record outside its vertex domain");
+}
+
 }  // namespace
 
 int main() {
@@ -385,6 +569,9 @@ int main() {
   test_top_only_is_accepted_deferred();
   test_source_exact_rejections();
   test_bounded_snapshot_rejections();
+  test_plan_codec_round_trips();
+  test_plan_codec_rejects_truncation_and_corruption();
+  test_plan_codec_rejects_invalid_owned_limits();
   std::puts("jak2 shadow bucket-195 source-exact plan tests passed");
   return 0;
 }

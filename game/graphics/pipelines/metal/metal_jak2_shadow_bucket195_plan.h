@@ -15,6 +15,8 @@ constexpr u64 kJak2ShadowBucket195PlanMaximumPayloadBytes = 1 << 20;
 constexpr u32 kJak2ShadowBucket195PlanMaximumBatches = 128;
 constexpr u32 kJak2ShadowBucket195PlanMaximumVertices = 32 << 10;
 constexpr u32 kJak2ShadowBucket195PlanMaximumRecords = 32 << 10;
+constexpr u16 kJak2ShadowBucket195PlanSerializationVersion = 1;
+constexpr std::size_t kJak2ShadowBucket195PlanMaximumSerializedBytes = 1 << 20;
 
 enum class Jak2ShadowBucket195PlanDisposition : u8 {
   Absent,
@@ -98,5 +100,11 @@ std::optional<Jak2ShadowBucket195Plan> plan_jak2_shadow_bucket195(
 
 bool jak2_shadow_bucket195_plans_match(const Jak2ShadowBucket195Plan& live,
                                        const Jak2ShadowBucket195Plan& copied);
+
+std::optional<std::vector<u8>> serialize_jak2_shadow_bucket195_plan(
+    const Jak2ShadowBucket195Plan& plan);
+
+std::optional<Jak2ShadowBucket195Plan> deserialize_jak2_shadow_bucket195_plan(const u8* data,
+                                                                              std::size_t size);
 
 }  // namespace metal_renderer
