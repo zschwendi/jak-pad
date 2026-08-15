@@ -2097,6 +2097,9 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &effects_bucket315_callback_executed,
         &*copied_gmerc_warp_bucket317_plan,
         &gmerc_warp_bucket317_callback_executed};
+    const bool execute_shadow_bucket195 =
+        metal_renderer::jak2_metal_bucket_table()[metal_renderer::kJak2ShadowBucket195PlanBucket]
+            .behavior == metal_renderer::Jak2MetalBucketBehavior::Shadow2;
     auto render_options = host->options;
     merge_animated_texture_slots(host);
     render_options.animated_texture_slots = host->animated_texture_slots.data();
@@ -2107,7 +2110,8 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.jak2_pris_eye_plan_count = copied_pris_eye_renderer_plans.size();
     render_options.jak2_common_pris_plan = &*copied_common_pris_plan;
     render_options.jak2_gmerc_warp_bucket317_plan = &*copied_gmerc_warp_bucket317_plan;
-    render_options.jak2_shadow_bucket195_plan = &*copied_shadow_bucket195_plan;
+    render_options.jak2_shadow_bucket195_plan =
+        execute_shadow_bucket195 ? &*copied_shadow_bucket195_plan : nullptr;
     const u64 warp_texture_upload_executions_before =
         host->metrics.warp_texture_upload_executions;
     const auto pris2_texture_upload_executions_before =
@@ -2208,61 +2212,61 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
     warp_execution.completed_executions++;
-    const auto expected_shadow_disposition = copied_shadow_bucket195_plan->disposition;
-    const bool shadow_ready = expected_shadow_disposition ==
-                              metal_renderer::Jak2ShadowBucket195PlanDisposition::Ready;
-    const bool shadow_deferred = expected_shadow_disposition ==
-                                 metal_renderer::Jak2ShadowBucket195PlanDisposition::
-                                     AcceptedDeferredNoDraw;
-    const uint32_t expected_shadow_triangles =
-        shadow_execution.last_actual_front_triangles +
-        shadow_execution.last_actual_back_triangles;
-    const bool shadow_has_geometry = shadow_ready && expected_shadow_triangles != 0;
-    bool expected_darken = false;
-    bool expected_lighten = false;
-    if (shadow_has_geometry) {
-      for (uint32_t channel = 0; channel < 3; ++channel) {
-        expected_darken |= copied_shadow_bucket195_plan->color[channel] < 128;
-        expected_lighten |= copied_shadow_bucket195_plan->color[channel] > 128;
+    if (execute_shadow_bucket195) {
+      const auto expected_shadow_disposition = copied_shadow_bucket195_plan->disposition;
+      const bool shadow_ready =
+          expected_shadow_disposition == metal_renderer::Jak2ShadowBucket195PlanDisposition::Ready;
+      const bool shadow_deferred =
+          expected_shadow_disposition ==
+          metal_renderer::Jak2ShadowBucket195PlanDisposition::AcceptedDeferredNoDraw;
+      const uint32_t expected_shadow_triangles = shadow_execution.last_actual_front_triangles +
+                                                 shadow_execution.last_actual_back_triangles;
+      const bool shadow_has_geometry = shadow_ready && expected_shadow_triangles != 0;
+      bool expected_darken = false;
+      bool expected_lighten = false;
+      if (shadow_has_geometry) {
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+          expected_darken |= copied_shadow_bucket195_plan->color[channel] < 128;
+          expected_lighten |= copied_shadow_bucket195_plan->color[channel] > 128;
+        }
       }
+      const uint32_t expected_shadow_draws =
+          (shadow_execution.last_actual_front_triangles != 0 ? 1u : 0u) +
+          (shadow_execution.last_actual_back_triangles != 0 ? 1u : 0u) +
+          (expected_darken ? 1u : 0u) + (expected_lighten ? 1u : 0u);
+      const bool shadow_no_draw = !shadow_ready || !shadow_has_geometry;
+      if (shadow_execution.last_actual_executions != 1 ||
+          shadow_execution.last_actual_absent !=
+              (expected_shadow_disposition ==
+                       metal_renderer::Jak2ShadowBucket195PlanDisposition::Absent
+                   ? 1u
+                   : 0u) ||
+          shadow_execution.last_actual_ready != (shadow_ready ? 1u : 0u) ||
+          shadow_execution.last_actual_deferred_no_draw != (shadow_deferred ? 1u : 0u) ||
+          shadow_execution.last_actual_input_batches != shadow_execution.last_expected_batches ||
+          shadow_execution.last_actual_input_vertices != shadow_execution.last_expected_vertices ||
+          shadow_execution.last_actual_input_records != shadow_execution.last_expected_records ||
+          shadow_execution.last_actual_output_vertices != expected_shadow_triangles * 3 ||
+          shadow_execution.last_actual_draws != (shadow_no_draw ? 0u : expected_shadow_draws) ||
+          shadow_execution.last_actual_triangles !=
+              (shadow_no_draw ? 0u
+                              : expected_shadow_triangles + 2u * ((expected_darken ? 1u : 0u) +
+                                                                  (expected_lighten ? 1u : 0u))) ||
+          shadow_execution.last_actual_darken_draws != (expected_darken ? 1u : 0u) ||
+          shadow_execution.last_actual_lighten_draws != (expected_lighten ? 1u : 0u) ||
+          shadow_execution.last_actual_unexpected_dma != 0 ||
+          shadow_execution.last_actual_invalid_plan != 0 ||
+          shadow_execution.last_actual_nonfinite_projection != 0 ||
+          shadow_execution.last_actual_overflow != 0 ||
+          shadow_execution.last_actual_pipeline_failures != 0 ||
+          shadow_execution.last_actual_reached_boundary != 1) {
+        record_send_chain_failure(host,
+                                  "Jak 2 Shadow2 bucket 195 violated its exact execution gate",
+                                  host_texture_mutated);
+        return;
+      }
+      shadow_execution.completed_executions++;
     }
-    const uint32_t expected_shadow_draws =
-        (shadow_execution.last_actual_front_triangles != 0 ? 1u : 0u) +
-        (shadow_execution.last_actual_back_triangles != 0 ? 1u : 0u) +
-        (expected_darken ? 1u : 0u) + (expected_lighten ? 1u : 0u);
-    const bool shadow_no_draw = !shadow_ready || !shadow_has_geometry;
-    if (shadow_execution.last_actual_executions != 1 ||
-        shadow_execution.last_actual_absent !=
-            (expected_shadow_disposition ==
-                     metal_renderer::Jak2ShadowBucket195PlanDisposition::Absent
-                 ? 1u
-                 : 0u) ||
-        shadow_execution.last_actual_ready != (shadow_ready ? 1u : 0u) ||
-        shadow_execution.last_actual_deferred_no_draw != (shadow_deferred ? 1u : 0u) ||
-        shadow_execution.last_actual_input_batches != shadow_execution.last_expected_batches ||
-        shadow_execution.last_actual_input_vertices != shadow_execution.last_expected_vertices ||
-        shadow_execution.last_actual_input_records != shadow_execution.last_expected_records ||
-        shadow_execution.last_actual_output_vertices != expected_shadow_triangles * 3 ||
-        shadow_execution.last_actual_draws != (shadow_no_draw ? 0u : expected_shadow_draws) ||
-        shadow_execution.last_actual_triangles !=
-            (shadow_no_draw ? 0u
-                            : expected_shadow_triangles +
-                                  2u * ((expected_darken ? 1u : 0u) +
-                                        (expected_lighten ? 1u : 0u))) ||
-        shadow_execution.last_actual_darken_draws != (expected_darken ? 1u : 0u) ||
-        shadow_execution.last_actual_lighten_draws != (expected_lighten ? 1u : 0u) ||
-        shadow_execution.last_actual_unexpected_dma != 0 ||
-        shadow_execution.last_actual_invalid_plan != 0 ||
-        shadow_execution.last_actual_nonfinite_projection != 0 ||
-        shadow_execution.last_actual_overflow != 0 ||
-        shadow_execution.last_actual_pipeline_failures != 0 ||
-        shadow_execution.last_actual_reached_boundary != 1) {
-      record_send_chain_failure(
-          host, "Jak 2 Shadow2 bucket 195 violated its exact execution gate",
-          host_texture_mutated);
-      return;
-    }
-    shadow_execution.completed_executions++;
     if (!warp_texture_upload_callback_executed ||
         !counter_advanced_by(warp_texture_upload_executions_before,
                              host->metrics.warp_texture_upload_executions,

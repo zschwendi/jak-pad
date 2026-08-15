@@ -96,7 +96,7 @@ int main() {
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 16, "16 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 17, "17 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 31,
@@ -129,7 +129,7 @@ int main() {
   check(effects_lightning == 1,
         "one source-exact EFFECTS bucket has a dedicated Lightning renderer");
   check(warp == 1, "one source-exact GMERC_WARP bucket owns framebuffer warp rendering");
-  check(shadow2 == 1, "one source-exact Jak II Shadow2 bucket owns stencil rendering");
+  check(shadow2 == 0, "the physically rejected Jak II Shadow2 route remains deferred");
   check(generic2 == 26,
         "26 source-proven normal GMerc buckets are implemented by Metal Generic2");
   check(ocean_mid_far == 1 && ocean_near == 1,
@@ -373,14 +373,14 @@ int main() {
   check(has_behavior(jak2::BucketId::DEBUG_NO_ZBUF1, Behavior::HostTextureUploadDirect) &&
             has_behavior(jak2::BucketId::TEX_ALL_MAP, Behavior::HostTextureUploadDirect),
         "DEBUG_NO_ZBUF1 and TEX_ALL_MAP preserve their reference upload-plus-Direct behavior");
-  check(has_behavior(jak2::BucketId::SHADOW, Behavior::Shadow2) &&
+  check(has_behavior(jak2::BucketId::SHADOW, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::MERC_L0_PRIS2, Behavior::Merc) &&
             has_behavior(jak2::BucketId::MERC_L1_PRIS2, Behavior::Merc) &&
             has_behavior(jak2::BucketId::GMERC_L5_PRIS2, Behavior::DeferredSkip) &&
             has_behavior(jak2::BucketId::GMERC_L5_WATER, Behavior::Generic2) &&
             has_behavior(jak2::BucketId::GMERC_LCOM_WATER, Behavior::StrictEmpty) &&
             has_behavior(jak2::BucketId::DEBUG3, Behavior::DeferredSkip),
-        "Shadow2, PRIS2 Merc, water, common-water, and tail bindings stay explicit");
+        "deferred Shadow2, PRIS2 Merc, water, common-water, and tail bindings stay explicit");
   check(has_behavior(jak2::BucketId::SKY_DRAW, Behavior::Direct) &&
             has_behavior(jak2::BucketId::PROGRESS, Behavior::Direct) &&
             has_behavior(jak2::BucketId::SCREEN_FILTER, Behavior::Direct) &&
