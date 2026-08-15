@@ -18,6 +18,7 @@
  *    own command buffer, which is committed and waited on before the frame's.
  */
 
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -44,6 +45,7 @@ class MetalEyeRenderer : public MetalBucketRenderer {
     int missing_textures = 0;  // adgif named a VRAM slot with nothing in it
     int unexpected_dma = 0;    // bucket did not match: consumed and reported
     int duplicate_slot_writes = 0;
+    int versioned_slot_writes = 0;
     int command_buffers_committed = 0;
     int command_buffers_completed = 0;
     int command_buffer_errors = 0;
@@ -66,7 +68,8 @@ class MetalEyeRenderer : public MetalBucketRenderer {
   // EyeRenderer::handle_eye_dma2): decode and compose, dma left after the chunk.
   void render_from_texture_bucket(DmaFollower& dma,
                                   MetalSharedRenderState* render_state,
-                                  MetalFrameContext& ctx);
+                                  MetalFrameContext& ctx,
+                                  u32 producer_bucket = 0);
 
   // Eyes are composed from the texture buckets as well as this renderer's own
   // bucket, so the per-frame stats reset happens at frame start, not per bucket.
@@ -138,13 +141,16 @@ class MetalEyeRenderer : public MetalBucketRenderer {
   std::vector<SingleEyeDraws> get_draws(DmaFollower& dma, MetalSharedRenderState* render_state);
   bool run_gpu(const std::vector<SingleEyeDraws>& draws,
                MetalSharedRenderState* render_state,
-               MetalFrameContext& ctx);
+               MetalFrameContext& ctx,
+               u32 producer_bucket);
   void detach_pool();
 
   id<MTLDevice> m_device;
   id<MTLCommandQueue> m_queue;
   TexturePool* m_pool = nullptr;
   GpuEyeTex m_gpu_eye_textures[METAL_NUM_EYE_PAIRS * 2];
+  std::array<u32, METAL_NUM_EYE_PAIRS * 2> m_frame_producer_buckets = {};
+  std::vector<u64> m_retired_handles;
 
   // xyst per vertex, 4 vertices per square, 4 draws per eye, all eyes.
   static constexpr int VTX_BUFFER_FLOATS = 4 * 4 * 4 * METAL_NUM_EYE_PAIRS * 2;

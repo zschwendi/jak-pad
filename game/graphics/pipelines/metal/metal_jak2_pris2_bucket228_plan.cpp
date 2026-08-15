@@ -14,6 +14,38 @@ bool is_pris2_texture_bucket(u32 bucket_id) {
          kJak2Pris2TextureUploadBuckets.end();
 }
 
+constexpr std::array<u32, kJak2PrisEyeProducerCount> kPrisEyeProducerOrder = {
+    kJak2PrisTextureUploadBuckets[0],  kJak2PrisTextureUploadBuckets[1],
+    kJak2PrisTextureUploadBuckets[2],  kJak2PrisTextureUploadBuckets[3],
+    kJak2PrisTextureUploadBuckets[4],  kJak2PrisTextureUploadBuckets[5],
+    kJak2CommonPrisTextureUploadBucket, kJak2Pris2TextureUploadBuckets[0],
+    kJak2Pris2TextureUploadBuckets[1], kJak2Pris2TextureUploadBuckets[2],
+    kJak2Pris2TextureUploadBuckets[3], kJak2Pris2TextureUploadBuckets[4],
+    kJak2Pris2TextureUploadBuckets[5]};
+
+template <typename Plan>
+bool eye_plan_mask_is_owned(const Plan& plan, bool present) {
+  if (plan.chunk_count > kJak2PrisEyeMaximumChunks) {
+    return false;
+  }
+  if (!present) {
+    return plan.chunk_count == 0 && plan.eye_slot_mask == 0;
+  }
+  u64 owned_mask = 0;
+  for (std::size_t i = 0; i < plan.chunk_count; ++i) {
+    const auto& chunk = plan.chunks[i];
+    if (chunk.pair_index >= 20) {
+      return false;
+    }
+    const u64 chunk_mask = 3ull << (chunk.pair_index * 2);
+    if (chunk.eye_slot_mask != chunk_mask || (owned_mask & chunk_mask) != 0) {
+      return false;
+    }
+    owned_mask |= chunk_mask;
+  }
+  return owned_mask == plan.eye_slot_mask;
+}
+
 void set_rejection(Jak2PrisEyeTextureUploadRejection* rejection,
                    Jak2PrisEyeTextureUploadRejectReason reason) {
   if (rejection) {
@@ -164,38 +196,49 @@ Jak2PrisEyeTextureUploadPlan adapt_jak2_pris2_to_pris_eye_plan(
   return result;
 }
 
-bool jak2_pris_eye_slot_masks_are_disjoint(
+bool jak2_pris_eye_plan_sequence_is_valid(
     const Jak2PrisEyeTextureUploadPlan* per_level_plans,
     std::size_t per_level_plan_count,
     const Jak2CommonPrisTextureUploadPlan& common_plan,
     const Jak2Pris2Bucket228Plan* pris2_plans,
     std::size_t pris2_plan_count) {
-  if ((!per_level_plans && per_level_plan_count != 0) ||
-      (!pris2_plans && pris2_plan_count != 0)) {
+  if (!per_level_plans || !pris2_plans ||
+      per_level_plan_count != kJak2PrisTextureUploadBuckets.size() ||
+      pris2_plan_count != kJak2Pris2TextureUploadBuckets.size() ||
+      common_plan.bucket_id != kJak2CommonPrisTextureUploadBucket ||
+      !eye_plan_mask_is_owned(common_plan, common_plan.present)) {
     return false;
   }
-  u64 claimed = 0;
-  const auto claim = [&claimed](u64 mask) {
-    if ((claimed & mask) != 0) {
-      return false;
-    }
-    claimed |= mask;
-    return true;
-  };
   for (std::size_t i = 0; i < per_level_plan_count; ++i) {
-    if (!claim(per_level_plans[i].eye_slot_mask)) {
+    const auto& plan = per_level_plans[i];
+    if (plan.bucket_id != kJak2PrisTextureUploadBuckets[i] ||
+        !eye_plan_mask_is_owned(plan, plan.present)) {
       return false;
     }
-  }
-  if (!claim(common_plan.eye_slot_mask)) {
-    return false;
   }
   for (std::size_t i = 0; i < pris2_plan_count; ++i) {
-    if (!claim(pris2_plans[i].eye_slot_mask)) {
+    const auto& plan = pris2_plans[i];
+    const bool present = plan.variant != Jak2Pris2Bucket228Variant::Absent;
+    const std::size_t expected_chunk_count =
+        plan.variant == Jak2Pris2Bucket228Variant::OneEyeChunk
+            ? 1
+            : plan.variant == Jak2Pris2Bucket228Variant::TwoEyeChunks ? 2 : 0;
+    if (plan.bucket_id != kJak2Pris2TextureUploadBuckets[i] ||
+        plan.chunk_count != expected_chunk_count ||
+        !eye_plan_mask_is_owned(plan, present)) {
       return false;
     }
   }
   return true;
+}
+
+bool jak2_pris_eye_producer_precedes(u32 earlier_bucket, u32 later_bucket) {
+  const auto earlier = std::find(kPrisEyeProducerOrder.begin(), kPrisEyeProducerOrder.end(),
+                                 earlier_bucket);
+  const auto later =
+      std::find(kPrisEyeProducerOrder.begin(), kPrisEyeProducerOrder.end(), later_bucket);
+  return earlier != kPrisEyeProducerOrder.end() && later != kPrisEyeProducerOrder.end() &&
+         earlier < later;
 }
 
 }  // namespace metal_renderer

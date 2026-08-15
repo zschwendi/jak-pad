@@ -450,33 +450,57 @@ void test_live_copy_matching() {
         "a valid source mutation between live and copied plans fails matching");
 }
 
-void test_cross_plan_eye_slot_ownership() {
-  std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan, 2> per_level;
-  per_level[0].eye_slot_mask = 0x3;
-  per_level[1].eye_slot_mask = 0xc;
+void test_source_ordered_eye_slot_ownership() {
+  std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan, 6> per_level;
+  for (std::size_t i = 0; i < per_level.size(); ++i) {
+    per_level[i].bucket_id = metal_renderer::kJak2PrisTextureUploadBuckets[i];
+  }
   metal_renderer::Jak2CommonPrisTextureUploadPlan common;
-  common.eye_slot_mask = 0x30;
-  std::array<metal_renderer::Jak2Pris2Bucket228Plan, 2> pris2;
-  pris2[0].eye_slot_mask = 0xc0;
-  pris2[1].eye_slot_mask = 0x300;
-  check(metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
-            per_level.data(), per_level.size(), common, pris2.data(), pris2.size()),
-        "per-level, common, and all PRIS2 disjoint eye slots are accepted");
+  std::array<metal_renderer::Jak2Pris2Bucket228Plan, 6> pris2;
+  for (std::size_t i = 0; i < pris2.size(); ++i) {
+    pris2[i].bucket_id = metal_renderer::kJak2Pris2TextureUploadBuckets[i];
+  }
 
-  pris2[0].eye_slot_mask = 0x20;
-  check(!metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
+  auto add_pair = [](auto* plan, u32 pair) {
+    auto& chunk = plan->chunks[plan->chunk_count++];
+    chunk.pair_index = pair;
+    chunk.eye_slot_mask = 3ull << (pair * 2);
+    plan->eye_slot_mask |= chunk.eye_slot_mask;
+  };
+  per_level[1].present = true;
+  add_pair(&per_level[1], 12);
+  per_level[2].present = true;
+  add_pair(&per_level[2], 0);
+  add_pair(&per_level[2], 12);
+  check(metal_renderer::jak2_pris_eye_plan_sequence_is_valid(
+            per_level.data(), per_level.size(), common, pris2.data(), pris2.size()),
+        "Build18 bucket 200 pair 12 may be reused by bucket 204 after its Merc consumer");
+
+  per_level[2].chunks[1].pair_index = 0;
+  per_level[2].chunks[1].eye_slot_mask = 0x3;
+  check(!metal_renderer::jak2_pris_eye_plan_sequence_is_valid(
              per_level.data(), per_level.size(), common, pris2.data(), pris2.size()),
-        "a PRIS2 producer cannot overlap a common-PRIS eye slot");
-  pris2[0].eye_slot_mask = 0;
-  pris2[1].eye_slot_mask = 0xc;
-  check(!metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
+        "duplicate slots within one producer remain fail-closed");
+  per_level[2].chunks[1].pair_index = 12;
+  per_level[2].chunks[1].eye_slot_mask = 0x03000000;
+
+  per_level[2].bucket_id = 208;
+  check(!metal_renderer::jak2_pris_eye_plan_sequence_is_valid(
              per_level.data(), per_level.size(), common, pris2.data(), pris2.size()),
-        "PRIS2 producers cannot overlap ordinary PRIS producers");
-  pris2[1].eye_slot_mask = 0;
-  per_level[1].eye_slot_mask = 0x2;
-  check(!metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
+        "a reordered per-level producer sequence is rejected");
+  per_level[2].bucket_id = 204;
+
+  per_level[1].eye_slot_mask ^= 1;
+  check(!metal_renderer::jak2_pris_eye_plan_sequence_is_valid(
              per_level.data(), per_level.size(), common, pris2.data(), pris2.size()),
-        "per-level PRIS producers cannot overlap each other before mutation");
+        "a producer mask not exactly owned by its chunks is rejected");
+
+  check(metal_renderer::jak2_pris_eye_producer_precedes(200, 204) &&
+            metal_renderer::jak2_pris_eye_producer_precedes(220, 224) &&
+            !metal_renderer::jak2_pris_eye_producer_precedes(204, 200) &&
+            !metal_renderer::jak2_pris_eye_producer_precedes(200, 200) &&
+            !metal_renderer::jak2_pris_eye_producer_precedes(199, 204),
+        "only distinct audited PRIS producers are ordered for generation reuse");
 }
 
 void test_source_grammar_and_rejections() {
@@ -558,7 +582,7 @@ void test_source_grammar_and_rejections() {
 int main() {
   test_observed_forms();
   test_live_copy_matching();
-  test_cross_plan_eye_slot_ownership();
+  test_source_ordered_eye_slot_ownership();
   test_source_grammar_and_rejections();
   std::puts("metal_jak2_pris2_bucket228_plan_test: PASS");
   return 0;

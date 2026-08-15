@@ -1899,11 +1899,11 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                    copied_pris_eye_renderer_plans.begin() + copied_pris_eye_plans.size(),
                    metal_renderer::adapt_jak2_pris2_to_pris_eye_plan);
 
-    if (!metal_renderer::jak2_pris_eye_slot_masks_are_disjoint(
+    if (!metal_renderer::jak2_pris_eye_plan_sequence_is_valid(
             copied_pris_eye_plans.data(), copied_pris_eye_plans.size(),
             *copied_common_pris_plan, copied_pris2_plans.data(),
             copied_pris2_plans.size())) {
-      record_failure(host, "Jak 2 eye slots overlap across PRIS, common PRIS, or PRIS2");
+      record_failure(host, "Jak 2 PRIS eye producer order or owned masks are invalid");
       return;
     }
 

@@ -14,6 +14,8 @@ inline constexpr std::array<u32, 6> kJak2Pris2TextureUploadBuckets = {
     224, 228, 232, 236, 240, 244};
 inline constexpr std::array<u32, 6> kJak2Pris2MercBuckets = {
     225, 229, 233, 237, 241, 245};
+constexpr std::size_t kJak2PrisEyeProducerCount =
+    kJak2PrisTextureUploadBuckets.size() + 1 + kJak2Pris2TextureUploadBuckets.size();
 
 // Retained for the existing passive 228/229 ABI fields and focused fixtures.
 constexpr u32 kJak2Pris2TextureUploadBucket = 228;
@@ -90,12 +92,19 @@ inline Jak2PrisEyeTextureUploadPlan adapt_jak2_pris2_bucket228_to_pris_eye_plan(
   return adapt_jak2_pris2_to_pris_eye_plan(source);
 }
 
-/*! Reject overlapping eye publications across ordinary PRIS, common PRIS, and all PRIS2 plans. */
-bool jak2_pris_eye_slot_masks_are_disjoint(
+/*!
+ * Validate the complete source-ordered PRIS producer sequence and each producer's owned eye mask.
+ * Cross-producer reuse is source-valid: every producer is followed by its Merc consumer before the
+ * next producer. Duplicate slots within one producer remain invalid.
+ */
+bool jak2_pris_eye_plan_sequence_is_valid(
     const Jak2PrisEyeTextureUploadPlan* per_level_plans,
     std::size_t per_level_plan_count,
     const Jak2CommonPrisTextureUploadPlan& common_plan,
     const Jak2Pris2Bucket228Plan* pris2_plans,
     std::size_t pris2_plan_count);
+
+/*! True only for two different audited PRIS producers in source bucket order. */
+bool jak2_pris_eye_producer_precedes(u32 earlier_bucket, u32 later_bucket);
 
 }  // namespace metal_renderer

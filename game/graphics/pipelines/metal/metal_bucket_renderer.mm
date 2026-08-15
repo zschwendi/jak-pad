@@ -339,7 +339,8 @@ void MetalJak2PrisEyeBucketRenderer::render(DmaFollower& dma,
                                                  chunk.start_relative_tag_offset),
                        "chunk start");
     const auto before = render_state->eye_renderer->stats();
-    render_state->eye_renderer->render_from_texture_bucket(dma, render_state, ctx);
+    render_state->eye_renderer->render_from_texture_bucket(dma, render_state, ctx,
+                                                           bucket_id);
     const auto after = render_state->eye_renderer->stats();
     if (after.eyes != before.eyes + 2 || after.draw_calls != before.draw_calls + 8 ||
         after.triangles != before.triangles + 16 ||
@@ -457,7 +458,8 @@ void MetalJak2CommonPrisBucketRenderer::render(DmaFollower& dma,
                                                  chunk.start_relative_tag_offset),
                        "chunk start");
     const auto before = render_state->eye_renderer->stats();
-    render_state->eye_renderer->render_from_texture_bucket(dma, render_state, ctx);
+    render_state->eye_renderer->render_from_texture_bucket(dma, render_state, ctx,
+                                                           bucket_id);
     const auto after = render_state->eye_renderer->stats();
     if (after.eyes != before.eyes + 2 || after.draw_calls != before.draw_calls + 8 ||
         after.triangles != before.triangles + 16 ||
