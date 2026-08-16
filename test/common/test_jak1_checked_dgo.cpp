@@ -5,12 +5,16 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "decompiler/extractor/jak1_checked_dgo.h"
 
 #include "third-party/lzokay/lzokay.hpp"
+
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
 
 namespace {
 
@@ -130,6 +134,24 @@ bool derives_art_group_and_duplicate_names() {
   return true;
 }
 
+bool derives_jak2_art_group_names_without_changing_the_default() {
+  const std::string marker = "/src/jak2/final/art-group7/plat-ag.go";
+  std::vector<std::uint8_t> art_data(marker.begin(), marker.end());
+  art_data.push_back(0);
+  const auto fixture = make_raw_dgo("ART.DGO", {{"plat", art_data}});
+
+  const auto jak1_result = jak1_checked_dgo::read(fixture);
+  CHECK(jak1_result);
+  CHECK(jak1_result.value().objects[0].unique_name == "plat");
+
+  jak1_checked_dgo::Options options;
+  options.game_version = GameVersion::Jak2;
+  const auto jak2_result = jak1_checked_dgo::read(fixture, {}, options);
+  CHECK(jak2_result);
+  CHECK(jak2_result.value().objects[0].unique_name == "plat-ag");
+  return true;
+}
+
 bool rejects_ambiguous_duplicate_names() {
   const auto fixture =
       make_raw_dgo("DUP.DGO", {{"same", {1, 2}}, {"same", {3, 4}}, {"same", {5, 6}}});
@@ -228,6 +250,16 @@ bool rejects_malformed_art_group_marker_and_reserved_name() {
   result = jak1_checked_dgo::read(fixture);
   CHECK(!result);
   CHECK(result.error().code == ErrorCode::invalid_name);
+
+  const std::string jak2_marker = "/src/jak2/final/art-group7/other-ag.go";
+  data.assign(jak2_marker.begin(), jak2_marker.end());
+  data.push_back(0);
+  fixture = make_raw_dgo("ART.DGO", {{"plat", data}});
+  jak1_checked_dgo::Options jak2_options;
+  jak2_options.game_version = GameVersion::Jak2;
+  result = jak1_checked_dgo::read(fixture, {}, jak2_options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::invalid_art_group_marker);
   return true;
 }
 
@@ -309,6 +341,44 @@ bool enforces_compressed_limits_and_rejects_corruption() {
   result = jak1_checked_dgo::read(compressed, {}, options);
   CHECK(!result);
   CHECK(result.error().code == ErrorCode::compressed_padding_limit_exceeded);
+
+  compressed = make_blzo(raw);
+  constexpr std::size_t kJak2NtscV2ArchiveAlignment = 0x40000;
+  const auto aligned_trailing =
+      kJak2NtscV2ArchiveAlignment - compressed.size() % kJak2NtscV2ArchiveAlignment;
+  CHECK(aligned_trailing < kJak2NtscV2ArchiveAlignment);
+  compressed.resize(compressed.size() + aligned_trailing, 0);
+  options = {};
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::compressed_padding_limit_exceeded);
+
+  options.game_version = GameVersion::Jak2;
+  options.compressed_trailing_alignment_bytes = kJak2NtscV2ArchiveAlignment;
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(result);
+
+  compressed.resize(compressed.size() + kJak2NtscV2ArchiveAlignment, 0);
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::compressed_padding_limit_exceeded);
+  compressed.resize(compressed.size() - kJak2NtscV2ArchiveAlignment);
+
+  compressed.push_back(0);
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::compressed_padding_limit_exceeded);
+
+  compressed.pop_back();
+  compressed.back() = 1;
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::trailing_data);
+
+  options.compressed_trailing_alignment_bytes = 0;
+  result = jak1_checked_dgo::read(compressed, {}, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::invalid_argument);
   return true;
 }
 
@@ -321,6 +391,31 @@ bool cancellation_is_recoverable() {
   CHECK(!result);
   CHECK(result.error().code == ErrorCode::cancelled);
   CHECK(result.error().object_index == 0);
+  return true;
+}
+
+bool callback_failures_and_input_identity_are_typed() {
+  const auto fixture = make_raw_dgo("BOUND.DGO", {{"one", {1, 2, 3}}});
+  jak1_checked_dgo::Options options;
+  options.should_cancel = []() -> bool { throw std::runtime_error("boom"); };
+  auto result = jak1_checked_dgo::read(fixture, "BOUND.DGO", options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::callback_failed);
+
+  options.should_cancel = []() -> bool { throw 7; };
+  result = jak1_checked_dgo::read(fixture, "BOUND.DGO", options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::callback_failed);
+
+  options = {};
+  CHECK(!options.expected_input);
+  options.expected_input = checked_file_identity::Identity{
+      "DGO/BOUND.DGO", fixture.size(), XXH64(fixture.data(), fixture.size(), 0)};
+  CHECK(jak1_checked_dgo::read(fixture, "BOUND.DGO", options));
+  ++options.expected_input->xxh64;
+  result = jak1_checked_dgo::read(fixture, "BOUND.DGO", options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::input_identity_mismatch);
   return true;
 }
 
@@ -367,6 +462,8 @@ bool bounded_file_adapter() {
 
 bool error_names_are_stable() {
   CHECK(std::string(jak1_checked_dgo::error_code_name(ErrorCode::cancelled)) == "cancelled");
+  CHECK(std::string(jak1_checked_dgo::error_code_name(ErrorCode::callback_failed)) ==
+        "callback_failed");
   CHECK(std::string(jak1_checked_dgo::error_code_name(ErrorCode::decompression_failed)) ==
         "decompression_failed");
   return true;
@@ -378,6 +475,8 @@ int main() {
   const std::vector<std::pair<const char*, bool (*)()>> tests = {
       {"valid_raw_preserves_order_and_names", valid_raw_preserves_order_and_names},
       {"derives_art_group_and_duplicate_names", derives_art_group_and_duplicate_names},
+      {"derives_jak2_art_group_names_without_changing_the_default",
+       derives_jak2_art_group_names_without_changing_the_default},
       {"rejects_ambiguous_duplicate_names", rejects_ambiguous_duplicate_names},
       {"valid_compressed_fixture", valid_compressed_fixture},
       {"valid_compressed_raw_chunk_fixture", valid_compressed_raw_chunk_fixture},
@@ -389,6 +488,8 @@ int main() {
       {"enforces_compressed_limits_and_rejects_corruption",
        enforces_compressed_limits_and_rejects_corruption},
       {"cancellation_is_recoverable", cancellation_is_recoverable},
+      {"callback_failures_and_input_identity_are_typed",
+       callback_failures_and_input_identity_are_typed},
       {"bounded_file_adapter", bounded_file_adapter},
       {"error_names_are_stable", error_names_are_stable},
   };

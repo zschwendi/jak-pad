@@ -6,6 +6,7 @@
 
 #include "common/common_types.h"
 #include "common/dma/dma.h"
+#include "common/math/ps2_vu_float.h"
 #include "common/util/Assert.h"
 #include "common/util/BitUtils.h"
 
@@ -1023,7 +1024,7 @@ struct ExecutionContext {
   }
 
   void vdiv(int src0, BC bc0, int src1, BC bc1) {
-    Q = vf_src(src0).f[(int)bc0] / vf_src(src1).f[(int)bc1];
+    Q = ps2_vu_div_q(vf_src(src0).f[(int)bc0], vf_src(src1).f[(int)bc1]);
   }
 
   void vrsqrt(int src0, BC bc0, int src1, BC bc1) {

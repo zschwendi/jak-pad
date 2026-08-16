@@ -7,6 +7,127 @@
 
 ;; DECOMP BEGINS
 
+(defenum pc-scene-wait-gate
+  :type int32
+  :bitfield #f
+  (none 0)
+  (progress 1)
+  (target-grab 2)
+  (setting-or-entry-gui 3)
+  (ground-time 4)
+  (levels 5)
+  (art-file 6)
+  (art-gui 7)
+  (ready 8)
+  )
+
+(define *pc-scene-wait-gate* (pc-scene-wait-gate none))
+(define *pc-scene-wait-entry-gui-id* (the-as sound-id 0))
+(define *pc-scene-wait-entry-gui-status* (gui-status unknown))
+(define *pc-scene-wait-art-file-status* (the-as symbol #f))
+(define *pc-scene-wait-art-gui-id* (the-as sound-id 0))
+(define *pc-scene-wait-art-gui-channel* (gui-channel none))
+(define *pc-scene-wait-art-gui-action* (gui-action none))
+(define *pc-scene-wait-art-gui-status* (gui-status unknown))
+
+(defconstant PC_SCENE_ACTOR_DIAGNOSTIC_MAX 8)
+(defconstant PC_SCENE_ACTOR_DIAGNOSTIC_FIELDS 4)
+(defconstant PC_SCENE_ACTOR_DIAGNOSTIC_CAPACITY 32)
+(defconstant PC_SCENE_ACTOR_FLAGS 0)
+(defconstant PC_SCENE_ACTOR_LEVEL_INDEX 1)
+(defconstant PC_SCENE_ACTOR_SKELETON_STATUS 2)
+(defconstant PC_SCENE_ACTOR_MERC_JOINT_COUNT 3)
+
+(defenum pc-scene-actor-diagnostic-flag
+  :type uint32
+  :bitfield #t
+  (spawn-attempted 0)
+  (pool-allocated 1)
+  (draw-control 2)
+  (joint-control 3)
+  (merc-geometry 4)
+  )
+
+(define *pc-scene-actor-sequence* 0)
+(define *pc-scene-actor-scene-name* (the-as string #f))
+(define *pc-scene-actor-count* 0)
+(define *pc-scene-actor-total-count* 0)
+(define *pc-scene-actor-current-index* -1)
+(define *pc-scene-actor-data* (new 'global 'boxed-array uint32 PC_SCENE_ACTOR_DIAGNOSTIC_CAPACITY))
+
+(defun pc-scene-actor-diagnostic-slot ((index int) (field int))
+  (+ (* index PC_SCENE_ACTOR_DIAGNOSTIC_FIELDS) field)
+  )
+
+(defun pc-scene-actor-diagnostic-index? ((index int))
+  (and (>= index 0) (< index *pc-scene-actor-count*))
+  )
+
+(defun pc-scene-actor-note ((index int) (flag pc-scene-actor-diagnostic-flag))
+  (when (pc-scene-actor-diagnostic-index? index)
+    (let ((slot (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_FLAGS)))
+      (set! (-> *pc-scene-actor-data* slot)
+            (logior (-> *pc-scene-actor-data* slot) (the-as uint flag))
+            )
+      )
+    )
+  (none)
+  )
+
+(defun pc-scene-actor-note-process ((index int) (proc process-drawable))
+  (when (and (pc-scene-actor-diagnostic-index? index) proc)
+    (let ((draw (-> proc draw))
+          (skel (-> proc skel))
+          )
+      (when draw
+        (pc-scene-actor-note index (pc-scene-actor-diagnostic-flag draw-control))
+        (set! (-> *pc-scene-actor-data*
+                   (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_LEVEL_INDEX))
+              (the-as uint (-> draw level-index))
+              )
+        (when (-> draw mgeo)
+          (pc-scene-actor-note index (pc-scene-actor-diagnostic-flag merc-geometry))
+          (set! (-> *pc-scene-actor-data*
+                     (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_MERC_JOINT_COUNT))
+                (the-as uint (-> draw mgeo num-joints))
+                )
+          )
+        )
+      (when skel
+        (pc-scene-actor-note index (pc-scene-actor-diagnostic-flag joint-control))
+        (set! (-> *pc-scene-actor-data*
+                   (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_SKELETON_STATUS))
+              (the-as uint (-> skel status))
+              )
+        )
+      )
+    )
+  (none)
+  )
+
+(defun pc-scene-actor-diagnostics-reset ((current-scene scene))
+  (+! *pc-scene-actor-sequence* 1)
+  (set! *pc-scene-actor-scene-name* (-> current-scene anim))
+  (set! *pc-scene-actor-total-count* (-> current-scene actor length))
+  (set! *pc-scene-actor-count*
+        (if (< *pc-scene-actor-total-count* PC_SCENE_ACTOR_DIAGNOSTIC_MAX)
+            *pc-scene-actor-total-count*
+            PC_SCENE_ACTOR_DIAGNOSTIC_MAX
+            )
+        )
+  (set! *pc-scene-actor-current-index* -1)
+  (dotimes (slot PC_SCENE_ACTOR_DIAGNOSTIC_CAPACITY)
+    (set! (-> *pc-scene-actor-data* slot) 0)
+    )
+  (dotimes (index PC_SCENE_ACTOR_DIAGNOSTIC_MAX)
+    (set! (-> *pc-scene-actor-data*
+               (pc-scene-actor-diagnostic-slot index PC_SCENE_ACTOR_LEVEL_INDEX))
+          #xffffffff
+          )
+    )
+  (none)
+  )
+
 (deftype scene-stage (process-hidden)
   ()
   )
@@ -89,6 +210,10 @@
                 (let ((sv-96 (get-process *default-dead-pool* manipy #x4000)))
                   (set! s4-0
                         (when sv-96
+                          (pc-scene-actor-note
+                            *pc-scene-actor-current-index*
+                            (pc-scene-actor-diagnostic-flag pool-allocated)
+                            )
                           ((method-of-type manipy activate) (the-as manipy sv-96) arg0 (-> this name) (the-as pointer #x70004000))
                           (run-now-in-process
                             sv-96
@@ -101,6 +226,10 @@
                                 1
                                 0
                                 )
+                            )
+                          (pc-scene-actor-note-process
+                            *pc-scene-actor-current-index*
+                            (the-as process-drawable sv-96)
                             )
                           (-> sv-96 ppointer)
                           )
@@ -289,9 +418,17 @@
       (cond
         (v1-11
           (if (not (handle->process (-> s3-0 process)))
-              (set! (-> s3-0 process) (ppointer->handle (scene-actor-method-9 s3-0 this)))
+              (begin
+                (pc-scene-actor-note s4-0 (pc-scene-actor-diagnostic-flag spawn-attempted))
+                (set! *pc-scene-actor-current-index* s4-0)
+                (set! (-> s3-0 process) (ppointer->handle (scene-actor-method-9 s3-0 this)))
+                (set! *pc-scene-actor-current-index* -1)
+                )
               )
           (let ((s2-1 (handle->process (-> s3-0 process))))
+            (when s2-1
+              (pc-scene-actor-note-process s4-0 (the-as process-drawable s2-1))
+              )
             (when (and s2-1 (nonzero? (-> (the-as process-drawable s2-1) draw)))
               (let* ((s3-1 (-> s3-0 scissor-frames))
                      (s1-1 (car s3-1))
@@ -397,6 +534,7 @@
 
 (defmethod scene-player-method-23 ((this scene-player) (arg0 string) (arg1 symbol))
   (let ((gp-0 (scene-player-method-24 this arg0 #t)))
+    (pc-scene-actor-diagnostics-reset gp-0)
     (when (-> gp-0 peaceful)
       (let ((s3-0 *traffic-manager*))
         (send-event s3-0 'decrease-alert-level 0)
@@ -824,6 +962,14 @@
 (defstate wait (scene-player)
   :virtual #t
   :enter (behavior ((arg0 symbol))
+    (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
+    (set! *pc-scene-wait-entry-gui-id* (the-as sound-id 0))
+    (set! *pc-scene-wait-entry-gui-status* (gui-status unknown))
+    (set! *pc-scene-wait-art-file-status* (the-as symbol #f))
+    (set! *pc-scene-wait-art-gui-id* (the-as sound-id 0))
+    (set! *pc-scene-wait-art-gui-channel* (gui-channel none))
+    (set! *pc-scene-wait-art-gui-action* (gui-action none))
+    (set! *pc-scene-wait-art-gui-status* (gui-status unknown))
     (set-time! (-> self state-time))
     (when (or (-> self scene) (-> self preload-continue))
       (let ((gp-0 (scene-decode-continue (the-as basic (if (-> self scene)
@@ -884,9 +1030,11 @@
   :code (behavior ((arg0 symbol))
     (local-vars (v1-18 symbol) (v1-118 symbol))
     (when (and (-> self scene) (zero? (-> self scene wait-max-time)))
+      (set! *pc-scene-wait-gate* (pc-scene-wait-gate progress))
       (while *progress-process*
         (suspend)
         )
+      (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
       (set-setting! 'allow-progress #f 0.0 0)
       (set-setting! 'bg-a-force 'abs 1.0 0)
       (apply-settings *setting-control*)
@@ -920,11 +1068,13 @@
     (suspend)
     (let ((s5-0 (current-time)))
       (when (and *target* (not (logtest? (-> *target* focus-status) (focus-status grabbed))))
+        (set! *pc-scene-wait-gate* (pc-scene-wait-gate target-grab))
         (label cfg-44)
         (when (not (process-grab? *target* #f))
           (suspend)
           (goto cfg-44)
           )
+        (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
         )
       (process-entity-status! self (entity-perm-status no-kill) #t)
       ;; og:preserve-this
@@ -935,6 +1085,7 @@
                         (or (-> *setting-control* user-current talking)
                             (-> *setting-control* user-current hint)
                             (-> *setting-control* user-current ambient)))))
+        (set! *pc-scene-wait-gate* (pc-scene-wait-gate setting-or-entry-gui))
         (set-setting! 'allow-progress #f 0.0 0)
         (apply-settings *setting-control*)
         (dotimes (s4-0 2)
@@ -950,20 +1101,29 @@
                               (!= (-> *setting-control* user-current movie) (process->ppointer self))
                               )
                          *progress-process*
-                         (!= (get-status *gui-control* (-> self gui-id)) 3)
+                         (!= (begin
+                               (set! *pc-scene-wait-entry-gui-id* (-> self gui-id))
+                               (set! *pc-scene-wait-entry-gui-status*
+                                     (get-status *gui-control* (-> self gui-id)))
+                               *pc-scene-wait-entry-gui-status*)
+                             (gui-status active))
                          )
                      )
+            (set! *pc-scene-wait-gate* (pc-scene-wait-gate setting-or-entry-gui))
             (suspend)
             )
           )
+        (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
         (when arg0
           (while (and (-> self scene) (not (or (time-elapsed? s5-0 (-> self scene wait-ground-time))
                                                (time-elapsed? (-> self state-time) (-> self scene wait-max-time))
                                                )
                                            )
                       )
+            (set! *pc-scene-wait-gate* (pc-scene-wait-gate ground-time))
             (suspend)
             )
+          (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
           )
         (remove-setting! 'movie)
         (remove-setting! 'sound-bank-load)
@@ -995,9 +1155,11 @@
                    (label cfg-109)
                    v1-118
                    )
+            (set! *pc-scene-wait-gate* (pc-scene-wait-gate levels))
             (set-blackout-frames (seconds 0.1))
             (suspend)
             )
+          (set! *pc-scene-wait-gate* (pc-scene-wait-gate none))
           (when (and (zero? s5-1) (< (-> self scene-index) (-> self scene-list length)))
             (scene-player-method-24 self (-> self scene-list (-> self scene-index)) #t)
             (when (-> self scene)
@@ -1016,25 +1178,55 @@
       (while (and (-> self scene)
                   (nonzero? (-> self anim anim-name))
                   (let ((v1-161 (file-status *art-control* (-> self anim name) 0)))
-                    (or (not (or (= v1-161 'active) (= v1-161 'locked)))
-                        (let* ((a1-26 (lookup-gui-connection-id
-                                        *gui-control*
-                                        (the-as string (-> self anim anim-name))
-                                        (gui-channel none)
-                                        (gui-action none)
+                    (set! *pc-scene-wait-art-file-status* v1-161)
+                    (let ((file-ready? (or (= v1-161 'active) (= v1-161 'locked))))
+                      (if (not file-ready?)
+                          (begin
+                            (set! *pc-scene-wait-gate* (pc-scene-wait-gate art-file))
+                            #t
+                            )
+                          (let* ((a1-26 (lookup-gui-connection-id
+                                          *gui-control*
+                                          (the-as string (-> self anim anim-name))
+                                          (gui-channel none)
+                                          (gui-action none)
+                                          )
                                         )
-                                      )
-                               (v1-167 (get-status *gui-control* a1-26))
-                               )
-                          (not (or (= v1-167 (gui-status ready)) (= v1-167 (gui-status active))))
+                                 (v1-167 (get-status *gui-control* a1-26))
+                                 (connection (lookup-gui-connection
+                                               *gui-control*
+                                               (the-as process #f)
+                                               (gui-channel none)
+                                               (the-as string (-> self anim anim-name))
+                                               a1-26
+                                               )
+                                             )
+                                 (gui-ready? (or (= v1-167 (gui-status ready))
+                                                 (= v1-167 (gui-status active))))
+                                 )
+                            (set! *pc-scene-wait-art-gui-id* a1-26)
+                            (set! *pc-scene-wait-art-gui-channel*
+                                  (if connection (-> connection channel) (gui-channel none)))
+                            (set! *pc-scene-wait-art-gui-action*
+                                  (if connection (-> connection action) (gui-action none)))
+                            (set! *pc-scene-wait-art-gui-status* v1-167)
+                            (if (not gui-ready?)
+                                (begin
+                                  (set! *pc-scene-wait-gate* (pc-scene-wait-gate art-gui))
+                                  #t
+                                  )
+                                #f
+                                )
+                            )
                           )
-                        )
+                      )
                     )
                   )
         (set-blackout-frames (seconds 0.1))
         (suspend)
         )
       )
+    (set! *pc-scene-wait-gate* (pc-scene-wait-gate ready))
     (go-virtual play-anim)
     )
   )

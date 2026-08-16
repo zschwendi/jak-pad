@@ -43,6 +43,10 @@ u64 metal_texture_register(id<MTLTexture> tex);
 // Returns nil if the handle is unknown.
 id<MTLTexture> metal_texture_lookup(u64 handle);
 
+// Atomically replaces the texture behind an existing handle. The caller owns
+// any TexturePool dimension bookkeeping associated with the handle.
+bool metal_texture_replace(u64 handle, id<MTLTexture> replacement);
+
 // Drops the registry's reference (the Metal analog of glDeleteTextures).
 void metal_texture_release(u64 handle);
 
@@ -58,6 +62,15 @@ u64 metal_upload_texture_rgba8(id<MTLDevice> device,
                                const u8* data,
                                u32 w,
                                u32 h);
+
+// Builds a complete replacement for an existing registry texture, then swaps it
+// atomically behind the same handle. The dimensions and RGBA8 format must match
+// exactly; failure leaves the prior registered texture unchanged.
+bool metal_update_texture_rgba8(u64 handle,
+                                id<MTLCommandQueue> queue,
+                                const u8* data,
+                                u32 w,
+                                u32 h);
 
 // Mirror of the GL loader's add_texture: upload, then give to the pool if the
 // texture is flagged for it. Returns the registry handle.

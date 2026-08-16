@@ -6,15 +6,18 @@
  * (game/graphics/opengl_renderer/background/Shrub.cpp). Objective-C++ only.
  *
  * Shrub is the small instanced vegetation and clutter: bushes, grass tufts,
- * flowers. It is the simplest of the three background renderers - the chain
- * carries only the PC port control block, and the GL renderer does no culling
- * at all (every draw of every tree is issued), so this port does the same.
+ * flowers. It is the simplest of the three background renderers. Jak 1's chain
+ * carries only the PC port control block, and the GL renderer does no geometric
+ * culling (every visible-prototype draw of every tree is issued), so this port
+ * does the same.
  *
  * The one shrub-specific piece is the shader: shrub vertices carry a base
  * vertex color that is multiplied with the time-of-day palette color, and their
  * texture coordinates are stored scaled by 4096.
  *
- * Not ported: per-proto visibility toggles (Jak 2/3 only).
+ * Jak 2's normal shrub buckets append one PC_PORT transfer containing the
+ * NUL-terminated names of hidden prototypes. Those names are applied to the
+ * per-draw proto index before any GPU work is submitted.
  */
 
 #include <string>
@@ -44,12 +47,16 @@ class MetalShrub : public MetalBucketRenderer {
  private:
   bool setup_for_level(const std::string& level);
   void update_load(MetalLevelData* level_data);
+  bool configure_proto_visibility(const std::vector<std::string>& hidden_names,
+                                  MetalBackgroundState* background);
   void render_tree(int idx, MetalSharedRenderState* render_state, MetalFrameContext& ctx);
 
   struct Tree {
     MetalLevelData::TreeBuffers* buffers = nullptr;
     const std::vector<tfrag3::ShrubDraw>* draws = nullptr;
     const tfrag3::PackedTimeOfDay* colors = nullptr;
+    const std::vector<std::string>* proto_names = nullptr;
+    std::vector<bool> proto_visible;
   };
 
   MetalTfragPcPortData m_pc_port_data;
@@ -64,5 +71,6 @@ class MetalShrub : public MetalBucketRenderer {
   std::vector<std::pair<u32, u32>> m_draw_runs;
   std::vector<MetalDrawRun> m_runs;
   Stats m_stats;
+  bool m_apply_proto_visibility = false;
   bool m_warned_missing_level = false;
 };

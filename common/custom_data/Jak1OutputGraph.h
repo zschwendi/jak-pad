@@ -14,8 +14,15 @@
 
 namespace jak1_output_graph {
 
-inline constexpr std::array<std::uint8_t, 8> kMagic = {'J', '1', 'G', 'R', 'A', 'P', 'H', 0};
+inline constexpr std::array<std::uint8_t, 8> kJak1Magic = {'J', '1', 'G', 'R', 'A', 'P', 'H', 0};
+inline constexpr std::array<std::uint8_t, 8> kJak2Magic = {'J', '2', 'G', 'R', 'A', 'P', 'H', 0};
+inline constexpr auto kMagic = kJak1Magic;
 inline constexpr std::uint32_t kSchemaVersion = 1;
+
+enum class WireGame : std::uint8_t {
+  jak1 = 1,
+  jak2 = 2,
+};
 
 enum class ObjectProducerKind : std::uint8_t {
   bundled_source = 1,
@@ -84,6 +91,7 @@ struct Limits {
 
 struct Options {
   Limits limits;
+  WireGame wire_game = WireGame::jak1;
   CancelCallback should_cancel;
 };
 

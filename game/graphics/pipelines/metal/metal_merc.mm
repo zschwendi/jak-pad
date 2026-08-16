@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstring>
 
 #include "common/goal_constants.h"
 #include "common/log/log.h"
@@ -9,14 +10,15 @@
 #include "common/util/fnv.h"
 
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
+#include "game/graphics/pipelines/metal/metal_jak2_merc_dma.h"
+#include "game/graphics/pipelines/metal/metal_level_data.h"
+#include "game/graphics/pipelines/metal/metal_merc_dma_dialect.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/mips2c/jak1_bones_provenance_trace.h"
 
 #include "fmt/format.h"
 
 namespace {
-
-constexpr float kGameHeightJak1 = 448.f;
 
 metal_merc_transform_trace::ProvenanceObservation make_bones_provenance_observation(
     u32 source_address,
@@ -391,9 +393,62 @@ void blerc_vertices(const u32* i_data,
 
 }  // namespace
 
+void MetalMerc2::Stats::record_model_packet(u64 model_name_hash, bool missing) {
+  for (std::size_t i = 0; i < model_diagnostic_count; ++i) {
+    auto& diagnostic = model_diagnostics[i];
+    if (diagnostic.model_name_hash == model_name_hash) {
+      diagnostic.packets++;
+      diagnostic.missing_models += missing ? 1 : 0;
+      return;
+    }
+  }
+  if (model_diagnostic_count == model_diagnostics.size()) {
+    model_diagnostic_overflow_packets++;
+    return;
+  }
+  auto& diagnostic = model_diagnostics[model_diagnostic_count++];
+  diagnostic.model_name_hash = model_name_hash;
+  diagnostic.packets = 1;
+  diagnostic.missing_models = missing ? 1 : 0;
+}
+
+void MetalMerc2::Stats::record_model_draw(u64 model_name_hash, u64 draw_triangles) {
+  for (std::size_t i = 0; i < model_diagnostic_count; ++i) {
+    auto& diagnostic = model_diagnostics[i];
+    if (diagnostic.model_name_hash == model_name_hash) {
+      diagnostic.draws++;
+      diagnostic.triangles += draw_triangles;
+      return;
+    }
+  }
+}
+
 void MetalMerc2::Stats::add(const Stats& o) {
   models += o.models;
   missing_models += o.missing_models;
+  for (std::size_t i = 0; i < o.model_diagnostic_count; ++i) {
+    const auto& source = o.model_diagnostics[i];
+    metal_renderer::MercModelDiagnostic* destination = nullptr;
+    for (std::size_t j = 0; j < model_diagnostic_count; ++j) {
+      if (model_diagnostics[j].model_name_hash == source.model_name_hash) {
+        destination = &model_diagnostics[j];
+        break;
+      }
+    }
+    if (!destination && model_diagnostic_count < model_diagnostics.size()) {
+      destination = &model_diagnostics[model_diagnostic_count++];
+      destination->model_name_hash = source.model_name_hash;
+    }
+    if (destination) {
+      destination->packets += source.packets;
+      destination->draws += source.draws;
+      destination->triangles += source.triangles;
+      destination->missing_models += source.missing_models;
+    } else {
+      model_diagnostic_overflow_packets += source.packets;
+    }
+  }
+  model_diagnostic_overflow_packets += o.model_diagnostic_overflow_packets;
   effects += o.effects;
   draws += o.draws;
   triangles += o.triangles;
@@ -402,8 +457,24 @@ void MetalMerc2::Stats::add(const Stats& o) {
   lights += o.lights;
   mod_vtx_uploads += o.mod_vtx_uploads;
   mod_vtx_skipped += o.mod_vtx_skipped;
+  anim_slot_draws += o.anim_slot_draws;
+  anim_slot_placeholder_draws += o.anim_slot_placeholder_draws;
+  for (std::size_t i = 0; i < anim_slot_draws_by_slot.size(); ++i) {
+    anim_slot_draws_by_slot[i] += o.anim_slot_draws_by_slot[i];
+    anim_slot_placeholder_draws_by_slot[i] += o.anim_slot_placeholder_draws_by_slot[i];
+    if (!anim_slot_first_model_hashes[i] && o.anim_slot_first_model_hashes[i]) {
+      anim_slot_first_model_hashes[i] = o.anim_slot_first_model_hashes[i];
+    }
+  }
   eye_draws += o.eye_draws;
+  eye_renderer_missing += o.eye_renderer_missing;
+  eye_lookup_failed += o.eye_lookup_failed;
+  eye_placeholder_draws += o.eye_placeholder_draws;
   missing_textures += o.missing_textures;
+  malformed_dma += o.malformed_dma;
+  if (preflight_rejection_reason == 0 && o.preflight_rejection_reason != 0) {
+    preflight_rejection_reason = o.preflight_rejection_reason;
+  }
   bad_bone_pointers += o.bad_bone_pointers;
   bad_draw_ranges += o.bad_draw_ranges;
   missing_bone_slots += o.missing_bone_slots;
@@ -485,6 +556,36 @@ void MetalMerc2::render(DmaFollower& dma,
                         MetalFrameContext& ctx,
                         Stats* stats) {
   *stats = {};
+  if (render_state->version == GameVersion::Jak2) {
+    auto preflight = metal_jak2_merc_dma::preflight_bucket(
+        &dma, render_state->dma_copy_base, render_state->dma_copy_size,
+        dma.current_tag_offset(), render_state->next_bucket, EE_MAIN_MEM_SIZE,
+        &stats->malformed_dma,
+        [](const metal_jak2_merc_dma::ModelPacket& packet, std::string* error) {
+          const auto model = metal_merc_models().get_merc_model(packet.name.c_str());
+          if (model && packet.effect_count != model->model->effects.size()) {
+            *error = "the packet effect count to match its loaded Merc model";
+            return false;
+          }
+          return true;
+        });
+    // Only this decision can enter the DMA handlers or publish queued draws.
+    // Empty and malformed buckets recover to the boundary inside preflight.
+    if (!preflight.should_render()) {
+      if (preflight.action == metal_jak2_merc_dma::PreflightAction::SkipMalformed) {
+        stats->preflight_rejection_reason = static_cast<u32>(preflight.rejection_reason);
+        if (!m_warned_malformed_dma) {
+          lg::warn("Metal Jak 2 merc: expected {}; the bucket is skipped (logged once)",
+                   preflight.error);
+          m_warned_malformed_dma = true;
+        }
+      }
+      if (!preflight.recovered) {
+        lg::error("Metal Jak 2 merc: cannot recover to an out-of-range bucket boundary");
+      }
+      return;
+    }
+  }
   handle_all_dma(dma, render_state, ctx, stats);
   flush_draw_buckets(render_state, ctx, stats);
 }
@@ -572,9 +673,9 @@ void MetalMerc2::handle_setup_dma(DmaFollower& dma, MetalSharedRenderState* rend
     ASSERT(mscal.immediate == 0);
   }
 
-  ASSERT(render_state->version == GameVersion::Jak1);
   auto second = dma.read_and_advance();
-  ASSERT(second.size_bytes == 32);  // setting up test register.
+  ASSERT(second.size_bytes ==
+         metal_merc_dma::dialect(render_state->version).gs_setup_bytes);  // test/zbuf registers
   auto nothing = dma.read_and_advance();
   ASSERT(nothing.size_bytes == 0);
   ASSERT(nothing.vif0() == 0);
@@ -597,7 +698,7 @@ void MetalMerc2::handle_merc_chain(DmaFollower& dma,
   }
 
   auto init = dma.read_and_advance();
-  const int skip_count = 2;  // Jak 1
+  const int skip_count = metal_merc_dma::dialect(render_state->version).model_patch_count;
 
   while (init.vifcode1().kind == VifCode::Kind::PC_PORT) {
     handle_pc_model(init, render_state, ctx, stats);
@@ -883,12 +984,16 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   //  ;; fades    (u32 x N), padding to qw aligned
   //  ;; pointers (u32 x N), padding
   const u8* input_data = setup.data;
-  ASSERT(strlen((const char*)input_data) < 127);
-  char name[128];
-  strcpy(name, (const char*)setup.data);
+  const auto* name_end = static_cast<const u8*>(std::memchr(input_data, 0, 128));
+  ASSERT(name_end);
+  ASSERT(render_state->version != GameVersion::Jak1 || name_end - input_data < 127);
+  char name[128] = {};
+  memcpy(name, input_data, static_cast<size_t>(name_end - input_data));
   input_data += 128;
 
   auto model_ref = metal_merc_models().get_merc_model(name);
+  const u64 model_name_hash = fnv64(std::string(name));
+  stats->record_model_packet(model_name_hash, !model_ref);
   if (!model_ref) {
     // the level holding this model is not loaded: don't draw, and say so.
     stats->missing_models++;
@@ -963,9 +1068,12 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   input_data += sizeof(VuLights);
 
   u64 uses_water = 0;
-  // jak 1 figures out water at runtime
-  memcpy(&uses_water, input_data, 8);
-  input_data += 16;
+  const auto dialect = metal_merc_dma::dialect(render_state->version);
+  if (dialect.water_slot_bytes) {
+    // Jak 1 figures out water at runtime. Jak 2 omits this quadword.
+    memcpy(&uses_water, input_data, 8);
+    input_data += dialect.water_slot_bytes;
+  }
 
   // The matrix slot string tells us which bones go where; the matrices
   // themselves live in EE main memory (bones runs after merc's DMA is built).
@@ -1364,6 +1472,7 @@ void MetalMerc2::handle_pc_model(const DmaTransfer& setup,
   args.lights = lights;
   args.first_bone = first_bone;
   args.skin_profile = nullptr;
+  args.model_name_hash = fnv64(model->name);
   args.trace_source_base = expected_source_base;
   args.trace_source_base_valid = expected_source_base_valid;
   args.trace_packet_palette_hash = eichar_packet_palette_hash;
@@ -1482,6 +1591,7 @@ MetalMerc2::Draw* MetalMerc2::alloc_normal_draw(const tfrag3::MercDraw& mdraw,
   draw->flags = 0;
   draw->mod_vtx = {};
   draw->skin_profile = args.skin_profile;
+  draw->model_name_hash = args.model_name_hash;
   draw->trace_source_base = args.trace_source_base;
   draw->trace_source_base_valid = args.trace_source_base_valid;
   draw->trace_packet_palette_hash = args.trace_packet_palette_hash;
@@ -1531,6 +1641,7 @@ MetalMerc2::Draw* MetalMerc2::try_alloc_envmap_draw(const tfrag3::MercDraw& mdra
   draw->flags = 0;
   draw->mod_vtx = {};
   draw->skin_profile = args.skin_profile;
+  draw->model_name_hash = args.model_name_hash;
   draw->trace_source_base = args.trace_source_base;
   draw->trace_source_base_valid = args.trace_source_base_valid;
   draw->trace_packet_palette_hash = args.trace_packet_palette_hash;
@@ -1654,16 +1765,50 @@ void MetalMerc2::do_draws(const Draw* draw_array,
         if (maybe_eye) {
           tex = metal_texture_lookup(*maybe_eye);
         }
+        if (!tex) {
+          stats->eye_lookup_failed++;
+        }
+      } else {
+        stats->eye_renderer_missing++;
       }
       if (!tex && !m_warned_eyes) {
         lg::warn("Metal merc: no eye texture for draw {}; using the placeholder (logged once)",
                  draw.texture & 0xff);
         m_warned_eyes = true;
       }
+    } else if (draw.texture < 0) {
+      stats->anim_slot_draws++;
+      const s64 slot = -static_cast<s64>(draw.texture) - 1;
+      if (slot >= 0 && static_cast<std::size_t>(slot) < stats->anim_slot_draws_by_slot.size()) {
+        const std::size_t diagnostic_slot = static_cast<std::size_t>(slot);
+        stats->anim_slot_draws_by_slot[diagnostic_slot]++;
+        if (!stats->anim_slot_first_model_hashes[diagnostic_slot]) {
+          stats->anim_slot_first_model_hashes[diagnostic_slot] = draw.model_name_hash;
+        }
+      }
+      if (render_state->animated_texture_slots &&
+          static_cast<u64>(slot) < render_state->animated_texture_slot_count) {
+        const u64 handle = render_state->animated_texture_slots[slot];
+        if (handle) {
+          tex = metal_texture_lookup(handle);
+        }
+      }
+      if (!tex) {
+        stats->anim_slot_placeholder_draws++;
+        if (slot >= 0 &&
+            static_cast<std::size_t>(slot) < stats->anim_slot_placeholder_draws_by_slot.size()) {
+          stats->anim_slot_placeholder_draws_by_slot[static_cast<std::size_t>(slot)]++;
+        }
+        stats->missing_textures++;
+      }
     } else {
       stats->missing_textures++;
     }
     if (!tex) {
+      if ((draw.texture & 0xffffff00) == 0xefffff00) {
+        stats->eye_placeholder_draws++;
+        stats->missing_textures++;
+      }
       tex = metal_texture_lookup(placeholder);
     }
     ASSERT(tex);
@@ -1696,8 +1841,8 @@ void MetalMerc2::do_draws(const Draw* draw_array,
     for (int i = 0; i < 4; i++) {
       vs.fade[i] = draw.fade[i] / 255.f;
     }
-    vs.height_scale = 1.f;  // Jak 1
-    vs.scissor_adjust = 512.f / kGameHeightJak1;
+    vs.height_scale = metal_height_scale(render_state->version);
+    vs.scissor_adjust = metal_scissor_adjust(render_state->version);
     memcpy(vs.view_clip_from_game_clip, render_state->view_transform.clip_from_game_clip.data(),
            sizeof(vs.view_clip_from_game_clip));
 
@@ -1792,6 +1937,7 @@ void MetalMerc2::do_draws(const Draw* draw_array,
 
     stats->draws++;
     stats->triangles += draw.num_triangles;
+    stats->record_model_draw(draw.model_name_hash, draw.num_triangles);
     if (envmap) {
       stats->envmap_draws++;
     }

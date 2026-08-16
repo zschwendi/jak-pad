@@ -6,6 +6,7 @@
 #include "common/util/Assert.h"
 
 #include "game/sound/common/voice.h"
+#include "game/sound/sndshim.h"
 
 #include "fmt/format.h"
 
@@ -14,6 +15,14 @@ u8 spu_memory[0x15160 * 10];
 
 static sceSdTransIntrHandler trans_handler[2] = {nullptr, nullptr};
 static void* userdata[2] = {nullptr, nullptr};
+
+namespace {
+class AudioStateLock {
+ public:
+  AudioStateLock() { snd_LockVoiceAllocator(true); }
+  ~AudioStateLock() { snd_UnlockVoiceAllocator(); }
+};
+}  // namespace
 
 u32 sceSdGetSwitch(u32 entry) {
   // we can ignore this, only used for getting vmix
@@ -26,6 +35,7 @@ snd::Voice* voice_from_entry(u32 entry) {
 }
 
 u32 sceSdGetAddr(u32 entry) {
+  AudioStateLock lock;
   [[maybe_unused]] u32 core = entry & 1;
   [[maybe_unused]] u32 voice_id = (entry >> 1) & 0x1f;
 
@@ -42,6 +52,7 @@ u32 sceSdGetAddr(u32 entry) {
 }
 
 void sceSdSetSwitch(u32 entry, u32 value) {
+  AudioStateLock lock;
   u32 reg = entry & ~0x3f;
   u8 voice = 0;
   while (value) {
@@ -64,6 +75,7 @@ void sceSdSetSwitch(u32 entry, u32 value) {
 }
 
 void sceSdSetAddr(u32 entry, u32 value) {
+  AudioStateLock lock;
   [[maybe_unused]] u32 core = entry & 1;
   [[maybe_unused]] u32 voice_id = (entry >> 1) & 0x1f;
   auto* voice = voice_from_entry(voice_id);
@@ -87,6 +99,7 @@ void sceSdSetAddr(u32 entry, u32 value) {
 }
 
 void sceSdSetParam(u32 entry, u32 value) {
+  AudioStateLock lock;
   [[maybe_unused]] u32 core = entry & 1;
   [[maybe_unused]] u32 voice_id = (entry >> 1) & 0x1f;
 
@@ -123,7 +136,10 @@ void sceSdSetTransIntrHandler(s32 channel, sceSdTransIntrHandler handler, void* 
 }
 
 u32 sceSdVoiceTrans(s32 channel, s32 mode, const void* iop_addr, u32 spu_addr, u32 size) {
-  memcpy(&spu_memory[spu_addr], iop_addr, size);
+  {
+    AudioStateLock lock;
+    memcpy(&spu_memory[spu_addr], iop_addr, size);
+  }
   if (trans_handler[channel] != nullptr) {
     trans_handler[channel](channel, userdata[channel]);
   }

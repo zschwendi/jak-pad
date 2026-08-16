@@ -14,6 +14,7 @@
  */
 
 #include <array>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,16 @@ class TexturePool;
 struct MetalBackgroundState;
 // composes eye textures other renderers sample (metal_eye_renderer.h)
 class MetalEyeRenderer;
+
+namespace metal_renderer {
+struct Jak2PrisEyeTextureUploadPlan;
+struct Jak2CommonPrisTextureUploadPlan;
+struct Jak2GmercWarpBucket317Plan;
+struct Jak2ShadowBucket195Plan;
+class Jak2Shadow195FrameCapture;
+}
+
+using MetalHostBucketCallback = void (*)(void* context, u32 bucket_id);
 
 /*!
  * Per-frame bump allocator for dynamic vertex data. The GL renderers stream
@@ -96,6 +107,8 @@ struct MetalSharedRenderState {
   MetalBackgroundState* background = nullptr;
   // merc resolves its eye draws through this, like the GL renderer does
   MetalEyeRenderer* eye_renderer = nullptr;
+  const u8* dma_copy_base = nullptr;
+  std::size_t dma_copy_size = 0;
   const u8* ee_memory = nullptr;
   u32 offset_of_s7 = 0;
   u64 engine_frame_id = 0;
@@ -112,6 +125,19 @@ struct MetalSharedRenderState {
   // Selects the stream-independent mutable GPU resources for this frame. Ordinary drawable
   // frames rotate through three slots; borrowed/external frames use a dedicated fourth slot.
   size_t frame_resource_slot = kMetalExternalFrameResourceSlot;
+  const u64* animated_texture_slots = nullptr;
+  std::size_t animated_texture_slot_count = 0;
+  void* host_bucket_context = nullptr;
+  MetalHostBucketCallback host_bucket_callback = nullptr;
+  const metal_renderer::Jak2PrisEyeTextureUploadPlan* jak2_pris_eye_plans = nullptr;
+  std::size_t jak2_pris_eye_plan_count = 0;
+  const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;
+  const metal_renderer::Jak2GmercWarpBucket317Plan* jak2_gmerc_warp_bucket317_plan = nullptr;
+  const metal_renderer::Jak2ShadowBucket195Plan* jak2_shadow_bucket195_plan = nullptr;
+  metal_renderer::Jak2Shadow195FrameCapture* jak2_shadow195_frame_capture = nullptr;
+  u64 render_target_view_id = 0;
+  bool render_target_external = false;
+  float target_fps = 60.f;
 };
 
 /*!
@@ -140,6 +166,15 @@ struct MetalFrameContext {
   NSUInteger game_depth_slice = 0;
   // Full-target viewport for the selected attachments. Restored after a bucket splits the pass.
   MTLViewport game_viewport = {0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+  MTLScissorRect game_scissor = {0, 0, 0, 0};
+  bool game_scissor_valid = false;
+  bool game_scissor_explicit = false;
+  u32 color_load_action = 0;
+  u32 color_store_action = 0;
+  u32 depth_load_action = 0;
+  u32 depth_store_action = 0;
+  u32 stencil_load_action = 0;
+  u32 stencil_store_action = 0;
   // frame stats (mirror of the GL profiler counters the tests read)
   int draw_calls = 0;
   int triangles = 0;
@@ -198,10 +233,67 @@ class MetalSkipRenderer : public MetalBucketRenderer {
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
   u64 skipped_bytes() const { return m_skipped_bytes; }
+  u64 last_skipped_bytes() const { return m_last_skipped_bytes; }
+  void reset_last_skipped_bytes() { m_last_skipped_bytes = 0; }
 
  private:
   u64 m_skipped_bytes = 0;
+  u64 m_last_skipped_bytes = 0;
   bool m_warned = false;
+};
+
+/*!
+ * Drains a bucket whose side effects are completed synchronously by its host.
+ * A per-frame callback runs at this exact bucket boundary when one is supplied.
+ */
+class MetalHostHandledRenderer : public MetalBucketRenderer {
+ public:
+  MetalHostHandledRenderer(const std::string& name, int my_id)
+      : MetalBucketRenderer(name, my_id) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+};
+
+/*!
+ * Executes one prevalidated Jak II PRIS eye bucket. The host owns the ordinary texture upload at
+ * the exact bucket-entry callback; this renderer then consumes only the copied plan's fixed prefix,
+ * optional validated prison-Jak animator no-op, eye chunks, linkers, and terminal reset. The exact
+ * allowlist is the six per-level PRIS producers plus typed PRIS2 bucket 228.
+ */
+class MetalJak2PrisEyeBucketRenderer : public MetalBucketRenderer {
+ public:
+  MetalJak2PrisEyeBucketRenderer(const std::string& name, int my_id)
+      : MetalBucketRenderer(name, my_id) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+};
+
+/*! Executes the independently preflighted common bucket-220 Dark Jak and eye composite. */
+class MetalJak2CommonPrisBucketRenderer : public MetalBucketRenderer {
+ public:
+  MetalJak2CommonPrisBucketRenderer(const std::string& name, int my_id)
+      : MetalBucketRenderer(name, my_id) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+};
+
+/*!
+ * Copies a frame's per-level visibility strings and optional background
+ * fallback block into owned shared state. This bucket does not draw.
+ */
+class MetalVisibilityBucketRenderer : public MetalBucketRenderer {
+ public:
+  MetalVisibilityBucketRenderer(const std::string& name, int my_id, std::size_t level_count)
+      : MetalBucketRenderer(name, my_id), m_level_count(level_count) {}
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+
+ private:
+  std::size_t m_level_count = 0;
 };
 
 /*!

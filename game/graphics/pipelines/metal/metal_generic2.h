@@ -12,9 +12,9 @@
  * and sampler keys, and the vertex/index data goes into the frame's stream
  * buffer instead of a re-uploaded GL_STREAM_DRAW buffer.
  *
- * Jak 1 uses Mode::NORMAL for every generic bucket (OpenGLRenderer.cpp), so
- * that is what is ported; the LIGHTNING / WARP / PRIM modes and the Jak 2/3 DMA
- * layout are not.
+ * Mode::NORMAL is ported for Jak 1 and Jak 2. Jak 2 LIGHTNING and WARP are
+ * selected only by their exact host-gated routes. PRIM and the Jak 3 DMA layout
+ * are not ported.
  */
 
 #include <memory>
@@ -33,12 +33,15 @@ class MetalGeneric2 {
  public:
   struct Stats {
     int fragments = 0;
+    int continued_fragments = 0;
     int vertices = 0;
     int adgifs = 0;
     int draw_buckets = 0;
     int draw_calls = 0;
     int triangles = 0;
     int missing_textures = 0;
+    int placeholder_draws = 0;
+    int missing_warp_publications = 0;
     int unsupported_blends = 0;
     int unexpected_dma = 0;  // a bucket did not match: consumed and reported
     int overflow = 0;        // more data than the fixed buffers hold: reported
@@ -51,11 +54,20 @@ class MetalGeneric2 {
                 u32 num_adgif = 10000,
                 u32 num_buckets = 800);
 
-  // Mirror of Generic2::render_in_mode with Mode::NORMAL.
+  enum class Mode { NORMAL, LIGHTNING, WARP };
+
+  // Normal production entry point.
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx,
               Stats* stats);
+
+  // Mode-selecting seam. Production special modes are restricted to exact host-gated buckets.
+  void render_in_mode(DmaFollower& dma,
+                      MetalSharedRenderState* render_state,
+                      MetalFrameContext& ctx,
+                      Mode mode,
+                      Stats* stats);
 
   // Must match GenericVertexIn in shaders/generic.metal (and Generic2::Vertex).
   struct Vertex {
@@ -148,10 +160,12 @@ class MetalGeneric2 {
     u32 generation = 0;
   };
 
-  // --- DMA (mirror of Generic2_DMA.cpp, Jak 1 path) ---
+  // --- DMA (mirror of Generic2_DMA.cpp, NORMAL paths) ---
   bool check_for_end_of_generic_data(DmaFollower& dma, u32 next_bucket);
   bool handle_bucket_setup_dma(DmaFollower& dma, u32 next_bucket);
   void process_dma_jak1(DmaFollower& dma, u32 next_bucket);
+  void process_dma_jak2(DmaFollower& dma, u32 next_bucket);
+  void process_dma_lightning(DmaFollower& dma, u32 next_bucket);
   u32 handle_fragments_after_unpack_v4_32(const u8* data,
                                           u32 off,
                                           u32 first_unpack_bytes,
@@ -205,6 +219,7 @@ class MetalGeneric2 {
   bool alloc_vtx(u32 count);
 
   Stats* m_stats = nullptr;
+  Mode m_current_mode = Mode::NORMAL;
   std::unordered_map<std::string, bool> m_logged;
 };
 
@@ -215,14 +230,17 @@ class MetalGeneric2BucketRenderer : public MetalBucketRenderer {
  public:
   MetalGeneric2BucketRenderer(const std::string& name,
                               int my_id,
-                              std::shared_ptr<MetalGeneric2> generic)
-      : MetalBucketRenderer(name, my_id), m_generic(std::move(generic)) {}
+                              std::shared_ptr<MetalGeneric2> generic,
+                              MetalGeneric2::Mode mode = MetalGeneric2::Mode::NORMAL)
+      : MetalBucketRenderer(name, my_id), m_generic(std::move(generic)), m_mode(mode) {}
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
   const MetalGeneric2::Stats& stats() const { return m_stats; }
+  MetalGeneric2::Mode mode() const { return m_mode; }
 
  private:
   std::shared_ptr<MetalGeneric2> m_generic;
+  MetalGeneric2::Mode m_mode;
   MetalGeneric2::Stats m_stats;
 };

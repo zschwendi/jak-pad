@@ -17,27 +17,35 @@
 
 namespace decompiler {
 StrFileReader::StrFileReader(const fs::path& file_path, GameVersion version) : m_version(version) {
-  switch (version) {
+  const auto data = file_util::read_binary_file(file_path);
+  init(data);
+}
+
+StrFileReader::StrFileReader(std::span<const u8> data, GameVersion version) : m_version(version) {
+  init(data);
+}
+
+void StrFileReader::init(std::span<const u8> data) {
+  switch (m_version) {
     case GameVersion::Jak1:
-      init_jak1(file_path);
+      init_jak1(data);
       break;
     case GameVersion::Jak2:
     case GameVersion::Jak3:
     case GameVersion::JakX:
-      init_jak2(file_path);
+      init_jak2(data);
       break;
     default:
       throw std::runtime_error("[StrFileReader] NYI game version");
   }
 }
 
-void StrFileReader::init_jak1(const fs::path& file_path) {
-  auto data = file_util::read_binary_file(file_path);
+void StrFileReader::init_jak1(std::span<const u8> data) {
   ASSERT(data.size() >= SECTOR_SIZE);      // must have at least the header sector
   ASSERT(data.size() % SECTOR_SIZE == 0);  // should be multiple of the sector size.
   int end_sector = int(data.size()) / SECTOR_SIZE;
 
-  auto* header = (StrFileHeaderSector*)data.data();
+  const auto* header = reinterpret_cast<const StrFileHeaderSector*>(data.data());
 
   bool got_zero = false;
   for (int i = 0; i < SECTOR_TABLE_SIZE; i++) {
@@ -79,13 +87,12 @@ void StrFileReader::init_jak1(const fs::path& file_path) {
   }
 }
 
-void StrFileReader::init_jak2(const fs::path& file_path) {
-  auto data = file_util::read_binary_file(file_path);
+void StrFileReader::init_jak2(std::span<const u8> data) {
   ASSERT(data.size() >= SECTOR_SIZE);      // must have at least the header sector
   ASSERT(data.size() % SECTOR_SIZE == 0);  // should be multiple of the sector size.
   int end_sector = int(data.size()) / SECTOR_SIZE;
 
-  auto* header = (StrFileHeaderJ2*)data.data();
+  const auto* header = reinterpret_cast<const StrFileHeaderJ2*>(data.data());
 
   bool got_zero = false;
   for (int i = 0; i < SECTOR_TABLE_SIZE_J2; i++) {

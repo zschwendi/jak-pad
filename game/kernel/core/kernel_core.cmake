@@ -151,8 +151,8 @@ endif()
 # core translation units reach the game through kernel_game.h, and this target compiles the jak2
 # implementation of that seam next to the jak2 kernel translation units. Smaller than the jak1
 # library on purpose - the sound path has loader framing, checked SBlk loads, ordinary named SFX
-# playback and ordinary STR files; the shared pushed-state pad seam handles controllers. Music and
-# streaming remain machine stubs that report loudly. The graphics-host seam forwards complete
+# playback, and ordinary/chunked STR files; the shared pushed-state pad seam handles controllers.
+# Music and streaming remain machine stubs that report loudly. The graphics-host seam forwards complete
 # chains, pacing, synchronization, texture operations, desired/active level sets, and display
 # alpha to a host; the headless probes only count or measure those chains and deliberately drop
 # them. dgo_loader_jak2.cpp carries both C-driven loads and native channel-3 incremental RPC.
@@ -204,7 +204,7 @@ set(JAK2_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/dgo_loader_jak2.cpp"
     # shared cpad-open / cpad-get-data, over controller state the host pushes in
     "${CMAKE_CURRENT_LIST_DIR}/pad.cpp"
-    # the Jak 2 sound loader's 4.0 version handshake, checked banks, and ordinary STR files
+    # the Jak 2 sound loader's 4.0 version handshake, checked banks, and ordinary/chunked STR files
     "${CMAKE_CURRENT_LIST_DIR}/sblk_preflight.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/sound_rpc_jak2.cpp"
     # the common bank/RPC/player state and output-backend-free 989snd instance owned by this seam

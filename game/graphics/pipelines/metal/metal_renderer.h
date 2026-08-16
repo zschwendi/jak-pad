@@ -17,8 +17,10 @@
  * will replace it in later stages.
  */
 
+#include <cstddef>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
@@ -35,7 +37,13 @@
 class TexturePool;
 class MetalSkyBlendCPU;
 class MetalSkyBlendHandler;
+class MetalJak2BlitDisplayRenderer;
 struct MetalPresentationState;
+
+namespace metal_renderer {
+class Jak2Shadow195FrameCapture;
+class MetalJak2Shadow2Renderer;
+}
 
 // Backs metal_renderer::set_s7_override (see metal_pipeline.h).
 void metal_set_s7_override(u32 s7_ptr);
@@ -77,10 +85,25 @@ struct MetalRenderOptions {
   metal_camera_trace::Snapshot expected_camera;
   bool expected_render_camera_valid = false;
   metal_camera_trace::RenderSnapshot expected_render_camera;
+  // Jak 2/3 background draws encode texture-animator slots as negative texture IDs.
+  const u64* animated_texture_slots = nullptr;
+  std::size_t animated_texture_slot_count = 0;
+  // Optional synchronous host work that must stay ordered with Jak II bucket dispatch.
+  void* host_bucket_context = nullptr;
+  MetalHostBucketCallback host_bucket_callback = nullptr;
+  const metal_renderer::Jak2PrisEyeTextureUploadPlan* jak2_pris_eye_plans = nullptr;
+  std::size_t jak2_pris_eye_plan_count = 0;
+  const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;
+  const metal_renderer::Jak2GmercWarpBucket317Plan* jak2_gmerc_warp_bucket317_plan = nullptr;
+  const metal_renderer::Jak2ShadowBucket195Plan* jak2_shadow_bucket195_plan = nullptr;
+  metal_renderer::Jak2Shadow195FrameCapture* jak2_shadow195_frame_capture = nullptr;
+  float target_fps = 60.f;
 };
 
 // Borrowed render attachments for one host-owned view. The submitted command buffer retains the
-// textures through GPU completion; ownership stays with the host.
+// textures through GPU completion; ownership stays with the host. Jak 2 retains color between
+// submissions only while view_id and the live color/depth texture slices remain identical. A host
+// that discards an attachment's contents must supply a new view_id or attachment identity.
 struct MetalExternalRenderTargetDescriptor {
   u64 view_id = 0;
   id<MTLTexture> color_texture = nil;
@@ -103,6 +126,9 @@ enum class MetalExternalFrameReservation {
 
 class MetalRenderer {
  public:
+  MetalRenderer();
+  ~MetalRenderer();
+
   bool init(id<MTLDevice> device);
   id<MTLDevice> device() const { return m_device; }
   id<MTLCommandQueue> queue() const { return m_queue; }
@@ -110,7 +136,9 @@ class MetalRenderer {
   // Builds the selected game's bucket renderer table. Must be called once the
   // texture pool exists (the Jak 1 sky blender registers its output textures
   // with it).
-  void init_bucket_renderers(TexturePool* pool, GameVersion version);
+  void init_bucket_renderers(TexturePool* pool,
+                             GameVersion version,
+                             bool host_texture_uploads = false);
 
   // Renders one frame: game passes into the offscreen target, then the present
   // pass into the layer's next drawable, all in one command buffer.
@@ -123,7 +151,8 @@ class MetalRenderer {
   bool render_chain_frame(const MetalRenderOptions& opts,
                           CAMetalLayer* layer,
                           const u8* chain_data,
-                          u32 chain_offset);
+                          u32 chain_offset,
+                          std::size_t chain_size);
 
   // Renders one DMA-chain view directly into host-owned color/depth texture slices, without a
   // CAMetalLayer or present pass. Invalid descriptors return before renderer state is mutated.
@@ -131,7 +160,8 @@ class MetalRenderer {
       const MetalRenderOptions& opts,
       const MetalExternalRenderTargetDescriptor& target,
       const u8* chain_data,
-      u32 chain_offset);
+      u32 chain_offset,
+      std::size_t chain_size);
 
   // Validates both views before mutation, then renders the same copied chain into both targets.
   // The primary owns frame-global uploads, callbacks, diagnostics, and aggregate frame stats; the
@@ -147,7 +177,8 @@ class MetalRenderer {
       const MetalExternalRenderTargetDescriptor& right,
       id<MTLCommandBuffer> command_buffer,
       const u8* chain_data,
-      u32 chain_offset);
+      u32 chain_offset,
+      std::size_t chain_size);
 
   // Reserves the existing stream allocator without waiting. The caller must reserve before
   // acquiring its external textures, then either submit the borrowed command buffer or cancel.
@@ -201,15 +232,25 @@ class MetalRenderer {
     MetalDepthStencilKey depth;
   };
 
+  struct ExternalTargetHistory {
+    __weak id<MTLTexture> color_texture = nil;
+    NSUInteger color_slice = 0;
+    __weak id<MTLTexture> depth_texture = nil;
+    NSUInteger depth_slice = 0;
+  };
+
   void setup_frame(const MetalRenderOptions& opts);
-  void encode_game_passes(id<MTLCommandBuffer> cmds);
+  void encode_game_passes(id<MTLCommandBuffer> cmds,
+                          id<MTLTexture> color,
+                          id<MTLTexture> depth);
   void init_bucket_renderers_jak1();
   void init_bucket_renderers_jak2();
   void dispatch_buckets_jak1(DmaFollower dma, MetalFrameContext& ctx);
   void dispatch_buckets_jak2(DmaFollower dma, MetalFrameContext& ctx);
   void encode_present_pass(id<MTLCommandBuffer> cmds,
                            id<MTLTexture> target,
-                           const MetalRenderOptions& opts);
+                           const MetalRenderOptions& opts,
+                           id<MTLTexture> source);
   void build_validation_scene();
   bool read_color_target(id<MTLTexture> tex, metal_renderer::FramePixels* out);
   bool render_chain_frame_impl(const MetalRenderOptions& opts,
@@ -225,7 +266,8 @@ class MetalRenderer {
                                bool frame_global_side_effects,
                                id<MTLCommandBuffer> borrowed_command_buffer,
                                const u8* chain_data,
-                               u32 chain_offset);
+                               u32 chain_offset,
+                               std::size_t chain_size);
 #if GOALPAD_VISION_STEREO_EYE_MARKERS
   void encode_stereo_eye_markers(
       id<MTLCommandBuffer> command_buffer,
@@ -241,6 +283,8 @@ class MetalRenderer {
   // offscreen game render target (game internal resolution)
   id<MTLTexture> m_game_color;
   id<MTLTexture> m_game_depth;
+  id<MTLTexture> m_jak2_fallback_color;
+  id<MTLTexture> m_jak2_fallback_depth;
 
   // validation scene resources
   id<MTLBuffer> m_scene_vertices;
@@ -266,7 +310,12 @@ class MetalRenderer {
   MetalStreamBuffer m_external_stream;
   MetalSharedRenderState m_shared_state;
   std::vector<std::unique_ptr<MetalBucketRenderer>> m_bucket_renderers;
+  std::unique_ptr<metal_renderer::MetalJak2Shadow2Renderer>
+      m_jak2_shadow195_capture_renderer;
+  std::unique_ptr<MetalEyeRenderer> m_jak2_eye_renderer;
   TexturePool* m_texture_pool = nullptr;
+  bool m_host_texture_uploads = false;
+  MetalJak2BlitDisplayRenderer* m_jak2_blit_display = nullptr;
   MetalSkyBlendHandler* m_sky_blend_handlers[2] = {nullptr, nullptr};
   std::shared_ptr<MetalSkyBlendCPU> m_sky_cpu_blender;
   // level-geometry frame state, shared with the tfrag/tie/shrub renderers
@@ -276,4 +325,6 @@ class MetalRenderer {
   bool m_reported_camera_mismatch = false;
   std::shared_ptr<MetalPresentationState> m_presentation_state;
   u64 m_submission_count = 0;
+  bool m_game_target_fresh = true;
+  std::unordered_map<u64, std::unique_ptr<ExternalTargetHistory>> m_external_target_history;
 };

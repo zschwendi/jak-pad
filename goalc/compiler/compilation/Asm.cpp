@@ -1234,6 +1234,9 @@ Val* Compiler::compile_asm_div_vf(const goos::Object& form, const goos::Object& 
 
   auto temp_reg1 = env->make_vfr(dest->type());
   auto temp_reg2 = env->make_vfr(dest->type());
+  auto scratch_gpr1 = env->make_gpr(TypeSpec("uint"));
+  auto scratch_gpr2 = env->make_gpr(TypeSpec("uint"));
+  auto scratch_vf = env->make_vfr(dest->type());
 
   // Splat src1's value into a temp reg, keep it simple, this way no matter which vector component
   // is accessed from the final result will be the correct answer
@@ -1242,7 +1245,8 @@ Val* Compiler::compile_asm_div_vf(const goos::Object& form, const goos::Object& 
   env->emit_ir<IR_SplatVF>(form, color, temp_reg2, src2, ftf_fsf_to_vector_element(ftf));
 
   // Perform the Division
-  env->emit_ir<IR_VFMath3Asm>(form, color, dest, temp_reg1, temp_reg2, IR_VFMath3Asm::Kind::DIV);
+  env->emit_ir<IR_PS2VUDivQ>(form, color, dest, temp_reg1, temp_reg2, scratch_gpr1, scratch_gpr2,
+                            scratch_vf);
   return get_none();
 }
 

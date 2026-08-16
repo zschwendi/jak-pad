@@ -5,9 +5,11 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -100,6 +102,8 @@ struct Progress {
 };
 
 using CancelCallback = std::function<bool()>;
+/// Extraction reports its initial state, each completed file, and 8 MiB byte intervals between
+/// file completions.
 using ProgressCallback = std::function<void(const Progress&)>;
 
 struct Options {
@@ -111,11 +115,71 @@ struct Options {
   uint32_t max_depth = 32;
   uint32_t max_name_bytes = 128;
   uint32_t max_path_bytes = 1024;
-  size_t read_chunk_bytes = 256 * 1024;
+  size_t read_chunk_bytes = 4 * 1024 * 1024;
   bool hash_files = false;
   CancelCallback should_cancel;
   ProgressCallback on_progress;
 };
+
+#ifndef _WIN32
+enum class OwnedStagingFinalizationResult {
+  success,
+  unavailable,
+  callback_failed,
+  staging_changed,
+};
+
+/// Retains the exact POSIX directory created by extract_to_owned_staging across caller callbacks.
+/// Destruction removes only entries whose identities were recorded when the reader created them.
+class OwnedStagingDirectory {
+ public:
+  OwnedStagingDirectory();
+  ~OwnedStagingDirectory();
+  OwnedStagingDirectory(const OwnedStagingDirectory&) = delete;
+  OwnedStagingDirectory& operator=(const OwnedStagingDirectory&) = delete;
+  OwnedStagingDirectory(OwnedStagingDirectory&&) noexcept;
+  OwnedStagingDirectory& operator=(OwnedStagingDirectory&&) noexcept;
+
+  /// Remove the exact reader-created entries and directory. Unexpected or replaced entries are
+  /// preserved and reported as an error.
+  std::optional<std::string> cleanup();
+
+  /// Leave the successfully validated staging directory in place and relinquish its descriptors.
+  /// Returns false and retains ownership when finalization is required, its caller-visible path or
+  /// recorded tree changed.
+  bool keep();
+
+  /// One-shot finalization for an extraction created by
+  /// extract_to_owned_staging_for_finalization. Invokes the checkpoint callback, verifies the exact
+  /// descriptor-owned tree and identities, then keeps it.
+  OwnedStagingFinalizationResult finalize_and_keep(const std::function<bool()>& checkpoint);
+
+  /// Confirm that the retained directory is still linked and contains exactly the recorded tree.
+  bool is_linked() const;
+
+  /// Reopen every reader-created file without following symlinks and verify its creation identity,
+  /// exact size, and XXH64. Call before tracking importer-created metadata.
+  bool verify_recorded_contents() const;
+
+  /// Descriptor-relative helpers for importer metadata created after ISO extraction.
+  int directory_descriptor() const;
+  bool track_created_file(std::string_view name, int descriptor);
+  bool rename_tracked_file(std::string_view old_name, std::string_view new_name);
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> m_impl;
+
+  friend struct OwnedStagingDirectoryAccess;
+  friend Result<IsoFile> extract_to_owned_staging(FILE*,
+                                                  const std::filesystem::path&,
+                                                  OwnedStagingDirectory*,
+                                                  const Options&);
+};
+#endif
+
+/// Return the exact safe basename used when an inspected ISO entry is extracted.
+std::string extracted_output_name(std::string_view entry_name);
 
 /// Parse and validate an ISO9660 image without writing any output.
 Result<IsoFile> inspect(FILE* file, const Options& options = {});
@@ -132,6 +196,24 @@ Result<IsoFile> extract_layout(FILE* file,
 Result<IsoFile> extract_to_staging(FILE* file,
                                    const std::filesystem::path& staging_directory,
                                    const Options& options = {});
+
+#ifndef _WIN32
+/// Inspect and extract while returning a creation-owned POSIX staging handle. The caller must
+/// retain the handle until validation finishes, then call keep() on success or cleanup() on
+/// failure.
+Result<IsoFile> extract_to_owned_staging(FILE* file,
+                                         const std::filesystem::path& staging_directory,
+                                         OwnedStagingDirectory* owned_staging,
+                                         const Options& options = {});
+
+/// Extract without the reader's immediate content-verification pass. The returned owned handle
+/// cannot be kept directly and must be consumed by finalize_and_keep after validation succeeds.
+Result<IsoFile> extract_to_owned_staging_for_finalization(
+    FILE* file,
+    const std::filesystem::path& staging_directory,
+    OwnedStagingDirectory* owned_staging,
+    const Options& options = {});
+#endif
 
 const char* error_code_name(ErrorCode code);
 

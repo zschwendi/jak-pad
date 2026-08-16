@@ -9,6 +9,7 @@
 
 #include "decompiler/extractor/jak1_retail_object_catalog.h"
 
+#include "third-party/lzokay/lzokay.hpp"
 #include "third-party/zstd/lib/common/xxhash.h"
 
 namespace {
@@ -132,6 +133,31 @@ std::vector<std::uint8_t> make_dgo(const std::string& archive_name,
   return bytes;
 }
 
+std::vector<std::uint8_t> make_aligned_blzo(std::span<const std::uint8_t> expanded,
+                                            std::size_t alignment) {
+  constexpr std::size_t kBlockSize = 0x8000;
+  std::vector<std::uint8_t> output{'o', 'Z', 'l', 'B'};
+  append_u32(&output, expanded.size());
+  for (std::size_t offset = 0; offset < expanded.size();) {
+    const auto block_size = std::min(kBlockSize, expanded.size() - offset);
+    std::vector<std::uint8_t> compressed(lzokay::compress_worst_size(block_size));
+    auto compressed_size = compressed.size();
+    if (lzokay::compress(expanded.data() + offset, block_size, compressed.data(), compressed.size(),
+                         compressed_size) != lzokay::EResult::Success ||
+        compressed_size >= kBlockSize) {
+      return {};
+    }
+    append_u32(&output, compressed_size);
+    output.insert(output.end(), compressed.begin(), compressed.begin() + compressed_size);
+    while (output.size() % 4) {
+      output.push_back(0);
+    }
+    offset += block_size;
+  }
+  output.resize(output.size() + (alignment - output.size() % alignment) % alignment, 0);
+  return output;
+}
+
 bool indexes_exact_provenance_in_deterministic_order() {
   const auto shared = make_v2(7);
   const auto archive_z = make_dgo("Z.DGO", {{"shared", shared}, {"zeta", make_v2(9)}});
@@ -240,6 +266,116 @@ bool divergent_names_require_exact_provenance() {
   return true;
 }
 
+bool indexes_retained_checked_archive_without_raw_redecode() {
+  auto raw = make_dgo("CHECKED.DGO", {{"data", make_v4(11)}, {"code", make_v3("code")}});
+  const std::vector<ArchiveSource> raw_sources = {{"DGO/CHECKED.DGO", raw}};
+  const auto raw_catalog = jak1_retail_object_catalog::build(raw_sources);
+  CHECK(raw_catalog);
+
+  const auto decoded = jak1_checked_dgo::read(raw, "CHECKED.DGO");
+  CHECK(decoded);
+  CHECK(decoded.value().input_size == raw.size());
+  CHECK(decoded.value().expanded_size == raw.size());
+  std::fill(raw.begin(), raw.end(), 0);
+
+  std::vector<jak1_retail_object_catalog::Progress> progress;
+  jak1_retail_object_catalog::Options options;
+  options.on_progress = [&](const auto& update) { progress.push_back(update); };
+  auto checked_catalog = jak1_retail_object_catalog::build_checked_archive(
+      "DGO/CHECKED.DGO", decoded.value(), options);
+  CHECK(checked_catalog);
+  CHECK(checked_catalog.value().entries().size() == raw_catalog.value().entries().size());
+  CHECK(checked_catalog.value().skipped_code_object_count() == 1);
+  CHECK(checked_catalog.value().expanded_archive_bytes() == decoded.value().expanded_size);
+  CHECK(checked_catalog.value().all_object_payload_bytes() ==
+        decoded.value().objects[0].data.size() + decoded.value().objects[1].data.size());
+  CHECK(checked_catalog.value().entries()[0].provenance ==
+        raw_catalog.value().entries()[0].provenance);
+  CHECK(progress.size() == 4);
+  CHECK(progress[0].stage == jak1_retail_object_catalog::ProgressStage::starting_archive);
+  CHECK(progress[1].stage == jak1_retail_object_catalog::ProgressStage::indexed_object);
+  CHECK(progress[2].stage == jak1_retail_object_catalog::ProgressStage::skipped_code_object);
+  CHECK(progress[3].stage == jak1_retail_object_catalog::ProgressStage::complete);
+  CHECK(progress[3].archives_processed == 1);
+
+  options = {};
+  options.max_archive_input_bytes = decoded.value().input_size - 1;
+  checked_catalog = jak1_retail_object_catalog::build_checked_archive("DGO/CHECKED.DGO",
+                                                                      decoded.value(), options);
+  CHECK(!checked_catalog);
+  CHECK(checked_catalog.error().code == ErrorCode::archive_limit_exceeded);
+
+  options = {};
+  options.max_total_expanded_archive_bytes = decoded.value().expanded_size - 1;
+  checked_catalog = jak1_retail_object_catalog::build_checked_archive("DGO/CHECKED.DGO",
+                                                                      decoded.value(), options);
+  CHECK(!checked_catalog);
+  CHECK(checked_catalog.error().code == ErrorCode::expanded_byte_limit_exceeded);
+
+  options = {};
+  options.max_total_object_bytes =
+      decoded.value().objects[0].data.size() + decoded.value().objects[1].data.size() - 1;
+  checked_catalog = jak1_retail_object_catalog::build_checked_archive("DGO/CHECKED.DGO",
+                                                                      decoded.value(), options);
+  CHECK(!checked_catalog);
+  CHECK(checked_catalog.error().code == ErrorCode::total_byte_limit_exceeded);
+
+  auto wrong_name = decoded.value();
+  wrong_name.internal_name = "OTHER.DGO";
+  checked_catalog =
+      jak1_retail_object_catalog::build_checked_archive("DGO/CHECKED.DGO", wrong_name);
+  CHECK(!checked_catalog);
+  CHECK(checked_catalog.error().code == ErrorCode::invalid_checked_archive);
+
+  options = {};
+  options.should_cancel = []() { return true; };
+  checked_catalog = jak1_retail_object_catalog::build_checked_archive("DGO/CHECKED.DGO",
+                                                                      decoded.value(), options);
+  CHECK(!checked_catalog);
+  CHECK(checked_catalog.error().code == ErrorCode::cancelled);
+  return true;
+}
+
+bool retained_catalog_matches_jak2_aligned_compressed_build() {
+  auto object = make_v4(19);
+  const std::string marker = "/src/jak2/final/art-group7/retail-ag.go";
+  std::copy(marker.begin(), marker.end(), object.begin() + 16);
+  object[16 + marker.size()] = 0;
+  const auto expanded = make_dgo("JAK2.DGO", {{"retail", object}});
+  constexpr std::size_t kAlignment = 2048;
+  const auto compressed = make_aligned_blzo(expanded, kAlignment);
+  CHECK(!compressed.empty());
+  CHECK(compressed.size() % kAlignment == 0);
+
+  jak1_retail_object_catalog::Options catalog_options;
+  catalog_options.game_version = GameVersion::Jak2;
+  catalog_options.compressed_trailing_alignment_bytes = kAlignment;
+  const std::vector<ArchiveSource> sources = {{"DGO/JAK2.DGO", compressed}};
+  const auto raw_catalog = jak1_retail_object_catalog::build(sources, catalog_options);
+  CHECK(raw_catalog);
+
+  jak1_checked_dgo::Options dgo_options;
+  dgo_options.game_version = GameVersion::Jak2;
+  dgo_options.compressed_trailing_alignment_bytes = kAlignment;
+  const auto decoded = jak1_checked_dgo::read(compressed, "JAK2.DGO", dgo_options);
+  CHECK(decoded);
+  CHECK(decoded.value().was_compressed);
+  CHECK(decoded.value().input_size == compressed.size());
+  CHECK(decoded.value().expanded_size == expanded.size());
+  const auto retained_catalog = jak1_retail_object_catalog::build_checked_archive(
+      "DGO/JAK2.DGO", decoded.value(), catalog_options);
+  CHECK(retained_catalog);
+  CHECK(retained_catalog.value().entries().size() == 1);
+  CHECK(retained_catalog.value().entries()[0].provenance ==
+        raw_catalog.value().entries()[0].provenance);
+  CHECK(retained_catalog.value().entries()[0].provenance.unique_name == "retail-ag");
+  CHECK(retained_catalog.value().expanded_archive_bytes() ==
+        raw_catalog.value().expanded_archive_bytes());
+  CHECK(retained_catalog.value().all_object_payload_bytes() ==
+        raw_catalog.value().all_object_payload_bytes());
+  return true;
+}
+
 bool retains_checked_unique_names_and_rejects_ambiguity() {
   const auto duplicate_archive =
       make_dgo("DUP.DGO", {{"same", make_v2(1)}, {"same", make_v2(2)}});
@@ -289,12 +425,20 @@ bool retains_checked_unique_names_and_rejects_ambiguity() {
 }
 
 bool skips_code_and_rejects_invalid_or_unsupported_headers() {
-  auto archive = make_dgo("CODE.DGO", {{"code", make_v3("code")}});
+  const auto code_object = make_v3("code");
+  auto archive = make_dgo("CODE.DGO", {{"code", code_object}});
   std::vector<ArchiveSource> sources = {{"DGO/CODE.DGO", archive}};
   auto result = jak1_retail_object_catalog::build(sources);
   CHECK(result);
   CHECK(result.value().entries().empty());
   CHECK(result.value().skipped_code_object_count() == 1);
+  CHECK(result.value().all_object_payload_bytes() == code_object.size());
+
+  jak1_retail_object_catalog::Options code_budget;
+  code_budget.max_total_object_bytes = code_object.size() - 1;
+  result = jak1_retail_object_catalog::build(sources, code_budget);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::total_byte_limit_exceeded);
 
   archive =
       make_dgo("MIXED.DGO",
@@ -336,6 +480,8 @@ bool skips_code_and_rejects_invalid_or_unsupported_headers() {
 }
 
 bool enforces_caps_paths_and_callbacks() {
+  jak1_retail_object_catalog::Options defaults;
+  CHECK(!defaults.compressed_trailing_alignment_bytes);
   const auto archive_a = make_dgo("A.DGO", {{"one", make_v2()}});
   const auto archive_b = make_dgo("B.DGO", {{"two", make_v4()}});
   const std::vector<ArchiveSource> sources = {
@@ -364,6 +510,39 @@ bool enforces_caps_paths_and_callbacks() {
   CHECK(result.error().code == ErrorCode::total_byte_limit_exceeded);
 
   options = {};
+  options.max_total_archive_input_bytes = archive_a.size() + archive_b.size();
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(result);
+  --options.max_total_archive_input_bytes;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::archive_limit_exceeded);
+  CHECK(result.error().source_archive_relative_path == "DGO/B.DGO");
+
+  options = {};
+  options.max_total_expanded_archive_bytes = archive_a.size() + archive_b.size();
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(result);
+  CHECK(result.value().expanded_archive_bytes() == archive_a.size() + archive_b.size());
+  --options.max_total_expanded_archive_bytes;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::expanded_byte_limit_exceeded);
+  CHECK(result.error().source_archive_relative_path == "DGO/B.DGO");
+
+  const auto expected_object_bytes = make_v2().size() + make_v4().size();
+  options = {};
+  options.max_total_object_bytes = expected_object_bytes;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(result);
+  CHECK(result.value().all_object_payload_bytes() == expected_object_bytes);
+  --options.max_total_object_bytes;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::total_byte_limit_exceeded);
+  CHECK(result.error().source_archive_relative_path == "DGO/B.DGO");
+
+  options = {};
   options.max_internal_name_bytes = 2;
   result = jak1_retail_object_catalog::build(sources, options);
   CHECK(!result);
@@ -385,6 +564,12 @@ bool enforces_caps_paths_and_callbacks() {
   CHECK(result.error().code == ErrorCode::invalid_source_archive_path);
 
   options = {};
+  options.compressed_trailing_alignment_bytes = 0;
+  result = jak1_retail_object_catalog::build(sources, options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::invalid_argument);
+
+  options = {};
   options.should_cancel = []() { return true; };
   result = jak1_retail_object_catalog::build(sources, options);
   CHECK(!result);
@@ -400,6 +585,8 @@ bool enforces_caps_paths_and_callbacks() {
 
 bool error_names_are_stable() {
   CHECK(std::string(jak1_retail_object_catalog::error_code_name(
+            ErrorCode::invalid_checked_archive)) == "invalid_checked_archive");
+  CHECK(std::string(jak1_retail_object_catalog::error_code_name(
             ErrorCode::unsupported_object_version)) == "unsupported_object_version");
   CHECK(std::string(jak1_retail_object_catalog::error_code_name(ErrorCode::provenance_mismatch)) ==
         "provenance_mismatch");
@@ -413,6 +600,10 @@ int main() {
       {"indexes_exact_provenance_in_deterministic_order",
        indexes_exact_provenance_in_deterministic_order},
       {"divergent_names_require_exact_provenance", divergent_names_require_exact_provenance},
+      {"indexes_retained_checked_archive_without_raw_redecode",
+       indexes_retained_checked_archive_without_raw_redecode},
+      {"retained_catalog_matches_jak2_aligned_compressed_build",
+       retained_catalog_matches_jak2_aligned_compressed_build},
       {"retains_checked_unique_names_and_rejects_ambiguity",
        retains_checked_unique_names_and_rejects_ambiguity},
       {"skips_code_and_rejects_invalid_or_unsupported_headers",

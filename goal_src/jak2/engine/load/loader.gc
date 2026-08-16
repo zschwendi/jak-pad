@@ -219,7 +219,10 @@
                 (when v1-8
                   (countdown (a0-5 (-> v1-8 length))
                     (if (= (-> v1-8 data a0-5) s4-0)
-                        (goto cfg-24)
+                        (begin
+                          (set! s2-0 #t)
+                          (goto cfg-24)
+                          )
                         )
                     )
                   (cond
@@ -1045,7 +1048,8 @@
                   (set-time! (-> gp-0 old-time))
                   (suspend)
                   (let* ((f26-0 (* (- (the float (current-str-pos (-> gp-0 sid))) (-> gp-0 part-audio-start)) f30-0))
-                         (f0-16 (if (str-id-is-playing? (the-as int (-> gp-0 sid)))
+                         (f0-16 (if (or (>= (-> *setting-control* user-current movie-skip-frame) 0.0)
+                                        (str-id-is-playing? (the-as int (-> gp-0 sid))))
                                     (fmax 0.0 (fmin f26-0 (the float (+ (-> (ja-group) frames num-frames) -1))))
                                     (fmax 0.0 (fmin (ja-frame-num 0) (the float (+ (-> (ja-group) frames num-frames) -1))))
                                     )

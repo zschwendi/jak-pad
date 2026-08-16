@@ -6,10 +6,13 @@
 #include "game/graphics/pipelines/metal/metal_tfrag.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 
+#include "game/graphics/pipelines/metal/metal_vis_data.h"
 #include "game/graphics/texture/TexturePool.h"
 
 namespace {
@@ -46,6 +49,8 @@ MetalTFragment::MetalTFragment(const std::string& name,
   // Fixed maximum so the shaders' color indices line up regardless of how many
   // colors a level actually has (same as the GL renderer).
   m_color_result.resize(kMetalTimeOfDayColorCount);
+  const char* log_visibility = std::getenv("GOALPAD_JAK2_DEBUG_LOG_TFRAG_BUCKET8_VISIBILITY");
+  m_log_bucket8_visibility = my_id == 8 && log_visibility && std::strcmp(log_visibility, "1") == 0;
 }
 
 /*!
@@ -104,6 +109,7 @@ void MetalTFragment::render(DmaFollower& dma,
                             MetalSharedRenderState* render_state,
                             MetalFrameContext& ctx) {
   m_stats = {};
+  m_stats.level_id = m_level_id;
   auto* bg = render_state->background;
   auto expect = [&](bool ok, const char* what) {
     return metal_background_expect(ok, m_name, what, bg);
@@ -137,8 +143,8 @@ void MetalTFragment::render(DmaFollower& dma,
     for (int i = 0; i < jak1::LEVEL_MAX; i++) {
       if (transfers[i].size_bytes == 128 * 16) {
         if (bg && bg->use_occlusion_culling) {
-          bg->occlusion_vis[i].valid = true;
-          memcpy(bg->occlusion_vis[i].data, transfers[i].data, 128 * 16);
+          bg->visibility.levels[i].valid = true;
+          memcpy(bg->visibility.levels[i].data.data(), transfers[i].data, 128 * 16);
         }
       } else {
         // 16 bytes means "this level has no visibility this frame"
@@ -194,12 +200,24 @@ void MetalTFragment::render(DmaFollower& dma,
   MetalTfragRenderSettings settings;
   settings.camera = m_pc_port_data.camera;
   settings.tree_idx = 0;
-  if (bg && bg->occlusion_vis[m_level_id].valid) {
-    settings.occlusion_culling = bg->occlusion_vis[m_level_id].data;
+  if (bg && bg->visibility.levels[m_level_id].valid) {
+    settings.occlusion_culling = bg->visibility.levels[m_level_id].data.data();
   }
+  m_stats.occlusion_valid = settings.occlusion_culling != nullptr;
+  m_stats.all_visible_override = bg && bg->debug_all_visible;
 
   // lod: the GL renderer exposes lod_tfrag as a debug setting, default 0.
   render_matching_trees(0, settings, render_state, ctx);
+  if (m_log_bucket8_visibility && m_bucket8_visibility_logs < 8) {
+    lg::info("GOALPAD_JAK2_TFRAG_BUCKET8_VIS sample={} name={} level={} occ={} override={} "
+             "nodes=v{}/f{}/o{}/t{} groups=v{}/a{}/t{} trees={} draws={} runs={} tris={}",
+             m_bucket8_visibility_logs, m_stats.level_name, m_stats.level_id,
+             m_stats.occlusion_valid, m_stats.all_visible_override, m_stats.visible_nodes,
+             m_stats.frustum_visible_nodes, m_stats.occlusion_visible_nodes, m_stats.bvh_nodes,
+             m_stats.visible_vis_groups, m_stats.always_visible_vis_groups, m_stats.vis_groups,
+             m_stats.trees_rendered, m_stats.draws, m_stats.runs, m_stats.triangles);
+    m_bucket8_visibility_logs++;
+  }
 }
 
 /*!
@@ -299,14 +317,48 @@ void MetalTFragment::render_tree(int geom,
     metal_update_time_of_day_texture(time_of_day, m_color_result.data(), tree.colors->color_count);
   }
 
-  // visibility
+  const bool all_visible_override = bg && bg->debug_all_visible;
+  if (!all_visible_override || m_log_bucket8_visibility) {
+    metal_cull_check_all_slow(settings.camera.planes, tree.vis->vis_nodes,
+                              settings.occlusion_culling, m_cache.vis_temp.data());
+  }
+  if (m_log_bucket8_visibility) {
+    // Keep the natural cull result even when the all-visible debug override is
+    // active so this diagnostic can distinguish visibility data from frustum
+    // rejection without changing the rendered result.
+    m_stats.bvh_nodes += (int)tree.vis->vis_nodes.size();
+    for (size_t i = 0; i < tree.vis->vis_nodes.size(); i++) {
+      const auto& node = tree.vis->vis_nodes[i];
+      const bool frustum_visible = metal_sphere_in_view_ref(node.bsphere, settings.camera.planes);
+      const bool occlusion_visible =
+          !settings.occlusion_culling ||
+          (node.my_id != UINT16_MAX &&
+           node.my_id / 8 < metal_renderer::kMetalVisibilityBytes &&
+           (settings.occlusion_culling[node.my_id / 8] & (1 << (7 - (node.my_id & 7)))));
+      m_stats.frustum_visible_nodes += frustum_visible;
+      m_stats.occlusion_visible_nodes += occlusion_visible;
+      m_stats.visible_nodes += m_cache.vis_temp[i] != 0;
+    }
+    for (const auto& draw : *tree.draws) {
+      for (const auto& group : draw.vis_groups) {
+        m_stats.vis_groups++;
+        if (group.vis_idx_in_pc_bvh == UINT16_MAX) {
+          m_stats.always_visible_vis_groups++;
+          m_stats.visible_vis_groups++;
+        } else if (group.vis_idx_in_pc_bvh < m_cache.vis_temp.size() &&
+                   m_cache.vis_temp[group.vis_idx_in_pc_bvh]) {
+          m_stats.visible_vis_groups++;
+        }
+      }
+    }
+  }
+
+  // visibility -> draw runs
   u32 total_tris;
-  if (bg && bg->debug_all_visible) {
+  if (all_visible_override) {
     total_tris = metal_make_all_visible_draw_runs(m_cache.draw_runs.data(), m_cache.runs.data(),
                                                   *tree.draws);
   } else {
-    metal_cull_check_all_slow(settings.camera.planes, tree.vis->vis_nodes,
-                              settings.occlusion_culling, m_cache.vis_temp.data());
     total_tris = metal_make_draw_runs_from_vis_string(
         m_cache.draw_runs.data(), m_cache.runs.data(), *tree.draws, m_cache.vis_temp);
   }
@@ -380,7 +432,7 @@ void MetalTFragment::render_tree(int geom,
                  indexBufferOffset:run.first_index * sizeof(u32)];
         m_stats.runs++;
       }
-      m_stats.draws++;
+      draws_this_tree++;
     }
   }
 

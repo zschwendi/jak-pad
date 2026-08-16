@@ -1,0 +1,21 @@
+#pragma once
+
+#include <cstdint>
+#include <span>
+
+#include "common/custom_data/Jak1OutputGraph.h"
+
+namespace jak2_public_output_graph {
+
+inline constexpr const char* kBaseRetailProfileName = "jak2-base-retail";
+inline constexpr std::uint32_t kArchiveLimit = 256;
+
+jak1_output_graph::Options default_options();
+
+std::span<const std::uint8_t> wire_data();
+jak1_output_graph::Result<jak1_output_graph::Graph> decode(
+    const jak1_output_graph::Options& options = default_options());
+jak1_output_graph::Result<jak1_output_graph::Graph> decode_base_retail(
+    const jak1_output_graph::Options& options = default_options());
+
+}  // namespace jak2_public_output_graph

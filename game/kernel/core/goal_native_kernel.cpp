@@ -113,9 +113,13 @@ struct StackWatermark {
   int fullest_used;   // the suspend that came closest to filling its buffer
   int fullest_size;
   uint32_t fullest_name;
+  int current_used;  // the most recent stack range validated by suspend or resume
+  int current_size;
+  int overflow_failures;
+  int validation_failures;
 };
 
-StackWatermark g_stack_watermark = {0, 0, 0, 0, 0, 1, 0};
+StackWatermark g_stack_watermark = {0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0};
 
 [[noreturn]] void fail(const char* format, ...) __attribute__((format(printf, 1, 2)));
 [[noreturn]] void fail(const char* format, ...) {
@@ -127,6 +131,17 @@ StackWatermark g_stack_watermark = {0, 0, 0, 0, 0, 1, 0};
   std::fputs("\n", stderr);
   std::fflush(stderr);
   std::abort();
+}
+
+void report_stack_failure(int kind, int used, int backup_size) {
+  // Stable numeric kinds: 1 suspend overflow, 2 invalid suspend range, 3 invalid resume range.
+  std::fprintf(stderr,
+               "GOALPAD_GOAL_THREAD_STACK_FAILURE kind=%d current=%d/%d fullest=%d/%d "
+               "overflows=%d failures=%d\n",
+               kind, used, backup_size, g_stack_watermark.fullest_used,
+               g_stack_watermark.fullest_size, g_stack_watermark.overflow_failures,
+               g_stack_watermark.validation_failures);
+  std::fflush(stderr);
 }
 
 uint8_t* mem() {
@@ -341,6 +356,8 @@ void thread_suspend_body(GoalContext* ctx, uint64_t thread_u) {
   const int32_t backup_size = (int32_t)load32(thread, field::kThreadStackSize);
 
   g_stack_watermark.suspends++;
+  g_stack_watermark.current_used = used;
+  g_stack_watermark.current_size = backup_size;
   if (used > g_stack_watermark.deepest_used) {
     g_stack_watermark.deepest_used = used;
     g_stack_watermark.deepest_size = backup_size;
@@ -355,11 +372,16 @@ void thread_suspend_body(GoalContext* ctx, uint64_t thread_u) {
   // GOAL's own check, which is a (break) there. Copying more than the backup buffer holds would
   // walk off the end of the thread object and into the process heap behind it.
   if (used > backup_size) {
+    g_stack_watermark.overflow_failures++;
+    g_stack_watermark.validation_failures++;
+    report_stack_failure(1, used, backup_size);
     fail("%s used %d bytes of stack but its backup buffer is only %d. Raise the thread's "
          "stack-size; see docs/aot-stack-model.md.",
          describe_thread(thread), used, backup_size);
   }
   if (used < 0) {
+    g_stack_watermark.validation_failures++;
+    report_stack_failure(2, used, backup_size);
     fail("a suspending thread's stack pointer (GOAL #x%x) is above its stack top (#x%x)", sp,
          stack_top);
   }
@@ -393,7 +415,14 @@ void thread_resume_body(GoalContext* ctx, uint64_t thread_u) {
   const uint32_t stack_top = load32(thread, field::kThreadStackTop);
   const int32_t used = (int32_t)(stack_top - sp);
   const int32_t backup_size = (int32_t)load32(thread, field::kThreadStackSize);
+  g_stack_watermark.current_used = used;
+  g_stack_watermark.current_size = backup_size;
   if (used < 0 || used > backup_size) {
+    if (used > backup_size) {
+      g_stack_watermark.overflow_failures++;
+    }
+    g_stack_watermark.validation_failures++;
+    report_stack_failure(3, used, backup_size);
     fail("thread-resume was given %s, whose stack pointer (GOAL #x%x) does not fit under its "
          "stack top (#x%x) and backup size (%d)",
          describe_thread(thread), sp, stack_top, backup_size);
@@ -608,6 +637,10 @@ void goal_thread_stack_watermark(goal_thread_stack_watermark_report* out) {
   out->fullest_used = g_stack_watermark.fullest_used;
   out->fullest_size = g_stack_watermark.fullest_size;
   out->fullest_name = goal_thread_stack_watermark_name(g_stack_watermark.fullest_name);
+  out->current_used = g_stack_watermark.current_used;
+  out->current_size = g_stack_watermark.current_size;
+  out->overflow_failures = g_stack_watermark.overflow_failures;
+  out->validation_failures = g_stack_watermark.validation_failures;
 }
 
 }  // extern "C"

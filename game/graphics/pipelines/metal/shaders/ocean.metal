@@ -153,3 +153,53 @@ fragment float4 ocean_common_fs(OceanCommonVSOut in [[stage_in]],
   }
   return color;
 }
+
+// --- Jak II ocean envmap standalone proof ---------------------------------
+
+struct OceanEnvmapHazeVertexIn {
+  packed_float2 pos;
+  packed_float4 color;
+};
+
+struct OceanEnvmapHazeVSOut {
+  float4 pos [[position]];
+  float4 color;
+};
+
+vertex OceanEnvmapHazeVSOut ocean_envmap_haze_vs(
+    uint vid [[vertex_id]],
+    const device OceanEnvmapHazeVertexIn* verts [[buffer(0)]]) {
+  OceanEnvmapHazeVSOut out;
+  out.pos = float4(float2(verts[vid].pos), 0.0, 1.0);
+  out.color = float4(verts[vid].color);
+  return out;
+}
+
+fragment float4 ocean_envmap_haze_fs(OceanEnvmapHazeVSOut in [[stage_in]]) {
+  return in.color;
+}
+
+struct OceanEnvmapRadialVSOut {
+  float4 pos [[position]];
+  float2 tex_coord;
+};
+
+vertex OceanEnvmapRadialVSOut ocean_envmap_radial_vs(uint vid [[vertex_id]]) {
+  float2 xy[4] = {float2(-1, -1), float2(-1, 1), float2(1, -1), float2(1, 1)};
+  OceanEnvmapRadialVSOut out;
+  out.pos = float4(xy[vid], 0.0, 1.0);
+  // GL's framebuffer coordinates are bottom-up; Metal texture coordinates are
+  // top-down. Carry GL-equivalent coordinates and invert only at sampling.
+  out.tex_coord = (xy[vid] + 1.0) * 0.5;
+  return out;
+}
+
+fragment float4 ocean_envmap_radial_fs(OceanEnvmapRadialVSOut in [[stage_in]],
+                                       texture2d<float> tex_T1 [[texture(0)]],
+                                       sampler samp [[sampler(0)]]) {
+  constexpr float kPi = 3.14159265358979;
+  float theta = (0.5 - in.tex_coord.x) * 2.0 * kPi;
+  float t = 1.0 - abs(2.0 * in.tex_coord.y - 1.0);
+  float2 st = float2(0.5) + t * 0.5 * float2(sin(theta), cos(theta));
+  return tex_T1.sample(samp, float2(st.x, 1.0 - st.y));
+}

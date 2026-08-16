@@ -12,8 +12,9 @@ Jak 2 kernel, with `dgo_loader_jak2.cpp` carrying both the C-driven DGO load and
 channel-3 incremental begin/continue/cancel RPC. Its top-level router answers DGO traffic while
 delegating sound channels 0, 1, and 4 to `sound_rpc_jak2.cpp`, which handles command-aware framing,
 the IRX 4.0 version handshake, checked SBlk loads, ordinary named-SFX PLAY/update commands, and
-ordinary STR files. A bounded user-local bank is validated in memory before the same bytes reach
-989snd, and unsafe PLAY falloff parameters are rejected before spatial volume calculation. The
+ordinary files plus source-compatible, fail-closed animation chunks from Jak 2 STR tables. A
+bounded user-local bank is validated in memory before the same bytes reach 989snd, and unsafe PLAY
+falloff parameters are rejected before spatial volume calculation. The
 upstream Jak 2 mips2c translations are registered through the native-function seam, and the kernel
 owns its sound-system shutdown. Command 2 has no reply payload: its zero return only means the
 synchronous transport completed, not that a bank loaded; failures are available through host logs
@@ -802,6 +803,59 @@ gameplay claim, and simulator success is not physical-device compatibility evide
 nil-layer one-tick proof, `GOALPAD_JAK2_LIFECYCLE_PROOF`, and the independent synthetic
 `GOALPAD_JAK2_CAMETAL_LAYER_PROOF` remain unchanged.
 
+**Experimental:** setting `GOALPAD_JAK2_REAL_DMA_DRAW_CAMETAL_LAYER_PROOF=1` extends the same
+real-runtime and app-owned-layer route to the first observed `SKY_DRAW` title-path draw,
+without changing the bounded first-chain proof above. It pauses after each submitted DMA chain,
+waits for GPU completion, and reads the renderer's 640-by-480 RGBA game target before allowing
+another display tick. The first chain must remain the zero-draw baseline. Within three chains, a
+later chain must report positive `SKY_DRAW` draws and triangles, attribute all draws exactly to
+the enabled `SKY_DRAW`, `SCREEN_FILTER`, and `DEBUG_NO_ZBUF2` Direct buckets, and produce a frame
+with a changed hash and more non-black pixels than that baseline. Every chain must also retain
+exact drawable, commit, completion, submission, bucket-policy, and error counters.
+The reported alpha-channel and last-`SKY_DRAW` batch facts are diagnostic only; they do not replace
+the changed-hash and increased-non-black-pixel PASS gate.
+Physical-device runs additionally require one retained presentation callback per submission;
+simulator runs require zero callbacks.
+
+The bounded pixel summary is read from the game render target used by the submitted frame, not
+back from the drawable itself. A PASS proves that real game-built DMA reached the specifically
+attributed `SKY_DRAW` bucket, encoded a completed Direct draw, and changed the sampled game-target
+pixels through the same layer-backed host. It does not establish visual correctness, a title
+screen, gameplay, or physical-device compatibility.
+
+`jak2-metal-runtime-proof` composes that same AOT runtime and external Metal host in a standalone
+ARM64 macOS process. It creates an SDL Metal window on the main thread, runs at most three serial
+runtime ticks, waits for each command buffer before the next tick, and reports the runtime, bucket,
+SKY-batch, and readback counters. Before the runtime receives its callback copy, the host
+synchronously loads `<data-dir>/fr3/GAME.fr3` as common art. Real texture upload and relocate
+callbacks then map the game's VRAM slots through that host-owned pool, and each valid basename
+requested by `__pc-set-levels` loads `<data-dir>/fr3/<name>.fr3` once. Those levels remain resident
+until host teardown; active-level selection, eviction, and Merc models remain outside this
+checkpoint. The exact pre-SKY animator and title sprite-page uploads execute synchronously, and
+normal Jak II Sprite3 DMA is parsed and submitted through Metal. Jak II glow is still measured and
+consumed as unsupported DMA. It does not link the desktop runtime, the Jak 1 renderer shell, or Eco.
+
+```sh
+cmake --build build --target jak2-metal-runtime-proof -j2
+build/game/jak2-metal-runtime-proof \
+  --data-dir /path/to/prepared/jak2 --saves-dir /private/tmp/jak2-saves --ticks 3
+```
+
+The window is visible by default. `--hidden` is useful only for diagnostics because an
+uncomposited macOS drawable can be reported as a presentation drop. GPU completion and game-target
+readback are the default automated gate, so asynchronous presentation callbacks remain reported but
+do not decide that mode. `--require-presentation` additionally requires every retained drawable
+callback with no drops or ordering mismatches while the main thread pumps SDL events.
+`--saves-dir` also roots the proof's PC settings so it never reads or writes the player's normal
+OpenGOAL settings. A strict later frame must simultaneously report exactly one `SKY_DRAW` draw and
+two triangles with a valid batch, two exact title sprite-page uploads, the audited normal/glow
+Sprite3 classification, complete draw attribution, a hash different from the first frame, and more
+non-black RGB pixels than that first frame. The observed 64-record normal Sprite3 span contains four
+glow markers and 60 ordinary records with zero input alpha; drawing those ordinary records correctly
+leaves RGB unchanged. The four separate glow records are the next visible renderer gate. Until glow
+or another live draw family produces the attributed non-black frame, an `INCOMPLETE` result must not
+be reported as a title screen or playable game.
+
 ```sh
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 GEN=build/Release/bin/game/aot-generated
@@ -873,8 +927,9 @@ with no case now fails to compile rather than returning garbage.
   argument array from the C arguments.
 - **Jak 2 remains a headless kernel probe.** Its kernel and GAME.CGO objects load through the AOT
   path, its translated mips2c functions are registered, and its sound loader accepts the IRX 4.0
-  version handshake, ordinary STR files, validated SBlk banks retained by 989snd, and ordinary
-  named-SFX PLAY/update commands. Its portable pad seam accepts host-pushed controller state.
+  version handshake, ordinary files and validated animation chunks from Jak 2 STR tables, validated
+  SBlk banks retained by 989snd, and ordinary named-SFX PLAY/update commands. Its portable pad seam
+  accepts host-pushed controller state.
   Its graphics machine boundary now has per-game desired/active-level adapters, host callbacks,
   and pre-`syncv` vblank dispatch, but the kernel probe installs only a counting/discarding host
   and has no renderer or drawn output. Music, streaming and info-frame updates are not

@@ -13,6 +13,7 @@
  * where OpenGOAL's hand-translated PS2 assembly gets them.
  */
 
+#include <math.h>
 #include <string.h>
 
 #include "vec_generated.h"
@@ -23,6 +24,9 @@
 #define DST 0x600000ull
 #define SRC_A 0x600010ull
 #define SRC_B 0x600020ull
+#define MERC_JOINT 0x600100ull
+#define MERC_BONE 0x600140ull
+#define MERC_CAMERA 0x600180ull
 
 static int g_failures = 0;
 
@@ -66,6 +70,17 @@ static void expect_words(const char* what, uint32_t w0, uint32_t w1, uint32_t w2
   }
 }
 
+static void expect_words_at(
+    const char* what, uint64_t at, uint32_t w0, uint32_t w1, uint32_t w2, uint32_t w3) {
+  const uint32_t want[4] = {w0, w1, w2, w3};
+  if (memcmp(host(at), want, 16) != 0) {
+    const uint32_t* got = (const uint32_t*)host(at);
+    printf("FAIL %s: got %08x %08x %08x %08x\n", what, got[0], got[1], got[2], got[3]);
+    printf("     wanted %08x %08x %08x %08x\n", w0, w1, w2, w3);
+    g_failures++;
+  }
+}
+
 static void expect_halfwords(const char* what, const uint16_t want[8]) {
   if (memcmp(host(DST), want, 16) != 0) {
     report(what);
@@ -88,10 +103,15 @@ static void expect_bytes(const char* what, const uint8_t want[16]) {
   }
 }
 
-static void expect_floats(const char* what, float f0, float f1, float f2, float f3) {
+static void expect_floats_at(const char* what,
+                             uint64_t at,
+                             float f0,
+                             float f1,
+                             float f2,
+                             float f3) {
   const float want[4] = {f0, f1, f2, f3};
   float got[4];
-  memcpy(got, host(DST), 16);
+  memcpy(got, host(at), 16);
   for (int i = 0; i < 4; i++) {
     if (got[i] != want[i]) {
       printf("FAIL %s: got %f %f %f %f, wanted %f %f %f %f\n", what, (double)got[0], (double)got[1],
@@ -101,6 +121,10 @@ static void expect_floats(const char* what, float f0, float f1, float f2, float 
       return;
     }
   }
+}
+
+static void expect_floats(const char* what, float f0, float f1, float f2, float f3) {
+  expect_floats_at(what, DST, f0, f1, f2, f3);
 }
 
 static void test_quadword_copies(void) {
@@ -271,6 +295,79 @@ static void test_outer_product(void) {
                 a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0], 1.f);
 }
 
+static void test_div_q_exceptional_values(void) {
+  put_words(SRC_A, 0x3f800000, 0, 0, 0);
+  put_words(SRC_B, 0x80000000, 0, 0, 0);
+  goal_vec_aot_test_div_q(DST, SRC_A, SRC_B);
+  expect_words("div Q +1 / -0", 0xff7fffff, 0xff7fffff, 0xff7fffff, 0xff7fffff);
+
+  put_words(SRC_A, 0x80000000, 0, 0, 0);
+  put_words(SRC_B, 0x00000000, 0, 0, 0);
+  goal_vec_aot_test_div_q(DST, SRC_A, SRC_B);
+  expect_words("div Q -0 / +0", 0xff7fffff, 0xff7fffff, 0xff7fffff, 0xff7fffff);
+
+  put_words(SRC_A, 0x00000001, 0, 0, 0);
+  put_words(SRC_B, 0x3f800000, 0, 0, 0);
+  goal_vec_aot_test_div_q(DST, SRC_A, SRC_B);
+  expect_words("div Q denormal numerator flush", 0, 0, 0, 0);
+}
+
+static void test_merc_matrix_contract(void) {
+  /* Identity bind pose and camera, with a 90-degree Z rotation and nonuniform 2x3x4 scale. */
+  put_floats(MERC_JOINT, 1.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_JOINT + 16, 0.f, 1.f, 0.f, 0.f);
+  put_floats(MERC_JOINT + 32, 0.f, 0.f, 1.f, 0.f);
+  put_floats(MERC_JOINT + 48, 0.f, 0.f, 0.f, 1.f);
+  put_floats(MERC_BONE, 0.f, 2.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 16, -3.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 32, 0.f, 0.f, 4.f, 0.f);
+  put_floats(MERC_BONE + 48, 10.f, 20.f, 30.f, 1.f);
+  put_floats(MERC_CAMERA, 1.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_CAMERA + 16, 0.f, 1.f, 0.f, 0.f);
+  put_floats(MERC_CAMERA + 32, 0.f, 0.f, 1.f, 0.f);
+  put_floats(MERC_CAMERA + 48, 0.f, 0.f, 0.f, 1.f);
+
+  goal_vec_aot_test_merc_matrix(DST, MERC_JOINT, MERC_BONE, MERC_CAMERA);
+
+  int all_finite = 1;
+  const float* lanes = (const float*)host(DST);
+  for (int lane = 0; lane < 28; lane++) {
+    all_finite &= isfinite(lanes[lane]);
+  }
+  if (!all_finite) {
+    printf("FAIL merc matrix: a required transform or normal lane is non-finite\n");
+    g_failures++;
+  }
+
+  expect_floats_at("merc tmat column 0", DST, 0.f, 2.f, 0.f, 0.f);
+  expect_floats_at("merc tmat column 1", DST + 16, -3.f, 0.f, 0.f, 0.f);
+  expect_floats_at("merc tmat column 2", DST + 32, 0.f, 0.f, 4.f, 0.f);
+  expect_floats_at("merc tmat translation", DST + 48, 10.f, 20.f, 30.f, 1.f);
+  expect_floats_at("merc nmat column 0", DST + 64, 0.f, .5f, 0.f, 0.f);
+  expect_floats_at("merc nmat column 1", DST + 80, -1.f / 3.f, 0.f, 0.f, 0.f);
+  expect_floats_at("merc nmat column 2", DST + 96, 0.f, 0.f, .25f, 0.f);
+
+  /* A zero X scale is singular. The -0.25 Y and 0.5 Z columns have one +0.125 Y cofactor. PS2 DIV
+     clamps 1/0 to MAX; multiplying that exact power-of-two cofactor gives MAX/8 (0x7dffffff),
+     while the other two normal columns remain zero. */
+  put_floats(MERC_BONE, 0.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 16, -.25f, 0.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 32, 0.f, 0.f, .5f, 0.f);
+  goal_vec_aot_test_merc_matrix(DST, MERC_JOINT, MERC_BONE, MERC_CAMERA);
+  expect_words_at("singular merc nmat column 0", DST + 64, 0, 0x7dffffff, 0, 0);
+  expect_words_at("singular merc nmat column 1", DST + 80, 0, 0, 0, 0);
+  expect_words_at("singular merc nmat column 2", DST + 96, 0, 0, 0, 0);
+
+  /* A fully collapsed hide transform has no surviving cofactors, so finite MAX Q still produces a
+     zero normal matrix instead of IEEE 0 * infinity NaNs. */
+  put_floats(MERC_BONE + 16, 0.f, 0.f, 0.f, 0.f);
+  put_floats(MERC_BONE + 32, 0.f, 0.f, 0.f, 0.f);
+  goal_vec_aot_test_merc_matrix(DST, MERC_JOINT, MERC_BONE, MERC_CAMERA);
+  expect_words_at("collapsed merc nmat column 0", DST + 64, 0, 0, 0, 0);
+  expect_words_at("collapsed merc nmat column 1", DST + 80, 0, 0, 0, 0);
+  expect_words_at("collapsed merc nmat column 2", DST + 96, 0, 0, 0, 0);
+}
+
 static void test_vu_sync_barriers(void) {
   /* .nop.vf and .wait.vf emit nothing, so the add around them must still happen */
   put_floats(SRC_A, 1.f, 2.f, 3.f, 4.f);
@@ -306,6 +403,8 @@ int main(void) {
   test_ppach();
   test_blend();
   test_outer_product();
+  test_div_q_exceptional_values();
+  test_merc_matrix_contract();
   test_vu_sync_barriers();
   test_scalar_vu_sqrt_results_are_broadcast();
 

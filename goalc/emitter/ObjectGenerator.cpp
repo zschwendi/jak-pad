@@ -253,6 +253,14 @@ void ObjectGenerator::link_instruction_jump(InstructionRecord jump_instr, IR_Rec
   m_jump_temp_links_by_seg.at(jump_instr.seg).push_back({jump_instr, destination});
 }
 
+void ObjectGenerator::link_instruction_jump(InstructionRecord jump_instr,
+                                            InstructionRecord destination) {
+  if (jump_instr.seg != destination.seg || jump_instr.func_id != destination.func_id) {
+    throw std::runtime_error("Instruction jumps must remain within one function and segment.");
+  }
+  m_instruction_jump_temp_links_by_seg.at(jump_instr.seg).push_back({jump_instr, destination});
+}
+
 /*!
  * Patch a load/store instruction to refer to a symbol. This patching will happen at runtime
  * linking.  The instruction must use 32-bit immediate displacement addressing, relative to the
@@ -390,30 +398,42 @@ void ObjectGenerator::handle_temp_static_ptr_links(int seg) {
  * m_jump_temp_links_by_seg patching after memory layout is done
  */
 void ObjectGenerator::handle_temp_jump_links(int seg) {
-  for (const auto& link : m_jump_temp_links_by_seg.at(seg)) {
+  const auto patch_jump = [this, seg](const InstructionRecord& jump,
+                                     const InstructionRecord& destination) {
     // we need to compute three offsets, all relative to the start of data.
     // 1). the location of the patch (the immediate of the opcode)
     // 2). the value of RIP at the jump (the instruction after the jump, on x86)
     // 3). the value of RIP we want
-    const auto& function = m_function_data_by_seg.at(seg).at(link.jump_instr.func_id);
-    ASSERT(link.jump_instr.func_id == link.dest.func_id);
-    ASSERT(link.jump_instr.seg == seg);
-    ASSERT(link.dest.seg == seg);
-    const auto& jump_instr = function.instructions.at(link.jump_instr.instr_id);
+    const auto& function = m_function_data_by_seg.at(seg).at(jump.func_id);
+    ASSERT(jump.func_id == destination.func_id);
+    ASSERT(jump.seg == seg);
+    ASSERT(destination.seg == seg);
+    const auto& jump_instr = function.instructions.at(jump.instr_id);
     ASSERT(jump_instr.get_imm_size() == 4);
 
     // 1). patch = instruction location + location of imm in instruction.
-    int patch_location = function.instruction_to_byte_in_data.at(link.jump_instr.instr_id) +
+    int patch_location = function.instruction_to_byte_in_data.at(jump.instr_id) +
                          jump_instr.offset_of_imm();
 
     // 2). source rip = jump instr + 1 location
-    int source_rip = function.instruction_to_byte_in_data.at(link.jump_instr.instr_id + 1);
+    int source_rip = function.instruction_to_byte_in_data.at(jump.instr_id + 1);
 
-    // 3). dest rip = first instruction of dest IR
-    int dest_rip =
-        function.instruction_to_byte_in_data.at(function.ir_to_instruction.at(link.dest.ir_id));
+    // 3). dest rip = destination instruction
+    int dest_rip = function.instruction_to_byte_in_data.at(destination.instr_id);
 
     patch_data<s32>(seg, patch_location, dest_rip - source_rip);
+  };
+
+  for (const auto& link : m_jump_temp_links_by_seg.at(seg)) {
+    const auto& function = m_function_data_by_seg.at(seg).at(link.jump_instr.func_id);
+    InstructionRecord destination = link.jump_instr;
+    destination.ir_id = link.dest.ir_id;
+    destination.instr_id = function.ir_to_instruction.at(link.dest.ir_id);
+    patch_jump(link.jump_instr, destination);
+  }
+
+  for (const auto& link : m_instruction_jump_temp_links_by_seg.at(seg)) {
+    patch_jump(link.jump_instr, link.dest);
   }
 }
 

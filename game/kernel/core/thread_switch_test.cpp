@@ -63,6 +63,10 @@ uint64_t goal_test_saved_registers(uint64_t (*fn)(uint64_t), uint64_t arg, uint6
 
 namespace {
 
+static_assert(offsetof(goal_thread_stack_watermark_report, current_used) ==
+                  offsetof(goal_thread_stack_watermark_report, fullest_name) + sizeof(const char*),
+              "stack diagnostics must remain tail-appended to the C ABI");
+
 int g_failures = 0;
 
 // gkernel's AOT function list keeps the native thread-suspend implementation at index 22. The
@@ -310,6 +314,17 @@ void test_thread_suspend_and_resume() {
     fail("the suspended thread recorded no live stack");
     return;
   }
+  goal_thread_stack_watermark_report watermark = {};
+  goal_thread_stack_watermark(&watermark);
+  check_s64("the watermark records the current usage", watermark.current_used, used);
+  if (watermark.current_size < watermark.current_used) {
+    fail("the watermark reports an undersized current backup");
+  } else {
+    std::printf("  ok   %-40s %d of %d bytes\n", "the current backup contains the stack",
+                watermark.current_used, watermark.current_size);
+  }
+  check_s64("no stack overflow was observed", watermark.overflow_failures, 0);
+  check_s64("no stack validation failed", watermark.validation_failures, 0);
 
   // Overwrite everything the thread had live. If thread-suspend did not really copy it into the
   // backup buffer, or thread-resume does not really copy it back, nothing below can work.

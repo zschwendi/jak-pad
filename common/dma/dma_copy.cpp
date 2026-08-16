@@ -2,11 +2,14 @@
 #include "dma_copy.h"
 
 #include "common/dma/dma_chain_read.h"
+#include "common/dma/dma_chain_validation.h"
 #include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/util/Timer.h"
 
 #include "fmt/format.h"
+
+#include <stdexcept>
 
 /*!
  * Convert a DMA chain to an array of bytes that can be directly fed to VIF.
@@ -87,6 +90,13 @@ void FixedChunkDmaCopier::set_input_data(const void* memory, u32 offset, bool ru
 }
 
 const DmaData& FixedChunkDmaCopier::run(const void* memory, u32 offset, bool verify) {
+  const auto validation = validate_dma_chain(memory, m_main_memory_size, offset);
+  if (!validation) {
+    throw std::runtime_error(fmt::format("DMA chain validation failed at {:#x}: {}",
+                                         validation.error_offset,
+                                         dma_chain_validation_error_message(validation.error)));
+  }
+
   Timer timer;
   m_input_offset = offset;
   m_input_data = memory;
@@ -96,7 +106,7 @@ const DmaData& FixedChunkDmaCopier::run(const void* memory, u32 offset, bool ver
   m_result.stats = DmaStats();
   m_result.start_offset = 0;
 
-  DmaFollower dma(memory, offset);
+  DmaFollower dma(memory, offset, m_main_memory_size);
   while (!dma.ended()) {
     auto tag_offset = dma.current_tag_offset();
     auto tag = dma.current_tag();
@@ -107,8 +117,16 @@ const DmaData& FixedChunkDmaCopier::run(const void* memory, u32 offset, bool ver
     u32 tag_offset_in_chunk = tag_offset % chunk_size;
     m_chunk_mask.at(tag_chunk_idx) = true;
 
-    if (tag.addr) {
-      ASSERT(tag.addr > EE_MAIN_MEM_LOW_PROTECT);
+    const bool address_needs_fixup =
+        tag.kind == DmaTag::Kind::NEXT || tag.kind == DmaTag::Kind::REF ||
+        tag.kind == DmaTag::Kind::REFS || tag.kind == DmaTag::Kind::REFE ||
+        tag.kind == DmaTag::Kind::CALL;
+    if (address_needs_fixup && tag.addr) {
+      if (tag.addr <= EE_MAIN_MEM_LOW_PROTECT || tag.addr >= m_main_memory_size) {
+        throw std::runtime_error(
+            fmt::format("DMA tag at {:#x} has an address the fixed-chunk copier cannot map: {:#x}",
+                        tag_offset, tag.addr));
+      }
       u32 addr_chunk_idx = tag.addr / chunk_size;
       u32 addr_offset_in_chunk = tag.addr % chunk_size;
       // next, make sure that we get the address (if applicable)
@@ -171,9 +189,19 @@ const DmaData& FixedChunkDmaCopier::run(const void* memory, u32 offset, bool ver
   // setup final offset
   m_result.start_offset = m_chunk_mask.at(offset / chunk_size) * chunk_size + (offset % chunk_size);
 
+  const auto copied_validation =
+      validate_dma_chain(m_result.data.data(), m_result.data.size(), m_result.start_offset);
+  if (!copied_validation) {
+    throw std::runtime_error(fmt::format("Copied DMA chain validation failed at {:#x}: {}",
+                                         copied_validation.error_offset,
+                                         dma_chain_validation_error_message(
+                                             copied_validation.error)));
+  }
+
   if (verify) {
-    auto ref = flatten_dma(DmaFollower(memory, offset));
-    auto v2 = flatten_dma(DmaFollower(m_result.data.data(), m_result.start_offset));
+    auto ref = flatten_dma(DmaFollower(memory, offset, m_main_memory_size));
+    auto v2 = flatten_dma(
+        DmaFollower(m_result.data.data(), m_result.start_offset, m_result.data.size()));
 
     if (ref != v2) {
       lg::error("Verification has failed.");
@@ -185,8 +213,9 @@ const DmaData& FixedChunkDmaCopier::run(const void* memory, u32 offset, bool ver
           break;
         }
       }
-      diff_dma_chains(DmaFollower(memory, offset),
-                      DmaFollower(m_result.data.data(), m_result.start_offset));
+      diff_dma_chains(
+          DmaFollower(memory, offset, m_main_memory_size),
+          DmaFollower(m_result.data.data(), m_result.start_offset, m_result.data.size()));
       ASSERT(false);
     } else {
       lg::debug("verification ok: {} bytes", ref.size());

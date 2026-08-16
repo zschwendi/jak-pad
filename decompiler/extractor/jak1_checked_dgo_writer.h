@@ -109,6 +109,7 @@ struct WriteSummary {
   std::uint32_t object_count = 0;
   std::size_t object_bytes = 0;
   std::size_t output_bytes = 0;
+  std::uint64_t output_xxh64 = 0;
 };
 
 Result<std::vector<std::uint8_t>> build(std::string_view archive_name,
@@ -119,6 +120,12 @@ Result<WriteSummary> write_file(const std::filesystem::path& destination,
                                 std::string_view archive_name,
                                 std::span<const ObjectRecord> objects,
                                 const Options& options = {});
+
+Result<WriteSummary> write_file_at(int directory_fd,
+                                   std::string_view destination_basename,
+                                   std::string_view archive_name,
+                                   std::span<const ObjectRecord> objects,
+                                   const Options& options = {});
 
 const char* error_code_name(ErrorCode code);
 

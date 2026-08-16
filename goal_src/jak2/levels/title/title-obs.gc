@@ -910,7 +910,7 @@
                 (cond
                   ((not (-> gp-0 user-object (-> arg0 index)))
                    (let ((s4-0 (-> arg0 heap)))
-                     (set! (-> s4-0 base) (kmalloc (-> gp-0 heap) #xd0000 (kmalloc-flags) "heap"))
+                     (set! (-> s4-0 base) (kmalloc (-> gp-0 heap) #xd0000 (kmalloc-flags align-64) "heap"))
                      (set! (-> s4-0 current) (-> s4-0 base))
                      (set! (-> s4-0 top-base) (&+ (-> s4-0 base) #xd0000))
                      (set! (-> s4-0 top) (-> s4-0 top-base))

@@ -15,15 +15,21 @@
  * only far enough to report the first title-level DGO request and the next missing subsystem.
  * --play-gfx-host counts and drops the complete graphics-host boundary. --play-dma preserves
  * that mode and additionally waits for one valid 327-bucket graphics-DMA chain. This remains a
- * headless probe, not a renderer.
+ * headless probe, not a renderer. --preview-scene waits for the stable title menu, previews one
+ * authored scene through Scene Player's no-save path, and verifies the temporary save tree did not
+ * change.
  */
 
 #include <cstdarg>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
 #include <random>
 #include <string>
 #include <system_error>
@@ -37,6 +43,7 @@ extern "C" {
 #include "common/log/log.h"
 #include "common/symbols.h"
 #include "common/util/FileUtil.h"
+#include "common/util/fnv.h"
 
 #include "game/kernel/common/kboot.h"
 #include "game/kernel/common/klink.h"
@@ -46,6 +53,7 @@ extern "C" {
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/core/aot_loader.h"
 #include "game/kernel/core/dgo_loader.h"
+#include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/jak2_runtime.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/pad.h"
@@ -81,6 +89,118 @@ void report_heap(const char* what) {
     say("  %s: global heap at #x%x (%u bytes used), %d symbols\n", what,
         state.global_heap_current_offset, state.global_heap_used_bytes, state.symbol_count);
   }
+}
+
+using SaveTree = std::map<std::string, std::string>;
+
+bool snapshot_save_entry(const std::filesystem::path& path,
+                         const std::string& name,
+                         bool is_directory,
+                         SaveTree* out,
+                         std::string* error) {
+  std::error_code time_error;
+  const auto modified = std::filesystem::last_write_time(path, time_error);
+  if (time_error) {
+    *error = "could not read the modification time for " + name + ": " + time_error.message();
+    return false;
+  }
+  std::string identity =
+      std::to_string(static_cast<long long>(modified.time_since_epoch().count()));
+  if (!is_directory) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+      *error = "could not read " + name;
+      return false;
+    }
+    identity.push_back('\0');
+    identity.append(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+  }
+  out->emplace(name, std::move(identity));
+  return true;
+}
+
+bool snapshot_save_tree(const std::filesystem::path& root,
+                        SaveTree* out,
+                        std::string* error) {
+  if (!out || !error) {
+    return false;
+  }
+  out->clear();
+  error->clear();
+  if (!snapshot_save_entry(root, ".", true, out, error)) {
+    return false;
+  }
+  std::error_code walk_error;
+  for (std::filesystem::recursive_directory_iterator it(root, walk_error), end;
+       !walk_error && it != end; it.increment(walk_error)) {
+    const auto relative = std::filesystem::relative(it->path(), root, walk_error);
+    if (walk_error) {
+      break;
+    }
+    const std::string name = relative.generic_string();
+    if (it->is_directory(walk_error)) {
+      if (!snapshot_save_entry(it->path(), name + "/", true, out, error)) {
+        return false;
+      }
+    } else if (it->is_regular_file(walk_error)) {
+      if (!snapshot_save_entry(it->path(), name, false, out, error)) {
+        return false;
+      }
+    }
+  }
+  if (walk_error) {
+    *error = walk_error.message();
+    return false;
+  }
+  return true;
+}
+
+bool has_exact_city_help_kid_levels(const char* joined) {
+  if (!joined) {
+    return false;
+  }
+  bool slums = false;
+  bool wide = false;
+  bool kor = false;
+  int count = 0;
+  std::string levels = joined;
+  size_t begin = 0;
+  while (begin <= levels.size()) {
+    const size_t end = levels.find('+', begin);
+    const std::string level = levels.substr(begin, end - begin);
+    if (!level.empty()) {
+      count++;
+      slums |= level == "ctyslumb";
+      wide |= level == "ctywide";
+      kor |= level == "ctykora";
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    begin = end + 1;
+  }
+  return count == 3 && slums && wide && kor;
+}
+
+bool has_city_help_kid_actors(const goal_jak2_runtime_metrics& metrics) {
+  constexpr uint32_t kReadyFlags = GOAL_JAK2_SCENE_ACTOR_SPAWN_ATTEMPTED |
+                                   GOAL_JAK2_SCENE_ACTOR_POOL_ALLOCATED |
+                                   GOAL_JAK2_SCENE_ACTOR_DRAW_CONTROL |
+                                   GOAL_JAK2_SCENE_ACTOR_JOINT_CONTROL |
+                                   GOAL_JAK2_SCENE_ACTOR_MERC_GEOMETRY;
+  static const uint64_t kSceneHash = fnv64(std::string("city-help-kid-intro"));
+  if (!metrics.scene_actor_diagnostics_valid ||
+      metrics.scene_actor_scene_name_hash != kSceneHash || metrics.scene_actor_count <= 4) {
+    return false;
+  }
+  for (int index = 1; index <= 4; ++index) {
+    const auto& actor = metrics.scene_actors[index];
+    if ((actor.flags & kReadyFlags) != kReadyFlags || actor.level_index != 2 ||
+        actor.merc_pris_bucket != 205 || !actor.merc_joint_count) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::string object_name_of(const char* source) {
@@ -212,7 +332,7 @@ int run_boot(const std::string& data_dir,
 
   // InitHeapAndSymbol's kernel load
   say("\n=== KERNEL.CGO\n");
-  if (goal_dgo_load("KERNEL", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
+  if (goal_jak2_dgo_load_boot("KERNEL", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
     say("FAILED: %s\n", goal_dgo_last_error());
     drain_goal_print_buffer();
     say("  got through %d of KERNEL.CGO's objects (%d code, %d data)\n", stats.objects,
@@ -252,7 +372,7 @@ int run_boot(const std::string& data_dir,
 
   if (with_game) {
     say("\n=== GAME.CGO (exploratory; expected to stop at the first missing subsystem)\n");
-    if (goal_dgo_load("GAME", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
+    if (goal_jak2_dgo_load_boot("GAME", boot_flags, 0x400000, &stats) != GOAL_KERNEL_CORE_OK) {
       say("STOPPED: %s\n", goal_dgo_last_error());
       drain_goal_print_buffer();
       say("  got through %d of GAME.CGO's objects (%d code, %d data)\n", stats.objects,
@@ -332,7 +452,8 @@ int run_boot(const std::string& data_dir,
 
 int run_play_runtime(const std::string& data_dir,
                      int dispatch_frames,
-                     goal_jak2_runtime_graphics graphics) {
+                     goal_jak2_runtime_graphics graphics,
+                     const std::string& preview_scene) {
   const bool validate_dma = graphics == GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION;
   const bool validate_host = graphics != GOAL_JAK2_RUNTIME_GRAPHICS_STUBS;
   std::random_device random;
@@ -390,6 +511,17 @@ int run_play_runtime(const std::string& data_dir,
       (metrics.kernel_version >> 3) & 0xffff, metrics.sound_info_ee);
 
   goal_jak2_runtime_status tick_status = GOAL_JAK2_RUNTIME_OK;
+  SaveTree saves_before_preview;
+  std::string save_snapshot_error;
+  bool preview_requested = false;
+  bool preview_seen = false;
+  bool preview_finished = false;
+  bool preview_identity_valid = false;
+  bool preview_animation_valid = false;
+  bool preview_animation_sampled = false;
+  float preview_first_aframe = 0.f;
+  bool preview_dependencies_valid = false;
+  bool preview_actors_valid = false;
   while (metrics.ticks < static_cast<uint64_t>(dispatch_frames)) {
     tick_status = goal_jak2_runtime_tick();
     if (tick_status != GOAL_JAK2_RUNTIME_OK && tick_status != GOAL_JAK2_RUNTIME_EXITED) {
@@ -397,12 +529,73 @@ int run_play_runtime(const std::string& data_dir,
       return 1;
     }
     goal_jak2_runtime_get_metrics(&metrics);
+    if (!preview_scene.empty() && !preview_requested) {
+      const bool stable_title =
+          metrics.title_ready && metrics.title_control_process &&
+          std::strcmp(metrics.master_mode, "game") == 0 &&
+          std::strcmp(metrics.title_control_state, "wait") == 0 &&
+          !metrics.progress_process;
+      if (stable_title) {
+        if (!snapshot_save_tree(saves_path, &saves_before_preview, &save_snapshot_error)) {
+          say("FAILED: could not snapshot the temporary save tree: %s\n",
+              save_snapshot_error.c_str());
+          return 1;
+        }
+        if (goal_jak2_runtime_request_scene_preview(preview_scene.c_str()) !=
+            GOAL_JAK2_RUNTIME_OK) {
+          say("FAILED: %s\n", goal_jak2_runtime_last_error());
+          return 1;
+        }
+        preview_requested = true;
+        say("  queued scene preview %s from the stable title menu at tick %llu\n",
+            preview_scene.c_str(), (unsigned long long)metrics.ticks);
+      }
+    }
+    if (preview_requested && metrics.scene_identity_valid &&
+        preview_scene == metrics.scene_animation_name) {
+      preview_seen = true;
+      if (metrics.animation_diagnostics_valid) {
+        if (preview_animation_sampled) {
+          preview_animation_valid |=
+              std::fabs(metrics.animation_aframe - preview_first_aframe) > 0.001f;
+        } else {
+          preview_first_aframe = metrics.animation_aframe;
+          preview_animation_sampled = true;
+        }
+      }
+      if (preview_scene == "city-help-kid-intro") {
+        preview_identity_valid = std::strcmp(metrics.scene_entity, "hal-help-kid-1") == 0;
+      } else {
+        preview_identity_valid = true;
+        preview_dependencies_valid = true;
+        preview_actors_valid = true;
+      }
+    }
+    if (preview_requested && preview_scene == "city-help-kid-intro") {
+      preview_dependencies_valid |= metrics.host_last_desired_level_count == 3 &&
+                                    has_exact_city_help_kid_levels(metrics.host_desired_levels);
+      preview_actors_valid |= has_city_help_kid_actors(metrics);
+    }
+    if (preview_seen && !metrics.scene_player_process) {
+      SaveTree saves_after_preview;
+      if (!snapshot_save_tree(saves_path, &saves_after_preview, &save_snapshot_error)) {
+        say("FAILED: could not resnapshot the temporary save tree: %s\n",
+            save_snapshot_error.c_str());
+        return 1;
+      }
+      if (saves_after_preview != saves_before_preview) {
+        say("FAILED: scene preview changed the temporary save tree\n");
+        return 1;
+      }
+      preview_finished = true;
+      break;
+    }
     if (validate_dma && metrics.dma_malformed > 0) {
       break;
     }
     const bool host_frontier = metrics.host_chains > 0 && metrics.host_sync_paths > 0 &&
                                metrics.host_syncvs > 0;
-    if (metrics.title_ready &&
+    if (preview_scene.empty() && metrics.title_ready &&
         (!validate_dma || (metrics.dma_accounting_complete && metrics.dma_found_valid)) &&
         (!validate_host || host_frontier)) {
       break;
@@ -426,9 +619,12 @@ int run_play_runtime(const std::string& data_dir,
   say("  play-boot returned #x%llx; dispatched %llu frame(s)\n",
       (unsigned long long)metrics.play_boot_result, (unsigned long long)metrics.ticks);
   say("  channel 3 first request: %s; %d archive(s), %d object(s) "
-      "(%d code from AOT, %d data linked)\n",
+      "(%d code from AOT, %d data linked); current=%s last=%s result=%d failures=%d error=%s\n",
       metrics.first_dgo_name[0] ? metrics.first_dgo_name : "<none>", metrics.dgo_archives,
-      metrics.dgo_objects, metrics.dgo_code_objects, metrics.dgo_data_objects);
+      metrics.dgo_objects, metrics.dgo_code_objects, metrics.dgo_data_objects,
+      metrics.current_dgo_name[0] ? metrics.current_dgo_name : "<none>",
+      metrics.last_dgo_name[0] ? metrics.last_dgo_name : "<none>", metrics.dgo_last_result,
+      metrics.dgo_failures, metrics.last_dgo_error[0] ? metrics.last_dgo_error : "<none>");
   report_heap("after play-boot frontier");
 
   if (validate_dma) {
@@ -448,12 +644,24 @@ int run_play_runtime(const std::string& data_dir,
   if (validate_host) {
     say("  headless graphics host after play-boot: chains=%d syncv=%d sync-path=%d "
         "texture-upload=%d texture-relocate=%d desired-levels=%d (last %d) "
-        "active-levels=%d (last %d) pmode=%d (last %.6f)\n",
+        "active-levels=%d (last %d) pmode=%d (last %.6f); "
+        "desired-sets=%d [%s] active-sets=%d [%s]\n",
         metrics.host_chains, metrics.host_syncvs, metrics.host_sync_paths,
         metrics.host_texture_uploads, metrics.host_texture_relocations,
         metrics.host_desired_level_calls, metrics.host_last_desired_level_count,
         metrics.host_active_level_calls, metrics.host_last_active_level_count,
-        metrics.host_pmode_calls, metrics.host_last_pmode_alpha);
+        metrics.host_pmode_calls, metrics.host_last_pmode_alpha, metrics.host_desired_level_sets,
+        metrics.host_desired_levels, metrics.host_active_level_sets, metrics.host_active_levels);
+    goal_gfx_host_stats gfx = {};
+    goal_gfx_host_stats_get(&gfx);
+    if (metrics.host_desired_level_sets != gfx.level_sets ||
+        metrics.host_active_level_sets != gfx.active_level_sets ||
+        std::strcmp(metrics.host_desired_levels, gfx.last_levels ? gfx.last_levels : "") != 0 ||
+        std::strcmp(metrics.host_active_levels,
+                    gfx.last_active_levels ? gfx.last_active_levels : "") != 0) {
+      say("FAILED: runtime desired/active level snapshots do not match the graphics-host seam\n");
+      return 1;
+    }
     if (metrics.host_chains <= 0 || metrics.host_sync_paths <= 0 || metrics.host_syncvs <= 0) {
       say("FAILED: the headless graphics host requires at least one send-chain, syncv and "
           "sync-path callback after its baseline\n");
@@ -472,6 +680,40 @@ int run_play_runtime(const std::string& data_dir,
     return 1;
   }
   say("  proved: Jak 2 play reached TITLE.DGO through the composed channel-3 router\n");
+  if (!preview_scene.empty()) {
+    if (!preview_requested) {
+      say("FAILED: scene preview never reached a stable title menu in %d frames\n",
+          dispatch_frames);
+      return 1;
+    }
+    if (!preview_seen || !preview_identity_valid || !preview_animation_valid ||
+        !preview_dependencies_valid || !preview_actors_valid) {
+      say("FAILED: scene preview contract was not observed: scene=%d identity=%d animation=%d "
+          "dependencies=%d actors=%d first-aframe=%.3f last-aframe=%.3f last=%s entity=%s "
+          "levels=%s\n",
+          preview_seen, preview_identity_valid, preview_animation_valid,
+          preview_dependencies_valid, preview_actors_valid, preview_first_aframe,
+          metrics.animation_aframe, metrics.scene_animation_name, metrics.scene_entity,
+          metrics.host_desired_levels);
+      return 1;
+    }
+    if (!preview_finished) {
+      say("FAILED: scene preview did not return through the no-save release path in %d frames\n",
+          dispatch_frames);
+      return 1;
+    }
+    if (preview_scene == "city-help-kid-intro") {
+      say("  proved: %s used hal-help-kid-1, ctyslumb+ctywide+ctykora, and complete "
+          "ctykora Merc actors 1..4; the temporary save tree remained byte-and-timestamp "
+          "identical\n",
+          preview_scene.c_str());
+    } else {
+      say("  proved: %s completed and left the temporary save tree byte-and-timestamp "
+          "identical\n",
+          preview_scene.c_str());
+    }
+    return 0;
+  }
   if (graphics == GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION) {
     say("  proved: the title frontier crossed the host graphics boundary: %d chain(s), "
         "%d syncv, %d sync-path\n",
@@ -509,6 +751,8 @@ int run_play_runtime(const std::string& data_dir,
 int main(int argc, char** argv) {
   std::string data_dir;
   int dispatch_frames = 100;
+  bool frames_explicit = false;
+  std::string preview_scene;
   bool with_game = false;
   bool run_play = false;
   bool run_play_dma = false;
@@ -519,6 +763,7 @@ int main(int argc, char** argv) {
       data_dir = argv[++i];
     } else if (arg == "--frames" && i + 1 < argc) {
       dispatch_frames = std::atoi(argv[++i]);
+      frames_explicit = true;
     } else if (arg == "--verbose") {
       goal_dgo_set_verbose(1);
     } else if (arg == "--with-game") {
@@ -534,9 +779,21 @@ int main(int argc, char** argv) {
       run_play = true;
       run_play_gfx_host = true;
       with_game = true;
+    } else if (arg == "--preview-scene" && i + 1 < argc) {
+      preview_scene = argv[++i];
+      run_play = true;
+      with_game = true;
     } else {
       std::fprintf(stderr, "unknown argument %s\n", arg.c_str());
       return 2;
+    }
+  }
+  if (!preview_scene.empty()) {
+    if (!run_play_dma && !run_play_gfx_host) {
+      run_play_gfx_host = true;
+    }
+    if (!frames_explicit) {
+      dispatch_frames = 9000;
     }
   }
   if (run_play_dma && run_play_gfx_host) {
@@ -567,7 +824,7 @@ int main(int argc, char** argv) {
     } else if (run_play_gfx_host) {
       graphics = GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION;
     }
-    return run_play_runtime(data_dir, dispatch_frames, graphics);
+    return run_play_runtime(data_dir, dispatch_frames, graphics, preview_scene);
   }
 
   if (goal_kernel_core_initialize() != GOAL_KERNEL_CORE_OK) {

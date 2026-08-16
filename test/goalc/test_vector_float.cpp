@@ -518,6 +518,13 @@ INSTANTIATE_TEST_SUITE_P(WithGameTests_VectorFloatTests,
                          VectorFloatParameterizedTestFixtureWithRunner_TwoOperandQuotient,
                          ::testing::ValuesIn(vectorMathCaseGen_TwoOperandQuotient()));
 
+TEST_F(WithMinimalGameTests, VF_DIV_PS2_EXCEPTIONAL_BITS) {
+  shared_compiler->runner.run_static_test(
+      testCategory, "test-vector-div-q-bits.gc",
+      {"#xff7fffff\n#xff7fffff\n#x0\n#x7f7fffff\n#x7f7fffff\n#x3fc00000\n"
+       "#x7f7fffff\n#x0\n0\n"});
+}
+
 // ---- Single Operand Quotient Register Operations
 
 struct VectorFloatTestCase_OneOperandQuotient : VectorFloatTestCase {

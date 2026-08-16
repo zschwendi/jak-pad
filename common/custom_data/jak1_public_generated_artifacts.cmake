@@ -3,9 +3,13 @@ include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_output_graph.cmake")
 if(NOT TARGET jak1-public-generated-artifacts)
   add_library(jak1-public-generated-artifacts STATIC
               "${CMAKE_SOURCE_DIR}/common/custom_data/GoalDataObjectBuilder.cpp"
+              "${CMAKE_SOURCE_DIR}/common/custom_data/PublicGeneratedDataObjectCompiler.cpp"
               "${CMAKE_SOURCE_DIR}/common/custom_data/Jak1PublicGeneratedArtifacts.cpp")
   target_include_directories(jak1-public-generated-artifacts PUBLIC "${CMAKE_SOURCE_DIR}")
+  target_include_directories(jak1-public-generated-artifacts
+                             PRIVATE "${CMAKE_SOURCE_DIR}/third-party/fmt/include")
   target_compile_features(jak1-public-generated-artifacts PUBLIC cxx_std_20)
+  target_compile_definitions(jak1-public-generated-artifacts PRIVATE FMT_HEADER_ONLY=1)
   target_link_libraries(jak1-public-generated-artifacts PUBLIC jak1-output-graph)
 
   if(MSVC)

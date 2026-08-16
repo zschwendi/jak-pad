@@ -1,10 +1,13 @@
 #include "metal_eye_renderer.h"
 
+#include <array>
+#include <mutex>
 #include <unordered_map>
 
 #include "common/log/log.h"
 
 #include "game/graphics/opengl_renderer/AdgifHandler.h"
+#include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/texture/TexturePool.h"
 
 #include "fmt/format.h"
@@ -42,9 +45,27 @@ MetalEyeRenderer::MetalEyeRenderer(const std::string& name,
                                    id<MTLDevice> device,
                                    id<MTLCommandQueue> queue)
     : MetalBucketRenderer(name, my_id), m_device(device), m_queue(queue) {
+  // Audited PRIS producers can each replace any of the forty slots once per frame.
+  // Reserve every possible retired generation before publication can begin.
+  m_retired_handles.reserve(METAL_NUM_EYE_PAIRS * 2 *
+                            (metal_renderer::kJak2PrisEyeProducerCount - 1));
   for (auto& tex : m_gpu_eye_textures) {
     tex.texture = make_eye_target(device);
     tex.handle = metal_texture_register(tex.texture);
+  }
+}
+
+MetalEyeRenderer::~MetalEyeRenderer() {
+  detach_pool();
+  for (u64 handle : m_retired_handles) {
+    metal_texture_release(handle);
+  }
+  m_retired_handles.clear();
+  for (auto& tex : m_gpu_eye_textures) {
+    if (tex.handle) {
+      metal_texture_release(tex.handle);
+      tex.handle = 0;
+    }
   }
 }
 
@@ -52,16 +73,24 @@ MetalEyeRenderer::MetalEyeRenderer(const std::string& name,
  * Mirror of EyeRenderer::init_textures: each eye gets a VRAM slot so merc's
  * adgifs and the pool's slot lookups resolve to the composed texture.
  */
-void MetalEyeRenderer::init_textures(TexturePool& texture_pool, GameVersion version) {
+bool MetalEyeRenderer::init_textures(TexturePool& texture_pool, GameVersion version) {
+  if (m_pool || !m_device || !m_queue ||
+      (version != GameVersion::Jak1 && version != GameVersion::Jak2)) {
+    return false;
+  }
+  for (const auto& tex : m_gpu_eye_textures) {
+    if (!tex.texture || !tex.handle) {
+      return false;
+    }
+  }
+
+  std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
   for (int pair_idx = 0; pair_idx < METAL_NUM_EYE_PAIRS; pair_idx++) {
     for (int lr = 0; lr < 2; lr++) {
       u32 tidx = pair_idx * 2 + lr;
       u32 tbp = pair_idx * 2 + lr;
-      if (version != GameVersion::Jak1) {
-        // the Metal bucket table is Jak 1 only; the other versions' base
-        // blocks arrive with their tables.
-        lg::warn("Metal eyes: only Jak 1 is supported; using the Jak 1 base block");
-      }
+      // Jak 2 deliberately uses Jak 1's base, matching the GL renderer. Its
+      // nominal base overlaps ocean state in the original game.
       tbp += METAL_EYE_BASE_BLOCK_JAK1;
 
       TextureInput in;
@@ -71,9 +100,40 @@ void MetalEyeRenderer::init_textures(TexturePool& texture_pool, GameVersion vers
       in.debug_page_name = "PC-EYES";
       in.debug_name = fmt::format("{}-eye-gpu-{}", lr ? "left" : "right", pair_idx);
       in.id = texture_pool.allocate_pc_port_texture(version);
+      m_gpu_eye_textures[tidx].texture_id = in.id;
       m_gpu_eye_textures[tidx].gpu_tex = texture_pool.give_texture_and_load_to_vram(in, tbp);
       m_gpu_eye_textures[tidx].tbp = tbp;
     }
+  }
+  m_pool = &texture_pool;
+  return true;
+}
+
+void MetalEyeRenderer::detach_pool() {
+  if (!m_pool) {
+    return;
+  }
+  std::lock_guard<std::mutex> pool_lock(m_pool->mutex());
+  for (auto& tex : m_gpu_eye_textures) {
+    if (tex.gpu_tex && tex.handle) {
+      m_pool->unload_texture(tex.texture_id, tex.handle);
+    }
+    tex.gpu_tex = nullptr;
+  }
+  m_pool = nullptr;
+}
+
+void MetalEyeRenderer::start_frame() {
+  // MetalRenderer calls this only after waiting for the prior stream submission. Earlier Merc
+  // encoders can no longer reference these retained generations at this boundary.
+  for (u64 handle : m_retired_handles) {
+    metal_texture_release(handle);
+  }
+  m_retired_handles.clear();
+  m_stats = Stats();
+  m_frame_producer_buckets.fill(0);
+  for (auto& tex : m_gpu_eye_textures) {
+    tex.composed_this_frame = false;
   }
 }
 
@@ -422,10 +482,11 @@ bool MetalEyeRenderer::handle_eye_dma2(DmaFollower& dma, MetalSharedRenderState*
 
 void MetalEyeRenderer::render_from_texture_bucket(DmaFollower& dma,
                                                   MetalSharedRenderState* render_state,
-                                                  MetalFrameContext& ctx) {
+                                                  MetalFrameContext& ctx,
+                                                  u32 producer_bucket) {
   if (handle_eye_dma2(dma, render_state)) {
     auto draws = get_draws(dma, render_state);
-    run_gpu(draws, render_state, ctx);
+    run_gpu(draws, render_state, ctx, producer_bucket);
   }
 }
 
@@ -451,7 +512,7 @@ void MetalEyeRenderer::render(DmaFollower& dma,
 
   if (handle_eye_dma2(dma, render_state)) {
     auto draws = get_draws(dma, render_state);
-    run_gpu(draws, render_state, ctx);
+    run_gpu(draws, render_state, ctx, 0);
   }
 
   while (dma.current_tag_offset() != render_state->next_bucket) {
@@ -549,11 +610,43 @@ int add_clear_draw_to_buffer(int idx, float* data) {
  * command buffer because the frame's encoder is open - the same structure the
  * generated ocean texture uses.
  */
-void MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
+bool MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
                                MetalSharedRenderState* render_state,
-                               MetalFrameContext& ctx) {
+                               MetalFrameContext& ctx,
+                               u32 producer_bucket) {
   if (draws.empty()) {
-    return;
+    return false;
+  }
+
+  std::array<bool, METAL_NUM_EYE_PAIRS * 2> pending_slots = {};
+  std::array<bool, METAL_NUM_EYE_PAIRS * 2> versioned_slots = {};
+  int duplicate_slots = 0;
+  for (const auto& draw : draws) {
+    const int slot = draw.tex_slot();
+    if (slot < 0 || slot >= METAL_NUM_EYE_PAIRS * 2) {
+      eye_expect(false, "an in-range eye texture slot", &m_stats.unexpected_dma, &m_warned_dma);
+      return false;
+    }
+    if (pending_slots[slot]) {
+      duplicate_slots++;
+    } else if (m_gpu_eye_textures[slot].composed_this_frame) {
+      if (metal_renderer::jak2_pris_eye_producer_precedes(
+              m_frame_producer_buckets[slot], producer_bucket)) {
+        versioned_slots[slot] = true;
+      } else {
+        duplicate_slots++;
+      }
+    }
+    pending_slots[slot] = true;
+  }
+  if (duplicate_slots) {
+    m_stats.duplicate_slot_writes += duplicate_slots;
+    if (!m_warned_duplicate_slot) {
+      m_warned_duplicate_slot = true;
+      lg::warn("Metal eyes: rejected {} duplicate eye slot write(s) (logged once)",
+               duplicate_slots);
+    }
+    return false;
   }
 
   int buffer_idx = 0;
@@ -577,7 +670,7 @@ void MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
     if (buffer_idx > VTX_BUFFER_FLOATS) {
       eye_expect(false, "no more eyes than the vertex buffer holds", &m_stats.unexpected_dma,
                  &m_warned_dma);
-      return;
+      return false;
     }
   }
   id<MTLBuffer> vertex_buffer = nil;
@@ -603,21 +696,68 @@ void MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
   sampler_key.min_filter = MTLSamplerMinMagFilterLinear;
   sampler_key.mag_filter = MTLSamplerMinMagFilterLinear;
   id<MTLSamplerState> sampler = ctx.sampler_cache->get(sampler_key);
+  if (!opaque_pso || !blend_pso || !sampler || !m_queue || !m_pool ||
+      render_state->texture_pool != m_pool) {
+    m_stats.command_buffer_errors++;
+    return false;
+  }
+
+  struct PendingGeneration {
+    id<MTLTexture> texture = nil;
+    u64 handle = 0;
+  };
+  std::array<PendingGeneration, METAL_NUM_EYE_PAIRS * 2> pending_generations = {};
+  const auto release_pending_generations = [&pending_generations]() {
+    for (auto& generation : pending_generations) {
+      if (generation.handle) {
+        metal_texture_release(generation.handle);
+        generation.handle = 0;
+      }
+      generation.texture = nil;
+    }
+  };
+  for (std::size_t slot = 0; slot < versioned_slots.size(); ++slot) {
+    if (!versioned_slots[slot]) {
+      continue;
+    }
+    auto& generation = pending_generations[slot];
+    generation.texture = make_eye_target(m_device);
+    generation.handle = metal_texture_register(generation.texture);
+    if (!generation.handle) {
+      release_pending_generations();
+      m_stats.command_buffer_errors++;
+      return false;
+    }
+  }
 
   id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
+  if (!cmds) {
+    release_pending_generations();
+    m_stats.command_buffer_errors++;
+    return false;
+  }
+  int encoded_draw_calls = 0;
+  int encoded_triangles = 0;
   buffer_idx = 0;
   for (const auto& draw : draws) {
-    auto& out_tex = m_gpu_eye_textures[draw.tex_slot()];
-    out_tex.fnv_name_hash = draw.fnv_name_hash;
-    out_tex.lr = draw.lr;
+    const int slot = draw.tex_slot();
+    auto& out_tex = m_gpu_eye_textures[slot];
+    id<MTLTexture> target = versioned_slots[slot]
+                                ? pending_generations[slot].texture
+                                : out_tex.texture;
 
     auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = out_tex.texture;
+    pass.colorAttachments[0].texture = target;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     // the GL renderer's debugging clear: red where nothing draws
     pass.colorAttachments[0].clearColor = MTLClearColorMake(1.0, 0.0, 0.0, 0.0);
     id<MTLRenderCommandEncoder> enc = [cmds renderCommandEncoderWithDescriptor:pass];
+    if (!enc) {
+      release_pending_generations();
+      m_stats.command_buffer_errors++;
+      return false;
+    }
     [enc setCullMode:MTLCullModeNone];
     [enc setVertexBuffer:vertex_buffer offset:vertex_buffer_offset atIndex:0];
     [enc setFragmentSamplerState:sampler atIndex:0];
@@ -630,8 +770,8 @@ void MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
         [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
                 vertexStart:(NSUInteger)(buffer_idx / 4)
                 vertexCount:4];
-        m_stats.draw_calls++;
-        m_stats.triangles += 2;
+        encoded_draw_calls++;
+        encoded_triangles += 2;
       }
       buffer_idx += 4 * 4;
     };
@@ -644,24 +784,62 @@ void MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
     quad(draw.has_lid ? opaque_pso : nil, draw.lid_tex_handle);
 
     [enc endEncoding];
-    if (!m_stats.first_texture) {
-      m_stats.first_texture = out_tex.handle;
-    }
-    m_stats.eyes++;
-
-    // hand the composed texture to "VRAM" so merc's slot lookups find it
-    if (out_tex.gpu_tex) {
-      render_state->texture_pool->move_existing_to_vram(out_tex.gpu_tex, out_tex.tbp);
-    }
   }
 
   [cmds commit];
-  if (!ctx.auxiliary_submissions_share_frame_queue) {
+  m_stats.command_buffers_committed++;
+  const bool wait_for_composition =
+      !ctx.auxiliary_submissions_share_frame_queue || render_state->version == GameVersion::Jak2;
+  if (wait_for_composition) {
     // Borrowed frame command buffers may be submitted to another queue. Preserve immediate
-    // ordering there; renderer-owned frames are ordered by the serial queue and the tracked main
-    // submission keeps this stream allocation alive until the eye work has completed.
+    // ordering there. Jak II also publishes the composed generations synchronously because its
+    // downstream PRIS buckets consume and validate them in the same engine frame.
     [cmds waitUntilCompleted];
+    m_stats.last_command_buffer_status = static_cast<int>(cmds.status);
+    if (cmds.status != MTLCommandBufferStatusCompleted) {
+      release_pending_generations();
+      m_stats.command_buffer_errors++;
+      lg::error("Metal eyes: composition command buffer failed with status {}",
+                m_stats.last_command_buffer_status);
+      return false;
+    }
+    m_stats.command_buffers_completed++;
   }
+
+  {
+    std::lock_guard<std::mutex> pool_lock(m_pool->mutex());
+    for (const auto& draw : draws) {
+      const int slot = draw.tex_slot();
+      auto& out_tex = m_gpu_eye_textures[slot];
+      if (versioned_slots[slot]) {
+        auto& generation = pending_generations[slot];
+        const u64 retired_handle = out_tex.handle;
+        m_pool->update_gl_texture(out_tex.gpu_tex, 32, 32, generation.handle);
+        out_tex.texture = generation.texture;
+        out_tex.handle = generation.handle;
+        generation.handle = 0;
+        generation.texture = nil;
+        m_retired_handles.push_back(retired_handle);
+        m_stats.versioned_slot_writes++;
+      }
+      m_pool->move_existing_to_vram(out_tex.gpu_tex, out_tex.tbp);
+    }
+  }
+  for (const auto& draw : draws) {
+    auto& out_tex = m_gpu_eye_textures[draw.tex_slot()];
+    out_tex.fnv_name_hash = draw.fnv_name_hash;
+    out_tex.lr = draw.lr;
+    out_tex.composed_once = true;
+    out_tex.composed_this_frame = true;
+    m_frame_producer_buckets[draw.tex_slot()] = producer_bucket;
+    if (!m_stats.first_texture) {
+      m_stats.first_texture = out_tex.handle;
+    }
+  }
+  m_stats.eyes += static_cast<int>(draws.size());
+  m_stats.draw_calls += encoded_draw_calls;
+  m_stats.triangles += encoded_triangles;
+  return true;
 }
 
 std::optional<u64> MetalEyeRenderer::lookup_eye_texture(u8 eye_id) {
@@ -669,13 +847,17 @@ std::optional<u64> MetalEyeRenderer::lookup_eye_texture(u8 eye_id) {
   if ((int)eye_id >= METAL_NUM_EYE_PAIRS * 2) {
     return {};
   }
-  const u64 handle = m_gpu_eye_textures[eye_id].handle;
+  const auto& slot = m_gpu_eye_textures[eye_id];
+  if (!slot.composed_once) {
+    return {};
+  }
+  const u64 handle = slot.handle;
   return handle ? std::optional<u64>(handle) : std::optional<u64>();
 }
 
 std::optional<u64> MetalEyeRenderer::lookup_eye_texture_hash(u64 hash, bool lr) {
   for (auto& slot : m_gpu_eye_textures) {
-    if (slot.fnv_name_hash == hash && slot.lr == lr) {
+    if (slot.composed_once && slot.fnv_name_hash == hash && slot.lr == lr) {
       return slot.handle ? std::optional<u64>(slot.handle) : std::optional<u64>();
     }
   }

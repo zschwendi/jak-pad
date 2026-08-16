@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "common/math/ps2_vu_float.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -302,6 +304,14 @@ static inline goal_vf goal_vf_max(goal_vf a, goal_vf b) {
   goal_vf out;
   for (int i = 0; i < 4; i++) {
     out[i] = b[i] > a[i] ? b[i] : a[i];
+  }
+  return out;
+}
+
+static inline goal_vf goal_vf_ps2_vu_div_q(goal_vf numerator, goal_vf denominator) {
+  goal_vf out;
+  for (int i = 0; i < 4; i++) {
+    out[i] = ps2_vu_div_q(numerator[i], denominator[i]);
   }
   return out;
 }

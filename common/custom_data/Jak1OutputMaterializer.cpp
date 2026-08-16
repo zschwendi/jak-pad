@@ -1,8 +1,11 @@
 #include "Jak1OutputMaterializer.h"
+#include "Jak1OutputMaterializerTestHooks.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <dirent.h>
+#include <fcntl.h>
 #include <fstream>
 #include <limits>
 #include <new>
@@ -10,7 +13,16 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <unistd.h>
 
+#if defined(__APPLE__)
+#include <sys/acl.h>
+#include <sys/clonefile.h>
+#include <sys/xattr.h>
+#endif
+
+#include "common/util/PosixFile.h"
+#include "common/versions/jak2_iso_revisions.h"
 #include "decompiler/extractor/jak1_checked_dgo.h"
 #include "decompiler/extractor/jak1_checked_dgo_writer.h"
 #include "decompiler/extractor/jak1_retail_object_catalog.h"
@@ -23,6 +35,16 @@ namespace {
 
 namespace fs = std::filesystem;
 constexpr std::uint64_t kDgoHeaderBytes = 64;
+constexpr std::uint64_t kProgressIntervalBytes = 8 * 1024 * 1024;
+
+using OutputMap = std::unordered_map<std::string, checked_file_identity::Identity>;
+
+struct OwnedOutput {
+  std::string name;
+  posix_file::Identity identity;
+};
+
+using OwnedOutputMap = std::unordered_map<std::string, OwnedOutput>;
 
 Error make_error(ErrorCode code,
                  std::string message,
@@ -47,8 +69,12 @@ std::optional<Error> cancelled(const Options& options,
   }
   try {
     if (options.should_cancel()) {
-      return make_error(ErrorCode::cancelled, "Jak 1 output materialization was cancelled.",
-                        archive_index, object_index);
+      return make_error(
+          ErrorCode::cancelled,
+          std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1"
+                                                                              : "Jak II") +
+              " output materialization was cancelled.",
+          archive_index, object_index);
     }
   } catch (...) {
     return make_error(ErrorCode::callback_failed, "The materializer cancellation callback failed.",
@@ -114,15 +140,322 @@ std::string collision_key(std::string_view value) {
   return result;
 }
 
-bool known_revision(const jak1_output_recipe::RevisionProvenance& revision) {
-  const auto revisions = jak1_iso::supported_revisions();
-  return std::any_of(revisions.begin(), revisions.end(), [&](const auto& known) {
-    return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
-           revision.contents_hash == known.contents_hash &&
-           revision.file_count == known.file_count &&
-           revision.config_version == known.decomp_config_version &&
-           revision.territory == known.territory && revision.black_label == known.black_label;
-  });
+using IdentityMap =
+    std::unordered_map<std::string, const checked_file_identity::Identity*>;
+
+Result<IdentityMap> index_file_identities(
+    std::span<const checked_file_identity::Identity> identities,
+    std::size_t cap,
+    const Options& options) {
+  if (identities.size() > cap) {
+    return Result<IdentityMap>::failure(make_error(
+        ErrorCode::input_identity_mismatch,
+        "A validated file-identity manifest exceeds its entry cap."));
+  }
+  IdentityMap indexed;
+  indexed.reserve(identities.size());
+  for (const auto& identity : identities) {
+    if (!safe_relative_path(identity.relative_path, options.limits.max_path_bytes) ||
+        !indexed.emplace(collision_key(identity.relative_path), &identity).second) {
+      return Result<IdentityMap>::failure(make_error(
+          ErrorCode::input_identity_mismatch,
+          "A validated file-identity manifest is unsafe or ambiguous."));
+    }
+  }
+  return Result<IdentityMap>::success(std::move(indexed));
+}
+
+Result<const checked_file_identity::Identity*> required_identity(
+    const IdentityMap& identities,
+    std::string_view relative_path,
+    const Options& options) {
+  const auto found = identities.find(collision_key(relative_path));
+  if (found != identities.end() && found->second->relative_path == relative_path) {
+    return Result<const checked_file_identity::Identity*>::success(found->second);
+  }
+  if (options.require_validated_file_identities || !identities.empty()) {
+    return Result<const checked_file_identity::Identity*>::failure(make_error(
+        ErrorCode::input_identity_mismatch,
+        "A required input has no exact validated file identity."));
+  }
+  return Result<const checked_file_identity::Identity*>::success(nullptr);
+}
+
+std::optional<Error> inspect_parent_identity(const fs::path& path,
+                                             const posix_file::Identity& expected) {
+  struct stat status {};
+  if (::lstat(path.c_str(), &status) != 0 || !S_ISDIR(status.st_mode) ||
+      !posix_file::same_identity(status, expected)) {
+    return make_error(ErrorCode::stage_install_failed,
+                      "The output parent directory changed during materialization.");
+  }
+  return {};
+}
+
+std::optional<Error> remove_owned_entries(int directory, const OwnedOutputMap& owned) {
+  auto enumeration = posix_file::open_directory_at(directory, ".");
+  if (!enumeration) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "Could not reopen an owned output directory for cleanup.");
+  }
+  DIR* stream = ::fdopendir(enumeration.release());
+  if (!stream) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "Could not enumerate an owned output directory for cleanup.");
+  }
+  int read_error = 0;
+  std::size_t found_count = 0;
+  while (true) {
+    errno = 0;
+    const auto* entry = ::readdir(stream);
+    if (!entry) {
+      read_error = errno;
+      break;
+    }
+    const std::string_view name(entry->d_name);
+    if (name == "." || name == "..") {
+      continue;
+    }
+    const auto found = owned.find(collision_key(name));
+    if (found == owned.end() || found->second.name != name ||
+        !posix_file::entry_identity(directory, name, found->second.identity)) {
+      ::closedir(stream);
+      return make_error(ErrorCode::stage_cleanup_failed,
+                        "An owned output directory contains an unowned or changed entry.");
+    }
+    ++found_count;
+  }
+  ::closedir(stream);
+  if (read_error != 0 || found_count != owned.size()) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "An owned output directory could not be exactly matched for cleanup.");
+  }
+  for (const auto& [key, output] : owned) {
+    (void)key;
+    if (!posix_file::entry_identity(directory, output.name, output.identity) ||
+        ::unlinkat(directory, output.name.c_str(), 0) != 0) {
+      return make_error(ErrorCode::stage_cleanup_failed,
+                        "An exact owned staged output changed during cleanup.");
+    }
+  }
+  return {};
+}
+
+struct OutputStage {
+  fs::path parent_path;
+  std::string destination_name;
+  std::string stage_name;
+  posix_file::OwnedFd parent;
+  posix_file::OwnedFd root;
+  posix_file::OwnedFd iso;
+  posix_file::OwnedFd fr3;
+  posix_file::Identity parent_identity;
+  posix_file::Identity root_identity;
+  posix_file::Identity iso_identity;
+  posix_file::Identity fr3_identity;
+  OwnedOutputMap iso_outputs;
+  OwnedOutputMap fr3_outputs;
+  bool linked = false;
+  bool iso_linked = false;
+  bool fr3_linked = false;
+  bool installed = false;
+
+  std::optional<Error> cleanup() {
+    if (!linked || installed) {
+      return {};
+    }
+    if (!root) {
+      root = posix_file::open_directory_at(parent.get(), stage_name);
+      posix_file::Identity current;
+      if (!root || !posix_file::descriptor_identity(root.get(), &current) ||
+          current.device != root_identity.device || current.inode != root_identity.inode) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not retain the exact owned materializer stage for cleanup.");
+      }
+    }
+    if (iso_linked && !iso) {
+      iso = posix_file::open_directory_at(root.get(), "iso");
+      posix_file::Identity current;
+      if (!iso || !posix_file::descriptor_identity(iso.get(), &current) ||
+          current.device != iso_identity.device || current.inode != iso_identity.inode) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not retain the exact owned ISO stage for cleanup.");
+      }
+    }
+    if (fr3_linked && !fr3) {
+      fr3 = posix_file::open_directory_at(root.get(), "fr3");
+      posix_file::Identity current;
+      if (!fr3 || !posix_file::descriptor_identity(fr3.get(), &current) ||
+          current.device != fr3_identity.device || current.inode != fr3_identity.inode) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not retain the exact owned FR3 stage for cleanup.");
+      }
+    }
+    if (iso_linked) {
+      if (const auto error = remove_owned_entries(iso.get(), iso_outputs)) {
+        return error;
+      }
+      if (!posix_file::entry_identity(root.get(), "iso", iso_identity) ||
+          ::unlinkat(root.get(), "iso", AT_REMOVEDIR) != 0) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not remove the exact owned ISO stage.");
+      }
+      iso_linked = false;
+    }
+    if (fr3_linked) {
+      if (const auto error = remove_owned_entries(fr3.get(), fr3_outputs)) {
+        return error;
+      }
+      if (!posix_file::entry_identity(root.get(), "fr3", fr3_identity) ||
+          ::unlinkat(root.get(), "fr3", AT_REMOVEDIR) != 0) {
+        return make_error(ErrorCode::stage_cleanup_failed,
+                          "Could not remove the exact owned FR3 stage.");
+      }
+      fr3_linked = false;
+    }
+    if (!posix_file::entry_identity(parent.get(), stage_name, root_identity) ||
+        ::unlinkat(parent.get(), stage_name.c_str(), AT_REMOVEDIR) != 0) {
+      return make_error(ErrorCode::stage_cleanup_failed,
+                        "Could not remove the exact owned materializer stage.");
+    }
+    linked = false;
+    return {};
+  }
+
+  std::optional<Error> install() {
+    if (!linked || !iso_linked || !fr3_linked || installed ||
+        inspect_parent_identity(parent_path, parent_identity) ||
+        !posix_file::entry_identity(parent.get(), stage_name, root_identity) ||
+        !posix_file::entry_identity(root.get(), "iso", iso_identity) ||
+        !posix_file::entry_identity(root.get(), "fr3", fr3_identity)) {
+      return make_error(ErrorCode::stage_install_failed,
+                        "The exact owned materializer stage changed before installation.");
+    }
+    if (posix_file::exclusive_rename_at(parent.get(), stage_name, parent.get(),
+                                        destination_name) != 0 ||
+        !posix_file::entry_identity(parent.get(), destination_name, root_identity)) {
+      return make_error(ErrorCode::stage_install_failed,
+                        "Could not exclusively install the exact materializer stage.");
+    }
+    installed = true;
+    linked = false;
+    return {};
+  }
+};
+
+std::optional<Error> create_output_stage(const fs::path& destination, OutputStage* stage) {
+  if (!stage || !destination.is_absolute() || destination.filename().empty()) {
+    return make_error(ErrorCode::invalid_argument,
+                      "The output destination is not a safe absolute path.");
+  }
+  stage->parent_path = destination.parent_path();
+  stage->destination_name = destination.filename().string();
+  stage->stage_name = stage->destination_name + ".stage";
+  if (!valid_name(stage->destination_name, 255) || !valid_name(stage->stage_name, 255)) {
+    return make_error(ErrorCode::invalid_argument,
+                      "The output destination basename is unsafe.");
+  }
+  stage->parent = posix_file::open_directory(stage->parent_path.c_str());
+  if (!stage->parent ||
+      !posix_file::descriptor_identity(stage->parent.get(), &stage->parent_identity)) {
+    return make_error(ErrorCode::destination_inspection_failed,
+                      "Could not open the direct output parent directory.");
+  }
+  struct stat destination_status {};
+  if (::fstatat(stage->parent.get(), stage->destination_name.c_str(), &destination_status,
+                AT_SYMLINK_NOFOLLOW) == 0) {
+    return make_error(ErrorCode::destination_exists, "The output destination already exists.");
+  }
+  if (errno != ENOENT) {
+    return make_error(ErrorCode::destination_inspection_failed,
+                      "Could not inspect the output destination.");
+  }
+  if (::mkdirat(stage->parent.get(), stage->stage_name.c_str(), 0700) != 0) {
+    return make_error(errno == EEXIST ? ErrorCode::destination_exists
+                                      : ErrorCode::stage_create_failed,
+                      "The private output stage already exists or could not be created.");
+  }
+  stage->linked = true;
+  struct stat root_status {};
+  if (::fstatat(stage->parent.get(), stage->stage_name.c_str(), &root_status,
+                AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISDIR(root_status.st_mode)) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not retain the exact output-stage identity.");
+  }
+  stage->root_identity = {root_status.st_dev, root_status.st_ino};
+  stage->root = posix_file::open_directory_at(stage->parent.get(), stage->stage_name);
+  posix_file::Identity opened_root;
+  if (!stage->root || !posix_file::descriptor_identity(stage->root.get(), &opened_root) ||
+      opened_root.device != stage->root_identity.device ||
+      opened_root.inode != stage->root_identity.inode) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not open the exact descriptor-owned output stage.");
+  }
+  if (::mkdirat(stage->root.get(), "iso", 0700) != 0) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not create the descriptor-owned ISO output directory.");
+  }
+  stage->iso_linked = true;
+  struct stat iso_status {};
+  if (::fstatat(stage->root.get(), "iso", &iso_status, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISDIR(iso_status.st_mode)) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not retain the exact ISO output identity.");
+  }
+  stage->iso_identity = {iso_status.st_dev, iso_status.st_ino};
+  stage->iso = posix_file::open_directory_at(stage->root.get(), "iso");
+  posix_file::Identity opened_iso;
+  if (!stage->iso || !posix_file::descriptor_identity(stage->iso.get(), &opened_iso) ||
+      opened_iso.device != stage->iso_identity.device ||
+      opened_iso.inode != stage->iso_identity.inode) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not open the exact descriptor-owned ISO output directory.");
+  }
+  if (::mkdirat(stage->root.get(), "fr3", 0700) != 0) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not create the descriptor-owned FR3 output directory.");
+  }
+  stage->fr3_linked = true;
+  struct stat fr3_status {};
+  if (::fstatat(stage->root.get(), "fr3", &fr3_status, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISDIR(fr3_status.st_mode)) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not retain the exact FR3 output identity.");
+  }
+  stage->fr3_identity = {fr3_status.st_dev, fr3_status.st_ino};
+  stage->fr3 = posix_file::open_directory_at(stage->root.get(), "fr3");
+  posix_file::Identity opened_fr3;
+  if (!stage->fr3 || !posix_file::descriptor_identity(stage->fr3.get(), &opened_fr3) ||
+      opened_fr3.device != stage->fr3_identity.device ||
+      opened_fr3.inode != stage->fr3_identity.inode) {
+    return make_error(ErrorCode::stage_create_failed,
+                      "Could not open the exact descriptor-owned FR3 output directory.");
+  }
+  return {};
+}
+
+bool known_revision(const jak1_output_recipe::RevisionProvenance& revision,
+                    jak1_output_recipe::WireGame game) {
+  if (game == jak1_output_recipe::WireGame::jak1) {
+    const auto revisions = jak1_iso::supported_revisions();
+    return std::any_of(revisions.begin(), revisions.end(), [&](const auto& known) {
+      return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
+             revision.contents_hash == known.contents_hash &&
+             revision.file_count == known.file_count &&
+             revision.config_version == known.decomp_config_version &&
+             revision.territory == known.territory && revision.black_label == known.black_label;
+    });
+  }
+  if (game != jak1_output_recipe::WireGame::jak2) {
+    return false;
+  }
+  const auto& known = jak2_iso::import_revision();
+  return revision.serial == known.serial && revision.executable_hash == known.elf_hash &&
+         revision.contents_hash == known.contents_hash && revision.file_count == known.file_count &&
+         revision.config_version == known.decomp_config_version &&
+         static_cast<int>(revision.territory) == static_cast<int>(known.territory) &&
+         !revision.black_label;
 }
 
 bool valid_options(const Options& options) {
@@ -132,10 +465,16 @@ bool valid_options(const Options& options) {
          limits.max_flat_file_bytes > 0 && limits.max_fr3_file_bytes > 0 &&
          limits.max_total_output_bytes > 0 && limits.max_generated_objects > 0 &&
          limits.max_generated_flat_files > 0 && limits.max_path_bytes > 0 &&
-         limits.max_name_bytes > 0 && limits.io_chunk_bytes > 0 &&
+         limits.max_name_bytes > 0 && limits.max_validated_extracted_files > 0 &&
+         limits.max_validated_fr3_files > 0 && limits.io_chunk_bytes > 0 &&
+         (!options.compressed_trailing_alignment_bytes ||
+          *options.compressed_trailing_alignment_bytes > 0) &&
+         (!options.expected_recipe_bytes ||
+          (!options.expected_recipe_bytes->empty() &&
+           options.expected_recipe_bytes->size() <= limits.max_recipe_bytes)) &&
          options.expected_source_object_pack.object_count > 0 &&
          options.expected_source_object_pack.aggregate_xxh64 != 0 &&
-         known_revision(options.expected_revision);
+         known_revision(options.expected_revision, options.wire_game);
 }
 
 ErrorCode map_recipe_error(jak1_output_recipe::ErrorCode code) {
@@ -286,26 +625,345 @@ std::optional<Error> reserve_output(std::uint64_t size,
   std::uint64_t next = 0;
   if (!checked_add(*total, size, &next) || next > options.limits.max_total_output_bytes) {
     return make_error(ErrorCode::output_limit_exceeded,
-                      "The materialized Jak 1 output exceeds its configured size cap.");
+                      "The materialized output exceeds its configured size cap.");
   }
   *total = next;
   return {};
 }
 
-std::optional<Error> copy_file(
+bool same_file_snapshot(const struct stat& before, const struct stat& after) {
+  if (before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+      before.st_mode != after.st_mode || before.st_nlink != after.st_nlink ||
+      before.st_size != after.st_size) {
+    return false;
+  }
+#if defined(__APPLE__)
+  return before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec &&
+         before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec &&
+         before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec &&
+         before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec;
+#else
+  return before.st_mtim.tv_sec == after.st_mtim.tv_sec &&
+         before.st_mtim.tv_nsec == after.st_mtim.tv_nsec &&
+         before.st_ctim.tv_sec == after.st_ctim.tv_sec &&
+         before.st_ctim.tv_nsec == after.st_ctim.tv_nsec;
+#endif
+}
+
+#if defined(__APPLE__)
+bool clone_fallback_error(int error) {
+  if (error == ENOTSUP || error == EXDEV) {
+    return true;
+  }
+#if defined(EOPNOTSUPP)
+  return error == EOPNOTSUPP;
+#else
+  return false;
+#endif
+}
+
+std::optional<Error> verify_clone_fallback_destination_absent(
+    int directory,
+    std::string_view name) {
+  const std::string owned_name(name);
+  struct stat status {};
+  if (::fstatat(directory, owned_name.c_str(), &status, AT_SYMLINK_NOFOLLOW) == 0 ||
+      errno != ENOENT) {
+    return make_error(ErrorCode::output_write_failed,
+                      "A failed file clone left an unsafe destination entry.");
+  }
+  return {};
+}
+
+enum class ExtendedAclState {
+  absent,
+  present,
+  inspection_failed,
+};
+
+bool no_extended_acl_error(int error) {
+  return error == ENOENT || error == ENOATTR || error == EOPNOTSUPP;
+}
+
+ExtendedAclState inspect_extended_acl(int descriptor) {
+  errno = 0;
+  acl_t output_acl = ::acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED);
+  if (!output_acl) {
+    return no_extended_acl_error(errno) ? ExtendedAclState::absent
+                                        : ExtendedAclState::inspection_failed;
+  }
+  acl_entry_t entry = nullptr;
+  errno = 0;
+  const auto entry_result = ::acl_get_entry(output_acl, ACL_FIRST_ENTRY, &entry);
+  const auto entry_error = errno;
+  ::acl_free(output_acl);
+  if (entry_result == 0) {
+    return ExtendedAclState::present;
+  }
+  return entry_error == EINVAL ? ExtendedAclState::absent
+                               : ExtendedAclState::inspection_failed;
+}
+
+#if defined(JAK1_OUTPUT_MATERIALIZER_ENABLE_TEST_HOOKS)
+testing::ExtendedAclSetter g_extended_acl_setter = ::acl_set_fd_np;
+
+int set_extended_acl(int descriptor, acl_t acl) {
+  return g_extended_acl_setter(descriptor, acl, ACL_TYPE_EXTENDED);
+}
+#else
+int set_extended_acl(int descriptor, acl_t acl) {
+  return ::acl_set_fd_np(descriptor, acl, ACL_TYPE_EXTENDED);
+}
+#endif
+
+bool descriptor_has_no_extended_acl(int descriptor) {
+  return inspect_extended_acl(descriptor) == ExtendedAclState::absent;
+}
+
+bool descriptor_has_only_allowed_apple_xattrs(int descriptor) {
+  constexpr std::string_view kSystemProvenance = "com.apple.provenance";
+  const auto list_size = ::flistxattr(descriptor, nullptr, 0, 0);
+  if (list_size == 0) {
+    return true;
+  }
+  if (list_size < 0) {
+    return false;
+  }
+  std::vector<char> names(static_cast<std::size_t>(list_size));
+  const auto actual_size = ::flistxattr(descriptor, names.data(), names.size(), 0);
+  if (actual_size <= 0 || actual_size > static_cast<ssize_t>(names.size())) {
+    return false;
+  }
+  std::size_t offset = 0;
+  std::size_t allowed_count = 0;
+  while (offset < static_cast<std::size_t>(actual_size)) {
+    const auto end = std::find(names.begin() + static_cast<std::ptrdiff_t>(offset),
+                               names.begin() + actual_size, '\0');
+    if (end == names.begin() + actual_size || end == names.begin() + offset ||
+        std::string_view(names.data() + offset,
+                         static_cast<std::size_t>(end - names.begin()) - offset) !=
+            kSystemProvenance) {
+      return false;
+    }
+    ++allowed_count;
+    offset = static_cast<std::size_t>(end - names.begin()) + 1;
+  }
+  return allowed_count == 1;
+}
+
+bool descriptor_has_normalized_apple_metadata(int descriptor, const struct stat& status) {
+  return status.st_uid == ::geteuid() && (status.st_mode & 07777) == 0600 &&
+         status.st_flags == 0 && descriptor_has_only_allowed_apple_xattrs(descriptor) &&
+         descriptor_has_no_extended_acl(descriptor);
+}
+
+std::optional<Error> normalize_cloned_output(int descriptor) {
+  if (::fchflags(descriptor, 0) != 0 || ::fchmod(descriptor, 0600) != 0) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not normalize cloned output metadata.");
+  }
+
+  const auto list_size = ::flistxattr(descriptor, nullptr, 0, 0);
+  if (list_size < 0) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not inspect cloned output extended attributes.");
+  }
+  std::vector<char> names(static_cast<std::size_t>(list_size));
+  if (!names.empty()) {
+    const auto actual_size = ::flistxattr(descriptor, names.data(), names.size(), 0);
+    if (actual_size < 0 || actual_size > static_cast<ssize_t>(names.size())) {
+      return make_error(ErrorCode::output_write_failed,
+                        "Could not list cloned output extended attributes.");
+    }
+    std::size_t offset = 0;
+    while (offset < static_cast<std::size_t>(actual_size)) {
+      const auto end = std::find(names.begin() + static_cast<std::ptrdiff_t>(offset),
+                                 names.begin() + actual_size, '\0');
+      if (end == names.begin() + actual_size || end == names.begin() + offset ||
+          ::fremovexattr(descriptor,
+                         std::string(names.begin() + static_cast<std::ptrdiff_t>(offset), end)
+                             .c_str(),
+                         0) != 0) {
+        return make_error(ErrorCode::output_write_failed,
+                          "Could not remove cloned output extended attributes.");
+      }
+      offset = static_cast<std::size_t>(end - names.begin()) + 1;
+    }
+  }
+  if (!descriptor_has_only_allowed_apple_xattrs(descriptor)) {
+    return make_error(ErrorCode::output_write_failed,
+                      "A cloned output retained disallowed extended attributes.");
+  }
+  const auto initial_acl_state = inspect_extended_acl(descriptor);
+  if (initial_acl_state == ExtendedAclState::inspection_failed) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not inspect cloned output extended ACL metadata.");
+  }
+  if (initial_acl_state == ExtendedAclState::present) {
+    acl_t empty_acl = ::acl_init(0);
+    if (!empty_acl) {
+      return make_error(ErrorCode::output_write_failed,
+                        "Could not allocate empty cloned output ACL metadata.");
+    }
+    const auto set_acl_result = set_extended_acl(descriptor, empty_acl);
+    ::acl_free(empty_acl);
+    if (set_acl_result != 0) {
+      return make_error(ErrorCode::output_write_failed,
+                        "Could not clear cloned output extended ACL metadata.");
+    }
+  }
+  const auto final_acl_state = inspect_extended_acl(descriptor);
+  if (final_acl_state == ExtendedAclState::inspection_failed) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not verify cloned output extended ACL metadata.");
+  }
+  if (final_acl_state != ExtendedAclState::absent) {
+    return make_error(ErrorCode::output_write_failed,
+                      "A cloned output retained extended ACL metadata.");
+  }
+  return {};
+}
+#endif
+
+struct ByteProgress {
+  const Options& options;
+  Phase phase;
+  std::uint32_t completed;
+  std::uint32_t total;
+  std::uint64_t base_bytes;
+  std::uint64_t* shared_bytes;
+  std::string_view current_item;
+};
+
+std::optional<Error> report_byte_progress(const ByteProgress& progress,
+                                          std::uint64_t file_bytes,
+                                          std::uint64_t file_size) {
+  std::uint64_t bytes_written = 0;
+  if (!progress.shared_bytes ||
+      !checked_add(progress.base_bytes, *progress.shared_bytes, &bytes_written)) {
+    return make_error(ErrorCode::output_limit_exceeded,
+                      "Materializer byte progress overflowed.");
+  }
+  return report(progress.options, progress.phase,
+                progress.completed + static_cast<std::uint32_t>(file_bytes == file_size),
+                progress.total, bytes_written, std::string(progress.current_item));
+}
+
+std::optional<Error> hash_descriptor(int descriptor,
+                                     std::uint64_t size,
+                                     std::uint64_t* result,
+                                     ErrorCode read_error_code,
+                                     std::string_view read_error_message,
+                                     const ByteProgress* progress = nullptr) {
+  XXH64_state_t hash_state;
+  XXH64_reset(&hash_state, 0);
+  const auto chunk_bytes = progress
+                               ? std::min<std::size_t>(progress->options.limits.io_chunk_bytes,
+                                                       kProgressIntervalBytes)
+                               : 64 * 1024;
+  std::vector<std::uint8_t> buffer(chunk_bytes);
+  std::uint64_t offset = 0;
+  std::uint64_t next_progress = kProgressIntervalBytes;
+  while (offset < size) {
+    if (progress) {
+      if (const auto cancel_error = cancelled(progress->options)) {
+        return cancel_error;
+      }
+    }
+    const auto chunk = static_cast<std::size_t>(
+        std::min<std::uint64_t>(buffer.size(), size - offset));
+    const auto count = ::pread(descriptor, buffer.data(), chunk, static_cast<off_t>(offset));
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count != static_cast<ssize_t>(chunk)) {
+      return make_error(read_error_code, std::string(read_error_message));
+    }
+    XXH64_update(&hash_state, buffer.data(), chunk);
+    offset += chunk;
+    if (progress) {
+      *progress->shared_bytes += chunk;
+      if (offset == size || offset >= next_progress) {
+        if (const auto progress_error = report_byte_progress(*progress, offset, size)) {
+          return progress_error;
+        }
+        if (const auto cancel_error = cancelled(progress->options)) {
+          return cancel_error;
+        }
+        next_progress =
+            offset > std::numeric_limits<std::uint64_t>::max() - kProgressIntervalBytes
+                ? std::numeric_limits<std::uint64_t>::max()
+                : offset + kProgressIntervalBytes;
+      }
+    }
+  }
+  *result = XXH64_digest(&hash_state);
+  return {};
+}
+
+std::optional<Error> remove_owned_file(int directory,
+                                       std::string_view name,
+                                       const posix_file::Identity& identity) {
+  if (!posix_file::entry_identity(directory, name, identity)) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "A staged output changed before cleanup.");
+  }
+  const std::string owned_name(name);
+  if (::unlinkat(directory, owned_name.c_str(), 0) != 0) {
+    return make_error(ErrorCode::stage_cleanup_failed,
+                      "Could not remove an exact staged output.");
+  }
+  return {};
+}
+
+std::optional<Error> record_owned_output(int directory,
+                                         std::string_view name,
+                                         OwnedOutputMap* outputs) {
+  auto file = posix_file::open_file_at(directory, name, O_RDONLY);
+  posix_file::Identity identity;
+  struct stat status {};
+  if (!outputs || !file ||
+      !posix_file::descriptor_identity(file.get(), &identity, &status) ||
+      !S_ISREG(status.st_mode) || status.st_nlink != 1 ||
+      !posix_file::entry_identity(directory, name, identity) ||
+      !outputs->emplace(collision_key(name), OwnedOutput{std::string(name), identity}).second) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not record an exact owned staged output.");
+  }
+  return {};
+}
+
+std::optional<Error> copy_file_at(
     const fs::path& source,
-    const fs::path& destination,
+    int destination_directory,
+    std::string_view destination_name,
     std::uint64_t cap,
     const std::optional<std::pair<std::uint64_t, std::uint64_t>>& expected,
     ErrorCode mismatch_code,
     std::uint64_t* total_output,
-    const Options& options) {
-  std::error_code error;
-  const auto size = fs::file_size(source, error);
-  if (error || size == 0 || size > cap) {
-    return make_error(error ? ErrorCode::input_read_failed : ErrorCode::input_too_large,
-                      "A copied input is unreadable, empty, or too large: " + source.string());
+    const Options& options,
+    Phase progress_phase,
+    std::uint32_t progress_completed,
+    std::uint32_t progress_total,
+    checked_file_identity::Identity* produced,
+    posix_file::Identity* produced_inode,
+    bool* produced_clone) {
+  const int input_descriptor = ::open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  posix_file::OwnedFd input(input_descriptor);
+  struct stat input_before {};
+  if (!input || !posix_file::descriptor_identity(input.get(), nullptr, &input_before)) {
+    return make_error(ErrorCode::input_read_failed,
+                      "Could not open a materializer copy input.");
   }
+  if (!S_ISREG(input_before.st_mode)) {
+    return make_error(ErrorCode::input_not_regular,
+                      "A materializer copy input is not a regular file.");
+  }
+  if (input_before.st_size <= 0 || static_cast<std::uint64_t>(input_before.st_size) > cap) {
+    return make_error(ErrorCode::input_too_large,
+                      "A copied input is empty or too large: " + source.string());
+  }
+  const auto size = static_cast<std::uint64_t>(input_before.st_size);
   if (expected && expected->first != size) {
     return make_error(mismatch_code, "A copied artifact has the wrong size: " + source.string());
   }
@@ -313,45 +971,310 @@ std::optional<Error> copy_file(
   if (const auto budget = reserve_output(size, &next_total, options)) {
     return budget;
   }
-  std::ifstream input(source, std::ios::binary);
-  std::ofstream output(destination, std::ios::binary | std::ios::trunc);
-  if (!input || !output) {
+  if (const auto error_result = cancelled(options)) {
+    return error_result;
+  }
+
+  bool cloned = false;
+  posix_file::Identity cloned_identity;
+#if defined(__APPLE__)
+  if (options.attempt_file_clones && options.require_validated_file_identities && expected) {
+    const std::string owned_destination_name(destination_name);
+    if (::fclonefileat(input.get(), destination_directory, owned_destination_name.c_str(),
+                       CLONE_NOOWNERCOPY) == 0) {
+      cloned = true;
+      struct stat cloned_status {};
+      if (::fstatat(destination_directory, owned_destination_name.c_str(), &cloned_status,
+                    AT_SYMLINK_NOFOLLOW) != 0) {
+        return make_error(ErrorCode::output_write_failed,
+                          "Could not retain the exact cloned staged output.");
+      }
+      cloned_identity = {cloned_status.st_dev, cloned_status.st_ino};
+      if (!S_ISREG(cloned_status.st_mode) || cloned_status.st_nlink != 1) {
+        auto error = make_error(ErrorCode::output_write_failed,
+                                "The cloned staged output is not a private regular file.");
+        const auto cleanup =
+            remove_owned_file(destination_directory, destination_name, cloned_identity);
+        return cleanup ? *cleanup : std::move(error);
+      }
+    } else {
+      const auto clone_error = errno;
+      if (!clone_fallback_error(clone_error)) {
+        return make_error(ErrorCode::output_write_failed,
+                          "Could not safely clone a materializer copy input.");
+      }
+      if (const auto error = verify_clone_fallback_destination_absent(
+              destination_directory, destination_name)) {
+        return error;
+      }
+    }
+  }
+#else
+  (void)options.attempt_file_clones;
+#endif
+
+  auto output = cloned
+                    ? posix_file::open_file_at(destination_directory, destination_name, O_RDONLY)
+                    : posix_file::open_file_at(
+                          destination_directory, destination_name, O_RDWR | O_CREAT | O_EXCL, 0600);
+  if (!output) {
+    auto error = make_error(ErrorCode::output_write_failed,
+                            cloned ? "Could not open a cloned materializer copy output."
+                                   : "Could not exclusively create a materializer copy output.");
+    if (cloned) {
+      if (const auto cleanup =
+              remove_owned_file(destination_directory, destination_name, cloned_identity)) {
+        return cleanup;
+      }
+    }
+    return error;
+  }
+  posix_file::Identity output_identity;
+  struct stat output_status {};
+  if (!posix_file::descriptor_identity(output.get(), &output_identity, &output_status)) {
     return make_error(ErrorCode::output_write_failed,
-                      "Could not open a materializer copy input or output.");
+                      "Could not retain a copied output descriptor identity.");
+  }
+  const auto fail_owned = [&](Error error) {
+    const auto cleanup = remove_owned_file(destination_directory, destination_name, output_identity);
+    return cleanup ? *cleanup : std::move(error);
+  };
+  if (!S_ISREG(output_status.st_mode) || output_status.st_nlink != 1 ||
+      output_status.st_uid != ::geteuid()) {
+    return fail_owned(make_error(ErrorCode::output_write_failed,
+                                 "The copied output is not a private regular file."));
+  }
+  if (cloned && (output_identity.device != cloned_identity.device ||
+                 output_identity.inode != cloned_identity.inode)) {
+    return make_error(ErrorCode::output_write_failed,
+                      "The cloned staged output changed before it could be opened.");
+  }
+  if (const auto error_result = cancelled(options)) {
+    return fail_owned(*error_result);
   }
   XXH64_state_t hash_state;
   XXH64_reset(&hash_state, 0);
-  std::vector<char> buffer(options.limits.io_chunk_bytes);
   std::uint64_t copied = 0;
-  while (copied < size) {
-    if (const auto error_result = cancelled(options)) {
-      return error_result;
+  std::uint64_t copied_hash = 0;
+  if (cloned) {
+    if (const auto normalization = normalize_cloned_output(output.get())) {
+      return fail_owned(*normalization);
     }
-    const auto chunk =
-        static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - copied));
-    input.read(buffer.data(), static_cast<std::streamsize>(chunk));
-    if (input.gcount() != static_cast<std::streamsize>(chunk)) {
-      return make_error(ErrorCode::input_read_failed,
-                        "Could not completely read a copied input: " + source.string());
+    if (!posix_file::descriptor_identity(output.get(), nullptr, &output_status) ||
+        !S_ISREG(output_status.st_mode) || output_status.st_nlink != 1 ||
+        !descriptor_has_normalized_apple_metadata(output.get(), output_status) ||
+        !posix_file::entry_identity(destination_directory, destination_name, output_identity)) {
+      return fail_owned(make_error(ErrorCode::output_write_failed,
+                                   "A cloned output retained unsafe metadata."));
     }
-    output.write(buffer.data(), static_cast<std::streamsize>(chunk));
-    if (!output) {
-      return make_error(ErrorCode::output_write_failed,
-                        "Could not write a staged output: " + destination.string());
+    auto writable_output =
+        posix_file::open_file_at(destination_directory, destination_name, O_RDWR);
+    posix_file::Identity writable_identity;
+    struct stat writable_status {};
+    if (!writable_output ||
+        !posix_file::descriptor_identity(writable_output.get(), &writable_identity,
+                                         &writable_status) ||
+        writable_identity.device != output_identity.device ||
+        writable_identity.inode != output_identity.inode ||
+        !S_ISREG(writable_status.st_mode) || writable_status.st_nlink != 1 ||
+        !posix_file::entry_identity(destination_directory, destination_name, output_identity)) {
+      return fail_owned(make_error(ErrorCode::output_write_failed,
+                                   "Could not reopen the exact normalized clone for writing."));
     }
-    XXH64_update(&hash_state, buffer.data(), chunk);
-    copied += chunk;
+    output = std::move(writable_output);
+    ByteProgress clone_progress{options, progress_phase, progress_completed, progress_total,
+                                *total_output, &copied, destination_name};
+    if (const auto hash_error = hash_descriptor(
+            input.get(), size, &copied_hash, ErrorCode::input_read_failed,
+            "Could not completely verify a cloned input.", &clone_progress)) {
+      return fail_owned(*hash_error);
+    }
+  } else {
+    const auto buffer_size = options.on_progress
+                                 ? std::min<std::size_t>(options.limits.io_chunk_bytes,
+                                                         kProgressIntervalBytes)
+                                 : options.limits.io_chunk_bytes;
+    std::vector<char> buffer(buffer_size);
+    std::uint64_t next_progress = kProgressIntervalBytes;
+    while (copied < size) {
+      if (const auto error_result = cancelled(options)) {
+        return fail_owned(*error_result);
+      }
+      const auto chunk =
+          static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - copied));
+      const auto read_count = ::read(input.get(), buffer.data(), chunk);
+      if (read_count < 0 && errno == EINTR) {
+        continue;
+      }
+      if (read_count != static_cast<ssize_t>(chunk)) {
+        return fail_owned(make_error(ErrorCode::input_read_failed,
+                                     "Could not completely read a copied input: " +
+                                         source.string()));
+      }
+      std::size_t written = 0;
+      while (written < chunk) {
+        const auto write_count =
+            ::write(output.get(), buffer.data() + written, chunk - written);
+        if (write_count < 0 && errno == EINTR) {
+          continue;
+        }
+        if (write_count <= 0) {
+          return fail_owned(make_error(ErrorCode::output_write_failed,
+                                       "Could not write a staged output."));
+        }
+        written += static_cast<std::size_t>(write_count);
+      }
+      XXH64_update(&hash_state, buffer.data(), chunk);
+      copied += chunk;
+      if (copied == size || copied >= next_progress) {
+        ByteProgress stream_progress{options, progress_phase, progress_completed, progress_total,
+                                     *total_output, &copied, destination_name};
+        if (const auto progress_error = report_byte_progress(stream_progress, copied, size)) {
+          return fail_owned(*progress_error);
+        }
+        if (const auto cancel_error = cancelled(options)) {
+          return fail_owned(*cancel_error);
+        }
+        next_progress =
+            copied > std::numeric_limits<std::uint64_t>::max() - kProgressIntervalBytes
+                ? std::numeric_limits<std::uint64_t>::max()
+                : copied + kProgressIntervalBytes;
+      }
+    }
+    copied_hash = XXH64_digest(&hash_state);
   }
-  output.flush();
-  if (!output) {
-    return make_error(ErrorCode::output_write_failed,
-                      "Could not flush a staged output: " + destination.string());
+  if (::fsync(output.get()) != 0) {
+    return fail_owned(make_error(ErrorCode::output_write_failed,
+                                 "Could not synchronize a staged output."));
   }
-  if (expected && XXH64_digest(&hash_state) != expected->second) {
-    return make_error(mismatch_code, "A copied artifact has the wrong hash: " + source.string());
+  if (expected && copied_hash != expected->second) {
+    return fail_owned(
+        make_error(mismatch_code, "A copied artifact has the wrong hash: " + source.string()));
+  }
+  struct stat input_after {};
+  if (!posix_file::descriptor_identity(input.get(), nullptr, &input_after) ||
+      !same_file_snapshot(input_before, input_after)) {
+    return fail_owned(make_error(
+        mismatch_code, "A copied artifact changed while it was being verified: " + source.string()));
+  }
+  struct stat final_status {};
+  if (!posix_file::descriptor_identity(output.get(), nullptr, &final_status) ||
+      !posix_file::entry_identity(destination_directory, destination_name, output_identity) ||
+      !S_ISREG(final_status.st_mode) || final_status.st_nlink != 1 ||
+      final_status.st_uid != ::geteuid() ||
+      final_status.st_size != static_cast<off_t>(size)) {
+    const auto cleanup = remove_owned_file(destination_directory, destination_name, output_identity);
+    return cleanup ? cleanup
+                   : std::optional<Error>(make_error(
+                         ErrorCode::output_write_failed,
+                         "A staged output changed while it was descriptor-validated."));
   }
   *total_output = next_total;
+  if (produced) {
+    *produced = {std::string(destination_name), size, copied_hash};
+  }
+  if (produced_inode) {
+    *produced_inode = output_identity;
+  }
+  if (produced_clone) {
+    *produced_clone = cloned;
+  }
   return {};
+}
+
+std::optional<Error> validate_output_directory(int directory,
+                                               const OutputMap& expected,
+                                               std::uint64_t file_cap,
+                                               std::uint32_t name_cap) {
+  auto enumeration = posix_file::open_directory_at(directory, ".");
+  if (!enumeration) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not reopen a staged output directory.");
+  }
+  DIR* stream = ::fdopendir(enumeration.release());
+  if (!stream) {
+    return make_error(ErrorCode::output_write_failed,
+                      "Could not enumerate a staged output directory.");
+  }
+  std::unordered_set<std::string> found;
+  int read_error = 0;
+  while (true) {
+    errno = 0;
+    const auto* entry = ::readdir(stream);
+    if (!entry) {
+      read_error = errno;
+      break;
+    }
+    const std::string name(entry->d_name);
+    if (name == "." || name == "..") {
+      continue;
+    }
+    if (!valid_name(name, name_cap) || !found.emplace(collision_key(name)).second) {
+      ::closedir(stream);
+      return make_error(ErrorCode::output_write_failed,
+                        "A staged output directory contains an unsafe entry.");
+    }
+    const auto expected_entry = expected.find(collision_key(name));
+    if (expected_entry == expected.end() || expected_entry->second.relative_path != name ||
+        expected_entry->second.size == 0 || expected_entry->second.size > file_cap) {
+      ::closedir(stream);
+      return make_error(ErrorCode::output_write_failed,
+                        "A staged output directory differs from its exact manifest.");
+    }
+    auto file = posix_file::open_file_at(directory, name, O_RDONLY);
+    posix_file::Identity identity;
+    struct stat before {};
+    if (!file || !posix_file::descriptor_identity(file.get(), &identity, &before) ||
+        !S_ISREG(before.st_mode) || before.st_nlink != 1 ||
+        before.st_size != static_cast<off_t>(expected_entry->second.size)) {
+      ::closedir(stream);
+      return make_error(ErrorCode::output_write_failed,
+                        "A staged output is not the expected private regular file.");
+    }
+    std::uint64_t hash = 0;
+    struct stat after {};
+    if (const auto hash_error = hash_descriptor(
+            file.get(), expected_entry->second.size, &hash, ErrorCode::output_write_failed,
+            "Could not re-read an exact staged output.")) {
+      ::closedir(stream);
+      return hash_error;
+    }
+    if (hash != expected_entry->second.xxh64 ||
+        !posix_file::descriptor_identity(file.get(), nullptr, &after) ||
+        !same_file_snapshot(before, after) ||
+        !posix_file::entry_identity(directory, name, identity)) {
+      ::closedir(stream);
+      return make_error(ErrorCode::output_write_failed,
+                        "A staged output changed during final descriptor validation.");
+    }
+  }
+  ::closedir(stream);
+  if (read_error != 0 || found.size() != expected.size()) {
+    return make_error(ErrorCode::output_write_failed,
+                      "A staged output directory is incomplete or changed during enumeration.");
+  }
+  return {};
+}
+
+std::optional<Error> validate_stage(const OutputStage& stage,
+                                    const OutputMap& iso_outputs,
+                                    const OutputMap& fr3_outputs,
+                                    const Options& options) {
+  if (inspect_parent_identity(stage.parent_path, stage.parent_identity) ||
+      !posix_file::entry_identity(stage.parent.get(), stage.stage_name, stage.root_identity) ||
+      !posix_file::entry_identity(stage.root.get(), "iso", stage.iso_identity) ||
+      !posix_file::entry_identity(stage.root.get(), "fr3", stage.fr3_identity)) {
+    return make_error(ErrorCode::output_write_failed,
+                      "The descriptor-owned materializer stage changed before validation.");
+  }
+  if (const auto error = validate_output_directory(
+          stage.iso.get(), iso_outputs, options.limits.max_total_output_bytes,
+          options.limits.max_name_bytes)) {
+    return error;
+  }
+  return validate_output_directory(stage.fr3.get(), fr3_outputs,
+                                   options.limits.max_fr3_file_bytes,
+                                   options.limits.max_name_bytes);
 }
 
 std::string generated_object_key(jak1_output_recipe::GeneratedDataKind kind,
@@ -374,24 +1297,23 @@ bool known_generated_flat_kind(jak1_output_recipe::GeneratedFlatFileKind kind) {
          kind <= jak1_output_recipe::GeneratedFlatFileKind::game_subtitle;
 }
 
-std::optional<Error> cleanup_failure(Error error, const fs::path& stage) {
-  std::error_code cleanup_error;
-  fs::remove_all(stage, cleanup_error);
-  if (cleanup_error) {
-    return make_error(ErrorCode::stage_cleanup_failed,
-                      error.message + " Cleanup also failed: " + cleanup_error.message());
+std::optional<Error> cleanup_failure(Error error, OutputStage& stage) {
+  if (const auto cleanup = stage.cleanup()) {
+    auto cleanup_error = *cleanup;
+    cleanup_error.message = error.message + " Cleanup also failed: " + cleanup_error.message;
+    return cleanup_error;
   }
   return error;
 }
 
 struct LoadedRetailArchive {
-  std::vector<std::uint8_t> raw;
   jak1_checked_dgo::Archive archive;
   jak1_retail_object_catalog::Catalog catalog;
 };
 
 Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
                                                 std::string_view relative,
+                                                const checked_file_identity::Identity* identity,
                                                 const Options& options) {
   auto resolved = resolve_regular_file(inputs.extracted_iso_root, relative, options);
   if (!resolved) {
@@ -401,16 +1323,45 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
   if (!raw) {
     return Result<LoadedRetailArchive>::failure(raw.error());
   }
+  if (identity && raw.value().size() != identity->size) {
+    return Result<LoadedRetailArchive>::failure(make_error(
+        ErrorCode::input_identity_mismatch, "A retail archive does not match its validated size."));
+  }
 
   const std::string source_path(relative);
-  const jak1_retail_object_catalog::ArchiveSource catalog_source{source_path, raw.value()};
+  jak1_checked_dgo::Options dgo_options;
+  dgo_options.game_version = options.wire_game == jak1_output_recipe::WireGame::jak1
+                                 ? GameVersion::Jak1
+                                 : GameVersion::Jak2;
+  dgo_options.max_input_bytes = options.limits.max_retail_archive_bytes;
+  dgo_options.max_compressed_bytes = options.limits.max_retail_archive_bytes;
+  dgo_options.compressed_trailing_alignment_bytes =
+      options.compressed_trailing_alignment_bytes;
+  if (identity) {
+    dgo_options.expected_input = *identity;
+  }
+  dgo_options.should_cancel = options.should_cancel;
+  const auto archive_name = fs::path(relative).filename().string();
+  auto archive = jak1_checked_dgo::read(raw.value(), archive_name, dgo_options);
+  if (!archive) {
+    return Result<LoadedRetailArchive>::failure(make_error(
+        archive.error().code == jak1_checked_dgo::ErrorCode::cancelled ? ErrorCode::cancelled
+        : archive.error().code == jak1_checked_dgo::ErrorCode::callback_failed
+            ? ErrorCode::callback_failed
+        : archive.error().code == jak1_checked_dgo::ErrorCode::input_identity_mismatch
+            ? ErrorCode::input_identity_mismatch
+            : ErrorCode::retail_catalog_failed,
+        "The checked DGO reader rejected " + source_path + ": " + archive.error().message));
+  }
+
   jak1_retail_object_catalog::Options catalog_options;
+  catalog_options.game_version = dgo_options.game_version;
   catalog_options.max_archive_input_bytes = options.limits.max_retail_archive_bytes;
   catalog_options.max_archive_compressed_bytes = options.limits.max_retail_archive_bytes;
+  catalog_options.compressed_trailing_alignment_bytes = options.compressed_trailing_alignment_bytes;
   catalog_options.should_cancel = options.should_cancel;
-  auto catalog = jak1_retail_object_catalog::build(
-      std::span<const jak1_retail_object_catalog::ArchiveSource>(&catalog_source, 1),
-      catalog_options);
+  auto catalog = jak1_retail_object_catalog::build_checked_archive(source_path, archive.value(),
+                                                                   catalog_options);
   if (!catalog) {
     return Result<LoadedRetailArchive>::failure(make_error(
         catalog.error().code == jak1_retail_object_catalog::ErrorCode::cancelled
@@ -420,30 +1371,31 @@ Result<LoadedRetailArchive> load_retail_archive(const Inputs& inputs,
             : ErrorCode::retail_catalog_failed,
         "The checked retail catalog rejected " + source_path + ": " + catalog.error().message));
   }
-
-  jak1_checked_dgo::Options dgo_options;
-  dgo_options.max_input_bytes = options.limits.max_retail_archive_bytes;
-  dgo_options.max_compressed_bytes = options.limits.max_retail_archive_bytes;
-  dgo_options.should_cancel = options.should_cancel;
-  const auto archive_name = fs::path(relative).filename().string();
-  auto archive = jak1_checked_dgo::read(raw.value(), archive_name, dgo_options);
-  if (!archive) {
-    return Result<LoadedRetailArchive>::failure(make_error(
-        archive.error().code == jak1_checked_dgo::ErrorCode::cancelled
-            ? ErrorCode::cancelled
-            : ErrorCode::retail_archive_failed,
-        "The checked DGO reader rejected " + source_path + ": " + archive.error().message));
-  }
-  return Result<LoadedRetailArchive>::success(
-      {raw.take_value(), archive.take_value(), catalog.take_value()});
+  return Result<LoadedRetailArchive>::success({archive.take_value(), catalog.take_value()});
 }
 
 }  // namespace
 
+#if defined(__APPLE__) && defined(JAK1_OUTPUT_MATERIALIZER_ENABLE_TEST_HOOKS)
+namespace testing {
+
+ExtendedAclSetter replace_extended_acl_setter(ExtendedAclSetter setter) {
+  const auto previous = g_extended_acl_setter;
+  g_extended_acl_setter = setter ? setter : ::acl_set_fd_np;
+  return previous;
+}
+
+bool normalize_cloned_output(int descriptor) {
+  return !jak1_output_materializer::normalize_cloned_output(descriptor).has_value();
+}
+
+}  // namespace testing
+#endif
+
 Result<Summary> materialize(const Inputs& inputs,
                             const fs::path& destination_root,
                             const Options& options) {
-  fs::path stage;
+  OutputStage stage;
   try {
     if (!valid_options(options) || !destination_root.is_absolute() ||
         destination_root.filename().empty() ||
@@ -459,14 +1411,47 @@ Result<Summary> materialize(const Inputs& inputs,
       return Result<Summary>::failure(*error);
     }
 
+    if ((options.expected_validated_extracted_file_count &&
+         inputs.validated_extracted_files.size() !=
+             *options.expected_validated_extracted_file_count) ||
+        (options.expected_validated_fr3_file_count &&
+         inputs.validated_fr3_files.size() != *options.expected_validated_fr3_file_count)) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::input_identity_mismatch,
+          "A validated file-identity manifest has the wrong exact entry count."));
+    }
+    auto extracted_identities =
+        index_file_identities(inputs.validated_extracted_files,
+                              options.limits.max_validated_extracted_files, options);
+    auto fr3_identities = index_file_identities(inputs.validated_fr3_files,
+                                                options.limits.max_validated_fr3_files, options);
+    if (!extracted_identities || !fr3_identities ||
+        (options.require_validated_file_identities &&
+         (extracted_identities.value().empty() || fr3_identities.value().empty()))) {
+      return Result<Summary>::failure(
+          !extracted_identities ? extracted_identities.error()
+          : !fr3_identities    ? fr3_identities.error()
+                               : make_error(ErrorCode::input_identity_mismatch,
+                                            "Required validated file identities are missing."));
+    }
+
     auto recipe_bytes = read_file(inputs.recipe_file, options.limits.max_recipe_bytes, options);
     if (!recipe_bytes) {
       return Result<Summary>::failure(recipe_bytes.error());
+    }
+    if (options.expected_recipe_bytes &&
+        !std::equal(recipe_bytes.value().begin(), recipe_bytes.value().end(),
+                    options.expected_recipe_bytes->begin(),
+                    options.expected_recipe_bytes->end())) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::recipe_mismatch,
+          "The safely read output recipe does not match the caller's exact expected bytes."));
     }
     jak1_output_recipe::Options recipe_options;
     recipe_options.limits = options.recipe_limits;
     recipe_options.expected_revision = options.expected_revision;
     recipe_options.expected_source_object_pack = options.expected_source_object_pack;
+    recipe_options.wire_game = options.wire_game;
     recipe_options.should_cancel = options.should_cancel;
     auto decoded = jak1_output_recipe::decode(recipe_bytes.value(), recipe_options);
     if (!decoded) {
@@ -514,44 +1499,13 @@ Result<Summary> materialize(const Inputs& inputs,
       }
     }
 
-    std::error_code fs_error;
-    const auto parent_status = fs::symlink_status(destination_root.parent_path(), fs_error);
-    if (fs_error || parent_status.type() != fs::file_type::directory) {
-      return Result<Summary>::failure(make_error(
-          ErrorCode::destination_inspection_failed,
-          "The output destination parent is missing, a symbolic link, or not a directory."));
-    }
-    const auto destination_status = fs::symlink_status(destination_root, fs_error);
-    if ((fs_error && fs_error != std::errc::no_such_file_or_directory) ||
-        destination_status.type() != fs::file_type::not_found) {
-      return Result<Summary>::failure(make_error(
-          fs_error ? ErrorCode::destination_inspection_failed : ErrorCode::destination_exists,
-          "The output destination already exists or could not be inspected."));
-    }
-    fs_error.clear();
-    stage = fs::path(destination_root.string() + ".stage");
-    const auto stage_status = fs::symlink_status(stage, fs_error);
-    if ((fs_error && fs_error != std::errc::no_such_file_or_directory) ||
-        stage_status.type() != fs::file_type::not_found) {
-      return Result<Summary>::failure(make_error(
-          fs_error ? ErrorCode::destination_inspection_failed : ErrorCode::destination_exists,
-          "The private output staging path already exists or could not be inspected."));
-    }
-    fs_error.clear();
-    if (!fs::create_directory(stage, fs_error) || fs_error) {
-      return Result<Summary>::failure(make_error(
-          ErrorCode::stage_create_failed, "Could not create the private output staging root."));
-    }
-    const auto iso_root = stage / "iso";
-    const auto fr3_root = stage / "fr3";
-    if (!fs::create_directory(iso_root, fs_error) || fs_error ||
-        !fs::create_directory(fr3_root, fs_error) || fs_error) {
-      return Result<Summary>::failure(*cleanup_failure(
-          make_error(ErrorCode::stage_create_failed, "Could not create staged output directories."),
-          stage));
+    if (const auto error = create_output_stage(destination_root, &stage)) {
+      return Result<Summary>::failure(stage.linked ? *cleanup_failure(*error, stage) : *error);
     }
 
     Summary summary;
+    OutputMap iso_outputs;
+    OutputMap fr3_outputs;
     std::unordered_set<std::string> used_generated_objects;
     for (std::uint32_t archive_index = 0; archive_index < recipe.archives.size(); ++archive_index) {
       const auto& archive_record = recipe.archives[archive_index];
@@ -596,7 +1550,16 @@ Result<Summary> materialize(const Inputs& inputs,
           const auto& source = std::get<jak1_output_recipe::VerifiedRetailObject>(object.source);
           auto found = retail_archives.find(source.source_archive_relative_path);
           if (found == retail_archives.end()) {
-            auto loaded = load_retail_archive(inputs, source.source_archive_relative_path, options);
+            auto identity = required_identity(extracted_identities.value(),
+                                              source.source_archive_relative_path, options);
+            if (!identity) {
+              auto error = identity.error();
+              error.archive_index = archive_index;
+              error.object_index = object_index;
+              return Result<Summary>::failure(*cleanup_failure(std::move(error), stage));
+            }
+            auto loaded = load_retail_archive(inputs, source.source_archive_relative_path,
+                                              identity.value(), options);
             if (!loaded) {
               auto error = loaded.error();
               error.archive_index = archive_index;
@@ -694,9 +1657,9 @@ Result<Summary> materialize(const Inputs& inputs,
           std::min(writer_options.write_chunk_bytes, options.limits.io_chunk_bytes);
       writer_options.duplicate_name_policy = jak1_checked_dgo_writer::DuplicateNamePolicy::allow;
       writer_options.should_cancel = options.should_cancel;
-      auto written = jak1_checked_dgo_writer::write_file(
-          iso_root / archive_record.destination_basename, archive_record.destination_basename,
-          write_objects, writer_options);
+      auto written = jak1_checked_dgo_writer::write_file_at(
+          stage.iso.get(), archive_record.destination_basename,
+          archive_record.destination_basename, write_objects, writer_options);
       if (!written) {
         return Result<Summary>::failure(*cleanup_failure(
             make_error(
@@ -705,12 +1668,27 @@ Result<Summary> materialize(const Inputs& inputs,
                 archive_index, written.error().object_index),
             stage));
       }
+      if (const auto owned = record_owned_output(
+              stage.iso.get(), archive_record.destination_basename, &stage.iso_outputs)) {
+        return Result<Summary>::failure(*cleanup_failure(*owned, stage));
+      }
       if (const auto budget =
               reserve_output(written.value().output_bytes, &summary.output_bytes, options)) {
         return Result<Summary>::failure(*cleanup_failure(*budget, stage));
       }
       ++summary.archives_written;
       summary.objects_written += written.value().object_count;
+      if (!iso_outputs
+               .emplace(collision_key(archive_record.destination_basename),
+                        checked_file_identity::Identity{archive_record.destination_basename,
+                                                        written.value().output_bytes,
+                                                        written.value().output_xxh64})
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged archive destination collides with another output."),
+            stage));
+      }
     }
     if (used_generated_objects.size() != generated_objects.size()) {
       return Result<Summary>::failure(*cleanup_failure(
@@ -723,21 +1701,51 @@ Result<Summary> materialize(const Inputs& inputs,
     const auto flat_total = static_cast<std::uint32_t>(recipe.flat_file_copies.size() +
                                                        recipe.generated_flat_files.size());
     for (const auto& copy : recipe.flat_file_copies) {
+      auto identity = required_identity(extracted_identities.value(),
+                                        copy.extracted_iso_relative_path, options);
+      if (!identity) {
+        return Result<Summary>::failure(*cleanup_failure(identity.error(), stage));
+      }
       auto source = resolve_regular_file(inputs.extracted_iso_root,
                                          copy.extracted_iso_relative_path, options);
       if (!source) {
         return Result<Summary>::failure(*cleanup_failure(source.error(), stage));
       }
-      if (const auto error = report(options, Phase::copying_flat_files, flat_index++, flat_total,
+      if (const auto error = report(options, Phase::copying_flat_files, flat_index, flat_total,
                                     summary.output_bytes, copy.destination_basename)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
-      if (const auto error =
-              copy_file(source.value(), iso_root / copy.destination_basename,
-                        options.limits.max_flat_file_bytes, {}, ErrorCode::input_read_failed,
-                        &summary.output_bytes, options)) {
+      const auto expected = identity.value()
+                                ? std::optional<std::pair<std::uint64_t, std::uint64_t>>(
+                                      std::pair{identity.value()->size, identity.value()->xxh64})
+                                : std::nullopt;
+      checked_file_identity::Identity produced;
+      posix_file::Identity produced_inode;
+      bool produced_clone = false;
+      if (const auto error = copy_file_at(
+              source.value(), stage.iso.get(), copy.destination_basename,
+              options.limits.max_flat_file_bytes, expected, ErrorCode::input_identity_mismatch,
+              &summary.output_bytes, options, Phase::copying_flat_files, flat_index, flat_total,
+              &produced, &produced_inode, &produced_clone)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
+      if (!stage.iso_outputs
+               .emplace(collision_key(copy.destination_basename),
+                        OwnedOutput{copy.destination_basename, produced_inode})
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged flat ownership record collides with another output."),
+            stage));
+      }
+      if (!iso_outputs.emplace(collision_key(copy.destination_basename), std::move(produced)).second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged flat destination collides with another output."),
+            stage));
+      }
+      summary.files_cloned += static_cast<std::uint32_t>(produced_clone);
+      ++flat_index;
       ++summary.flat_files_written;
     }
     std::unordered_set<std::string> used_generated_flats;
@@ -756,18 +1764,42 @@ Result<Summary> materialize(const Inputs& inputs,
       if (!source) {
         return Result<Summary>::failure(*cleanup_failure(source.error(), stage));
       }
-      if (const auto error = report(options, Phase::copying_flat_files, flat_index++, flat_total,
+      if (const auto error = report(options, Phase::copying_flat_files, flat_index, flat_total,
                                     summary.output_bytes, generated.destination_basename)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
-      if (const auto error =
-              copy_file(source.value(), iso_root / generated.destination_basename,
-                        options.limits.max_flat_file_bytes,
-                        std::pair<std::uint64_t, std::uint64_t>{artifact.size, artifact.xxh64},
-                        ErrorCode::generated_artifact_mismatch, &summary.output_bytes, options)) {
+      checked_file_identity::Identity produced;
+      posix_file::Identity produced_inode;
+      bool produced_clone = false;
+      if (const auto error = copy_file_at(
+              source.value(), stage.iso.get(), generated.destination_basename,
+              options.limits.max_flat_file_bytes,
+              std::pair<std::uint64_t, std::uint64_t>{artifact.size, artifact.xxh64},
+              ErrorCode::generated_artifact_mismatch, &summary.output_bytes, options,
+              Phase::copying_flat_files, flat_index, flat_total, &produced, &produced_inode,
+              &produced_clone)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
+      if (!stage.iso_outputs
+               .emplace(collision_key(generated.destination_basename),
+                        OwnedOutput{generated.destination_basename, produced_inode})
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A generated flat ownership record collides with another output."),
+            stage));
+      }
+      if (!iso_outputs
+               .emplace(collision_key(generated.destination_basename), std::move(produced))
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A generated flat destination collides with another output."),
+            stage));
+      }
       used_generated_flats.emplace(key);
+      summary.files_cloned += static_cast<std::uint32_t>(produced_clone);
+      ++flat_index;
       ++summary.flat_files_written;
     }
     if (used_generated_flats.size() != generated_flats.size()) {
@@ -777,6 +1809,7 @@ Result<Summary> materialize(const Inputs& inputs,
           stage));
     }
 
+    std::error_code fs_error;
     std::unordered_set<std::string> actual_fr3;
     const auto fr3_status = fs::symlink_status(inputs.prepared_fr3_root, fs_error);
     if (fs_error || fr3_status.type() != fs::file_type::directory) {
@@ -807,8 +1840,19 @@ Result<Summary> materialize(const Inputs& inputs,
                      "The prepared FR3 directory does not exactly match the output recipe."),
           stage));
     }
+    if (options.require_validated_file_identities &&
+        fr3_identities.value().size() != actual_fr3.size()) {
+      return Result<Summary>::failure(*cleanup_failure(
+          make_error(ErrorCode::input_identity_mismatch,
+                     "The prepared FR3 identity manifest does not match the exact FR3 set."),
+          stage));
+    }
     for (std::uint32_t index = 0; index < recipe.expected_fr3_basenames.size(); ++index) {
       const auto& name = recipe.expected_fr3_basenames[index];
+      auto identity = required_identity(fr3_identities.value(), name, options);
+      if (!identity) {
+        return Result<Summary>::failure(*cleanup_failure(identity.error(), stage));
+      }
       auto source = resolve_regular_file(inputs.prepared_fr3_root, name, options);
       if (!source) {
         return Result<Summary>::failure(*cleanup_failure(source.error(), stage));
@@ -819,11 +1863,36 @@ Result<Summary> materialize(const Inputs& inputs,
                      summary.output_bytes, name)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
-      if (const auto error =
-              copy_file(source.value(), fr3_root / name, options.limits.max_fr3_file_bytes, {},
-                        ErrorCode::fr3_set_mismatch, &summary.output_bytes, options)) {
+      checked_file_identity::Identity produced;
+      posix_file::Identity produced_inode;
+      bool produced_clone = false;
+      if (const auto error = copy_file_at(
+              source.value(), stage.fr3.get(), name, options.limits.max_fr3_file_bytes,
+              identity.value()
+                  ? std::optional<std::pair<std::uint64_t, std::uint64_t>>(
+                        std::pair{identity.value()->size, identity.value()->xxh64})
+                  : std::nullopt,
+              ErrorCode::input_identity_mismatch, &summary.output_bytes, options,
+              Phase::copying_fr3, index,
+              static_cast<std::uint32_t>(recipe.expected_fr3_basenames.size()), &produced,
+              &produced_inode, &produced_clone)) {
         return Result<Summary>::failure(*cleanup_failure(*error, stage));
       }
+      if (!stage.fr3_outputs
+               .emplace(collision_key(name), OwnedOutput{name, produced_inode})
+               .second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged FR3 ownership record collides with another output."),
+            stage));
+      }
+      if (!fr3_outputs.emplace(collision_key(name), std::move(produced)).second) {
+        return Result<Summary>::failure(*cleanup_failure(
+            make_error(ErrorCode::output_write_failed,
+                       "A staged FR3 destination collides with another output."),
+            stage));
+      }
+      summary.files_cloned += static_cast<std::uint32_t>(produced_clone);
       ++summary.fr3_files_written;
     }
 
@@ -831,24 +1900,34 @@ Result<Summary> materialize(const Inputs& inputs,
                                   destination_root.filename().string())) {
       return Result<Summary>::failure(*cleanup_failure(*error, stage));
     }
-    fs::rename(stage, destination_root, fs_error);
-    if (fs_error) {
-      return Result<Summary>::failure(*cleanup_failure(
-          make_error(ErrorCode::stage_install_failed,
-                     "Could not atomically install the prepared output: " + fs_error.message()),
-          stage));
+    if (const auto error = cancelled(options)) {
+      return Result<Summary>::failure(*cleanup_failure(*error, stage));
     }
-    stage.clear();
+    if (const auto validation = validate_stage(stage, iso_outputs, fr3_outputs, options)) {
+      return Result<Summary>::failure(*cleanup_failure(*validation, stage));
+    }
+    if (const auto error = stage.install()) {
+      return Result<Summary>::failure(*cleanup_failure(*error, stage));
+    }
     return Result<Summary>::success(std::move(summary));
   } catch (const std::bad_alloc&) {
-    auto error =
-        make_error(ErrorCode::allocation_failed, "Jak 1 output materialization ran out of memory.");
-    return Result<Summary>::failure(stage.empty() ? error : *cleanup_failure(error, stage));
+    auto error = make_error(
+        ErrorCode::allocation_failed,
+        std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
+            " output materialization ran out of memory.");
+    return Result<Summary>::failure(stage.linked ? *cleanup_failure(error, stage) : error);
   } catch (const std::exception& exception) {
-    auto error =
-        make_error(ErrorCode::output_write_failed,
-                   std::string("Jak 1 output materialization failed: ") + exception.what());
-    return Result<Summary>::failure(stage.empty() ? error : *cleanup_failure(error, stage));
+    auto error = make_error(
+        ErrorCode::output_write_failed,
+        std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
+            " output materialization failed: " + exception.what());
+    return Result<Summary>::failure(stage.linked ? *cleanup_failure(error, stage) : error);
+  } catch (...) {
+    auto error = make_error(
+        ErrorCode::output_write_failed,
+        std::string(options.wire_game == jak1_output_recipe::WireGame::jak1 ? "Jak 1" : "Jak II") +
+            " output materialization failed unexpectedly.");
+    return Result<Summary>::failure(stage.linked ? *cleanup_failure(error, stage) : error);
   }
 }
 
@@ -874,6 +1953,10 @@ const char* error_code_name(ErrorCode code) {
       return "input_read_failed";
     case ErrorCode::recipe_invalid:
       return "recipe_invalid";
+    case ErrorCode::recipe_mismatch:
+      return "recipe_mismatch";
+    case ErrorCode::input_identity_mismatch:
+      return "input_identity_mismatch";
     case ErrorCode::revision_mismatch:
       return "revision_mismatch";
     case ErrorCode::source_pack_mismatch:

@@ -25,6 +25,10 @@
 #include "common/math/Vector.h"
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
+#include "game/graphics/texture/TextureID.h"
+
+class TexturePool;
+struct GpuTexture;
 
 class MetalDirectRenderer : public MetalBucketRenderer {
  public:
@@ -56,9 +60,55 @@ class MetalDirectRenderer : public MetalBucketRenderer {
   void reset_state();
   void flush_pending(MetalSharedRenderState* render_state, MetalFrameContext& ctx);
 
+  // Composite renderers such as the Jak II ocean envmap reuse Direct against
+  // a small offscreen target. The shader already carries the source-faithful
+  // transform; keep its selection explicit at the call site.
+  void set_offscreen_mode(bool enabled) { m_offscreen_mode = enabled; }
+  bool offscreen_mode() const { return m_offscreen_mode; }
+
+  struct ScissorSnapshot {
+    u16 scax0 = 0;
+    u16 scax1 = 0;
+    u16 scay0 = 0;
+    u16 scay1 = 0;
+    bool enabled = false;
+
+    bool operator==(const ScissorSnapshot& other) const = default;
+  };
+
+  ScissorSnapshot capture_scissor() const;
+  void restore_scissor(const ScissorSnapshot& snapshot);
+  math::Vector<float, 2> coordinate_offset() const {
+    return math::Vector<float, 2>{m_prim_buffer.x_off, m_prim_buffer.y_off};
+  }
+
+  struct LastBatchStats {
+    bool valid = false;
+    bool textured = false;
+    int vertices = 0;
+    int nonzero_rgb_vertices = 0;
+    u32 tex0_tbp = 0;
+    bool tex0_tcc = false;
+    bool tex0_decal = false;
+    bool texture_lookup_hit = false;
+    bool used_placeholder = false;
+    bool write_rgb = false;
+    bool blend_enabled = false;
+    u8 blend_a = 0;
+    u8 blend_b = 0;
+    u8 blend_c = 0;
+    u8 blend_d = 0;
+    bool alpha_test_enabled = false;
+    u8 alpha_test_mode = 0;
+    u8 alpha_aref = 0;
+    u8 alpha_afail = 0;
+  };
+
   struct Stats {
     int triangles = 0;
     int draw_calls = 0;
+    int textured_draw_calls = 0;
+    int missing_texture_draw_calls = 0;
     int flush_from_tex_0 = 0;
     int flush_from_zbuf = 0;
     int flush_from_test = 0;
@@ -67,8 +117,16 @@ class MetalDirectRenderer : public MetalBucketRenderer {
     int flush_from_prim = 0;
     int flush_from_state_exhaust = 0;
     int unsupported_blends = 0;  // draws whose GS blend mode has no mapping yet
+    LastBatchStats last_batch;
   };
   const Stats& stats() const { return m_stats; }
+
+ protected:
+  virtual void handle_frame(u64 val, MetalSharedRenderState* render_state, MetalFrameContext& ctx);
+  void update_frame_write_mask(u32 fbmsk,
+                               bool already_flushed,
+                               MetalSharedRenderState* render_state,
+                               MetalFrameContext& ctx);
 
  private:
   void handle_prim(u64 val, MetalSharedRenderState* render_state, MetalFrameContext& ctx);
@@ -237,6 +295,7 @@ class MetalDirectRenderer : public MetalBucketRenderer {
     u16 scax1 = 0, scay1 = 0;
   } m_scissor;
   bool m_scissor_enable = false;
+  bool m_offscreen_mode = false;
 
   float m_color_mult = 1.0f;
   float m_alpha_mult = 1.0f;
@@ -246,4 +305,88 @@ class MetalDirectRenderer : public MetalBucketRenderer {
   Stats m_stats;
   bool m_warned_unsupported_blend = false;
   metal_renderer::StereoSpace m_stereo_space;
+};
+
+/*!
+ * Jak II's PROGRESS bucket renders the minimap into GS framebuffer 126, then
+ * samples that framebuffer through VRAM block 4032 after returning to the
+ * screen framebuffer. Unlike ordinary Direct buckets, FRAME_1 is therefore a
+ * real render-target transition here.
+ */
+class MetalProgressRenderer final : public MetalDirectRenderer {
+ public:
+  static constexpr u32 kMinimapVramAddr = 4032;
+  static constexpr u32 kMinimapWidth = 128;
+  static constexpr u32 kMinimapHeight = 128;
+  static constexpr u32 kScreenFbp = 408;
+  static constexpr u32 kMinimapFbp = 126;
+
+  struct TargetStats {
+    int frame_registers = 0;
+    int to_minimap = 0;
+    int to_screen = 0;
+    bool published = false;
+    u32 current_fbp = kScreenFbp;
+  };
+
+  MetalProgressRenderer(const std::string& name,
+                        int my_id,
+                        int batch_size,
+                        id<MTLDevice> device,
+                        TexturePool* texture_pool);
+  ~MetalProgressRenderer() override;
+
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+
+  const TargetStats& target_stats() const { return m_target_stats; }
+  u64 minimap_handle() const { return m_minimap_handle; }
+  id<MTLTexture> minimap_texture() const { return m_minimap_color; }
+
+ protected:
+  void handle_frame(u64 val, MetalSharedRenderState* render_state, MetalFrameContext& ctx) override;
+
+ private:
+  void ensure_minimap_targets(MetalSharedRenderState* render_state, MetalFrameContext& ctx);
+  void begin_minimap_pass(MetalFrameContext& ctx);
+  void resume_game_pass(MetalFrameContext& ctx);
+  void detach_pool();
+
+  id<MTLDevice> m_device = nil;
+  TexturePool* m_texture_pool = nullptr;
+  id<MTLTexture> m_minimap_color = nil;
+  id<MTLTexture> m_minimap_depth = nil;
+  u64 m_minimap_handle = 0;
+  PcTextureId m_minimap_texture_id;
+  GpuTexture* m_minimap_pool_texture = nullptr;
+  u32 m_current_fbp = kScreenFbp;
+  TargetStats m_target_stats;
+};
+
+/*!
+ * Jak II TextureUploadHandler counterpart for the source buckets constructed with add_direct.
+ * The host callback performs the already-validated uploads at this bucket boundary; exact
+ * PC_PORT records are then omitted while Direct payloads retain their source order.
+ */
+class MetalHostTextureUploadDirectRenderer : public MetalDirectRenderer {
+ public:
+  enum class CallbackPoint {
+    BucketEntry,
+    PcPort12,
+  };
+
+  MetalHostTextureUploadDirectRenderer(
+      const std::string& name,
+      int my_id,
+      int batch_size,
+      CallbackPoint callback_point = CallbackPoint::BucketEntry)
+      : MetalDirectRenderer(name, my_id, batch_size), m_callback_point(callback_point) {}
+
+  void render(DmaFollower& dma,
+              MetalSharedRenderState* render_state,
+              MetalFrameContext& ctx) override;
+
+ private:
+  CallbackPoint m_callback_point;
 };

@@ -23,6 +23,7 @@
 #include "game/kernel/jak2/kmachine.h"
 #include "game/kernel/jak2/kmalloc.h"
 #include "game/kernel/jak2/kprint.h"
+#include "game/kernel/jak2/method_set_guard.h"
 
 namespace jak2 {
 using namespace jak2_symbols;
@@ -836,40 +837,53 @@ u64 method_set(u32 type_, u32 method_id, u32 method) {
   // the condition is either setting *enable-method-set* in GOAL, or if we're debugging without the
   // disk boot. The point of doing this in debug is just to print warning messages.
   if (*EnableMethodSet || (!FastLink && MasterDebug && !DiskBoot)) {
+    constexpr u32 invalid_warning_limit = 4;
+    u32 invalid_warning_count = 0;
+    const auto propagate_to_candidate = [&](Ptr<Symbol4<Ptr<Type>>> sym) {
+      auto candidate = sym->value();
+      if (!in_valid_memory_for_new_type(candidate.offset) || !is_valid_type(candidate.offset) ||
+          method_id >= candidate->num_methods ||
+          candidate->get_method(method_id).offset != existing_method) {
+        return;
+      }
+
+      const auto chain = check_method_set_type_chain(
+          candidate.offset, type.offset, u32_in_fixed_sym(FIX_SYM_OBJECT_TYPE), SymbolTable2.offset,
+          u32_in_fixed_sym(FIX_SYM_TYPE_TYPE), [](u32 tag_offset) { return *Ptr<u32>(tag_offset); },
+          [](u32 type_offset) { return Ptr<Type>(type_offset)->parent.offset; });
+      if (chain.status == MethodSetTypeChainStatus::UNRELATED) {
+        return;
+      }
+      if (chain.status != MethodSetTypeChainStatus::SUBTYPE) {
+        if (invalid_warning_count < invalid_warning_limit) {
+          MsgWarn(
+              "dkernel: method-set skipped invalid candidate name='%.48s' method=%u "
+              "target=#x%08x symbol=#x%08x type=#x%08x bad-parent=#x%08x "
+              "reason=%s depth=%u\n",
+              sym_to_string(sym)->data(), method_id, type.offset, sym.offset, candidate.offset,
+              chain.bad_parent, method_set_type_chain_reason(chain.status), chain.depth);
+          invalid_warning_count++;
+        }
+        return;
+      }
+
+      if (FastLink != 0) {
+        printf("************ WARNING **************\n");
+        printf("method %d of %s redefined - you must define class heirarchies in order now\n",
+               method_id, sym_to_string(sym)->data());
+        printf("***********************************\n");
+      }
+      candidate->get_method(method_id).offset = method;
+    };
+
     auto sym = Ptr<Symbol4<Ptr<Type>>>(s7.offset);
     for (; sym.offset < LastSymbol.offset; sym.offset += 4) {
-      auto sym_value = sym->value();
-      if (in_valid_memory_for_new_type(sym_value.offset) && (sym_value.offset & 7) == 4 &&
-          *Ptr<u32>(sym_value.offset - 4) == u32_in_fixed_sym(FIX_SYM_TYPE_TYPE) &&
-          method_id < sym_value->num_methods &&
-          sym_value->get_method(method_id).offset == existing_method &&
-          type_typep(sym_value, type) != s7.offset) {
-        if (FastLink != 0) {
-          printf("************ WARNING **************\n");
-          printf("method %d of %s redefined - you must define class heirarchies in order now\n",
-                 method_id, sym_to_string(sym)->data());
-          printf("***********************************\n");
-        }
-        sym_value->get_method(method_id).offset = method;
-      }
+      propagate_to_candidate(sym);
     }
 
     sym = Ptr<Symbol4<Ptr<Type>>>(SymbolTable2.offset);
     for (; sym.offset < s7.offset; sym.offset += 4) {
-      auto sym_value = sym->value();
-      if (in_valid_memory_for_new_type(sym_value.offset) && (sym_value.offset & 7) == 4 &&
-          *Ptr<u32>(sym_value.offset - 4) == u32_in_fixed_sym(FIX_SYM_TYPE_TYPE) &&
-          method_id < sym_value->num_methods &&
-          sym_value->get_method(method_id).offset == existing_method &&
-          type_typep(sym_value, type) != s7.offset) {
-        if (FastLink != 0) {
-          printf("************ WARNING **************\n");
-          printf("method %d of %s redefined - you must define class heirarchies in order now\n",
-                 method_id, sym_to_string(sym)->data());
-          printf("***********************************\n");
-        }
-        sym_value->get_method(method_id).offset = method;
-      }
+      propagate_to_candidate(sym);
     }
   }
 

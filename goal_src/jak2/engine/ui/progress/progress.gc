@@ -65,6 +65,8 @@
 
 (define *progress-state* (new 'static 'progress-global-state :which-slot -1 :last-slot-saved -1))
 
+(define *pc-scene-preview-request* (the-as string #f))
+
 (kmemopen global "mc-slot-info")
 
 (define *progress-save-info* (new 'global 'mc-slot-info))
@@ -1057,6 +1059,8 @@
   (none)
   )
 
+(define-extern pc-preview-scene-by-name (function string object))
+
 (defbehavior progress-trans progress ()
   ;; og:preserve-this pc port note : added variable
   (let ((speed-mod (if (-> *pc-settings* fast-progress?) (-> *pc-cheat-state* progress-speed) 1.0)))
@@ -1114,7 +1118,13 @@
       )
     )
   (if (= (-> self ring-angle) (-> self ring-want-angle))
-      (respond-to-cpad self)
+      (if *pc-scene-preview-request*
+          (let ((name *pc-scene-preview-request*))
+            (set! *pc-scene-preview-request* (the-as string #f))
+            (pc-preview-scene-by-name name)
+            )
+          (respond-to-cpad self)
+          )
       )
   (let ((f30-0 (* 0.005 (-> self clock time-adjust-ratio))))
     (cond
@@ -2035,11 +2045,6 @@
     (set! (-> arg0 state-pos) 0)
     (set-next-state arg0 'secrets-insufficient-space 0)
     )
-  (when (= (-> this name) (text-id progress-continue-without-saving))
-    (let ((a1-3 (get-state-check-card arg0 (-> arg0 current))))
-      (set-next-state arg0 a1-3 0)
-      )
-    )
   (when (and (= (-> this name) (text-id progress-root-secrets))
              (= *title* (-> arg0 current-options))
              (not (memcard-unlocked-secrets? #f))
@@ -2952,6 +2957,57 @@
   0
   )
 
+(defun scene-player-preview ((info object) (continue string))
+  "Start one scene-player selection without advancing or saving the active game."
+  (let ((display-profile *display-profile*))
+    (play-clean 'debug)
+    (set! *display-profile* display-profile)
+    )
+  (set! (-> *game-info* mode) 'play)
+  (set! (-> *game-info* demo-state) (the-as uint 100))
+  (logior! (-> *game-info* secrets) (game-secrets scene-player-1))
+  (process-spawn scene-player :init scene-player-init info #t continue)
+  (set-master-mode 'game)
+  #t
+  )
+
+(defun pc-preview-scene-by-name ((name string))
+  "Find an authored scene-player entry and preview exactly that scene with its authored continue."
+  (let* ((find-scene-in-act
+           (lambda ((scene-list (array hud-scene-info)) (scene-name string))
+             (doarray (scene-info scene-list)
+               (if (and (string? (-> scene-info info))
+                        (string= (the string (-> scene-info info)) scene-name)
+                        )
+                   (return scene-info)
+                   )
+               (when (pair? (-> scene-info info))
+                 (let ((iter (the pair (-> scene-info info))))
+                   (while (not (null? iter))
+                     (if (and (string? (car iter)) (string= (the string (car iter)) scene-name))
+                         (return scene-info)
+                         )
+                     (set! iter (cdr iter))
+                     )
+                   )
+                 )
+               )
+             (the hud-scene-info #f)
+             )
+           )
+         (scene-info (or (find-scene-in-act *hud-select-scene-act1* name)
+                         (find-scene-in-act *hud-select-scene-act2* name)
+                         (find-scene-in-act *hud-select-scene-act3* name)
+                         )
+           )
+         )
+    (if scene-info
+        (scene-player-preview name (-> (the hud-scene-info scene-info) continue))
+        #f
+        )
+    )
+  )
+
 (defmethod respond-progress ((this menu-select-scene-option) (arg0 progress) (arg1 symbol))
   "Handle progress menu navigation logic."
   (set! (-> arg0 sliding-height) (seek-ease
@@ -3006,17 +3062,9 @@
          (logclear! (-> *cpad-list* cpads 0 button0-abs 0) (pad-buttons confirm))
          (logclear! (-> *cpad-list* cpads 0 button0-rel 0) (pad-buttons confirm))
          (sound-play "generic-beep")
-         (let ((s3-2 *display-profile*))
-           (play-clean 'debug)
-           (set! *display-profile* s3-2)
-           )
-         (set! (-> *game-info* mode) 'play)
          (let ((s5-1 (-> s4-0 (-> this task-index))))
-           (set! (-> *game-info* demo-state) (the-as uint 100))
-           (logior! (-> *game-info* secrets) (game-secrets scene-player-1))
-           (process-spawn scene-player :init scene-player-init (-> s5-1 info) #t (-> s5-1 continue))
+           (scene-player-preview (-> s5-1 info) (-> s5-1 continue))
            )
-         (set-master-mode 'game)
          )
         )
       )

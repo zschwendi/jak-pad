@@ -5,11 +5,13 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "common/custom_data/Jak1OutputRecipe.h"
+#include "common/custom_data/CheckedFileIdentity.h"
 
 namespace jak1_output_materializer {
 
@@ -39,6 +41,8 @@ struct Inputs {
   std::filesystem::path prepared_fr3_root;
   std::vector<GeneratedObjectArtifact> generated_objects;
   std::vector<GeneratedFlatArtifact> generated_flat_files;
+  std::span<const checked_file_identity::Identity> validated_extracted_files = {};
+  std::span<const checked_file_identity::Identity> validated_fr3_files = {};
 };
 
 enum class Phase {
@@ -72,6 +76,8 @@ struct Limits {
   std::uint32_t max_generated_flat_files = 64;
   std::uint32_t max_path_bytes = 1024;
   std::uint32_t max_name_bytes = 128;
+  std::uint32_t max_validated_extracted_files = 100000;
+  std::uint32_t max_validated_fr3_files = 10000;
   std::size_t io_chunk_bytes = 256 * 1024;
 };
 
@@ -80,8 +86,15 @@ struct Options {
   jak1_output_recipe::Limits recipe_limits;
   jak1_output_recipe::RevisionProvenance expected_revision;
   jak1_output_recipe::SourceObjectPackIdentity expected_source_object_pack;
+  jak1_output_recipe::WireGame wire_game = jak1_output_recipe::WireGame::jak1;
+  std::optional<std::size_t> compressed_trailing_alignment_bytes;
+  std::optional<std::span<const std::uint8_t>> expected_recipe_bytes;
+  bool require_validated_file_identities = false;
+  std::optional<std::size_t> expected_validated_extracted_file_count;
+  std::optional<std::size_t> expected_validated_fr3_file_count;
   CancelCallback should_cancel;
   ProgressCallback on_progress;
+  bool attempt_file_clones = true;
 };
 
 enum class ErrorCode {
@@ -95,6 +108,8 @@ enum class ErrorCode {
   input_too_large,
   input_read_failed,
   recipe_invalid,
+  recipe_mismatch,
+  input_identity_mismatch,
   revision_mismatch,
   source_pack_mismatch,
   source_object_mismatch,
@@ -152,6 +167,7 @@ struct Summary {
   std::uint32_t flat_files_written = 0;
   std::uint32_t fr3_files_written = 0;
   std::uint64_t output_bytes = 0;
+  std::uint32_t files_cloned = 0;
 };
 
 Result<Summary> materialize(const Inputs& inputs,

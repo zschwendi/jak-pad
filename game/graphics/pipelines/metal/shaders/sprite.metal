@@ -259,5 +259,10 @@ fragment float4 sprite_distort_fs(SpriteDistortVSOut in [[stage_in]],
   // bottom-up texture; the Metal snapshot is top-down, so the same texel sits
   // at y + offset.
   float2 tc = float2(in.tex_coord.x, in.tex_coord.y + params.fb_v_offset);
-  return color * fb_tex.sample(fb_sampler, tc);
+  float4 framebuffer_sample = fb_tex.sample(fb_sampler, tc);
+  // GL snapshots into an RGB texture, whose sampled alpha is always one.
+  // Metal reads BGRA directly, so do not leak the scene target's alpha into
+  // the source-alpha blend used by the distortion pass.
+  framebuffer_sample.a = 1.0;
+  return color * framebuffer_sample;
 }

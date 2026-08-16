@@ -140,9 +140,7 @@ void MetalBackgroundState::reset_frame(
     bool enable_camera_trace,
     const metal_camera_trace::Snapshot* expected_camera,
     const metal_camera_trace::RenderSnapshot* expected_render_camera) {
-  for (auto& vis : occlusion_vis) {
-    vis.valid = false;
-  }
+  visibility.reset();
   tfrag_draws = 0;
   tfrag_tris = 0;
   tie_draws = 0;
@@ -801,10 +799,12 @@ id<MTLTexture> metal_background_texture(const MetalLevelData& level,
       tex = level.texture_objects[tree_tex_id];
     }
   } else {
-    // negative = texture-animator slot. The animator is a Jak 2/3 renderer; a
-    // Jak 1 level should never ask for one, so this is counted rather than
-    // guessed at.
     bg->anim_slot_draws++;
+    const s64 slot = -static_cast<s64>(tree_tex_id) - 1;
+    if (render_state->animated_texture_slots && slot >= 0 &&
+        static_cast<u64>(slot) < render_state->animated_texture_slot_count) {
+      tex = metal_texture_lookup(render_state->animated_texture_slots[slot]);
+    }
   }
 
   if (!tex) {

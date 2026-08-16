@@ -254,12 +254,23 @@ _call_goal_on_stack_asm_arm64:
   ;; x3 - function pointer
   ;; x4  - st (goes in x21 and x20)
   ;; x5  - offset (goes in x22)
+  ;; x6  - thread-local slot that receives the suspended native sp, or null for a nested GOAL call
 
   ;; saved registers we need to modify for GOAL should be preserved.
   ;; these stay on the caller's stack, which is still ours until the switch below.
   ; ARM64 requires 16-byte stack pointer alignment
   stp x20, x21, [sp, #-16]!
   str x22, [sp, #-16]!
+  stp x23, x24, [sp, #-16]!
+
+  ;; Publish the bottom of the suspended native frame for synchronous platform callbacks. Keep the
+  ;; previous value in callee-saved registers so nested native-to-GOAL entries restore it exactly.
+  mov x23, x6
+  cbz x23, 1f
+  ldr x24, [x23]
+  mov x9, sp
+  str x9, [x23]
+1:
 
   ;; switch to the new stack first, then stash the old stack pointer on the NEW stack.
   ;; the load that undoes this runs after the call, while sp still points into the new stack,
@@ -280,7 +291,12 @@ _call_goal_on_stack_asm_arm64:
   ldr x9, [sp], #16
   mov sp, x9
 
+  cbz x23, 2f
+  str x24, [x23]
+2:
+
   ;; restore registers
+  ldp x23, x24, [sp], #16
   ldr x22, [sp], #16
   ldp x20, x21, [sp], #16
   ldp	x29, x30, [sp], #16

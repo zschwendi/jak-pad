@@ -8,7 +8,7 @@ set(OPENGOAL_JAK2_IPHONEOS_DEVELOPMENT_TEAM
     CACHE STRING "Apple development team used to sign the Jak 2 iPhoneOS AOT link proof")
 set(OPENGOAL_JAK2_IPHONEOS_DISPLAY_TICK_BUNDLE_IDENTIFIER
     "org.example.Jak2DisplayTickProof"
-    CACHE STRING "Bundle identifier for the development-only Jak 2 display-tick proof")
+    CACHE STRING "Bundle identifier for the development-only Jak 2 title-loop app")
 
 if(OPENGOAL_JAK2_IPHONEOS_BUNDLE_IDENTIFIER STREQUAL "")
   message(FATAL_ERROR
@@ -72,7 +72,20 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
   include("${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_product.cmake")
   opengoal_add_metal_product(jak2-iphoneos-metal-product)
   add_library(jak2-iphoneos-metal-host STATIC EXCLUDE_FROM_ALL
-    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_host_bridge.mm")
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_host_bridge.mm"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_effects_bucket315_capture.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_effects_bucket315_plan.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_gmerc_warp_bucket317_plan.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_subtitle_bucket322_plan.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.cpp")
   set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/../../graphics/pipelines/metal/metal_jak2_host_bridge.mm"
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -81,6 +94,8 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
     jak2-kernel-core)
 
   add_executable(jak2-iphoneos-display-tick-proof MACOSX_BUNDLE EXCLUDE_FROM_ALL
+    "${CMAKE_CURRENT_LIST_DIR}/jak2_apple_audio.mm"
+    "${CMAKE_CURRENT_LIST_DIR}/jak2_apple_input.mm"
     "${CMAKE_CURRENT_LIST_DIR}/jak2_iphoneos_display_tick_main.m"
     "${CMAKE_CURRENT_LIST_DIR}/jak2_metal_presenter.mm")
   set_source_files_properties(
@@ -89,6 +104,9 @@ if(CMAKE_GENERATOR STREQUAL "Xcode")
   target_link_libraries(jak2-iphoneos-display-tick-proof PRIVATE
     jak2-iphoneos-runtime
     jak2-iphoneos-metal-host
+    "-framework AudioToolbox"
+    "-framework AVFAudio"
+    "-framework GameController"
     "-framework UIKit"
     "-framework QuartzCore"
     "-framework Foundation")

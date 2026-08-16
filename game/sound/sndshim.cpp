@@ -11,6 +11,11 @@
 
 std::unique_ptr<snd::Player> player;
 
+namespace {
+thread_local snd::Player* locked_player = nullptr;
+thread_local u32 player_lock_depth = 0;
+}  // namespace
+
 void snd_StartSoundSystem() {
   player = std::make_unique<snd::Player>();
 
@@ -47,12 +52,22 @@ void snd_RegisterIOPMemAllocator(AllocFun, FreeFun) {
 }
 
 int snd_LockVoiceAllocator(bool block) {
-  // printf("snd_LockVoiceAllocator\n");
+  if (block && player) {
+    auto* current_player = player.get();
+    current_player->LockAudioState();
+    locked_player = current_player;
+    player_lock_depth++;
+  }
   return 0;
 }
 
 void snd_UnlockVoiceAllocator() {
-  // printf("snd_UnlockVoiceAllocator\n");
+  if (player_lock_depth) {
+    locked_player->UnlockAudioState();
+    if (!--player_lock_depth) {
+      locked_player = nullptr;
+    }
+  }
 }
 
 s32 snd_ExternVoiceAlloc(s32 vol_group, s32 priority) {
@@ -259,15 +274,19 @@ s32 snd_GetVoiceStatus(s32 voice) {
 }
 
 void snd_keyOnVoiceRaw(u32 core, u32 voice_id) {
-  if (voices[0]) {
-    voices[0]->KeyOn();
+  snd_LockVoiceAllocator(true);
+  if (core < 2 && voice_id < kNVoices && voices[voice_id]) {
+    voices[voice_id]->KeyOn();
   }
+  snd_UnlockVoiceAllocator();
 }
 
 void snd_keyOffVoiceRaw(u32 core, u32 voice_id) {
-  if (voices[0]) {
-    voices[0]->KeyOff();
+  snd_LockVoiceAllocator(true);
+  if (core < 2 && voice_id < kNVoices && voices[voice_id]) {
+    voices[voice_id]->KeyOff();
   }
+  snd_UnlockVoiceAllocator();
 }
 
 s32 snd_GetSoundUserData(snd::BankHandle block_handle,

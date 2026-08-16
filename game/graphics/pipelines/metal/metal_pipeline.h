@@ -14,6 +14,7 @@
  * implementation lives in metal_renderer.h/.mm and metal_pipeline.mm.
  */
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,18 @@ struct Level;
 }
 
 namespace metal_renderer {
+
+inline constexpr std::size_t kTrackedDeferredBuckets = 4;
+inline constexpr std::size_t kMercModelDiagnosticCapacity = 16;
+
+struct MercModelDiagnostic {
+  u32 bucket_id = 0;
+  u64 model_name_hash = 0;
+  u64 packets = 0;
+  u64 draws = 0;
+  u64 triangles = 0;
+  u64 missing_models = 0;
+};
 
 // RGBA8 copy of a rendered frame, used by tests to verify that rendering
 // actually happened. Origin is the top-left corner.
@@ -119,6 +132,28 @@ struct MercPaletteHealthEvent {
   bool valid() const { return issue_mask != 0; }
 };
 
+struct DirectBatchStats {
+  bool valid = false;
+  bool textured = false;
+  int vertices = 0;
+  int nonzero_rgb_vertices = 0;
+  u32 tex0_tbp = 0;
+  bool tex0_tcc = false;
+  bool tex0_decal = false;
+  bool texture_lookup_hit = false;
+  bool used_placeholder = false;
+  bool write_rgb = false;
+  bool blend_enabled = false;  // GS PRIM.ABE for the batch
+  u8 blend_a = 0;
+  u8 blend_b = 0;
+  u8 blend_c = 0;
+  u8 blend_d = 0;
+  bool alpha_test_enabled = false;
+  u8 alpha_test_mode = 0;
+  u8 alpha_aref = 0;
+  u8 alpha_afail = 0;
+};
+
 // Counters for the DMA-chain path, used by tests to verify that send_chain
 // frames really dispatched buckets and that deferred content is counted.
 struct ChainStats {
@@ -191,6 +226,30 @@ struct ChainStats {
   // from the last chain frame
   int draw_calls = 0;
   int triangles = 0;
+  int jak2_sky_draw_draws = 0;
+  int jak2_sky_draw_triangles = 0;
+  DirectBatchStats jak2_sky_draw_last_batch;
+  bool jak2_blit_display_plan_valid = false;
+  bool jak2_blit_display_snapshot_requested = false;
+  bool jak2_blit_display_copy_back_requested = false;
+  bool jak2_blit_display_copy_back_performed = false;
+  bool jak2_blit_display_texture_lookup_hit = false;
+  bool jak2_blit_display_used_placeholder = false;
+  u64 jak2_blit_display_texture_handle = 0;
+  u32 jak2_blit_display_texture_tbp = 0;
+  u64 jak2_blit_display_unsupported_pc_ports = 0;
+  int jak2_screen_filter_draws = 0;
+  int jak2_screen_filter_triangles = 0;
+  int jak2_progress_draws = 0;
+  int jak2_progress_triangles = 0;
+  int jak2_progress_textured_draws = 0;
+  int jak2_progress_missing_texture_draws = 0;
+  int jak2_debug_no_zbuf1_draws = 0;
+  int jak2_debug_no_zbuf1_triangles = 0;
+  int jak2_debug_no_zbuf1_textured_draws = 0;
+  int jak2_debug_no_zbuf1_missing_texture_draws = 0;
+  int jak2_debug_no_zbuf2_draws = 0;
+  int jak2_debug_no_zbuf2_triangles = 0;
   int tex_uploads = 0;
   int sky_draws = 0;
   int sky_blends = 0;
@@ -201,8 +260,28 @@ struct ChainStats {
   int sprites_3d = 0;
   int sprites_hud = 0;
   int sprites_distort = 0;  // DMA consumed; distort drawing is not ported
+  int sprite_normal_submitted = 0;
+  int sprite_glow_marked = 0;
+  int sprite_glow_skipped = 0;
+  int sprite_glow_parsed = 0;
+  int sprite_glow_accepted = 0;
+  int sprite_glow_rejected = 0;
+  int sprite_glow_invalid_records = 0;
+  // Legacy host-facing names: these are visibility-tested final flare counts.
+  int sprite_glow_force_visible_submitted = 0;
+  int sprite_glow_force_visible_drawn = 0;
+  int sprite_glow_force_visible_draws = 0;
+  int sprite_glow_force_visible_triangles = 0;
+  int sprite_glow_force_visible_missing_textures = 0;
   int sprite_draws = 0;
+  int sprite_triangles = 0;
   int sprite_missing_textures = 0;
+  int sprite_placeholder_batches = 0;
+  int sprite_placeholder_sprites = 0;
+  bool sprite_first_placeholder_valid = false;
+  u32 sprite_first_placeholder_tbp = 0;
+  u32 sprite_first_placeholder_draw_mode = 0;
+  u64 sprite_unsupported_bytes = 0;
   // ocean buckets, from the last chain frame
   int ocean_draws = 0;
   int ocean_triangles = 0;
@@ -210,6 +289,10 @@ struct ChainStats {
   int ocean_mid_verts = 0;
   int ocean_near_verts = 0;
   int ocean_missing_textures = 0;
+  int ocean_command_buffers_committed = 0;
+  int ocean_command_buffers_completed = 0;
+  int ocean_command_buffer_errors = 0;
+  int ocean_last_command_buffer_status = 0;
   // registry handles of the two generated ocean textures (mipmapped one from
   // ocean-mid-and-far, single-level one from ocean-near), so tests can read
   // them back
@@ -218,13 +301,26 @@ struct ChainStats {
   // merc buckets, from the last chain frame
   int merc_models = 0;
   int merc_missing_models = 0;  // the model's level is not loaded
+  std::array<MercModelDiagnostic, kMercModelDiagnosticCapacity> merc_model_diagnostics = {};
+  std::size_t merc_model_diagnostic_count = 0;
+  u64 merc_model_diagnostic_overflow_packets = 0;
+  int merc_malformed_dma = 0;
+  u32 merc_preflight_rejection_reason = 0;
   int merc_draws = 0;
   int merc_triangles = 0;
   int merc_envmap_draws = 0;
   int merc_bone_vectors = 0;
   int merc_mod_vtx_uploads = 0;  // effects whose blerc / mod-vertex update was uploaded
   int merc_mod_vtx_skipped = 0;  // effects that asked for one but could not be updated
+  int merc_anim_slot_draws = 0;
+  int merc_anim_slot_placeholder_draws = 0;
+  std::array<int, 4> merc_anim_slot_draws_by_slot = {};
+  std::array<int, 4> merc_anim_slot_placeholder_draws_by_slot = {};
+  std::array<u64, 4> merc_anim_slot_first_model_hashes = {};
   int merc_eye_draws = 0;        // draws whose texture the eye renderer composed
+  int merc_eye_renderer_missing = 0;
+  int merc_eye_lookup_failed = 0;
+  int merc_eye_placeholder_draws = 0;
   int merc_missing_textures = 0;
   int merc_bad_bone_pointers = 0;  // bone pointer outside EE memory
   int merc_bad_draw_ranges = 0;    // draw range outside the level's index buffer
@@ -270,6 +366,11 @@ struct ChainStats {
   int eye_triangles = 0;
   int eye_missing_textures = 0;
   int eye_unexpected_dma = 0;
+  int eye_duplicate_slot_writes = 0;
+  int eye_command_buffers_committed = 0;
+  int eye_command_buffers_completed = 0;
+  int eye_command_buffer_errors = 0;
+  int eye_last_command_buffer_status = 0;
   // registry handle of the first eye composed this frame, so tests can read it
   u64 eye_texture = 0;
   // generic2 buckets, from the last chain frame
@@ -283,15 +384,72 @@ struct ChainStats {
   int generic_unsupported_blends = 0;
   int generic_unexpected_dma = 0;
   int generic_overflow = 0;
+  // Exact Jak II EFFECTS bucket 315, kept separate from normal Generic2 buckets.
+  int effects315_fragments = 0;
+  int effects315_vertices = 0;
+  int effects315_adgifs = 0;
+  int effects315_draw_buckets = 0;
+  int effects315_draws = 0;
+  int effects315_triangles = 0;
+  int effects315_missing_textures = 0;
+  int effects315_placeholder_draws = 0;
+  int effects315_unsupported_blends = 0;
+  int effects315_unexpected_dma = 0;
+  int effects315_overflow = 0;
+  // Exact Jak II GMERC_WARP bucket 317, kept separate from normal Generic2 buckets.
+  int warp317_fragments = 0;
+  int warp317_continued_fragments = 0;
+  int warp317_vertices = 0;
+  int warp317_adgifs = 0;
+  int warp317_draw_buckets = 0;
+  int warp317_draws = 0;
+  int warp317_triangles = 0;
+  int warp317_missing_textures = 0;
+  int warp317_placeholder_draws = 0;
+  int warp317_missing_publications = 0;
+  int warp317_unsupported_blends = 0;
+  int warp317_unexpected_dma = 0;
+  int warp317_overflow = 0;
+  u64 warp317_snapshot_publications = 0;
+  u64 warp317_snapshot_copies = 0;
+  u64 warp317_snapshot_allocations = 0;
+  u64 warp317_snapshot_replacements = 0;
+  u64 warp317_snapshot_failures = 0;
+  u64 warp317_snapshot_texture = 0;
   // shadow renderer, from the last chain frame
   int shadow_volumes = 0;
   int shadow_vertices = 0;
   int shadow_draws = 0;
   int shadow_triangles = 0;
   int shadow_unexpected_dma = 0;
+  // Exact Jak II SHADOW bucket 195, kept separate from Jak 1 ShadowVu telemetry.
+  int shadow195_executions = 0;
+  int shadow195_absent = 0;
+  int shadow195_ready = 0;
+  int shadow195_deferred_no_draw = 0;
+  int shadow195_input_batches = 0;
+  int shadow195_input_vertices = 0;
+  int shadow195_input_records = 0;
+  int shadow195_output_vertices = 0;
+  int shadow195_front_triangles = 0;
+  int shadow195_back_triangles = 0;
+  int shadow195_draws = 0;
+  int shadow195_triangles = 0;
+  int shadow195_darken_draws = 0;
+  int shadow195_lighten_draws = 0;
+  int shadow195_unexpected_dma = 0;
+  int shadow195_invalid_plan = 0;
+  int shadow195_nonfinite_projection = 0;
+  int shadow195_overflow = 0;
+  int shadow195_pipeline_failures = 0;
+  bool shadow195_reached_boundary = false;
   // cumulative
   u64 skipped_bucket_bytes = 0;    // DMA consumed by not-yet-ported bucket renderers
   u64 skipped_tfrag_bytes = 0;     // tfrag-trans content in the sky-blend buckets
+  // largest deferred buckets in the last frame, descending by payload bytes
+  int last_skipped_bucket_count = 0;
+  std::array<u32, kTrackedDeferredBuckets> last_skipped_bucket_ids = {};
+  std::array<u64, kTrackedDeferredBuckets> last_skipped_bucket_bytes = {};
   int direct_unsupported_blends = 0;
 };
 

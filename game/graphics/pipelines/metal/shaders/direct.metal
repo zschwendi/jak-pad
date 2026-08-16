@@ -117,7 +117,7 @@ vertex DirectTexturedVSOut direct_textured_vs(uint vid [[vertex_id]],
   float4 game_clip;
   if (params.offscreen_mode == 1) {
     game_clip = float4((v.xyzf.x - 0.453125) * 64.0,
-                       (v.xyzf.y - 0.5 + (2.25 / 64.0)) * 64.0, v.xyzf.z, 1.0);
+                       -(v.xyzf.y - 0.5 + (2.25 / 64.0)) * 64.0, v.xyzf.z, 1.0);
   } else {
     game_clip = float4((v.xyzf.x - 0.5) * 16.0,
                        -(v.xyzf.y - 0.5) * 32.0 * params.height_scale *

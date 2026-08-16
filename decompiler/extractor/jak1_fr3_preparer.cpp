@@ -1,24 +1,99 @@
 #include "jak1_fr3_preparer.h"
+#include "jak2_fr3_preparer.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <fcntl.h>
+#include <fstream>
 #include <limits>
+#include <map>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+#include <unistd.h>
 
 #include "common/log/log.h"
 #include "common/util/FileUtil.h"
+#include "common/util/PosixFile.h"
 
 #include "decompiler/Disasm/OpcodeInfo.h"
 #include "decompiler/ObjectFile/ObjectFileDB.h"
 #include "decompiler/config.h"
 #include "decompiler/level_extractor/extract_level.h"
 
+#define XXH_PRIVATE_API
+#include "third-party/zstd/lib/common/xxhash.h"
+
 namespace jak1_fr3 {
 namespace {
 
 namespace fs = std::filesystem;
+
+std::optional<checked_file_identity::Identity> hash_fr3_output(
+    const fs::path& path,
+    std::string relative_path,
+    std::uintmax_t cap) {
+  std::error_code error;
+  const auto status = fs::symlink_status(path, error);
+  if (error || status.type() != fs::file_type::regular) {
+    return std::nullopt;
+  }
+  const auto size = fs::file_size(path, error);
+  if (error || size == 0 || size > cap || size > std::numeric_limits<std::size_t>::max()) {
+    return std::nullopt;
+  }
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return std::nullopt;
+  }
+  XXH64_state_t hash;
+  XXH64_reset(&hash, 0);
+  std::vector<char> buffer(64 * 1024);
+  std::uintmax_t total = 0;
+  while (total < size) {
+    const auto chunk = static_cast<std::streamsize>(
+        std::min<std::uintmax_t>(buffer.size(), size - total));
+    input.read(buffer.data(), chunk);
+    if (input.gcount() != chunk) {
+      return std::nullopt;
+    }
+    XXH64_update(&hash, buffer.data(), static_cast<std::size_t>(chunk));
+    total += static_cast<std::uintmax_t>(chunk);
+  }
+  char trailing = 0;
+  input.read(&trailing, 1);
+  if (input.gcount() != 0) {
+    return std::nullopt;
+  }
+  return checked_file_identity::Identity{std::move(relative_path), size, XXH64_digest(&hash)};
+}
+
+struct GameProfile {
+  GameVersion game_version;
+  std::string_view display_name;
+  std::string_view project_name;
+  std::string_view config_path;
+  std::string_view config_version;
+};
+
+constexpr GameProfile kJak1Profile = {
+    GameVersion::Jak1,
+    "Jak 1",
+    "jak1",
+    "decompiler/config/jak1/jak1_config.jsonc",
+    "ntsc_v1",
+};
+
+constexpr GameProfile kJak2Profile = {
+    GameVersion::Jak2,
+    "Jak II",
+    "jak2",
+    "decompiler/config/jak2/jak2_config.jsonc",
+    "ntsc_v1",
+};
 
 class UnsafeOutputError : public std::runtime_error {
  public:
@@ -63,8 +138,10 @@ std::optional<Error> report(const Options& options,
 bool valid_options(const Options& options) {
   return options.max_archive_bytes > 0 && options.max_expanded_archive_bytes > 0 &&
          options.max_total_archive_bytes > 0 && options.max_total_expanded_archive_bytes > 0 &&
-         options.max_output_bytes > 0 &&
-         options.max_archives > 0 && options.max_levels > 0;
+         options.max_output_bytes > 0 && options.max_archives > 0 && options.max_levels > 0 &&
+         options.max_validated_file_identities > 0 &&
+         (!options.expected_distinct_fr3_files ||
+          *options.expected_distinct_fr3_files > 0);
 }
 
 bool supported_revision(const jak1_iso::Revision& revision) {
@@ -115,6 +192,32 @@ bool safe_output_basename(std::string_view name, std::string_view suffix) {
   });
 }
 
+std::string identity_collision_key(std::string_view path) {
+  std::string key(path);
+  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char byte) {
+    return static_cast<char>(std::tolower(byte));
+  });
+  return key;
+}
+
+bool safe_input_relative_path(std::string_view value) {
+  if (value.empty() || value.size() > 1024) {
+    return false;
+  }
+  const auto path = fs::path(value);
+  if (!path.is_relative() || path != path.lexically_normal()) {
+    return false;
+  }
+  return std::all_of(path.begin(), path.end(), [](const auto& component) {
+    const auto name = component.string();
+    return !name.empty() && name.size() <= 128 && name != "." && name != ".." &&
+           name.back() != '.' && name.back() != ' ' &&
+           std::all_of(name.begin(), name.end(), [](unsigned char byte) {
+             return byte >= 0x20 && byte <= 0x7e && byte != '/' && byte != '\\' && byte != ':';
+           });
+  });
+}
+
 std::set<std::string> fr3_files(const fs::path& root) {
   std::set<std::string> result;
   for (const auto& entry : fs::directory_iterator(root)) {
@@ -155,20 +258,128 @@ class OwnedWorkRoot {
 
 }  // namespace
 
-Result<Summary> prepare(const fs::path& project_root,
-                        const fs::path& extracted_iso_root,
-                        const fs::path& work_root,
-                        const jak1_iso::Revision& revision,
-                        const Options& options) {
+namespace internal {
+
+bool safe_fr3_output_basename(std::string_view output_basename) {
+  return safe_output_basename(output_basename, ".fr3");
+}
+
+LevelOutputUpdate update_expected_fr3_outputs(std::set<std::string>* expected_outputs,
+                                              std::set<std::string>* level_outputs,
+                                              std::string_view output_basename,
+                                              std::size_t remaining_levels,
+                                              std::size_t expected_final_count) {
+  if (!expected_outputs || !level_outputs || expected_final_count == 0 ||
+      !safe_fr3_output_basename(output_basename)) {
+    return LevelOutputUpdate::invalid;
+  }
+
+  auto next_expected = *expected_outputs;
+  auto next_levels = *level_outputs;
+  const std::string output(output_basename);
+  const bool added = next_levels.insert(output).second;
+  if ((added && !next_expected.insert(output).second) ||
+      (!added && !next_expected.contains(output)) ||
+      next_expected.size() > expected_final_count ||
+      expected_final_count - next_expected.size() > remaining_levels) {
+    return LevelOutputUpdate::invalid;
+  }
+
+  *expected_outputs = std::move(next_expected);
+  *level_outputs = std::move(next_levels);
+  return added ? LevelOutputUpdate::added : LevelOutputUpdate::replaced;
+}
+
+Result<std::vector<std::uint8_t>> read_validated_input_file(
+    const fs::path& extracted_iso_root,
+    const checked_file_identity::Identity& expected,
+    std::uintmax_t max_bytes,
+    const Options& options) {
+  try {
+    if (max_bytes == 0 || !safe_input_relative_path(expected.relative_path) ||
+        expected.size == 0 || expected.size > max_bytes ||
+        expected.size > std::numeric_limits<std::size_t>::max()) {
+      return Result<std::vector<std::uint8_t>>::failure(make_error(
+          ErrorCode::invalid_argument, "A validated FR3 input identity is invalid or too large."));
+    }
+    auto directory = posix_file::open_directory(extracted_iso_root.c_str());
+    if (!directory) {
+      return Result<std::vector<std::uint8_t>>::failure(make_error(
+          ErrorCode::input_missing, "The extracted ISO root could not be opened directly."));
+    }
+    std::vector<std::string> components;
+    for (const auto& component : fs::path(expected.relative_path)) {
+      components.push_back(component.string());
+    }
+    for (std::size_t index = 0; index + 1 < components.size(); ++index) {
+      auto child = posix_file::open_directory_at(directory.get(), components[index]);
+      if (!child) {
+        return Result<std::vector<std::uint8_t>>::failure(make_error(
+            ErrorCode::archive_failed,
+            "A validated FR3 input path contains a missing or linked directory."));
+      }
+      directory = std::move(child);
+    }
+    auto input = posix_file::open_file_at(directory.get(), components.back(), O_RDONLY);
+    posix_file::Identity input_identity;
+    struct stat before {};
+    if (!input || !posix_file::descriptor_identity(input.get(), &input_identity, &before) ||
+        !S_ISREG(before.st_mode) || before.st_nlink != 1 || before.st_size < 0 ||
+        static_cast<std::uint64_t>(before.st_size) != expected.size) {
+      return Result<std::vector<std::uint8_t>>::failure(make_error(
+          ErrorCode::archive_failed,
+          "A required FR3 input does not match its validated direct-file identity."));
+    }
+
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(expected.size));
+    XXH64_state_t hash;
+    XXH64_reset(&hash, 0);
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+      if (const auto error = cancellation_error(options)) {
+        return Result<std::vector<std::uint8_t>>::failure(*error);
+      }
+      const auto chunk = std::min<std::size_t>(64 * 1024, bytes.size() - offset);
+      const auto count =
+          ::pread(input.get(), bytes.data() + offset, chunk, static_cast<off_t>(offset));
+      if (count < 0 && errno == EINTR) {
+        continue;
+      }
+      if (count != static_cast<ssize_t>(chunk)) {
+        return Result<std::vector<std::uint8_t>>::failure(make_error(
+            ErrorCode::archive_failed, "A validated FR3 input could not be read completely."));
+      }
+      XXH64_update(&hash, bytes.data() + offset, chunk);
+      offset += chunk;
+    }
+    struct stat after {};
+    if (XXH64_digest(&hash) != expected.xxh64 ||
+        !posix_file::descriptor_identity(input.get(), nullptr, &after) ||
+        !posix_file::same_identity(after, input_identity) || before.st_size != after.st_size ||
+        after.st_nlink != 1 ||
+        !posix_file::entry_identity(directory.get(), components.back(), input_identity)) {
+      return Result<std::vector<std::uint8_t>>::failure(make_error(
+          ErrorCode::archive_failed,
+          "A required FR3 input changed after its validated extraction."));
+    }
+    return Result<std::vector<std::uint8_t>>::success(std::move(bytes));
+  } catch (const std::bad_alloc&) {
+    return Result<std::vector<std::uint8_t>>::failure(make_error(
+        ErrorCode::extraction_failed, "Validated FR3 input loading ran out of memory."));
+  }
+}
+
+}  // namespace internal
+
+static Result<Summary> prepare_for_profile(const fs::path& project_root,
+                                           const fs::path& extracted_iso_root,
+                                           const fs::path& work_root,
+                                           const GameProfile& profile,
+                                           const Options& options) {
   if (!valid_options(options) || project_root.empty() || extracted_iso_root.empty() ||
       work_root.empty()) {
     return Result<Summary>::failure(
         make_error(ErrorCode::invalid_argument, "The FR3 preparation arguments are invalid."));
-  }
-  if (!supported_revision(revision)) {
-    return Result<Summary>::failure(
-        make_error(ErrorCode::unsupported_revision,
-                   "This FR3 preparer currently supports only the verified NTSC-U v1 revision."));
   }
 
   try {
@@ -226,14 +437,40 @@ Result<Summary> prepare(const fs::path& project_root,
           ErrorCode::project_setup_failed,
           "The process already selected a different OpenGOAL project-data root."));
     }
-    const auto config_path = project_path / "decompiler/config/jak1/jak1_config.jsonc";
-    auto config =
-        decompiler::read_config_file(config_path, std::string(revision.decomp_config_version));
+    const auto config_path = project_path / std::string(profile.config_path);
+    auto config = decompiler::read_config_file(config_path, std::string(profile.config_version));
+    if (config.game_version != profile.game_version) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::configuration_failed,
+          std::string(profile.display_name) + " decompiler configuration selected another game."));
+    }
     config.rip_levels = false;
     config.save_texture_pngs = false;
     config.rip_collision = false;
     config.rip_streamed_audio = false;
     config.write_patches = false;
+
+    if (options.validated_extracted_files.size() > options.max_validated_file_identities) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::invalid_argument,
+          "The validated extracted-file identity manifest exceeds its entry cap."));
+    }
+    std::map<std::string, const checked_file_identity::Identity*> extracted_identities;
+    std::set<std::string> extracted_identity_keys;
+    for (const auto& identity : options.validated_extracted_files) {
+      if (!safe_input_relative_path(identity.relative_path) ||
+          !extracted_identity_keys.insert(identity_collision_key(identity.relative_path)).second ||
+          !extracted_identities.emplace(identity.relative_path, &identity).second) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::invalid_argument,
+            "The validated extracted-file identity manifest is unsafe or ambiguous."));
+      }
+    }
+    if (options.require_validated_file_identities && extracted_identities.empty()) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::invalid_argument,
+          "The FR3 preparation requires a validated extracted-file identity manifest."));
+    }
     if (const auto error = report(options, Phase::loading_configuration, 1, 1)) {
       return Result<Summary>::failure(*error);
     }
@@ -244,28 +481,111 @@ Result<Summary> prepare(const fs::path& project_root,
         archive_paths.push_back(extracted_iso_root / name);
       }
     }
-    if (archive_paths.empty() || archive_paths.size() > options.max_archives) {
+    if (archive_paths.empty() ||
+        archive_paths.size() + config.str_texture_file_names.size() > options.max_archives) {
       return Result<Summary>::failure(make_error(
-          ErrorCode::archive_limit_exceeded, "The Jak 1 archive list is empty or exceeds its cap."));
+          ErrorCode::archive_limit_exceeded,
+          "The " + std::string(profile.display_name) + " archive list is empty or exceeds its cap."));
     }
     if (config.levels_to_extract.empty() || config.levels_to_extract.size() > options.max_levels) {
       return Result<Summary>::failure(make_error(
-          ErrorCode::archive_limit_exceeded, "The Jak 1 level list is empty or exceeds its cap."));
+          ErrorCode::archive_limit_exceeded,
+          "The " + std::string(profile.display_name) + " level list is empty or exceeds its cap."));
+    }
+    const auto maximum_fr3_files =
+        static_cast<std::uint32_t>(config.levels_to_extract.size() + 1);
+    const auto expected_fr3_files =
+        options.expected_distinct_fr3_files.value_or(maximum_fr3_files);
+    if (expected_fr3_files < 2 || expected_fr3_files > maximum_fr3_files) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::configuration_failed,
+          "The expected distinct FR3 count is incompatible with the tracked level list."));
     }
 
-    std::vector<ghc::filesystem::path> text_objects;
+    struct InputSpec {
+      fs::path path;
+      const checked_file_identity::Identity* identity = nullptr;
+    };
+
+    std::vector<InputSpec> text_objects;
     for (const auto& name : config.object_file_names) {
       const auto path = extracted_iso_root / name;
-      if (!fs::is_regular_file(path)) {
+      const auto relative_path = fs::path(name).lexically_normal().generic_string();
+      const auto identity = extracted_identities.find(relative_path);
+      if (identity == extracted_identities.end() &&
+          (options.require_validated_file_identities || !extracted_identities.empty())) {
         return Result<Summary>::failure(make_error(
-            ErrorCode::input_missing, "A required Jak 1 text object is missing: " + name));
+            ErrorCode::archive_failed,
+            "A required text object has no validated extracted-file identity."));
       }
-      text_objects.emplace_back(path.string());
+      if (identity == extracted_identities.end() && !fs::is_regular_file(path)) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::input_missing,
+            "A required " + std::string(profile.display_name) + " text object is missing: " +
+                name));
+      }
+      text_objects.push_back(
+          {path, identity == extracted_identities.end() ? nullptr : identity->second});
     }
 
+    std::uintmax_t total_archive_bytes = 0;
+    std::vector<InputSpec> streamed_texture_objects;
+    for (const auto& name : config.str_texture_file_names) {
+      const auto path = extracted_iso_root / name;
+      const auto relative_path = fs::path(name).lexically_normal().generic_string();
+      const auto identity = extracted_identities.find(relative_path);
+      if (identity == extracted_identities.end() &&
+          (options.require_validated_file_identities || !extracted_identities.empty())) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::archive_failed,
+            "A streamed texture has no validated extracted-file identity."));
+      }
+      if (identity == extracted_identities.end() && !fs::is_regular_file(path)) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::input_missing,
+            "A required " + std::string(profile.display_name) +
+                " streamed texture archive is missing: " + name));
+      }
+      const auto input_size = identity == extracted_identities.end()
+                                  ? fs::file_size(path)
+                                  : identity->second->size;
+      if (input_size > options.max_archive_bytes ||
+          input_size > options.max_total_archive_bytes - total_archive_bytes) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::archive_limit_exceeded,
+            "The " + std::string(profile.display_name) +
+                " archives exceed their configured cap."));
+      }
+      total_archive_bytes += input_size;
+      streamed_texture_objects.push_back(
+          {path, identity == extracted_identities.end() ? nullptr : identity->second});
+    }
+
+    const auto total_input_files = archive_paths.size() + streamed_texture_objects.size();
     decompiler::ObjectFileDB database({}, ghc::filesystem::path(config.obj_file_name_map_file), {},
                                       {}, {}, {}, config, true);
-    std::uintmax_t total_archive_bytes = 0;
+    for (std::size_t index = 0; index < streamed_texture_objects.size(); ++index) {
+      if (const auto error = cancellation_error(options)) {
+        return Result<Summary>::failure(*error);
+      }
+      if (const auto error = report(options, Phase::reading_archives,
+                                    static_cast<std::uint32_t>(index),
+                                    static_cast<std::uint32_t>(total_input_files),
+                                    streamed_texture_objects[index].path.filename().string())) {
+        return Result<Summary>::failure(*error);
+      }
+      const auto& input = streamed_texture_objects[index];
+      if (input.identity) {
+        auto bytes = internal::read_validated_input_file(
+            extracted_iso_root, *input.identity, options.max_archive_bytes, options);
+        if (!bytes) {
+          return Result<Summary>::failure(bytes.error());
+        }
+        database.add_streamed_texture_data(bytes.value(), config);
+      } else {
+        database.add_streamed_texture_file(ghc::filesystem::path(input.path.string()), config);
+      }
+    }
     std::uintmax_t total_expanded_archive_bytes = 0;
     for (std::size_t index = 0; index < archive_paths.size(); ++index) {
       if (const auto error = cancellation_error(options)) {
@@ -274,29 +594,47 @@ Result<Summary> prepare(const fs::path& project_root,
       const auto& path = archive_paths[index];
       if (!fs::is_regular_file(path)) {
         return Result<Summary>::failure(make_error(
-            ErrorCode::input_missing, "A required Jak 1 archive is missing: " + path.string()));
+            ErrorCode::input_missing, "A required " + std::string(profile.display_name) +
+                                          " archive is missing: " + path.string()));
       }
       const auto input_size = fs::file_size(path);
       if (input_size > options.max_archive_bytes ||
           input_size > options.max_total_archive_bytes - total_archive_bytes) {
         return Result<Summary>::failure(make_error(
-            ErrorCode::archive_limit_exceeded, "The Jak 1 archives exceed their configured cap."));
+            ErrorCode::archive_limit_exceeded,
+            "The " + std::string(profile.display_name) +
+                " archives exceed their configured cap."));
       }
       total_archive_bytes += input_size;
       if (const auto error = report(options, Phase::reading_archives,
-                                    static_cast<std::uint32_t>(index),
-                                    static_cast<std::uint32_t>(archive_paths.size()),
+                                    static_cast<std::uint32_t>(streamed_texture_objects.size() +
+                                                               index),
+                                    static_cast<std::uint32_t>(total_input_files),
                                     path.filename().string())) {
         return Result<Summary>::failure(*error);
       }
 
       jak1_checked_dgo::Options read_options;
+      read_options.game_version = profile.game_version;
       read_options.max_input_bytes = static_cast<std::size_t>(options.max_archive_bytes);
       read_options.max_compressed_bytes = static_cast<std::size_t>(options.max_archive_bytes);
       read_options.max_expanded_bytes =
           static_cast<std::size_t>(options.max_expanded_archive_bytes);
       read_options.max_total_object_bytes =
           static_cast<std::size_t>(options.max_expanded_archive_bytes);
+      read_options.compressed_trailing_alignment_bytes =
+          options.compressed_trailing_alignment_bytes;
+      const auto relative_path = path.lexically_relative(extracted_iso_root).generic_string();
+      const auto identity = extracted_identities.find(relative_path);
+      if (identity == extracted_identities.end()) {
+        if (options.require_validated_file_identities || !extracted_identities.empty()) {
+          return Result<Summary>::failure(make_error(
+              ErrorCode::archive_failed,
+              "A required archive has no validated extracted-file identity."));
+        }
+      } else {
+        read_options.expected_input = *identity->second;
+      }
       bool read_callback_failed = false;
       read_options.should_cancel = [&] {
         const auto error = cancellation_error(options);
@@ -306,7 +644,8 @@ Result<Summary> prepare(const fs::path& project_root,
       auto archive = jak1_checked_dgo::read_file(
           path, path.filename().string(), read_options);
       if (!archive) {
-        if (read_callback_failed) {
+        if (read_callback_failed ||
+            archive.error().code == jak1_checked_dgo::ErrorCode::callback_failed) {
           return Result<Summary>::failure(make_error(
               ErrorCode::callback_failed, "The FR3 preparation cancellation callback failed."));
         }
@@ -320,17 +659,28 @@ Result<Summary> prepare(const fs::path& project_root,
           options.max_total_expanded_archive_bytes - total_expanded_archive_bytes) {
         return Result<Summary>::failure(make_error(
             ErrorCode::archive_limit_exceeded,
-            "The expanded Jak 1 archives exceed their configured aggregate cap."));
+            "The expanded " + std::string(profile.display_name) +
+                " archives exceed their configured aggregate cap."));
       }
       total_expanded_archive_bytes += archive.value().expanded_size;
       database.add_checked_dgo(archive.value(), config);
     }
-    for (const auto& object_file : text_objects) {
-      database.add_plain_object_file(object_file, config);
+    for (const auto& input : text_objects) {
+      const auto object_file = ghc::filesystem::path(input.path.string());
+      if (input.identity) {
+        auto bytes = internal::read_validated_input_file(
+            extracted_iso_root, *input.identity, options.max_archive_bytes, options);
+        if (!bytes) {
+          return Result<Summary>::failure(bytes.error());
+        }
+        database.add_plain_object_data(object_file, bytes.take_value(), config);
+      } else {
+        database.add_plain_object_file(object_file, config);
+      }
     }
     if (const auto error = report(options, Phase::reading_archives,
-                                  static_cast<std::uint32_t>(archive_paths.size()),
-                                  static_cast<std::uint32_t>(archive_paths.size()))) {
+                                  static_cast<std::uint32_t>(total_input_files),
+                                  static_cast<std::uint32_t>(total_input_files))) {
       return Result<Summary>::failure(*error);
     }
 
@@ -353,7 +703,8 @@ Result<Summary> prepare(const fs::path& project_root,
       database.dts.jg_info = config.jg_info_dump;
     } else {
       return Result<Summary>::failure(make_error(
-          ErrorCode::configuration_failed, "The Jak 1 art-group metadata is unavailable."));
+          ErrorCode::configuration_failed,
+          "The " + std::string(profile.display_name) + " art-group metadata is unavailable."));
     }
     if (config.process_part_group_table && !config.part_group_table.empty()) {
       database.dts.part_group_table = config.part_group_table;
@@ -379,7 +730,8 @@ Result<Summary> prepare(const fs::path& project_root,
     auto game_text = database.process_game_text_files(config);
     if (game_text.empty()) {
       return Result<Summary>::failure(
-          make_error(ErrorCode::extraction_failed, "Jak 1 game text extraction was empty."));
+          make_error(ErrorCode::extraction_failed,
+                     std::string(profile.display_name) + " game text extraction was empty."));
     }
     file_util::write_text_file((assets / "game_text.txt").string(), game_text);
     if (const auto error = report(options, Phase::extracting_intermediates, 1, 4, "game text")) {
@@ -391,16 +743,19 @@ Result<Summary> prepare(const fs::path& project_root,
                                                    (intermediates / "import").string());
     if (tpage_directory.empty()) {
       return Result<Summary>::failure(
-          make_error(ErrorCode::extraction_failed, "Jak 1 texture extraction was empty."));
+          make_error(ErrorCode::extraction_failed,
+                     std::string(profile.display_name) + " texture extraction was empty."));
     }
     file_util::write_text_file((textures / "tpage-dir.txt").string(), tpage_directory);
     file_util::write_text_file((textures / "tex-remap.txt").string(),
                                texture_database.generate_texture_dest_adjustment_table());
-    const auto texture_merges = project_root / "game/assets/jak1/texture_merges";
+    const auto texture_merges = project_root / "game/assets" / std::string(profile.project_name) /
+                                "texture_merges";
     if (fs::exists(texture_merges)) {
       texture_database.merge_textures(ghc::filesystem::path(texture_merges.string()));
     }
-    const auto texture_replacements = project_root / "custom_assets/jak1/texture_replacements";
+    const auto texture_replacements = project_root / "custom_assets" /
+                                      std::string(profile.project_name) / "texture_replacements";
     if (fs::exists(texture_replacements)) {
       texture_database.replace_textures(ghc::filesystem::path(texture_replacements.string()));
     }
@@ -412,16 +767,20 @@ Result<Summary> prepare(const fs::path& project_root,
     }
 
     auto game_count = database.process_game_count_file();
-    if (game_count.empty()) {
+    if (game_count.empty() && options.require_game_count) {
       return Result<Summary>::failure(
-          make_error(ErrorCode::extraction_failed, "Jak 1 game-count extraction was empty."));
+          make_error(ErrorCode::extraction_failed,
+                     std::string(profile.display_name) + " game-count extraction was empty."));
     }
-    file_util::write_text_file((assets / "game_count.txt").string(), game_count);
+    if (!game_count.empty()) {
+      file_util::write_text_file((assets / "game_count.txt").string(), game_count);
+    }
     if (const auto error = report(options, Phase::extracting_intermediates, 3, 4, "game count")) {
       return Result<Summary>::failure(*error);
     }
 
     auto expected_fr3 = fr3_files(fr3);
+    std::map<std::string, checked_file_identity::Identity> fr3_identities;
     decompiler::extract_common(database, texture_database, "GAME.CGO", fr3.string(), config);
     const auto common_outputs = fr3_files(fr3);
     if (common_outputs.size() != expected_fr3.size() + 1 ||
@@ -430,6 +789,13 @@ Result<Summary> prepare(const fs::path& project_root,
           ErrorCode::output_incomplete, "Common extraction did not create exactly GAME.fr3."));
     }
     expected_fr3 = common_outputs;
+    auto game_identity = hash_fr3_output(fr3 / "GAME.fr3", "GAME.fr3", options.max_output_bytes);
+    if (!game_identity) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::output_incomplete,
+          "Common extraction did not return an exact checked GAME.fr3 identity."));
+    }
+    fr3_identities.emplace("GAME.fr3", std::move(*game_identity));
     if (const auto error = output_budget_error(work_root, options)) {
       return Result<Summary>::failure(*error);
     }
@@ -437,6 +803,7 @@ Result<Summary> prepare(const fs::path& project_root,
       return Result<Summary>::failure(*error);
     }
 
+    std::set<std::string> level_outputs;
     for (std::size_t index = 0; index < config.levels_to_extract.size(); ++index) {
       if (const auto error = cancellation_error(options)) {
         return Result<Summary>::failure(*error);
@@ -448,17 +815,40 @@ Result<Summary> prepare(const fs::path& project_root,
                                     level)) {
         return Result<Summary>::failure(*error);
       }
-      decompiler::extract_from_level(database, texture_database, level, config, fr3.string(),
-                                     entities.string());
-      const auto current_fr3 = fr3_files(fr3);
-      if (current_fr3.size() != expected_fr3.size() + 1 ||
-          !std::includes(current_fr3.begin(), current_fr3.end(), expected_fr3.begin(),
-                         expected_fr3.end())) {
+      bool rejected_unsafe_basename = false;
+      const auto output_basename = decompiler::extract_from_level(
+          database, texture_database, level, config, fr3.string(), entities.string(),
+          [&](std::string_view candidate) {
+            const bool safe = internal::safe_fr3_output_basename(candidate);
+            rejected_unsafe_basename = !safe;
+            return safe;
+          });
+      if (rejected_unsafe_basename) {
+        throw UnsafeOutputError("A level extraction selected an unsafe output basename.");
+      }
+      if (!output_basename ||
+          internal::update_expected_fr3_outputs(
+              &expected_fr3, &level_outputs, *output_basename,
+              config.levels_to_extract.size() - index - 1, expected_fr3_files) ==
+              internal::LevelOutputUpdate::invalid) {
         return Result<Summary>::failure(make_error(
             ErrorCode::output_incomplete,
-            "A level extraction did not create exactly one safe FR3 output."));
+            "A level extraction did not produce an expected safe FR3 destination."));
       }
-      expected_fr3 = current_fr3;
+      const auto current_fr3 = fr3_files(fr3);
+      if (current_fr3 != expected_fr3) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::output_incomplete,
+            "A level extraction did not produce the exact expected FR3 set."));
+      }
+      auto output_identity =
+          hash_fr3_output(fr3 / *output_basename, *output_basename, options.max_output_bytes);
+      if (!output_identity) {
+        return Result<Summary>::failure(make_error(
+            ErrorCode::output_incomplete,
+            "A level extraction did not return an exact checked FR3 identity."));
+      }
+      fr3_identities.insert_or_assign(*output_basename, std::move(*output_identity));
       if (const auto error = output_budget_error(work_root, options)) {
         return Result<Summary>::failure(*error);
       }
@@ -470,15 +860,19 @@ Result<Summary> prepare(const fs::path& project_root,
     }
 
     Summary summary;
-    summary.archives_read = static_cast<std::uint32_t>(archive_paths.size());
+    summary.archives_read = static_cast<std::uint32_t>(total_input_files);
     summary.levels_written = 0;
     summary.output_bytes = directory_size(work_root);
     directory_size(fr3, &summary.levels_written);
     directory_size(raw_objects, &summary.raw_objects_written);
-    const auto expected_levels = static_cast<std::uint32_t>(config.levels_to_extract.size() + 1);
-    if (summary.levels_written != expected_levels || expected_fr3.size() != expected_levels) {
+    if (summary.levels_written != expected_fr3_files ||
+        expected_fr3.size() != expected_fr3_files ||
+        fr3_identities.size() != expected_fr3_files) {
       return Result<Summary>::failure(make_error(
           ErrorCode::output_incomplete, "FR3 preparation did not produce every expected level."));
+    }
+    for (auto& [name, identity] : fr3_identities) {
+      summary.fr3_files.push_back(std::move(identity));
     }
     if (const auto error = output_budget_error(work_root, options)) {
       return Result<Summary>::failure(*error);
@@ -491,6 +885,31 @@ Result<Summary> prepare(const fs::path& project_root,
   } catch (const std::exception& error) {
     return Result<Summary>::failure(make_error(ErrorCode::extraction_failed, error.what()));
   }
+}
+
+Result<Summary> prepare(const fs::path& project_root,
+                        const fs::path& extracted_iso_root,
+                        const fs::path& work_root,
+                        const jak1_iso::Revision& revision,
+                        const Options& options) {
+  if (!valid_options(options) || project_root.empty() || extracted_iso_root.empty() ||
+      work_root.empty()) {
+    return Result<Summary>::failure(
+        make_error(ErrorCode::invalid_argument, "The FR3 preparation arguments are invalid."));
+  }
+  if (!supported_revision(revision)) {
+    return Result<Summary>::failure(
+        make_error(ErrorCode::unsupported_revision,
+                   "This FR3 preparer currently supports only the verified NTSC-U v1 revision."));
+  }
+  return prepare_for_profile(project_root, extracted_iso_root, work_root, kJak1Profile, options);
+}
+
+static Result<Summary> prepare_jak2(const fs::path& project_root,
+                                    const fs::path& extracted_iso_root,
+                                    const fs::path& work_root,
+                                    const Options& options) {
+  return prepare_for_profile(project_root, extracted_iso_root, work_root, kJak2Profile, options);
 }
 
 const char* error_code_name(ErrorCode code) {
@@ -530,3 +949,14 @@ const char* error_code_name(ErrorCode code) {
 }
 
 }  // namespace jak1_fr3
+
+namespace jak2_fr3 {
+
+Result<Summary> prepare(const std::filesystem::path& project_root,
+                        const std::filesystem::path& extracted_iso_root,
+                        const std::filesystem::path& work_root,
+                        const Options& options) {
+  return jak1_fr3::prepare_jak2(project_root, extracted_iso_root, work_root, options);
+}
+
+}  // namespace jak2_fr3

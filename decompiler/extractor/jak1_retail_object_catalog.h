@@ -65,13 +65,17 @@ struct Options {
   std::size_t max_entries = 16384;
   std::size_t max_total_object_bytes = 1024ull * 1024 * 1024;
   std::size_t max_archive_input_bytes = 512ull * 1024 * 1024;
+  std::size_t max_total_archive_input_bytes = 1024ull * 1024 * 1024;
   std::size_t max_archive_compressed_bytes = 512ull * 1024 * 1024;
   std::size_t max_archive_expanded_bytes = 1024ull * 1024 * 1024;
+  std::size_t max_total_expanded_archive_bytes = 1024ull * 1024 * 1024;
   std::size_t max_object_bytes = 256ull * 1024 * 1024;
   std::size_t max_source_path_bytes = 255;
   std::size_t max_internal_name_bytes = 59;
   std::size_t hash_chunk_bytes = 256 * 1024;
   std::uint32_t max_archive_expansion_ratio = 256;
+  std::optional<std::size_t> compressed_trailing_alignment_bytes;
+  GameVersion game_version = GameVersion::Jak1;
   CancelCallback should_cancel;
   ProgressCallback on_progress;
 };
@@ -81,11 +85,13 @@ enum class ErrorCode {
   cancelled,
   callback_failed,
   allocation_failed,
+  invalid_checked_archive,
   invalid_source_archive_path,
   duplicate_source_archive_path,
   archive_limit_exceeded,
   entry_limit_exceeded,
   total_byte_limit_exceeded,
+  expanded_byte_limit_exceeded,
   checked_dgo_failed,
   invalid_object_header,
   unsupported_object_version,
@@ -132,15 +138,28 @@ class Catalog {
  public:
   const std::vector<Entry>& entries() const { return m_entries; }
   std::size_t skipped_code_object_count() const { return m_skipped_code_objects; }
+  std::size_t expanded_archive_bytes() const { return m_expanded_archive_bytes; }
+  std::size_t all_object_payload_bytes() const { return m_all_object_payload_bytes; }
   Result<const Entry*> lookup(const Provenance& expected) const;
 
  private:
   friend Result<Catalog> build(std::span<const ArchiveSource>, const Options&);
+  friend Result<Catalog> build_checked_archive(const std::string&,
+                                               const jak1_checked_dgo::Archive&,
+                                               const Options&);
   std::vector<Entry> m_entries;
   std::size_t m_skipped_code_objects = 0;
+  std::size_t m_expanded_archive_bytes = 0;
+  std::size_t m_all_object_payload_bytes = 0;
 };
 
 Result<Catalog> build(std::span<const ArchiveSource> sources, const Options& options = {});
+
+// The archive must have been produced by jak1_checked_dgo with the same game and compressed-input
+// policy. Catalog-specific limits, cancellation, progress, and object hashes are still enforced.
+Result<Catalog> build_checked_archive(const std::string& source_archive_relative_path,
+                                      const jak1_checked_dgo::Archive& archive,
+                                      const Options& options = {});
 
 const char* error_code_name(ErrorCode code);
 

@@ -29,6 +29,13 @@ constexpr ShaderFunctionNames kShaderFunctions[(int)MetalShaderId::COUNT] = {
     {"shadow_vs", "shadow_fs"},                    // SHADOW
     {"etie_shared_vs", "tfrag3_fs"},               // ETIE (etie.frag == tfrag3.frag)
     {"sprite_distort_vs", "sprite_distort_fs"},    // SPRITE_DISTORT
+    {"sprite_glow_depth_copy_vs", "sprite_glow_depth_copy_fs"},
+    {"sprite_glow_probe_vs", "sprite_glow_probe_fs"},
+    {"sprite_glow_downsample_vs", "sprite_glow_downsample_fs"},
+    {"sprite_glow_vs", "sprite_glow_fs"},
+    {"ocean_envmap_haze_vs", "ocean_envmap_haze_fs"},
+    {"ocean_envmap_radial_vs", "ocean_envmap_radial_fs"},
+    {"shadow2_vs", "shadow2_fs"},                // SHADOW2
 };
 
 size_t hash_combine(size_t seed, size_t v) {

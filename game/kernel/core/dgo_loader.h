@@ -40,6 +40,15 @@ goal_kernel_core_status goal_dgo_load(const char* name,
                                       goal_dgo_load_stats* out);
 
 /*!
+ * Jak 2 boot-only variant. KERNEL and GAME need method propagation while their AOT top-levels
+ * establish the initial type system. Ordinary package and level loads must use `goal_dgo_load`.
+ */
+goal_kernel_core_status goal_jak2_dgo_load_boot(const char* name,
+                                                uint32_t link_flags,
+                                                int32_t buffer_size,
+                                                goal_dgo_load_stats* out);
+
+/*!
  * Install the entry points GOAL's own level loader drives a DGO with: the DGO RPC (`rpc-call` /
  * `rpc-busy?`, answered synchronously out of the same reader) and `link-begin` / `link-resume`
  * with this platform's code/data rule applied. See dgo_loader.cpp.
@@ -54,6 +63,8 @@ void goal_dgo_install_goal_loader(void);
 typedef struct goal_dgo_rpc_stats {
   int dgo_archives;          /*! DGO loads GOAL started */
   int dgo_objects;           /*! objects the RPC handed back */
+  int dgo_failures;          /*! well-formed DGO RPCs that returned an error */
+  int last_dgo_result;       /*! most recent DGO_RPC_RESULT_* value */
   int linked_code_objects;   /*! link-begin calls taken from the AOT path */
   int linked_data_objects;   /*! link-begin calls given to the real linker */
   int str_reads;             /*! files and animation chunks the STR RPC delivered */
@@ -63,6 +74,9 @@ typedef struct goal_dgo_rpc_stats {
   int ramdisk_misses;        /*! ramdisk requests that found nothing to read */
   unsigned level_code_bytes; /*! heap a level's own object files took, in the level's own heap */
   char first_dgo_name[17];   /*! first archive GOAL asked channel 3 to load, uppercased */
+  char current_dgo_name[17]; /*! archive still returning objects, or empty when none */
+  char last_dgo_name[17];    /*! archive named by the most recent load request */
+  char last_dgo_error[256];  /*! diagnostic from the most recent error result */
 } goal_dgo_rpc_stats;
 
 void goal_dgo_goal_loader_stats(goal_dgo_rpc_stats* out);

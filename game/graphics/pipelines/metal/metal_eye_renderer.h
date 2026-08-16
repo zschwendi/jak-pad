@@ -19,11 +19,13 @@
  *    completion wait because they may come from another queue.
  */
 
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "game/graphics/pipelines/metal/metal_bucket_renderer.h"
+#include "game/graphics/texture/TextureID.h"
 
 #import <Metal/Metal.h>
 
@@ -43,6 +45,12 @@ class MetalEyeRenderer : public MetalBucketRenderer {
     int triangles = 0;
     int missing_textures = 0;  // adgif named a VRAM slot with nothing in it
     int unexpected_dma = 0;    // bucket did not match: consumed and reported
+    int duplicate_slot_writes = 0;
+    int versioned_slot_writes = 0;
+    int command_buffers_committed = 0;
+    int command_buffers_completed = 0;
+    int command_buffer_errors = 0;
+    int last_command_buffer_status = 0;
     u64 first_texture = 0;     // registry handle of the first eye composed
   };
 
@@ -50,8 +58,9 @@ class MetalEyeRenderer : public MetalBucketRenderer {
                    int my_id,
                    id<MTLDevice> device,
                    id<MTLCommandQueue> queue);
+  ~MetalEyeRenderer() override;
 
-  void init_textures(TexturePool& texture_pool, GameVersion version);
+  bool init_textures(TexturePool& texture_pool, GameVersion version);
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
@@ -60,11 +69,12 @@ class MetalEyeRenderer : public MetalBucketRenderer {
   // EyeRenderer::handle_eye_dma2): decode and compose, dma left after the chunk.
   void render_from_texture_bucket(DmaFollower& dma,
                                   MetalSharedRenderState* render_state,
-                                  MetalFrameContext& ctx);
+                                  MetalFrameContext& ctx,
+                                  u32 producer_bucket = 0);
 
   // Eyes are composed from the texture buckets as well as this renderer's own
   // bucket, so the per-frame stats reset happens at frame start, not per bucket.
-  void start_frame() { m_stats = Stats(); }
+  void start_frame();
 
   // Merc resolves its eye draws through these, like the GL renderer does.
   std::optional<u64> lookup_eye_texture(u8 eye_id);
@@ -96,9 +106,12 @@ class MetalEyeRenderer : public MetalBucketRenderer {
     id<MTLTexture> texture = nil;
     u64 handle = 0;
     GpuTexture* gpu_tex = nullptr;
+    PcTextureId texture_id;
     u32 tbp = 0;
     u64 fnv_name_hash = 0;
     bool lr = false;
+    bool composed_once = false;
+    bool composed_this_frame = false;
   };
 
   struct SingleEyeDraws {
@@ -127,13 +140,18 @@ class MetalEyeRenderer : public MetalBucketRenderer {
 
   bool handle_eye_dma2(DmaFollower& dma, MetalSharedRenderState* render_state);
   std::vector<SingleEyeDraws> get_draws(DmaFollower& dma, MetalSharedRenderState* render_state);
-  void run_gpu(const std::vector<SingleEyeDraws>& draws,
+  bool run_gpu(const std::vector<SingleEyeDraws>& draws,
                MetalSharedRenderState* render_state,
-               MetalFrameContext& ctx);
+               MetalFrameContext& ctx,
+               u32 producer_bucket);
+  void detach_pool();
 
   id<MTLDevice> m_device;
   id<MTLCommandQueue> m_queue;
+  TexturePool* m_pool = nullptr;
   GpuEyeTex m_gpu_eye_textures[METAL_NUM_EYE_PAIRS * 2];
+  std::array<u32, METAL_NUM_EYE_PAIRS * 2> m_frame_producer_buckets = {};
+  std::vector<u64> m_retired_handles;
 
   // xyst per vertex, 4 vertices per square, 4 draws per eye, all eyes.
   static constexpr int VTX_BUFFER_FLOATS = 4 * 4 * 4 * METAL_NUM_EYE_PAIRS * 2;
@@ -141,4 +159,5 @@ class MetalEyeRenderer : public MetalBucketRenderer {
 
   Stats m_stats;
   bool m_warned_dma = false;
+  bool m_warned_duplicate_slot = false;
 };

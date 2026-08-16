@@ -139,6 +139,14 @@ void Player::Tick(s16Output* stream, int samples) {
   }
 }
 
+void Player::LockAudioState() {
+  mTickLock.lock();
+}
+
+void Player::UnlockAudioState() {
+  mTickLock.unlock();
+}
+
 u32 Player::PlaySound(BankHandle bank_id, u32 sound_id, s32 vol, s32 pan, s32 pm, s32 pb) {
   std::scoped_lock lock(mTickLock);
   auto bank = mLoader.GetBankByHandle(bank_id);

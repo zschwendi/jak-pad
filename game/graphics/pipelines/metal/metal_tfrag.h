@@ -5,11 +5,11 @@
  * Metal port of the TFragment bucket renderer
  * (game/graphics/opengl_renderer/background/TFragment.cpp). Objective-C++ only.
  *
- * tfrag is the static terrain: the ground, cliffs and water of every Jak 1
- * level. The DMA chain carries only a control block - the camera, fog, the
- * level name and (in the level-0 bucket) the occlusion-visibility strings for
- * every loaded level. The geometry comes from the level's `.fr3`, uploaded by
- * the level-data stage (metal_level_data.h).
+ * tfrag is the static terrain: the ground, cliffs and water of a level. The
+ * DMA chain carries only a control block - the camera, fog, the
+ * level name and, on Jak 1, the occlusion-visibility strings for every loaded
+ * level. The geometry comes from the level's `.fr3`, uploaded by the level-data
+ * stage (metal_level_data.h).
  *
  * The DMA walk, the per-frame BVH + occlusion culling, the visibility ->
  * draw-range conversion and the time-of-day palette interpolation are the GL
@@ -18,6 +18,12 @@
  * sampler key, and GL's one glMultiDrawElements per draw becomes one
  * drawIndexedPrimitives per visible run (Metal has no multidraw). Metal
  * restarts strips on the GL renderer's 0xFFFFFFFF index natively.
+ *
+ * Jak 2 normal and translucent level buckets share this renderer with distinct
+ * FR3 tree-kind filters. Jak 2 visibility arrives through its separate
+ * visibility bucket, so those renderers do not copy Jak 1's per-level
+ * occlusion strings from TFRAG level 0. Scissor remains separate work. Normal
+ * shrub and TIE are handled by their own Metal renderers.
  *
  * Not ported: the BVH cull-debug overlay (an ImGui-only debug view), and the
  * texture-animator slots a negative texture index selects (Jak 2/3 only) -
@@ -55,6 +61,16 @@ class MetalTFragment : public MetalBucketRenderer {
     int draws = 0;
     int runs = 0;
     int triangles = 0;
+    int level_id = -1;
+    bool occlusion_valid = false;
+    bool all_visible_override = false;
+    int bvh_nodes = 0;
+    int frustum_visible_nodes = 0;
+    int occlusion_visible_nodes = 0;
+    int visible_nodes = 0;
+    int vis_groups = 0;
+    int visible_vis_groups = 0;
+    int always_visible_vis_groups = 0;
     bool level_missing = false;
     std::string level_name;
   };
@@ -103,4 +119,6 @@ class MetalTFragment : public MetalBucketRenderer {
   std::vector<math::Vector<u8, 4>> m_color_result;
   Stats m_stats;
   bool m_warned_missing_level = false;
+  bool m_log_bucket8_visibility = false;
+  int m_bucket8_visibility_logs = 0;
 };

@@ -45,9 +45,9 @@ bool valid_source_graph(std::span<const std::string> sources) {
   });
 }
 
-bool valid_options(const Options& options, std::span<const std::string> expected_source_files) {
+bool valid_base_options(const Options& options) {
   const auto& limits = options.limits;
-  return valid_source_graph(expected_source_files) && limits.max_manifest_bytes > 0 &&
+  return limits.max_manifest_bytes > 0 &&
          limits.max_manifest_bytes <= std::numeric_limits<std::size_t>::max() &&
          limits.max_object_bytes > 0 && limits.max_total_object_bytes > 0 &&
          limits.io_chunk_bytes > 0 &&
@@ -56,6 +56,10 @@ bool valid_options(const Options& options, std::span<const std::string> expected
          (!options.expected_identity ||
           (options.expected_identity->object_count == kExpectedObjectCount &&
            options.expected_identity->aggregate_xxh64 != 0));
+}
+
+bool valid_options(const Options& options, std::span<const std::string> expected_source_files) {
+  return valid_base_options(options) && valid_source_graph(expected_source_files);
 }
 
 std::optional<Error> cancelled(const Options& options,
@@ -301,10 +305,10 @@ Result<Summary> validate(const fs::path& root,
     }
     for (std::size_t index = 0; index < manifest.value().entries.size(); ++index) {
       if (manifest.value().entries[index].source_file != expected_source_files[index]) {
-        return Result<Summary>::failure(make_error(
-            ErrorCode::source_graph_mismatch,
-            "The source-object-pack order differs from the Jak II GROUP:all-code graph.",
-            static_cast<std::uint32_t>(index)));
+        return Result<Summary>::failure(
+            make_error(ErrorCode::source_graph_mismatch,
+                       "The source-object-pack order differs from the Jak II GROUP:all-code graph.",
+                       static_cast<std::uint32_t>(index)));
       }
     }
     if (const auto contents_error = verify_exact_contents(root, manifest.value())) {
@@ -333,6 +337,68 @@ Result<Summary> validate(const fs::path& root,
       }
     }
     return Result<Summary>::success({manifest.value().identity, total});
+  } catch (const std::bad_alloc&) {
+    return Result<Summary>::failure(make_error(ErrorCode::allocation_failed,
+                                               "Source-object-pack validation ran out of memory."));
+  } catch (...) {
+    return Result<Summary>::failure(make_error(
+        ErrorCode::object_read_failed, "Source-object-pack validation failed unexpectedly."));
+  }
+}
+
+Result<Summary> validate_recorded(const fs::path& root, const Options& options) {
+  try {
+    Options recorded_options = options;
+    const jak1_output_recipe::SourceObjectPackIdentity recorded_identity{kExpectedObjectCount,
+                                                                         kRecordedAggregateXXH64};
+    if (recorded_options.expected_identity &&
+        *recorded_options.expected_identity != recorded_identity) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::invalid_argument,
+          "The requested source-object-pack identity differs from the recorded Jak II bundle."));
+    }
+    recorded_options.expected_identity = recorded_identity;
+    if (!valid_base_options(recorded_options) || !root.is_absolute()) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::invalid_argument, "The source-object-pack validator options are invalid."));
+    }
+    std::error_code error;
+    const auto root_status = fs::symlink_status(root, error);
+    if (error || root_status.type() != fs::file_type::directory) {
+      return Result<Summary>::failure(
+          make_error(ErrorCode::root_missing,
+                     "The source-object-pack root is missing, linked, or not a directory."));
+    }
+
+    Options manifest_options = recorded_options;
+    manifest_options.on_progress = {};
+    auto manifest_bytes = read_manifest(root, manifest_options);
+    if (!manifest_bytes) {
+      return Result<Summary>::failure(manifest_bytes.error());
+    }
+    generator::Options parse_options;
+    parse_options.expected_source_object_count = kExpectedObjectCount;
+    parse_options.limits.max_manifest_bytes =
+        static_cast<std::size_t>(recorded_options.limits.max_manifest_bytes);
+    parse_options.should_cancel = recorded_options.should_cancel;
+    auto manifest =
+        generator::parse_source_object_pack_manifest(manifest_bytes.value(), parse_options);
+    if (!manifest) {
+      return Result<Summary>::failure(
+          make_error(map_manifest_error(manifest.error().code), manifest.error().message));
+    }
+
+    std::vector<std::string> expected_source_files;
+    expected_source_files.reserve(manifest.value().entries.size());
+    for (const auto& entry : manifest.value().entries) {
+      expected_source_files.push_back(entry.source_file);
+    }
+    if (!valid_source_graph(expected_source_files)) {
+      return Result<Summary>::failure(make_error(
+          ErrorCode::source_graph_mismatch,
+          "The recorded source-object pack does not contain a valid Jak II source graph."));
+    }
+    return validate(root, expected_source_files, recorded_options);
   } catch (const std::bad_alloc&) {
     return Result<Summary>::failure(make_error(ErrorCode::allocation_failed,
                                                "Source-object-pack validation ran out of memory."));

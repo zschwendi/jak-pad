@@ -853,6 +853,14 @@ std::string FileEmitter::emit_instruction(const FunctionEnv& func, IR* ir) {
     }
   }
 
+  if (auto* p = dynamic_cast<IR_PS2VUDivQ*>(ir)) {
+    const std::string d = reg(p->destination());
+    const std::string t = c_type_for(p->destination()->ireg().reg_class);
+    const std::string numerator = fmt::format("(goal_vf){}", reg(p->numerator()));
+    const std::string denominator = fmt::format("(goal_vf){}", reg(p->denominator()));
+    return fmt::format("{} = ({})goal_vf_ps2_vu_div_q({}, {});", d, t, numerator, denominator);
+  }
+
   if (auto* p = dynamic_cast<IR_VFMath2Asm*>(ir)) {
     const std::string d = reg(p->destination());
     const std::string t = c_type_for(p->destination()->ireg().reg_class);

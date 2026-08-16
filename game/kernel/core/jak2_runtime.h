@@ -24,6 +24,7 @@ typedef enum goal_jak2_runtime_status {
   GOAL_JAK2_RUNTIME_INVALID_ARGUMENT = 3,
   GOAL_JAK2_RUNTIME_START_FAILED = 4,
   GOAL_JAK2_RUNTIME_EXITED = 5,
+  GOAL_JAK2_RUNTIME_REQUEST_FAILED = 6,
 } goal_jak2_runtime_status;
 
 typedef enum goal_jak2_runtime_state {
@@ -44,6 +45,75 @@ typedef enum goal_jak2_runtime_graphics {
   /*! Install a copied host supplied by the app. The app retains any state its callbacks use. */
   GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST = 3,
 } goal_jak2_runtime_graphics;
+
+typedef enum goal_jak2_progress_screen {
+  GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE = -1,
+  GOAL_JAK2_PROGRESS_SCREEN_TITLE = 27,
+} goal_jak2_progress_screen;
+
+/*! Fail-closed, copied fields for the one source-proven Jak II progress screen. */
+typedef struct goal_jak2_progress_menu_snapshot {
+  int32_t available;
+  int32_t screen;
+  int32_t option_index;
+  int32_t selected_option;
+  int32_t in_transition;
+  int32_t navigation_available;
+  int32_t starting_screen;
+  int32_t can_exit_with_start;
+  int32_t can_go_back;
+} goal_jak2_progress_menu_snapshot;
+
+typedef enum goal_jak2_progress_menu_semantic_phase {
+  GOAL_JAK2_PROGRESS_MENU_PHASE_UNAVAILABLE = 0,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_SELECT_SAVE_TITLE = 1,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_NO_MEMORY_CARD = 2,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_CREATE_GAME = 3,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_CREATING = 4,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_SAVING = 5,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_ALREADY_EXISTS = 6,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_ICON_INFO = 7,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_SELECT_LOAD = 8,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_SELECT_SAVE = 9,
+  GOAL_JAK2_PROGRESS_MENU_PHASE_LOADING = 10,
+} goal_jak2_progress_menu_semantic_phase;
+
+typedef enum goal_jak2_progress_menu_semantic_action {
+  GOAL_JAK2_PROGRESS_MENU_ACTION_NONE = 0,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_UP = 1u << 0,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_DOWN = 1u << 1,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_LEFT = 1u << 2,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_RIGHT = 1u << 3,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_CONFIRM = 1u << 4,
+  GOAL_JAK2_PROGRESS_MENU_ACTION_BACK = 1u << 5,
+} goal_jak2_progress_menu_semantic_action;
+
+/*! Fixed-width additive ABI for source-proven Jak II menu meanings, independent of Jak 1 IDs. */
+typedef struct goal_jak2_progress_menu_semantic_snapshot {
+  int32_t available;
+  int32_t phase;
+  int32_t option_index;
+  uint32_t action_mask;
+} goal_jak2_progress_menu_semantic_snapshot;
+
+/*! Raw, copied values explaining why a live progress snapshot failed closed. */
+typedef struct goal_jak2_progress_menu_diagnostics {
+  int32_t rejection;
+  uint32_t progress;
+  uint32_t process_state;
+  uint32_t process_state_name;
+  uint32_t process_next_state;
+  uint32_t current_options;
+  uint32_t expected_options;
+  uint32_t current;
+  uint32_t expected_current;
+  uint32_t next;
+  uint32_t expected_next;
+  uint32_t starting_state;
+  int32_t option_index;
+  uint32_t selected_option;
+  float menu_transition;
+} goal_jak2_progress_menu_diagnostics;
 
 typedef struct goal_jak2_runtime_config {
   /*! The player's prepared Jak 2 directory, containing `iso/`. Required and copied at start. */
@@ -68,6 +138,39 @@ typedef struct goal_jak2_thread_suspend_probe {
   int32_t matches_expected;
 } goal_jak2_thread_suspend_probe;
 
+typedef enum goal_jak2_scene_wait_gate {
+  GOAL_JAK2_SCENE_WAIT_NONE = 0,
+  GOAL_JAK2_SCENE_WAIT_PROGRESS = 1,
+  GOAL_JAK2_SCENE_WAIT_TARGET_GRAB = 2,
+  GOAL_JAK2_SCENE_WAIT_SETTING_OR_ENTRY_GUI = 3,
+  GOAL_JAK2_SCENE_WAIT_GROUND_TIME = 4,
+  GOAL_JAK2_SCENE_WAIT_LEVELS = 5,
+  GOAL_JAK2_SCENE_WAIT_ART_FILE = 6,
+  GOAL_JAK2_SCENE_WAIT_ART_GUI = 7,
+  GOAL_JAK2_SCENE_WAIT_READY = 8,
+} goal_jak2_scene_wait_gate;
+
+#define GOAL_JAK2_SCENE_PREVIEW_NAME_MAX 63
+
+#define GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX 8
+
+typedef enum goal_jak2_scene_actor_diagnostic_flag {
+  GOAL_JAK2_SCENE_ACTOR_SPAWN_ATTEMPTED = 1u << 0,
+  GOAL_JAK2_SCENE_ACTOR_POOL_ALLOCATED = 1u << 1,
+  GOAL_JAK2_SCENE_ACTOR_DRAW_CONTROL = 1u << 2,
+  GOAL_JAK2_SCENE_ACTOR_JOINT_CONTROL = 1u << 3,
+  GOAL_JAK2_SCENE_ACTOR_MERC_GEOMETRY = 1u << 4,
+} goal_jak2_scene_actor_diagnostic_flag;
+
+/*! Sticky numeric facts for one bounded actor in the most recently initialized scene. */
+typedef struct goal_jak2_scene_actor_diagnostic {
+  uint32_t flags;
+  uint32_t level_index;
+  uint32_t merc_pris_bucket;
+  uint32_t skeleton_status;
+  uint32_t merc_joint_count;
+} goal_jak2_scene_actor_diagnostic;
+
 /*! A copied snapshot. It owns no pointers into the GOAL heap or graphics host. */
 typedef struct goal_jak2_runtime_metrics {
   goal_jak2_runtime_state state;
@@ -89,8 +192,24 @@ typedef struct goal_jak2_runtime_metrics {
   int32_t dgo_objects;
   int32_t dgo_code_objects;
   int32_t dgo_data_objects;
+  int32_t dgo_failures;
+  int32_t dgo_last_result;
   char first_dgo_name[17];
+  char current_dgo_name[17];
+  char last_dgo_name[17];
+  char last_dgo_error[256];
   int32_t title_ready;
+
+  char master_mode[24];
+  uint32_t title_control_process;
+  char title_control_state[24];
+  uint64_t title_control_time;
+  uint32_t scene_player_process;
+  char scene_player_state[24];
+  uint32_t progress_process;
+  char progress_state[24];
+  uint32_t target_process;
+  char target_state[24];
 
   int32_t host_chains;
   int32_t host_sync_paths;
@@ -103,6 +222,10 @@ typedef struct goal_jak2_runtime_metrics {
   int32_t host_last_desired_level_count;
   int32_t host_last_active_level_count;
   float host_last_pmode_alpha;
+  int32_t host_desired_level_sets;
+  int32_t host_active_level_sets;
+  char host_desired_levels[128];
+  char host_active_levels[128];
 
   int32_t dma_chains;
   int32_t dma_well_formed;
@@ -121,6 +244,70 @@ typedef struct goal_jak2_runtime_metrics {
   uint32_t sound_player_failures;
   uint32_t sound_str_failures;
   uint32_t sound_rejected_calls;
+
+  int32_t display_timing_valid;
+  int64_t display_base_frame_counter;
+  int64_t blackout_time;
+  int64_t blackout_remaining;
+
+  int32_t settings_diagnostics_valid;
+  float background_alpha;
+  float background_alpha_force;
+  uint32_t movie_process;
+  uint32_t spooling_process;
+
+  int32_t scene_diagnostics_valid;
+  int32_t scene_identity_valid;
+  uint32_t scene_list;
+  int32_t scene_list_length;
+  uint32_t scene;
+  int32_t scene_index;
+  uint32_t scene_animation;
+  uint32_t scene_next_animation;
+  int64_t scene_start_time;
+  int64_t scene_elapsed;
+  char scene_entity[48];
+  char scene_art_group[48];
+  char scene_animation_name[64];
+
+  int32_t skeleton_diagnostics_valid;
+  uint16_t skeleton_status;
+  uint8_t skeleton_active_channels;
+  uint8_t skeleton_padding;
+  int32_t animation_diagnostics_valid;
+  uint32_t animation_frame_group;
+  float animation_frame;
+  float animation_aframe;
+
+  uint32_t sound_player_batches;
+  uint32_t sound_player_commands;
+  uint32_t sound_play_requests;
+  uint32_t sound_sounds_started;
+  uint32_t sound_updates;
+  uint32_t sound_str_requests;
+  uint32_t sound_str_reads;
+  uint32_t sound_str_bytes;
+
+  int32_t scene_wait_diagnostics_valid;
+  int32_t scene_wait_gate;
+  uint32_t scene_wait_entry_gui_id;
+  int32_t scene_wait_entry_gui_status;
+  uint32_t scene_wait_art_file_status;
+  char scene_wait_art_file_status_name[16];
+  uint32_t scene_wait_art_gui_id;
+  int32_t scene_wait_art_gui_channel;
+  int32_t scene_wait_art_gui_action;
+  int32_t scene_wait_art_gui_status;
+
+  int32_t scene_actor_diagnostics_valid;
+  uint32_t scene_actor_sequence;
+  uint64_t scene_actor_scene_name_hash;
+  int32_t scene_actor_count;
+  int32_t scene_actor_total_count;
+  int32_t scene_actor_overflow;
+  uint32_t scene_actor_reserved;
+  goal_jak2_scene_actor_diagnostic
+      scene_actors[GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX];
 } goal_jak2_runtime_metrics;
 
 /*!
@@ -137,11 +324,35 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
 goal_jak2_runtime_status goal_jak2_runtime_probe_thread_suspend(
     goal_jak2_thread_suspend_probe* out);
 
+/*
+ * Copy and queue one authored scene name for the debug-only Scene Player preview path. At the
+ * source-validated title menu, the pending request transiently drives the normal port-zero START
+ * path into the authored progress process. The helper is called only after progress owns the
+ * master mode. This does not persist the temporary in-memory Scene Player unlock, select a save,
+ * or evaluate arbitrary GOAL text.
+ */
+goal_jak2_runtime_status goal_jak2_runtime_request_scene_preview(const char* scene_name);
+
 /*! Run exactly one `kernel-dispatcher` call. This function has no loop, sleep, or clock input. */
 goal_jak2_runtime_status goal_jak2_runtime_tick(void);
 
 /*! Copy the latest runtime snapshot into `out`. */
 goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics* out);
+
+/*!
+ * Copy the live Jak II title progress-menu state. Every other progress screen, malformed pointer,
+ * type mismatch, unsupported symbol, and out-of-range field returns an unavailable snapshot.
+ */
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
+    goal_jak2_progress_menu_snapshot* out);
+
+/* Copy only stable title-origin save-flow phases and their exact supported input actions. */
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_semantic_snapshot(
+    goal_jak2_progress_menu_semantic_snapshot* out);
+
+/*! Copy bounded raw fields used by the fail-closed progress snapshot reader. */
+goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_diagnostics(
+    goal_jak2_progress_menu_diagnostics* out);
 
 int goal_jak2_runtime_is_running(void);
 

@@ -144,46 +144,32 @@ const std::unordered_map<std::string, u16> jak3_speaker_name_to_enum_val = {
     {"yates", 46},
 };
 
-GameSubtitlePackage read_json_files_v2(const GameSubtitleDefinitionFile& file_info) {
+GameSubtitlePackage read_json_values_v2(const json& lines,
+                                        const json& meta,
+                                        const std::optional<json>& lines_base,
+                                        const std::optional<json>& meta_base) {
   GameSubtitlePackage package;
   SubtitleFile lang_lines;
   try {
-    // If we have a base file defined, load that and merge it
-    if (file_info.meta_base_path) {
-      auto base_data =
-          parse_commented_json(file_util::read_text_file(file_util::get_jak_project_dir() /
-                                                         file_info.meta_base_path.value()),
-                               "subtitle_meta_base_path");
+    if (meta_base) {
+      auto base_data = *meta_base;
       package.base_meta = base_data;
-      auto data = parse_commented_json(
-          file_util::read_text_file(file_util::get_jak_project_dir() / file_info.meta_path),
-          "subtitle_meta_path");
-      base_data.at("cutscenes").update(data.at("cutscenes"));
-      base_data.at("other").update(data.at("other"));
+      base_data.at("cutscenes").update(meta.at("cutscenes"));
+      base_data.at("other").update(meta.at("other"));
       package.combined_meta = base_data;
     } else {
-      package.combined_meta = parse_commented_json(
-          file_util::read_text_file(file_util::get_jak_project_dir() / file_info.meta_path),
-          "subtitle_meta_path");
+      package.combined_meta = meta;
     }
-    if (file_info.lines_base_path) {
-      auto base_data =
-          parse_commented_json(file_util::read_text_file(file_util::get_jak_project_dir() /
-                                                         file_info.lines_base_path.value()),
-                               "subtitle_line_base_path");
+    if (lines_base) {
+      auto base_data = *lines_base;
       package.base_lines = base_data;
-      auto data = parse_commented_json(
-          file_util::read_text_file(file_util::get_jak_project_dir() / file_info.lines_path),
-          "subtitle_line_path");
-      lang_lines = data;
-      base_data.at("cutscenes").update(data.at("cutscenes"));
-      base_data.at("other").update(data.at("other"));
-      base_data.at("speakers").update(data.at("speakers"));
+      lang_lines = lines;
+      base_data.at("cutscenes").update(lines.at("cutscenes"));
+      base_data.at("other").update(lines.at("other"));
+      base_data.at("speakers").update(lines.at("speakers"));
       package.combined_lines = base_data;
     } else {
-      package.combined_lines = parse_commented_json(
-          file_util::read_text_file(file_util::get_jak_project_dir() / file_info.lines_path),
-          "subtitle_line_path");
+      package.combined_lines = lines;
       lang_lines = package.combined_lines;
     }
     // Update any line metadata to `merge = false` if they've been defined
@@ -216,6 +202,24 @@ GameSubtitlePackage read_json_files_v2(const GameSubtitleDefinitionFile& file_in
     throw;
   }
   return package;
+}
+
+GameSubtitlePackage read_json_files_v2(const GameSubtitleDefinitionFile& file_info) {
+  const auto read = [](const std::string& path, const std::string& source_name) {
+    return parse_commented_json(file_util::read_text_file(file_util::get_jak_project_dir() / path),
+                                source_name);
+  };
+  const auto lines = read(file_info.lines_path, "subtitle_line_path");
+  const auto meta = read(file_info.meta_path, "subtitle_meta_path");
+  const auto lines_base =
+      file_info.lines_base_path
+          ? std::optional<json>(read(*file_info.lines_base_path, "subtitle_line_base_path"))
+          : std::nullopt;
+  const auto meta_base =
+      file_info.meta_base_path
+          ? std::optional<json>(read(*file_info.meta_base_path, "subtitle_meta_base_path"))
+          : std::nullopt;
+  return read_json_values_v2(lines, meta, lines_base, meta_base);
 }
 
 void GameSubtitleDB::init_banks_from_file(const GameSubtitleDefinitionFile& file_info) {
@@ -325,7 +329,7 @@ void GameSubtitleBank::add_scenes_from_files(const GameSubtitlePackage& package)
   }
 }
 
-std::vector<std::string> GameSubtitleBank::speaker_names_ordered_by_enum_value() {
+std::vector<std::string> GameSubtitleBank::speaker_names_ordered_by_enum_value() const {
   // Create a temporary vector of pairs (key, value)
   std::vector<std::pair<std::string, u16>> temp_vec;
   switch (m_text_version) {
@@ -357,7 +361,7 @@ std::vector<std::string> GameSubtitleBank::speaker_names_ordered_by_enum_value()
   return sorted_names;
 }
 
-u16 GameSubtitleBank::speaker_enum_value_from_name(const std::string& speaker_id) {
+u16 GameSubtitleBank::speaker_enum_value_from_name(const std::string& speaker_id) const {
   std::unordered_map<std::string, u16> enum_map;
   switch (m_text_version) {
     case GameTextVersion::JAK2:

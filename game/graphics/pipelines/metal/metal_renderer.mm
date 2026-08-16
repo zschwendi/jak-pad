@@ -1,11 +1,19 @@
 #include "metal_renderer.h"
 
+#include "common/dma/dma_chain_validation.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <optional>
+#include <stdexcept>
+#include <tuple>
 
+#include "fmt/format.h"
+
+#include "common/goal_constants.h"
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
@@ -14,6 +22,14 @@
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_generic2.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
+#include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
+#include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_blit_display_renderer.h"
+#include "game/graphics/pipelines/metal/metal_jak2_chain_validation.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow2_renderer.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow195_frame_capture_metal.h"
+#include "game/graphics/pipelines/metal/metal_jak2_warp_renderer.h"
 #include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
 #include "game/graphics/pipelines/metal/metal_merc.h"
@@ -114,6 +130,75 @@ bool can_blit_stereo_eye_marker(id<MTLTexture> texture,
 }
 #endif
 
+std::optional<std::string> jak2_level_foreground_name(std::size_t bucket_id,
+                                                       jak2::BucketId level_0,
+                                                       jak2::BucketId level_1,
+                                                       const char* prefix,
+                                                       const char* category) {
+  const auto first = static_cast<std::size_t>(level_0);
+  const auto stride = static_cast<std::size_t>(level_1) - first;
+  if (bucket_id < first || (bucket_id - first) % stride != 0) {
+    return std::nullopt;
+  }
+  const auto level = (bucket_id - first) / stride;
+  if (level >= jak2::LEVEL_MAX) {
+    return std::nullopt;
+  }
+  return fmt::format("{}-l{}-{}", prefix, level, category);
+}
+
+std::optional<std::string> jak2_merc_bucket_name(std::size_t bucket_id) {
+  const std::array families = {
+      std::tuple{jak2::BucketId::MERC_L0_TFRAG, jak2::BucketId::MERC_L1_TFRAG, "tfrag"},
+      std::tuple{jak2::BucketId::MERC_L0_SHRUB, jak2::BucketId::MERC_L1_SHRUB, "shrub"},
+      std::tuple{jak2::BucketId::MERC_L0_ALPHA, jak2::BucketId::MERC_L1_ALPHA, "alpha"},
+      std::tuple{jak2::BucketId::MERC_L0_PRIS, jak2::BucketId::MERC_L1_PRIS, "pris"},
+      std::tuple{jak2::BucketId::MERC_L0_PRIS2, jak2::BucketId::MERC_L1_PRIS2, "pris2"},
+      std::tuple{jak2::BucketId::MERC_L0_WATER, jak2::BucketId::MERC_L1_WATER, "water"},
+  };
+  for (const auto& [level_0, level_1, category] : families) {
+    if (auto name =
+            jak2_level_foreground_name(bucket_id, level_0, level_1, "merc", category)) {
+      return name;
+    }
+  }
+  switch (static_cast<jak2::BucketId>(bucket_id)) {
+    case jak2::BucketId::MERC_LCOM_TFRAG:
+      return "merc-lcom-tfrag";
+    case jak2::BucketId::MERC_LCOM_SHRUB:
+      return "merc-lcom-shrub";
+    case jak2::BucketId::MERC_LCOM_PRIS:
+      return "merc-lcom-pris";
+    case jak2::BucketId::MERC_LCOM_WATER:
+      return "merc-lcom-water";
+    default:
+      return std::nullopt;
+  }
+}
+
+std::optional<std::string> jak2_generic2_bucket_name(std::size_t bucket_id) {
+  const std::array families = {
+      std::tuple{jak2::BucketId::GMERC_L0_TFRAG, jak2::BucketId::GMERC_L1_TFRAG, "tfrag"},
+      std::tuple{jak2::BucketId::GMERC_L0_SHRUB, jak2::BucketId::GMERC_L1_SHRUB, "shrub"},
+      std::tuple{jak2::BucketId::GMERC_L0_ALPHA, jak2::BucketId::GMERC_L1_ALPHA, "alpha"},
+      std::tuple{jak2::BucketId::GMERC_L0_WATER, jak2::BucketId::GMERC_L1_WATER, "water"},
+  };
+  for (const auto& [level_0, level_1, category] : families) {
+    if (auto name =
+            jak2_level_foreground_name(bucket_id, level_0, level_1, "gmerc", category)) {
+      return name;
+    }
+  }
+  switch (static_cast<jak2::BucketId>(bucket_id)) {
+    case jak2::BucketId::GMERC_LCOM_TFRAG:
+      return "gmerc-lcom-tfrag";
+    case jak2::BucketId::GMERC_LCOM_PRIS:
+      return "gmerc-lcom-pris";
+    default:
+      return std::nullopt;
+  }
+}
+
 void schedule_present(id<MTLCommandBuffer> cmds,
                       id<CAMetalDrawable> drawable,
                       const MetalRenderOptions& opts) {
@@ -147,7 +232,7 @@ id<MTLTexture> make_depth_target(id<MTLDevice> device, int w, int h) {
                                                                   width:w
                                                                  height:h
                                                               mipmapped:NO];
-  desc.usage = MTLTextureUsageRenderTarget;
+  desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   desc.storageMode = MTLStorageModePrivate;
   return [device newTextureWithDescriptor:desc];
 }
@@ -401,7 +486,7 @@ void MetalRenderer::init_bucket_renderers_jak1() {
     // the same way the GL table publishes render_state->eye_renderer
     auto eyes = std::make_unique<MetalEyeRenderer>(
         "common-pris-eyes", (int)BucketId::MERC_EYES_AFTER_PRIS, m_device, m_queue);
-    eyes->init_textures(*m_texture_pool, GameVersion::Jak1);
+    ASSERT(eyes->init_textures(*m_texture_pool, GameVersion::Jak1));
     m_shared_state.eye_renderer = eyes.get();
     set(BucketId::MERC_EYES_AFTER_PRIS, std::move(eyes));
   }
@@ -445,11 +530,239 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   ASSERT(table.size() == static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS));
   m_bucket_renderers.resize(table.size());
 
+  auto eyes = std::make_unique<MetalEyeRenderer>("jak2-detached-eyes", 0, m_device, m_queue);
+  ASSERT(eyes->init_textures(*m_texture_pool, GameVersion::Jak2));
+  m_shared_state.eye_renderer = eyes.get();
+  m_jak2_eye_renderer = std::move(eyes);
+
+  constexpr auto first_tfrag = static_cast<std::size_t>(jak2::BucketId::TFRAG_L0_TFRAG);
+  constexpr auto tfrag_stride = static_cast<std::size_t>(jak2::BucketId::TFRAG_L1_TFRAG) -
+                                first_tfrag;
+  constexpr auto first_shrub = static_cast<std::size_t>(jak2::BucketId::SHRUB_L0_SHRUB);
+  constexpr auto shrub_stride = static_cast<std::size_t>(jak2::BucketId::SHRUB_L1_SHRUB) -
+                                first_shrub;
+  constexpr auto first_tie = static_cast<std::size_t>(jak2::BucketId::TIE_L0_TFRAG);
+  constexpr auto tie_stride = static_cast<std::size_t>(jak2::BucketId::TIE_L1_TFRAG) - first_tie;
+  constexpr auto first_etie = static_cast<std::size_t>(jak2::BucketId::ETIE_L0_TFRAG);
+  constexpr auto etie_stride = static_cast<std::size_t>(jak2::BucketId::ETIE_L1_TFRAG) -
+                               first_etie;
+  constexpr auto first_tfrag_trans =
+      static_cast<std::size_t>(jak2::BucketId::TFRAG_T_L0_ALPHA);
+  constexpr auto tfrag_trans_stride =
+      static_cast<std::size_t>(jak2::BucketId::TFRAG_T_L1_ALPHA) - first_tfrag_trans;
+  constexpr auto first_tie_trans = static_cast<std::size_t>(jak2::BucketId::TIE_T_L0_ALPHA);
+  constexpr auto tie_trans_stride =
+      static_cast<std::size_t>(jak2::BucketId::TIE_T_L1_ALPHA) - first_tie_trans;
+  constexpr auto first_etie_trans = static_cast<std::size_t>(jak2::BucketId::ETIE_T_L0_ALPHA);
+  constexpr auto etie_trans_stride =
+      static_cast<std::size_t>(jak2::BucketId::ETIE_T_L1_ALPHA) - first_etie_trans;
+  constexpr auto first_tfrag_water =
+      static_cast<std::size_t>(jak2::BucketId::TFRAG_W_L0_WATER);
+  constexpr auto tfrag_water_stride =
+      static_cast<std::size_t>(jak2::BucketId::TFRAG_W_L1_WATER) - first_tfrag_water;
+  constexpr auto first_tie_water = static_cast<std::size_t>(jak2::BucketId::TIE_W_L0_WATER);
+  constexpr auto tie_water_stride =
+      static_cast<std::size_t>(jak2::BucketId::TIE_W_L1_WATER) - first_tie_water;
+  constexpr auto first_etie_water = static_cast<std::size_t>(jak2::BucketId::ETIE_W_L0_WATER);
+  constexpr auto etie_water_stride =
+      static_cast<std::size_t>(jak2::BucketId::ETIE_W_L1_WATER) - first_etie_water;
+  const std::vector<tfrag3::TFragmentTreeKind> normal_tfrags = {
+      tfrag3::TFragmentTreeKind::NORMAL};
+  const std::vector<tfrag3::TFragmentTreeKind> trans_tfrags = {
+      tfrag3::TFragmentTreeKind::TRANS};
+  const std::vector<tfrag3::TFragmentTreeKind> water_tfrags = {
+      tfrag3::TFragmentTreeKind::WATER};
+  std::array<MetalTie3*, jak2::LEVEL_MAX> normal_ties = {};
+  auto merc = std::make_shared<MetalMerc2>(m_device, m_queue, m_texture_pool);
+  auto generic2 = std::make_shared<MetalGeneric2>();
+  m_jak2_shadow195_capture_renderer =
+      std::make_unique<metal_renderer::MetalJak2Shadow2Renderer>(
+          "shadow195-private-capture", metal_renderer::kJak2ShadowBucket195PlanBucket);
+
   for (const auto& descriptor : table) {
     const auto bucket_id = static_cast<std::size_t>(descriptor.id);
     const int batch_size = metal_renderer::jak2_metal_direct_batch_size(bucket_id);
-    if (batch_size != 0) {
-      ASSERT(descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip);
+    if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Visibility) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::BUCKET_2));
+      ASSERT(batch_size == 0);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalVisibilityBucketRenderer>(
+          "jak2-vis-data", descriptor.id, jak2::LEVEL_MAX);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::BlitDisplay) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::BUCKET_3));
+      ASSERT(batch_size == 0);
+      auto renderer = std::make_unique<MetalJak2BlitDisplayRenderer>(
+          "blit-display", descriptor.id, m_texture_pool);
+      m_jak2_blit_display = renderer.get();
+      m_bucket_renderers[bucket_id] = std::move(renderer);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Sprite) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::PARTICLES));
+      ASSERT(batch_size == 0);
+      m_bucket_renderers[bucket_id] =
+          std::make_unique<MetalSpriteRenderer>("jak2-particles", descriptor.id);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TFragment) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_tfrag && (bucket_id - first_tfrag) % tfrag_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_tfrag) / tfrag_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTFragment>(
+          fmt::format("tfrag-l{}-tfrag", level_id), descriptor.id, normal_tfrags, level_id,
+          false);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TFragmentTrans) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_tfrag_trans &&
+             (bucket_id - first_tfrag_trans) % tfrag_trans_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_tfrag_trans) / tfrag_trans_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTFragment>(
+          fmt::format("tfrag-t-l{}-alpha", level_id), descriptor.id, trans_tfrags, level_id,
+          false);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TFragmentWater) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_tfrag_water &&
+             (bucket_id - first_tfrag_water) % tfrag_water_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_tfrag_water) / tfrag_water_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTFragment>(
+          fmt::format("tfrag-w-l{}-water", level_id), descriptor.id, water_tfrags, level_id,
+          false);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Shrub) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_shrub && (bucket_id - first_shrub) % shrub_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_shrub) / shrub_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalShrub>(
+          fmt::format("shrub-l{}-shrub", level_id), descriptor.id);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Tie) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_tie && (bucket_id - first_tie) % tie_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_tie) / tie_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      auto renderer = std::make_unique<MetalTie3>(fmt::format("tie-l{}-tfrag", level_id),
+                                                  descriptor.id, level_id);
+      normal_ties[level_id] = renderer.get();
+      m_bucket_renderers[bucket_id] = std::move(renderer);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TieEnvmap) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_etie && (bucket_id - first_etie) % etie_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_etie) / etie_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      ASSERT(normal_ties[level_id]);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTieCategory>(
+          fmt::format("etie-l{}-tfrag", level_id), descriptor.id, normal_ties[level_id],
+          tfrag3::TieCategory::NORMAL_ENVMAP);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TieTrans) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_tie_trans &&
+             (bucket_id - first_tie_trans) % tie_trans_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_tie_trans) / tie_trans_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      ASSERT(normal_ties[level_id]);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTieCategory>(
+          fmt::format("tie-t-l{}-alpha", level_id), descriptor.id, normal_ties[level_id],
+          tfrag3::TieCategory::TRANS);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TieTransEnvmap) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_etie_trans &&
+             (bucket_id - first_etie_trans) % etie_trans_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_etie_trans) / etie_trans_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      ASSERT(normal_ties[level_id]);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTieCategory>(
+          fmt::format("etie-t-l{}-alpha", level_id), descriptor.id, normal_ties[level_id],
+          tfrag3::TieCategory::TRANS_ENVMAP);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TieWater) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_tie_water &&
+             (bucket_id - first_tie_water) % tie_water_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_tie_water) / tie_water_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      ASSERT(normal_ties[level_id]);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTieCategory>(
+          fmt::format("tie-w-l{}-water", level_id), descriptor.id, normal_ties[level_id],
+          tfrag3::TieCategory::WATER);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::TieWaterEnvmap) {
+      ASSERT(batch_size == 0);
+      ASSERT(bucket_id >= first_etie_water &&
+             (bucket_id - first_etie_water) % etie_water_stride == 0);
+      const int level_id = static_cast<int>((bucket_id - first_etie_water) / etie_water_stride);
+      ASSERT(level_id >= 0 && level_id < jak2::LEVEL_MAX);
+      ASSERT(normal_ties[level_id]);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalTieCategory>(
+          fmt::format("etie-w-l{}-water", level_id), descriptor.id, normal_ties[level_id],
+          tfrag3::TieCategory::WATER_ENVMAP);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Merc) {
+      ASSERT(batch_size == 0);
+      const auto name = jak2_merc_bucket_name(bucket_id);
+      ASSERT(name);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalMercBucketRenderer>(
+          *name, descriptor.id, merc);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::MercAlpha) {
+      ASSERT(batch_size == 0);
+      const auto name = jak2_merc_bucket_name(bucket_id);
+      ASSERT(name);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalMercBucketRenderer>(
+          *name, descriptor.id, merc);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::MercWater) {
+      ASSERT(batch_size == 0);
+      const auto name = jak2_merc_bucket_name(bucket_id);
+      ASSERT(name);
+      m_bucket_renderers[bucket_id] =
+          std::make_unique<MetalMercBucketRenderer>(*name, descriptor.id, merc);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Generic2) {
+      ASSERT(batch_size == 0);
+      const auto name = jak2_generic2_bucket_name(bucket_id);
+      ASSERT(name);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalGeneric2BucketRenderer>(
+          *name, descriptor.id, generic2);
+    } else if (descriptor.behavior ==
+               metal_renderer::Jak2MetalBucketBehavior::EffectsLightning) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::EFFECTS));
+      ASSERT(batch_size == 0);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalGeneric2BucketRenderer>(
+            "effects-lightning", descriptor.id, generic2, MetalGeneric2::Mode::LIGHTNING);
+      } else {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+            "jak2-effects-lightning-unavailable", descriptor.id);
+      }
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Warp) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::GMERC_WARP));
+      ASSERT(batch_size == 0);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] =
+            std::make_unique<metal_renderer::MetalJak2WarpBucketRenderer>(
+                "gmerc-warp", descriptor.id, generic2, m_texture_pool);
+      } else {
+        m_bucket_renderers[bucket_id] =
+            std::make_unique<MetalSkipRenderer>("jak2-gmerc-warp-unavailable", descriptor.id);
+      }
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Shadow2) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::SHADOW));
+      ASSERT(batch_size == 0);
+      m_bucket_renderers[bucket_id] =
+          std::make_unique<metal_renderer::MetalJak2Shadow2Renderer>(
+              "shadow", descriptor.id);
+    } else if (descriptor.behavior ==
+               metal_renderer::Jak2MetalBucketBehavior::HostTextureUploadDirect) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1) ||
+             bucket_id == static_cast<std::size_t>(jak2::BucketId::TEX_ALL_MAP));
+      ASSERT(batch_size == 1024 * 6);
+      if (m_host_texture_uploads) {
+        const char* name = bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1)
+                               ? "debug-no-zbuf1"
+                               : "tex-all-map";
+        const auto callback_point =
+            bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1)
+                ? MetalHostTextureUploadDirectRenderer::CallbackPoint::PcPort12
+                : MetalHostTextureUploadDirectRenderer::CallbackPoint::BucketEntry;
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalHostTextureUploadDirectRenderer>(
+            name, descriptor.id, batch_size, callback_point);
+      } else {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+            "jak2-host-texture-upload-direct-unavailable", descriptor.id);
+      }
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
+      ASSERT(batch_size != 0);
       const char* name = "direct";
       switch (static_cast<jak2::BucketId>(bucket_id)) {
         case jak2::BucketId::SKY_DRAW:
@@ -458,24 +771,80 @@ void MetalRenderer::init_bucket_renderers_jak2() {
         case jak2::BucketId::SCREEN_FILTER:
           name = "screen-filter";
           break;
-        case jak2::BucketId::DEBUG2:
-          name = "debug2";
+        case jak2::BucketId::PROGRESS:
+          name = "progress";
           break;
         case jak2::BucketId::DEBUG_NO_ZBUF2:
           name = "debug-no-zbuf2";
           break;
-        case jak2::BucketId::DEBUG3:
-          name = "debug3";
-          break;
         default:
           ASSERT(false);
       }
-      m_bucket_renderers[bucket_id] =
-          std::make_unique<MetalDirectRenderer>(name, descriptor.id, batch_size);
+      if (static_cast<jak2::BucketId>(bucket_id) == jak2::BucketId::PROGRESS) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalProgressRenderer>(
+            name, descriptor.id, batch_size, m_device, m_texture_pool);
+      } else {
+        m_bucket_renderers[bucket_id] =
+            std::make_unique<MetalDirectRenderer>(name, descriptor.id, batch_size);
+      }
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::OceanMidFar) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::OCEAN_MID_FAR));
+      ASSERT(batch_size == 0);
+      auto ocean =
+          std::make_unique<MetalOceanMidAndFar>("ocean-mid-far", descriptor.id, m_device, m_queue);
+      ocean->init_textures(*m_texture_pool, GameVersion::Jak2);
+      m_bucket_renderers[bucket_id] = std::move(ocean);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::OceanNear) {
+      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::OCEAN_NEAR));
+      ASSERT(batch_size == 0);
+      auto ocean =
+          std::make_unique<MetalOceanNear>("ocean-near", descriptor.id, m_device, m_queue);
+      ocean->init_textures(*m_texture_pool, GameVersion::Jak2);
+      m_bucket_renderers[bucket_id] = std::move(ocean);
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::PrisEye) {
+      const bool exact_pris_eye_bucket =
+          std::find(metal_renderer::kJak2PrisTextureUploadBuckets.begin(),
+                    metal_renderer::kJak2PrisTextureUploadBuckets.end(), bucket_id) !=
+              metal_renderer::kJak2PrisTextureUploadBuckets.end() ||
+          std::find(metal_renderer::kJak2Pris2TextureUploadBuckets.begin(),
+                    metal_renderer::kJak2Pris2TextureUploadBuckets.end(), bucket_id) !=
+              metal_renderer::kJak2Pris2TextureUploadBuckets.end();
+      ASSERT(exact_pris_eye_bucket);
+      ASSERT(batch_size == 0);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalJak2PrisEyeBucketRenderer>(
+            fmt::format("jak2-pris-eye-{}", bucket_id), descriptor.id);
+      } else {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+            "jak2-pris-eye-unavailable", descriptor.id);
+      }
+    } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::CommonPris) {
+      ASSERT(bucket_id == metal_renderer::kJak2CommonPrisTextureUploadBucket);
+      ASSERT(batch_size == 0);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalJak2CommonPrisBucketRenderer>(
+            "jak2-common-pris", descriptor.id);
+      } else {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+            "jak2-common-pris-unavailable", descriptor.id);
+      }
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip) {
+      ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
           fmt::format("jak2-deferred-{}", bucket_id), descriptor.id);
+    } else if (descriptor.behavior ==
+               metal_renderer::Jak2MetalBucketBehavior::HostTextureUpload) {
+      ASSERT(batch_size == 0);
+      if (m_host_texture_uploads) {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalHostHandledRenderer>(
+            "jak2-host-texture-upload", descriptor.id);
+      } else {
+        m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
+            "jak2-host-texture-upload-unavailable", descriptor.id);
+      }
     } else {
+      ASSERT(descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::StrictEmpty);
+      ASSERT(batch_size == 0);
       m_bucket_renderers[bucket_id] =
           std::make_unique<MetalEmptyBucketRenderer>(fmt::format("bucket-{}", bucket_id),
                                                      descriptor.id);
@@ -483,8 +852,16 @@ void MetalRenderer::init_bucket_renderers_jak2() {
   }
 }
 
-void MetalRenderer::init_bucket_renderers(TexturePool* pool, GameVersion version) {
+void MetalRenderer::init_bucket_renderers(TexturePool* pool,
+                                          GameVersion version,
+                                          bool host_texture_uploads) {
+  m_shared_state.eye_renderer = nullptr;
+  m_bucket_renderers.clear();
+  m_jak2_eye_renderer.reset();
+  m_jak2_shadow195_capture_renderer.reset();
   m_texture_pool = pool;
+  m_host_texture_uploads = host_texture_uploads;
+  m_jak2_blit_display = nullptr;
   m_shared_state.version = version;
   switch (version) {
     case GameVersion::Jak1:
@@ -496,6 +873,14 @@ void MetalRenderer::init_bucket_renderers(TexturePool* pool, GameVersion version
     default:
       ASSERT_MSG(false, "Metal bucket renderers only support Jak 1 and Jak 2");
   }
+}
+
+MetalRenderer::MetalRenderer() = default;
+
+MetalRenderer::~MetalRenderer() {
+  m_shared_state.eye_renderer = nullptr;
+  m_bucket_renderers.clear();
+  m_jak2_eye_renderer.reset();
 }
 
 bool MetalRenderer::init(id<MTLDevice> device) {
@@ -614,22 +999,25 @@ void MetalRenderer::setup_frame(const MetalRenderOptions& opts) {
     lg::info("Metal game target setup: {}x{}", opts.game_res_w, opts.game_res_h);
     m_game_color = make_color_target(m_device, opts.game_res_w, opts.game_res_h, true);
     m_game_depth = make_depth_target(m_device, opts.game_res_w, opts.game_res_h);
+    m_game_target_fresh = true;
   }
 }
 
-void MetalRenderer::encode_game_passes(id<MTLCommandBuffer> cmds) {
+void MetalRenderer::encode_game_passes(id<MTLCommandBuffer> cmds,
+                                       id<MTLTexture> color,
+                                       id<MTLTexture> depth) {
   auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-  pass.colorAttachments[0].texture = m_game_color;
+  pass.colorAttachments[0].texture = color;
   pass.colorAttachments[0].loadAction = MTLLoadActionClear;
   pass.colorAttachments[0].storeAction = MTLStoreActionStore;
   // Jak 1 clears the game framebuffer to transparent black and depth to 0
   // (OpenGLRenderer::setup_frame)
   pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
-  pass.depthAttachment.texture = m_game_depth;
+  pass.depthAttachment.texture = depth;
   pass.depthAttachment.loadAction = MTLLoadActionClear;
   pass.depthAttachment.storeAction = MTLStoreActionDontCare;
   pass.depthAttachment.clearDepth = 0.0;
-  pass.stencilAttachment.texture = m_game_depth;
+  pass.stencilAttachment.texture = depth;
   pass.stencilAttachment.loadAction = MTLLoadActionClear;
   pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
   pass.stencilAttachment.clearStencil = 0;
@@ -658,7 +1046,8 @@ void MetalRenderer::encode_game_passes(id<MTLCommandBuffer> cmds) {
  */
 void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
                                         id<MTLTexture> target,
-                                        const MetalRenderOptions& opts) {
+                                        const MetalRenderOptions& opts,
+                                        id<MTLTexture> source) {
   int target_w = (int)target.width;
   int target_h = (int)target.height;
   int region_w = opts.draw_region_w;
@@ -691,7 +1080,7 @@ void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
   PresentParams params =
       make_present_params(opts.brightness_contrast_color, opts.brightness_contrast_alpha);
   [enc setFragmentBytes:&params length:sizeof(params) atIndex:0];
-  [enc setFragmentTexture:m_game_color atIndex:0];
+  [enc setFragmentTexture:source atIndex:0];
   [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
 
   if (opts.pmode_alp < 1.f) {
@@ -720,23 +1109,42 @@ void MetalRenderer::render_frame(const MetalRenderOptions& opts, CAMetalLayer* l
   @autoreleasepool {
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
 
-    setup_frame(opts);
-    encode_game_passes(cmds);
+    const bool jak2_fallback = m_shared_state.version == GameVersion::Jak2;
+    id<MTLTexture> color = nil;
+    id<MTLTexture> depth = nil;
+    if (jak2_fallback) {
+      if (!m_jak2_fallback_color || (int)m_jak2_fallback_color.width != opts.game_res_w ||
+          (int)m_jak2_fallback_color.height != opts.game_res_h) {
+        m_jak2_fallback_color =
+            make_color_target(m_device, opts.game_res_w, opts.game_res_h, true);
+        m_jak2_fallback_depth = make_depth_target(m_device, opts.game_res_w, opts.game_res_h);
+      }
+      color = m_jak2_fallback_color;
+      depth = m_jak2_fallback_depth;
+    } else {
+      setup_frame(opts);
+      color = m_game_color;
+      depth = m_game_depth;
+    }
+    encode_game_passes(cmds, color, depth);
 #if TARGET_OS_OSX
     {
       id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
-      [blit synchronizeResource:m_game_color];
+      [blit synchronizeResource:color];
       [blit endEncoding];
     }
 #endif
 
     id<CAMetalDrawable> drawable = [layer nextDrawable];
     if (drawable) {
-      encode_present_pass(cmds, drawable.texture, opts);
+      encode_present_pass(cmds, drawable.texture, opts, color);
       schedule_present(cmds, drawable, opts);
     }
 
     [cmds commit];
+    if (!jak2_fallback) {
+      m_game_target_fresh = false;
+    }
     {
       std::lock_guard<std::mutex> lock(m_frame_mutex);
       m_last_internal_frame_cmds = cmds;
@@ -803,10 +1211,19 @@ void MetalRenderer::dispatch_buckets_jak2(DmaFollower dma, MetalFrameContext& ct
   m_shared_state.default_regs_buffer = 0;
 
   for (size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
-    auto& renderer = m_bucket_renderers[bucket_id];
+    auto* renderer = m_bucket_renderers[bucket_id].get();
+    if (bucket_id == metal_renderer::kJak2ShadowBucket195PlanBucket &&
+        m_shared_state.jak2_shadow195_frame_capture) {
+      const auto route = metal_renderer::route_jak2_shadow195_frame_capture(
+          renderer, m_jak2_shadow195_capture_renderer.get(), &renderer);
+      if (route == metal_renderer::Jak2Shadow195CaptureDispatchRoute::Unsupported) {
+        m_shared_state.jak2_shadow195_frame_capture->fail(static_cast<u32>(
+            metal_renderer::Jak2Shadow195FrameCaptureFailure::RendererFailed));
+      }
+    }
     if (m_shared_state.secondary_view &&
-        (dynamic_cast<MetalTextureBucketRenderer*>(renderer.get()) ||
-         dynamic_cast<MetalEyeRenderer*>(renderer.get()))) {
+        (dynamic_cast<MetalTextureBucketRenderer*>(renderer) ||
+         dynamic_cast<MetalEyeRenderer*>(renderer))) {
       metal_consume_bucket_without_side_effects(dma, m_shared_state);
     } else {
       renderer->render(dma, &m_shared_state, ctx);
@@ -828,23 +1245,25 @@ void MetalRenderer::dispatch_buckets_jak2(DmaFollower dma, MetalFrameContext& ct
 bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
                                        CAMetalLayer* layer,
                                        const u8* chain_data,
-                                       u32 chain_offset) {
+                                       u32 chain_offset,
+                                       std::size_t chain_size) {
   return render_chain_frame_impl(opts, layer, nil, 0, nil, 0, nullptr, 0.0, 0, {}, true, nil,
-                                 chain_data, chain_offset);
+                                 chain_data, chain_offset, chain_size);
 }
 
 bool MetalRenderer::render_chain_frame_to_external_target(
     const MetalRenderOptions& opts,
     const MetalExternalRenderTargetDescriptor& target,
     const u8* chain_data,
-    u32 chain_offset) {
+    u32 chain_offset,
+    std::size_t chain_size) {
   if (!chain_data || !valid_external_target(m_device, opts, target)) {
     return false;
   }
   return render_chain_frame_impl(opts, nil, target.color_texture, target.color_slice,
                                  target.depth_texture, target.depth_slice, &target.viewport,
                                  target.clear_depth, target.view_id, target.view_transform, true,
-                                 nil, chain_data, chain_offset);
+                                 nil, chain_data, chain_offset, chain_size);
 }
 
 MetalExternalFrameReservation MetalRenderer::reserve_external_stereo_frame() {
@@ -891,7 +1310,8 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
     const MetalExternalRenderTargetDescriptor& right,
     id<MTLCommandBuffer> command_buffer,
     const u8* chain_data,
-    u32 chain_offset) {
+    u32 chain_offset,
+    std::size_t chain_size) {
   const bool reserved = m_presentation_state &&
                         m_presentation_state->external_submission_gate.is_reserved();
   if (!reserved || command_buffer == nil || command_buffer.device != m_device ||
@@ -905,12 +1325,14 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
   const bool left_rendered =
       render_chain_frame_impl(opts, nil, left.color_texture, left.color_slice, left.depth_texture,
                               left.depth_slice, &left.viewport, left.clear_depth, left.view_id,
-                              left.view_transform, true, command_buffer, chain_data, chain_offset);
+                              left.view_transform, true, command_buffer, chain_data, chain_offset,
+                              chain_size);
   const bool right_rendered =
       left_rendered && render_chain_frame_impl(
                            opts, nil, right.color_texture, right.color_slice, right.depth_texture,
                            right.depth_slice, &right.viewport, right.clear_depth, right.view_id,
-                           right.view_transform, false, command_buffer, chain_data, chain_offset);
+                           right.view_transform, false, command_buffer, chain_data, chain_offset,
+                           chain_size);
   if (right_rendered) {
     m_chain_stats.last_views_rendered = 2;
 #if GOALPAD_VISION_STEREO_EYE_MARKERS
@@ -1052,7 +1474,31 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
                                             bool frame_global_side_effects,
                                             id<MTLCommandBuffer> borrowed_command_buffer,
                                             const u8* chain_data,
-                                            u32 chain_offset) {
+                                            u32 chain_offset,
+                                            std::size_t chain_size) {
+  if (m_shared_state.version == GameVersion::Jak2) {
+    const auto validation =
+        metal_renderer::validate_jak2_metal_dma_chain(chain_data, chain_size, chain_offset);
+    if (!validation) {
+      if (validation.error == metal_renderer::Jak2MetalChainValidationError::DmaChain) {
+        throw std::runtime_error(fmt::format(
+            "Jak 2 Metal DMA chain validation failed at {:#x}: {}",
+            validation.dma.error_offset,
+            dma_chain_validation_error_message(validation.dma.error)));
+      }
+      throw std::runtime_error(fmt::format(
+          "Jak 2 Metal DMA chain validation failed before bucket {}: {}",
+          validation.failed_bucket + 1,
+          metal_renderer::jak2_metal_chain_validation_error_message(validation.error)));
+    }
+  } else {
+    const auto validation = validate_dma_chain(chain_data, chain_size, chain_offset);
+    if (!validation) {
+      throw std::runtime_error(fmt::format("Metal DMA chain validation failed at {:#x}: {}",
+                                           validation.error_offset,
+                                           dma_chain_validation_error_message(validation.error)));
+    }
+  }
   bool drawable_acquired = false;
   const bool external_target = view_id != 0;
   @autoreleasepool {
@@ -1109,6 +1555,18 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       game_color = m_game_color;
       game_depth = m_game_depth;
     }
+    bool external_target_has_history = false;
+    if (external_target && m_shared_state.version == GameVersion::Jak2) {
+      const auto previous = m_external_target_history.find(view_id);
+      if (previous != m_external_target_history.end()) {
+        id<MTLTexture> previous_color = previous->second->color_texture;
+        id<MTLTexture> previous_depth = previous->second->depth_texture;
+        external_target_has_history =
+            previous_color && previous_depth && previous_color == game_color &&
+            previous->second->color_slice == color_slice && previous_depth == game_depth &&
+            previous->second->depth_slice == depth_slice;
+      }
+    }
     // Secondary replay gets scratch bookkeeping, so the primary frame remains the one reported to
     // the host even though both views decode the same chain.
     MetalBackgroundState secondary_background;
@@ -1123,6 +1581,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     }
     m_shared_state.background = background;
     m_shared_state.texture_pool = m_texture_pool;
+    m_shared_state.dma_copy_base = chain_data;
+    m_shared_state.dma_copy_size = chain_size;
     m_shared_state.ee_memory = g_ee_main_mem;
     m_shared_state.offset_of_s7 = g_s7_override ? g_s7_override : metal_offset_of_s7();
     m_shared_state.engine_frame_id = opts.engine_frame_id;
@@ -1135,6 +1595,36 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     if (frame_global_side_effects && m_sky_cpu_blender) {
       m_sky_cpu_blender->start_frame(*m_texture_pool, frame_resource_slot);
     }
+    m_shared_state.target_fps = opts.target_fps;
+    m_shared_state.animated_texture_slots = opts.animated_texture_slots;
+    m_shared_state.animated_texture_slot_count = opts.animated_texture_slot_count;
+    m_shared_state.host_bucket_context = opts.host_bucket_context;
+    m_shared_state.host_bucket_callback = opts.host_bucket_callback;
+    m_shared_state.jak2_pris_eye_plans = opts.jak2_pris_eye_plans;
+    m_shared_state.jak2_pris_eye_plan_count = opts.jak2_pris_eye_plan_count;
+    m_shared_state.jak2_common_pris_plan = opts.jak2_common_pris_plan;
+    m_shared_state.jak2_gmerc_warp_bucket317_plan = opts.jak2_gmerc_warp_bucket317_plan;
+    m_shared_state.jak2_shadow_bucket195_plan = opts.jak2_shadow_bucket195_plan;
+    m_shared_state.jak2_shadow195_frame_capture = opts.jak2_shadow195_frame_capture;
+    m_shared_state.render_target_view_id = view_id;
+    m_shared_state.render_target_external = external_target;
+    struct HostBucketCallbackScope {
+      MetalSharedRenderState* state;
+      ~HostBucketCallbackScope() {
+        state->animated_texture_slots = nullptr;
+        state->animated_texture_slot_count = 0;
+        state->host_bucket_context = nullptr;
+        state->host_bucket_callback = nullptr;
+        state->jak2_pris_eye_plans = nullptr;
+        state->jak2_pris_eye_plan_count = 0;
+        state->jak2_common_pris_plan = nullptr;
+        state->jak2_gmerc_warp_bucket317_plan = nullptr;
+        state->jak2_shadow_bucket195_plan = nullptr;
+        state->jak2_shadow195_frame_capture = nullptr;
+        state->render_target_view_id = 0;
+        state->render_target_external = false;
+      }
+    } host_bucket_callback_scope{&m_shared_state};
 
     id<MTLCommandBuffer> cmds = borrowed_command_buffer ?: [m_queue commandBuffer];
     if (cmds == nil) {
@@ -1145,12 +1635,17 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
                                               static_cast<unsigned long long>(view_id)];
     }
 
-    // one render pass over the game target for all buckets, cleared like
-    // Jak 1's setup_frame (color 0, depth 0, PS2 reversed depth)
+    // Start the game-target pass. Jak 2 retains color across submitted frames
+    // until bucket 3 snapshots it and restarts with a clear; Jak 1 and newly
+    // allocated targets keep the original frame-start clear.
     auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = game_color;
     pass.colorAttachments[0].slice = color_slice;
-    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    const bool load_previous_jak2_color =
+        m_shared_state.version == GameVersion::Jak2 &&
+        (external_target ? external_target_has_history : !m_game_target_fresh);
+    pass.colorAttachments[0].loadAction =
+        load_previous_jak2_color ? MTLLoadActionLoad : MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     pass.depthAttachment.texture = game_depth;
@@ -1189,22 +1684,44 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     ctx.game_depth = game_depth;
     ctx.game_depth_slice = depth_slice;
     ctx.game_viewport = frame_viewport;
+    ctx.game_scissor = {0, 0, game_color.width, game_color.height};
+    ctx.game_scissor_valid = true;
+    ctx.color_load_action = static_cast<u32>(pass.colorAttachments[0].loadAction);
+    ctx.color_store_action = static_cast<u32>(pass.colorAttachments[0].storeAction);
+    ctx.depth_load_action = static_cast<u32>(pass.depthAttachment.loadAction);
+    ctx.depth_store_action = static_cast<u32>(pass.depthAttachment.storeAction);
+    ctx.stencil_load_action = static_cast<u32>(pass.stencilAttachment.loadAction);
+    ctx.stencil_store_action = static_cast<u32>(pass.stencilAttachment.storeAction);
 
     if (frame_global_side_effects) {
       m_chain_stats.last_buckets_dispatched = 0;
       m_chain_stats.last_frame_global_callbacks = 0;
     }
-    switch (m_shared_state.version) {
-      case GameVersion::Jak1:
-        dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset), ctx);
-        break;
-      case GameVersion::Jak2:
-        dispatch_buckets_jak2(DmaFollower(chain_data, chain_offset), ctx);
-        break;
-      default:
-        ASSERT_MSG(false, "Metal DMA dispatch only supports Jak 1 and Jak 2");
+    try {
+      switch (m_shared_state.version) {
+        case GameVersion::Jak1:
+          dispatch_buckets_jak1(DmaFollower(chain_data, chain_offset, chain_size), ctx);
+          break;
+        case GameVersion::Jak2:
+          dispatch_buckets_jak2(DmaFollower(chain_data, chain_offset, chain_size), ctx);
+          break;
+        default:
+          ASSERT_MSG(false, "Metal DMA dispatch only supports Jak 1 and Jak 2");
+      }
+      if (m_shared_state.version == GameVersion::Jak2) {
+        ASSERT(m_jak2_blit_display);
+        // OpenGLRenderer::render calls BlitDisplays::do_copy_back only after
+        // dispatch_buckets, so opcode 0x11 intentionally restores over every
+        // later bucket before the frame is presented.
+        m_jak2_blit_display->finish_frame(ctx);
+      }
+    } catch (...) {
+      [ctx.enc endEncoding];
+      ctx.enc = nil;
+      throw;
     }
     [ctx.enc endEncoding];
+    ctx.enc = nil;
 
     if (frame_global_side_effects) {
       m_chain_stats.last_host_tick_id = opts.host_tick_id;
@@ -1354,7 +1871,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     if (drawable) {
       drawable_acquired = true;
       m_chain_stats.drawables_acquired++;
-      encode_present_pass(cmds, drawable.texture, opts);
+      encode_present_pass(cmds, drawable.texture, opts, m_game_color);
       if (opts.presentation_time > 0.0 && opts.presentation_time <= CACurrentMediaTime()) {
         m_chain_stats.late_present_submissions++;
       }
@@ -1456,6 +1973,31 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         completion_state->command_buffer_cv.notify_all();
       }];
       [cmds commit];
+      if (external_target && m_shared_state.version == GameVersion::Jak2) {
+        for (auto history = m_external_target_history.begin();
+             history != m_external_target_history.end();) {
+          id<MTLTexture> previous_color = history->second->color_texture;
+          id<MTLTexture> previous_depth = history->second->depth_texture;
+          const bool dead = !previous_color || !previous_depth;
+          const bool aliases_color = previous_color == game_color &&
+                                     history->second->color_slice == color_slice;
+          const bool aliases_depth = previous_depth == game_depth &&
+                                     history->second->depth_slice == depth_slice;
+          if (dead || history->first == view_id || aliases_color || aliases_depth) {
+            history = m_external_target_history.erase(history);
+          } else {
+            ++history;
+          }
+        }
+        auto history = std::make_unique<ExternalTargetHistory>();
+        history->color_texture = game_color;
+        history->color_slice = color_slice;
+        history->depth_texture = game_depth;
+        history->depth_slice = depth_slice;
+        m_external_target_history.emplace(view_id, std::move(history));
+      } else if (!external_target) {
+        m_game_target_fresh = false;
+      }
       m_chain_stats.command_buffers_committed++;
       {
         std::lock_guard<std::mutex> lock(m_frame_mutex);
@@ -1478,41 +2020,241 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     // consume those diagnostics can skip the aggregation without changing rendering or essential
     // frame/submission accounting.
     if (frame_global_side_effects && m_detailed_frame_stats_enabled) {
+      m_chain_stats.jak2_sky_draw_draws = 0;
+      m_chain_stats.jak2_sky_draw_triangles = 0;
+      m_chain_stats.jak2_sky_draw_last_batch = {};
+      m_chain_stats.jak2_blit_display_plan_valid = false;
+      m_chain_stats.jak2_blit_display_snapshot_requested = false;
+      m_chain_stats.jak2_blit_display_copy_back_requested = false;
+      m_chain_stats.jak2_blit_display_copy_back_performed = false;
+      m_chain_stats.jak2_blit_display_texture_lookup_hit = false;
+      m_chain_stats.jak2_blit_display_used_placeholder = false;
+      m_chain_stats.jak2_blit_display_texture_handle = 0;
+      m_chain_stats.jak2_blit_display_texture_tbp = 0;
+      m_chain_stats.jak2_blit_display_unsupported_pc_ports = 0;
+      m_chain_stats.jak2_screen_filter_draws = 0;
+      m_chain_stats.jak2_screen_filter_triangles = 0;
+      m_chain_stats.jak2_progress_draws = 0;
+      m_chain_stats.jak2_progress_triangles = 0;
+      m_chain_stats.jak2_progress_textured_draws = 0;
+      m_chain_stats.jak2_progress_missing_texture_draws = 0;
+      m_chain_stats.jak2_debug_no_zbuf1_draws = 0;
+      m_chain_stats.jak2_debug_no_zbuf1_triangles = 0;
+      m_chain_stats.jak2_debug_no_zbuf1_textured_draws = 0;
+      m_chain_stats.jak2_debug_no_zbuf1_missing_texture_draws = 0;
+      m_chain_stats.jak2_debug_no_zbuf2_draws = 0;
+      m_chain_stats.jak2_debug_no_zbuf2_triangles = 0;
       int uploads = 0;
       u64 skipped = 0;
+      m_chain_stats.last_skipped_bucket_count = 0;
+      m_chain_stats.last_skipped_bucket_ids.fill(0);
+      m_chain_stats.last_skipped_bucket_bytes.fill(0);
+      const auto track_skipped_bucket = [this](u32 bucket_id, u64 bytes) {
+        if (bytes == 0) {
+          return;
+        }
+        std::size_t insert_at = 0;
+        while (insert_at < metal_renderer::kTrackedDeferredBuckets &&
+               m_chain_stats.last_skipped_bucket_bytes[insert_at] >= bytes) {
+          insert_at++;
+        }
+        if (insert_at == metal_renderer::kTrackedDeferredBuckets) {
+          return;
+        }
+        for (std::size_t i = metal_renderer::kTrackedDeferredBuckets - 1; i > insert_at; i--) {
+          m_chain_stats.last_skipped_bucket_ids[i] =
+              m_chain_stats.last_skipped_bucket_ids[i - 1];
+          m_chain_stats.last_skipped_bucket_bytes[i] =
+              m_chain_stats.last_skipped_bucket_bytes[i - 1];
+        }
+        m_chain_stats.last_skipped_bucket_ids[insert_at] = bucket_id;
+        m_chain_stats.last_skipped_bucket_bytes[insert_at] = bytes;
+        m_chain_stats.last_skipped_bucket_count = std::min<int>(
+            m_chain_stats.last_skipped_bucket_count + 1,
+            static_cast<int>(metal_renderer::kTrackedDeferredBuckets));
+      };
       int unsupported_blends = 0;
       m_chain_stats.ocean_draws = 0;
       m_chain_stats.ocean_triangles = 0;
       m_chain_stats.ocean_missing_textures = 0;
+      m_chain_stats.ocean_command_buffers_committed = 0;
+      m_chain_stats.ocean_command_buffers_completed = 0;
+      m_chain_stats.ocean_command_buffer_errors = 0;
+      m_chain_stats.ocean_last_command_buffer_status = 0;
+      m_chain_stats.eyes_composed = 0;
+      m_chain_stats.eye_draws = 0;
+      m_chain_stats.eye_triangles = 0;
+      m_chain_stats.eye_missing_textures = 0;
+      m_chain_stats.eye_unexpected_dma = 0;
+      m_chain_stats.eye_duplicate_slot_writes = 0;
+      m_chain_stats.eye_command_buffers_committed = 0;
+      m_chain_stats.eye_command_buffers_completed = 0;
+      m_chain_stats.eye_command_buffer_errors = 0;
+      m_chain_stats.eye_last_command_buffer_status = 0;
+      m_chain_stats.eye_texture = 0;
+      m_chain_stats.shadow195_executions = 0;
+      m_chain_stats.shadow195_absent = 0;
+      m_chain_stats.shadow195_ready = 0;
+      m_chain_stats.shadow195_deferred_no_draw = 0;
+      m_chain_stats.shadow195_input_batches = 0;
+      m_chain_stats.shadow195_input_vertices = 0;
+      m_chain_stats.shadow195_input_records = 0;
+      m_chain_stats.shadow195_output_vertices = 0;
+      m_chain_stats.shadow195_front_triangles = 0;
+      m_chain_stats.shadow195_back_triangles = 0;
+      m_chain_stats.shadow195_draws = 0;
+      m_chain_stats.shadow195_triangles = 0;
+      m_chain_stats.shadow195_darken_draws = 0;
+      m_chain_stats.shadow195_lighten_draws = 0;
+      m_chain_stats.shadow195_unexpected_dma = 0;
+      m_chain_stats.shadow195_invalid_plan = 0;
+      m_chain_stats.shadow195_nonfinite_projection = 0;
+      m_chain_stats.shadow195_overflow = 0;
+      m_chain_stats.shadow195_pipeline_failures = 0;
+      m_chain_stats.shadow195_reached_boundary = false;
+      m_chain_stats.merc_model_diagnostics = {};
+      m_chain_stats.merc_model_diagnostic_count = 0;
+      m_chain_stats.merc_model_diagnostic_overflow_packets = 0;
       MetalMerc2::Stats merc_stats;
       MetalGeneric2::Stats generic_stats;
-      for (auto& r : m_bucket_renderers) {
+      MetalGeneric2::Stats effects315_stats;
+      const auto aggregate_eye_stats = [this](const MetalEyeRenderer::Stats& stats) {
+        m_chain_stats.eyes_composed += stats.eyes;
+        m_chain_stats.eye_draws += stats.draw_calls;
+        m_chain_stats.eye_triangles += stats.triangles;
+        m_chain_stats.eye_missing_textures += stats.missing_textures;
+        m_chain_stats.eye_unexpected_dma += stats.unexpected_dma;
+        m_chain_stats.eye_duplicate_slot_writes += stats.duplicate_slot_writes;
+        m_chain_stats.eye_command_buffers_committed += stats.command_buffers_committed;
+        m_chain_stats.eye_command_buffers_completed += stats.command_buffers_completed;
+        m_chain_stats.eye_command_buffer_errors += stats.command_buffer_errors;
+        if (stats.last_command_buffer_status != 0) {
+          m_chain_stats.eye_last_command_buffer_status = stats.last_command_buffer_status;
+        }
+        if (!m_chain_stats.eye_texture) {
+          m_chain_stats.eye_texture = stats.first_texture;
+        }
+      };
+      if (m_shared_state.version == GameVersion::Jak2 && m_jak2_blit_display) {
+        const auto& stats = m_jak2_blit_display->stats();
+        m_chain_stats.jak2_blit_display_plan_valid = stats.plan_valid;
+        m_chain_stats.jak2_blit_display_snapshot_requested = stats.snapshot_requested;
+        m_chain_stats.jak2_blit_display_copy_back_requested = stats.copy_back_requested;
+        m_chain_stats.jak2_blit_display_copy_back_performed = stats.copy_back_performed;
+        m_chain_stats.jak2_blit_display_texture_lookup_hit = stats.texture_lookup_hit;
+        m_chain_stats.jak2_blit_display_used_placeholder = stats.used_placeholder;
+        m_chain_stats.jak2_blit_display_texture_handle = stats.texture_handle;
+        m_chain_stats.jak2_blit_display_texture_tbp = stats.texture_tbp;
+        m_chain_stats.jak2_blit_display_unsupported_pc_ports =
+            stats.unsupported_pc_port_count;
+      }
+      for (std::size_t bucket_id = 0; bucket_id < m_bucket_renderers.size(); bucket_id++) {
+        auto& r = m_bucket_renderers[bucket_id];
         if (auto* t = dynamic_cast<MetalTextureBucketRenderer*>(r.get())) {
           uploads += t->last_stats().uploads;
         } else if (auto* s = dynamic_cast<MetalSkipRenderer*>(r.get())) {
           skipped += s->skipped_bytes();
+          track_skipped_bucket(static_cast<u32>(bucket_id), s->last_skipped_bytes());
         } else if (auto* d = dynamic_cast<MetalDirectRenderer*>(r.get())) {
           unsupported_blends += d->stats().unsupported_blends;
+          if (m_shared_state.version == GameVersion::Jak2 &&
+              bucket_id == static_cast<std::size_t>(jak2::BucketId::SKY_DRAW)) {
+            const auto& stats = d->stats();
+            const auto& batch = stats.last_batch;
+            auto& sky_batch = m_chain_stats.jak2_sky_draw_last_batch;
+            m_chain_stats.jak2_sky_draw_draws = stats.draw_calls;
+            m_chain_stats.jak2_sky_draw_triangles = stats.triangles;
+            sky_batch.valid = batch.valid;
+            sky_batch.textured = batch.textured;
+            sky_batch.vertices = batch.vertices;
+            sky_batch.nonzero_rgb_vertices = batch.nonzero_rgb_vertices;
+            sky_batch.tex0_tbp = batch.tex0_tbp;
+            sky_batch.tex0_tcc = batch.tex0_tcc;
+            sky_batch.tex0_decal = batch.tex0_decal;
+            sky_batch.texture_lookup_hit = batch.texture_lookup_hit;
+            sky_batch.used_placeholder = batch.used_placeholder;
+            sky_batch.write_rgb = batch.write_rgb;
+            sky_batch.blend_enabled = batch.blend_enabled;
+            sky_batch.blend_a = batch.blend_a;
+            sky_batch.blend_b = batch.blend_b;
+            sky_batch.blend_c = batch.blend_c;
+            sky_batch.blend_d = batch.blend_d;
+            sky_batch.alpha_test_enabled = batch.alpha_test_enabled;
+            sky_batch.alpha_test_mode = batch.alpha_test_mode;
+            sky_batch.alpha_aref = batch.alpha_aref;
+            sky_batch.alpha_afail = batch.alpha_afail;
+          } else if (m_shared_state.version == GameVersion::Jak2 &&
+                     bucket_id == static_cast<std::size_t>(jak2::BucketId::PROGRESS)) {
+            m_chain_stats.jak2_progress_draws = d->stats().draw_calls;
+            m_chain_stats.jak2_progress_triangles = d->stats().triangles;
+            m_chain_stats.jak2_progress_textured_draws = d->stats().textured_draw_calls;
+            m_chain_stats.jak2_progress_missing_texture_draws =
+                d->stats().missing_texture_draw_calls;
+          } else if (m_shared_state.version == GameVersion::Jak2 &&
+                     bucket_id == static_cast<std::size_t>(jak2::BucketId::SCREEN_FILTER)) {
+            m_chain_stats.jak2_screen_filter_draws = d->stats().draw_calls;
+            m_chain_stats.jak2_screen_filter_triangles = d->stats().triangles;
+          } else if (m_shared_state.version == GameVersion::Jak2 &&
+                     bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF1)) {
+            m_chain_stats.jak2_debug_no_zbuf1_draws = d->stats().draw_calls;
+            m_chain_stats.jak2_debug_no_zbuf1_triangles = d->stats().triangles;
+            m_chain_stats.jak2_debug_no_zbuf1_textured_draws = d->stats().textured_draw_calls;
+            m_chain_stats.jak2_debug_no_zbuf1_missing_texture_draws =
+                d->stats().missing_texture_draw_calls;
+          } else if (m_shared_state.version == GameVersion::Jak2 &&
+                     bucket_id == static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF2)) {
+            m_chain_stats.jak2_debug_no_zbuf2_draws = d->stats().draw_calls;
+            m_chain_stats.jak2_debug_no_zbuf2_triangles = d->stats().triangles;
+          }
         } else if (auto* sky = dynamic_cast<MetalSkyRenderer*>(r.get())) {
           unsupported_blends += sky->direct_stats().unsupported_blends;
         } else if (auto* omf = dynamic_cast<MetalOceanMidAndFar*>(r.get())) {
-          m_chain_stats.ocean_texture_verts = omf->texture_stats().vertices;
+          const auto& envmap_stats = omf->envmap_stats();
+          const auto& texture_stats = omf->texture_stats();
+          m_chain_stats.ocean_texture_verts = texture_stats.vertices;
           m_chain_stats.ocean_mid_verts = omf->mid_stats().vertices;
-          m_chain_stats.ocean_draws +=
-              omf->texture_stats().draw_calls + omf->mid_stats().draw_calls;
+          m_chain_stats.ocean_draws += texture_stats.draw_calls + omf->mid_stats().draw_calls;
           m_chain_stats.ocean_triangles +=
-              omf->texture_stats().triangles + omf->mid_stats().triangles;
+              texture_stats.triangles + omf->mid_stats().triangles;
           m_chain_stats.ocean_missing_textures +=
-              omf->texture_stats().missing_textures + omf->mid_stats().missing_textures;
+              texture_stats.missing_textures + omf->mid_stats().missing_textures;
+          m_chain_stats.ocean_command_buffers_committed +=
+              envmap_stats.command_buffers_committed + texture_stats.command_buffers_committed;
+          m_chain_stats.ocean_command_buffers_completed +=
+              envmap_stats.command_buffers_completed + texture_stats.command_buffers_completed;
+          m_chain_stats.ocean_command_buffer_errors +=
+              envmap_stats.command_buffer_errors + texture_stats.command_buffer_errors;
+          if (envmap_stats.last_command_buffer_status != 0 &&
+              (envmap_stats.command_buffer_errors != 0 ||
+               m_chain_stats.ocean_last_command_buffer_status == 0)) {
+            m_chain_stats.ocean_last_command_buffer_status =
+                envmap_stats.last_command_buffer_status;
+          }
+          if (texture_stats.last_command_buffer_status != 0 &&
+              (texture_stats.command_buffer_errors != 0 ||
+               m_chain_stats.ocean_last_command_buffer_status == 0)) {
+            m_chain_stats.ocean_last_command_buffer_status =
+                texture_stats.last_command_buffer_status;
+          }
           m_chain_stats.ocean_mid_texture = omf->texture_handle();
           unsupported_blends += omf->direct_stats().unsupported_blends;
         } else if (auto* on = dynamic_cast<MetalOceanNear*>(r.get())) {
+          const auto& texture_stats = on->texture_stats();
           m_chain_stats.ocean_near_verts = on->near_stats().vertices;
-          m_chain_stats.ocean_draws += on->texture_stats().draw_calls + on->near_stats().draw_calls;
+          m_chain_stats.ocean_draws += texture_stats.draw_calls + on->near_stats().draw_calls;
           m_chain_stats.ocean_triangles +=
-              on->texture_stats().triangles + on->near_stats().triangles;
+              texture_stats.triangles + on->near_stats().triangles;
           m_chain_stats.ocean_missing_textures +=
-              on->texture_stats().missing_textures + on->near_stats().missing_textures;
+              texture_stats.missing_textures + on->near_stats().missing_textures;
+          m_chain_stats.ocean_command_buffers_committed += texture_stats.command_buffers_committed;
+          m_chain_stats.ocean_command_buffers_completed += texture_stats.command_buffers_completed;
+          m_chain_stats.ocean_command_buffer_errors += texture_stats.command_buffer_errors;
+          if (texture_stats.last_command_buffer_status != 0 &&
+              (texture_stats.command_buffer_errors != 0 ||
+               m_chain_stats.ocean_last_command_buffer_status == 0)) {
+            m_chain_stats.ocean_last_command_buffer_status =
+                texture_stats.last_command_buffer_status;
+          }
           m_chain_stats.ocean_near_texture = on->texture_handle();
         } else if (auto* sp = dynamic_cast<MetalSpriteRenderer*>(r.get())) {
           const auto& ss = sp->stats();
@@ -1520,9 +2262,46 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
           m_chain_stats.sprites_3d = ss.sprites_3d;
           m_chain_stats.sprites_hud = ss.count_2d_grp1;
           m_chain_stats.sprites_distort = ss.distort_sprites;
+          m_chain_stats.sprite_normal_submitted = ss.normal_sprites_submitted;
+          m_chain_stats.sprite_glow_marked = ss.glow_marked_sprites;
+          m_chain_stats.sprite_glow_skipped = ss.glow_sprites_skipped;
+          m_chain_stats.sprite_glow_parsed = ss.glow_sprites_parsed;
+          m_chain_stats.sprite_glow_accepted = ss.glow_sprites_accepted;
+          m_chain_stats.sprite_glow_rejected = ss.glow_sprites_rejected;
+          m_chain_stats.sprite_glow_invalid_records = ss.glow_invalid_records;
+          m_chain_stats.sprite_glow_force_visible_submitted = ss.glow_force_visible_submitted;
+          m_chain_stats.sprite_glow_force_visible_drawn = ss.glow_force_visible_drawn;
+          m_chain_stats.sprite_glow_force_visible_draws = ss.glow_force_visible_draw_calls;
+          m_chain_stats.sprite_glow_force_visible_triangles = ss.glow_force_visible_triangles;
+          m_chain_stats.sprite_glow_force_visible_missing_textures =
+              ss.glow_force_visible_missing_textures;
           m_chain_stats.sprite_draws = ss.draw_calls;
+          m_chain_stats.sprite_triangles = ss.triangles;
           m_chain_stats.sprite_missing_textures = ss.missing_textures;
+          m_chain_stats.sprite_placeholder_batches = ss.placeholder_batches;
+          m_chain_stats.sprite_placeholder_sprites = ss.placeholder_sprites;
+          m_chain_stats.sprite_first_placeholder_valid = ss.first_placeholder_valid;
+          m_chain_stats.sprite_first_placeholder_tbp = ss.first_placeholder_tbp;
+          m_chain_stats.sprite_first_placeholder_draw_mode = ss.first_placeholder_draw_mode;
+          m_chain_stats.sprite_unsupported_bytes = ss.unsupported_bytes;
+          skipped += sp->unsupported_bytes_total();
         } else if (auto* mc = dynamic_cast<MetalMercBucketRenderer*>(r.get())) {
+          const auto& bucket_stats = mc->stats();
+          for (std::size_t i = 0; i < bucket_stats.model_diagnostic_count; ++i) {
+            const auto& source = bucket_stats.model_diagnostics[i];
+            if (m_chain_stats.merc_model_diagnostic_count ==
+                m_chain_stats.merc_model_diagnostics.size()) {
+              m_chain_stats.merc_model_diagnostic_overflow_packets += source.packets;
+              continue;
+            }
+            auto& destination =
+                m_chain_stats
+                    .merc_model_diagnostics[m_chain_stats.merc_model_diagnostic_count++];
+            destination = source;
+            destination.bucket_id = static_cast<u32>(bucket_id);
+          }
+          m_chain_stats.merc_model_diagnostic_overflow_packets +=
+              bucket_stats.model_diagnostic_overflow_packets;
           merc_stats.add(mc->stats());
         } else if (auto* sh = dynamic_cast<MetalShadowRenderer*>(r.get())) {
           const auto& ss = sh->stats();
@@ -1531,17 +2310,87 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
           m_chain_stats.shadow_draws = ss.draw_calls;
           m_chain_stats.shadow_triangles = ss.triangles;
           m_chain_stats.shadow_unexpected_dma = ss.unexpected_dma;
+        } else if (auto* sh2 =
+                       dynamic_cast<metal_renderer::MetalJak2Shadow2Renderer*>(r.get())) {
+          const auto& ss = sh2->stats();
+          m_chain_stats.shadow195_executions = ss.executions;
+          m_chain_stats.shadow195_absent = ss.absent;
+          m_chain_stats.shadow195_ready = ss.ready;
+          m_chain_stats.shadow195_deferred_no_draw = ss.accepted_deferred_no_draw;
+          m_chain_stats.shadow195_input_batches = ss.input_batches;
+          m_chain_stats.shadow195_input_vertices = ss.input_vertices;
+          m_chain_stats.shadow195_input_records = ss.input_records;
+          m_chain_stats.shadow195_output_vertices = ss.output_vertices;
+          m_chain_stats.shadow195_front_triangles = ss.front_triangles;
+          m_chain_stats.shadow195_back_triangles = ss.back_triangles;
+          m_chain_stats.shadow195_draws = ss.draw_calls;
+          m_chain_stats.shadow195_triangles = ss.triangles;
+          m_chain_stats.shadow195_darken_draws = ss.darken_draws;
+          m_chain_stats.shadow195_lighten_draws = ss.lighten_draws;
+          m_chain_stats.shadow195_unexpected_dma = ss.unexpected_dma;
+          m_chain_stats.shadow195_invalid_plan = ss.invalid_plan;
+          m_chain_stats.shadow195_nonfinite_projection = ss.nonfinite_projection;
+          m_chain_stats.shadow195_overflow = ss.overflow;
+          m_chain_stats.shadow195_pipeline_failures = ss.pipeline_failures;
+          m_chain_stats.shadow195_reached_boundary = ss.reached_boundary;
         } else if (auto* gn = dynamic_cast<MetalGeneric2BucketRenderer*>(r.get())) {
-          generic_stats.add(gn->stats());
+          if (gn->mode() == MetalGeneric2::Mode::LIGHTNING) {
+            effects315_stats.add(gn->stats());
+          } else {
+            generic_stats.add(gn->stats());
+          }
+        } else if (auto* warp =
+                       dynamic_cast<metal_renderer::MetalJak2WarpBucketRenderer*>(r.get())) {
+          const auto& generic = warp->generic_stats();
+          const auto& snapshot = warp->snapshot_stats();
+          m_chain_stats.warp317_fragments = generic.fragments;
+          m_chain_stats.warp317_continued_fragments = generic.continued_fragments;
+          m_chain_stats.warp317_vertices = generic.vertices;
+          m_chain_stats.warp317_adgifs = generic.adgifs;
+          m_chain_stats.warp317_draw_buckets = generic.draw_buckets;
+          m_chain_stats.warp317_draws = generic.draw_calls;
+          m_chain_stats.warp317_triangles = generic.triangles;
+          m_chain_stats.warp317_missing_textures = generic.missing_textures;
+          m_chain_stats.warp317_placeholder_draws = generic.placeholder_draws;
+          m_chain_stats.warp317_missing_publications = generic.missing_warp_publications;
+          m_chain_stats.warp317_unsupported_blends = generic.unsupported_blends;
+          m_chain_stats.warp317_unexpected_dma = generic.unexpected_dma;
+          m_chain_stats.warp317_overflow = generic.overflow;
+          m_chain_stats.warp317_snapshot_publications = snapshot.publications;
+          m_chain_stats.warp317_snapshot_copies = snapshot.copies;
+          m_chain_stats.warp317_snapshot_allocations = snapshot.allocations;
+          m_chain_stats.warp317_snapshot_replacements = snapshot.replacements;
+          m_chain_stats.warp317_snapshot_failures = snapshot.failures;
+          m_chain_stats.warp317_snapshot_texture = warp->texture_handle();
         } else if (auto* ey = dynamic_cast<MetalEyeRenderer*>(r.get())) {
-          const auto& es = ey->stats();
-          m_chain_stats.eyes_composed = es.eyes;
-          m_chain_stats.eye_draws = es.draw_calls;
-          m_chain_stats.eye_triangles = es.triangles;
-          m_chain_stats.eye_missing_textures = es.missing_textures;
-          m_chain_stats.eye_unexpected_dma = es.unexpected_dma;
-          m_chain_stats.eye_texture = es.first_texture;
+          aggregate_eye_stats(ey->stats());
         }
+      }
+      if (m_jak2_eye_renderer) {
+        aggregate_eye_stats(m_jak2_eye_renderer->stats());
+      }
+      if (opts.jak2_shadow195_frame_capture && m_jak2_shadow195_capture_renderer) {
+        const auto& ss = m_jak2_shadow195_capture_renderer->stats();
+        m_chain_stats.shadow195_executions = ss.executions;
+        m_chain_stats.shadow195_absent = ss.absent;
+        m_chain_stats.shadow195_ready = ss.ready;
+        m_chain_stats.shadow195_deferred_no_draw = ss.accepted_deferred_no_draw;
+        m_chain_stats.shadow195_input_batches = ss.input_batches;
+        m_chain_stats.shadow195_input_vertices = ss.input_vertices;
+        m_chain_stats.shadow195_input_records = ss.input_records;
+        m_chain_stats.shadow195_output_vertices = ss.output_vertices;
+        m_chain_stats.shadow195_front_triangles = ss.front_triangles;
+        m_chain_stats.shadow195_back_triangles = ss.back_triangles;
+        m_chain_stats.shadow195_draws = ss.draw_calls;
+        m_chain_stats.shadow195_triangles = ss.triangles;
+        m_chain_stats.shadow195_darken_draws = ss.darken_draws;
+        m_chain_stats.shadow195_lighten_draws = ss.lighten_draws;
+        m_chain_stats.shadow195_unexpected_dma = ss.unexpected_dma;
+        m_chain_stats.shadow195_invalid_plan = ss.invalid_plan;
+        m_chain_stats.shadow195_nonfinite_projection = ss.nonfinite_projection;
+        m_chain_stats.shadow195_overflow = ss.overflow;
+        m_chain_stats.shadow195_pipeline_failures = ss.pipeline_failures;
+        m_chain_stats.shadow195_reached_boundary = ss.reached_boundary;
       }
       m_chain_stats.generic_fragments = generic_stats.fragments;
       m_chain_stats.generic_vertices = generic_stats.vertices;
@@ -1553,20 +2402,44 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       m_chain_stats.generic_unsupported_blends = generic_stats.unsupported_blends;
       m_chain_stats.generic_unexpected_dma = generic_stats.unexpected_dma;
       m_chain_stats.generic_overflow = generic_stats.overflow;
+      m_chain_stats.effects315_fragments = effects315_stats.fragments;
+      m_chain_stats.effects315_vertices = effects315_stats.vertices;
+      m_chain_stats.effects315_adgifs = effects315_stats.adgifs;
+      m_chain_stats.effects315_draw_buckets = effects315_stats.draw_buckets;
+      m_chain_stats.effects315_draws = effects315_stats.draw_calls;
+      m_chain_stats.effects315_triangles = effects315_stats.triangles;
+      m_chain_stats.effects315_missing_textures = effects315_stats.missing_textures;
+      m_chain_stats.effects315_placeholder_draws = effects315_stats.placeholder_draws;
+      m_chain_stats.effects315_unsupported_blends = effects315_stats.unsupported_blends;
+      m_chain_stats.effects315_unexpected_dma = effects315_stats.unexpected_dma;
+      m_chain_stats.effects315_overflow = effects315_stats.overflow;
       m_chain_stats.merc_models = merc_stats.models;
       m_chain_stats.merc_missing_models = merc_stats.missing_models;
+      m_chain_stats.merc_malformed_dma = merc_stats.malformed_dma;
+      m_chain_stats.merc_preflight_rejection_reason = merc_stats.preflight_rejection_reason;
       m_chain_stats.merc_draws = merc_stats.draws;
       m_chain_stats.merc_triangles = merc_stats.triangles;
       m_chain_stats.merc_envmap_draws = merc_stats.envmap_draws;
       m_chain_stats.merc_bone_vectors = merc_stats.bone_vectors;
       m_chain_stats.merc_mod_vtx_uploads = merc_stats.mod_vtx_uploads;
       m_chain_stats.merc_mod_vtx_skipped = merc_stats.mod_vtx_skipped;
+      m_chain_stats.merc_anim_slot_draws = merc_stats.anim_slot_draws;
+      m_chain_stats.merc_anim_slot_placeholder_draws = merc_stats.anim_slot_placeholder_draws;
+      m_chain_stats.merc_anim_slot_draws_by_slot = merc_stats.anim_slot_draws_by_slot;
+      m_chain_stats.merc_anim_slot_placeholder_draws_by_slot =
+          merc_stats.anim_slot_placeholder_draws_by_slot;
+      m_chain_stats.merc_anim_slot_first_model_hashes =
+          merc_stats.anim_slot_first_model_hashes;
       m_chain_stats.merc_eye_draws = merc_stats.eye_draws;
+      m_chain_stats.merc_eye_renderer_missing = merc_stats.eye_renderer_missing;
+      m_chain_stats.merc_eye_lookup_failed = merc_stats.eye_lookup_failed;
+      m_chain_stats.merc_eye_placeholder_draws = merc_stats.eye_placeholder_draws;
       m_chain_stats.merc_missing_textures = merc_stats.missing_textures;
       m_chain_stats.merc_bad_bone_pointers = merc_stats.bad_bone_pointers;
       m_chain_stats.merc_bad_draw_ranges = merc_stats.bad_draw_ranges;
       m_chain_stats.merc_missing_bone_slots = merc_stats.missing_bone_slots;
-      m_chain_stats.merc_models_with_missing_bone_slots = merc_stats.models_with_missing_bone_slots;
+      m_chain_stats.merc_models_with_missing_bone_slots =
+          merc_stats.models_with_missing_bone_slots;
       m_chain_stats.merc_nonfinite_bone_matrices = merc_stats.nonfinite_bone_matrices;
       m_chain_stats.merc_degenerate_bone_matrices = merc_stats.degenerate_bone_matrices;
       m_chain_stats.merc_incoherent_bone_sources = merc_stats.incoherent_bone_sources;
@@ -1626,7 +2499,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       }
       if (!m_chain_stats.first_merc_eichar_provenance_event.valid() &&
           merc_stats.first_eichar_provenance_event.valid()) {
-        m_chain_stats.first_merc_eichar_provenance_event = merc_stats.first_eichar_provenance_event;
+        m_chain_stats.first_merc_eichar_provenance_event =
+            merc_stats.first_eichar_provenance_event;
       }
       if (merc_stats.last_eichar_provenance_event.valid()) {
         m_chain_stats.last_merc_eichar_provenance_event = merc_stats.last_eichar_provenance_event;
@@ -1779,7 +2653,7 @@ bool MetalRenderer::read_present_frame(int window_w,
     }
     id<MTLTexture> target = make_color_target(m_device, window_w, window_h, false);
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
-    encode_present_pass(cmds, target, opts);
+    encode_present_pass(cmds, target, opts, m_game_color);
 #if TARGET_OS_OSX
     {
       id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];

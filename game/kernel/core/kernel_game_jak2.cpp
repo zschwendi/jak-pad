@@ -389,7 +389,9 @@ int goal_game_sound_pull_audio(int16_t* out, int frames) {
   if (!goal_jak2_sound_rpc_is_installed()) {
     return 0;
   }
-  return snd_PullAudio(out, frames);
+  const int pulled_frames = snd_PullAudio(out, frames);
+  goal_jak2_sound_audio_pull_record(pulled_frames);
+  return pulled_frames;
 }
 
 void goal_game_init_kernel_globals() {

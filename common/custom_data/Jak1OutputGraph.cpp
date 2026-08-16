@@ -12,7 +12,8 @@
 namespace jak1_output_graph {
 namespace {
 
-constexpr std::size_t kHeaderBytes = kMagic.size() + sizeof(std::uint32_t) + sizeof(std::uint64_t);
+constexpr std::size_t kHeaderBytes =
+    kJak1Magic.size() + sizeof(std::uint32_t) + sizeof(std::uint64_t);
 constexpr std::size_t kHashBytes = sizeof(std::uint64_t);
 
 Error make_error(ErrorCode code,
@@ -45,11 +46,16 @@ std::optional<Error> check_cancelled(const Options& options,
 
 bool valid_options(const Options& options) {
   const auto& limits = options.limits;
-  return limits.max_wire_bytes >= kHeaderBytes + kHashBytes && limits.max_source_files > 0 &&
+  return (options.wire_game == WireGame::jak1 || options.wire_game == WireGame::jak2) &&
+         limits.max_wire_bytes >= kHeaderBytes + kHashBytes && limits.max_source_files > 0 &&
          limits.max_archives > 0 && limits.max_objects_per_archive > 0 &&
          limits.max_total_objects > 0 && limits.max_flat_file_copies > 0 &&
          limits.max_generated_flat_files > 0 && limits.max_name_bytes > 0 &&
          limits.max_path_bytes > 0;
+}
+
+const std::array<std::uint8_t, 8>& wire_magic(WireGame game) {
+  return game == WireGame::jak2 ? kJak2Magic : kJak1Magic;
 }
 
 bool valid_name(std::string_view value, std::uint32_t cap) {
@@ -335,9 +341,10 @@ Result<std::vector<std::uint8_t>> encode(const Graph& graph, const Options& opti
 
     std::vector<std::uint8_t> bytes;
     bytes.reserve(std::min<std::size_t>(options.limits.max_wire_bytes, 256 * 1024));
-    bytes.insert(bytes.end(), kMagic.begin(), kMagic.end());
+    const auto& magic = wire_magic(options.wire_game);
+    bytes.insert(bytes.end(), magic.begin(), magic.end());
     bytes.resize(kHeaderBytes);
-    write_u32_at(&bytes, kMagic.size(), kSchemaVersion);
+    write_u32_at(&bytes, magic.size(), kSchemaVersion);
     Writer writer(&bytes, options.limits.max_wire_bytes - kHashBytes);
     if (!writer.u32(static_cast<std::uint32_t>(graph.ordered_source_files.size()))) {
       return Result<std::vector<std::uint8_t>>::failure(
@@ -403,7 +410,7 @@ Result<std::vector<std::uint8_t>> encode(const Graph& graph, const Options& opti
       }
     }
 
-    write_u64_at(&bytes, kMagic.size() + sizeof(std::uint32_t), bytes.size() - kHeaderBytes);
+    write_u64_at(&bytes, magic.size() + sizeof(std::uint32_t), bytes.size() - kHeaderBytes);
     const auto hash = XXH64(bytes.data(), bytes.size(), 0);
     const auto hash_offset = bytes.size();
     bytes.resize(hash_offset + kHashBytes);
@@ -429,15 +436,16 @@ Result<Graph> decode(std::span<const std::uint8_t> bytes, const Options& options
       return Result<Graph>::failure(
           make_error(ErrorCode::limit_exceeded, 0, "The output graph exceeds its wire cap."));
     }
-    if (!std::equal(kMagic.begin(), kMagic.end(), bytes.begin())) {
+    const auto& magic = wire_magic(options.wire_game);
+    if (!std::equal(magic.begin(), magic.end(), bytes.begin())) {
       return Result<Graph>::failure(
           make_error(ErrorCode::wrong_magic, 0, "The output graph has the wrong magic."));
     }
-    if (read_u32(bytes, kMagic.size()) != kSchemaVersion) {
-      return Result<Graph>::failure(make_error(ErrorCode::unsupported_schema, kMagic.size(),
+    if (read_u32(bytes, magic.size()) != kSchemaVersion) {
+      return Result<Graph>::failure(make_error(ErrorCode::unsupported_schema, magic.size(),
                                                "The output graph schema is unsupported."));
     }
-    const auto payload_size = read_u64(bytes, kMagic.size() + sizeof(std::uint32_t));
+    const auto payload_size = read_u64(bytes, magic.size() + sizeof(std::uint32_t));
     if (payload_size != bytes.size() - kHeaderBytes - kHashBytes) {
       return Result<Graph>::failure(make_error(
           payload_size > bytes.size() - kHeaderBytes - kHashBytes ? ErrorCode::truncated

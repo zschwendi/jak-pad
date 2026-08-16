@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -163,6 +164,33 @@ bool valid_pack_reports_exact_identity_and_progress() {
   return true;
 }
 
+bool recorded_bundle_identity_is_pinned_and_fails_closed() {
+  Fixture fixture;
+  CHECK(pack::kRecordedAggregateXXH64 == 0x8568d70061609617ULL);
+  auto result = pack::validate_recorded(fixture.root);
+  CHECK(!result);
+  CHECK(result.error().code == pack::ErrorCode::wrong_identity);
+
+  pack::Options options;
+  options.expected_identity = fixture.expected.identity;
+  result = pack::validate_recorded(fixture.root, options);
+  CHECK(!result);
+  CHECK(result.error().code == pack::ErrorCode::invalid_argument);
+  return true;
+}
+
+bool optionally_validates_recorded_bundle_oracle() {
+  const auto* root = std::getenv("OPENGOAL_JAK2_RECORDED_SOURCE_PACK");
+  if (!root || !*root) {
+    return true;
+  }
+  const auto result = pack::validate_recorded(fs::absolute(root));
+  CHECK(result);
+  CHECK(result.value().identity.object_count == pack::kExpectedObjectCount);
+  CHECK(result.value().identity.aggregate_xxh64 == pack::kRecordedAggregateXXH64);
+  return true;
+}
+
 bool rejects_wrong_count_and_source_graph() {
   Fixture fixture;
   auto malformed = fixture.manifest;
@@ -234,6 +262,8 @@ bool surfaces_cancellation_and_callback_failures() {
 int main() {
   const std::array tests = {
       valid_pack_reports_exact_identity_and_progress,
+      recorded_bundle_identity_is_pinned_and_fails_closed,
+      optionally_validates_recorded_bundle_oracle,
       rejects_wrong_count_and_source_graph,
       rejects_directory_and_object_mismatches,
       surfaces_cancellation_and_callback_failures,

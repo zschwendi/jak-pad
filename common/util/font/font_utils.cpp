@@ -246,11 +246,19 @@ std::string GameTextFontBank::convert_utf8_to_game_korean(const std::string& str
     if (file_util::file_exists(db_file_path)) {
       auto raw_data = file_util::read_text_file(db_file_path);
       auto json_data = parse_commented_json(raw_data, "jak2_jak3_korean_db.json");
-      std::unordered_map<std::string, KoreanLookupOrientations> temp_db;
+      KoreanLookupDatabase temp_db;
       json_data.get_to(temp_db);
       m_korean_db = temp_db;
     }
   }
+  return convert_utf8_to_game_korean(str, m_korean_db.value());
+}
+
+std::string GameTextFontBank::convert_utf8_to_game_korean(
+    const std::string& str,
+    const KoreanLookupDatabase& korean_db) const {
+  ASSERT_MSG(m_version == GameTextVersion::JAK2 || m_version == GameTextVersion::JAK3,
+             "Korean is not supported for any game other than Jak 2 and Jak 3 right now");
 
   std::string output;
   output.reserve(str.size());
@@ -267,7 +275,7 @@ std::string GameTextFontBank::convert_utf8_to_game_korean(const std::string& str
         non_korean_buffer = "";
       }
       // write out the korean character
-      output += font_util_korean::game_encode_korean_syllable(str, cp, m_korean_db.value());
+      output += font_util_korean::game_encode_korean_syllable(str, cp, korean_db);
     } else {
       non_korean_buffer += str_util::utf8_encode(cp);
     }
