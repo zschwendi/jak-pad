@@ -23,6 +23,7 @@ namespace {
 
 constexpr u32 kSourceTbp = 100;
 constexpr u32 kSecondSourceTbp = 101;
+constexpr u32 kPlaceholderSourceTbp = 102;
 constexpr u64 kEyeHash = 0x123456789abcdef0ull;
 constexpr u32 kPrisBucket = 200;
 constexpr u32 kPrisBucketOffset = kPrisBucket * 16;
@@ -122,36 +123,39 @@ void append_eye_draw(std::vector<u8>* chain, u64 hash, u32 pair) {
                   VifCode::Kind::DIRECT, 0, 6);
 }
 
-std::vector<u8> make_eye_chain(u32 pair = 0, u32 source_tbp = kSourceTbp) {
+std::vector<u8> make_eye_chain_with_sources(u32 pair,
+                                            u32 iris_tbp,
+                                            u32 pupil_tbp,
+                                            u32 lid_tbp) {
   std::vector<u8> chain;
   append_transfer(&chain, std::vector<u8>(128), VifCode::Kind::FLUSHA,
                   VifCode::Kind::DIRECT, 0, 8);
   append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 2);
 
-  append_transfer(&chain, make_adgif(source_tbp), VifCode::Kind::NOP,
+  append_transfer(&chain, make_adgif(iris_tbp), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 6);
   append_eye_draw(&chain, kEyeHash + pair, pair);  // pair/hash metadata
   append_eye_draw(&chain, 0, pair);                 // left iris
-  append_transfer(&chain, make_adgif(source_tbp), VifCode::Kind::NOP,
+  append_transfer(&chain, make_adgif(iris_tbp), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 6);
   append_eye_draw(&chain, 0, pair);  // right iris
 
   append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 2);
-  append_transfer(&chain, make_adgif(source_tbp), VifCode::Kind::NOP,
+  append_transfer(&chain, make_adgif(pupil_tbp), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 6);
   append_eye_draw(&chain, 0, pair);  // left pupil
-  append_transfer(&chain, make_adgif(source_tbp), VifCode::Kind::NOP,
+  append_transfer(&chain, make_adgif(pupil_tbp), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 6);
   append_eye_draw(&chain, 0, pair);  // right pupil
 
   append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 2);
-  append_transfer(&chain, make_adgif(source_tbp), VifCode::Kind::NOP,
+  append_transfer(&chain, make_adgif(lid_tbp), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 6);
   append_eye_draw(&chain, 0, pair);  // left lid
-  append_transfer(&chain, make_adgif(source_tbp), VifCode::Kind::NOP,
+  append_transfer(&chain, make_adgif(lid_tbp), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 6);
   append_eye_draw(&chain, 0, pair);  // right lid
 
@@ -161,6 +165,10 @@ std::vector<u8> make_eye_chain(u32 pair = 0, u32 source_tbp = kSourceTbp) {
   append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 2);
   return chain;
+}
+
+std::vector<u8> make_eye_chain(u32 pair = 0, u32 source_tbp = kSourceTbp) {
+  return make_eye_chain_with_sources(pair, source_tbp, source_tbp, source_tbp);
 }
 
 void put_tag(std::vector<u8>* data,
@@ -483,13 +491,25 @@ struct EyeVertexStorageRun {
   std::vector<u8> eye_pixels;
 };
 
+u32 read_eye_pixel(const EyeVertexStorageRun& run, u32 eye, u32 x, u32 y) {
+  constexpr std::size_t kBytesPerEye = METAL_EYE_TEX_SIZE * METAL_EYE_TEX_SIZE * 4;
+  const std::size_t offset = eye * kBytesPerEye +
+                             (y * METAL_EYE_TEX_SIZE + x) * sizeof(u32);
+  u32 pixel = 0;
+  if (offset + sizeof(pixel) <= run.eye_pixels.size()) {
+    std::memcpy(&pixel, run.eye_pixels.data() + offset, sizeof(pixel));
+  }
+  return pixel;
+}
+
 EyeVertexStorageRun run_eye_vertex_storage_case(
     bool dedicated_vertex_buffer,
     id<MTLDevice> device,
     id<MTLCommandQueue> queue,
     TexturePool* texture_pool,
     MetalPsoCache* pso_cache,
-    MetalSamplerCache* sampler_cache) {
+    MetalSamplerCache* sampler_cache,
+    const std::vector<u8>& chain) {
   constexpr const char* kDiagnosticVariable =
       "GOALPAD_JAK2_DIAGNOSTIC_EYE_DEDICATED_VERTEX_BUFFER";
   if (dedicated_vertex_buffer) {
@@ -519,7 +539,6 @@ EyeVertexStorageRun run_eye_vertex_storage_case(
   context.pso_cache = pso_cache;
   context.sampler_cache = sampler_cache;
   context.stream = &stream;
-  const auto chain = make_eye_chain();
   DmaFollower dma(chain.data(), 0, chain.size());
   renderer.render_from_texture_bucket(dma, &state, context);
   result.stats = renderer.stats();
@@ -616,6 +635,9 @@ int main() {
         0xff00ff00, 0xff00ff00, 0xff00ff00, 0xff00ff00};
     const u64 second_source_handle = metal_upload_texture_rgba8(
         device, queue, reinterpret_cast<const u8*>(second_source_pixels.data()), 2, 2);
+    const u64 placeholder_handle = metal_upload_texture_rgba8(
+        device, queue, reinterpret_cast<const u8*>(texture_pool.placeholder_data().data()), 16,
+        16);
     PcTextureId source_id;
     PcTextureId second_source_id;
     {
@@ -638,13 +660,14 @@ int main() {
       second_source_id = input.id;
       texture_pool.give_texture_and_load_to_vram(input, kSecondSourceTbp);
     }
-    check(source_handle != 0 && second_source_handle != 0,
-          "published both synthetic eye source textures");
+    check(source_handle != 0 && second_source_handle != 0 && placeholder_handle != 0,
+          "published synthetic real and placeholder eye source textures");
 
+    const auto eye_chain = make_eye_chain();
     const auto stream_vertex_run = run_eye_vertex_storage_case(
-        false, device, queue, &texture_pool, &pso_cache, &sampler_cache);
+        false, device, queue, &texture_pool, &pso_cache, &sampler_cache, eye_chain);
     const auto dedicated_vertex_run = run_eye_vertex_storage_case(
-        true, device, queue, &texture_pool, &pso_cache, &sampler_cache);
+        true, device, queue, &texture_pool, &pso_cache, &sampler_cache, eye_chain);
     unsetenv("GOALPAD_JAK2_DIAGNOSTIC_EYE_DEDICATED_VERTEX_BUFFER");
     check(stream_vertex_run.initialized && dedicated_vertex_run.initialized,
           "initialized both eye vertex-storage A/B renderers");
@@ -677,6 +700,51 @@ int main() {
               stream_vertex_run.eye_pixels == dedicated_vertex_run.eye_pixels &&
               stream_vertex_run.eye_hashes == dedicated_vertex_run.eye_hashes,
           "default stream and dedicated vertex storage produce byte-identical eye textures");
+    check(read_eye_pixel(stream_vertex_run, 0, 8, 8) == source_pixels[0] &&
+              read_eye_pixel(stream_vertex_run, 0, 120, 8) == source_pixels[1] &&
+              read_eye_pixel(stream_vertex_run, 0, 8, 120) == source_pixels[2] &&
+              read_eye_pixel(stream_vertex_run, 0, 120, 120) == source_pixels[3],
+          "asymmetric source corners retain their expected composed-eye orientation");
+
+    EyeVertexStorageRun placeholder_run;
+    {
+      TexturePool placeholder_pool(GameVersion::Jak2);
+      placeholder_pool.set_placeholder(placeholder_handle);
+      PcTextureId placeholder_source_id;
+      {
+        std::lock_guard<std::mutex> pool_lock(placeholder_pool.mutex());
+        TextureInput input;
+        input.debug_page_name = "PC-EYE-TEST";
+        input.debug_name = "synthetic-eye-real-source";
+        input.id = placeholder_pool.allocate_pc_port_texture(GameVersion::Jak2);
+        input.gpu_texture = source_handle;
+        input.src_data = reinterpret_cast<const u8*>(source_pixels.data());
+        input.w = 2;
+        input.h = 2;
+        placeholder_pool.give_texture_and_load_to_vram(input, kSourceTbp);
+
+        input.debug_name = "synthetic-eye-placeholder-source";
+        input.id = placeholder_pool.allocate_pc_port_texture(GameVersion::Jak2);
+        placeholder_source_id = input.id;
+        placeholder_pool.give_texture_and_load_to_vram(input, kPlaceholderSourceTbp);
+        placeholder_pool.unload_texture(placeholder_source_id, source_handle);
+      }
+      const auto placeholder_chain = make_eye_chain_with_sources(
+          0, kPlaceholderSourceTbp, kSourceTbp, kPlaceholderSourceTbp);
+      placeholder_run = run_eye_vertex_storage_case(
+          false, device, queue, &placeholder_pool, &pso_cache, &sampler_cache, placeholder_chain);
+    }
+    std::printf("placeholder-backed eye hash: %016llx\n",
+                static_cast<unsigned long long>(placeholder_run.eye_hashes[0]));
+    check(placeholder_run.readback_completed && placeholder_run.stats.eyes == 2 &&
+              placeholder_run.stats.draw_calls == 8 &&
+              placeholder_run.stats.missing_textures == 0 &&
+              placeholder_run.stats.unexpected_dma == 0 &&
+              placeholder_run.stats.command_buffer_errors == 0 &&
+              read_eye_pixel(placeholder_run, 0, 8, 8) == 0xff303030 &&
+              read_eye_pixel(placeholder_run, 0, 40, 8) == 0xffe0e0e0,
+          "placeholder-backed eye sources draw a gray checkerboard without tripping current "
+          "health metrics");
 
     {
       MetalEyeRenderer renderer("jak2-eyes", 0, device, queue);
@@ -1047,7 +1115,7 @@ int main() {
     }
     check(detached_all_eye_slots,
           "eye teardown unloads every pool publication while the pool is live");
-    check(metal_texture_live_count() == initial_live_textures + 2,
+    check(metal_texture_live_count() == initial_live_textures + 3,
           "eye teardown releases all forty registered render targets");
 
     {
@@ -1057,6 +1125,7 @@ int main() {
     }
     metal_texture_release(source_handle);
     metal_texture_release(second_source_handle);
+    metal_texture_release(placeholder_handle);
     check(metal_texture_live_count() == initial_live_textures,
           "the synthetic source cleanup restores the texture registry baseline");
 
