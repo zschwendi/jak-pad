@@ -212,6 +212,11 @@ PrisFixture make_pris_fixture(std::size_t chunk_count,
         0x1000, metal_renderer::kJak2PrisPrisonJakAnimatorMissingTbp, 0x1020, 0x1030,
         0x1040, 0x1050, 0x1060};
     auto& animator = fixture.plan.prison_jak_animator;
+    animator.opcode = metal_renderer::kJak2PrisPrisonJakAnimatorOpcode;
+    animator.destination_tbp_count = static_cast<u8>(kTbps.size());
+    animator.source_padding_size = static_cast<u8>(
+        12 + metal_renderer::kJak2PrisPrisonJakAnimatorBodyBytes -
+        (16 + kTbps.size() * sizeof(u32)));
     animator.morph = 0.5f;
     animator.destination_tbps = kTbps;
     for (std::size_t i = 0; i < animator.source_padding.size(); ++i) {
@@ -495,6 +500,13 @@ int main() {
     MetalSamplerCache sampler_cache;
     check(pso_cache.init(device, library), "initialized the eye pipeline cache");
     sampler_cache.init(device);
+    MetalStreamBuffer stream;
+    stream.init(device);
+    id<MTLBuffer> prefix_buffer = nil;
+    u32 prefix_offset = 0;
+    std::memset(stream.alloc(32, &prefix_buffer, &prefix_offset), 0xa5, 32);
+    check(prefix_buffer != nil && prefix_offset == 0,
+          "reserved a non-eye prefix in the merged transient vertex stream");
 
     TexturePool texture_pool(GameVersion::Jak2);
     const std::array<u32, 4> source_pixels = {
@@ -544,6 +556,7 @@ int main() {
       MetalFrameContext context;
       context.pso_cache = &pso_cache;
       context.sampler_cache = &sampler_cache;
+      context.stream = &stream;
       const auto chain = make_eye_chain();
 
       DmaFollower first_dma(chain.data(), 0, chain.size());
@@ -552,8 +565,10 @@ int main() {
       check(first.eyes == 2 && first.draw_calls == 8 && first.triangles == 16 &&
                 first.duplicate_slot_writes == 0 && first.command_buffers_committed == 1 &&
                 first.command_buffers_completed == 1 && first.command_buffer_errors == 0 &&
+                first.vertex_stream_uploads == 1 && first.vertex_bytes == 512 &&
+                first.last_vertex_buffer_offset == 32 && first.last_vertex_fingerprint != 0 &&
                 first.last_command_buffer_status == MTLCommandBufferStatusCompleted,
-            "one synthetic eye pair publishes only after its command buffer completes");
+            "one synthetic eye pair composes from a nonzero transient-stream offset");
       check(renderer.lookup_eye_texture(0) && renderer.lookup_eye_texture(1) &&
                 renderer.lookup_eye_texture_hash(kEyeHash, false) &&
                 renderer.lookup_eye_texture_hash(kEyeHash, true),
@@ -676,6 +691,10 @@ int main() {
                 two_chunk_stats.duplicate_slot_writes == 0 &&
                 two_chunk_stats.command_buffers_committed == 2 &&
                 two_chunk_stats.command_buffers_completed == 2 &&
+                two_chunk_stats.vertex_stream_uploads == 2 &&
+                two_chunk_stats.vertex_bytes == 1024 &&
+                two_chunk_stats.last_vertex_buffer_offset > 32 &&
+                two_chunk_stats.last_vertex_fingerprint != 0 &&
                 two_chunk_stats.command_buffer_errors == 0,
             "the PRIS renderer follows both planned chunks and consumes every terminal shape");
 

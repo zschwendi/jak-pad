@@ -79,6 +79,9 @@ static_assert(offsetof(goal_jak2_metal_host_metrics, last_merc_palette_health_ev
               offsetof(goal_jak2_metal_host_metrics, subtitle_bucket322_typed));
 static_assert(offsetof(goal_jak2_metal_host_metrics, subtitle_bucket322_typed) +
                   sizeof(goal_jak2_subtitle_bucket322_typed_metrics) ==
+              offsetof(goal_jak2_metal_host_metrics, ocean_texture_vertices));
+static_assert(offsetof(goal_jak2_metal_host_metrics, last_eye_vertex_fingerprint) +
+                  sizeof(uint64_t) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -1880,6 +1883,8 @@ int main() {
   check(metrics.command_buffers_committed == 0 && metrics.command_buffers_completed == 0 &&
             metrics.command_buffer_errors == 0 &&
             metrics.ocean_draws == 0 && metrics.ocean_triangles == 0 &&
+            metrics.ocean_texture_vertices == 0 && metrics.ocean_mid_vertices == 0 &&
+            metrics.ocean_near_vertices == 0 &&
             metrics.ocean_missing_textures == 0 &&
             metrics.ocean_command_buffers_committed == 0 &&
             metrics.ocean_command_buffers_completed == 0 &&
@@ -1890,9 +1895,11 @@ int main() {
             metrics.last_screen_filter_draws == 0 && metrics.last_screen_filter_triangles == 0 &&
             metrics.last_debug_no_zbuf2_draws == 0 &&
             metrics.last_debug_no_zbuf2_triangles == 0 &&
+            metrics.last_tfrag_draws == 0 && metrics.last_tfrag_triangles == 0 &&
             metrics.last_tie_draws == 0 && metrics.last_tie_triangles == 0 &&
             metrics.last_background_missing_levels == 0 &&
             metrics.last_background_missing_textures == 0 &&
+            metrics.last_background_unexpected_dma == 0 &&
             metrics.last_background_anim_slot_draws == 0 &&
             metrics.last_merc_models == 0 && metrics.last_merc_draws == 0 &&
             metrics.last_merc_triangles == 0 && metrics.last_merc_malformed_dma == 0 &&
@@ -1925,6 +1932,10 @@ int main() {
             metrics.last_generic_draw_buckets == 0 && metrics.last_generic_draws == 0 &&
             metrics.last_generic_triangles == 0 && metrics.last_generic_missing_textures == 0 &&
             metrics.last_generic_unexpected_dma == 0 &&
+            metrics.last_eye_vertex_stream_uploads == 0 &&
+            metrics.last_eye_vertex_bytes == 0 &&
+            metrics.last_eye_vertex_buffer_offset == 0 &&
+            metrics.last_eye_vertex_fingerprint == 0 &&
             metrics.presentations == 0 && metrics.presentation_drops == 0 &&
             metrics.presentation_order_mismatches == 0 && metrics.unsupported_blends == 0,
         "nil-layer lifecycle dispatches without committing, drawing, or presenting");

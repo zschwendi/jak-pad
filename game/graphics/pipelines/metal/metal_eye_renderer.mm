@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "common/log/log.h"
+#include "common/util/fnv.h"
 
 #include "game/graphics/opengl_renderer/AdgifHandler.h"
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
@@ -678,6 +679,10 @@ bool MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
   const u32 vertex_buffer_size = (u32)buffer_idx * sizeof(float);
   void* vertex_data = ctx.stream->alloc(vertex_buffer_size, &vertex_buffer, &vertex_buffer_offset);
   memcpy(vertex_data, m_cpu_vertex_buffer, vertex_buffer_size);
+  m_stats.vertex_stream_uploads++;
+  m_stats.vertex_bytes += vertex_buffer_size;
+  m_stats.last_vertex_buffer_offset = vertex_buffer_offset;
+  m_stats.last_vertex_fingerprint = fnv64(m_cpu_vertex_buffer, vertex_buffer_size);
 
   MetalPsoKey opaque_key;
   opaque_key.shader = MetalShaderId::EYE;

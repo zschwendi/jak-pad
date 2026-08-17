@@ -531,6 +531,18 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_merc_palette_health_event last_merc_palette_health_event;
   // Append-only passive typed telemetry. Bucket 322 remains DeferredSkip with no execution route.
   goal_jak2_subtitle_bucket322_typed_metrics subtitle_bucket322_typed;
+  // Append-only renderer A/B telemetry. These distinguish generated ocean work from loaded
+  // background geometry and identify the merged eye renderer's transient-stream vertex upload.
+  uint64_t ocean_texture_vertices;
+  uint64_t ocean_mid_vertices;
+  uint64_t ocean_near_vertices;
+  uint64_t last_tfrag_draws;
+  uint64_t last_tfrag_triangles;
+  uint64_t last_background_unexpected_dma;
+  uint64_t last_eye_vertex_stream_uploads;
+  uint64_t last_eye_vertex_bytes;
+  uint32_t last_eye_vertex_buffer_offset;
+  uint64_t last_eye_vertex_fingerprint;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

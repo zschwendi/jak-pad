@@ -378,6 +378,9 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.ocean_command_buffers_completed = stats.ocean_command_buffers_completed;
   host->metrics.ocean_command_buffer_errors = stats.ocean_command_buffer_errors;
   host->metrics.ocean_last_command_buffer_status = stats.ocean_last_command_buffer_status;
+  host->metrics.ocean_texture_vertices = stats.ocean_texture_verts;
+  host->metrics.ocean_mid_vertices = stats.ocean_mid_verts;
+  host->metrics.ocean_near_vertices = stats.ocean_near_verts;
   host->metrics.drawables_acquired = stats.drawables_acquired;
   host->metrics.drawable_misses = stats.drawable_misses;
   host->metrics.late_present_submissions = stats.late_present_submissions;
@@ -385,9 +388,12 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.triangles = stats.triangles;
   host->metrics.last_tie_draws = background.tie_draws;
   host->metrics.last_tie_triangles = background.tie_tris;
+  host->metrics.last_tfrag_draws = background.tfrag_draws;
+  host->metrics.last_tfrag_triangles = background.tfrag_tris;
   host->metrics.last_background_missing_levels = background.missing_levels;
   host->metrics.last_background_missing_textures = background.missing_textures;
   host->metrics.last_background_anim_slot_draws = background.anim_slot_draws;
+  host->metrics.last_background_unexpected_dma = background.unexpected_dma;
   host->metrics.last_merc_models = stats.merc_models;
   host->metrics.last_merc_draws = stats.merc_draws;
   host->metrics.last_merc_triangles = stats.merc_triangles;
@@ -511,6 +517,10 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_eye_command_buffers_committed = stats.eye_command_buffers_committed;
   host->metrics.last_eye_command_buffers_completed = stats.eye_command_buffers_completed;
   host->metrics.last_eye_command_buffer_errors = stats.eye_command_buffer_errors;
+  host->metrics.last_eye_vertex_stream_uploads = stats.eye_vertex_stream_uploads;
+  host->metrics.last_eye_vertex_bytes = stats.eye_vertex_bytes;
+  host->metrics.last_eye_vertex_buffer_offset = stats.eye_last_vertex_buffer_offset;
+  host->metrics.last_eye_vertex_fingerprint = stats.eye_last_vertex_fingerprint;
   host->metrics.last_sky_draw_draws = stats.jak2_sky_draw_draws;
   host->metrics.last_sky_draw_triangles = stats.jak2_sky_draw_triangles;
   const auto& sky_batch = stats.jak2_sky_draw_last_batch;

@@ -2091,6 +2091,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       m_chain_stats.eye_command_buffers_completed = 0;
       m_chain_stats.eye_command_buffer_errors = 0;
       m_chain_stats.eye_last_command_buffer_status = 0;
+      m_chain_stats.eye_vertex_stream_uploads = 0;
+      m_chain_stats.eye_vertex_bytes = 0;
+      m_chain_stats.eye_last_vertex_buffer_offset = 0;
+      m_chain_stats.eye_last_vertex_fingerprint = 0;
       m_chain_stats.eye_texture = 0;
       m_chain_stats.shadow195_executions = 0;
       m_chain_stats.shadow195_absent = 0;
@@ -2128,6 +2132,12 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         m_chain_stats.eye_command_buffers_committed += stats.command_buffers_committed;
         m_chain_stats.eye_command_buffers_completed += stats.command_buffers_completed;
         m_chain_stats.eye_command_buffer_errors += stats.command_buffer_errors;
+        m_chain_stats.eye_vertex_stream_uploads += stats.vertex_stream_uploads;
+        m_chain_stats.eye_vertex_bytes += stats.vertex_bytes;
+        if (stats.vertex_stream_uploads != 0) {
+          m_chain_stats.eye_last_vertex_buffer_offset = stats.last_vertex_buffer_offset;
+          m_chain_stats.eye_last_vertex_fingerprint = stats.last_vertex_fingerprint;
+        }
         if (stats.last_command_buffer_status != 0) {
           m_chain_stats.eye_last_command_buffer_status = stats.last_command_buffer_status;
         }

@@ -371,6 +371,10 @@ struct ChainStats {
   int eye_command_buffers_completed = 0;
   int eye_command_buffer_errors = 0;
   int eye_last_command_buffer_status = 0;
+  int eye_vertex_stream_uploads = 0;
+  int eye_vertex_bytes = 0;
+  u32 eye_last_vertex_buffer_offset = 0;
+  u64 eye_last_vertex_fingerprint = 0;
   // registry handle of the first eye composed this frame, so tests can read it
   u64 eye_texture = 0;
   // generic2 buckets, from the last chain frame

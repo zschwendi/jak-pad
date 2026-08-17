@@ -51,6 +51,10 @@ class MetalEyeRenderer : public MetalBucketRenderer {
     int command_buffers_completed = 0;
     int command_buffer_errors = 0;
     int last_command_buffer_status = 0;
+    int vertex_stream_uploads = 0;
+    int vertex_bytes = 0;
+    u32 last_vertex_buffer_offset = 0;
+    u64 last_vertex_fingerprint = 0;
     u64 first_texture = 0;     // registry handle of the first eye composed
   };
 
