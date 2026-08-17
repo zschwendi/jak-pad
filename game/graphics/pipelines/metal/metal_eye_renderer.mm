@@ -1,6 +1,8 @@
 #include "metal_eye_renderer.h"
 
 #include <array>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 
@@ -46,6 +48,16 @@ MetalEyeRenderer::MetalEyeRenderer(const std::string& name,
                                    id<MTLDevice> device,
                                    id<MTLCommandQueue> queue)
     : MetalBucketRenderer(name, my_id), m_device(device), m_queue(queue) {
+  const char* diagnostic_vertex_buffer =
+      std::getenv("GOALPAD_JAK2_DIAGNOSTIC_EYE_DEDICATED_VERTEX_BUFFER");
+  m_use_diagnostic_vertex_buffer =
+      diagnostic_vertex_buffer && std::strcmp(diagnostic_vertex_buffer, "1") == 0;
+  if (m_use_diagnostic_vertex_buffer) {
+    m_diagnostic_vertex_buffer =
+        [device newBufferWithLength:VTX_BUFFER_FLOATS * sizeof(float)
+                            options:MTLResourceStorageModeShared];
+    lg::info("Metal eyes: using the diagnostic dedicated vertex buffer");
+  }
   // Audited PRIS producers can each replace any of the forty slots once per frame.
   // Reserve every possible retired generation before publication can begin.
   m_retired_handles.reserve(METAL_NUM_EYE_PAIRS * 2 *
@@ -76,6 +88,7 @@ MetalEyeRenderer::~MetalEyeRenderer() {
  */
 bool MetalEyeRenderer::init_textures(TexturePool& texture_pool, GameVersion version) {
   if (m_pool || !m_device || !m_queue ||
+      (m_use_diagnostic_vertex_buffer && !m_diagnostic_vertex_buffer) ||
       (version != GameVersion::Jak1 && version != GameVersion::Jak2)) {
     return false;
   }
@@ -677,7 +690,13 @@ bool MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
   id<MTLBuffer> vertex_buffer = nil;
   u32 vertex_buffer_offset = 0;
   const u32 vertex_buffer_size = (u32)buffer_idx * sizeof(float);
-  void* vertex_data = ctx.stream->alloc(vertex_buffer_size, &vertex_buffer, &vertex_buffer_offset);
+  void* vertex_data = nullptr;
+  if (m_use_diagnostic_vertex_buffer) {
+    vertex_buffer = m_diagnostic_vertex_buffer;
+    vertex_data = vertex_buffer.contents;
+  } else {
+    vertex_data = ctx.stream->alloc(vertex_buffer_size, &vertex_buffer, &vertex_buffer_offset);
+  }
   memcpy(vertex_data, m_cpu_vertex_buffer, vertex_buffer_size);
   m_stats.vertex_stream_uploads++;
   m_stats.vertex_bytes += vertex_buffer_size;

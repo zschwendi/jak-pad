@@ -160,6 +160,8 @@ class MetalEyeRenderer : public MetalBucketRenderer {
   // xyst per vertex, 4 vertices per square, 4 draws per eye, all eyes.
   static constexpr int VTX_BUFFER_FLOATS = 4 * 4 * 4 * METAL_NUM_EYE_PAIRS * 2;
   float m_cpu_vertex_buffer[VTX_BUFFER_FLOATS];
+  id<MTLBuffer> m_diagnostic_vertex_buffer = nil;
+  bool m_use_diagnostic_vertex_buffer = false;
 
   Stats m_stats;
   bool m_warned_dma = false;
