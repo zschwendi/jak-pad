@@ -316,10 +316,22 @@
 ;;;; methods
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defun normalize-managed-display-aspect! ((obj pc-settings-jak2))
+  (when (and (pc-host-manages-display?)
+             (or (-> obj use-vis?)
+                 (not (-> obj aspect-ratio-auto?))
+                 (!= (get-game-setting obj 'aspect-ratio) 'aspect4x3)))
+    (set-aspect! obj 4 3)
+    (set-game-setting! obj 'aspect-ratio 'aspect4x3)
+    (set! (-> obj aspect-ratio-auto?) #t)
+    (commit-to-file obj))
+  (none))
+
 (defmethod initialize ((obj pc-settings-jak2))
   "initial initialize method to be run after allocating"
   (set! (-> obj music-unlocked) (new 'global 'bit-array (-> *music-player-tracks* length)))
   ((method-of-type pc-settings initialize) obj)
+  (normalize-managed-display-aspect! obj)
   ;; any post-operations that need to be done after loading
   (set! (-> *setting-control* user-default sfx-volume) (-> obj memcard-volume-sfx))
   (set! (-> *setting-control* user-default music-volume) (-> obj memcard-volume-music))

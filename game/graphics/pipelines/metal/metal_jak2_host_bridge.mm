@@ -84,6 +84,7 @@ struct goal_jak2_metal_host {
   bool configuration_attempted = false;
   bool configured = false;
   bool callbacks_copied = false;
+  bool app_manages_presentation_geometry = false;
   bool inactive = false;
 };
 
@@ -1629,6 +1630,11 @@ bool update_draw_region(goal_jak2_metal_host* host) {
   }
   const int width = static_cast<int>(size.width);
   const int height = static_cast<int>(size.height);
+  if (host->app_manages_presentation_geometry) {
+    return host->options.game_res_w > 0 && host->options.game_res_h > 0 &&
+           host->options.draw_region_w > 0 && host->options.draw_region_h > 0 &&
+           host->options.draw_region_w <= width && host->options.draw_region_h <= height;
+  }
   if (width * 3 >= height * 4) {
     host->options.draw_region_h = height;
     host->options.draw_region_w = height * 4 / 3;
@@ -2881,6 +2887,48 @@ int goal_jak2_metal_host_rebind_presenting_layer(goal_jak2_metal_host* host,
   layer.presentsWithTransaction = NO;
   layer.allowsNextDrawableTimeout = YES;
   host->layer = layer;
+  return 1;
+}
+
+int goal_jak2_metal_host_set_presentation_geometry(
+    goal_jak2_metal_host* host,
+    const goal_jak2_metal_presentation_geometry* geometry) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  constexpr uint32_t kMaximumDimension = static_cast<uint32_t>(std::numeric_limits<int>::max());
+  if (!host || host != g_active_host || host->inactive || !geometry || !geometry->game_width ||
+      !geometry->game_height || !geometry->draw_region_width || !geometry->draw_region_height ||
+      geometry->game_width > kMaximumDimension || geometry->game_height > kMaximumDimension ||
+      geometry->draw_region_width > kMaximumDimension ||
+      geometry->draw_region_height > kMaximumDimension) {
+    return 0;
+  }
+  if (host->layer) {
+    const CGSize size = host->layer.drawableSize;
+    if (!std::isfinite(size.width) || !std::isfinite(size.height) || size.width < 1.0 ||
+        size.height < 1.0 || geometry->draw_region_width > size.width ||
+        geometry->draw_region_height > size.height) {
+      return 0;
+    }
+  }
+  host->options.game_res_w = static_cast<int>(geometry->game_width);
+  host->options.game_res_h = static_cast<int>(geometry->game_height);
+  host->options.draw_region_w = static_cast<int>(geometry->draw_region_width);
+  host->options.draw_region_h = static_cast<int>(geometry->draw_region_height);
+  host->app_manages_presentation_geometry = true;
+  return 1;
+}
+
+int goal_jak2_metal_host_get_presentation_geometry(
+    goal_jak2_metal_host* host,
+    goal_jak2_metal_presentation_geometry* out) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (!host || host != g_active_host || host->inactive || !out) {
+    return 0;
+  }
+  out->game_width = static_cast<uint32_t>(host->options.game_res_w);
+  out->game_height = static_cast<uint32_t>(host->options.game_res_h);
+  out->draw_region_width = static_cast<uint32_t>(host->options.draw_region_w);
+  out->draw_region_height = static_cast<uint32_t>(host->options.draw_region_h);
   return 1;
 }
 

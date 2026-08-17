@@ -17,6 +17,13 @@ extern "C" {
 
 typedef struct goal_jak2_metal_host goal_jak2_metal_host;
 
+typedef struct goal_jak2_metal_presentation_geometry {
+  uint32_t game_width;
+  uint32_t game_height;
+  uint32_t draw_region_width;
+  uint32_t draw_region_height;
+} goal_jak2_metal_presentation_geometry;
+
 typedef struct goal_jak2_bucket4_texture_upload_metrics {
   uint32_t valid;
   uint32_t present;
@@ -684,6 +691,16 @@ goal_jak2_metal_host* goal_jak2_metal_host_create_presenting(
 /*! Rebind a running presenting host to a replacement app-owned layer after view recreation. */
 int goal_jak2_metal_host_rebind_presenting_layer(goal_jak2_metal_host* host,
                                                  goal_jak2_metal_host_layer layer);
+
+/*! Set the game target and centered drawable region selected by the app presentation policy. */
+int goal_jak2_metal_host_set_presentation_geometry(
+    goal_jak2_metal_host* host,
+    const goal_jak2_metal_presentation_geometry* geometry);
+
+/*! Copy the current game-target and draw-region geometry. */
+int goal_jak2_metal_host_get_presentation_geometry(
+    goal_jak2_metal_host* host,
+    goal_jak2_metal_presentation_geometry* out);
 
 /*! Set the minimum on-screen duration for future drawables. Zero disables presentation pacing. */
 int goal_jak2_metal_host_set_present_pacing(goal_jak2_metal_host* host, double seconds);

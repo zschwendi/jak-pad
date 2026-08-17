@@ -1732,6 +1732,27 @@ int main() {
   goal_jak2_metal_host* missing_host = goal_jak2_metal_host_create();
   check(missing_host != nullptr,
         "created a host after auditing the table's explicit Generic2 behavior");
+  goal_jak2_metal_presentation_geometry presentation = {688, 480, 2388, 1668};
+  goal_jak2_metal_presentation_geometry observed_presentation = {};
+  check(missing_host &&
+            goal_jak2_metal_host_set_presentation_geometry(missing_host, &presentation) &&
+            goal_jak2_metal_host_get_presentation_geometry(missing_host,
+                                                           &observed_presentation) &&
+            observed_presentation.game_width == 688 &&
+            observed_presentation.game_height == 480 &&
+            observed_presentation.draw_region_width == 2388 &&
+            observed_presentation.draw_region_height == 1668,
+        "app-managed Hor+ geometry widens the game target and fills the draw region");
+  presentation.game_width = 0;
+  check(missing_host &&
+            !goal_jak2_metal_host_set_presentation_geometry(missing_host, &presentation) &&
+            goal_jak2_metal_host_get_presentation_geometry(missing_host,
+                                                           &observed_presentation) &&
+            observed_presentation.game_width == 688 &&
+            observed_presentation.game_height == 480 &&
+            observed_presentation.draw_region_width == 2388 &&
+            observed_presentation.draw_region_height == 1668,
+        "invalid app-managed geometry is rejected without changing the active target");
   check(missing_host &&
             !goal_jak2_metal_host_configure_level_art(
                 missing_host, (fixture_root / "missing").string().c_str()),
