@@ -736,15 +736,37 @@ int main() {
     }
     std::printf("placeholder-backed eye hash: %016llx\n",
                 static_cast<unsigned long long>(placeholder_run.eye_hashes[0]));
+    std::printf(
+        "placeholder provenance: total=%d iris=%d pupil=%d lid=%d first=%u/0x%08x/0x%016llx/"
+        "%ux%u/0x%08x\n",
+        placeholder_run.stats.placeholder_textures,
+        placeholder_run.stats.placeholder_iris_textures,
+        placeholder_run.stats.placeholder_pupil_textures,
+        placeholder_run.stats.placeholder_lid_textures,
+        placeholder_run.stats.first_placeholder_component,
+        placeholder_run.stats.first_placeholder_tbp,
+        static_cast<unsigned long long>(placeholder_run.stats.first_placeholder_handle),
+        placeholder_run.stats.first_placeholder_width,
+        placeholder_run.stats.first_placeholder_height,
+        placeholder_run.stats.first_placeholder_texture_id);
     check(placeholder_run.readback_completed && placeholder_run.stats.eyes == 2 &&
               placeholder_run.stats.draw_calls == 8 &&
               placeholder_run.stats.missing_textures == 0 &&
+              placeholder_run.stats.placeholder_textures == 4 &&
+              placeholder_run.stats.placeholder_iris_textures == 2 &&
+              placeholder_run.stats.placeholder_pupil_textures == 0 &&
+              placeholder_run.stats.placeholder_lid_textures == 2 &&
+              placeholder_run.stats.first_placeholder_component == 1 &&
+              placeholder_run.stats.first_placeholder_tbp == kPlaceholderSourceTbp &&
+              placeholder_run.stats.first_placeholder_handle == placeholder_handle &&
+              placeholder_run.stats.first_placeholder_width == 2 &&
+              placeholder_run.stats.first_placeholder_height == 2 &&
+              placeholder_run.stats.first_placeholder_texture_id != 0 &&
               placeholder_run.stats.unexpected_dma == 0 &&
               placeholder_run.stats.command_buffer_errors == 0 &&
               read_eye_pixel(placeholder_run, 0, 8, 8) == 0xff303030 &&
               read_eye_pixel(placeholder_run, 0, 40, 8) == 0xffe0e0e0,
-          "placeholder-backed eye sources draw a gray checkerboard without tripping current "
-          "health metrics");
+          "placeholder-backed eye sources draw a gray checkerboard with exact source provenance");
 
     {
       MetalEyeRenderer renderer("jak2-eyes", 0, device, queue);

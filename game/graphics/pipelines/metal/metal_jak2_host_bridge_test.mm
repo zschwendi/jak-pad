@@ -82,6 +82,9 @@ static_assert(offsetof(goal_jak2_metal_host_metrics, subtitle_bucket322_typed) +
               offsetof(goal_jak2_metal_host_metrics, ocean_texture_vertices));
 static_assert(offsetof(goal_jak2_metal_host_metrics, last_eye_vertex_fingerprint) +
                   sizeof(uint64_t) ==
+              offsetof(goal_jak2_metal_host_metrics, last_eye_placeholder_textures));
+static_assert(offsetof(goal_jak2_metal_host_metrics, last_eye_first_placeholder_texture_id) +
+                  sizeof(uint32_t) <=
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -1884,6 +1887,7 @@ int main() {
             kPrisBuckets.size() + metal_renderer::kJak2Pris2TextureUploadBuckets.size() &&
             metrics.last_pris_eye_present_dispatches == 0 &&
             metrics.last_pris_eye_chunks == 0 && metrics.last_eye_composed == 0 &&
+            metrics.last_eye_placeholder_textures == 0 &&
             metrics.last_eye_command_buffers_committed == 0 &&
             metrics.last_eye_command_buffers_completed == 0 &&
             metrics.last_eye_command_buffer_errors == 0,
@@ -3130,6 +3134,7 @@ int main() {
             pris_upload_metrics.last_eye_draws == 0 &&
             pris_upload_metrics.last_eye_triangles == 0 &&
             pris_upload_metrics.last_eye_missing_textures == 0 &&
+            pris_upload_metrics.last_eye_placeholder_textures == 0 &&
             pris_upload_metrics.last_eye_unexpected_dma == 0 &&
             pris_upload_metrics.last_eye_duplicate_slot_writes == 0 &&
             pris_upload_metrics.last_eye_command_buffers_committed == 0 &&

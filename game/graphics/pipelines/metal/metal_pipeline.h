@@ -373,6 +373,16 @@ struct ChainStats {
   int eye_draws = 0;
   int eye_triangles = 0;
   int eye_missing_textures = 0;
+  int eye_placeholder_textures = 0;
+  int eye_placeholder_iris_textures = 0;
+  int eye_placeholder_pupil_textures = 0;
+  int eye_placeholder_lid_textures = 0;
+  u32 eye_first_placeholder_component = 0;
+  u32 eye_first_placeholder_tbp = 0;
+  u64 eye_first_placeholder_handle = 0;
+  u32 eye_first_placeholder_width = 0;
+  u32 eye_first_placeholder_height = 0;
+  u32 eye_first_placeholder_texture_id = 0;
   int eye_unexpected_dma = 0;
   int eye_duplicate_slot_writes = 0;
   int eye_command_buffers_committed = 0;

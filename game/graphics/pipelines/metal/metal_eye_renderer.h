@@ -44,6 +44,16 @@ class MetalEyeRenderer : public MetalBucketRenderer {
     int draw_calls = 0;
     int triangles = 0;
     int missing_textures = 0;  // adgif named a VRAM slot with nothing in it
+    int placeholder_textures = 0;
+    int placeholder_iris_textures = 0;
+    int placeholder_pupil_textures = 0;
+    int placeholder_lid_textures = 0;
+    u32 first_placeholder_component = 0;
+    u32 first_placeholder_tbp = 0;
+    u64 first_placeholder_handle = 0;
+    u32 first_placeholder_width = 0;
+    u32 first_placeholder_height = 0;
+    u32 first_placeholder_texture_id = 0;
     int unexpected_dma = 0;    // bucket did not match: consumed and reported
     int duplicate_slot_writes = 0;
     int versioned_slot_writes = 0;

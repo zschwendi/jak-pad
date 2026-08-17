@@ -544,6 +544,16 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_eye_vertex_bytes = stats.eye_vertex_bytes;
   host->metrics.last_eye_vertex_buffer_offset = stats.eye_last_vertex_buffer_offset;
   host->metrics.last_eye_vertex_fingerprint = stats.eye_last_vertex_fingerprint;
+  host->metrics.last_eye_placeholder_textures = stats.eye_placeholder_textures;
+  host->metrics.last_eye_placeholder_iris_textures = stats.eye_placeholder_iris_textures;
+  host->metrics.last_eye_placeholder_pupil_textures = stats.eye_placeholder_pupil_textures;
+  host->metrics.last_eye_placeholder_lid_textures = stats.eye_placeholder_lid_textures;
+  host->metrics.last_eye_first_placeholder_component = stats.eye_first_placeholder_component;
+  host->metrics.last_eye_first_placeholder_tbp = stats.eye_first_placeholder_tbp;
+  host->metrics.last_eye_first_placeholder_handle = stats.eye_first_placeholder_handle;
+  host->metrics.last_eye_first_placeholder_width = stats.eye_first_placeholder_width;
+  host->metrics.last_eye_first_placeholder_height = stats.eye_first_placeholder_height;
+  host->metrics.last_eye_first_placeholder_texture_id = stats.eye_first_placeholder_texture_id;
   host->metrics.last_sky_draw_draws = stats.jak2_sky_draw_draws;
   host->metrics.last_sky_draw_triangles = stats.jak2_sky_draw_triangles;
   const auto& sky_batch = stats.jak2_sky_draw_last_batch;

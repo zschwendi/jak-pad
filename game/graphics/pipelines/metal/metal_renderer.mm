@@ -2093,6 +2093,16 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       m_chain_stats.eye_draws = 0;
       m_chain_stats.eye_triangles = 0;
       m_chain_stats.eye_missing_textures = 0;
+      m_chain_stats.eye_placeholder_textures = 0;
+      m_chain_stats.eye_placeholder_iris_textures = 0;
+      m_chain_stats.eye_placeholder_pupil_textures = 0;
+      m_chain_stats.eye_placeholder_lid_textures = 0;
+      m_chain_stats.eye_first_placeholder_component = 0;
+      m_chain_stats.eye_first_placeholder_tbp = 0;
+      m_chain_stats.eye_first_placeholder_handle = 0;
+      m_chain_stats.eye_first_placeholder_width = 0;
+      m_chain_stats.eye_first_placeholder_height = 0;
+      m_chain_stats.eye_first_placeholder_texture_id = 0;
       m_chain_stats.eye_unexpected_dma = 0;
       m_chain_stats.eye_duplicate_slot_writes = 0;
       m_chain_stats.eye_command_buffers_committed = 0;
@@ -2135,6 +2145,18 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         m_chain_stats.eye_draws += stats.draw_calls;
         m_chain_stats.eye_triangles += stats.triangles;
         m_chain_stats.eye_missing_textures += stats.missing_textures;
+        m_chain_stats.eye_placeholder_textures += stats.placeholder_textures;
+        m_chain_stats.eye_placeholder_iris_textures += stats.placeholder_iris_textures;
+        m_chain_stats.eye_placeholder_pupil_textures += stats.placeholder_pupil_textures;
+        m_chain_stats.eye_placeholder_lid_textures += stats.placeholder_lid_textures;
+        if (!m_chain_stats.eye_first_placeholder_handle && stats.first_placeholder_handle) {
+          m_chain_stats.eye_first_placeholder_component = stats.first_placeholder_component;
+          m_chain_stats.eye_first_placeholder_tbp = stats.first_placeholder_tbp;
+          m_chain_stats.eye_first_placeholder_handle = stats.first_placeholder_handle;
+          m_chain_stats.eye_first_placeholder_width = stats.first_placeholder_width;
+          m_chain_stats.eye_first_placeholder_height = stats.first_placeholder_height;
+          m_chain_stats.eye_first_placeholder_texture_id = stats.first_placeholder_texture_id;
+        }
         m_chain_stats.eye_unexpected_dma += stats.unexpected_dma;
         m_chain_stats.eye_duplicate_slot_writes += stats.duplicate_slot_writes;
         m_chain_stats.eye_command_buffers_committed += stats.command_buffers_committed;

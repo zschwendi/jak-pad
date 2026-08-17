@@ -558,6 +558,16 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t last_eye_vertex_bytes;
   uint32_t last_eye_vertex_buffer_offset;
   uint64_t last_eye_vertex_fingerprint;
+  uint64_t last_eye_placeholder_textures;
+  uint64_t last_eye_placeholder_iris_textures;
+  uint64_t last_eye_placeholder_pupil_textures;
+  uint64_t last_eye_placeholder_lid_textures;
+  uint32_t last_eye_first_placeholder_component;
+  uint32_t last_eye_first_placeholder_tbp;
+  uint64_t last_eye_first_placeholder_handle;
+  uint32_t last_eye_first_placeholder_width;
+  uint32_t last_eye_first_placeholder_height;
+  uint32_t last_eye_first_placeholder_texture_id;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {
