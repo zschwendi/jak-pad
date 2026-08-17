@@ -532,6 +532,9 @@ bool reader_failures_and_cancellation_leave_no_staging() {
   CHECK(!preexisting);
   CHECK(preexisting.error().reader_error);
   CHECK(preexisting.error().reader_error->code == iso_file::ErrorCode::output_create_failed);
+  CHECK(preexisting.error().reader_error->system_error == std::errc::file_exists);
+  CHECK(preexisting.error().reader_error->message.find(
+            preexisting.error().reader_error->system_error.message()) != std::string::npos);
   CHECK(read_text(existing / "sentinel") == "keep");
   return true;
 }

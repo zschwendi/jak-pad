@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "common/custom_data/Jak2PublicOutputGraph.h"
@@ -342,7 +344,7 @@ bool descriptor_promotion_rejects_callback_races() {
            } catch (...) {
              return composer::Error{composer::ErrorCode::callback_failed,
                                     "synthetic guarded callback failure", std::nullopt,
-                                    std::nullopt};
+                                    std::nullopt, std::nullopt};
            }
            return {};
          }},
@@ -558,7 +560,7 @@ bool failure_preserves_all_unregistered_work_files() {
          write_text(paths.work_root / "recoverable.marker", "keep me");
          write_text(paths.work_root / "artifact.partial", "preserve me");
          return composer::Error{composer::ErrorCode::iso_validation_failed, "synthetic failure",
-                                std::nullopt, std::nullopt};
+                                std::nullopt, std::nullopt, std::nullopt};
        }},
   }};
   const auto result = composer::internal::compose_in_fresh_candidate(
@@ -570,6 +572,64 @@ bool failure_preserves_all_unregistered_work_files() {
   CHECK(has_partial(candidate));
   CHECK(read_text(candidate / ".opengoal-import/artifact.partial") == "preserve me");
   CHECK(read_text(active / "sentinel") == "active stays untouched");
+  return true;
+}
+
+bool iso_reader_failures_reach_composer_with_detail() {
+  jak2_iso::ValidationError read_failure;
+  read_failure.code = jak2_iso::ValidationErrorCode::iso_reader_failed;
+  read_failure.message = "The ISO could not be extracted into a private staging directory.";
+  read_failure.reader_error = iso_file::Error{
+      iso_file::ErrorCode::read_failed, 0x12345678,
+      "Could not read the requested ISO bytes: Input/output error",
+      std::error_code(EIO, std::generic_category())};
+
+  TemporaryRoot temporary;
+  const auto candidate = temporary.root / "read-failure.candidate";
+  std::optional<composer::Summary> summary;
+  std::optional<composer::internal::FinalContract> contract;
+  const std::array<composer::internal::StageAction, 1> stages = {{
+      {composer::Phase::extracting_iso,
+       [&](const composer::internal::WorkPaths&) -> std::optional<composer::Error> {
+         return composer::internal::map_iso_extraction_failure(read_failure);
+       }},
+  }};
+  const auto result = composer::internal::compose_in_fresh_candidate(
+      candidate, {}, stages, &summary, &contract);
+  CHECK(!result);
+  CHECK(result.error().code == composer::ErrorCode::iso_validation_failed);
+  CHECK(result.error().preserved_candidate_root == candidate);
+  CHECK(result.error().iso_reader_error);
+  CHECK(result.error().iso_reader_error->code == iso_file::ErrorCode::read_failed);
+  CHECK(result.error().iso_reader_error->image_offset == 0x12345678);
+  CHECK(result.error().iso_reader_error->system_error == std::errc::io_error);
+  CHECK(result.error().message.find("Reader read_failed at ISO byte offset 305419896") !=
+        std::string::npos);
+  CHECK(result.error().message.find("Input/output error") != std::string::npos);
+
+  jak2_iso::ValidationError output_failure;
+  output_failure.code = jak2_iso::ValidationErrorCode::iso_reader_failed;
+  output_failure.message = read_failure.message;
+  output_failure.reader_error = iso_file::Error{
+      iso_file::ErrorCode::output_write_failed, 4096, "Could not write output file GAME.CGO",
+      std::error_code(ENOSPC, std::generic_category())};
+  const auto no_space = composer::internal::map_iso_extraction_failure(output_failure);
+  CHECK(no_space.code == composer::ErrorCode::insufficient_storage);
+  CHECK(no_space.iso_reader_error);
+  CHECK(no_space.iso_reader_error->system_error == std::errc::no_space_on_device);
+  CHECK(no_space.message.find("not enough free space") != std::string::npos);
+  CHECK(no_space.message.find("Reader output_write_failed at ISO byte offset 4096") !=
+        std::string::npos);
+
+  jak2_iso::ValidationError cancelled;
+  cancelled.code = jak2_iso::ValidationErrorCode::cancelled;
+  cancelled.message = "The ISO could not be extracted into a private staging directory.";
+  cancelled.reader_error = iso_file::Error{iso_file::ErrorCode::cancelled, 8192,
+                                           "ISO extraction was cancelled.", {}};
+  const auto cancellation = composer::internal::map_iso_extraction_failure(cancelled);
+  CHECK(cancellation.code == composer::ErrorCode::cancelled);
+  CHECK(cancellation.iso_reader_error);
+  CHECK(cancellation.message == "Jak II ISO extraction was cancelled.");
   return true;
 }
 
@@ -637,7 +697,8 @@ bool callbacks_remain_typed_with_stage_boundary_ownership() {
            for (std::size_t index = 0; index < 1000; ++index) {
              if (stage_options.should_cancel()) {
                return composer::Error{composer::ErrorCode::cancelled,
-                                      "synthetic cancellation", std::nullopt, std::nullopt};
+                                      "synthetic cancellation", std::nullopt, std::nullopt,
+                                      std::nullopt};
              }
              stage_options.on_progress(
                  {composer::Phase::materializing_output, index, 1000, 0, "synthetic"});
@@ -1002,6 +1063,7 @@ int main() {
       linked_output_is_rejected,
       descriptor_promotion_rejects_callback_races,
       failure_preserves_all_unregistered_work_files,
+      iso_reader_failures_reach_composer_with_detail,
       cancellation_and_callback_failures_are_typed,
       callbacks_remain_typed_with_stage_boundary_ownership,
       existing_candidate_and_input_containment_are_rejected,

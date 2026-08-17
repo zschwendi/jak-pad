@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "decompiler/extractor/jak2_import_composer.h"
+#include "decompiler/extractor/jak2_iso_validation.h"
 #include "decompiler/extractor/jak1_retail_object_catalog.h"
 #include "goalc/make/Jak2OutputRecipeGenerator.h"
 
@@ -48,6 +49,8 @@ select_exact_retail_catalog(
 std::optional<Error> write_file_atomically(const std::filesystem::path& destination,
                                            std::span<const std::uint8_t> bytes,
                                            const Options& options = {});
+
+Error map_iso_extraction_failure(const jak2_iso::ValidationError& error);
 
 struct WorkPaths {
   std::filesystem::path candidate_root;

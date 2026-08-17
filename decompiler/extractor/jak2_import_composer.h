@@ -7,6 +7,8 @@
 #include <string>
 #include <utility>
 
+#include "common/util/read_iso_file.h"
+
 namespace jak2_import_composer {
 
 struct Request {
@@ -73,6 +75,7 @@ struct Error {
   std::string message;
   std::optional<std::filesystem::path> preserved_candidate_root;
   std::optional<std::string> cleanup_error;
+  std::optional<iso_file::Error> iso_reader_error;
 };
 
 template <typename T>

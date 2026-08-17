@@ -35,12 +35,27 @@ constexpr uint64_t kProgressIntervalBytes = 8ull * 1024 * 1024;
 using iso_file::Error;
 using iso_file::ErrorCode;
 
-Error make_error(ErrorCode code, uint64_t offset, std::string message) {
-  return {code, offset, std::move(message)};
+Error make_error(ErrorCode code,
+                 uint64_t offset,
+                 std::string message,
+                 std::error_code system_error = {}) {
+  return {code, offset, std::move(message), system_error};
+}
+
+Error make_system_error(ErrorCode code,
+                        uint64_t offset,
+                        std::string message,
+                        int error_number) {
+  const std::error_code system_error(error_number, std::generic_category());
+  if (system_error) {
+    message += ": " + system_error.message();
+  }
+  return make_error(code, offset, std::move(message), system_error);
 }
 
 int seek_64(FILE* file, uint64_t offset, int origin) {
   if (offset > uint64_t(LLONG_MAX)) {
+    errno = EOVERFLOW;
     return -1;
   }
 #ifdef _WIN32
@@ -59,13 +74,27 @@ int64_t tell_64(FILE* file) {
 }
 
 std::optional<Error> image_size(FILE* file, uint64_t* size) {
+  errno = 0;
   const auto original = tell_64(file);
-  if (original < 0 || seek_64(file, 0, SEEK_END)) {
-    return make_error(ErrorCode::seek_failed, 0, "Could not seek in the ISO image.");
+  if (original < 0) {
+    return make_system_error(ErrorCode::seek_failed, 0,
+                             "Could not determine the current ISO image position", errno);
   }
+  errno = 0;
+  if (seek_64(file, 0, SEEK_END)) {
+    return make_system_error(ErrorCode::seek_failed, 0, "Could not seek to the ISO image end",
+                             errno);
+  }
+  errno = 0;
   const auto end = tell_64(file);
-  if (end < 0 || seek_64(file, static_cast<uint64_t>(original), SEEK_SET)) {
-    return make_error(ErrorCode::seek_failed, 0, "Could not determine the ISO image size.");
+  if (end < 0) {
+    return make_system_error(ErrorCode::seek_failed, 0, "Could not determine the ISO image size",
+                             errno);
+  }
+  errno = 0;
+  if (seek_64(file, static_cast<uint64_t>(original), SEEK_SET)) {
+    return make_system_error(ErrorCode::seek_failed, 0,
+                             "Could not restore the ISO image position", errno);
   }
   *size = static_cast<uint64_t>(end);
   return std::nullopt;
@@ -80,11 +109,23 @@ std::optional<Error> read_exact(FILE* file,
     return make_error(ErrorCode::extent_out_of_bounds, offset,
                       "A read extends beyond the ISO image.");
   }
+  errno = 0;
   if (seek_64(file, offset, SEEK_SET)) {
-    return make_error(ErrorCode::seek_failed, offset, "Could not seek in the ISO image.");
+    return make_system_error(ErrorCode::seek_failed, offset,
+                             "Could not seek to the requested ISO bytes", errno);
   }
-  if (size && fread(destination, 1, size, file) != size) {
-    return make_error(ErrorCode::read_failed, offset, "Could not read the requested ISO bytes.");
+  if (size) {
+    errno = 0;
+    const auto bytes_read = fread(destination, 1, size, file);
+    if (bytes_read != size) {
+      const auto failure_offset = offset + bytes_read;
+      if (ferror(file)) {
+        return make_system_error(ErrorCode::read_failed, failure_offset,
+                                 "Could not read the requested ISO bytes", errno);
+      }
+      return make_error(ErrorCode::read_failed, failure_offset,
+                        "The ISO image ended before the requested bytes were read.");
+    }
   }
   return std::nullopt;
 }
@@ -101,9 +142,11 @@ std::optional<Error> read_extent_chunk(FILE* file,
 #ifdef _WIN32
   return read_exact(file, image_bytes, offset, destination, size);
 #else
+  errno = 0;
   const auto descriptor = fileno(file);
   if (descriptor < 0) {
-    return make_error(ErrorCode::read_failed, offset, "Could not read the requested ISO bytes.");
+    return make_system_error(ErrorCode::read_failed, offset,
+                             "Could not access the ISO file descriptor", errno);
   }
   size_t completed = 0;
   while (completed < size) {
@@ -112,9 +155,14 @@ std::optional<Error> read_extent_chunk(FILE* file,
     if (result < 0 && errno == EINTR) {
       continue;
     }
-    if (result <= 0) {
+    if (result < 0) {
+      const int read_error = errno;
+      return make_system_error(ErrorCode::read_failed, offset + completed,
+                               "Could not read the requested ISO bytes", read_error);
+    }
+    if (result == 0) {
       return make_error(ErrorCode::read_failed, offset + completed,
-                        "Could not read the requested ISO bytes.");
+                        "The ISO image ended before the requested bytes were read.");
     }
     completed += static_cast<size_t>(result);
   }
@@ -521,9 +569,18 @@ std::optional<Error> validate_options(FILE* file,
 std::optional<Error> ensure_output_directory(const std::filesystem::path& path) {
   std::error_code error;
   std::filesystem::create_directories(path, error);
-  if (error || !std::filesystem::is_directory(path, error)) {
+  if (error) {
     return make_error(ErrorCode::output_create_failed, 0,
-                      "Could not create output directory: " + path.string());
+                      "Could not create output directory: " + path.string() + ": " +
+                          error.message(),
+                      error);
+  }
+  if (!std::filesystem::is_directory(path, error) || error) {
+    auto message = "Could not retain output directory: " + path.string();
+    if (error) {
+      message += ": " + error.message();
+    }
+    return make_error(ErrorCode::output_create_failed, 0, std::move(message), error);
   }
   return std::nullopt;
 }
@@ -584,10 +641,11 @@ std::optional<Error> extract_entry(ExtractState* state,
     return std::nullopt;
   }
 
+  errno = 0;
   std::ofstream stream(output, std::ios::binary | std::ios::trunc);
   if (!stream) {
-    return make_error(ErrorCode::output_create_failed, entry->offset_in_file,
-                      "Could not create output file: " + output.string());
+    return make_system_error(ErrorCode::output_create_failed, entry->offset_in_file,
+                             "Could not create output file: " + output.string(), errno);
   }
 
   XXH64_state_t hash_state;
@@ -608,11 +666,12 @@ std::optional<Error> extract_entry(ExtractState* state,
                                        entry->offset_in_file + copied, buffer.data(), amount)) {
       return error;
     }
+    errno = 0;
     stream.write(reinterpret_cast<const char*>(buffer.data()),
                  static_cast<std::streamsize>(amount));
     if (!stream) {
-      return make_error(ErrorCode::output_write_failed, entry->offset_in_file + copied,
-                        "Could not write output file: " + output.string());
+      return make_system_error(ErrorCode::output_write_failed, entry->offset_in_file + copied,
+                               "Could not write output file: " + output.string(), errno);
     }
     if (state->options->hash_files) {
       XXH64_update(&hash_state, buffer.data(), amount);
@@ -623,10 +682,11 @@ std::optional<Error> extract_entry(ExtractState* state,
       report_progress(state);
     }
   }
+  errno = 0;
   stream.close();
   if (!stream) {
-    return make_error(ErrorCode::output_write_failed, entry->offset_in_file + copied,
-                      "Could not finish output file: " + output.string());
+    return make_system_error(ErrorCode::output_write_failed, entry->offset_in_file + copied,
+                             "Could not finish output file: " + output.string(), errno);
   }
 
   layout->files_extracted++;
@@ -716,22 +776,45 @@ struct OwnedStagingDirectory::Impl {
                         "The staging directory does not have a safe basename.");
     }
     parent = posix_file::open_directory(parent_path.c_str());
-    if (!parent || !posix_file::descriptor_identity(parent.get(), &parent_identity)) {
-      return make_error(ErrorCode::output_create_failed, 0,
-                        system_error("Could not open the staging parent directory"));
+    if (!parent) {
+      const int open_error = errno;
+      return make_system_error(ErrorCode::output_create_failed, 0,
+                               "Could not open the staging parent directory", open_error);
+    }
+    errno = 0;
+    if (!posix_file::descriptor_identity(parent.get(), &parent_identity)) {
+      const int identity_error = errno;
+      return make_system_error(ErrorCode::output_create_failed, 0,
+                               "Could not inspect the staging parent directory", identity_error);
     }
     if (::mkdirat(parent.get(), root_name.c_str(), 0700) != 0) {
-      const auto message = errno == EEXIST
+      const int create_error = errno;
+      const auto message = create_error == EEXIST
                                ? "The staging directory already exists and will not be overwritten"
                                : "Could not create the staging directory";
-      return make_error(ErrorCode::output_create_failed, 0,
-                        system_error(std::string(message) + ": " + staging_directory.string()));
+      return make_system_error(ErrorCode::output_create_failed, 0,
+                               std::string(message) + ": " + staging_directory.string(),
+                               create_error);
     }
     root = posix_file::open_directory_at(parent.get(), root_name);
-    if (!root || !posix_file::descriptor_identity(root.get(), &root_identity) ||
-        !posix_file::entry_identity(parent.get(), root_name, root_identity)) {
-      return make_error(ErrorCode::output_create_failed, 0,
-                        "Could not retain the exact newly created staging directory.");
+    if (!root) {
+      const int open_error = errno;
+      return make_system_error(ErrorCode::output_create_failed, 0,
+                               "Could not open the newly created staging directory", open_error);
+    }
+    errno = 0;
+    if (!posix_file::descriptor_identity(root.get(), &root_identity)) {
+      const int identity_error = errno;
+      return make_system_error(ErrorCode::output_create_failed, 0,
+                               "Could not inspect the newly created staging directory",
+                               identity_error);
+    }
+    errno = 0;
+    if (!posix_file::entry_identity(parent.get(), root_name, root_identity)) {
+      const int identity_error = errno;
+      return make_system_error(ErrorCode::output_create_failed, 0,
+                               "Could not retain the exact newly created staging directory",
+                               identity_error);
     }
     cleanup_pending = true;
     return {};
@@ -752,16 +835,33 @@ struct OwnedStagingDirectory::Impl {
     const auto child_path = relative_path.empty() ? name : relative_path + "/" + name;
     if (entry->is_dir) {
       if (::mkdirat(parent_descriptor, name.c_str(), 0700) != 0) {
-        return make_error(
-            ErrorCode::output_create_failed, entry->offset_in_file,
-            system_error("Could not exclusively create output directory " + child_path));
+        const int create_error = errno;
+        return make_system_error(ErrorCode::output_create_failed, entry->offset_in_file,
+                                 "Could not exclusively create output directory " + child_path,
+                                 create_error);
       }
       auto child = posix_file::open_directory_at(parent_descriptor, name);
+      if (!child) {
+        const int open_error = errno;
+        return make_system_error(ErrorCode::output_create_failed, entry->offset_in_file,
+                                 "Could not open created output directory " + child_path,
+                                 open_error);
+      }
       posix_file::Identity identity;
-      if (!child || !posix_file::descriptor_identity(child.get(), &identity) ||
-          !posix_file::entry_identity(parent_descriptor, name, identity)) {
-        return make_error(ErrorCode::output_create_failed, entry->offset_in_file,
-                          "Could not retain the exact created output directory: " + child_path);
+      errno = 0;
+      if (!posix_file::descriptor_identity(child.get(), &identity)) {
+        const int identity_error = errno;
+        return make_system_error(ErrorCode::output_create_failed, entry->offset_in_file,
+                                 "Could not inspect created output directory " + child_path,
+                                 identity_error);
+      }
+      errno = 0;
+      if (!posix_file::entry_identity(parent_descriptor, name, identity)) {
+        const int identity_error = errno;
+        return make_system_error(ErrorCode::output_create_failed, entry->offset_in_file,
+                                 "Could not retain the exact created output directory " +
+                                     child_path,
+                                 identity_error);
       }
       auto& owned = owned_entries->emplace_back(Entry{name, true, identity, {}, false, 0, 0});
       for (auto& nested : entry->children) {
@@ -775,13 +875,31 @@ struct OwnedStagingDirectory::Impl {
 
     auto output =
         posix_file::open_file_at(parent_descriptor, name, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (!output) {
+      const int open_error = errno;
+      return make_system_error(ErrorCode::output_create_failed, entry->offset_in_file,
+                               "Could not exclusively create output file " + child_path,
+                               open_error);
+    }
     posix_file::Identity identity;
     struct stat output_status{};
-    if (!output || !posix_file::descriptor_identity(output.get(), &identity, &output_status) ||
-        !S_ISREG(output_status.st_mode) ||
-        !posix_file::entry_identity(parent_descriptor, name, identity)) {
+    errno = 0;
+    if (!posix_file::descriptor_identity(output.get(), &identity, &output_status)) {
+      const int identity_error = errno;
+      return make_system_error(ErrorCode::output_create_failed, entry->offset_in_file,
+                               "Could not inspect created output file " + child_path,
+                               identity_error);
+    }
+    if (!S_ISREG(output_status.st_mode)) {
       return make_error(ErrorCode::output_create_failed, entry->offset_in_file,
-                        "Could not exclusively create and retain output file: " + child_path);
+                        "The created output is not a regular file: " + child_path);
+    }
+    errno = 0;
+    if (!posix_file::entry_identity(parent_descriptor, name, identity)) {
+      const int identity_error = errno;
+      return make_system_error(ErrorCode::output_create_failed, entry->offset_in_file,
+                               "Could not retain the exact created output file " + child_path,
+                               identity_error);
     }
     auto& owned = owned_entries->emplace_back(Entry{name, false, identity, {}, false, 0, 0});
 
@@ -807,9 +925,15 @@ struct OwnedStagingDirectory::Impl {
         if (result < 0 && errno == EINTR) {
           continue;
         }
-        if (result <= 0) {
+        if (result < 0) {
+          const int write_error = errno;
+          return make_system_error(ErrorCode::output_write_failed,
+                                   entry->offset_in_file + copied,
+                                   "Could not write output file " + child_path, write_error);
+        }
+        if (result == 0) {
           return make_error(ErrorCode::output_write_failed, entry->offset_in_file + copied,
-                            system_error("Could not write output file " + child_path));
+                            "Writing output file made no progress: " + child_path);
         }
         written += static_cast<size_t>(result);
       }
@@ -1370,7 +1494,9 @@ Result<IsoFile> extract_to_staging(FILE* file,
   if (fs_error) {
     return Result<IsoFile>::failure(
         make_error(ErrorCode::output_create_failed, 0,
-                   "Could not inspect staging directory: " + staging_directory.string()));
+                   "Could not inspect staging directory: " + staging_directory.string() + ": " +
+                       fs_error.message(),
+                   fs_error));
   }
   if (staging_exists) {
     return Result<IsoFile>::failure(
@@ -1386,7 +1512,9 @@ Result<IsoFile> extract_to_staging(FILE* file,
   if (!std::filesystem::create_directory(staging_directory, fs_error) || fs_error) {
     return Result<IsoFile>::failure(
         make_error(ErrorCode::output_create_failed, 0,
-                   "Could not create staging directory: " + staging_directory.string()));
+                   "Could not create staging directory: " + staging_directory.string() +
+                       (fs_error ? ": " + fs_error.message() : std::string{}),
+                   fs_error));
   }
 
   auto extracted = extract_layout(file, inspected.take_value(), staging_directory, options);

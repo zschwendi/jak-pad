@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -66,6 +67,7 @@ struct Error {
   ErrorCode code = ErrorCode::invalid_argument;
   uint64_t image_offset = 0;
   std::string message;
+  std::error_code system_error;
 };
 
 template <typename T>

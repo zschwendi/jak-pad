@@ -136,7 +136,7 @@ constexpr std::array<std::string_view, 8> kRequiredFr3Files = {
 };
 
 Error make_error(ErrorCode code, std::string message) {
-  return {code, std::move(message), std::nullopt, std::nullopt};
+  return {code, std::move(message), std::nullopt, std::nullopt, std::nullopt};
 }
 
 Error make_filesystem_error(ErrorCode fallback,
@@ -532,12 +532,13 @@ std::optional<Error> extract_iso_stage(const internal::WorkPaths& paths,
   auto extracted = jak2_iso::extract_and_validate(
       state->iso_file.get(), paths.work_root / "extracted-iso", iso_options);
   if (!extracted) {
-    const bool cancelled = extracted.error().code == jak2_iso::ValidationErrorCode::cancelled;
-    return callback_aware_error(
-        callbacks, ErrorCode::iso_validation_failed,
-        cancelled ? "Jak II ISO extraction was cancelled."
-                  : "The selected Jak II ISO was rejected: " + extracted.error().message,
-        cancelled);
+    auto error = internal::map_iso_extraction_failure(extracted.error());
+    if (callbacks.callback_failed()) {
+      auto callback_error = callbacks.cancellation_or_callback_error({});
+      callback_error.iso_reader_error = std::move(error.iso_reader_error);
+      return callback_error;
+    }
+    return error;
   }
   if (callbacks.callback_failed()) {
     return callbacks.cancellation_or_callback_error({});
@@ -1762,6 +1763,39 @@ Error map_source_pack_failure(const source_pack::Error& error, CallbackForwarder
 }  // namespace
 
 namespace internal {
+
+Error map_iso_extraction_failure(const jak2_iso::ValidationError& error) {
+  if (error.code == jak2_iso::ValidationErrorCode::cancelled) {
+    auto result = make_error(ErrorCode::cancelled, "Jak II ISO extraction was cancelled.");
+    result.iso_reader_error = error.reader_error;
+    return result;
+  }
+  if (error.code == jak2_iso::ValidationErrorCode::callback_failed) {
+    auto result = make_error(ErrorCode::callback_failed,
+                             "The Jak II import callback failed during ISO extraction.");
+    result.iso_reader_error = error.reader_error;
+    return result;
+  }
+
+  const bool out_of_space =
+      error.reader_error &&
+      (error.reader_error->code == iso_file::ErrorCode::output_create_failed ||
+       error.reader_error->code == iso_file::ErrorCode::output_write_failed) &&
+      error.reader_error->system_error == std::errc::no_space_on_device;
+  auto result = make_error(
+      out_of_space ? ErrorCode::insufficient_storage : ErrorCode::iso_validation_failed,
+      out_of_space
+          ? "There is not enough free space to extract the selected Jak II ISO into private staging."
+          : "The selected Jak II ISO was rejected: " + error.message);
+  result.iso_reader_error = error.reader_error;
+  if (error.reader_error) {
+    result.message += " Reader " + std::string(iso_file::error_code_name(error.reader_error->code)) +
+                      " at ISO byte offset " +
+                      std::to_string(error.reader_error->image_offset) + ": " +
+                      error.reader_error->message;
+  }
+  return result;
+}
 
 std::optional<Error> write_file_atomically(const fs::path& destination,
                                            std::span<const std::uint8_t> bytes,

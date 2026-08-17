@@ -7,7 +7,12 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <vector>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include "common/util/read_iso_file.h"
 
@@ -497,6 +502,70 @@ bool existing_staging_is_preserved() {
 }
 
 #ifndef _WIN32
+bool positioned_read_failure_retains_errno_and_offset() {
+  TemporaryDirectory temp;
+  const auto image = temp.path / "fixture.iso";
+  const auto output = temp.path / "output";
+  CHECK(write_image(image, std::vector<uint8_t>(64 * kSectorSize, 0x5a)));
+  CHECK(std::filesystem::create_directory(output));
+  OpenFile input(image);
+  CHECK(input.file);
+
+  IsoFile layout;
+  layout.root.children.push_back({false, "PAYLOAD.BIN", 2048, 1024, {}});
+  bool replaced_descriptor = false;
+  iso_file::Options options;
+  options.on_progress = [&](const iso_file::Progress& progress) {
+    if (replaced_descriptor || progress.bytes_completed != 0) {
+      return;
+    }
+    int descriptors[2] = {-1, -1};
+    if (::pipe(descriptors) != 0) {
+      return;
+    }
+    replaced_descriptor = ::dup2(descriptors[0], fileno(input.file)) == fileno(input.file);
+    ::close(descriptors[0]);
+    ::close(descriptors[1]);
+  };
+
+  const auto result = iso_file::extract_layout(input.file, layout, output, options);
+  CHECK(replaced_descriptor);
+  CHECK(!result);
+  CHECK(result.error().code == iso_file::ErrorCode::read_failed);
+  CHECK(result.error().image_offset == 2048);
+  CHECK(result.error().system_error == std::errc::invalid_seek);
+  CHECK(result.error().message.find(result.error().system_error.message()) != std::string::npos);
+  return true;
+}
+
+bool owned_staging_file_open_failure_retains_errno() {
+  TemporaryDirectory temp;
+  const auto fixture = make_synthetic_iso();
+  const auto image = temp.path / "fixture.iso";
+  const auto staging = temp.path / "staging";
+  CHECK(write_image(image, fixture.bytes));
+  OpenFile input(image);
+  CHECK(input.file);
+
+  bool inserted_collision = false;
+  iso_file::Options options;
+  options.on_progress = [&](const iso_file::Progress& progress) {
+    if (!inserted_collision && progress.bytes_completed == 0 && progress.files_completed == 0) {
+      std::ofstream(staging / "SAFE.TXT") << "caller-owned";
+      inserted_collision = true;
+    }
+  };
+  iso_file::OwnedStagingDirectory owned_staging;
+  const auto result =
+      iso_file::extract_to_owned_staging(input.file, staging, &owned_staging, options);
+  CHECK(inserted_collision);
+  CHECK(!result);
+  CHECK(result.error().code == iso_file::ErrorCode::output_create_failed);
+  CHECK(result.error().system_error == std::errc::file_exists);
+  CHECK(result.error().message.find(result.error().system_error.message()) != std::string::npos);
+  return true;
+}
+
 bool owned_staging_rejects_and_preserves_unexpected_entries() {
   TemporaryDirectory temp;
   const auto fixture = make_synthetic_iso();
@@ -719,6 +788,10 @@ int main() {
       {"enforces_depth_entry_and_size_limits", enforces_depth_entry_and_size_limits},
       {"existing_staging_is_preserved", existing_staging_is_preserved},
 #ifndef _WIN32
+      {"positioned_read_failure_retains_errno_and_offset",
+       positioned_read_failure_retains_errno_and_offset},
+      {"owned_staging_file_open_failure_retains_errno",
+       owned_staging_file_open_failure_retains_errno},
       {"owned_staging_rejects_and_preserves_unexpected_entries",
        owned_staging_rejects_and_preserves_unexpected_entries},
       {"owned_staging_deferred_extraction_requires_finalization",
