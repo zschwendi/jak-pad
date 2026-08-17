@@ -166,9 +166,17 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         self.assertIn("(title-progress 'title)", title_idle)
 
         title_startup = extract_goal_form(self.title_obs, "(defstate startup (title-control)")
+        save_info_copy = (
+            "(mem-copy! (the-as pointer *auto-save-info*) (the-as pointer gp-0) 300)"
+        )
+        self.assertIn(save_info_copy, title_startup)
         self.assertIn(
             "(when (#if PC_PORT\n                   #f\n                   (or (zero? (-> gp-0 handle))",
             title_startup,
+        )
+        self.assertLess(
+            title_startup.index(save_info_copy),
+            title_startup.index("(when (#if PC_PORT"),
         )
 
         prepare_start = self.runtime.index(

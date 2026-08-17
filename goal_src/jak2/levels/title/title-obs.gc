@@ -653,12 +653,12 @@
             (goto cfg-12)
             )
           (set! (-> *setting-control* user-default bg-a) 0.0)
+          (mem-copy! (the-as pointer *auto-save-info*) (the-as pointer gp-0) 300)
           (when (#if PC_PORT
                    #f
                    (or (zero? (-> gp-0 handle))
                        (and (nonzero? (-> gp-0 formatted)) (zero? (-> gp-0 inited)) (< (-> gp-0 mem-actual) (-> gp-0 mem-required)))
                        ))
-            (mem-copy! (the-as pointer *auto-save-info*) (the-as pointer gp-0) 300)
             (set-blackout-frames 0)
             (let ((s5-0 'insufficient-space))
               (if (zero? (-> gp-0 handle))
