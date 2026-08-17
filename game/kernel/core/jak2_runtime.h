@@ -379,7 +379,11 @@ goal_jak2_runtime_status goal_jak2_runtime_probe_thread_suspend(
  */
 goal_jak2_runtime_status goal_jak2_runtime_request_scene_preview(const char* scene_name);
 
-/*! Run one 60 Hz-compatible dispatcher frame when the host has no presentation timestamp. */
+/*!
+ * Run exactly one logical dispatcher frame when the host has no presentation timestamp. At the
+ * 60 Hz baseline this preserves the legacy API. In the experimental 120 Hz domain it assumes one
+ * delivered callback per logical frame; a host with variable or 60 Hz delivery must use tick_at.
+ */
 goal_jak2_runtime_status goal_jak2_runtime_tick(void);
 
 /*!

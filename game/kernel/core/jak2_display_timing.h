@@ -14,6 +14,8 @@ extern "C" {
 typedef struct goal_jak2_display_timing_step {
   uint32_t dispatcher_frames;
   uint32_t sound_frames;
+  /*! Bit N publishes one IOP frame immediately before dispatcher frame N. */
+  uint32_t sound_before_dispatch_mask;
 } goal_jak2_display_timing_step;
 
 typedef struct goal_jak2_display_timing {
@@ -44,7 +46,9 @@ void goal_jak2_display_timing_set_target_frame_rate(goal_jak2_display_timing* ti
 /*!
  * Convert one host target-presentation timestamp into bounded logical dispatcher and IOP frames.
  * A dispatcher frame is never replayed after a non-monotonic timestamp. At a lower delivered
- * cadence, accumulated whole target frames are reported together for the host to dispatch.
+ * cadence, accumulated whole target frames are reported together. The caller publishes the
+ * mask-selected IOP frames before their matching dispatcher frames and any remaining IOP frames
+ * after the batch.
  */
 goal_jak2_display_timing_step goal_jak2_display_timing_advance(
     goal_jak2_display_timing* timing,

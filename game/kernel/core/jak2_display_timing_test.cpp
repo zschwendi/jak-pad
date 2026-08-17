@@ -30,29 +30,42 @@ int main() {
   const auto third = advance(&timing, 10.0 + 2.0 / 120.0);
   expect(first.dispatcher_frames == 1 && second.dispatcher_frames == 1 &&
              third.dispatcher_frames == 1 &&
-             first.sound_frames + second.sound_frames + third.sound_frames == 1,
+             first.sound_frames + second.sound_frames + third.sound_frames == 1 &&
+             first.sound_before_dispatch_mask == 0 && second.sound_before_dispatch_mask == 1 &&
+             third.sound_before_dispatch_mask == 0,
          "120 Hz dispatches every callback while the IOP clock remains 60 Hz");
 
   goal_jak2_display_timing_set_target_frame_rate(&timing, 120);
   const auto sixty_first = advance(&timing, 20.0);
   const auto sixty_second = advance(&timing, 20.0 + 1.0 / 60.0);
   expect(sixty_first.dispatcher_frames == 1 && sixty_second.dispatcher_frames == 2 &&
-             sixty_first.sound_frames + sixty_second.sound_frames == 1,
+             sixty_first.sound_frames + sixty_second.sound_frames == 1 &&
+             sixty_second.sound_before_dispatch_mask == 1,
          "a 60 Hz delivery fallback preserves a 120 Hz logical domain with one 60 Hz sound frame");
 
   goal_jak2_display_timing_set_target_frame_rate(&timing, 120);
   const auto slow_first = advance(&timing, 30.0);
   const auto slow_second = advance(&timing, 30.0 + 1.0 / 24.0);
   expect(slow_first.dispatcher_frames == 1 && slow_second.dispatcher_frames == 5 &&
-             slow_first.sound_frames + slow_second.sound_frames == 3,
+             slow_first.sound_frames + slow_second.sound_frames == 3 &&
+             slow_second.sound_before_dispatch_mask == 0b10101,
          "24 Hz delivery is bounded to five logical frames and preserves fractional sound debt");
 
   goal_jak2_display_timing_set_target_frame_rate(&timing, 60);
   const auto baseline_first = advance(&timing, 40.0);
   const auto baseline_second = advance(&timing, 40.0 + 1.0 / 60.0);
   expect(baseline_first.dispatcher_frames == 1 && baseline_second.dispatcher_frames == 1 &&
-             baseline_first.sound_frames == 1 && baseline_second.sound_frames == 1,
+             baseline_first.sound_frames == 1 && baseline_second.sound_frames == 1 &&
+             baseline_first.sound_before_dispatch_mask == 1 &&
+             baseline_second.sound_before_dispatch_mask == 1,
          "60 Hz retains one dispatcher and one sound frame per callback");
+
+  goal_jak2_display_timing_set_target_frame_rate(&timing, 60);
+  const auto thirty_first = advance(&timing, 45.0);
+  const auto thirty_second = advance(&timing, 45.0 + 1.0 / 30.0);
+  expect(thirty_first.sound_before_dispatch_mask == 1 && thirty_second.dispatcher_frames == 2 &&
+             thirty_second.sound_frames == 2 && thirty_second.sound_before_dispatch_mask == 0b11,
+         "a low-cadence 60 Hz batch interleaves each sound frame before its dispatcher frame");
 
   goal_jak2_display_timing_set_target_frame_rate(&timing, 120);
   const auto switch_first = advance(&timing, 50.0);

@@ -82,6 +82,8 @@ goal_jak2_display_timing_step goal_jak2_display_timing_advance(
   }
 
   const double ratio = frame_ratio(timing, target_presentation_time);
+  const double display_debt_before = timing->dispatcher_debt;
+  const double sound_debt_before = timing->sound_debt;
   timing->dispatcher_debt += ratio;
   const uint32_t dispatcher_frames = static_cast<uint32_t>(
       std::clamp(static_cast<int>(timing->dispatcher_debt + kIntegralTolerance), 0, 5));
@@ -97,7 +99,25 @@ goal_jak2_display_timing_step goal_jak2_display_timing_advance(
   if (timing->sound_debt < 0.0 && timing->sound_debt > -kIntegralTolerance) {
     timing->sound_debt = 0.0;
   }
-  return {dispatcher_frames, sound_frames};
+
+  uint32_t sound_before_dispatch_mask = 0;
+  const double sound_per_target_frame = 60.0 / timing->target_frame_rate;
+  uint32_t next_dispatch = 0;
+  for (uint32_t sound_frame = 1; sound_frame <= sound_frames; sound_frame++) {
+    const double sound_progress =
+        (sound_frame - sound_debt_before) / (ratio * sound_per_target_frame);
+    while (next_dispatch < dispatcher_frames) {
+      const double dispatcher_progress = (next_dispatch + 1 - display_debt_before) / ratio;
+      if (dispatcher_progress + kIntegralTolerance >= sound_progress) {
+        break;
+      }
+      next_dispatch++;
+    }
+    if (next_dispatch < dispatcher_frames) {
+      sound_before_dispatch_mask |= 1u << next_dispatch;
+    }
+  }
+  return {dispatcher_frames, sound_frames, sound_before_dispatch_mask};
 }
 
 }  // extern "C"

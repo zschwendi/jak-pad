@@ -53,6 +53,7 @@ class Jak2ManagedDisplaySettingsTest(unittest.TestCase):
         cls.machine = (ROOT / "game/kernel/core/kernel_game_jak2.cpp").read_text()
         cls.desktop_seams = (ROOT / "game/kernel/core/desktop_seams.cpp").read_text()
         cls.runtime = (ROOT / "game/kernel/core/jak2_runtime.cpp").read_text()
+        cls.runtime_header = (ROOT / "game/kernel/core/jak2_runtime.h").read_text()
         cls.display = (ROOT / "goal_src/jak2/engine/gfx/hw/display.gc").read_text()
         cls.video = (ROOT / "goal_src/jak2/engine/gfx/hw/video.gc").read_text()
 
@@ -109,6 +110,13 @@ class Jak2ManagedDisplaySettingsTest(unittest.TestCase):
         self.assertIn("goal_pckernel_common__method_set_frame_rate_bang_pc_settings_", apply_rate)
         self.assertIn("goal_kernel_core_set_portable_display_refresh_rate(target_frame_rate)", apply_rate)
         self.assertIn("goal_jak2_display_timing_set_target_frame_rate", apply_rate)
+
+        startup = extract_cpp_function(self.runtime, "goal_jak2_runtime_status goal_jak2_runtime_start")
+        self.assertIn("requested_target_frame_rate == 120 &&", startup)
+        self.assertIn("variable or 60 Hz delivery must use tick_at", self.runtime_header)
+
+        failed_start = extract_cpp_function(self.runtime, "goal_jak2_runtime_status fail_start")
+        self.assertIn("goal_kernel_core_set_portable_display_refresh_rate(60)", failed_start)
 
         refresh_rate = extract_cpp_function(
             self.desktop_seams, "s64 portable_pc_get_refresh_rate()"

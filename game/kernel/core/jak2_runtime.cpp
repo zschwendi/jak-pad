@@ -674,6 +674,9 @@ goal_jak2_runtime_status fail_start(std::string message) {
   }
   g_dispatcher = 0;
   g_current_tick = 0;
+  g_target_frame_rate = 60;
+  goal_jak2_display_timing_init(&g_display_timing, 60);
+  goal_kernel_core_set_portable_display_refresh_rate(60);
   g_face_prompt_touch_reader.reset();
   reset_scene_preview_request();
   g_dma_before = {};
@@ -917,7 +920,11 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     if (MasterExit != RuntimeExitStatus::RUNNING) {
       return fail_start("Jak 2 play-boot requested exit before the runtime started");
     }
-    if (!apply_goal_target_frame_rate(requested_target_frame_rate)) {
+    // The existing 60 Hz settings initialization owns the baseline video-mode state. Reapplying
+    // it here would mutate that GOAL state without changing the host cadence. The experimental
+    // domain is the only startup request that needs the generated GOAL setter after boot.
+    if (requested_target_frame_rate == 120 &&
+        !apply_goal_target_frame_rate(requested_target_frame_rate)) {
       return fail_start(g_error);
     }
 
@@ -1040,11 +1047,14 @@ goal_jak2_runtime_status goal_jak2_runtime_tick_at(double target_presentation_ti
     const auto timing =
         goal_jak2_display_timing_advance(&g_display_timing, target_presentation_time);
     // Jak 2's overlord publishes sound/stream state from its vblank handler. The portable runtime
-    // has no IOP vblank, so keep that established 60 Hz clock independent of display callbacks.
-    for (uint32_t sound_frame = 0; sound_frame < timing.sound_frames; sound_frame++) {
-      goal_jak2_sound_frame();
-    }
+    // has no IOP vblank, so keep that established 60 Hz clock independent of display callbacks
+    // while preserving the baseline sound-before-dispatch ordering inside a catch-up batch.
+    uint32_t remaining_sound_frames = timing.sound_frames;
     for (uint32_t frame = 0; frame < timing.dispatcher_frames; frame++) {
+      if (timing.sound_before_dispatch_mask & (1u << frame)) {
+        goal_jak2_sound_frame();
+        remaining_sound_frames--;
+      }
       g_current_tick = g_metrics.ticks + 1;
       const auto preview_input_status = prepare_pending_scene_preview_input();
       if (preview_input_status != GOAL_JAK2_RUNTIME_OK) {
@@ -1068,6 +1078,10 @@ goal_jak2_runtime_status goal_jak2_runtime_tick_at(double target_presentation_ti
       if (had_pending_preview && !g_scene_preview_pending) {
         update_metrics();
       }
+    }
+    while (remaining_sound_frames) {
+      goal_jak2_sound_frame();
+      remaining_sound_frames--;
     }
     update_metrics();
     return GOAL_JAK2_RUNTIME_OK;
