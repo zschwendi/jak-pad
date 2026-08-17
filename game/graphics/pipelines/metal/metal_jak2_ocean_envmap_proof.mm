@@ -291,8 +291,9 @@ std::vector<u8> make_texture_vertices(std::size_t qwords, std::size_t qword_base
 void append_ocean_texture(std::vector<u8>* chain,
                           u32 source_tbp,
                           bool valid_vu_buffer_setup = true,
-                          bool short_initial_upload = false) {
-  append_transfer(chain, make_display_setup(128, 128, 0x40).data);
+                          bool short_initial_upload = false,
+                          u32 display_setup_width = 128) {
+  append_transfer(chain, make_display_setup(display_setup_width, 128, 0x40).data);
   append_transfer(chain, make_ocean_adgif(source_tbp).data);
   append_vif_transfer(chain, std::vector<u8>(64), 0, vif_direct(4));
   append_vif_transfer(chain, {}, vif(VifCode::Kind::BASE, 0),
@@ -1073,6 +1074,20 @@ int main() {
                 malformed_texture.stats().command_buffers_committed == 0 &&
                 malformed_texture.stats().published_vram_slot == 0,
             "rejected a one-qword payload before the fixed 192-qword ocean upload copy");
+
+      MetalOceanTexture managed_display_texture(false, device, queue);
+      managed_display_texture.init_textures(texture_pool, GameVersion::Jak2);
+      std::vector<u8> managed_display_chain;
+      append_ocean_texture(&managed_display_chain, MetalOceanEnvmap::kVramSlot, true, false, 640);
+      append_vif_transfer(&managed_display_chain, {}, 0, 0, DmaTag::Kind::END);
+      DmaFollower managed_display_dma(managed_display_chain.data(), 0,
+                                      managed_display_chain.size());
+      check(managed_display_texture.handle_ocean_texture_jak2(managed_display_dma, &state, ctx) &&
+                managed_display_texture.stats().transfers_consumed == 29 &&
+                managed_display_texture.stats().grammar_errors == 0 &&
+                managed_display_texture.stats().vertices == 2112 &&
+                managed_display_texture.stats().published_vram_slot == 672,
+            "accepted the upstream-ignored display packet with managed presentation geometry");
 
       MetalOceanTexture failed_texture(false, device, queue);
       failed_texture.init_textures(texture_pool, GameVersion::Jak2);

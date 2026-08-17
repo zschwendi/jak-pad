@@ -2081,6 +2081,14 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       m_chain_stats.ocean_command_buffers_completed = 0;
       m_chain_stats.ocean_command_buffer_errors = 0;
       m_chain_stats.ocean_last_command_buffer_status = 0;
+      m_chain_stats.ocean_mid_phase_order = 0;
+      m_chain_stats.ocean_near_phase_order = 0;
+      m_chain_stats.ocean_mid_texture_transfers = 0;
+      m_chain_stats.ocean_near_texture_transfers = 0;
+      m_chain_stats.ocean_mid_texture_grammar_errors = 0;
+      m_chain_stats.ocean_near_texture_grammar_errors = 0;
+      m_chain_stats.ocean_mid_calls = 0;
+      m_chain_stats.ocean_near_calls = 0;
       m_chain_stats.eyes_composed = 0;
       m_chain_stats.eye_draws = 0;
       m_chain_stats.eye_triangles = 0;
@@ -2247,6 +2255,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
                 texture_stats.last_command_buffer_status;
           }
           m_chain_stats.ocean_mid_texture = omf->texture_handle();
+          m_chain_stats.ocean_mid_phase_order = omf->phase_order();
+          m_chain_stats.ocean_mid_texture_transfers = texture_stats.transfers_consumed;
+          m_chain_stats.ocean_mid_texture_grammar_errors = texture_stats.grammar_errors;
+          m_chain_stats.ocean_mid_calls = omf->mid_jak2_calls();
           unsupported_blends += omf->direct_stats().unsupported_blends;
         } else if (auto* on = dynamic_cast<MetalOceanNear*>(r.get())) {
           const auto& texture_stats = on->texture_stats();
@@ -2266,6 +2278,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
                 texture_stats.last_command_buffer_status;
           }
           m_chain_stats.ocean_near_texture = on->texture_handle();
+          m_chain_stats.ocean_near_phase_order = on->phase_order();
+          m_chain_stats.ocean_near_texture_transfers = texture_stats.transfers_consumed;
+          m_chain_stats.ocean_near_texture_grammar_errors = texture_stats.grammar_errors;
+          m_chain_stats.ocean_near_calls = on->jak2_calls();
         } else if (auto* sp = dynamic_cast<MetalSpriteRenderer*>(r.get())) {
           const auto& ss = sp->stats();
           m_chain_stats.sprites_2d = ss.count_2d_grp0 - ss.sprites_3d;

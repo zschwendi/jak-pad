@@ -382,6 +382,32 @@ void update_scene_diagnostic_metrics() {
   g_metrics.scene_wait_art_gui_channel = static_cast<int32_t>(art_gui_channel);
   g_metrics.scene_wait_art_gui_action = static_cast<int32_t>(art_gui_action);
   g_metrics.scene_wait_art_gui_status = static_cast<int32_t>(art_gui_status);
+
+  // These offsets are the asserted Jak II display basic-object layout and ocean structure layout
+  // from decompiler/config/jak2/all-types.gc. Keep the copied values diagnostic-only: they
+  // distinguish absent GOAL ocean DMA from a Metal parser failure without changing game state.
+  const uint32_t display = inputs.display;
+  const uint32_t ocean = symbol_value_if_present("*ocean*");
+  const uint32_t blit_displays_work = symbol_value_if_present("*blit-displays-work*");
+  g_metrics.ocean_map = symbol_value_if_present("*ocean-map*");
+  g_metrics.ocean_map_city = symbol_value_if_present("*ocean-map-city*");
+  g_metrics.ocean_object = ocean;
+  g_metrics.ocean_false_object = goal_game_false_offset();
+  g_metrics.ocean_blit_displays_work = blit_displays_work;
+  g_metrics.ocean_diagnostics_valid =
+      copy_goal_bytes(display, 132, &g_metrics.ocean_renderer_mask,
+                      sizeof(g_metrics.ocean_renderer_mask)) &&
+      copy_goal_bytes(display, 140, &g_metrics.ocean_renderer_menu_mask,
+                      sizeof(g_metrics.ocean_renderer_menu_mask)) &&
+      copy_goal_bytes(blit_displays_work, 432, &g_metrics.ocean_blit_menu_mode,
+                      sizeof(g_metrics.ocean_blit_menu_mode)) &&
+      copy_goal_bytes(ocean, 56, &g_metrics.ocean_off, sizeof(g_metrics.ocean_off)) &&
+      copy_goal_bytes(ocean, 60, &g_metrics.ocean_near_off,
+                      sizeof(g_metrics.ocean_near_off)) &&
+      copy_goal_bytes(ocean, 64, &g_metrics.ocean_mid_off, sizeof(g_metrics.ocean_mid_off)) &&
+      copy_goal_bytes(ocean, 68, &g_metrics.ocean_far_on, sizeof(g_metrics.ocean_far_on)) &&
+      copy_goal_bytes(ocean, 76, &g_metrics.ocean_heights, sizeof(g_metrics.ocean_heights)) &&
+      copy_goal_bytes(ocean, 84, &g_metrics.ocean_verts, sizeof(g_metrics.ocean_verts));
 }
 
 void update_title_state_metrics() {

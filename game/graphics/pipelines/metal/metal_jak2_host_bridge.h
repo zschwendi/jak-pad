@@ -484,6 +484,14 @@ typedef struct goal_jak2_metal_host_metrics {
   uint64_t ocean_command_buffers_completed;
   uint64_t ocean_command_buffer_errors;
   int32_t ocean_last_command_buffer_status;
+  int32_t ocean_mid_phase_order;
+  int32_t ocean_near_phase_order;
+  int32_t ocean_mid_texture_transfers;
+  int32_t ocean_near_texture_transfers;
+  int32_t ocean_mid_texture_grammar_errors;
+  int32_t ocean_near_texture_grammar_errors;
+  int32_t ocean_mid_calls;
+  int32_t ocean_near_calls;
   uint64_t last_generic_draw_buckets;
   uint64_t last_generic_draws;
   uint64_t last_generic_triangles;

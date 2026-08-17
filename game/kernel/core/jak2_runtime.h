@@ -319,6 +319,22 @@ typedef struct goal_jak2_runtime_metrics {
   int32_t scene_wait_art_gui_action;
   int32_t scene_wait_art_gui_status;
 
+  int32_t ocean_diagnostics_valid;
+  uint32_t ocean_map;
+  uint32_t ocean_map_city;
+  uint32_t ocean_object;
+  uint32_t ocean_false_object;
+  uint32_t ocean_blit_displays_work;
+  uint32_t ocean_blit_menu_mode;
+  uint64_t ocean_renderer_mask;
+  uint64_t ocean_renderer_menu_mask;
+  uint32_t ocean_off;
+  uint32_t ocean_near_off;
+  uint32_t ocean_mid_off;
+  uint32_t ocean_far_on;
+  uint32_t ocean_heights;
+  uint32_t ocean_verts;
+
   int32_t scene_actor_diagnostics_valid;
   uint32_t scene_actor_sequence;
   uint64_t scene_actor_scene_name_hash;

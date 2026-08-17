@@ -393,6 +393,14 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.ocean_command_buffers_completed = stats.ocean_command_buffers_completed;
   host->metrics.ocean_command_buffer_errors = stats.ocean_command_buffer_errors;
   host->metrics.ocean_last_command_buffer_status = stats.ocean_last_command_buffer_status;
+  host->metrics.ocean_mid_phase_order = stats.ocean_mid_phase_order;
+  host->metrics.ocean_near_phase_order = stats.ocean_near_phase_order;
+  host->metrics.ocean_mid_texture_transfers = stats.ocean_mid_texture_transfers;
+  host->metrics.ocean_near_texture_transfers = stats.ocean_near_texture_transfers;
+  host->metrics.ocean_mid_texture_grammar_errors = stats.ocean_mid_texture_grammar_errors;
+  host->metrics.ocean_near_texture_grammar_errors = stats.ocean_near_texture_grammar_errors;
+  host->metrics.ocean_mid_calls = stats.ocean_mid_calls;
+  host->metrics.ocean_near_calls = stats.ocean_near_calls;
   host->metrics.ocean_texture_vertices = stats.ocean_texture_verts;
   host->metrics.ocean_mid_vertices = stats.ocean_mid_verts;
   host->metrics.ocean_near_vertices = stats.ocean_near_verts;

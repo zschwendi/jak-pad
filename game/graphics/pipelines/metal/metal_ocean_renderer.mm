@@ -730,12 +730,11 @@ bool MetalOceanTexture::handle_ocean_texture_jak2(DmaFollower& dma,
   // (set-display-gs-state arg0 21 128 128 0 0)
   {
     const auto data = read();
-    u64 scissor = 0;
-    if (!metal_renderer::jak2_ocean_grammar::direct(data, 48, 3) ||
-        !scan_gs_set(data.data, data.size_bytes, GsRegisterAddress::SCISSOR_1, &scissor) ||
-        GsScissor(scissor).x1() != 127 || GsScissor(scissor).y1() != 127) {
-      return fail_grammar();
-    }
+    // OceanTexture::handle_ocean_texture_jak2 intentionally ignores this host display-state
+    // packet. Its scissor can reflect the managed presentation geometry; the private Metal ocean
+    // target below remains 128x128. Preserve that upstream contract and validate the exact ocean
+    // texture/VIF grammar beginning with the following transfer.
+    (void)data;
   }
 
   // (ocean-texture-add-envmap arg0)
