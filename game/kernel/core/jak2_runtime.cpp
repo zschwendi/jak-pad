@@ -29,6 +29,7 @@ extern "C" {
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/gfx_host.h"
+#include "game/kernel/core/jak2_player_context_reader.h"
 #include "game/kernel/core/jak2_progress_menu_reader.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/kernel_game.h"
@@ -560,6 +561,15 @@ jak2_progress_menu_reader::Snapshot read_progress_menu(
               progress_menu_inputs(), diagnostics);
 }
 
+jak2_player_context_reader::Inputs player_context_inputs() {
+  jak2_player_context_reader::Inputs inputs;
+  inputs.target = symbol_value_if_present("*target*");
+  inputs.target_type_symbol = goal_game_find_symbol("target", &inputs.target_type);
+  inputs.normal_symbol = goal_game_find_symbol("normal", nullptr);
+  inputs.look_around_symbol = goal_game_find_symbol("look-around", nullptr);
+  return inputs;
+}
+
 goal_jak2_progress_menu_snapshot unavailable_progress_menu_snapshot() {
   goal_jak2_progress_menu_snapshot out = {};
   out.screen = GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE;
@@ -984,6 +994,44 @@ goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics
   }
   update_metrics();
   *out = g_metrics;
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
+goal_jak2_runtime_status goal_jak2_runtime_get_player_context_snapshot(
+    goal_jak2_player_context_snapshot* out) {
+  static_assert(sizeof(goal_jak2_player_context_snapshot) == 8);
+  static_assert(static_cast<int32_t>(jak2_player_context_reader::Traversal::unknown) ==
+                GOAL_JAK2_PLAYER_TRAVERSAL_UNKNOWN);
+  static_assert(static_cast<int32_t>(jak2_player_context_reader::Traversal::on_foot) ==
+                GOAL_JAK2_PLAYER_TRAVERSAL_ON_FOOT);
+  static_assert(static_cast<int32_t>(jak2_player_context_reader::Traversal::jetboard) ==
+                GOAL_JAK2_PLAYER_TRAVERSAL_JETBOARD);
+  static_assert(static_cast<int32_t>(jak2_player_context_reader::Traversal::vehicle_transition) ==
+                GOAL_JAK2_PLAYER_TRAVERSAL_VEHICLE_TRANSITION);
+  static_assert(static_cast<int32_t>(jak2_player_context_reader::Traversal::vehicle_riding) ==
+                GOAL_JAK2_PLAYER_TRAVERSAL_VEHICLE_RIDING);
+  static_assert(static_cast<int32_t>(jak2_player_context_reader::LookState::unknown) ==
+                GOAL_JAK2_PLAYER_LOOK_UNKNOWN);
+  static_assert(static_cast<int32_t>(jak2_player_context_reader::LookState::normal) ==
+                GOAL_JAK2_PLAYER_LOOK_NORMAL);
+  static_assert(static_cast<int32_t>(jak2_player_context_reader::LookState::look_around) ==
+                GOAL_JAK2_PLAYER_LOOK_AROUND);
+  if (!out) {
+    g_error = "goal_jak2_runtime_get_player_context_snapshot: out is null";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  *out = {};
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_ee_main_mem) {
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  const auto snapshot = jak2_player_context_reader::read(
+      {reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE,
+       goal_game_false_offset()},
+      player_context_inputs());
+  out->traversal = static_cast<goal_jak2_player_traversal_state>(snapshot.traversal);
+  out->look_state = static_cast<goal_jak2_player_look_state>(snapshot.look_state);
   return GOAL_JAK2_RUNTIME_OK;
 }
 

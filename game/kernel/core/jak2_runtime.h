@@ -46,6 +46,26 @@ typedef enum goal_jak2_runtime_graphics {
   GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST = 3,
 } goal_jak2_runtime_graphics;
 
+typedef enum goal_jak2_player_traversal_state {
+  GOAL_JAK2_PLAYER_TRAVERSAL_UNKNOWN = 0,
+  GOAL_JAK2_PLAYER_TRAVERSAL_ON_FOOT = 1,
+  GOAL_JAK2_PLAYER_TRAVERSAL_JETBOARD = 2,
+  GOAL_JAK2_PLAYER_TRAVERSAL_VEHICLE_TRANSITION = 3,
+  GOAL_JAK2_PLAYER_TRAVERSAL_VEHICLE_RIDING = 4,
+} goal_jak2_player_traversal_state;
+
+typedef enum goal_jak2_player_look_state {
+  GOAL_JAK2_PLAYER_LOOK_UNKNOWN = 0,
+  GOAL_JAK2_PLAYER_LOOK_NORMAL = 1,
+  GOAL_JAK2_PLAYER_LOOK_AROUND = 2,
+} goal_jak2_player_look_state;
+
+/*! Exact-type-checked target traversal and camera state. Unknown values fail closed independently. */
+typedef struct goal_jak2_player_context_snapshot {
+  goal_jak2_player_traversal_state traversal;
+  goal_jak2_player_look_state look_state;
+} goal_jak2_player_context_snapshot;
+
 typedef enum goal_jak2_progress_screen {
   GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE = -1,
   GOAL_JAK2_PROGRESS_SCREEN_TITLE = 27,
@@ -338,6 +358,10 @@ goal_jak2_runtime_status goal_jak2_runtime_tick(void);
 
 /*! Copy the latest runtime snapshot into `out`. */
 goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics* out);
+
+/*! Copy the exact-type-checked live target traversal and camera context. */
+goal_jak2_runtime_status goal_jak2_runtime_get_player_context_snapshot(
+    goal_jak2_player_context_snapshot* out);
 
 /*!
  * Copy the live Jak II title progress-menu state. Every other progress screen, malformed pointer,
