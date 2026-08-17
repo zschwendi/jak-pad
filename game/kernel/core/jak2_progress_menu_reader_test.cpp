@@ -359,6 +359,27 @@ void reads_source_proven_save_flow_semantics() {
 }
 
 void semantic_identity_and_stability_fail_closed() {
+  Fixture optional_inputs_missing;
+  optional_inputs_missing.set_semantic_state(kSelectLoadSymbol, kLoadSaveOptions);
+  optional_inputs_missing.inputs.icon_info_symbol = 0;
+  optional_inputs_missing.inputs.icon_info_options = 0;
+  optional_inputs_missing.inputs.creating_symbol = 0;
+  optional_inputs_missing.inputs.loading_options = 0;
+  expect(optional_inputs_missing.read_semantic_snapshot().available,
+         "unrelated unavailable save phases do not hide an active load menu");
+
+  Fixture active_state_missing;
+  active_state_missing.set_semantic_state(kSelectLoadSymbol, kLoadSaveOptions);
+  active_state_missing.inputs.select_load_symbol = 0;
+  expect(!active_state_missing.read_semantic_snapshot().available,
+         "an unavailable active state identity remains fail-closed");
+
+  Fixture active_options_missing;
+  active_options_missing.set_semantic_state(kSelectLoadSymbol, kLoadSaveOptions);
+  active_options_missing.inputs.load_save_options = 0;
+  expect(!active_options_missing.read_semantic_snapshot().available,
+         "an unavailable active option-list identity remains fail-closed");
+
   Fixture wrong_options;
   wrong_options.set_semantic_state(kSelectSaveTitleSymbol, kCreateGameOptions);
   expect(!wrong_options.read_semantic_snapshot().available,

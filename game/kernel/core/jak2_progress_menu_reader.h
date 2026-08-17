@@ -371,18 +371,15 @@ inline Snapshot read(const MemoryView& memory,
 }
 
 template <std::size_t Size>
-inline bool all_nonzero_unique(const std::array<uint32_t, Size>& values) {
-  for (std::size_t i = 0; i < values.size(); ++i) {
-    if (!values[i]) {
-      return false;
-    }
-    for (std::size_t j = i + 1; j < values.size(); ++j) {
-      if (values[i] == values[j]) {
-        return false;
-      }
-    }
+inline bool is_unique_member(uint32_t value, const std::array<uint32_t, Size>& values) {
+  if (!value) {
+    return false;
   }
-  return true;
+  std::size_t matches = 0;
+  for (const auto candidate : values) {
+    matches += candidate == value;
+  }
+  return matches == 1;
 }
 
 inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& inputs) {
@@ -400,10 +397,6 @@ inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& in
       inputs.create_game_options, inputs.already_exists_options, inputs.loading_options,
       inputs.icon_info_options,
   };
-  if (!all_nonzero_unique(state_symbols) || !all_nonzero_unique(option_lists)) {
-    return out;
-  }
-
   StableFields fields;
   if (!read_stable_fields(memory, inputs, &fields, nullptr) ||
       fields.next != inputs.none_symbol || fields.selected_option != memory.false_object ||
@@ -411,51 +404,55 @@ inline SemanticSnapshot read_semantic(const MemoryView& memory, const Inputs& in
     return out;
   }
 
+  const auto matches_phase = [&](uint32_t state, uint32_t options) {
+    return memory.is_object(state) && memory.is_object(options) &&
+           is_unique_member(state, state_symbols) &&
+           is_unique_member(options, option_lists) && fields.current == state &&
+           fields.current_options == options;
+  };
   const bool title_origin = fields.starting_state == inputs.title_symbol;
-  if (((title_origin && fields.current == inputs.select_save_title_symbol) ||
-       fields.current == inputs.select_save_title_hero_symbol) &&
-      fields.current_options == inputs.save_options_title &&
+  if (((title_origin && matches_phase(inputs.select_save_title_symbol,
+                                      inputs.save_options_title)) ||
+       matches_phase(inputs.select_save_title_hero_symbol, inputs.save_options_title)) &&
       fields.option_index >= 0 && fields.option_index <= 4) {
     out.phase = SemanticPhase::select_save_title;
     out.action_mask = action_up | action_down | action_confirm | action_back;
-  } else if (fields.current == inputs.select_load_symbol &&
-             fields.current_options == inputs.load_save_options &&
+  } else if (matches_phase(inputs.select_load_symbol, inputs.load_save_options) &&
              fields.option_index >= 0 && fields.option_index <= 3) {
     out.phase = SemanticPhase::select_load;
     out.action_mask = action_up | action_down | action_confirm | action_back;
-  } else if (fields.current == inputs.select_save_symbol &&
-             fields.current_options == inputs.load_save_options &&
+  } else if (matches_phase(inputs.select_save_symbol, inputs.load_save_options) &&
              fields.option_index >= 0 && fields.option_index <= 3) {
     out.phase = SemanticPhase::select_save;
     out.action_mask = action_up | action_down | action_confirm | action_back;
-  } else if (title_origin && fields.current == inputs.no_memory_card_symbol &&
-             fields.current_options == inputs.insufficient_space_options &&
+  } else if (title_origin &&
+             matches_phase(inputs.no_memory_card_symbol, inputs.insufficient_space_options) &&
              fields.option_index == 0) {
     out.phase = SemanticPhase::no_memory_card;
     out.action_mask = action_confirm;
-  } else if (title_origin && fields.current == inputs.create_game_symbol &&
-             fields.current_options == inputs.create_game_options &&
+  } else if (title_origin &&
+             matches_phase(inputs.create_game_symbol, inputs.create_game_options) &&
              fields.option_index == 0) {
     out.phase = SemanticPhase::create_game;
     out.action_mask = action_left | action_right | action_confirm | action_back;
-  } else if (title_origin && fields.current == inputs.already_exists_symbol &&
-             fields.current_options == inputs.already_exists_options &&
+  } else if (title_origin &&
+             matches_phase(inputs.already_exists_symbol, inputs.already_exists_options) &&
              fields.option_index == 0) {
     out.phase = SemanticPhase::already_exists;
     out.action_mask = action_left | action_right | action_confirm | action_back;
   } else if (fields.starting_state == inputs.icon_info_symbol &&
-             fields.current == inputs.icon_info_symbol &&
-             fields.current_options == inputs.icon_info_options && fields.option_index == 0) {
+             matches_phase(inputs.icon_info_symbol, inputs.icon_info_options) &&
+             fields.option_index == 0) {
     out.phase = SemanticPhase::icon_info;
     out.action_mask = action_confirm;
-  } else if (title_origin && fields.current == inputs.creating_symbol &&
-             fields.current_options == inputs.loading_options && fields.option_index == 0) {
+  } else if (title_origin && matches_phase(inputs.creating_symbol, inputs.loading_options) &&
+             fields.option_index == 0) {
     out.phase = SemanticPhase::creating;
-  } else if (title_origin && fields.current == inputs.saving_symbol &&
-             fields.current_options == inputs.loading_options && fields.option_index == 0) {
+  } else if (title_origin && matches_phase(inputs.saving_symbol, inputs.loading_options) &&
+             fields.option_index == 0) {
     out.phase = SemanticPhase::saving;
-  } else if (fields.current == inputs.loading_symbol &&
-             fields.current_options == inputs.loading_options && fields.option_index == 0) {
+  } else if (matches_phase(inputs.loading_symbol, inputs.loading_options) &&
+             fields.option_index == 0) {
     out.phase = SemanticPhase::loading;
   } else {
     return out;
