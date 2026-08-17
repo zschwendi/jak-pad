@@ -85,6 +85,10 @@ static_assert(offsetof(goal_jak2_metal_host_metrics, last_eye_vertex_fingerprint
               offsetof(goal_jak2_metal_host_metrics, last_eye_placeholder_textures));
 static_assert(offsetof(goal_jak2_metal_host_metrics, last_eye_first_placeholder_texture_id) +
                   sizeof(uint32_t) <=
+              offsetof(goal_jak2_metal_host_metrics, last_eye_source_vertex_fingerprint));
+static_assert(offsetof(goal_jak2_metal_host_metrics, last_eye_diagnostic_lid_source_corners) +
+                  sizeof(((goal_jak2_metal_host_metrics*)nullptr)
+                             ->last_eye_diagnostic_lid_source_corners) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;

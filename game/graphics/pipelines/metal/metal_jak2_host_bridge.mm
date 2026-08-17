@@ -554,6 +554,31 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.last_eye_first_placeholder_width = stats.eye_first_placeholder_width;
   host->metrics.last_eye_first_placeholder_height = stats.eye_first_placeholder_height;
   host->metrics.last_eye_first_placeholder_texture_id = stats.eye_first_placeholder_texture_id;
+  host->metrics.last_eye_source_vertex_fingerprint =
+      stats.eye_last_source_vertex_fingerprint;
+  host->metrics.last_eye_diagnostic_readbacks = stats.eye_diagnostic_readbacks;
+  host->metrics.last_eye_diagnostic_readback_errors = stats.eye_diagnostic_readback_errors;
+  host->metrics.last_eye_diagnostic_producer_bucket = stats.eye_diagnostic_producer_bucket;
+  host->metrics.last_eye_diagnostic_slot = stats.eye_diagnostic_slot;
+  host->metrics.last_eye_diagnostic_output_hash = stats.eye_diagnostic_output_hash;
+  std::copy(stats.eye_diagnostic_output_quadrant_hashes.begin(),
+            stats.eye_diagnostic_output_quadrant_hashes.end(),
+            host->metrics.last_eye_diagnostic_output_quadrant_hashes);
+  std::copy(stats.eye_diagnostic_output_corners.begin(),
+            stats.eye_diagnostic_output_corners.end(),
+            host->metrics.last_eye_diagnostic_output_corners);
+  host->metrics.last_eye_diagnostic_iris_source_hash = stats.eye_diagnostic_iris_source_hash;
+  host->metrics.last_eye_diagnostic_iris_source_width = stats.eye_diagnostic_iris_source_width;
+  host->metrics.last_eye_diagnostic_iris_source_height = stats.eye_diagnostic_iris_source_height;
+  std::copy(stats.eye_diagnostic_iris_source_corners.begin(),
+            stats.eye_diagnostic_iris_source_corners.end(),
+            host->metrics.last_eye_diagnostic_iris_source_corners);
+  host->metrics.last_eye_diagnostic_lid_source_hash = stats.eye_diagnostic_lid_source_hash;
+  host->metrics.last_eye_diagnostic_lid_source_width = stats.eye_diagnostic_lid_source_width;
+  host->metrics.last_eye_diagnostic_lid_source_height = stats.eye_diagnostic_lid_source_height;
+  std::copy(stats.eye_diagnostic_lid_source_corners.begin(),
+            stats.eye_diagnostic_lid_source_corners.end(),
+            host->metrics.last_eye_diagnostic_lid_source_corners);
   host->metrics.last_sky_draw_draws = stats.jak2_sky_draw_draws;
   host->metrics.last_sky_draw_triangles = stats.jak2_sky_draw_triangles;
   const auto& sky_batch = stats.jak2_sky_draw_last_batch;

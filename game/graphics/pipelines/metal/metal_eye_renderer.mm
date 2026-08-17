@@ -41,6 +41,107 @@ id<MTLTexture> make_eye_target(id<MTLDevice> device) {
   return [device newTextureWithDescriptor:desc];
 }
 
+constexpr std::size_t kDiagnosticReadbackAlignment = 256;
+constexpr std::size_t kMaximumDiagnosticReadbackBytes = 16 * 1024 * 1024;
+
+struct DiagnosticTextureCopy {
+  id<MTLTexture> texture = nil;
+  std::size_t offset = 0;
+  std::size_t bytes_per_row = 0;
+  u32 width = 0;
+  u32 height = 0;
+};
+
+bool prepare_diagnostic_copy(id<MTLTexture> texture,
+                             std::size_t* next_offset,
+                             DiagnosticTextureCopy* out) {
+  if (!texture || texture.pixelFormat != MTLPixelFormatRGBA8Unorm || texture.width == 0 ||
+      texture.height == 0 || texture.width > UINT32_MAX || texture.height > UINT32_MAX) {
+    return false;
+  }
+  const std::size_t unaligned_row_bytes = texture.width * sizeof(u32);
+  const std::size_t row_bytes =
+      (unaligned_row_bytes + kDiagnosticReadbackAlignment - 1) &
+      ~(kDiagnosticReadbackAlignment - 1);
+  if (texture.height > kMaximumDiagnosticReadbackBytes / row_bytes) {
+    return false;
+  }
+  const std::size_t byte_count = row_bytes * texture.height;
+  if (*next_offset > kMaximumDiagnosticReadbackBytes - byte_count) {
+    return false;
+  }
+  out->texture = texture;
+  out->offset = *next_offset;
+  out->bytes_per_row = row_bytes;
+  out->width = static_cast<u32>(texture.width);
+  out->height = static_cast<u32>(texture.height);
+  *next_offset += byte_count;
+  return true;
+}
+
+void encode_diagnostic_copy(id<MTLBlitCommandEncoder> blit,
+                            id<MTLBuffer> buffer,
+                            const DiagnosticTextureCopy& copy) {
+  if (!copy.texture) {
+    return;
+  }
+  [blit copyFromTexture:copy.texture
+            sourceSlice:0
+            sourceLevel:0
+           sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake(copy.width, copy.height, 1)
+               toBuffer:buffer
+      destinationOffset:copy.offset
+ destinationBytesPerRow:copy.bytes_per_row
+destinationBytesPerImage:copy.bytes_per_row * copy.height
+                options:MTLBlitOptionNone];
+}
+
+u64 hash_diagnostic_region(const u8* pixels,
+                           std::size_t bytes_per_row,
+                           u32 x,
+                           u32 y,
+                           u32 width,
+                           u32 height) {
+  u64 hash = 0xcbf29ce484222325;
+  for (u32 row = 0; row < height; ++row) {
+    const u8* source = pixels + (y + row) * bytes_per_row + x * sizeof(u32);
+    for (u32 byte = 0; byte < width * sizeof(u32); ++byte) {
+      hash = 1099511628211ull * (static_cast<u64>(source[byte]) ^ hash);
+    }
+  }
+  return hash;
+}
+
+void diagnostic_corners(const u8* pixels,
+                        std::size_t bytes_per_row,
+                        u32 width,
+                        u32 height,
+                        std::array<u32, 4>* out) {
+  const std::array<std::pair<u32, u32>, 4> coordinates = {
+      std::pair<u32, u32>{0, 0}, {width - 1, 0}, {0, height - 1}, {width - 1, height - 1}};
+  for (std::size_t i = 0; i < coordinates.size(); ++i) {
+    const auto [x, y] = coordinates[i];
+    std::memcpy(&(*out)[i], pixels + y * bytes_per_row + x * sizeof(u32), sizeof(u32));
+  }
+}
+
+void record_diagnostic_source(const u8* buffer,
+                              const DiagnosticTextureCopy& copy,
+                              u64* hash,
+                              u32* width,
+                              u32* height,
+                              std::array<u32, 4>* corners) {
+  if (!copy.texture) {
+    return;
+  }
+  const u8* pixels = buffer + copy.offset;
+  *hash = hash_diagnostic_region(pixels, copy.bytes_per_row, 0, 0, copy.width, copy.height);
+  *width = copy.width;
+  *height = copy.height;
+  diagnostic_corners(pixels, copy.bytes_per_row, copy.width, copy.height, corners);
+}
+
 }  // namespace
 
 MetalEyeRenderer::MetalEyeRenderer(const std::string& name,
@@ -52,11 +153,25 @@ MetalEyeRenderer::MetalEyeRenderer(const std::string& name,
       std::getenv("GOALPAD_JAK2_DIAGNOSTIC_EYE_DEDICATED_VERTEX_BUFFER");
   m_use_diagnostic_vertex_buffer =
       diagnostic_vertex_buffer && std::strcmp(diagnostic_vertex_buffer, "1") == 0;
+  const char* cancel_shader_y_negation =
+      std::getenv("GOALPAD_JAK2_DIAGNOSTIC_EYE_CANCEL_SHADER_Y_NEGATION");
+  m_cancel_diagnostic_shader_y_negation =
+      cancel_shader_y_negation && std::strcmp(cancel_shader_y_negation, "1") == 0;
+  const char* diagnostic_output_readback =
+      std::getenv("GOALPAD_JAK2_DIAGNOSTIC_EYE_OUTPUT_READBACK");
+  m_use_diagnostic_output_readback =
+      diagnostic_output_readback && std::strcmp(diagnostic_output_readback, "1") == 0;
   if (m_use_diagnostic_vertex_buffer) {
     m_diagnostic_vertex_buffer =
         [device newBufferWithLength:VTX_BUFFER_FLOATS * sizeof(float)
                             options:MTLResourceStorageModeShared];
     lg::info("Metal eyes: using the diagnostic dedicated vertex buffer");
+  }
+  if (m_cancel_diagnostic_shader_y_negation) {
+    lg::info("Metal eyes: canceling the eye shader's vertex-Y negation for diagnostics");
+  }
+  if (m_use_diagnostic_output_readback) {
+    lg::info("Metal eyes: reading back the first composed eye and real iris/lid sources");
   }
   // Audited PRIS producers can each replace any of the forty slots once per frame.
   // Reserve every possible retired generation before publication can begin.
@@ -725,6 +840,13 @@ bool MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
   id<MTLBuffer> vertex_buffer = nil;
   u32 vertex_buffer_offset = 0;
   const u32 vertex_buffer_size = (u32)buffer_idx * sizeof(float);
+  m_stats.last_source_vertex_fingerprint = fnv64(m_cpu_vertex_buffer, vertex_buffer_size);
+  if (m_cancel_diagnostic_shader_y_negation) {
+    for (int vertex = 0; vertex < buffer_idx / 4; ++vertex) {
+      float& y = m_cpu_vertex_buffer[vertex * 4 + 1];
+      y = 1536.f - y;
+    }
+  }
   void* vertex_data = nullptr;
   if (m_use_diagnostic_vertex_buffer) {
     vertex_buffer = m_diagnostic_vertex_buffer;
@@ -789,6 +911,40 @@ bool MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
     }
   }
 
+  DiagnosticTextureCopy output_copy;
+  DiagnosticTextureCopy iris_copy;
+  DiagnosticTextureCopy lid_copy;
+  id<MTLBuffer> diagnostic_readback = nil;
+  const bool capture_diagnostic_output =
+      m_use_diagnostic_output_readback && render_state->version == GameVersion::Jak2 &&
+      m_stats.diagnostic_readbacks == 0;
+  if (capture_diagnostic_output) {
+    const auto& first_draw = draws.front();
+    const int slot = first_draw.tex_slot();
+    id<MTLTexture> output = versioned_slots[slot] ? pending_generations[slot].texture
+                                                  : m_gpu_eye_textures[slot].texture;
+    id<MTLTexture> iris = first_draw.has_iris ? metal_texture_lookup(first_draw.iris_tex_handle)
+                                              : nil;
+    id<MTLTexture> lid =
+        first_draw.has_lid ? metal_texture_lookup(first_draw.lid_tex_handle) : nil;
+    std::size_t readback_bytes = 0;
+    const bool output_ready = prepare_diagnostic_copy(output, &readback_bytes, &output_copy);
+    const bool iris_ready =
+        !first_draw.has_iris || prepare_diagnostic_copy(iris, &readback_bytes, &iris_copy);
+    const bool lid_ready =
+        !first_draw.has_lid || prepare_diagnostic_copy(lid, &readback_bytes, &lid_copy);
+    if (!iris_ready || !lid_ready) {
+      m_stats.diagnostic_readback_errors++;
+    }
+    if (output_ready) {
+      diagnostic_readback =
+          [m_device newBufferWithLength:readback_bytes options:MTLResourceStorageModeShared];
+    }
+    if (!diagnostic_readback) {
+      m_stats.diagnostic_readback_errors++;
+    }
+  }
+
   id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
   if (!cmds) {
     release_pending_generations();
@@ -845,6 +1001,19 @@ bool MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
     [enc endEncoding];
   }
 
+  if (diagnostic_readback) {
+    id<MTLBlitCommandEncoder> blit = [cmds blitCommandEncoder];
+    if (blit) {
+      encode_diagnostic_copy(blit, diagnostic_readback, output_copy);
+      encode_diagnostic_copy(blit, diagnostic_readback, iris_copy);
+      encode_diagnostic_copy(blit, diagnostic_readback, lid_copy);
+      [blit endEncoding];
+    } else {
+      diagnostic_readback = nil;
+      m_stats.diagnostic_readback_errors++;
+    }
+  }
+
   [cmds commit];
   m_stats.command_buffers_committed++;
   const bool wait_for_composition =
@@ -863,6 +1032,36 @@ bool MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
       return false;
     }
     m_stats.command_buffers_completed++;
+    if (diagnostic_readback) {
+      const u8* buffer = static_cast<const u8*>(diagnostic_readback.contents);
+      const u8* output = buffer + output_copy.offset;
+      m_stats.diagnostic_readbacks++;
+      m_stats.diagnostic_producer_bucket = producer_bucket;
+      m_stats.diagnostic_eye_slot = static_cast<u32>(draws.front().tex_slot());
+      m_stats.diagnostic_output_hash = hash_diagnostic_region(
+          output, output_copy.bytes_per_row, 0, 0, output_copy.width, output_copy.height);
+      const u32 half_width = output_copy.width / 2;
+      const u32 half_height = output_copy.height / 2;
+      m_stats.diagnostic_output_quadrant_hashes = {
+          hash_diagnostic_region(output, output_copy.bytes_per_row, 0, 0, half_width, half_height),
+          hash_diagnostic_region(output, output_copy.bytes_per_row, half_width, 0,
+                                 output_copy.width - half_width, half_height),
+          hash_diagnostic_region(output, output_copy.bytes_per_row, 0, half_height, half_width,
+                                 output_copy.height - half_height),
+          hash_diagnostic_region(output, output_copy.bytes_per_row, half_width, half_height,
+                                 output_copy.width - half_width,
+                                 output_copy.height - half_height)};
+      diagnostic_corners(output, output_copy.bytes_per_row, output_copy.width, output_copy.height,
+                         &m_stats.diagnostic_output_corners);
+      record_diagnostic_source(buffer, iris_copy, &m_stats.diagnostic_iris_source_hash,
+                               &m_stats.diagnostic_iris_source_width,
+                               &m_stats.diagnostic_iris_source_height,
+                               &m_stats.diagnostic_iris_source_corners);
+      record_diagnostic_source(buffer, lid_copy, &m_stats.diagnostic_lid_source_hash,
+                               &m_stats.diagnostic_lid_source_width,
+                               &m_stats.diagnostic_lid_source_height,
+                               &m_stats.diagnostic_lid_source_corners);
+    }
   }
 
   {

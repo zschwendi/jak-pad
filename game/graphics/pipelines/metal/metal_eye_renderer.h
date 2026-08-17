@@ -64,7 +64,23 @@ class MetalEyeRenderer : public MetalBucketRenderer {
     int vertex_stream_uploads = 0;
     int vertex_bytes = 0;
     u32 last_vertex_buffer_offset = 0;
+    u64 last_source_vertex_fingerprint = 0;
     u64 last_vertex_fingerprint = 0;
+    int diagnostic_readbacks = 0;
+    int diagnostic_readback_errors = 0;
+    u32 diagnostic_producer_bucket = 0;
+    u32 diagnostic_eye_slot = 0;
+    u64 diagnostic_output_hash = 0;
+    std::array<u64, 4> diagnostic_output_quadrant_hashes = {};
+    std::array<u32, 4> diagnostic_output_corners = {};
+    u64 diagnostic_iris_source_hash = 0;
+    u32 diagnostic_iris_source_width = 0;
+    u32 diagnostic_iris_source_height = 0;
+    std::array<u32, 4> diagnostic_iris_source_corners = {};
+    u64 diagnostic_lid_source_hash = 0;
+    u32 diagnostic_lid_source_width = 0;
+    u32 diagnostic_lid_source_height = 0;
+    std::array<u32, 4> diagnostic_lid_source_corners = {};
     u64 first_texture = 0;     // registry handle of the first eye composed
   };
 
@@ -172,6 +188,8 @@ class MetalEyeRenderer : public MetalBucketRenderer {
   float m_cpu_vertex_buffer[VTX_BUFFER_FLOATS];
   id<MTLBuffer> m_diagnostic_vertex_buffer = nil;
   bool m_use_diagnostic_vertex_buffer = false;
+  bool m_cancel_diagnostic_shader_y_negation = false;
+  bool m_use_diagnostic_output_readback = false;
 
   Stats m_stats;
   bool m_warned_dma = false;

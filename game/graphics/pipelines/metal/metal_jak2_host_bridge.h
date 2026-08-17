@@ -568,6 +568,23 @@ typedef struct goal_jak2_metal_host_metrics {
   uint32_t last_eye_first_placeholder_width;
   uint32_t last_eye_first_placeholder_height;
   uint32_t last_eye_first_placeholder_texture_id;
+  // Append-only, env-gated eye composition/source readback diagnostics.
+  uint64_t last_eye_source_vertex_fingerprint;
+  uint64_t last_eye_diagnostic_readbacks;
+  uint64_t last_eye_diagnostic_readback_errors;
+  uint32_t last_eye_diagnostic_producer_bucket;
+  uint32_t last_eye_diagnostic_slot;
+  uint64_t last_eye_diagnostic_output_hash;
+  uint64_t last_eye_diagnostic_output_quadrant_hashes[4];
+  uint32_t last_eye_diagnostic_output_corners[4];
+  uint64_t last_eye_diagnostic_iris_source_hash;
+  uint32_t last_eye_diagnostic_iris_source_width;
+  uint32_t last_eye_diagnostic_iris_source_height;
+  uint32_t last_eye_diagnostic_iris_source_corners[4];
+  uint64_t last_eye_diagnostic_lid_source_hash;
+  uint32_t last_eye_diagnostic_lid_source_width;
+  uint32_t last_eye_diagnostic_lid_source_height;
+  uint32_t last_eye_diagnostic_lid_source_corners[4];
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {

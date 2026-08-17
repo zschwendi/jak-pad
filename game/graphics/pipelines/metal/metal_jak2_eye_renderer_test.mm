@@ -483,12 +483,23 @@ u32 read_eye_consumer_center(id<MTLTexture> texture) {
   return pixel;
 }
 
+u32 read_eye_consumer_pixel(id<MTLTexture> texture, u32 x, u32 y) {
+  u32 pixel = 0;
+  [texture getBytes:&pixel
+        bytesPerRow:sizeof(pixel)
+         fromRegion:MTLRegionMake2D(x, y, 1, 1)
+        mipmapLevel:0];
+  return pixel;
+}
+
 struct EyeVertexStorageRun {
   bool initialized = false;
   bool readback_completed = false;
   MetalEyeRenderer::Stats stats;
   std::array<u64, 2> eye_hashes = {};
   std::vector<u8> eye_pixels;
+  bool consumer_readback_completed = false;
+  std::array<u32, 4> consumer_corners = {};
 };
 
 u32 read_eye_pixel(const EyeVertexStorageRun& run, u32 eye, u32 x, u32 y) {
@@ -509,14 +520,25 @@ EyeVertexStorageRun run_eye_vertex_storage_case(
     TexturePool* texture_pool,
     MetalPsoCache* pso_cache,
     MetalSamplerCache* sampler_cache,
-    const std::vector<u8>& chain) {
+    const std::vector<u8>& chain,
+    bool cancel_shader_y_negation = false) {
   constexpr const char* kDiagnosticVariable =
       "GOALPAD_JAK2_DIAGNOSTIC_EYE_DEDICATED_VERTEX_BUFFER";
+  constexpr const char* kCancelYVariable =
+      "GOALPAD_JAK2_DIAGNOSTIC_EYE_CANCEL_SHADER_Y_NEGATION";
+  constexpr const char* kOutputReadbackVariable =
+      "GOALPAD_JAK2_DIAGNOSTIC_EYE_OUTPUT_READBACK";
   if (dedicated_vertex_buffer) {
     setenv(kDiagnosticVariable, "1", 1);
   } else {
     unsetenv(kDiagnosticVariable);
   }
+  if (cancel_shader_y_negation) {
+    setenv(kCancelYVariable, "1", 1);
+  } else {
+    unsetenv(kCancelYVariable);
+  }
+  setenv(kOutputReadbackVariable, "1", 1);
 
   EyeVertexStorageRun result;
   MetalStreamBuffer stream;
@@ -526,6 +548,9 @@ EyeVertexStorageRun run_eye_vertex_storage_case(
   std::memset(stream.alloc(32, &prefix_buffer, &prefix_offset), 0xa5, 32);
 
   MetalEyeRenderer renderer("jak2-eye-vertex-storage-ab", 0, device, queue);
+  unsetenv(kDiagnosticVariable);
+  unsetenv(kCancelYVariable);
+  unsetenv(kOutputReadbackVariable);
   result.initialized = prefix_buffer != nil && prefix_offset == 0 &&
                        renderer.init_textures(*texture_pool, GameVersion::Jak2);
   if (!result.initialized) {
@@ -587,6 +612,22 @@ EyeVertexStorageRun run_eye_vertex_storage_case(
     std::memcpy(result.eye_pixels.data(), readback.contents, result.eye_pixels.size());
     result.eye_hashes[0] = fnv64(result.eye_pixels.data(), kBytesPerEye);
     result.eye_hashes[1] = fnv64(result.eye_pixels.data() + kBytesPerEye, kBytesPerEye);
+  }
+
+  id<MTLTexture> consumer = make_eye_consumer_target(device);
+  id<MTLCommandBuffer> consumer_commands = [queue commandBuffer];
+  if (consumer && consumer_commands &&
+      encode_eye_consumer(consumer_commands, consumer, *left_handle, pso_cache, sampler_cache)) {
+    [consumer_commands commit];
+    [consumer_commands waitUntilCompleted];
+    result.consumer_readback_completed =
+        consumer_commands.status == MTLCommandBufferStatusCompleted;
+    if (result.consumer_readback_completed) {
+      result.consumer_corners = {read_eye_consumer_pixel(consumer, 0, 0),
+                                 read_eye_consumer_pixel(consumer, 3, 0),
+                                 read_eye_consumer_pixel(consumer, 0, 3),
+                                 read_eye_consumer_pixel(consumer, 3, 3)};
+    }
   }
   return result;
 }
@@ -668,7 +709,29 @@ int main() {
         false, device, queue, &texture_pool, &pso_cache, &sampler_cache, eye_chain);
     const auto dedicated_vertex_run = run_eye_vertex_storage_case(
         true, device, queue, &texture_pool, &pso_cache, &sampler_cache, eye_chain);
-    unsetenv("GOALPAD_JAK2_DIAGNOSTIC_EYE_DEDICATED_VERTEX_BUFFER");
+    const auto no_shader_y_negation_run = [&]() {
+      TexturePool no_y_texture_pool(GameVersion::Jak2);
+      {
+        std::lock_guard<std::mutex> pool_lock(no_y_texture_pool.mutex());
+        TextureInput input;
+        input.debug_page_name = "PC-EYE-TEST";
+        input.debug_name = "synthetic-eye-source";
+        input.id = no_y_texture_pool.allocate_pc_port_texture(GameVersion::Jak2);
+        input.gpu_texture = source_handle;
+        input.src_data = reinterpret_cast<const u8*>(source_pixels.data());
+        input.w = 2;
+        input.h = 2;
+        no_y_texture_pool.give_texture_and_load_to_vram(input, kSourceTbp);
+
+        input.debug_name = "synthetic-eye-source-second";
+        input.id = no_y_texture_pool.allocate_pc_port_texture(GameVersion::Jak2);
+        input.gpu_texture = second_source_handle;
+        input.src_data = reinterpret_cast<const u8*>(second_source_pixels.data());
+        no_y_texture_pool.give_texture_and_load_to_vram(input, kSecondSourceTbp);
+      }
+      return run_eye_vertex_storage_case(false, device, queue, &no_y_texture_pool, &pso_cache,
+                                         &sampler_cache, eye_chain, true);
+    }();
     check(stream_vertex_run.initialized && dedicated_vertex_run.initialized,
           "initialized both eye vertex-storage A/B renderers");
     check(stream_vertex_run.stats.eyes == 2 &&
@@ -705,6 +768,61 @@ int main() {
               read_eye_pixel(stream_vertex_run, 0, 8, 120) == source_pixels[2] &&
               read_eye_pixel(stream_vertex_run, 0, 120, 120) == source_pixels[3],
           "asymmetric source corners retain their expected composed-eye orientation");
+    check(stream_vertex_run.stats.diagnostic_readbacks == 1 &&
+              stream_vertex_run.stats.diagnostic_readback_errors == 0 &&
+              stream_vertex_run.stats.diagnostic_eye_slot == 0 &&
+              stream_vertex_run.stats.diagnostic_output_hash ==
+                  stream_vertex_run.eye_hashes[0] &&
+              stream_vertex_run.stats.diagnostic_output_corners == source_pixels &&
+              stream_vertex_run.stats.diagnostic_iris_source_hash ==
+                  fnv64(source_pixels.data(), sizeof(source_pixels)) &&
+              stream_vertex_run.stats.diagnostic_iris_source_width == 2 &&
+              stream_vertex_run.stats.diagnostic_iris_source_height == 2 &&
+              stream_vertex_run.stats.diagnostic_iris_source_corners == source_pixels &&
+              stream_vertex_run.stats.diagnostic_lid_source_hash ==
+                  fnv64(source_pixels.data(), sizeof(source_pixels)) &&
+              stream_vertex_run.stats.diagnostic_lid_source_width == 2 &&
+              stream_vertex_run.stats.diagnostic_lid_source_height == 2 &&
+              stream_vertex_run.stats.diagnostic_lid_source_corners == source_pixels,
+          "env-gated eye diagnostics hash the full composed output and first real iris/lid "
+          "sources");
+    check(no_shader_y_negation_run.initialized &&
+              no_shader_y_negation_run.readback_completed &&
+              no_shader_y_negation_run.consumer_readback_completed &&
+              no_shader_y_negation_run.stats.last_source_vertex_fingerprint ==
+                  stream_vertex_run.stats.last_source_vertex_fingerprint &&
+              no_shader_y_negation_run.stats.last_vertex_fingerprint !=
+                  stream_vertex_run.stats.last_vertex_fingerprint &&
+              no_shader_y_negation_run.eye_hashes[0] != stream_vertex_run.eye_hashes[0],
+          "current and canceled-Y runs use identical decoded vertices but distinct exact clip-Y "
+          "inputs and outputs");
+    const std::array<u32, 4> vertically_flipped_source = {
+        source_pixels[2], source_pixels[3], source_pixels[0], source_pixels[1]};
+    check(no_shader_y_negation_run.stats.diagnostic_output_corners ==
+                  vertically_flipped_source &&
+              read_eye_pixel(no_shader_y_negation_run, 0, 8, 8) == source_pixels[2] &&
+              read_eye_pixel(no_shader_y_negation_run, 0, 120, 8) == source_pixels[3] &&
+              read_eye_pixel(no_shader_y_negation_run, 0, 8, 120) == source_pixels[0] &&
+              read_eye_pixel(no_shader_y_negation_run, 0, 120, 120) == source_pixels[1],
+          "canceling the shader Y negation vertically flips the composed eye readback");
+    check(stream_vertex_run.consumer_readback_completed &&
+              stream_vertex_run.consumer_corners == source_pixels &&
+              no_shader_y_negation_run.consumer_corners == vertically_flipped_source,
+          "the Metal consumer preserves each composed orientation, so the current shader matches "
+          "GL's render-and-sample row identity");
+    std::printf(
+        "eye Y-sign A/B: current=%016llx corners=%08x/%08x/%08x/%08x "
+        "no-negation=%016llx corners=%08x/%08x/%08x/%08x\n",
+        static_cast<unsigned long long>(stream_vertex_run.eye_hashes[0]),
+        stream_vertex_run.stats.diagnostic_output_corners[0],
+        stream_vertex_run.stats.diagnostic_output_corners[1],
+        stream_vertex_run.stats.diagnostic_output_corners[2],
+        stream_vertex_run.stats.diagnostic_output_corners[3],
+        static_cast<unsigned long long>(no_shader_y_negation_run.eye_hashes[0]),
+        no_shader_y_negation_run.stats.diagnostic_output_corners[0],
+        no_shader_y_negation_run.stats.diagnostic_output_corners[1],
+        no_shader_y_negation_run.stats.diagnostic_output_corners[2],
+        no_shader_y_negation_run.stats.diagnostic_output_corners[3]);
 
     EyeVertexStorageRun placeholder_run;
     {

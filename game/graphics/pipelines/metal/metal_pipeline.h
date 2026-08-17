@@ -392,7 +392,23 @@ struct ChainStats {
   int eye_vertex_stream_uploads = 0;
   int eye_vertex_bytes = 0;
   u32 eye_last_vertex_buffer_offset = 0;
+  u64 eye_last_source_vertex_fingerprint = 0;
   u64 eye_last_vertex_fingerprint = 0;
+  int eye_diagnostic_readbacks = 0;
+  int eye_diagnostic_readback_errors = 0;
+  u32 eye_diagnostic_producer_bucket = 0;
+  u32 eye_diagnostic_slot = 0;
+  u64 eye_diagnostic_output_hash = 0;
+  std::array<u64, 4> eye_diagnostic_output_quadrant_hashes = {};
+  std::array<u32, 4> eye_diagnostic_output_corners = {};
+  u64 eye_diagnostic_iris_source_hash = 0;
+  u32 eye_diagnostic_iris_source_width = 0;
+  u32 eye_diagnostic_iris_source_height = 0;
+  std::array<u32, 4> eye_diagnostic_iris_source_corners = {};
+  u64 eye_diagnostic_lid_source_hash = 0;
+  u32 eye_diagnostic_lid_source_width = 0;
+  u32 eye_diagnostic_lid_source_height = 0;
+  std::array<u32, 4> eye_diagnostic_lid_source_corners = {};
   // registry handle of the first eye composed this frame, so tests can read it
   u64 eye_texture = 0;
   // generic2 buckets, from the last chain frame

@@ -2112,7 +2112,23 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       m_chain_stats.eye_vertex_stream_uploads = 0;
       m_chain_stats.eye_vertex_bytes = 0;
       m_chain_stats.eye_last_vertex_buffer_offset = 0;
+      m_chain_stats.eye_last_source_vertex_fingerprint = 0;
       m_chain_stats.eye_last_vertex_fingerprint = 0;
+      m_chain_stats.eye_diagnostic_readbacks = 0;
+      m_chain_stats.eye_diagnostic_readback_errors = 0;
+      m_chain_stats.eye_diagnostic_producer_bucket = 0;
+      m_chain_stats.eye_diagnostic_slot = 0;
+      m_chain_stats.eye_diagnostic_output_hash = 0;
+      m_chain_stats.eye_diagnostic_output_quadrant_hashes = {};
+      m_chain_stats.eye_diagnostic_output_corners = {};
+      m_chain_stats.eye_diagnostic_iris_source_hash = 0;
+      m_chain_stats.eye_diagnostic_iris_source_width = 0;
+      m_chain_stats.eye_diagnostic_iris_source_height = 0;
+      m_chain_stats.eye_diagnostic_iris_source_corners = {};
+      m_chain_stats.eye_diagnostic_lid_source_hash = 0;
+      m_chain_stats.eye_diagnostic_lid_source_width = 0;
+      m_chain_stats.eye_diagnostic_lid_source_height = 0;
+      m_chain_stats.eye_diagnostic_lid_source_corners = {};
       m_chain_stats.eye_texture = 0;
       m_chain_stats.shadow195_executions = 0;
       m_chain_stats.shadow195_absent = 0;
@@ -2164,9 +2180,32 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         m_chain_stats.eye_command_buffer_errors += stats.command_buffer_errors;
         m_chain_stats.eye_vertex_stream_uploads += stats.vertex_stream_uploads;
         m_chain_stats.eye_vertex_bytes += stats.vertex_bytes;
+        m_chain_stats.eye_diagnostic_readback_errors += stats.diagnostic_readback_errors;
         if (stats.vertex_stream_uploads != 0) {
           m_chain_stats.eye_last_vertex_buffer_offset = stats.last_vertex_buffer_offset;
+          m_chain_stats.eye_last_source_vertex_fingerprint =
+              stats.last_source_vertex_fingerprint;
           m_chain_stats.eye_last_vertex_fingerprint = stats.last_vertex_fingerprint;
+        }
+        if (m_chain_stats.eye_diagnostic_readbacks == 0 && stats.diagnostic_readbacks != 0) {
+          m_chain_stats.eye_diagnostic_readbacks = stats.diagnostic_readbacks;
+          m_chain_stats.eye_diagnostic_producer_bucket = stats.diagnostic_producer_bucket;
+          m_chain_stats.eye_diagnostic_slot = stats.diagnostic_eye_slot;
+          m_chain_stats.eye_diagnostic_output_hash = stats.diagnostic_output_hash;
+          m_chain_stats.eye_diagnostic_output_quadrant_hashes =
+              stats.diagnostic_output_quadrant_hashes;
+          m_chain_stats.eye_diagnostic_output_corners = stats.diagnostic_output_corners;
+          m_chain_stats.eye_diagnostic_iris_source_hash = stats.diagnostic_iris_source_hash;
+          m_chain_stats.eye_diagnostic_iris_source_width = stats.diagnostic_iris_source_width;
+          m_chain_stats.eye_diagnostic_iris_source_height = stats.diagnostic_iris_source_height;
+          m_chain_stats.eye_diagnostic_iris_source_corners =
+              stats.diagnostic_iris_source_corners;
+          m_chain_stats.eye_diagnostic_lid_source_hash = stats.diagnostic_lid_source_hash;
+          m_chain_stats.eye_diagnostic_lid_source_width = stats.diagnostic_lid_source_width;
+          m_chain_stats.eye_diagnostic_lid_source_height = stats.diagnostic_lid_source_height;
+          m_chain_stats.eye_diagnostic_lid_source_corners = stats.diagnostic_lid_source_corners;
+        } else {
+          m_chain_stats.eye_diagnostic_readbacks += stats.diagnostic_readbacks;
         }
         if (stats.last_command_buffer_status != 0) {
           m_chain_stats.eye_last_command_buffer_status = stats.last_command_buffer_status;
