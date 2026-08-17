@@ -543,6 +543,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
                 kernel/core/jak2_player_context_reader_test.cpp)
         add_test(NAME jak2-player-context-reader-test COMMAND jak2-player-context-reader-test)
 
+        add_executable(jak2-face-prompt-touch-reader-test
+                kernel/core/jak2_face_prompt_touch_reader_test.cpp)
+        add_test(NAME jak2-face-prompt-touch-reader-test COMMAND jak2-face-prompt-touch-reader-test)
+
         # `file-stream-valid?` is a GOAL macro, so exercise its emitted C rather than duplicating
         # the comparison in the native machine test. File I/O is the 50th Jak 2 object; the sweep
         # loads that real prefix to compile the one-function fixture and only that fixture is linked.

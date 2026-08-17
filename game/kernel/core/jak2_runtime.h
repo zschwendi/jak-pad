@@ -66,6 +66,13 @@ typedef struct goal_jak2_player_context_snapshot {
   goal_jak2_player_look_state look_state;
 } goal_jak2_player_context_snapshot;
 
+/*! Fresh, exact-type-checked Jak II face-button prompt state. */
+typedef struct goal_jak2_face_prompt_touch_snapshot {
+  int32_t available;
+  uint32_t requested_buttons;
+  uint32_t sequence;
+} goal_jak2_face_prompt_touch_snapshot;
+
 typedef enum goal_jak2_progress_screen {
   GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE = -1,
   GOAL_JAK2_PROGRESS_SCREEN_TITLE = 27,
@@ -378,6 +385,10 @@ goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics
 /*! Copy the exact-type-checked live target traversal and camera context. */
 goal_jak2_runtime_status goal_jak2_runtime_get_player_context_snapshot(
     goal_jak2_player_context_snapshot* out);
+
+/*! Copy the fresh face-button prompt state without exposing its GOAL owner or heartbeat. */
+goal_jak2_runtime_status goal_jak2_runtime_get_face_prompt_touch_snapshot(
+    goal_jak2_face_prompt_touch_snapshot* out);
 
 /*!
  * Copy the live Jak II title progress-menu state. Every other progress screen, malformed pointer,

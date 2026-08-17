@@ -29,6 +29,7 @@ extern "C" {
 #include "game/kernel/core/dgo_loader.h"
 #include "game/kernel/core/dma_capture.h"
 #include "game/kernel/core/gfx_host.h"
+#include "game/kernel/core/jak2_face_prompt_touch_reader.h"
 #include "game/kernel/core/jak2_player_context_reader.h"
 #include "game/kernel/core/jak2_progress_menu_reader.h"
 #include "game/kernel/core/kernel_core.h"
@@ -66,6 +67,7 @@ std::string g_saves_directory;
 uint32_t g_dispatcher = 0;
 uint64_t g_current_tick = 0;
 bool g_owns_kernel = false;
+jak2_face_prompt_touch_reader::Reader g_face_prompt_touch_reader;
 
 enum class ScenePreviewPhase {
   kAwaitStableTitle,
@@ -596,6 +598,14 @@ jak2_player_context_reader::Inputs player_context_inputs() {
   return inputs;
 }
 
+jak2_face_prompt_touch_reader::Inputs face_prompt_touch_inputs() {
+  jak2_face_prompt_touch_reader::Inputs inputs;
+  inputs.snapshot = symbol_value_if_present("*goalpad-face-prompt-touch-snapshot*");
+  inputs.snapshot_type_symbol =
+      goal_game_find_symbol("goalpad-face-prompt-touch-snapshot", &inputs.snapshot_type);
+  return inputs;
+}
+
 goal_jak2_progress_menu_snapshot unavailable_progress_menu_snapshot() {
   goal_jak2_progress_menu_snapshot out = {};
   out.screen = GOAL_JAK2_PROGRESS_SCREEN_UNAVAILABLE;
@@ -627,6 +637,7 @@ goal_jak2_runtime_status fail_start(std::string message) {
   }
   g_dispatcher = 0;
   g_current_tick = 0;
+  g_face_prompt_touch_reader.reset();
   reset_scene_preview_request();
   g_dma_before = {};
   g_host_observations = {};
@@ -747,6 +758,7 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     g_saves_directory = config->saves_directory ? config->saves_directory : "";
     g_dispatcher = 0;
     g_current_tick = 0;
+    g_face_prompt_touch_reader.reset();
     reset_scene_preview_request();
     g_dma_before = {};
     g_host_observations = {};
@@ -1061,6 +1073,32 @@ goal_jak2_runtime_status goal_jak2_runtime_get_player_context_snapshot(
   return GOAL_JAK2_RUNTIME_OK;
 }
 
+goal_jak2_runtime_status goal_jak2_runtime_get_face_prompt_touch_snapshot(
+    goal_jak2_face_prompt_touch_snapshot* out) {
+  static_assert(sizeof(goal_jak2_face_prompt_touch_snapshot) == 12);
+  if (!out) {
+    g_error = "goal_jak2_runtime_get_face_prompt_touch_snapshot: out is null";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  *out = {};
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_ee_main_mem) {
+    g_face_prompt_touch_reader.reset();
+    return GOAL_JAK2_RUNTIME_OK;
+  }
+
+  const auto snapshot = g_face_prompt_touch_reader.read(
+      {reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE,
+       goal_game_false_offset()},
+      face_prompt_touch_inputs(), g_metrics.ticks);
+  if (snapshot.available) {
+    out->available = 1;
+    out->requested_buttons = snapshot.requested_buttons;
+    out->sequence = snapshot.sequence;
+  }
+  return GOAL_JAK2_RUNTIME_OK;
+}
+
 goal_jak2_runtime_status goal_jak2_runtime_get_progress_menu_snapshot(
     goal_jak2_progress_menu_snapshot* out) {
   if (!out) {
@@ -1193,6 +1231,7 @@ void goal_jak2_runtime_shutdown(void) {
   }
   g_dispatcher = 0;
   g_current_tick = 0;
+  g_face_prompt_touch_reader.reset();
   reset_scene_preview_request();
   g_dma_before = {};
   g_host_observations = {};
