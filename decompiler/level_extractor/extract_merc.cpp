@@ -1002,7 +1002,10 @@ ConvertedMercEffect convert_merc_effect(const MercEffect& input_effect,
       merc_state.merc_draw_mode.mode =
           process_draw_mode(shader, result.has_envmap, use_alpha_blend, depth_write, fog);
       if (!merc_state.merc_draw_mode.mode.get_tcc_enable()) {
-        ASSERT(false);
+        lg::warn(
+            "Merc {} effect {} fragment {} shader {} uses TEX0 TCC=0; preserving RGB-only mode "
+            "(TEX0=0x{:016x})",
+            debug_name, effect_idx, fi, i, shader.tex0.data);
       }
       u32 new_tex = remap_texture(shader.original_tex, map);
 
