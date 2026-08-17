@@ -72,6 +72,14 @@ int main() {
              after_pause.sound_frames == 0,
          "a lifecycle reset drops stale elapsed time without discarding sound debt");
 
+  goal_jak2_display_timing_set_target_frame_rate(&timing, 120);
+  advance(&timing, 70.0);
+  const auto fractional_delivery = advance(&timing, 70.0 + 1.0 / 90.0);
+  const auto non_monotonic_delivery = advance(&timing, 69.0);
+  expect(fractional_delivery.dispatcher_frames == 1 &&
+             non_monotonic_delivery.dispatcher_frames == 1,
+         "a non-monotonic timestamp drops fractional display debt instead of replaying a frame");
+
   expect(goal_jak2_display_timing_normalize_target_frame_rate(90) == 60 &&
              goal_jak2_display_timing_normalize_target_frame_rate(120) == 120,
          "unsupported rates fail closed to the 60 Hz domain");

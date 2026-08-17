@@ -24,15 +24,16 @@ typedef struct goal_jak2_display_timing {
   int32_t has_previous_target_presentation_time;
 } goal_jak2_display_timing;
 
-/*! Jak II's current Apple host contract deliberately exposes only the 60 and 120 Hz domains. */
+/*! The runtime has a 60 Hz baseline and an experimental 120 Hz logical timing domain. */
 int32_t goal_jak2_display_timing_normalize_target_frame_rate(int32_t target_frame_rate);
 
 /*! Start a fresh timing domain. Invalid rates select the established 60 Hz baseline. */
 void goal_jak2_display_timing_init(goal_jak2_display_timing* timing, int32_t target_frame_rate);
 
 /*!
- * Discard timestamp history after a lifecycle interruption without losing fractional sound debt.
- * The next accepted callback is one logical frame, matching the established 60 Hz behavior.
+ * Discard timestamp history and fractional display debt after a lifecycle interruption without
+ * losing fractional sound debt. The next accepted callback is one logical frame, matching the
+ * established 60 Hz behavior.
  */
 void goal_jak2_display_timing_reset_presentation(goal_jak2_display_timing* timing);
 

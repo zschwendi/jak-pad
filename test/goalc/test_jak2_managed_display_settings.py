@@ -51,6 +51,10 @@ class Jak2ManagedDisplaySettingsTest(unittest.TestCase):
         cls.pckernel = (ROOT / "goal_src/jak2/pc/pckernel.gc").read_text()
         cls.pckernel_common = (ROOT / "goal_src/jak1/pc/pckernel-common.gc").read_text()
         cls.machine = (ROOT / "game/kernel/core/kernel_game_jak2.cpp").read_text()
+        cls.desktop_seams = (ROOT / "game/kernel/core/desktop_seams.cpp").read_text()
+        cls.runtime = (ROOT / "game/kernel/core/jak2_runtime.cpp").read_text()
+        cls.display = (ROOT / "goal_src/jak2/engine/gfx/hw/display.gc").read_text()
+        cls.video = (ROOT / "goal_src/jak2/engine/gfx/hw/video.gc").read_text()
 
     def test_jak2_installs_the_portable_display_queries(self) -> None:
         init_machine = extract_cpp_function(self.machine, "void InitMachineScheme()")
@@ -84,6 +88,32 @@ class Jak2ManagedDisplaySettingsTest(unittest.TestCase):
             "(and (not (-> obj use-vis?)) (-> obj aspect-ratio-auto?))", update_from_os
         )
         self.assertIn("(set-aspect-ratio! obj win-aspect)", update_from_os)
+
+    def test_existing_jak2_goal_code_accepts_the_host_selected_refresh_rate(self) -> None:
+        setter = extract_form(self.pckernel_common, "(defmethod set-frame-rate!")
+        for expected in (
+            "(pc-host-manages-display?)",
+            "(pc-get-active-display-refresh-rate)",
+            "(pc-set-frame-rate effective-rate)",
+            "(set! (-> obj target-fps) effective-rate)",
+            "(set-game-setting! obj 'video-mode 'custom)",
+        ):
+            self.assertIn(expected, setter)
+
+        self.assertIn("(/ 300.0 (-> *pc-settings* target-fps))", self.display)
+        self.assertIn("(sound-set-fps (-> *pc-settings* target-fps))", self.video)
+
+    def test_runtime_uses_the_generated_pc_settings_method_and_portable_refresh_seam(self) -> None:
+        apply_rate = extract_cpp_function(self.runtime, "bool apply_goal_target_frame_rate")
+        self.assertIn('#include "pckernel_common_generated.h"', self.runtime)
+        self.assertIn("goal_pckernel_common__method_set_frame_rate_bang_pc_settings_", apply_rate)
+        self.assertIn("goal_kernel_core_set_portable_display_refresh_rate(target_frame_rate)", apply_rate)
+        self.assertIn("goal_jak2_display_timing_set_target_frame_rate", apply_rate)
+
+        refresh_rate = extract_cpp_function(
+            self.desktop_seams, "s64 portable_pc_get_refresh_rate()"
+        )
+        self.assertIn("g_portable_display_refresh_rate.load", refresh_rate)
 
 
 if __name__ == "__main__":

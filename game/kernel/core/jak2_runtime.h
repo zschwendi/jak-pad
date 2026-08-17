@@ -150,7 +150,8 @@ typedef struct goal_jak2_runtime_config {
   goal_jak2_runtime_graphics graphics;
   /*! Required only for EXTERNAL_HOST. Read and copied synchronously by runtime_start. */
   const struct goal_gfx_host* external_gfx_host;
-  /*! Optional host display domain. Zero preserves the established 60 Hz default; 120 is supported. */
+  /*! Optional logical display domain. Zero preserves the established 60 Hz default; 120 remains
+   * experimental until a host accepts it and physical delivery is validated. */
   int32_t target_frame_rate;
 } goal_jak2_runtime_config;
 
@@ -387,7 +388,8 @@ goal_jak2_runtime_status goal_jak2_runtime_tick(void);
  */
 goal_jak2_runtime_status goal_jak2_runtime_tick_at(double target_presentation_time);
 
-/*! Apply a verified 60 or 120 Hz PC-settings domain to a running Jak II AOT session. */
+/*! Apply the 60 Hz baseline or experimental 120 Hz PC-settings domain to a running AOT session.
+ * This validates GOAL state only; it does not establish platform display-rate acceptance. */
 goal_jak2_runtime_status goal_jak2_runtime_set_target_frame_rate(int32_t target_frame_rate);
 
 /*! Drop only stale presentation timestamp history after lifecycle interruption. */

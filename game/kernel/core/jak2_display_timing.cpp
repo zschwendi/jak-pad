@@ -60,6 +60,9 @@ void goal_jak2_display_timing_reset_presentation(goal_jak2_display_timing* timin
   }
   timing->previous_target_presentation_time = 0.0;
   timing->has_previous_target_presentation_time = 0;
+  // A lifecycle gap or a non-monotonic host timestamp must not replay a fractional display
+  // callback on the next delivery. Sound uses its own clock and intentionally keeps its debt.
+  timing->dispatcher_debt = 0.0;
 }
 
 void goal_jak2_display_timing_set_target_frame_rate(goal_jak2_display_timing* timing,
