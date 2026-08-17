@@ -1,6 +1,7 @@
 #include "game/kernel/core/jak2_runtime.h"
 
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <exception>
 #include <string>
@@ -15,6 +16,7 @@ extern "C" uint64_t goal_native_thread_suspend(uint64_t,
 
 extern "C" {
 #include "aot_boot_manifest.h"
+#include "pckernel_common_generated.h"
 }
 
 #include "common/goal_constants.h"
@@ -31,6 +33,7 @@ extern "C" {
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/jak2_face_prompt_touch_reader.h"
 #include "game/kernel/core/jak2_player_context_reader.h"
+#include "game/kernel/core/jak2_display_timing.h"
 #include "game/kernel/core/jak2_progress_menu_reader.h"
 #include "game/kernel/core/kernel_core.h"
 #include "game/kernel/core/kernel_game.h"
@@ -66,6 +69,8 @@ std::string g_data_directory;
 std::string g_saves_directory;
 uint32_t g_dispatcher = 0;
 uint64_t g_current_tick = 0;
+int32_t g_target_frame_rate = 60;
+goal_jak2_display_timing g_display_timing = {};
 bool g_owns_kernel = false;
 jak2_face_prompt_touch_reader::Reader g_face_prompt_touch_reader;
 
@@ -172,6 +177,38 @@ void drain_goal_print_buffer() {
     lg::warn("[jak2-runtime] GOAL: {}", printed);
     clear_print();
   }
+}
+
+bool is_supported_target_frame_rate(int32_t target_frame_rate) {
+  return target_frame_rate == 60 || target_frame_rate == 120;
+}
+
+bool apply_goal_target_frame_rate(int32_t target_frame_rate) {
+  uint32_t pc_settings = 0;
+  if (goal_kernel_core_lookup("*pc-settings*", nullptr, &pc_settings) != GOAL_KERNEL_CORE_OK ||
+      !pc_settings) {
+    g_error = "Jak 2 GAME.CGO did not define *pc-settings*";
+    return false;
+  }
+
+  const int32_t previous_target_frame_rate = g_target_frame_rate;
+  goal_kernel_core_set_portable_display_refresh_rate(target_frame_rate);
+  const uint64_t effective_rate =
+      goal_pckernel_common__method_set_frame_rate_bang_pc_settings_(
+          pc_settings, static_cast<uint64_t>(target_frame_rate), goal_game_true_offset());
+  drain_goal_print_buffer();
+  if (effective_rate == static_cast<uint64_t>(target_frame_rate)) {
+    g_target_frame_rate = target_frame_rate;
+    goal_jak2_display_timing_set_target_frame_rate(&g_display_timing, target_frame_rate);
+    return true;
+  }
+
+  goal_kernel_core_set_portable_display_refresh_rate(previous_target_frame_rate);
+  (void)goal_pckernel_common__method_set_frame_rate_bang_pc_settings_(
+      pc_settings, static_cast<uint64_t>(previous_target_frame_rate), goal_game_true_offset());
+  drain_goal_print_buffer();
+  g_error = "Jak 2 PC settings rejected the requested host frame-rate domain";
+  return false;
 }
 
 std::string object_name_of(const char* source) {
@@ -729,11 +766,14 @@ goal_jak2_runtime_status run_pending_scene_preview() {
 extern "C" {
 
 goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config* config) {
+  const int32_t requested_target_frame_rate =
+      config && config->target_frame_rate ? config->target_frame_rate : 60;
   if (!config || !config->data_directory || !config->data_directory[0] ||
       (config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_STUBS &&
        config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_DMA_VALIDATION &&
        config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_HOST_VALIDATION &&
-       config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST)) {
+       config->graphics != GOAL_JAK2_RUNTIME_GRAPHICS_EXTERNAL_HOST) ||
+      !is_supported_target_frame_rate(requested_target_frame_rate)) {
     g_error = "goal_jak2_runtime_start: invalid configuration";
     return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
   }
@@ -759,6 +799,9 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     g_dispatcher = 0;
     g_current_tick = 0;
     g_face_prompt_touch_reader.reset();
+    g_target_frame_rate = requested_target_frame_rate;
+    goal_jak2_display_timing_init(&g_display_timing, requested_target_frame_rate);
+    goal_kernel_core_set_portable_display_refresh_rate(requested_target_frame_rate);
     reset_scene_preview_request();
     g_dma_before = {};
     g_host_observations = {};
@@ -874,6 +917,9 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     if (MasterExit != RuntimeExitStatus::RUNNING) {
       return fail_start("Jak 2 play-boot requested exit before the runtime started");
     }
+    if (!apply_goal_target_frame_rate(requested_target_frame_rate)) {
+      return fail_start(g_error);
+    }
 
     g_metrics.state = GOAL_JAK2_RUNTIME_RUNNING;
     update_metrics();
@@ -971,10 +1017,10 @@ goal_jak2_runtime_status goal_jak2_runtime_request_scene_preview(const char* sce
   return GOAL_JAK2_RUNTIME_OK;
 }
 
-goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
+goal_jak2_runtime_status goal_jak2_runtime_tick_at(double target_presentation_time) {
   if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
       g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING || !g_dispatcher) {
-    g_error = "goal_jak2_runtime_tick: no runtime is running";
+    g_error = "goal_jak2_runtime_tick_at: no runtime is running";
     return GOAL_JAK2_RUNTIME_NOT_RUNNING;
   }
   if (MasterExit != RuntimeExitStatus::RUNNING) {
@@ -991,38 +1037,67 @@ goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
         return probe_status;
       }
     }
-    g_current_tick = g_metrics.ticks + 1;
+    const auto timing =
+        goal_jak2_display_timing_advance(&g_display_timing, target_presentation_time);
     // Jak 2's overlord publishes sound/stream state from its vblank handler. The portable runtime
-    // has no IOP vblank, so publish the previous dispatcher frame before GOAL consumes it.
-    goal_jak2_sound_frame();
-    const auto preview_input_status = prepare_pending_scene_preview_input();
-    if (preview_input_status != GOAL_JAK2_RUNTIME_OK) {
-      return preview_input_status;
+    // has no IOP vblank, so keep that established 60 Hz clock independent of display callbacks.
+    for (uint32_t sound_frame = 0; sound_frame < timing.sound_frames; sound_frame++) {
+      goal_jak2_sound_frame();
     }
-    g_metrics.last_dispatch_result =
-        call_goal_on_stack(Ptr<Function>(g_dispatcher), goal_kernel_stack_top(), s7.offset,
-                           g_ee_main_mem);
-    drain_goal_print_buffer();
-    g_metrics.ticks++;
+    for (uint32_t frame = 0; frame < timing.dispatcher_frames; frame++) {
+      g_current_tick = g_metrics.ticks + 1;
+      const auto preview_input_status = prepare_pending_scene_preview_input();
+      if (preview_input_status != GOAL_JAK2_RUNTIME_OK) {
+        return preview_input_status;
+      }
+      g_metrics.last_dispatch_result =
+          call_goal_on_stack(Ptr<Function>(g_dispatcher), goal_kernel_stack_top(), s7.offset,
+                             g_ee_main_mem);
+      drain_goal_print_buffer();
+      g_metrics.ticks++;
+      if (MasterExit != RuntimeExitStatus::RUNNING) {
+        g_metrics.state = GOAL_JAK2_RUNTIME_STOPPED_BY_GAME;
+        update_metrics();
+        return GOAL_JAK2_RUNTIME_EXITED;
+      }
+      const bool had_pending_preview = g_scene_preview_pending;
+      const auto preview_status = run_pending_scene_preview();
+      if (preview_status != GOAL_JAK2_RUNTIME_OK) {
+        return preview_status;
+      }
+      if (had_pending_preview && !g_scene_preview_pending) {
+        update_metrics();
+      }
+    }
     update_metrics();
-    if (MasterExit != RuntimeExitStatus::RUNNING) {
-      g_metrics.state = GOAL_JAK2_RUNTIME_STOPPED_BY_GAME;
-      return GOAL_JAK2_RUNTIME_EXITED;
-    }
-    const bool had_pending_preview = g_scene_preview_pending;
-    const auto preview_status = run_pending_scene_preview();
-    if (preview_status != GOAL_JAK2_RUNTIME_OK) {
-      return preview_status;
-    }
-    if (had_pending_preview && !g_scene_preview_pending) {
-      update_metrics();
-    }
     return GOAL_JAK2_RUNTIME_OK;
   } catch (const std::exception& e) {
     return fail_start(std::string("Jak 2 runtime tick threw: ") + e.what());
   } catch (...) {
     return fail_start("Jak 2 runtime tick threw an unknown exception");
   }
+}
+
+goal_jak2_runtime_status goal_jak2_runtime_tick(void) {
+  return goal_jak2_runtime_tick_at(NAN);
+}
+
+goal_jak2_runtime_status goal_jak2_runtime_set_target_frame_rate(int32_t target_frame_rate) {
+  if (!is_supported_target_frame_rate(target_frame_rate)) {
+    g_error = "goal_jak2_runtime_set_target_frame_rate: only 60 and 120 Hz are supported";
+    return GOAL_JAK2_RUNTIME_INVALID_ARGUMENT;
+  }
+  if (!g_owns_kernel || !goal_kernel_core_is_initialized() ||
+      g_metrics.state != GOAL_JAK2_RUNTIME_RUNNING) {
+    g_error = "goal_jak2_runtime_set_target_frame_rate: no runtime is running";
+    return GOAL_JAK2_RUNTIME_NOT_RUNNING;
+  }
+  return apply_goal_target_frame_rate(target_frame_rate) ? GOAL_JAK2_RUNTIME_OK
+                                                          : GOAL_JAK2_RUNTIME_REQUEST_FAILED;
+}
+
+void goal_jak2_runtime_reset_frame_timing(void) {
+  goal_jak2_display_timing_reset_presentation(&g_display_timing);
 }
 
 goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics* out) {
@@ -1229,6 +1304,9 @@ void goal_jak2_runtime_shutdown(void) {
     goal_kernel_core_shutdown();
     g_owns_kernel = false;
   }
+  g_target_frame_rate = 60;
+  goal_jak2_display_timing_init(&g_display_timing, 60);
+  goal_kernel_core_set_portable_display_refresh_rate(60);
   g_dispatcher = 0;
   g_current_tick = 0;
   g_face_prompt_touch_reader.reset();

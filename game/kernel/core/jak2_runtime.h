@@ -150,6 +150,8 @@ typedef struct goal_jak2_runtime_config {
   goal_jak2_runtime_graphics graphics;
   /*! Required only for EXTERNAL_HOST. Read and copied synchronously by runtime_start. */
   const struct goal_gfx_host* external_gfx_host;
+  /*! Optional host display domain. Zero preserves the established 60 Hz default; 120 is supported. */
+  int32_t target_frame_rate;
 } goal_jak2_runtime_config;
 
 /*! Snapshot of the linked gkernel thread-suspend function object before the first display tick. */
@@ -376,8 +378,20 @@ goal_jak2_runtime_status goal_jak2_runtime_probe_thread_suspend(
  */
 goal_jak2_runtime_status goal_jak2_runtime_request_scene_preview(const char* scene_name);
 
-/*! Run exactly one `kernel-dispatcher` call. This function has no loop, sleep, or clock input. */
+/*! Run one 60 Hz-compatible dispatcher frame when the host has no presentation timestamp. */
 goal_jak2_runtime_status goal_jak2_runtime_tick(void);
+
+/*!
+ * Drive the bounded number of logical GOAL frames represented by one host presentation callback.
+ * The host owns the timestamp and presentation; this runtime owns no display object or run loop.
+ */
+goal_jak2_runtime_status goal_jak2_runtime_tick_at(double target_presentation_time);
+
+/*! Apply a verified 60 or 120 Hz PC-settings domain to a running Jak II AOT session. */
+goal_jak2_runtime_status goal_jak2_runtime_set_target_frame_rate(int32_t target_frame_rate);
+
+/*! Drop only stale presentation timestamp history after lifecycle interruption. */
+void goal_jak2_runtime_reset_frame_timing(void);
 
 /*! Copy the latest runtime snapshot into `out`. */
 goal_jak2_runtime_status goal_jak2_runtime_get_metrics(goal_jak2_runtime_metrics* out);

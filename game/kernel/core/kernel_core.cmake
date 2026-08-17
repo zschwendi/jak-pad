@@ -235,6 +235,8 @@ set(JAK2_KERNEL_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/gfx_host.cpp"
     # one foreground display callback runs one frame; paused callbacks are dropped, never queued
     "${CMAKE_CURRENT_LIST_DIR}/display_tick_coordinator.cpp"
+    # deterministic host cadence accounting for Jak II's 60/120 Hz timing domains
+    "${CMAKE_CURRENT_LIST_DIR}/jak2_display_timing.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma_copy.cpp"
     "${JAK1_KERNEL_CORE_ROOT}/common/dma/dma.cpp"
     # the mips2c seam, in place of game/mips2c/mips2c_table.cpp, plus the Jak 2 function library

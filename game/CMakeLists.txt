@@ -602,6 +602,10 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_test(NAME jak2-display-tick-coordinator-test
                 COMMAND jak2-display-tick-coordinator-test)
 
+        add_executable(jak2-display-timing-test kernel/core/jak2_display_timing_test.cpp)
+        target_link_libraries(jak2-display-timing-test jak2-kernel-core)
+        add_test(NAME jak2-display-timing-test COMMAND jak2-display-timing-test)
+
         add_executable(jak2-sound-rpc-test kernel/core/jak2_sound_rpc_test.cpp)
         target_link_libraries(jak2-sound-rpc-test jak2-kernel-core)
         add_test(NAME jak2-sound-rpc-test COMMAND jak2-sound-rpc-test)

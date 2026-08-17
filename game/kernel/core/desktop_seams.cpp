@@ -65,6 +65,7 @@ namespace {
 std::atomic<bool> g_portable_display_enabled{false};
 std::atomic<int32_t> g_portable_display_width{640};
 std::atomic<int32_t> g_portable_display_height{480};
+std::atomic<int32_t> g_portable_display_refresh_rate{60};
 
 [[noreturn]] void missing(const char* subsystem, const char* symbol) {
   lg::error("[kernel-core] {} is not part of this build; {} cannot be used.", subsystem, symbol);
@@ -314,7 +315,13 @@ u64 portable_pc_get_window_size(u32 width, u32 height) {
 }
 
 s64 portable_pc_get_refresh_rate() {
-  return 60;
+  return g_portable_display_refresh_rate.load(std::memory_order_relaxed);
+}
+
+u64 portable_pc_set_frame_rate(u64) {
+  // The application owns display cadence. GOAL's PC settings method records the effective rate
+  // and updates video/audio state; this callback must not negotiate a different host cadence.
+  return 0;
 }
 
 u64 portable_pc_is_supported_resolution(u64 width, u64 height) {
@@ -426,6 +433,15 @@ void goal_kernel_core_get_portable_display_size(int32_t* width, int32_t* height)
   }
 }
 
+void goal_kernel_core_set_portable_display_refresh_rate(int32_t frame_rate) {
+  g_portable_display_refresh_rate.store(frame_rate == 120 ? 120 : 60,
+                                        std::memory_order_relaxed);
+}
+
+int32_t goal_kernel_core_get_portable_display_refresh_rate() {
+  return g_portable_display_refresh_rate.load(std::memory_order_relaxed);
+}
+
 void goal_kernel_core_install_portable_pc_settings_functions() {
   goal_game_make_function_symbol("file-stream-open", (void*)portable_file_stream_open);
   goal_game_make_function_symbol("file-stream-close", (void*)portable_file_stream_close);
@@ -438,6 +454,7 @@ void goal_kernel_core_install_portable_pc_settings_functions() {
   goal_kernel_core_install_portable_display_functions();
   goal_game_make_function_symbol("pc-get-active-display-refresh-rate",
                                  (void*)portable_pc_get_refresh_rate);
+  goal_game_make_function_symbol("pc-set-frame-rate", (void*)portable_pc_set_frame_rate);
   goal_game_make_function_symbol("pc-is-supported-resolution?",
                                  (void*)portable_pc_is_supported_resolution);
   goal_game_make_function_symbol("pc-filepath-exists?", (void*)portable_pc_filepath_exists);

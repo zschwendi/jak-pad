@@ -224,6 +224,11 @@ int main() {
     expect(*Ptr<s64>(width).c() == 640 && *Ptr<s64>(height).c() == 480 &&
                goal_aot_call(pc_get_refresh_rate, 0, 0, 0) == 60,
            "PC settings expose a deterministic fallback display");
+    goal_kernel_core_set_portable_display_refresh_rate(120);
+    expect(goal_kernel_core_get_portable_display_refresh_rate() == 120 &&
+               goal_aot_call(pc_get_refresh_rate, 0, 0, 0) == 120,
+           "PC settings read the host-selected 120 Hz cadence");
+    goal_kernel_core_set_portable_display_refresh_rate(60);
     *Ptr<s64>(width).c() = 0;
     *Ptr<s64>(height).c() = 0;
     goal_aot_call(pc_get_window_size, width, height, 0);
