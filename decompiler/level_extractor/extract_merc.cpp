@@ -836,15 +836,6 @@ ConvertedMercEffect convert_merc_effect(const MercEffect& input_effect,
         process_draw_mode(*input_effect.extra_info.shader, false, false, false, false);
     result.envmap_mode.set_ab(true);
     u32 new_tex = remap_texture(input_effect.extra_info.shader->original_tex, map);
-    if (!result.envmap_mode.get_tcc_enable()) {
-      lg::warn("Merc {} effect {} envmap uses TEX0 TCC=0; preserving RGB-only mode "
-               "(TEX0=0x{:016x})",
-               debug_name, effect_idx, input_effect.extra_info.shader->tex0.data);
-    }
-    if (result.envmap_mode.get_alpha_blend() != DrawMode::AlphaBlend::SRC_0_DST_DST) {
-      lg::warn("Merc {} effect {} envmap uses alpha-blend mode {}", debug_name, effect_idx,
-               static_cast<int>(result.envmap_mode.get_alpha_blend()));
-    }
 
     // texture the texture page/texture index, and convert to a PC port texture ID
     u32 tpage = new_tex >> 20;
@@ -1008,12 +999,6 @@ ConvertedMercEffect convert_merc_effect(const MercEffect& input_effect,
       bool fog = true;
       merc_state.merc_draw_mode.mode =
           process_draw_mode(shader, result.has_envmap, use_alpha_blend, depth_write, fog);
-      if (!merc_state.merc_draw_mode.mode.get_tcc_enable()) {
-        lg::warn(
-            "Merc {} effect {} fragment {} shader {} uses TEX0 TCC=0; preserving RGB-only mode "
-            "(TEX0=0x{:016x})",
-            debug_name, effect_idx, fi, i, shader.tex0.data);
-      }
       u32 new_tex = remap_texture(shader.original_tex, map);
 
       // texture the texture page/texture index, and convert to a PC port texture ID
