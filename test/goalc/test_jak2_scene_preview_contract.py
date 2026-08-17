@@ -165,6 +165,12 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         title_idle = extract_goal_form(self.title_obs, "(defstate idle (title-control)")
         self.assertIn("(title-progress 'title)", title_idle)
 
+        title_startup = extract_goal_form(self.title_obs, "(defstate startup (title-control)")
+        self.assertIn(
+            "(when (#if PC_PORT\n                   #f\n                   (or (zero? (-> gp-0 handle))",
+            title_startup,
+        )
+
         prepare_start = self.runtime.index(
             "goal_jak2_runtime_status prepare_pending_scene_preview_input()"
         )
