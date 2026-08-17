@@ -1,10 +1,12 @@
 #include <array>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <vector>
 
 #include "common/dma/gs.h"
+#include "common/util/fnv.h"
 
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
@@ -473,6 +475,103 @@ u32 read_eye_consumer_center(id<MTLTexture> texture) {
   return pixel;
 }
 
+struct EyeVertexStorageRun {
+  bool initialized = false;
+  bool readback_completed = false;
+  MetalEyeRenderer::Stats stats;
+  std::array<u64, 2> eye_hashes = {};
+  std::vector<u8> eye_pixels;
+};
+
+EyeVertexStorageRun run_eye_vertex_storage_case(
+    bool dedicated_vertex_buffer,
+    id<MTLDevice> device,
+    id<MTLCommandQueue> queue,
+    TexturePool* texture_pool,
+    MetalPsoCache* pso_cache,
+    MetalSamplerCache* sampler_cache) {
+  constexpr const char* kDiagnosticVariable =
+      "GOALPAD_JAK2_DIAGNOSTIC_EYE_DEDICATED_VERTEX_BUFFER";
+  if (dedicated_vertex_buffer) {
+    setenv(kDiagnosticVariable, "1", 1);
+  } else {
+    unsetenv(kDiagnosticVariable);
+  }
+
+  EyeVertexStorageRun result;
+  MetalStreamBuffer stream;
+  stream.init(device);
+  id<MTLBuffer> prefix_buffer = nil;
+  u32 prefix_offset = 0;
+  std::memset(stream.alloc(32, &prefix_buffer, &prefix_offset), 0xa5, 32);
+
+  MetalEyeRenderer renderer("jak2-eye-vertex-storage-ab", 0, device, queue);
+  result.initialized = prefix_buffer != nil && prefix_offset == 0 &&
+                       renderer.init_textures(*texture_pool, GameVersion::Jak2);
+  if (!result.initialized) {
+    return result;
+  }
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak2;
+  state.texture_pool = texture_pool;
+  MetalFrameContext context;
+  context.pso_cache = pso_cache;
+  context.sampler_cache = sampler_cache;
+  context.stream = &stream;
+  const auto chain = make_eye_chain();
+  DmaFollower dma(chain.data(), 0, chain.size());
+  renderer.render_from_texture_bucket(dma, &state, context);
+  result.stats = renderer.stats();
+
+  const auto left_handle = renderer.lookup_eye_texture(0);
+  const auto right_handle = renderer.lookup_eye_texture(1);
+  id<MTLTexture> left_texture =
+      left_handle ? metal_texture_lookup(*left_handle) : nil;
+  id<MTLTexture> right_texture =
+      right_handle ? metal_texture_lookup(*right_handle) : nil;
+  if (!left_texture || !right_texture) {
+    return result;
+  }
+
+  constexpr std::size_t kBytesPerRow = METAL_EYE_TEX_SIZE * 4;
+  constexpr std::size_t kBytesPerEye = kBytesPerRow * METAL_EYE_TEX_SIZE;
+  id<MTLBuffer> readback =
+      [device newBufferWithLength:kBytesPerEye * 2
+                          options:MTLResourceStorageModeShared];
+  id<MTLCommandBuffer> commands = [queue commandBuffer];
+  id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+  if (!readback || !commands || !blit) {
+    return result;
+  }
+
+  const auto copy_eye = [&](id<MTLTexture> texture, std::size_t offset) {
+    [blit copyFromTexture:texture
+              sourceSlice:0
+              sourceLevel:0
+             sourceOrigin:MTLOriginMake(0, 0, 0)
+               sourceSize:MTLSizeMake(METAL_EYE_TEX_SIZE, METAL_EYE_TEX_SIZE, 1)
+                 toBuffer:readback
+        destinationOffset:offset
+   destinationBytesPerRow:kBytesPerRow
+ destinationBytesPerImage:kBytesPerEye
+                  options:MTLBlitOptionNone];
+  };
+  copy_eye(left_texture, 0);
+  copy_eye(right_texture, kBytesPerEye);
+  [blit endEncoding];
+  [commands commit];
+  [commands waitUntilCompleted];
+  result.readback_completed = commands.status == MTLCommandBufferStatusCompleted;
+  if (result.readback_completed) {
+    result.eye_pixels.resize(kBytesPerEye * 2);
+    std::memcpy(result.eye_pixels.data(), readback.contents, result.eye_pixels.size());
+    result.eye_hashes[0] = fnv64(result.eye_pixels.data(), kBytesPerEye);
+    result.eye_hashes[1] = fnv64(result.eye_pixels.data() + kBytesPerEye, kBytesPerEye);
+  }
+  return result;
+}
+
 }  // namespace
 
 int main() {
@@ -541,6 +640,43 @@ int main() {
     }
     check(source_handle != 0 && second_source_handle != 0,
           "published both synthetic eye source textures");
+
+    const auto stream_vertex_run = run_eye_vertex_storage_case(
+        false, device, queue, &texture_pool, &pso_cache, &sampler_cache);
+    const auto dedicated_vertex_run = run_eye_vertex_storage_case(
+        true, device, queue, &texture_pool, &pso_cache, &sampler_cache);
+    unsetenv("GOALPAD_JAK2_DIAGNOSTIC_EYE_DEDICATED_VERTEX_BUFFER");
+    check(stream_vertex_run.initialized && dedicated_vertex_run.initialized,
+          "initialized both eye vertex-storage A/B renderers");
+    check(stream_vertex_run.stats.eyes == 2 &&
+              stream_vertex_run.stats.draw_calls == 8 &&
+              stream_vertex_run.stats.triangles == 16 &&
+              stream_vertex_run.stats.command_buffers_completed == 1 &&
+              stream_vertex_run.stats.command_buffer_errors == 0 &&
+              stream_vertex_run.stats.last_vertex_buffer_offset == 32 &&
+              dedicated_vertex_run.stats.eyes == 2 &&
+              dedicated_vertex_run.stats.draw_calls == 8 &&
+              dedicated_vertex_run.stats.triangles == 16 &&
+              dedicated_vertex_run.stats.command_buffers_completed == 1 &&
+              dedicated_vertex_run.stats.command_buffer_errors == 0 &&
+              dedicated_vertex_run.stats.last_vertex_buffer_offset == 0 &&
+              stream_vertex_run.stats.last_vertex_fingerprint != 0 &&
+              stream_vertex_run.stats.last_vertex_fingerprint ==
+                  dedicated_vertex_run.stats.last_vertex_fingerprint,
+          "both A/B paths submit identical vertices from distinct buffer offsets");
+    check(stream_vertex_run.readback_completed &&
+              dedicated_vertex_run.readback_completed,
+          "both A/B eye targets completed full GPU readback");
+    std::printf(
+        "eye vertex A/B hashes: stream=%016llx/%016llx dedicated=%016llx/%016llx\n",
+        static_cast<unsigned long long>(stream_vertex_run.eye_hashes[0]),
+        static_cast<unsigned long long>(stream_vertex_run.eye_hashes[1]),
+        static_cast<unsigned long long>(dedicated_vertex_run.eye_hashes[0]),
+        static_cast<unsigned long long>(dedicated_vertex_run.eye_hashes[1]));
+    check(!stream_vertex_run.eye_pixels.empty() &&
+              stream_vertex_run.eye_pixels == dedicated_vertex_run.eye_pixels &&
+              stream_vertex_run.eye_hashes == dedicated_vertex_run.eye_hashes,
+          "default stream and dedicated vertex storage produce byte-identical eye textures");
 
     {
       MetalEyeRenderer renderer("jak2-eyes", 0, device, queue);
