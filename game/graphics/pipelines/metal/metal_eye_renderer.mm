@@ -355,19 +355,67 @@ enum class EyeSourceComponent : u32 {
   Lid = 3,
 };
 
-static u64 lookup_eye_source(TexturePool* pool,
-                             u32 tbp,
-                             bool* has_data,
-                             MetalEyeRenderer::Stats* stats,
-                             EyeSourceComponent component) {
-  auto handle = pool->lookup(tbp);
-  auto* gpu_tex = pool->lookup_gpu_texture(tbp);
-  *has_data = gpu_tex && gpu_tex->get_data_ptr();
-  if (!handle) {
-    stats->missing_textures++;
+struct EyeSource {
+  u64 handle = 0;
+  bool has_data = false;
+};
+
+std::optional<PcTextureId> decode_eye_texture_id(const u8* adgif_data) {
+  AdGifData adgif = {};
+  std::memcpy(&adgif, adgif_data, sizeof(adgif));
+  const u32 packed = static_cast<u32>(adgif.tex1_addr);
+  if ((packed & 0xffffff00u) == 0) {
+    return {};
+  }
+  return PcTextureId((packed >> 20) & 0xfff, (packed >> 8) & 0xfff);
+}
+
+u64 eye_texture_handle(TexturePool* pool, GpuTexture* texture) {
+  if (!texture) {
     return 0;
   }
-  if (gpu_tex && gpu_tex->is_placeholder) {
+  if (texture->is_placeholder) {
+    return pool->get_placeholder_texture();
+  }
+  return texture->gpu_textures.empty() ? 0 : texture->gpu_textures.front().gl;
+}
+
+static EyeSource lookup_eye_source(TexturePool* pool,
+                                   const u8* adgif_data,
+                                   u32 tbp,
+                                   GameVersion version,
+                                   MetalEyeRenderer::Stats* stats,
+                                   EyeSourceComponent component) {
+  const auto current_handle = pool->lookup(tbp);
+  GpuTexture* texture = pool->lookup_gpu_texture(tbp);
+  u64 handle = current_handle.value_or(0);
+
+  if (version == GameVersion::Jak2) {
+    // Jak II overlays its texture ID on TEX1's register address. Whole-page PC uploads can put
+    // several textures at one TBP, so recover same-page aliases from that ID while leaving
+    // different-page runtime-generated animations authoritative.
+    const auto requested_id = decode_eye_texture_id(adgif_data);
+    GpuTexture* requested = requested_id ? pool->lookup_gpu_texture_by_id(*requested_id) : nullptr;
+    if (requested && !texture) {
+      texture = requested;
+      handle = eye_texture_handle(pool, requested);
+    } else if (requested && texture && texture->tex_id.page == requested_id->page &&
+               texture->tex_id.tex != requested_id->tex) {
+      texture = requested;
+      handle = eye_texture_handle(pool, requested);
+      stats->aliased_source_resolutions++;
+    }
+  }
+
+  EyeSource result;
+  result.handle = handle;
+  result.has_data = texture && !texture->is_placeholder && !texture->gpu_textures.empty() &&
+                    texture->gpu_textures.front().data;
+  if (!handle) {
+    stats->missing_textures++;
+    return result;
+  }
+  if (texture && texture->is_placeholder) {
     stats->placeholder_textures++;
     switch (component) {
       case EyeSourceComponent::Iris:
@@ -383,16 +431,16 @@ static u64 lookup_eye_source(TexturePool* pool,
     if (!stats->first_placeholder_handle) {
       stats->first_placeholder_component = static_cast<u32>(component);
       stats->first_placeholder_tbp = tbp;
-      stats->first_placeholder_handle = *handle;
-      if (gpu_tex) {
-        stats->first_placeholder_width = gpu_tex->w;
-        stats->first_placeholder_height = gpu_tex->h;
+      stats->first_placeholder_handle = handle;
+      if (texture) {
+        stats->first_placeholder_width = texture->w;
+        stats->first_placeholder_height = texture->h;
         stats->first_placeholder_texture_id =
-            (static_cast<u32>(gpu_tex->tex_id.page) << 16) | gpu_tex->tex_id.tex;
+            (static_cast<u32>(texture->tex_id.page) << 16) | texture->tex_id.tex;
       }
     }
   }
-  return *handle;
+  return result;
 }
 
 std::vector<MetalEyeRenderer::SingleEyeDraws> MetalEyeRenderer::get_draws(
@@ -429,9 +477,8 @@ std::vector<MetalEyeRenderer::SingleEyeDraws> MetalEyeRenderer::get_draws(
       return draws;
     }
     AdgifHelper adgif0(adgif0_dma.data + 16);
-    bool tex0_has_data = false;
-    const u64 tex0 = lookup_eye_source(pool, adgif0.tex0().tbp0(), &tex0_has_data, &m_stats,
-                                       EyeSourceComponent::Iris);
+    const auto tex0 = lookup_eye_source(pool, adgif0_dma.data + 16, adgif0.tex0().tbp0(),
+                                        render_state->version, &m_stats, EyeSourceComponent::Iris);
 
     // first draw: the background. It reads 0,0 of the texture and uses that
     // color everywhere. The eye index falls out of its coordinates.
@@ -470,8 +517,8 @@ std::vector<MetalEyeRenderer::SingleEyeDraws> MetalEyeRenderer::get_draws(
         draws.clear();
         return draws;
       }
-      l_draw.has_iris = tex0 != 0;
-      l_draw.iris_tex_handle = tex0;
+      l_draw.has_iris = tex0.handle != 0;
+      l_draw.iris_tex_handle = tex0.handle;
 
       if (dma.current_tag().qwc == 6) {
         // the right eye changes adgif
@@ -483,15 +530,15 @@ std::vector<MetalEyeRenderer::SingleEyeDraws> MetalEyeRenderer::get_draws(
           return draws;
         }
         AdgifHelper r_iris_helper(r_iris_adgif.data + 16);
-        bool has_data = false;
-        u64 handle = lookup_eye_source(pool, r_iris_helper.tex0().tbp0(), &has_data, &m_stats,
-                                       EyeSourceComponent::Iris);
+        const auto source =
+            lookup_eye_source(pool, r_iris_adgif.data + 16, r_iris_helper.tex0().tbp0(),
+                              render_state->version, &m_stats, EyeSourceComponent::Iris);
         if (!read_eye_draw(dma, &r_draw.iris, counter, warned)) {
           draws.clear();
           return draws;
         }
-        r_draw.has_iris = handle != 0;
-        r_draw.iris_tex_handle = handle;
+        r_draw.has_iris = source.handle != 0;
+        r_draw.iris_tex_handle = source.handle;
       } else {
         if (!read_eye_draw(dma, &r_draw.iris, counter, warned)) {
           draws.clear();
@@ -512,17 +559,16 @@ std::vector<MetalEyeRenderer::SingleEyeDraws> MetalEyeRenderer::get_draws(
       return draws;
     }
     AdgifHelper adgif1(adgif1_dma.data + 16);
-    bool tex1_has_data = false;
-    const u64 tex1 = lookup_eye_source(pool, adgif1.tex0().tbp0(), &tex1_has_data, &m_stats,
-                                       EyeSourceComponent::Pupil);
+    const auto tex1 = lookup_eye_source(pool, adgif1_dma.data + 16, adgif1.tex0().tbp0(),
+                                        render_state->version, &m_stats, EyeSourceComponent::Pupil);
 
-    if (tex1_has_data && tex1) {
+    if (tex1.has_data && tex1.handle) {
       if (!read_eye_draw(dma, &l_draw.pupil, counter, warned)) {
         draws.clear();
         return draws;
       }
       l_draw.has_pupil = true;
-      l_draw.pupil_tex_handle = tex1;
+      l_draw.pupil_tex_handle = tex1.handle;
     }
 
     if (dma.current_tag().qwc == 6) {
@@ -534,22 +580,22 @@ std::vector<MetalEyeRenderer::SingleEyeDraws> MetalEyeRenderer::get_draws(
         return draws;
       }
       AdgifHelper r_pupil_helper(r_pupil_adgif.data + 16);
-      bool has_data = false;
-      u64 handle = lookup_eye_source(pool, r_pupil_helper.tex0().tbp0(), &has_data, &m_stats,
-                                     EyeSourceComponent::Pupil);
+      const auto source =
+          lookup_eye_source(pool, r_pupil_adgif.data + 16, r_pupil_helper.tex0().tbp0(),
+                            render_state->version, &m_stats, EyeSourceComponent::Pupil);
       if (!read_eye_draw(dma, &r_draw.pupil, counter, warned)) {
         draws.clear();
         return draws;
       }
-      r_draw.has_pupil = handle != 0;
-      r_draw.pupil_tex_handle = handle;
-    } else if (tex1_has_data && tex1) {
+      r_draw.has_pupil = source.handle != 0;
+      r_draw.pupil_tex_handle = source.handle;
+    } else if (tex1.has_data && tex1.handle) {
       if (!read_eye_draw(dma, &r_draw.pupil, counter, warned)) {
         draws.clear();
         return draws;
       }
       r_draw.has_pupil = true;
-      r_draw.pupil_tex_handle = tex1;
+      r_draw.pupil_tex_handle = tex1.handle;
     }
 
     // and finally the eyelid
@@ -562,16 +608,15 @@ std::vector<MetalEyeRenderer::SingleEyeDraws> MetalEyeRenderer::get_draws(
       return draws;
     }
     AdgifHelper adgif2(adgif2_dma.data + 16);
-    bool tex2_has_data = false;
-    const u64 tex2 = lookup_eye_source(pool, adgif2.tex0().tbp0(), &tex2_has_data, &m_stats,
-                                       EyeSourceComponent::Lid);
+    const auto tex2 = lookup_eye_source(pool, adgif2_dma.data + 16, adgif2.tex0().tbp0(),
+                                        render_state->version, &m_stats, EyeSourceComponent::Lid);
 
     if (!read_eye_draw(dma, &l_draw.lid, counter, warned)) {
       draws.clear();
       return draws;
     }
-    l_draw.has_lid = tex2 != 0;
-    l_draw.lid_tex_handle = tex2;
+    l_draw.has_lid = tex2.handle != 0;
+    l_draw.lid_tex_handle = tex2.handle;
 
     if (dma.current_tag().qwc == 6) {
       auto r_lid_adgif = dma.read_and_advance();
@@ -582,15 +627,15 @@ std::vector<MetalEyeRenderer::SingleEyeDraws> MetalEyeRenderer::get_draws(
         return draws;
       }
       AdgifHelper r_lid_helper(r_lid_adgif.data + 16);
-      bool has_data = false;
-      u64 handle = lookup_eye_source(pool, r_lid_helper.tex0().tbp0(), &has_data, &m_stats,
-                                     EyeSourceComponent::Lid);
+      const auto source =
+          lookup_eye_source(pool, r_lid_adgif.data + 16, r_lid_helper.tex0().tbp0(),
+                            render_state->version, &m_stats, EyeSourceComponent::Lid);
       if (!read_eye_draw(dma, &r_draw.lid, counter, warned)) {
         draws.clear();
         return draws;
       }
-      r_draw.has_lid = handle != 0;
-      r_draw.lid_tex_handle = handle;
+      r_draw.has_lid = source.handle != 0;
+      r_draw.lid_tex_handle = source.handle;
     } else {
       if (!read_eye_draw(dma, &r_draw.lid, counter, warned)) {
         draws.clear();

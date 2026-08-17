@@ -93,6 +93,19 @@ class TextureMap {
     }
   }
 
+  T* lookup_existing_if_valid(PcTextureId id) {
+    if (id.page >= m_dir.size()) {
+      return nullptr;
+    }
+    const u32 page_begin = m_dir[id.page];
+    const u32 page_end = id.page + 1 < m_dir.size() ? m_dir[id.page + 1] : m_data.size();
+    if (id.tex >= page_end - page_begin) {
+      return nullptr;
+    }
+    auto& elt = m_data[page_begin + id.tex];
+    return elt.present ? &elt.val : nullptr;
+  }
+
   T& at(PcTextureId id) {
     auto& elt = m_data[m_dir[id.page] + id.tex];
     if (elt.present) {
@@ -341,6 +354,9 @@ class TexturePool {
    * handle_upload_now.
    */
   GpuTexture* lookup_gpu_texture(u32 location) { return m_textures[location].source; }
+  GpuTexture* lookup_gpu_texture_by_id(PcTextureId id) {
+    return m_loaded_textures.lookup_existing_if_valid(id);
+  }
   std::optional<u64> lookup_mt4hh(u32 location);
   u64 get_placeholder_texture() { return m_placeholder_texture_id; }
   void draw_debug_window();

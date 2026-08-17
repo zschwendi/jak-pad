@@ -1,8 +1,9 @@
 #include <array>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "common/dma/gs.h"
@@ -13,7 +14,6 @@
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
-
 #import <Metal/Metal.h>
 
 extern "C" const unsigned char g_goalpad_metallib[];
@@ -24,6 +24,8 @@ namespace {
 constexpr u32 kSourceTbp = 100;
 constexpr u32 kSecondSourceTbp = 101;
 constexpr u32 kPlaceholderSourceTbp = 102;
+const PcTextureId kRequestedEyeSourceId(2568, 9);
+const PcTextureId kAliasedEyeSourceId(2568, 21);
 constexpr u64 kEyeHash = 0x123456789abcdef0ull;
 constexpr u32 kPrisBucket = 200;
 constexpr u32 kPrisBucketOffset = kPrisBucket * 16;
@@ -64,7 +66,7 @@ void append_transfer(std::vector<u8>* chain,
   chain->insert(chain->end(), payload.begin(), payload.end());
 }
 
-std::vector<u8> make_adgif(u32 tbp) {
+std::vector<u8> make_adgif(u32 tbp, std::optional<PcTextureId> requested_id = {}) {
   std::vector<u8> data;
   const u64 tag = 5 | (1ull << 15) | (1ull << 60);
   append_qword(&data, tag, static_cast<u64>(GifTag::RegisterDescriptor::AD));
@@ -72,6 +74,10 @@ std::vector<u8> make_adgif(u32 tbp) {
   adgif.tex0_data = tbp;
   adgif.tex0_addr = static_cast<u64>(GsRegisterAddress::TEX0_1);
   adgif.tex1_addr = static_cast<u64>(GsRegisterAddress::TEX1_1);
+  if (requested_id) {
+    adgif.tex1_addr |= static_cast<u64>(requested_id->tex & 0xfff) << 8;
+    adgif.tex1_addr |= static_cast<u64>(requested_id->page & 0xfff) << 20;
+  }
   adgif.mip_addr = static_cast<u64>(GsRegisterAddress::MIPTBP1_1);
   adgif.clamp_addr = static_cast<u64>(GsRegisterAddress::CLAMP_1);
   adgif.alpha_addr = static_cast<u64>(GsRegisterAddress::ALPHA_1);
@@ -126,37 +132,40 @@ void append_eye_draw(std::vector<u8>* chain, u64 hash, u32 pair) {
 std::vector<u8> make_eye_chain_with_sources(u32 pair,
                                             u32 iris_tbp,
                                             u32 pupil_tbp,
-                                            u32 lid_tbp) {
+                                            u32 lid_tbp,
+                                            std::optional<PcTextureId> iris_id = {},
+                                            std::optional<PcTextureId> pupil_id = {},
+                                            std::optional<PcTextureId> lid_id = {}) {
   std::vector<u8> chain;
   append_transfer(&chain, std::vector<u8>(128), VifCode::Kind::FLUSHA,
                   VifCode::Kind::DIRECT, 0, 8);
   append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 2);
 
-  append_transfer(&chain, make_adgif(iris_tbp), VifCode::Kind::NOP,
-                  VifCode::Kind::DIRECT, 0, 6);
+  append_transfer(&chain, make_adgif(iris_tbp, iris_id), VifCode::Kind::NOP, VifCode::Kind::DIRECT,
+                  0, 6);
   append_eye_draw(&chain, kEyeHash + pair, pair);  // pair/hash metadata
   append_eye_draw(&chain, 0, pair);                 // left iris
-  append_transfer(&chain, make_adgif(iris_tbp), VifCode::Kind::NOP,
-                  VifCode::Kind::DIRECT, 0, 6);
+  append_transfer(&chain, make_adgif(iris_tbp, iris_id), VifCode::Kind::NOP, VifCode::Kind::DIRECT,
+                  0, 6);
   append_eye_draw(&chain, 0, pair);  // right iris
 
   append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 2);
-  append_transfer(&chain, make_adgif(pupil_tbp), VifCode::Kind::NOP,
+  append_transfer(&chain, make_adgif(pupil_tbp, pupil_id), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 6);
   append_eye_draw(&chain, 0, pair);  // left pupil
-  append_transfer(&chain, make_adgif(pupil_tbp), VifCode::Kind::NOP,
+  append_transfer(&chain, make_adgif(pupil_tbp, pupil_id), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 6);
   append_eye_draw(&chain, 0, pair);  // right pupil
 
   append_transfer(&chain, std::vector<u8>(32), VifCode::Kind::NOP,
                   VifCode::Kind::DIRECT, 0, 2);
-  append_transfer(&chain, make_adgif(lid_tbp), VifCode::Kind::NOP,
-                  VifCode::Kind::DIRECT, 0, 6);
+  append_transfer(&chain, make_adgif(lid_tbp, lid_id), VifCode::Kind::NOP, VifCode::Kind::DIRECT, 0,
+                  6);
   append_eye_draw(&chain, 0, pair);  // left lid
-  append_transfer(&chain, make_adgif(lid_tbp), VifCode::Kind::NOP,
-                  VifCode::Kind::DIRECT, 0, 6);
+  append_transfer(&chain, make_adgif(lid_tbp, lid_id), VifCode::Kind::NOP, VifCode::Kind::DIRECT, 0,
+                  6);
   append_eye_draw(&chain, 0, pair);  // right lid
 
   // get_draws stops before the fixed GS-state restore transfer.
@@ -885,6 +894,75 @@ int main() {
               read_eye_pixel(placeholder_run, 0, 8, 8) == 0xff303030 &&
               read_eye_pixel(placeholder_run, 0, 40, 8) == 0xffe0e0e0,
           "placeholder-backed eye sources draw a gray checkerboard with exact source provenance");
+
+    EyeVertexStorageRun aliased_source_run;
+    {
+      TexturePool aliased_pool(GameVersion::Jak2);
+      {
+        std::lock_guard<std::mutex> pool_lock(aliased_pool.mutex());
+        TextureInput input;
+        input.debug_page_name = "PC-EYE-ALIAS-TEST";
+        input.debug_name = "requested-eye-source";
+        input.id = kRequestedEyeSourceId;
+        input.gpu_texture = source_handle;
+        input.src_data = reinterpret_cast<const u8*>(source_pixels.data());
+        input.w = 2;
+        input.h = 2;
+        aliased_pool.give_texture_and_load_to_vram(input, kSourceTbp);
+
+        input.debug_name = "later-same-page-alias";
+        input.id = kAliasedEyeSourceId;
+        input.gpu_texture = second_source_handle;
+        input.src_data = reinterpret_cast<const u8*>(second_source_pixels.data());
+        aliased_pool.give_texture_and_load_to_vram(input, kSourceTbp);
+      }
+      const auto aliased_chain =
+          make_eye_chain_with_sources(0, kSourceTbp, kSourceTbp, kSourceTbp, kRequestedEyeSourceId,
+                                      kRequestedEyeSourceId, kRequestedEyeSourceId);
+      aliased_source_run = run_eye_vertex_storage_case(false, device, queue, &aliased_pool,
+                                                       &pso_cache, &sampler_cache, aliased_chain);
+    }
+    check(aliased_source_run.readback_completed &&
+              aliased_source_run.stats.aliased_source_resolutions == 6 &&
+              aliased_source_run.stats.missing_textures == 0 &&
+              aliased_source_run.stats.placeholder_textures == 0 &&
+              aliased_source_run.stats.command_buffer_errors == 0 &&
+              aliased_source_run.stats.diagnostic_output_corners == source_pixels,
+          "Jak II eye shaders recover their requested same-page texture after a later VRAM alias");
+
+    EyeVertexStorageRun animated_source_run;
+    {
+      TexturePool animated_pool(GameVersion::Jak2);
+      {
+        std::lock_guard<std::mutex> pool_lock(animated_pool.mutex());
+        TextureInput input;
+        input.debug_page_name = "PC-EYE-ANIMATED-TEST";
+        input.debug_name = "requested-static-source";
+        input.id = kRequestedEyeSourceId;
+        input.gpu_texture = source_handle;
+        input.src_data = reinterpret_cast<const u8*>(source_pixels.data());
+        input.w = 2;
+        input.h = 2;
+        animated_pool.give_texture_and_load_to_vram(input, kSecondSourceTbp);
+
+        input.debug_name = "runtime-animated-source";
+        input.id = animated_pool.allocate_pc_port_texture(GameVersion::Jak2);
+        input.gpu_texture = second_source_handle;
+        input.src_data = reinterpret_cast<const u8*>(second_source_pixels.data());
+        animated_pool.give_texture_and_load_to_vram(input, kSourceTbp);
+      }
+      const auto animated_chain =
+          make_eye_chain_with_sources(0, kSourceTbp, kSourceTbp, kSourceTbp, kRequestedEyeSourceId,
+                                      kRequestedEyeSourceId, kRequestedEyeSourceId);
+      animated_source_run = run_eye_vertex_storage_case(false, device, queue, &animated_pool,
+                                                        &pso_cache, &sampler_cache, animated_chain);
+    }
+    check(animated_source_run.readback_completed &&
+              animated_source_run.stats.aliased_source_resolutions == 0 &&
+              animated_source_run.stats.missing_textures == 0 &&
+              animated_source_run.stats.command_buffer_errors == 0 &&
+              animated_source_run.stats.diagnostic_output_corners == second_source_pixels,
+          "different-page runtime eye animations remain authoritative over the shader identity");
 
     {
       MetalEyeRenderer renderer("jak2-eyes", 0, device, queue);

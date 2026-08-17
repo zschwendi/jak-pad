@@ -48,6 +48,7 @@ class MetalEyeRenderer : public MetalBucketRenderer {
     int placeholder_iris_textures = 0;
     int placeholder_pupil_textures = 0;
     int placeholder_lid_textures = 0;
+    int aliased_source_resolutions = 0;
     u32 first_placeholder_component = 0;
     u32 first_placeholder_tbp = 0;
     u64 first_placeholder_handle = 0;
