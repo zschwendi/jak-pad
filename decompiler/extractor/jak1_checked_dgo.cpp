@@ -372,7 +372,10 @@ Result<Archive> parse_expanded(std::span<const std::uint8_t> input,
   archive.internal_name = archive_name.take_value();
   archive.expanded_size = input.size();
   try {
-    archive.objects.reserve(object_count);
+    archive.objects.reserve(options.retained_internal_names.empty()
+                                ? object_count
+                                : std::min<std::size_t>(object_count,
+                                                        options.retained_internal_names.size()));
   } catch (const std::bad_alloc&) {
     return Result<Archive>::failure(
         make_error(ErrorCode::allocation_failed, 0, "Could not allocate the DGO object table."));
@@ -446,26 +449,33 @@ Result<Archive> parse_expanded(std::span<const std::uint8_t> input,
           "The DGO contains object names that remain ambiguous after size disambiguation.", index));
     }
 
-    Object object;
-    object.internal_name = object_name.take_value();
-    object.unique_name = unique_name.take_value();
-    try {
-      object.data.resize(object_size);
-      std::size_t copied = 0;
-      while (copied < object_size) {
-        if (auto error = cancellation_error(options, data_offset + copied,
-                                             "Copying a DGO object was cancelled.", index)) {
-          return Result<Archive>::failure(std::move(*error));
+    const bool retain_object =
+        options.retained_internal_names.empty() ||
+        std::find(options.retained_internal_names.begin(), options.retained_internal_names.end(),
+                  object_name.value()) != options.retained_internal_names.end();
+    if (retain_object) {
+      Object object;
+      object.archive_index = index;
+      object.internal_name = object_name.take_value();
+      object.unique_name = unique_name.take_value();
+      try {
+        object.data.resize(object_size);
+        std::size_t copied = 0;
+        while (copied < object_size) {
+          if (auto error = cancellation_error(options, data_offset + copied,
+                                               "Copying a DGO object was cancelled.", index)) {
+            return Result<Archive>::failure(std::move(*error));
+          }
+          const auto chunk = std::min(options.file_read_chunk_bytes, object_size - copied);
+          std::memcpy(object.data.data() + copied, input.data() + data_offset + copied, chunk);
+          copied += chunk;
         }
-        const auto chunk = std::min(options.file_read_chunk_bytes, object_size - copied);
-        std::memcpy(object.data.data() + copied, input.data() + data_offset + copied, chunk);
-        copied += chunk;
+        archive.objects.push_back(std::move(object));
+      } catch (const std::bad_alloc&) {
+        return Result<Archive>::failure(make_error(ErrorCode::allocation_failed, data_offset,
+                                                   "Could not allocate a DGO object payload.",
+                                                   index));
       }
-      archive.objects.push_back(std::move(object));
-    } catch (const std::bad_alloc&) {
-      return Result<Archive>::failure(make_error(ErrorCode::allocation_failed, data_offset,
-                                                 "Could not allocate a DGO object payload.",
-                                                 index));
     }
 
     if (!align_up(data_end, kObjectAlignment, &offset) || offset > input.size()) {

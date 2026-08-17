@@ -471,6 +471,7 @@ Result<Inputs> build(const ValidatedTree& tree,
     dgo_options.max_objects = options.limits.max_archive_objects;
     dgo_options.max_expansion_ratio = options.limits.max_archive_expansion_ratio;
     dgo_options.file_read_chunk_bytes = options.limits.file_read_chunk_bytes;
+    dgo_options.retained_internal_names = {contract.value().directory_internal_name};
     auto game_identity =
         required_identity(identities.value(), std::string(kGameArchivePath), options);
     if (!game_identity) {
@@ -514,18 +515,17 @@ Result<Inputs> build(const ValidatedTree& tree,
 
     const jak1_checked_dgo::Object* directory_object = nullptr;
     std::optional<std::uint32_t> directory_index;
-    for (std::size_t index = 0; index < archive.value().objects.size(); ++index) {
-      const auto& object = archive.value().objects[index];
+    for (const auto& object : archive.value().objects) {
       if (object.internal_name != contract.value().directory_internal_name) {
         continue;
       }
       if (directory_object) {
         return Result<Inputs>::failure(
             make_error(ErrorCode::duplicate_retail_object, "GAME.CGO repeats dir-tpages.",
-                       std::string(kGameArchivePath), static_cast<std::uint32_t>(index)));
+                       std::string(kGameArchivePath), object.archive_index));
       }
       directory_object = &object;
-      directory_index = static_cast<std::uint32_t>(index);
+      directory_index = object.archive_index;
     }
     if (!directory_object || directory_object->data.empty()) {
       return Result<Inputs>::failure(make_error(ErrorCode::missing_retail_object,

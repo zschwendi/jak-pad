@@ -189,6 +189,39 @@ bool valid_compressed_raw_chunk_fixture() {
   return true;
 }
 
+bool selective_retention_preserves_validation_and_indices() {
+  const std::vector<FixtureObject> objects = {
+      {"first", std::vector<std::uint8_t>(4096, 0x11)},
+      {"selected", {4, 5, 6}},
+      {"last", std::vector<std::uint8_t>(4096, 0x22)},
+  };
+  const auto raw = make_raw_dgo("SELECT.CGO", objects);
+  jak1_checked_dgo::Options options;
+  options.retained_internal_names = {"selected"};
+
+  auto result = jak1_checked_dgo::read(raw, "SELECT.CGO", options);
+  CHECK(result);
+  CHECK(result.value().objects.size() == 1);
+  CHECK(result.value().objects[0].archive_index == 1);
+  CHECK(result.value().objects[0].internal_name == "selected");
+  CHECK(result.value().objects[0].data == std::vector<std::uint8_t>({4, 5, 6}));
+
+  const auto compressed = make_blzo(raw);
+  CHECK(!compressed.empty());
+  result = jak1_checked_dgo::read(compressed, "SELECT.CGO", options);
+  CHECK(result);
+  CHECK(result.value().objects.size() == 1);
+  CHECK(result.value().objects[0].archive_index == 1);
+  CHECK(result.value().objects[0].data == std::vector<std::uint8_t>({4, 5, 6}));
+
+  options.max_total_object_bytes = objects[0].data.size() + objects[1].data.size();
+  result = jak1_checked_dgo::read(raw, "SELECT.CGO", options);
+  CHECK(!result);
+  CHECK(result.error().code == ErrorCode::total_object_size_limit_exceeded);
+  CHECK(result.error().object_index == 2);
+  return true;
+}
+
 bool rejects_truncation_and_trailing_data() {
   auto truncated = make_raw_dgo("BAD.DGO", {{"tiny", {1, 2, 3}}});
   truncated.pop_back();
@@ -480,6 +513,8 @@ int main() {
       {"rejects_ambiguous_duplicate_names", rejects_ambiguous_duplicate_names},
       {"valid_compressed_fixture", valid_compressed_fixture},
       {"valid_compressed_raw_chunk_fixture", valid_compressed_raw_chunk_fixture},
+      {"selective_retention_preserves_validation_and_indices",
+       selective_retention_preserves_validation_and_indices},
       {"rejects_truncation_and_trailing_data", rejects_truncation_and_trailing_data},
       {"rejects_bad_headers_and_names", rejects_bad_headers_and_names},
       {"rejects_malformed_art_group_marker_and_reserved_name",

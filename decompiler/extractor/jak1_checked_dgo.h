@@ -77,6 +77,7 @@ class Result {
 };
 
 struct Object {
+  std::uint32_t archive_index = 0;
   std::string internal_name;
   std::string unique_name;
   std::vector<std::uint8_t> data;
@@ -109,6 +110,9 @@ struct Options {
   std::size_t file_read_chunk_bytes = 256 * 1024;
   GameVersion game_version = GameVersion::Jak1;
   std::optional<checked_file_identity::Identity> expected_input;
+  /// Empty retains every validated object. Otherwise the reader still validates the complete
+  /// archive while retaining payload bytes only for matching internal names.
+  std::vector<std::string> retained_internal_names;
   CancelCallback should_cancel;
 };
 
