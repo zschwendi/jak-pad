@@ -263,7 +263,7 @@ u64 gmerc_warp_tex0() {
          (1ull << 34);
 }
 
-std::vector<u8> make_gmerc_warp_fragment() {
+std::vector<u8> make_gmerc_warp_fragment(bool zero_triangles = false) {
   std::vector<u8> bytes(112, 0);
   float matrix[16] = {};
   matrix[0] = 1.f;
@@ -301,9 +301,9 @@ std::vector<u8> make_gmerc_warp_fragment() {
     append_gmerc_warp_u32(&bytes, 0x80808080);
   }
   append_gmerc_warp_u32(&bytes, gmerc_warp_vif(VifCode::Kind::UNPACK_V2_16, 0, 4));
-  constexpr s16 s = 2048;
   constexpr s16 t = 2912;
   for (int i = 0; i < 4; ++i) {
+    const s16 s = zero_triangles && i >= 2 ? 2049 : 2048;
     const auto offset = bytes.size();
     bytes.resize(offset + 4);
     std::memcpy(bytes.data() + offset, &s, sizeof(s));
@@ -799,7 +799,9 @@ void make_warp_texture_mixed_chain() {
           kWarpTextureUploadTailOffset);
 }
 
-void make_gmerc_warp_chain(u32 fragments, bool short_setup = false) {
+void make_gmerc_warp_chain(u32 fragments,
+                           bool short_setup = false,
+                           bool zero_triangles = false) {
   make_empty_chain();
   auto* ee = static_cast<u8*>(g_ee_main_mem);
   const u32 bucket_offset = kChainOffset + kGmercWarpBucket * 16;
@@ -829,7 +831,7 @@ void make_gmerc_warp_chain(u32 fragments, bool short_setup = false) {
          gmerc_warp_vif(VifCode::Kind::STMOD));
   append({}, 0, 0);
   if (fragments == 1) {
-    append(make_gmerc_warp_fragment(), gmerc_warp_stcycl(4, 4),
+    append(make_gmerc_warp_fragment(zero_triangles), gmerc_warp_stcycl(4, 4),
            gmerc_warp_vif(VifCode::Kind::UNPACK_V4_32, 0x8000, 12));
   } else if (fragments == 2) {
     append(make_gmerc_warp_continued_fragment_transfer(), gmerc_warp_stcycl(4, 4),
@@ -2638,14 +2640,32 @@ int main() {
             metal_texture_live_count() == gmerc_warp_initial_live_count + 1,
         "bucket 317 renders its continued-fragment plan from one stable framebuffer snapshot");
 
+  make_gmerc_warp_chain(1, false, true);
+  gmerc_warp_callbacks.send_chain(g_ee_main_mem, kChainOffset);
+  check(goal_jak2_metal_host_get_metrics(gmerc_warp_host, &gmerc_warp_metrics) &&
+            gmerc_warp_metrics.chains == 6 && gmerc_warp_metrics.completed_chains == 6 &&
+            gmerc_warp_metrics.failed_chains == 0 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.callback_dispatches == 6 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.completed_executions == 6 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.last_actual_fragments == 1 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.last_actual_draw_buckets == 1 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.last_actual_draws == 1 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.last_actual_triangles == 0 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.last_snapshot_publications == 1 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.last_snapshot_copies == 1 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.last_snapshot_failures == 0 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.last_snapshot_texture ==
+                gmerc_warp_snapshot_handle,
+        "a source-valid degenerate warp draw with zero emitted triangles remains non-fatal");
+
   const uint64_t gmerc_warp_valid_copied_bytes = gmerc_warp_metrics.last_copied_bytes;
 
   make_malformed_gmerc_warp_chain();
   gmerc_warp_callbacks.send_chain(g_ee_main_mem, kChainOffset);
   check(goal_jak2_metal_host_get_metrics(gmerc_warp_host, &gmerc_warp_metrics) &&
-            gmerc_warp_metrics.chains == 6 && gmerc_warp_metrics.completed_chains == 5 &&
+            gmerc_warp_metrics.chains == 7 && gmerc_warp_metrics.completed_chains == 6 &&
             gmerc_warp_metrics.failed_chains == 1 &&
-            gmerc_warp_metrics.gmerc_warp_bucket317.observations == 6 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317.observations == 7 &&
             gmerc_warp_metrics.gmerc_warp_bucket317.malformed == 1 &&
             gmerc_warp_metrics.gmerc_warp_bucket317.last_transfer_count == 0 &&
             gmerc_warp_metrics.gmerc_warp_bucket317.last_fragment_count == 0 &&
@@ -2655,8 +2675,8 @@ int main() {
             gmerc_warp_metrics.gmerc_warp_bucket317.last_payload_bytes == 0 &&
             gmerc_warp_metrics.gmerc_warp_bucket317.last_semantic_fingerprint == 0 &&
             gmerc_warp_metrics.gmerc_warp_bucket317.last_variant == 3 &&
-            gmerc_warp_metrics.gmerc_warp_bucket317_execution.callback_dispatches == 5 &&
-            gmerc_warp_metrics.gmerc_warp_bucket317_execution.completed_executions == 5 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.callback_dispatches == 6 &&
+            gmerc_warp_metrics.gmerc_warp_bucket317_execution.completed_executions == 6 &&
             gmerc_warp_metrics.last_copied_bytes == gmerc_warp_valid_copied_bytes &&
             gmerc_warp_metrics.texture_uploads == 0 &&
             metal_texture_live_count() == gmerc_warp_initial_live_count + 1,

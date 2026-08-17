@@ -2463,7 +2463,6 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         warp_has_fragments
             ? (warp_execution.last_actual_draw_buckets > 0 &&
                warp_execution.last_actual_draws == warp_execution.last_actual_draw_buckets &&
-               warp_execution.last_actual_triangles > 0 &&
                warp_execution.last_snapshot_texture != 0)
             : (warp_execution.last_actual_draw_buckets == 0 &&
                warp_execution.last_actual_draws == 0 &&
