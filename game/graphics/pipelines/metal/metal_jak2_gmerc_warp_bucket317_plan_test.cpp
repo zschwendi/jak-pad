@@ -261,6 +261,18 @@ void test_fragments_and_relocation() {
             two->vertex_count == 8 && two->adgif_count == 2 && two->payload_bytes == 976,
         "the source parser's continued-fragment form is captured without drawing");
 
+  auto metadata_vif0 = make_chain(2);
+  put_u32(&metadata_vif0.memory, metadata_vif0.continued_mscal_tag_offset + 8, 0x00000040);
+  const auto metadata = plan(metadata_vif0);
+  check(metadata && metadata->variant == Variant::Fragments &&
+            metadata->transfer_count == two->transfer_count &&
+            metadata->fragment_count == two->fragment_count &&
+            metadata->continued_fragment_count == two->continued_fragment_count &&
+            metadata->vertex_count == two->vertex_count &&
+            metadata->adgif_count == two->adgif_count &&
+            metadata->payload_bytes == two->payload_bytes,
+        "continued MSCAL accepts the DMA control metadata ignored by the executable parser");
+
   const auto one_vertex_continued = plan(make_chain(2, false, kChainOffset, kDataOffset, 1, 1));
   check(one_vertex_continued && one_vertex_continued->variant == Variant::Fragments &&
             one_vertex_continued->fragment_count == 2 &&

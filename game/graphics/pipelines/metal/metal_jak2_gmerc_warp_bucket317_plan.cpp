@@ -504,7 +504,6 @@ std::optional<Jak2GmercWarpBucket317Plan> plan_jak2_gmerc_warp_bucket317(
         return std::nullopt;
       }
       if (index + 1 >= transfer_count || transfers[index + 1].payload_bytes != 0 ||
-          !is_kind(transfers[index + 1].vif0, VifCode::Kind::NOP) ||
           !is_kind(transfers[index + 1].vif1, VifCode::Kind::MSCAL)) {
         set_rejection(out_rejection, out_rejection_transfer_index,
                       Jak2GmercWarpBucket317RejectReason::ContinuedMscalGrammar, index + 1);
