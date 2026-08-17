@@ -524,13 +524,19 @@
        )
       )
     )
+  :exit (behavior ()
+    (goalpad-face-prompt-touch-clear! self)
+    )
   :code (behavior ()
     (remove-setting! 'allow-progress)
     (set-time! (-> self state-time))
     (update-transforms (-> self root))
     (until #f
       (handle-notice self)
-      (when (and (and *target*
+      (let ((goalpad-face-prompt? #f)
+            (goalpad-face-prompt-accepted? #f)
+            )
+        (when (and (and *target*
                       (and (>= (-> self distance) (vector-vector-distance (-> self root trans) (-> *target* control trans)))
                            (not (logtest? (focus-status teleporting) (-> *target* focus-status)))
                            )
@@ -565,8 +571,12 @@
                      )
                    (time-elapsed? (-> self state-time) (seconds 0.1))
                    )
-          (if (and (cpad-pressed? 0 triangle) (process-grab? *target* #f))
-              (go-virtual use (-> self continue))
+          (set! goalpad-face-prompt-accepted? (and (cpad-pressed? 0 triangle) (process-grab? *target* #f)))
+          (if goalpad-face-prompt-accepted?
+              (begin
+                (goalpad-face-prompt-touch-clear! self)
+                (go-virtual use (-> self continue))
+                )
               )
           (script-eval (-> self on-close))
           (let ((gp-0
@@ -585,7 +595,15 @@
               (bucket-id progress)
               )
             )
+          (when (not goalpad-face-prompt-accepted?)
+            (set! goalpad-face-prompt? #t)
+            )
           )
+        )
+        (if goalpad-face-prompt?
+            (goalpad-face-prompt-touch-publish! self (pad-buttons triangle))
+            (goalpad-face-prompt-touch-clear! self)
+            )
         )
       (cond
         ((-> self continue)

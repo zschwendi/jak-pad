@@ -1,6 +1,50 @@
 ;;-*-Lisp-*-
 (in-package goal)
 
+(deftype goalpad-face-prompt-touch-snapshot (basic)
+  ((revision          int32  :offset-assert 4)
+   (sequence          int32  :offset-assert 8)
+   (requested-buttons uint32 :offset-assert 12)
+   (owner             handle :offset-assert 16)
+   (heartbeat         int32  :offset-assert 24))
+  :method-count-assert 9
+  :size-assert #x1c)
+
+(define *goalpad-face-prompt-touch-snapshot*
+  (new 'static
+       'goalpad-face-prompt-touch-snapshot
+       :revision 1
+       :sequence 0
+       :requested-buttons 0
+       :heartbeat 0))
+
+(define *goalpad-face-prompt-touch-owner* (the-as process #f))
+
+(defun goalpad-face-prompt-touch-publish! ((owner process) (requested-buttons pad-buttons))
+  (when (and owner (nonzero? (the-as uint requested-buttons)))
+    (cond
+      ((and (= *goalpad-face-prompt-touch-owner* owner)
+            (= (-> *goalpad-face-prompt-touch-snapshot* requested-buttons) (the-as uint requested-buttons)))
+       (+! (-> *goalpad-face-prompt-touch-snapshot* heartbeat) 1))
+      (else
+       (+! (-> *goalpad-face-prompt-touch-snapshot* sequence) 1)
+       (set! *goalpad-face-prompt-touch-owner* owner)
+       (set! (-> *goalpad-face-prompt-touch-snapshot* requested-buttons) (the-as uint requested-buttons))
+       (set! (-> *goalpad-face-prompt-touch-snapshot* owner) (process->handle owner))
+       (set! (-> *goalpad-face-prompt-touch-snapshot* heartbeat) 1)
+       (+! (-> *goalpad-face-prompt-touch-snapshot* sequence) 1))))
+  (none))
+
+(defun goalpad-face-prompt-touch-clear! ((owner process))
+  (when (= *goalpad-face-prompt-touch-owner* owner)
+    (+! (-> *goalpad-face-prompt-touch-snapshot* sequence) 1)
+    (set! *goalpad-face-prompt-touch-owner* (the-as process #f))
+    (set! (-> *goalpad-face-prompt-touch-snapshot* requested-buttons) 0)
+    (set! (-> *goalpad-face-prompt-touch-snapshot* owner) (the-as handle 0))
+    (set! (-> *goalpad-face-prompt-touch-snapshot* heartbeat) 0)
+    (+! (-> *goalpad-face-prompt-touch-snapshot* sequence) 1))
+  (none))
+
 ;; name: process-taskable.gc
 ;; name in dgo: process-taskable
 ;; dgos: GAME, COMMON
@@ -145,10 +189,13 @@
     (set-time! (-> self state-time))
     )
   :exit (behavior ()
+    (goalpad-face-prompt-touch-clear! self)
     (logclear! (-> self draw status) (draw-control-status no-draw))
     )
   :trans (behavior ()
-    (let ((gp-0 (get-current-task-event (-> self task))))
+    (let ((gp-0 (get-current-task-event (-> self task)))
+          (goalpad-face-prompt? #f)
+          )
       (cond
         ((= (-> gp-0 action) (game-task-action hide))
          (if (or (not (logtest? (-> self draw status) (draw-control-status on-screen)))
@@ -246,7 +293,10 @@
                (set! (-> s5-1 flags) (font-flags shadow kerning middle-vert large))
                (print-game-text (lookup-text! *common-text* (-> self talk-message) #f) s5-1 #f 44 (bucket-id progress))
                )
+             (set! goalpad-face-prompt? #t)
              (when (cpad-pressed? 0 triangle)
+               (set! goalpad-face-prompt? #f)
+               (goalpad-face-prompt-touch-clear! self)
                (logclear! (-> *cpad-list* cpads 0 button0-abs 0) (pad-buttons triangle))
                (logclear! (-> *cpad-list* cpads 0 button0-rel 0) (pad-buttons triangle))
                (case (-> gp-0 action)
@@ -262,6 +312,10 @@
            )
          )
         )
+      (if goalpad-face-prompt?
+          (goalpad-face-prompt-touch-publish! self (pad-buttons triangle))
+          (goalpad-face-prompt-touch-clear! self)
+          )
       )
     (process-taskable-method-37 self)
     )

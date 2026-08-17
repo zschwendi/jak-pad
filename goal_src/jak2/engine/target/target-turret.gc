@@ -893,13 +893,17 @@
     (base-turret-method-43 self)
     (set! (-> self focus-status) (focus-status disable ignore inactive))
     )
+  :exit (behavior ()
+    (goalpad-face-prompt-touch-clear! self)
+    )
   :code (behavior ()
     (ja-channel-set! 1)
     (ja :group! (-> self draw art-group data 2))
     0.0
     (let ((f30-0 20480.0))
       (until #f
-        (when (and (and *target*
+        (let ((goalpad-face-prompt? #f))
+          (when (and (and *target*
                         (and (>= f30-0 (vector-vector-distance (-> self root trans) (-> *target* control trans)))
                              (not (logtest? (focus-status teleporting) (-> *target* focus-status)))
                              )
@@ -937,7 +941,10 @@
               (bucket-id progress)
               )
             )
+          (set! goalpad-face-prompt? #t)
           (when (and (cpad-pressed? 0 triangle) (send-event *target* 'change-mode 'turret self))
+            (set! goalpad-face-prompt? #f)
+            (goalpad-face-prompt-touch-clear! self)
             (set! (-> self rider) (process->handle *target*))
             (let ((gp-2 (res-lump-struct (-> self entity) 'on-exit structure)))
               (if (and gp-2 (not *scene-player*))
@@ -946,6 +953,11 @@
               )
             (go-virtual setup)
             )
+          )
+          (if goalpad-face-prompt?
+              (goalpad-face-prompt-touch-publish! self (pad-buttons triangle))
+              (goalpad-face-prompt-touch-clear! self)
+              )
           )
         ;; og:preserve-this target-look-at-me! macro
         (target-look-at-me! :trans (vector+! (new 'stack-no-clear 'vector) (the-as vector (-> self root root-prim prim-core)) (new 'static 'vector :y 2048.0 :w 1.0)))

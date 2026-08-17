@@ -143,6 +143,7 @@
 
 (defmethod deactivate ((this vehicle))
   "Make a process dead, clean it up, remove it from the active pool, and return to dead pool."
+  (goalpad-face-prompt-touch-clear! this)
   (vehicle-method-110 this)
   (call-parent-method this)
   (none)
@@ -177,7 +178,8 @@
   )
 
 (defmethod check-player-get-on ((this vehicle))
-  (with-pp
+  (let ((goalpad-face-prompt? #f))
+    (with-pp
     (when (< (-> this player-dist2) (square 102400.0))
       (let ((s5-0 (new 'stack-no-clear 'mystery-vehicle-type)))
         (set! (-> s5-0 floats 4) (+ 8192.0 (-> this root root-prim local-sphere w)))
@@ -333,10 +335,13 @@
                     (bucket-id progress)
                     )
                   )
+                (set! goalpad-face-prompt? #t)
                 (when (cpad-pressed? 0 triangle)
                   (cond
                     (s4-1
                       (when (send-event *target* 'change-mode 'pilot this 0 #f)
+                        (set! goalpad-face-prompt? #f)
+                        (goalpad-face-prompt-touch-clear! this)
                         (logior! (-> this flags) (rigid-body-object-flag player-driving))
                         (logclear! (-> this flags) (rigid-body-object-flag ai-driving))
                         (vehicle-method-87 this)
@@ -346,7 +351,11 @@
                       (set! (-> s5-0 handles 0) (process->handle this))
                       (mem-copy! (the-as pointer *pilot-edge-grab-info*) (the-as pointer (-> s5-0 vectors)) 40)
                       (if (send-event *target* 'pilot-edge-grab *pilot-edge-grab-info*)
-                          (format 0 "vehicle::check-player-get-on: (send-event *target* 'pilot-edge-grab self)~%")
+                          (begin
+                            (set! goalpad-face-prompt? #f)
+                            (goalpad-face-prompt-touch-clear! this)
+                            (format 0 "vehicle::check-player-get-on: (send-event *target* 'pilot-edge-grab self)~%")
+                            )
                           )
                       )
                     )
@@ -368,7 +377,12 @@
         (vehicle-method-88 this)
         )
       )
-    0
+    (if goalpad-face-prompt?
+        (goalpad-face-prompt-touch-publish! this (pad-buttons triangle))
+        (goalpad-face-prompt-touch-clear! this)
+        )
+    )
+  0
     (none)
     )
   )
