@@ -231,6 +231,7 @@
 (define-extern pc-send-trigger-rumble! (function int int int none))
 
 ;; Display Related Functions
+(define-extern pc-host-manages-display? (function symbol))
 (define-extern pc-get-display-mode (function symbol))
 (define-extern pc-get-active-display-size (function (pointer int64) (pointer int64) none))
 (define-extern pc-get-active-display-refresh-rate (function int))

@@ -576,14 +576,18 @@
   )
 
 (defmethod get-state-check-card ((this progress) (arg0 symbol))
-  (let ((v1-0 *progress-save-info*)
-        (v0-0 arg0)
-        )
-    (when v1-0
-      (when (and v1-0 (= (-> this menu-transition) 0.0))
-        (case arg0
-          (('insufficient-space 'no-memory-card 'unformatted-card)
-           (cond
+  (#if PC_PORT
+    ;; PC saves are ordinary files, so a physical-card state is never meaningful.  The host
+    ;; operation still reports real read/write failures through the existing save result path.
+    arg0
+    (let ((v1-0 *progress-save-info*)
+          (v0-0 arg0)
+          )
+      (when v1-0
+        (when (and v1-0 (= (-> this menu-transition) 0.0))
+          (case arg0
+            (('insufficient-space 'no-memory-card 'unformatted-card)
+             (cond
              ((zero? (-> v1-0 handle))
               (set! v0-0 'no-memory-card)
               )
@@ -609,14 +613,14 @@
                (set! v0-0 'select-save)
                )
              )
-           )
-          (('insert-card)
-           (if (= (-> v1-0 inited) 1)
-               (set! v0-0 'select-load)
                )
-           )
-          )
-        (cond
+            (('insert-card)
+             (if (= (-> v1-0 inited) 1)
+                 (set! v0-0 'select-load)
+                 )
+               )
+            )
+          (cond
           ((zero? (-> v1-0 handle))
            (cond
              ((-> *setting-control* user-current auto-save)
@@ -668,7 +672,8 @@
           )
         )
       )
-    v0-0
+      v0-0
+      )
     )
   )
 

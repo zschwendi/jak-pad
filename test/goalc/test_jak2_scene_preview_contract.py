@@ -280,6 +280,16 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         self.assertLess(dispatch, preview)
         self.assertIn("had_pending_preview && !g_scene_preview_pending", self.runtime[preview:])
 
+    def test_pc_progress_never_routes_native_files_through_physical_card_states(self) -> None:
+        card_state = extract_goal_form(
+            self.progress,
+            "(defmethod get-state-check-card ((this progress) (arg0 symbol))",
+        )
+        self.assertIn("(#if PC_PORT\n    ;; PC saves are ordinary files", card_state)
+        self.assertLess(card_state.index("arg0"), card_state.index("*progress-save-info*"))
+        self.assertIn("'no-memory-card", card_state)
+        self.assertIn("'insert-card", card_state)
+
     def test_boot_cli_uses_a_unique_temp_save_and_detects_any_persistence(self) -> None:
         self.assertIn('arg == "--preview-scene"', self.boot)
         self.assertIn("goal_jak2_runtime_request_scene_preview", self.boot)
