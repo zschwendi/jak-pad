@@ -9,6 +9,7 @@ PROGRESS = ROOT / "goal_src/jak2/engine/ui/progress/progress.gc"
 PROGRESS_STATIC = ROOT / "goal_src/jak2/engine/ui/progress/progress-static.gc"
 CITY_SCENES = ROOT / "goal_src/jak2/levels/city/ctywide-scenes.gc"
 TITLE_OBS = ROOT / "goal_src/jak2/levels/title/title-obs.gc"
+SCENE = ROOT / "goal_src/jak2/engine/scene/scene.gc"
 RUNTIME = ROOT / "game/kernel/core/jak2_runtime.cpp"
 RUNTIME_HEADER = ROOT / "game/kernel/core/jak2_runtime.h"
 BOOT_TEST = ROOT / "game/kernel/core/jak2_boot_test.cpp"
@@ -54,6 +55,7 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         cls.progress_static = PROGRESS_STATIC.read_text()
         cls.city_scenes = CITY_SCENES.read_text()
         cls.title_obs = TITLE_OBS.read_text()
+        cls.scene = SCENE.read_text()
         cls.runtime = RUNTIME.read_text()
         cls.runtime_header = RUNTIME_HEADER.read_text()
         cls.boot = BOOT_TEST.read_text()
@@ -91,6 +93,18 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         self.assertIn(
             "(scene-player-preview name (-> (the hud-scene-info scene-info) continue))",
             lookup,
+        )
+        self.assertIn("(set! *pc-scene-preview-active* #t)", lookup)
+
+    def test_host_preview_returns_to_title_without_the_secret_memcard_gate(self) -> None:
+        release = extract_goal_form(self.scene, "(defstate release (scene-player)")
+        preview_branch = extract_goal_form(release, "(if *pc-scene-preview-active*")
+        self.assertIn("(set! *pc-scene-preview-active* #f)", preview_branch)
+        self.assertIn("(activate-progress *dproc* 'title)", preview_branch)
+        self.assertIn("(activate-progress *dproc* 'select-scene-special)", preview_branch)
+        self.assertLess(
+            preview_branch.index("(set! *pc-scene-preview-active* #f)"),
+            preview_branch.index("(activate-progress *dproc* 'title)"),
         )
 
     def test_menu_and_host_helper_share_one_preview_path(self) -> None:
@@ -244,6 +258,7 @@ class Jak2ScenePreviewContractTest(unittest.TestCase):
         self.assertIn(
             "(define *pc-scene-preview-request* (the-as string #f))", self.progress
         )
+        self.assertIn("(define *pc-scene-preview-active* #f)", self.progress)
         self.assertIn(
             "(define-extern pc-preview-scene-by-name (function string object))",
             self.progress,

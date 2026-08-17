@@ -66,6 +66,7 @@
 (define *progress-state* (new 'static 'progress-global-state :which-slot -1 :last-slot-saved -1))
 
 (define *pc-scene-preview-request* (the-as string #f))
+(define *pc-scene-preview-active* #f)
 
 (kmemopen global "mc-slot-info")
 
@@ -3007,7 +3008,10 @@
            )
          )
     (if scene-info
-        (scene-player-preview name (-> (the hud-scene-info scene-info) continue))
+        (begin
+          (set! *pc-scene-preview-active* #t)
+          (scene-player-preview name (-> (the hud-scene-info scene-info) continue))
+          )
         #f
         )
     )
