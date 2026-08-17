@@ -14,6 +14,7 @@ constexpr u32 kDataOffset = 0x4000;
 constexpr std::size_t kMemorySize = 0x40000;
 
 using Plan = metal_renderer::Jak2GmercWarpBucket317Plan;
+using RejectReason = metal_renderer::Jak2GmercWarpBucket317RejectReason;
 using Variant = metal_renderer::Jak2GmercWarpBucket317Variant;
 
 void check(bool condition, const char* message) {
@@ -103,6 +104,8 @@ struct Fixture {
   u32 data_offset = 0;
   u32 constants_payload_offset = 0;
   u32 fragment_payload_offset = 0;
+  u32 continued_mscal_tag_offset = 0;
+  u32 terminator_tag_offset = 0;
   u32 final_tag_offset = 0;
 };
 
@@ -164,29 +167,64 @@ Fixture make_chain(u32 fragments,
     }
     append(std::vector<u8>(continued_position_bytes, 0xbc), 0,
            vif(VifCode::Kind::UNPACK_V3_32, 0, continued_vertices));
-    append({}, 0, vif(VifCode::Kind::MSCAL, 0x24));
+    fixture.continued_mscal_tag_offset = append({}, 0, vif(VifCode::Kind::MSCAL, 0x24));
   }
-  append(std::vector<u8>(160, 0xde), vif(VifCode::Kind::FLUSHA),
-         vif(VifCode::Kind::DIRECT, 10));
+  fixture.terminator_tag_offset =
+      append(std::vector<u8>(160, 0xde), vif(VifCode::Kind::FLUSHA),
+             vif(VifCode::Kind::DIRECT, 10));
   fixture.final_tag_offset = cursor;
   append({}, 0, 0, DmaTag::Kind::NEXT, next_bucket);
   return fixture;
 }
 
 std::optional<Plan> plan(const Fixture& fixture,
-                         u32 bucket_id = metal_renderer::kJak2GmercWarpBucket) {
+                         u32 bucket_id = metal_renderer::kJak2GmercWarpBucket,
+                         RejectReason* rejection = nullptr,
+                         u32* rejection_transfer_index = nullptr) {
   return metal_renderer::plan_jak2_gmerc_warp_bucket317(
-      fixture.memory.data(), fixture.memory.size(), fixture.chain_offset, bucket_id);
+      fixture.memory.data(), fixture.memory.size(), fixture.chain_offset, bucket_id, rejection,
+      rejection_transfer_index);
+}
+
+void expect_rejection(const Fixture& fixture,
+                      RejectReason expected_reason,
+                      u32 expected_transfer_index,
+                      const char* message,
+                      u32 bucket_id = metal_renderer::kJak2GmercWarpBucket) {
+  RejectReason rejection = RejectReason::None;
+  u32 rejection_transfer_index = metal_renderer::kJak2GmercWarpNoTransferIndex;
+  check(!plan(fixture, bucket_id, &rejection, &rejection_transfer_index) &&
+            rejection == expected_reason && rejection_transfer_index == expected_transfer_index,
+        message);
+}
+
+Fixture make_payload_limit_chain() {
+  constexpr u16 kMaximumQwc = std::numeric_limits<u16>::max();
+  constexpr u32 kPayloadOffset = 0x10000;
+  constexpr u32 kPayloadBytes = static_cast<u32>(kMaximumQwc) * 16;
+  Fixture fixture{std::vector<u8>(kPayloadOffset + kPayloadBytes + 16), kChainOffset, kDataOffset};
+  const u32 next_bucket = kChainOffset + (metal_renderer::kJak2GmercWarpBucket + 1) * 16;
+  put_tag(&fixture.memory, bucket_offset(kChainOffset), DmaTag::Kind::NEXT, 0, kDataOffset, 0, 0);
+  for (u32 i = 0; i < 17; ++i) {
+    put_tag(&fixture.memory, kDataOffset + i * 16, DmaTag::Kind::REF, kMaximumQwc,
+            kPayloadOffset, 0, 0);
+  }
+  put_tag(&fixture.memory, kDataOffset + 17 * 16, DmaTag::Kind::NEXT, 0, next_bucket, 0, 0);
+  return fixture;
 }
 
 void test_absent_and_setup_only() {
   Fixture absent{std::vector<u8>(kMemorySize), kChainOffset, kDataOffset};
   put_tag(&absent.memory, bucket_offset(kChainOffset), DmaTag::Kind::CNT, 0, 0, 0, 0);
-  const auto absent_plan = plan(absent);
+  RejectReason rejection = RejectReason::TrailingTransfer;
+  u32 rejection_transfer_index = 7;
+  const auto absent_plan = plan(absent, metal_renderer::kJak2GmercWarpBucket, &rejection,
+                                &rejection_transfer_index);
   check(absent_plan && absent_plan->variant == Variant::Absent &&
             absent_plan->transfer_count == 1 && absent_plan->payload_bytes == 0 &&
-            absent_plan->semantic_fingerprint != 0,
-        "the synthetic zero-CNT empty bucket is classified as absent");
+            absent_plan->semantic_fingerprint != 0 && rejection == RejectReason::None &&
+            rejection_transfer_index == metal_renderer::kJak2GmercWarpNoTransferIndex,
+        "a valid empty bucket clears stale rejection diagnostics");
 
   Fixture source_absent{std::vector<u8>(kMemorySize), kChainOffset, kDataOffset};
   const u32 next_bucket = kChainOffset + (metal_renderer::kJak2GmercWarpBucket + 1) * 16;
@@ -253,26 +291,64 @@ void test_fragments_and_relocation() {
 }
 
 void test_malformed_rejections() {
-  check(!plan(make_chain(1), metal_renderer::kJak2GmercWarpBucket - 1),
-        "every other bucket ID is rejected");
+  expect_rejection(make_chain(1), RejectReason::InvalidInput,
+                   metal_renderer::kJak2GmercWarpNoTransferIndex,
+                   "every other bucket ID reports invalid input without a transfer",
+                   metal_renderer::kJak2GmercWarpBucket - 1);
 
   auto cycle = make_chain(1);
   put_u64(&cycle.memory, bucket_offset(cycle.chain_offset),
           static_cast<u64>(DmaTag::Kind::NEXT) << 28 |
               (static_cast<u64>(bucket_offset(cycle.chain_offset)) << 32));
-  check(!plan(cycle), "a cyclic DMA chain fails closed");
+  expect_rejection(cycle, RejectReason::DmaChain, 1,
+                   "a cyclic DMA chain reports the first unreadable transfer");
+
+  expect_rejection(make_chain(0, false, kChainOffset, kDataOffset,
+                              metal_renderer::kJak2GmercWarpMaximumTransfers),
+                   RejectReason::TransferLimit, metal_renderer::kJak2GmercWarpMaximumTransfers,
+                   "the passive transfer budget reports the first transfer beyond its bound");
+
+  expect_rejection(make_payload_limit_chain(), RejectReason::PayloadLimit, 17,
+                   "the aggregate payload budget reports the first overflowing transfer");
 
   auto wrong_setup = make_chain(1);
   put_u32(&wrong_setup.memory, wrong_setup.data_offset + 12, vif(VifCode::Kind::NOP));
-  check(!plan(wrong_setup), "an unknown fixed-setup VIF shape fails closed");
+  expect_rejection(wrong_setup, RejectReason::SetupGrammar, 1,
+                   "an unknown fixed-setup VIF shape reports its exact setup transfer");
+
+  auto short_mark = make_chain(0, true);
+  put_u32(&short_mark.memory, bucket_offset(short_mark.chain_offset) + 8,
+          vif(VifCode::Kind::MARK));
+  expect_rejection(short_mark, RejectReason::SetupOnlyMarker, 0,
+                   "a short setup with a MARK reports its source-marker rejection");
 
   auto wrong_fragment = make_chain(1);
   put_u32(&wrong_fragment.memory, wrong_fragment.fragment_payload_offset + 192,
           vif_stcycl(4, 4));
-  check(!plan(wrong_fragment), "a fragment with the wrong vertex STCYCL fails closed");
+  expect_rejection(wrong_fragment, RejectReason::FragmentGrammar, 5,
+                   "a malformed fragment reports its exact transfer");
 
-  check(!plan(make_chain(2, false, kChainOffset, kDataOffset, 1, 1, 32)),
-        "a continued-position payload with the wrong floor-divided vertex count fails closed");
+  expect_rejection(make_chain(2, false, kChainOffset, kDataOffset, 1, 1, 32),
+                   RejectReason::ContinuedPositionGrammar, 6,
+                   "a malformed continued-position payload reports its exact transfer");
+
+  auto wrong_continued_mscal = make_chain(2);
+  put_u32(&wrong_continued_mscal.memory, wrong_continued_mscal.continued_mscal_tag_offset + 12,
+          vif(VifCode::Kind::NOP));
+  expect_rejection(wrong_continued_mscal, RejectReason::ContinuedMscalGrammar, 7,
+                   "a malformed continued-fragment MSCAL reports its exact transfer");
+
+  auto wrong_terminator = make_chain(1);
+  put_u32(&wrong_terminator.memory, wrong_terminator.terminator_tag_offset + 8,
+          vif(VifCode::Kind::NOP));
+  expect_rejection(wrong_terminator, RejectReason::TerminatorGrammar, 6,
+                   "a malformed terminator reports its exact transfer");
+
+  auto wrong_boundary = make_chain(1);
+  put_u32(&wrong_boundary.memory, wrong_boundary.final_tag_offset + 12,
+          vif(VifCode::Kind::MARK));
+  expect_rejection(wrong_boundary, RejectReason::BoundaryGrammar, 7,
+                   "a malformed boundary marker reports its exact transfer");
 
   auto trailing = make_chain(1);
   const u32 next_bucket =
@@ -280,11 +356,16 @@ void test_malformed_rejections() {
   put_tag(&trailing.memory, trailing.final_tag_offset, DmaTag::Kind::CNT, 0, 0, 0, 0);
   put_tag(&trailing.memory, trailing.final_tag_offset + 16, DmaTag::Kind::NEXT, 0, next_bucket,
           0, 0);
-  check(!plan(trailing), "a transfer after the final boundary NOP is rejected");
+  expect_rejection(trailing, RejectReason::TrailingTransfer, 8,
+                   "a transfer after the final boundary NOP reports its exact index");
 
-  check(!plan(make_chain(0, false, kChainOffset, kDataOffset,
-                         metal_renderer::kJak2GmercWarpMaximumTransfers)),
-        "the passive transfer budget fails closed before retaining unbounded input");
+  check(std::strcmp(metal_renderer::jak2_gmerc_warp_bucket317_reject_reason_name(
+                        RejectReason::ContinuedPositionGrammar),
+                    "continued-position-grammar") == 0 &&
+            std::strcmp(metal_renderer::jak2_gmerc_warp_bucket317_reject_reason_name(
+                            static_cast<RejectReason>(0xff)),
+                        "unknown") == 0,
+        "typed rejection names stay deterministic for runtime diagnostics");
 }
 
 void test_source_capacity_boundaries() {

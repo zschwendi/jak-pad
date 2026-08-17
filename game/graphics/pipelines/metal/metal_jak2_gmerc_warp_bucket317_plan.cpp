@@ -16,6 +16,18 @@ constexpr u32 kAdgifBytes = 5 * 16;
 constexpr u64 kOffsetBasis = 14695981039346656037ull;
 constexpr u64 kPrime = 1099511628211ull;
 
+void set_rejection(Jak2GmercWarpBucket317RejectReason* out,
+                   u32* out_transfer_index,
+                   Jak2GmercWarpBucket317RejectReason reason,
+                   u32 transfer_index = kJak2GmercWarpNoTransferIndex) {
+  if (out) {
+    *out = reason;
+  }
+  if (out_transfer_index) {
+    *out_transfer_index = transfer_index;
+  }
+}
+
 template <typename T>
 T read_unaligned(const u8* source) {
   T result;
@@ -342,8 +354,10 @@ bool parse_fragment_transfer(const CheckedTransfer& transfer,
 }
 
 bool setup_matches(const std::array<CheckedTransfer, kJak2GmercWarpMaximumTransfers>& transfers,
-                   u32 transfer_count) {
+                   u32 transfer_count,
+                   u32* rejection_transfer_index) {
   if (transfer_count < 4) {
+    *rejection_transfer_index = transfer_count;
     return false;
   }
   const auto& marker = transfers[0];
@@ -353,15 +367,29 @@ bool setup_matches(const std::array<CheckedTransfer, kJak2GmercWarpMaximumTransf
   const auto marker_kind = VifCode(marker.vif0).kind;
   const VifCode direct_code(direct.vif1);
   const VifCode constants_unpack(constants.vif1);
-  return marker.payload_bytes == 0 &&
-         (marker_kind == VifCode::Kind::MARK || marker_kind == VifCode::Kind::NOP) &&
-         is_kind(marker.vif1, VifCode::Kind::NOP) && direct.payload_bytes == 32 &&
-         is_kind(direct.vif0, VifCode::Kind::NOP) && direct_code.kind == VifCode::Kind::DIRECT &&
-         direct_code.immediate == 2 && constants.payload_bytes == 128 &&
-         is_kind(constants.vif0, VifCode::Kind::STCYCL) &&
-         constants_unpack.kind == VifCode::Kind::UNPACK_V4_32 && constants_unpack.num == 8 &&
-         vu_setup.payload_bytes == 32 && is_kind(vu_setup.vif0, VifCode::Kind::MSCALF) &&
-         is_kind(vu_setup.vif1, VifCode::Kind::STMOD);
+  if (marker.payload_bytes != 0 ||
+      (marker_kind != VifCode::Kind::MARK && marker_kind != VifCode::Kind::NOP) ||
+      !is_kind(marker.vif1, VifCode::Kind::NOP)) {
+    *rejection_transfer_index = 0;
+    return false;
+  }
+  if (direct.payload_bytes != 32 || !is_kind(direct.vif0, VifCode::Kind::NOP) ||
+      direct_code.kind != VifCode::Kind::DIRECT || direct_code.immediate != 2) {
+    *rejection_transfer_index = 1;
+    return false;
+  }
+  if (constants.payload_bytes != 128 ||
+      !is_kind(constants.vif0, VifCode::Kind::STCYCL) ||
+      constants_unpack.kind != VifCode::Kind::UNPACK_V4_32 || constants_unpack.num != 8) {
+    *rejection_transfer_index = 2;
+    return false;
+  }
+  if (vu_setup.payload_bytes != 32 || !is_kind(vu_setup.vif0, VifCode::Kind::MSCALF) ||
+      !is_kind(vu_setup.vif1, VifCode::Kind::STMOD)) {
+    *rejection_transfer_index = 3;
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -370,9 +398,15 @@ std::optional<Jak2GmercWarpBucket317Plan> plan_jak2_gmerc_warp_bucket317(
     const u8* dma_packet_snapshot,
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
-    u32 bucket_id) {
+    u32 bucket_id,
+    Jak2GmercWarpBucket317RejectReason* out_rejection,
+    u32* out_rejection_transfer_index) {
+  set_rejection(out_rejection, out_rejection_transfer_index,
+                Jak2GmercWarpBucket317RejectReason::None);
   if (bucket_id != kJak2GmercWarpBucket || !dma_packet_snapshot ||
       chain_offset > std::numeric_limits<u32>::max() - (kJak2GmercWarpBucket + 1) * 16) {
+    set_rejection(out_rejection, out_rejection_transfer_index,
+                  Jak2GmercWarpBucket317RejectReason::InvalidInput);
     return std::nullopt;
   }
   const u32 bucket_offset = chain_offset + kJak2GmercWarpBucket * 16;
@@ -383,11 +417,20 @@ std::optional<Jak2GmercWarpBucket317Plan> plan_jak2_gmerc_warp_bucket317(
   u64 payload_bytes = 0;
   u64 fingerprint = kOffsetBasis;
   while (dma.offset() != next_bucket) {
-    if (transfer_count == transfers.size() || !dma.read(&transfers[transfer_count])) {
+    if (transfer_count == transfers.size()) {
+      set_rejection(out_rejection, out_rejection_transfer_index,
+                    Jak2GmercWarpBucket317RejectReason::TransferLimit, transfer_count);
+      return std::nullopt;
+    }
+    if (!dma.read(&transfers[transfer_count])) {
+      set_rejection(out_rejection, out_rejection_transfer_index,
+                    Jak2GmercWarpBucket317RejectReason::DmaChain, transfer_count);
       return std::nullopt;
     }
     const auto& transfer = transfers[transfer_count++];
     if (transfer.payload_bytes > kJak2GmercWarpMaximumPayloadBytes - payload_bytes) {
+      set_rejection(out_rejection, out_rejection_transfer_index,
+                    Jak2GmercWarpBucket317RejectReason::PayloadLimit, transfer_count - 1);
       return std::nullopt;
     }
     payload_bytes += transfer.payload_bytes;
@@ -407,12 +450,18 @@ std::optional<Jak2GmercWarpBucket317Plan> plan_jak2_gmerc_warp_bucket317(
   if (transfer_count == 1 && is_nop_zero(transfers[0])) {
     return plan;
   }
-  if (!setup_matches(transfers, transfer_count)) {
+  u32 setup_rejection_transfer_index = 0;
+  if (!setup_matches(transfers, transfer_count, &setup_rejection_transfer_index)) {
+    set_rejection(out_rejection, out_rejection_transfer_index,
+                  Jak2GmercWarpBucket317RejectReason::SetupGrammar,
+                  setup_rejection_transfer_index);
     return std::nullopt;
   }
   if (transfer_count == 4) {
     // The source/OpenGL short setup-only form reaches the boundary only with a NOP marker.
     if (!is_kind(transfers[0].vif0, VifCode::Kind::NOP)) {
+      set_rejection(out_rejection, out_rejection_transfer_index,
+                    Jak2GmercWarpBucket317RejectReason::SetupOnlyMarker, 0);
       return std::nullopt;
     }
     plan.variant = Jak2GmercWarpBucket317Variant::SetupOnly;
@@ -424,15 +473,24 @@ std::optional<Jak2GmercWarpBucket317Plan> plan_jak2_gmerc_warp_bucket317(
     ++index;
   }
   while (index < transfer_count && !is_terminator(transfers[index])) {
+    if (index + 2 == transfer_count) {
+      set_rejection(out_rejection, out_rejection_transfer_index,
+                    Jak2GmercWarpBucket317RejectReason::TerminatorGrammar, index);
+      return std::nullopt;
+    }
     bool needs_positions = false;
     u32 continued_vertices = 0;
     if (!parse_fragment_transfer(transfers[index], &plan, &needs_positions,
                                  &continued_vertices)) {
+      set_rejection(out_rejection, out_rejection_transfer_index,
+                    Jak2GmercWarpBucket317RejectReason::FragmentGrammar, index);
       return std::nullopt;
     }
     ++index;
     if (needs_positions) {
-      if (index + 1 >= transfer_count) {
+      if (index >= transfer_count) {
+        set_rejection(out_rejection, out_rejection_transfer_index,
+                      Jak2GmercWarpBucket317RejectReason::ContinuedPositionGrammar, index);
         return std::nullopt;
       }
       const VifCode position_unpack(transfers[index].vif1);
@@ -440,9 +498,16 @@ std::optional<Jak2GmercWarpBucket317Plan> plan_jak2_gmerc_warp_bucket317(
           transfers[index].payload_bytes / 12 != continued_vertices ||
           !is_kind(transfers[index].vif0, VifCode::Kind::NOP) ||
           position_unpack.kind != VifCode::Kind::UNPACK_V3_32 ||
-          position_unpack.num != continued_vertices || transfers[index + 1].payload_bytes != 0 ||
+          position_unpack.num != continued_vertices) {
+        set_rejection(out_rejection, out_rejection_transfer_index,
+                      Jak2GmercWarpBucket317RejectReason::ContinuedPositionGrammar, index);
+        return std::nullopt;
+      }
+      if (index + 1 >= transfer_count || transfers[index + 1].payload_bytes != 0 ||
           !is_kind(transfers[index + 1].vif0, VifCode::Kind::NOP) ||
           !is_kind(transfers[index + 1].vif1, VifCode::Kind::MSCAL)) {
+        set_rejection(out_rejection, out_rejection_transfer_index,
+                      Jak2GmercWarpBucket317RejectReason::ContinuedMscalGrammar, index + 1);
         return std::nullopt;
       }
       index += 2;
@@ -451,13 +516,57 @@ std::optional<Jak2GmercWarpBucket317Plan> plan_jak2_gmerc_warp_bucket317(
       ++index;
     }
   }
-  if (index + 2 != transfer_count || !is_terminator(transfers[index]) ||
-      !is_nop_zero(transfers[index + 1])) {
+  if (index >= transfer_count || !is_terminator(transfers[index])) {
+    set_rejection(out_rejection, out_rejection_transfer_index,
+                  Jak2GmercWarpBucket317RejectReason::TerminatorGrammar, index);
+    return std::nullopt;
+  }
+  if (index + 1 >= transfer_count || !is_nop_zero(transfers[index + 1])) {
+    set_rejection(out_rejection, out_rejection_transfer_index,
+                  Jak2GmercWarpBucket317RejectReason::BoundaryGrammar, index + 1);
+    return std::nullopt;
+  }
+  if (index + 2 != transfer_count) {
+    set_rejection(out_rejection, out_rejection_transfer_index,
+                  Jak2GmercWarpBucket317RejectReason::TrailingTransfer, index + 2);
     return std::nullopt;
   }
   plan.variant = plan.fragment_count == 0 ? Jak2GmercWarpBucket317Variant::SetupOnly
                                           : Jak2GmercWarpBucket317Variant::Fragments;
   return plan;
+}
+
+const char* jak2_gmerc_warp_bucket317_reject_reason_name(
+    Jak2GmercWarpBucket317RejectReason reason) {
+  switch (reason) {
+    case Jak2GmercWarpBucket317RejectReason::None:
+      return "none";
+    case Jak2GmercWarpBucket317RejectReason::InvalidInput:
+      return "invalid-input";
+    case Jak2GmercWarpBucket317RejectReason::DmaChain:
+      return "dma-chain";
+    case Jak2GmercWarpBucket317RejectReason::TransferLimit:
+      return "transfer-limit";
+    case Jak2GmercWarpBucket317RejectReason::PayloadLimit:
+      return "payload-limit";
+    case Jak2GmercWarpBucket317RejectReason::SetupGrammar:
+      return "setup-grammar";
+    case Jak2GmercWarpBucket317RejectReason::SetupOnlyMarker:
+      return "setup-only-marker";
+    case Jak2GmercWarpBucket317RejectReason::FragmentGrammar:
+      return "fragment-grammar";
+    case Jak2GmercWarpBucket317RejectReason::ContinuedPositionGrammar:
+      return "continued-position-grammar";
+    case Jak2GmercWarpBucket317RejectReason::ContinuedMscalGrammar:
+      return "continued-mscal-grammar";
+    case Jak2GmercWarpBucket317RejectReason::TerminatorGrammar:
+      return "terminator-grammar";
+    case Jak2GmercWarpBucket317RejectReason::BoundaryGrammar:
+      return "boundary-grammar";
+    case Jak2GmercWarpBucket317RejectReason::TrailingTransfer:
+      return "trailing-transfer";
+  }
+  return "unknown";
 }
 
 bool jak2_gmerc_warp_bucket317_plans_match(const Jak2GmercWarpBucket317Plan& live,

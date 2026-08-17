@@ -274,6 +274,20 @@ std::string format_pris_eye_rejection(
   return result;
 }
 
+std::string format_gmerc_warp_bucket317_rejection(
+    const char* prefix,
+    metal_renderer::Jak2GmercWarpBucket317RejectReason reason,
+    u32 transfer_index) {
+  std::string result = prefix;
+  result += ": ";
+  result += metal_renderer::jak2_gmerc_warp_bucket317_reject_reason_name(reason);
+  result += " transfer=";
+  result += transfer_index == metal_renderer::kJak2GmercWarpNoTransferIndex
+                ? "none"
+                : std::to_string(transfer_index);
+  return result;
+}
+
 std::string fr3_path(const goal_jak2_metal_host* host, const std::string& name) {
   const bool has_separator = !host->fr3_directory.empty() && host->fr3_directory.back() == '/';
   return host->fr3_directory + (has_separator ? "" : "/") + name + ".fr3";
@@ -1699,13 +1713,21 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       record_failure(host, "Jak 2 shadow bucket 195 live DMA failed exact preflight");
       return;
     }
+    metal_renderer::Jak2GmercWarpBucket317RejectReason live_gmerc_warp_rejection =
+        metal_renderer::Jak2GmercWarpBucket317RejectReason::None;
+    u32 live_gmerc_warp_rejection_transfer_index =
+        metal_renderer::kJak2GmercWarpNoTransferIndex;
     const auto gmerc_warp_bucket317_plan = metal_renderer::plan_jak2_gmerc_warp_bucket317(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
-        metal_renderer::kJak2GmercWarpBucket);
+        metal_renderer::kJak2GmercWarpBucket, &live_gmerc_warp_rejection,
+        &live_gmerc_warp_rejection_transfer_index);
     record_gmerc_warp_bucket317_metrics(&host->metrics.gmerc_warp_bucket317,
                                         gmerc_warp_bucket317_plan);
     if (!gmerc_warp_bucket317_plan) {
-      record_failure(host, "Jak 2 GMERC_WARP bucket 317 live DMA failed exact preflight");
+      const auto error = format_gmerc_warp_bucket317_rejection(
+          "Jak 2 GMERC_WARP bucket 317 live DMA failed exact preflight",
+          live_gmerc_warp_rejection, live_gmerc_warp_rejection_transfer_index);
+      record_failure(host, error.c_str());
       return;
     }
     if (!update_draw_region(host)) {
@@ -2001,12 +2023,23 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
+    metal_renderer::Jak2GmercWarpBucket317RejectReason copied_gmerc_warp_rejection =
+        metal_renderer::Jak2GmercWarpBucket317RejectReason::None;
+    u32 copied_gmerc_warp_rejection_transfer_index =
+        metal_renderer::kJak2GmercWarpNoTransferIndex;
     const auto copied_gmerc_warp_bucket317_plan =
         metal_renderer::plan_jak2_gmerc_warp_bucket317(
             copied.data.data(), copied.data.size(), copied.start_offset,
-            metal_renderer::kJak2GmercWarpBucket);
-    if (!copied_gmerc_warp_bucket317_plan ||
-        !metal_renderer::jak2_gmerc_warp_bucket317_plans_match(
+            metal_renderer::kJak2GmercWarpBucket, &copied_gmerc_warp_rejection,
+            &copied_gmerc_warp_rejection_transfer_index);
+    if (!copied_gmerc_warp_bucket317_plan) {
+      const auto error = format_gmerc_warp_bucket317_rejection(
+          "Jak 2 copied GMERC_WARP bucket 317 failed exact preflight",
+          copied_gmerc_warp_rejection, copied_gmerc_warp_rejection_transfer_index);
+      record_send_chain_failure(host, error, false);
+      return;
+    }
+    if (!metal_renderer::jak2_gmerc_warp_bucket317_plans_match(
             *gmerc_warp_bucket317_plan, *copied_gmerc_warp_bucket317_plan)) {
       record_send_chain_failure(
           host, "Jak 2 copied GMERC_WARP bucket 317 did not match exact live DMA", false);
