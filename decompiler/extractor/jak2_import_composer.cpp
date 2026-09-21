@@ -1694,13 +1694,8 @@ std::optional<Error> validate_captured_directory(
     int directory,
     const std::map<std::string, checked_file_identity::Identity>& expected) {
   std::set<std::string> names;
-  for (const auto& [name, identity] : expected) {
-    names.emplace(name);
-    auto current = capture_file_at(directory, name);
-    if (!current || current.value() != identity) {
-      return make_error(ErrorCode::candidate_finalize_failed,
-                        "A prepared output changed after its exact identity was captured.");
-    }
+  for (const auto& entry : expected) {
+    names.emplace(entry.first);
   }
   auto current = capture_directory_at(directory, names);
   if (!current || current.value() != expected) {

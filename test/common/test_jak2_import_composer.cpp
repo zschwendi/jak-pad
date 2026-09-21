@@ -493,17 +493,20 @@ bool descriptor_promotion_rejects_callback_races() {
     CHECK(result.error().code == composer::ErrorCode::candidate_cleanup_failed);
     CHECK(!result.error().cleanup_error.has_value());
   }
-  {
+  for (const std::uint64_t boundary : {0, 1, 2}) {
     TemporaryRoot temporary;
-    const auto candidate = temporary.root / "terminal-mutation.candidate";
+    const auto candidate =
+        temporary.root / ("content-mutation-" + std::to_string(boundary) + ".candidate");
     std::optional<composer::Summary> summary = composer::Summary{2, 4, 11, 8, 1234};
     std::optional<composer::internal::FinalContract> produced_contract = contract;
     bool mutated = false;
     composer::Options options;
     options.on_progress = [&](const composer::Progress& progress) {
       if (!mutated && progress.phase == composer::Phase::finalizing_candidate &&
-          progress.completed == 2) {
-        write_text(candidate / "iso/KERNEL.CGO", "mutation!");
+          progress.completed == boundary) {
+        const auto output = boundary == 0 ? candidate / ".opengoal-import/.prepared"
+                                          : candidate;
+        write_text(output / "iso/KERNEL.CGO", "mutation!");
         mutated = true;
       }
     };
