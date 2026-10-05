@@ -2248,6 +2248,43 @@ int main() {
     goal_jak2_sound_rpc_stats_get(&stats);
     check_u32(stats.banks_loaded, 1, "a bank loads after full shutdown and reinitialization");
   }
+  std::printf("\n== live SFX pitch bend through SET_PARAM ==\n");
+  reset_bank_command(reinit_send, bank_name("play"));
+  rpc_call(1, 0, 1, reinit_send.command.offset, kCommandSize, 0, 0, 0);
+  auto render_bend = [&](s16 initial_bend, s16 updated_bend, bool update) {
+    set_player_play(reinit_player, 0, 0x7100, bank_name("test-tone"));
+    auto* command = reinit_player.data.cast<jak2::SoundRpcCommand>().c();
+    command->play.parms.mask = 0x104;
+    command->play.parms.bend = initial_bend;
+    command->play.parms.fo_curve = 2;
+    rpc_call(0, 0, 1, reinit_player.data.offset, kCommandSize, 0, 0, 0);
+    if (update) {
+      command = reset_player_command(reinit_player, 0, jak2::Jak2SoundCommand::set_param);
+      command->param.sound_id = 0x7100;
+      command->param.parms.mask = 4;
+      command->param.parms.bend = updated_bend;
+      rpc_call(0, 0, 1, reinit_player.data.offset, kCommandSize, 0, 0, 0);
+    }
+    std::array<s16, 1024> samples{};
+    check_s32(goal_game_sound_pull_audio(samples.data(), samples.size() / 2),
+              samples.size() / 2, "pitch fixture renders a complete stereo buffer");
+    command = reset_player_command(reinit_player, 0, jak2::Jak2SoundCommand::stop_sound);
+    command->sound_id.sound_id = 0x7100;
+    rpc_call(0, 0, 1, reinit_player.data.offset, kCommandSize, 0, 0, 0);
+    return samples;
+  };
+  const auto unbent = render_bend(0, 0, false);
+  check(std::any_of(unbent.begin(), unbent.end(), [](s16 sample) { return sample != 0; }),
+        "pitch fixture produces nonzero samples");
+  for (s16 bend : {s16(0x7fff), s16(-0x8000)}) {
+    const auto initial = render_bend(bend, 0, false);
+    const auto updated = render_bend(0, bend, true);
+    check(initial != unbent, "initial positive and negative pitch bends change the waveform");
+    check(updated == initial, "SET_PARAM pitch bend matches the engine's initial pitch bend");
+    check(render_bend(bend, 0, true) == unbent,
+          "SET_PARAM zero bend restores the original waveform");
+  }
+  check_guards(reinit_player, "pitch bend commands preserve their canaries");
   goal_jak2_sound_rpc_shutdown();
   check(!goal_jak2_sound_rpc_is_installed(), "explicit sound shutdown releases ownership");
   stopped_audio.fill(0x2345);

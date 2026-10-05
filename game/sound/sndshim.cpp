@@ -203,8 +203,8 @@ void snd_SetSoundPitchModifier(s32 sound_handle, s32 pitch_mod) {
 }
 
 void snd_SetSoundPitchBend(s32 sound_handle, s32 bend) {
-  // TODO
-  if (bend != 0) {
+  if (player) {
+    player->SetSoundPBend(sound_handle, bend);
   }
 }
 

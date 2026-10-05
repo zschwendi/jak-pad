@@ -68,6 +68,7 @@ class Player {
     mSynth.AddVoice(voice);
   };
   void SetSoundPmod(s32 sound_handle, s32 mod);
+  void SetSoundPBend(s32 sound_handle, s32 bend);
   void InitCubeb();
   void DestroyCubeb();
   s32 GetTick() { return mTick; };

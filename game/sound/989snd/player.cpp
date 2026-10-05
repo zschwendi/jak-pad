@@ -376,6 +376,15 @@ void Player::SetSoundPmod(s32 sound_handle, s32 mod) {
   handler->second->SetPMod(mod);
 }
 
+void Player::SetSoundPBend(s32 sound_handle, s32 bend) {
+  std::scoped_lock lock(mTickLock);
+  auto handler = mHandlers.find(sound_handle);
+  if (handler == mHandlers.end())
+    return;
+
+  handler->second->SetPBend(bend);
+}
+
 void Player::StopAllSounds() {
   std::scoped_lock lock(mTickLock);
   for (auto it = mHandlers.begin(); it != mHandlers.end();) {
