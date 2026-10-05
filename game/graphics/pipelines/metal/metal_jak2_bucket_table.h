@@ -38,7 +38,7 @@ enum class Jak2MetalBucketBehavior : std::uint8_t {
   EffectsLightning,
   Warp,
   Shadow2,
-  SubtitleHudSpriteDirect,
+  SubtitleSourceDirect,
 };
 
 struct Jak2MetalBucketDescriptor {

@@ -65,8 +65,9 @@ struct Jak2SubtitleBucket322Plan {
  *
  * Multiple producer chains may be linked into the bucket in any order. Unknown PC_PORT records,
  * non-CNT payloads, malformed known packets, and inputs beyond the fixed bounds fail closed.
- * Opaque text and image variants remain passive. HUD sprites execute only when every accompanying
- * text packet matches draw-string-asm and the optional terminal reset matches default-end-buffer.
+ * Images and unresolved Direct variants remain passive. Source font and HUD sprites execute only
+ * when every text packet matches draw-string-asm and the terminal reset, when present, matches
+ * default-end-buffer.
  */
 std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
     const u8* dma_packet_snapshot,
@@ -78,17 +79,24 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
 bool jak2_subtitle_bucket322_plans_match(const Jak2SubtitleBucket322Plan& live,
                                          const Jak2SubtitleBucket322Plan& copied);
 
-inline bool jak2_subtitle_bucket322_hud_sprite_plan_is_executable(
+inline bool jak2_subtitle_bucket322_source_plan_is_executable(
     const Jak2SubtitleBucket322Plan& plan) {
   const bool exact_hud_only =
       plan.variant == Jak2SubtitleBucket322Variant::HudSpriteDirect &&
-      plan.opaque_direct_transfers == 0 && plan.source_exact_font_glyph_transfers == 0;
+      plan.opaque_direct_transfers == 0 && plan.source_exact_font_glyph_transfers == 0 &&
+      plan.hud_sprite_pairs != 0;
+  const bool exact_font_only =
+      plan.variant == Jak2SubtitleBucket322Variant::OpaqueDirect &&
+      plan.opaque_direct_transfers != 0 &&
+      plan.opaque_direct_transfers == plan.source_exact_font_glyph_transfers &&
+      plan.hud_sprite_pairs == 0 && plan.direct_reset_transfers == 1;
   const bool exact_font_and_hud =
       plan.variant == Jak2SubtitleBucket322Variant::Mixed &&
       plan.opaque_direct_transfers != 0 &&
-      plan.opaque_direct_transfers == plan.source_exact_font_glyph_transfers;
-  return (exact_hud_only || exact_font_and_hud) && plan.image_upload_count == 0 &&
-         plan.hud_sprite_pairs != 0 && plan.direct_reset_transfers <= 1 &&
+      plan.opaque_direct_transfers == plan.source_exact_font_glyph_transfers &&
+      plan.hud_sprite_pairs != 0;
+  return (exact_hud_only || exact_font_only || exact_font_and_hud) &&
+         plan.image_upload_count == 0 && plan.direct_reset_transfers <= 1 &&
          plan.direct_transfers == plan.hud_sprite_pairs * 2 + plan.opaque_direct_transfers +
                                       plan.direct_reset_transfers &&
          plan.transfer_count == plan.linker_transfers + plan.direct_transfers;

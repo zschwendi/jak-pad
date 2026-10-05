@@ -61,7 +61,7 @@ int main() {
   std::size_t effects_lightning = 0;
   std::size_t warp = 0;
   std::size_t shadow2 = 0;
-  std::size_t subtitle_hud_sprite_direct = 0;
+  std::size_t subtitle_source_direct = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -94,7 +94,7 @@ int main() {
     effects_lightning += table[i].behavior == Behavior::EffectsLightning;
     warp += table[i].behavior == Behavior::Warp;
     shadow2 += table[i].behavior == Behavior::Shadow2;
-    subtitle_hud_sprite_direct += table[i].behavior == Behavior::SubtitleHudSpriteDirect;
+    subtitle_source_direct += table[i].behavior == Behavior::SubtitleSourceDirect;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
@@ -132,8 +132,8 @@ int main() {
         "one source-exact EFFECTS bucket has a dedicated Lightning renderer");
   check(warp == 1, "one source-exact GMERC_WARP bucket owns framebuffer warp rendering");
   check(shadow2 == 0, "the physically rejected Jak II Shadow2 route remains deferred");
-  check(subtitle_hud_sprite_direct == 1,
-        "one source-exact subtitle HUD-sprite family uses guarded Metal Direct");
+  check(subtitle_source_direct == 1,
+        "one source-exact subtitle family uses guarded Metal Direct");
   check(generic2 == 26,
         "26 source-proven normal GMerc buckets are implemented by Metal Generic2");
   check(ocean_mid_far == 1 && ocean_near == 1,

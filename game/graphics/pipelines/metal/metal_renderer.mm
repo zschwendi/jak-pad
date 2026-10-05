@@ -763,11 +763,11 @@ void MetalRenderer::init_bucket_renderers_jak2() {
             "jak2-host-texture-upload-direct-unavailable", descriptor.id);
       }
     } else if (descriptor.behavior ==
-               metal_renderer::Jak2MetalBucketBehavior::SubtitleHudSpriteDirect) {
+               metal_renderer::Jak2MetalBucketBehavior::SubtitleSourceDirect) {
       ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::SUBTITLE));
       ASSERT(batch_size == 1024 * 6);
-      m_bucket_renderers[bucket_id] = std::make_unique<MetalJak2SubtitleHudSpriteRenderer>(
-          "subtitle-hud-sprite", descriptor.id, batch_size);
+      m_bucket_renderers[bucket_id] = std::make_unique<MetalJak2SubtitleSourceDirectRenderer>(
+          "subtitle-source-direct", descriptor.id, batch_size);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
       ASSERT(batch_size != 0);
       const char* name = "direct";

@@ -2772,9 +2772,9 @@ int main() {
   const std::size_t subtitle_initial_live_count = metal_texture_live_count();
   check(subtitle_host && goal_jak2_metal_host_copy_gfx_host(subtitle_host, &subtitle_callbacks) &&
             metal_renderer::jak2_metal_bucket_table()[kSubtitleBucket].behavior ==
-                metal_renderer::Jak2MetalBucketBehavior::SubtitleHudSpriteDirect &&
+                metal_renderer::Jak2MetalBucketBehavior::SubtitleSourceDirect &&
             metal_renderer::jak2_metal_host_policy_table_is_audited(),
-        "created an audited host with the guarded bucket-322 HUD-sprite Direct policy");
+        "created an audited host with the guarded bucket-322 source Direct policy");
   goal_jak2_metal_host_metrics subtitle_metrics = {};
   make_empty_chain();
   subtitle_callbacks.send_chain(g_ee_main_mem, kChainOffset);

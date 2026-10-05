@@ -104,8 +104,8 @@ constexpr Table make_table() {
   const auto warp = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::Warp;
   };
-  const auto subtitle_hud_sprite_direct = [&table](BucketId id) {
-    table[index(id)].behavior = Jak2MetalBucketBehavior::SubtitleHudSpriteDirect;
+  const auto subtitle_source_direct = [&table](BucketId id) {
+    table[index(id)].behavior = Jak2MetalBucketBehavior::SubtitleSourceDirect;
   };
   // Mirror every renderer explicitly installed by OpenGLRenderer::init_bucket_renderers_jak2.
   visibility(BucketId::BUCKET_2);
@@ -173,7 +173,7 @@ constexpr Table make_table() {
   host_texture_upload_direct(BucketId::TEX_ALL_MAP);
   direct(BucketId::PROGRESS);
   direct(BucketId::SCREEN_FILTER);
-  subtitle_hud_sprite_direct(BucketId::SUBTITLE);
+  subtitle_source_direct(BucketId::SUBTITLE);
   defer(BucketId::DEBUG2);
   direct(BucketId::DEBUG_NO_ZBUF2);
   defer(BucketId::DEBUG3);
@@ -239,7 +239,7 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::CommonPris) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::EffectsLightning) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Warp) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Shadow2) == 0);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::SubtitleHudSpriteDirect) == 1);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::SubtitleSourceDirect) == 1);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);
 
 }  // namespace
@@ -261,7 +261,7 @@ int jak2_metal_direct_batch_size(std::size_t bucket_id) {
   if (bucket_id >= kTable.size() ||
       (kTable[bucket_id].behavior != Jak2MetalBucketBehavior::Direct &&
        kTable[bucket_id].behavior != Jak2MetalBucketBehavior::HostTextureUploadDirect &&
-       kTable[bucket_id].behavior != Jak2MetalBucketBehavior::SubtitleHudSpriteDirect)) {
+       kTable[bucket_id].behavior != Jak2MetalBucketBehavior::SubtitleSourceDirect)) {
     return 0;
   }
   switch (static_cast<BucketId>(bucket_id)) {

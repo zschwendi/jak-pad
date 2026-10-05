@@ -391,9 +391,9 @@ class MetalHostTextureUploadDirectRenderer : public MetalDirectRenderer {
   CallbackPoint m_callback_point;
 };
 
-class MetalJak2SubtitleHudSpriteRenderer final : public MetalDirectRenderer {
+class MetalJak2SubtitleSourceDirectRenderer final : public MetalDirectRenderer {
  public:
-  MetalJak2SubtitleHudSpriteRenderer(const std::string& name, int my_id, int batch_size)
+  MetalJak2SubtitleSourceDirectRenderer(const std::string& name, int my_id, int batch_size)
       : MetalDirectRenderer(name, my_id, batch_size) {}
 
   void render(DmaFollower& dma,

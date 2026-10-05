@@ -14,6 +14,7 @@ namespace metal_renderer {
 enum class Jak2SubtitleBucket322FixtureLayout {
   OpaqueDirect,
   SourceExactFontGlyph,
+  SourceExactFontGlyphWithReset,
   IntroHudSprite,
   IntroTwoHudSprites,
   CaptureSizedIntroFontHudSprite,
@@ -315,6 +316,10 @@ inline Jak2SubtitleBucket322Fixture make_jak2_subtitle_bucket322_fixture(
       break;
     case Jak2SubtitleBucket322FixtureLayout::SourceExactFontGlyph:
       emit_source_exact_font_glyph(fixture.ee_memory, &cursor);
+      break;
+    case Jak2SubtitleBucket322FixtureLayout::SourceExactFontGlyphWithReset:
+      emit_source_exact_font_glyph(fixture.ee_memory, &cursor);
+      emit_source_default_reset(fixture.ee_memory, &cursor);
       break;
     case Jak2SubtitleBucket322FixtureLayout::IntroHudSprite:
       emit_hud_sprite(fixture.ee_memory, &cursor);

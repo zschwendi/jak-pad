@@ -283,11 +283,11 @@ void MetalHostTextureUploadDirectRenderer::render(DmaFollower& dma,
   flush_pending(render_state, ctx);
 }
 
-void MetalJak2SubtitleHudSpriteRenderer::render(DmaFollower& dma,
-                                                 MetalSharedRenderState* render_state,
-                                                 MetalFrameContext& ctx) {
+void MetalJak2SubtitleSourceDirectRenderer::render(DmaFollower& dma,
+                                                    MetalSharedRenderState* render_state,
+                                                    MetalFrameContext& ctx) {
   const auto* plan = render_state->jak2_subtitle_bucket322_plan;
-  if (!plan || !metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(*plan)) {
+  if (!plan || !metal_renderer::jak2_subtitle_bucket322_source_plan_is_executable(*plan)) {
     metal_consume_bucket_without_side_effects(dma, *render_state);
     return;
   }

@@ -38,10 +38,10 @@ void test_policy_routes_only_exact_hud_sprite_plans() {
   const auto& descriptor =
       metal_renderer::jak2_metal_bucket_table()[metal_renderer::kJak2SubtitleBucket322];
   check(descriptor.behavior ==
-                metal_renderer::Jak2MetalBucketBehavior::SubtitleHudSpriteDirect &&
+                metal_renderer::Jak2MetalBucketBehavior::SubtitleSourceDirect &&
             metal_renderer::jak2_metal_direct_batch_size(
                 metal_renderer::kJak2SubtitleBucket322) == 1024 * 6,
-        "bucket 322 uses the guarded HUD-sprite Direct route");
+        "bucket 322 uses the guarded source Direct route");
 }
 
 void test_empty_forms() {
@@ -79,8 +79,19 @@ void test_source_exact_font_glyph_family() {
   check(result && result->variant == Variant::OpaqueDirect &&
             result->opaque_direct_transfers == 1 &&
             result->source_exact_font_glyph_transfers == 1 && result->direct_transfers == 1 &&
-            result->direct_payload_bytes == 224,
-        "the exact draw-string-asm qwc-14 glyph template is distinguished inside opaque Direct");
+            result->direct_payload_bytes == 224 &&
+            !metal_renderer::jak2_subtitle_bucket322_source_plan_is_executable(*result),
+        "the exact draw-string-asm glyph stays passive without its source terminal reset");
+
+  fixture = metal_renderer::make_jak2_subtitle_bucket322_fixture(
+      Layout::SourceExactFontGlyphWithReset);
+  result = plan(fixture);
+  check(result && result->variant == Variant::OpaqueDirect && result->transfer_count == 4 &&
+            result->linker_transfers == 2 && result->direct_transfers == 2 &&
+            result->direct_reset_transfers == 1 && result->opaque_direct_transfers == 1 &&
+            result->source_exact_font_glyph_transfers == 1 &&
+            metal_renderer::jak2_subtitle_bucket322_source_plan_is_executable(*result),
+        "an exact source font glyph with its terminal reset receives Direct execution");
 
   metal_renderer::jak2_subtitle_bucket322_fixture_detail::put_u64(
       fixture.ee_memory, fixture.payload_offset + 24,
@@ -94,8 +105,9 @@ void test_source_exact_font_glyph_family() {
            GifTag::RegisterDescriptor::XYZ2}));
   result = plan(fixture);
   check(result && result->variant == Variant::OpaqueDirect &&
-            result->source_exact_font_glyph_transfers == 0,
-        "a non-source glyph descriptor remains visibly unresolved instead of receiving exact proof");
+            result->source_exact_font_glyph_transfers == 0 &&
+            !metal_renderer::jak2_subtitle_bucket322_source_plan_is_executable(*result),
+        "a non-source glyph descriptor remains passive even with a valid terminal reset");
 }
 
 void test_intro_hud_sprite_family() {
@@ -131,7 +143,7 @@ void test_capture_sized_intro_font_hud_sprite_family() {
             result->source_exact_font_glyph_transfers == 148 && result->hud_sprite_pairs == 1 &&
             result->image_upload_count == 0,
         "the capture-sized model contains only synthetic source font, HUD, and reset packets");
-  check(metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(*result),
+  check(metal_renderer::jak2_subtitle_bucket322_source_plan_is_executable(*result),
         "the source font chain, inserted HUD sprite, and source default reset execute exactly");
 
   metal_renderer::jak2_subtitle_bucket322_fixture_detail::put_u64(
@@ -139,7 +151,7 @@ void test_capture_sized_intro_font_hud_sprite_family() {
   result = plan(fixture);
   check(result && result->variant == Variant::Mixed &&
             result->source_exact_font_glyph_transfers == 147 &&
-            !metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(*result),
+            !metal_renderer::jak2_subtitle_bucket322_source_plan_is_executable(*result),
         "one non-source font packet keeps the capture-sized mixed family passive");
 }
 
