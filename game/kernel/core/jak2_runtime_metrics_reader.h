@@ -161,6 +161,62 @@ struct MemoryView {
   }
 };
 
+struct MissionSnapshot {
+  bool valid = false;
+  bool fortress_complete = false;
+  int64_t fortress_start_frame = 0;
+  uint32_t story_complete = 0;
+};
+
+inline MissionSnapshot read_missions(const MemoryView& memory,
+                                     uint32_t game_info,
+                                     uint32_t game_info_type,
+                                     uint32_t perm_array_type,
+                                     uint32_t array_type) {
+  const auto has_type = [&](uint32_t object, uint32_t expected) {
+    uint32_t actual = 0;
+    if (!memory.is_object(object) || object < BASIC_OFFSET || !memory.is_object(expected) ||
+        !memory.span_fits(object - BASIC_OFFSET, sizeof(actual))) {
+      return false;
+    }
+    std::memcpy(&actual, memory.data + object - BASIC_OFFSET, sizeof(actual));
+    return actual == expected;
+  };
+  // Asserted game-info/entity-perm layouts in all-types.gc; story bounds and exclusions
+  // follow game-info::calculate-percentage. task-close-times is written on level-enter.
+  constexpr uint32_t kFortressEscape = 6;
+  constexpr uint32_t kLastStoryTask = 74;
+  constexpr uint32_t kPermStride = 16;
+  constexpr uint16_t kComplete = 1u << 8;
+  uint32_t perms = 0;
+  uint32_t starts = 0;
+  MissionSnapshot result;
+  if (!has_type(game_info, game_info_type) ||
+      !memory.read(game_info, layout::live_basic_offset(236), &perms) ||
+      !memory.read(game_info, layout::live_basic_offset(576), &starts) ||
+      !has_type(perms, perm_array_type) || !has_type(starts, array_type) ||
+      !memory.array_has_length(perms, kLastStoryTask + 1) ||
+      !memory.read_array(starts, kFortressEscape, &result.fortress_start_frame)) {
+    return {};
+  }
+  for (uint32_t task = kFortressEscape; task <= kLastStoryTask; ++task) {
+    if (task == 32 || task == 54) {
+      continue;
+    }
+    uint16_t status = 0;
+    if (!memory.read(perms, layout::kArrayData + task * kPermStride + 8, &status)) {
+      return {};
+    }
+    const bool complete = (status & kComplete) != 0;
+    result.story_complete += complete;
+    if (task == kFortressEscape) {
+      result.fortress_complete = complete;
+    }
+  }
+  result.valid = true;
+  return result;
+}
+
 struct Inputs {
   uint32_t display = 0;
   uint32_t game_info = 0;

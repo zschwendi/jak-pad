@@ -257,6 +257,58 @@ void remaining_time_saturates() {
          "diagnostic time subtraction is defined at both integer limits");
 }
 
+void reads_mission_progress_without_mutation() {
+  std::array<uint8_t, 0x2000> bytes = {};
+  constexpr uint32_t kGame = 0x100;
+  constexpr uint32_t kPerms = 0x400;
+  constexpr uint32_t kStarts = 0xa00;
+  constexpr uint32_t kGameType = 0x20;
+  constexpr uint32_t kPermType = 0x30;
+  constexpr uint32_t kArrayType = 0x40;
+  write(bytes, kGame - BASIC_OFFSET, kGameType);
+  write(bytes, kPerms - BASIC_OFFSET, kPermType);
+  write(bytes, kStarts - BASIC_OFFSET, kArrayType);
+  write(bytes, kGame + 232, kPerms);
+  write(bytes, kGame + 572, kStarts);
+  initialize_boxed_array(bytes, kPerms, 75);
+  initialize_boxed_array(bytes, kStarts, 75);
+  const MemoryView memory{bytes.data(), bytes.size(), 4};
+  const auto read_progress = [&] {
+    return read_missions(memory, kGame, kGameType, kPermType, kArrayType);
+  };
+  auto mission = read_progress();
+  expect(mission.valid && !mission.fortress_complete && mission.fortress_start_frame == 0 &&
+             mission.story_complete == 0,
+         "new game mission state has no fabricated start or completion");
+  write_boxed_array(bytes, kStarts, 6, int64_t{12345});
+  mission = read_progress();
+  expect(mission.valid && mission.fortress_start_frame == 12345 && !mission.fortress_complete,
+         "level-enter start time is distinct from mission completion");
+  write(bytes, kPerms + 12 + 6 * 16 + 8, uint16_t{0x100});
+  write(bytes, kPerms + 12 + 74 * 16 + 8, uint16_t{0x100});
+  write(bytes, kPerms + 12 + 32 * 16 + 8, uint16_t{0x100});
+  write(bytes, kPerms + 12 + 54 * 16 + 8, uint16_t{0x100});
+  const auto before = bytes;
+  mission = read_progress();
+  expect(mission.valid && mission.fortress_complete && mission.story_complete == 2,
+         "mission completion follows the status bit and excludes optional gun training");
+  expect(bytes == before, "mission diagnostics never change game progress");
+  write(bytes, kPerms - BASIC_OFFSET, kArrayType);
+  expect(!read_progress().valid, "wrong permanent-array type fails closed");
+  write(bytes, kPerms - BASIC_OFFSET, kPermType);
+  initialize_boxed_array(bytes, kPerms, 74);
+  expect(!read_progress().valid, "short permanent arrays cannot report story completion");
+  initialize_boxed_array(bytes, kPerms, 75);
+  initialize_boxed_array(bytes, kStarts, 6);
+  expect(!read_progress().valid, "short start-time arrays cannot report mission entry");
+  write(bytes, kGame + 572, uint32_t{4});
+  expect(!read_progress().valid, "false start-time arrays fail closed");
+  write(bytes, kGame + 572, uint32_t{0x1ffc});
+  write(bytes, 0x1ff8, kArrayType);
+  write(bytes, 0x1ffc, uint32_t{75});
+  expect(!read_progress().valid, "truncated start-time payload fails closed");
+}
+
 }  // namespace
 
 int main() {
@@ -264,6 +316,7 @@ int main() {
   reads_bounded_scene_actor_lifecycle();
   malformed_memory_fails_closed();
   remaining_time_saturates();
+  reads_mission_progress_without_mutation();
   std::printf("%s: jak2 runtime metrics reader\n", g_failures ? "FAILED" : "PASSED");
   return g_failures ? 1 : 0;
 }

@@ -64,6 +64,7 @@ bool copy_goal_bytes(uint32_t object, int offset, void* out, size_t size) {
 
 goal_jak2_runtime_metrics g_metrics = {};
 jak2_runtime_metrics_reader::SceneActorDiagnostics g_scene_actor_diagnostics = {};
+jak2_runtime_metrics_reader::MissionSnapshot g_mission_diagnostics = {};
 std::string g_error;
 std::string g_data_directory;
 std::string g_saves_directory;
@@ -309,6 +310,27 @@ uint32_t pointer_symbol_process(const char* name) {
   return pointer && pointer != goal_game_false_offset() ? goal_u32(pointer) : 0;
 }
 
+void update_mission_diagnostics() {
+  using namespace jak2_runtime_metrics_reader;
+  const MemoryView memory = {reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE,
+                             goal_game_false_offset()};
+  const auto mission = read_missions(memory, symbol_value_if_present("*game-info*"),
+                                     symbol_value_if_present("game-info"),
+                                     symbol_value_if_present("entity-perm-array"),
+                                     symbol_value_if_present("array"));
+  if (mission.valid && (!g_mission_diagnostics.valid ||
+                       mission.fortress_complete != g_mission_diagnostics.fortress_complete ||
+                       mission.fortress_start_frame != g_mission_diagnostics.fortress_start_frame ||
+                       mission.story_complete != g_mission_diagnostics.story_complete)) {
+    lg::info("GOALPAD_JAK2_MISSION_STATE tick={} task=6 name=fortress-escape state={} "
+             "start_frame={} story_complete={} story_total=67",
+             g_current_tick, mission.fortress_complete ? "complete" :
+                             mission.fortress_start_frame ? "entered" : "not-started",
+             mission.fortress_start_frame, mission.story_complete);
+  }
+  g_mission_diagnostics = mission;
+}
+
 void copy_known_symbol_name(uint32_t symbol, char* out, size_t size) {
   static const char* names[] = {"game",       "menu",    "progress", "pause",
                                 "freeze",     "startup", "wait",     "idle",
@@ -506,6 +528,7 @@ void update_metrics() {
                           dgo.dgo_archives >= 1 && dgo.dgo_objects >= 1 &&
                           dgo.linked_code_objects + dgo.linked_data_objects >= 1;
   update_title_state_metrics();
+  update_mission_diagnostics();
 
   goal_jak2_sound_rpc_stats sound = {};
   goal_jak2_sound_rpc_stats_get(&sound);
@@ -794,6 +817,7 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
   try {
     g_metrics = {};
     g_scene_actor_diagnostics = {};
+    g_mission_diagnostics = {};
     g_metrics.state = GOAL_JAK2_RUNTIME_STARTING;
     g_metrics.graphics = config->graphics;
     g_error.clear();
@@ -1333,6 +1357,7 @@ void goal_jak2_runtime_shutdown(void) {
   g_saves_directory.clear();
   g_metrics = {};
   g_scene_actor_diagnostics = {};
+  g_mission_diagnostics = {};
   g_metrics.state = GOAL_JAK2_RUNTIME_STOPPED;
   g_error.clear();
 }
