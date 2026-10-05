@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -15,6 +16,7 @@
 
 #include "common/dma/dma_copy.h"
 #include "common/goal_constants.h"
+#include "common/log/log.h"
 #include "common/texture/texture_slots.h"
 
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
@@ -81,6 +83,7 @@ struct goal_jak2_metal_host {
   std::array<u64, metal_renderer::kJak2Pris2TextureUploadBuckets.size()>
       pris2_texture_upload_executions = {};
   u64 placeholder_handle = 0;
+  bool subtitle322_metadata_capture_logged = false;
   bool configuration_attempted = false;
   bool configured = false;
   bool callbacks_copied = false;
@@ -930,6 +933,71 @@ void record_subtitle_bucket322_typed_metrics(
   out->last_image_upload_count = static_cast<u32>(live->image_upload_count);
   out->last_direct_payload_bytes = live->direct_payload_bytes;
   out->last_semantic_fingerprint = live->semantic_fingerprint;
+}
+
+void maybe_log_subtitle_bucket322_metadata_capture(
+    goal_jak2_metal_host* host,
+    const metal_renderer::Jak2CommonTfragTextureUploadCapture& capture,
+    const std::optional<metal_renderer::Jak2SubtitleBucket322Plan>& live,
+    metal_renderer::Jak2SubtitleBucket322RejectReason live_rejection,
+    u32 live_rejection_transfer_index,
+    const std::optional<metal_renderer::Jak2SubtitleBucket322Plan>& copied,
+    metal_renderer::Jak2SubtitleBucket322RejectReason copied_rejection,
+    u32 copied_rejection_transfer_index) {
+  const char* enabled = std::getenv("GOALPAD_JAK2_DEBUG_CAPTURE_SUBTITLE322");
+  if (!host || host->subtitle322_metadata_capture_logged || !enabled ||
+      std::strcmp(enabled, "1") != 0 || !capture.present ||
+      capture.transfer_count <= capture.inert_transfers) {
+    return;
+  }
+  host->subtitle322_metadata_capture_logged = true;
+
+  const auto variant = [](const auto& plan) {
+    return plan ? static_cast<u32>(plan->variant) : UINT32_MAX;
+  };
+  const auto transfer_count = [](const auto& plan) { return plan ? plan->transfer_count : 0; };
+  const auto linker_transfers = [](const auto& plan) { return plan ? plan->linker_transfers : 0; };
+  const auto direct_transfers = [](const auto& plan) { return plan ? plan->direct_transfers : 0; };
+  const auto opaque_direct_transfers = [](const auto& plan) {
+    return plan ? plan->opaque_direct_transfers : 0;
+  };
+  const auto font_glyph_transfers = [](const auto& plan) {
+    return plan ? plan->source_exact_font_glyph_transfers : 0;
+  };
+  const auto hud_sprite_pairs = [](const auto& plan) { return plan ? plan->hud_sprite_pairs : 0; };
+  const auto image_upload_count = [](const auto& plan) {
+    return plan ? plan->image_upload_count : 0;
+  };
+  const auto fingerprint = [](const auto& plan) { return plan ? plan->semantic_fingerprint : 0; };
+
+  constexpr std::size_t kMaximumLoggedTransfers = 128;
+  const std::size_t logged_transfers =
+      std::min<std::size_t>(capture.transfer_count, kMaximumLoggedTransfers);
+  lg::info(
+      "GOALPAD_JAK2_SUBTITLE322_CAPTURE tick={} legacy=valid{}/present{}/class{}/xfer{}/"
+      "inert{}/malformed{} live=present{}/variant{}/reject{}/index{}/xfer{}/link{}/direct{}/"
+      "opaque{}/font{}/pairs{}/images{}/hash{:016x} copied=present{}/variant{}/reject{}/index{}/"
+      "xfer{}/link{}/direct{}/opaque{}/font{}/pairs{}/images{}/hash{:016x} logged={}/{}",
+      host->metrics.chains, capture.valid, capture.present, static_cast<u32>(capture.classification),
+      capture.transfer_count, capture.inert_transfers, capture.malformed_transfers,
+      static_cast<bool>(live), variant(live), static_cast<u32>(live_rejection),
+      live_rejection_transfer_index, transfer_count(live), linker_transfers(live),
+      direct_transfers(live), opaque_direct_transfers(live), font_glyph_transfers(live),
+      hud_sprite_pairs(live), image_upload_count(live), fingerprint(live),
+      static_cast<bool>(copied), variant(copied), static_cast<u32>(copied_rejection),
+      copied_rejection_transfer_index, transfer_count(copied), linker_transfers(copied),
+      direct_transfers(copied), opaque_direct_transfers(copied), font_glyph_transfers(copied),
+      hud_sprite_pairs(copied), image_upload_count(copied), fingerprint(copied), logged_transfers,
+      capture.transfer_count);
+  for (std::size_t index = 0; index < logged_transfers; ++index) {
+    const auto& transfer = capture.transfers[index];
+    lg::info(
+        "GOALPAD_JAK2_SUBTITLE322_CAPTURE_TRANSFER index={} rel={} tag={} qwc={} bytes={} "
+        "vif0={}/{} vif1={}/{}",
+        index, transfer.relative_tag_offset, transfer.tag_kind, transfer.qwc,
+        transfer.payload_bytes, transfer.vif0_kind, transfer.vif0_immediate,
+        transfer.vif1_kind, transfer.vif1_immediate);
+  }
 }
 
 void record_effects_bucket315_metrics(
@@ -2028,6 +2096,10 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &copied_subtitle_rejection_transfer_index);
     record_subtitle_bucket322_typed_metrics(
         &host->metrics.subtitle_bucket322_typed, live_subtitle_plan, live_subtitle_rejection,
+        live_subtitle_rejection_transfer_index, copied_subtitle_plan, copied_subtitle_rejection,
+        copied_subtitle_rejection_transfer_index);
+    maybe_log_subtitle_bucket322_metadata_capture(
+        host, subtitle_capture, live_subtitle_plan, live_subtitle_rejection,
         live_subtitle_rejection_transfer_index, copied_subtitle_plan, copied_subtitle_rejection,
         copied_subtitle_rejection_transfer_index);
 
