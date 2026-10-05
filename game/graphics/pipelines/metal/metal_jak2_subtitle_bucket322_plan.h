@@ -63,9 +63,9 @@ struct Jak2SubtitleBucket322Plan {
  * - the exact PC_PORT 12/16/16/13 subtitle-image upload followed by its qwc-7/qwc-6/qwc-6 draw.
  *
  * Multiple producer chains may be linked into the bucket in any order. Unknown PC_PORT records,
- * non-CNT payloads, malformed known packets, and inputs beyond the fixed bounds fail closed. This
- * plan is intentionally passive: opaque text grammar and live upload contents are not exhaustive,
- * so it is not an execution contract.
+ * non-CNT payloads, malformed known packets, and inputs beyond the fixed bounds fail closed. The
+ * plan remains passive for opaque text and image variants. Only the exact HUD-sprite variant can
+ * become an execution contract through jak2_subtitle_bucket322_hud_sprite_plan_is_executable.
  */
 std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
     const u8* dma_packet_snapshot,
@@ -76,5 +76,8 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
 
 bool jak2_subtitle_bucket322_plans_match(const Jak2SubtitleBucket322Plan& live,
                                           const Jak2SubtitleBucket322Plan& copied);
+
+bool jak2_subtitle_bucket322_hud_sprite_plan_is_executable(
+    const Jak2SubtitleBucket322Plan& plan);
 
 }  // namespace metal_renderer

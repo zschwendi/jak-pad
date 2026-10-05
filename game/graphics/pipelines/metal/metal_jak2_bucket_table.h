@@ -38,6 +38,7 @@ enum class Jak2MetalBucketBehavior : std::uint8_t {
   EffectsLightning,
   Warp,
   Shadow2,
+  SubtitleHudSpriteDirect,
 };
 
 struct Jak2MetalBucketDescriptor {
@@ -47,7 +48,7 @@ struct Jak2MetalBucketDescriptor {
 
 inline constexpr std::size_t kJak2MetalBucketCount =
     static_cast<std::size_t>(jak2::BucketId::MAX_BUCKETS);
-inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0x2b00bc4010b915a7ull;
+inline constexpr std::uint64_t kJak2MetalBucketExpectedFingerprint = 0x2acbac40e2728734ull;
 
 const std::array<Jak2MetalBucketDescriptor, kJak2MetalBucketCount>& jak2_metal_bucket_table();
 

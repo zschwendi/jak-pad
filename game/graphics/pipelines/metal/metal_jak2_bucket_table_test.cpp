@@ -61,6 +61,7 @@ int main() {
   std::size_t effects_lightning = 0;
   std::size_t warp = 0;
   std::size_t shadow2 = 0;
+  std::size_t subtitle_hud_sprite_direct = 0;
   bool contiguous = true;
   for (std::size_t i = 0; i < table.size(); i++) {
     contiguous &= table[i].id == i;
@@ -93,10 +94,11 @@ int main() {
     effects_lightning += table[i].behavior == Behavior::EffectsLightning;
     warp += table[i].behavior == Behavior::Warp;
     shadow2 += table[i].behavior == Behavior::Shadow2;
+    subtitle_hud_sprite_direct += table[i].behavior == Behavior::SubtitleHudSpriteDirect;
   }
 
   check(table.size() == 327 && contiguous, "the Jak 2 table covers 327 contiguous bucket IDs");
-  check(deferred == 17, "17 OpenGL-bound buckets remain deferred for Metal");
+  check(deferred == 16, "16 OpenGL-bound buckets remain deferred for Metal");
   check(strict_empty == 127, "127 unbound buckets use strict-empty descriptor policy");
   check(direct == 4, "four reviewed OpenGL-bound buckets are implemented by Metal Direct");
   check(host_texture_upload == 31,
@@ -130,6 +132,8 @@ int main() {
         "one source-exact EFFECTS bucket has a dedicated Lightning renderer");
   check(warp == 1, "one source-exact GMERC_WARP bucket owns framebuffer warp rendering");
   check(shadow2 == 0, "the physically rejected Jak II Shadow2 route remains deferred");
+  check(subtitle_hud_sprite_direct == 1,
+        "one typed Jak II subtitle HUD-sprite family is executable");
   check(generic2 == 26,
         "26 source-proven normal GMerc buckets are implemented by Metal Generic2");
   check(ocean_mid_far == 1 && ocean_near == 1,
@@ -449,7 +453,7 @@ int main() {
   for (std::size_t i = 0; i < table.size(); i++) {
     direct_batches += metal_renderer::jak2_metal_direct_batch_size(i) != 0;
   }
-  check(direct_batches == 6 &&
+  check(direct_batches == 7 &&
             metal_renderer::jak2_metal_direct_batch_size(
                 static_cast<std::size_t>(jak2::BucketId::SKY_DRAW)) == 1024 &&
             metal_renderer::jak2_metal_direct_batch_size(
@@ -461,10 +465,13 @@ int main() {
             metal_renderer::jak2_metal_direct_batch_size(
                 static_cast<std::size_t>(jak2::BucketId::TEX_ALL_MAP)) == 1024 * 6 &&
             metal_renderer::jak2_metal_direct_batch_size(
+                static_cast<std::size_t>(jak2::BucketId::SUBTITLE)) == 1024 * 6 &&
+            metal_renderer::jak2_metal_direct_batch_size(
                 static_cast<std::size_t>(jak2::BucketId::DEBUG_NO_ZBUF2)) == 0x8000 &&
             metal_renderer::jak2_metal_direct_batch_size(
                 static_cast<std::size_t>(jak2::BucketId::DEBUG3)) == 0,
-        "the four Direct and two upload-plus-Direct bindings receive their reference batch sizes");
+        "the four Direct, two upload-plus-Direct, and typed subtitle bindings receive their "
+        "reference batch sizes");
   check(metal_renderer::jak2_metal_direct_batch_size(table.size()) == 0,
         "out-of-range buckets do not receive a Direct binding");
 

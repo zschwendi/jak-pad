@@ -458,4 +458,13 @@ bool jak2_subtitle_bucket322_plans_match(const Jak2SubtitleBucket322Plan& live,
   return true;
 }
 
+bool jak2_subtitle_bucket322_hud_sprite_plan_is_executable(
+    const Jak2SubtitleBucket322Plan& plan) {
+  return plan.variant == Jak2SubtitleBucket322Variant::HudSpriteDirect &&
+         plan.image_upload_count == 0 && plan.opaque_direct_transfers == 0 &&
+         plan.source_exact_font_glyph_transfers == 0 && plan.hud_sprite_pairs != 0 &&
+         plan.direct_transfers == plan.hud_sprite_pairs * 2 &&
+         plan.transfer_count == plan.linker_transfers + plan.direct_transfers;
+}
+
 }  // namespace metal_renderer
