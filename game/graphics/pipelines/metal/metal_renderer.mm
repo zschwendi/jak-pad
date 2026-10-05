@@ -29,7 +29,6 @@
 #include "game/graphics/pipelines/metal/metal_jak2_shadow2_renderer.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_shadow195_frame_capture_metal.h"
-#include "game/graphics/pipelines/metal/metal_jak2_subtitle_bucket322_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_warp_renderer.h"
 #include "game/graphics/pipelines/metal/metal_shadow_renderer.h"
 #include "game/graphics/pipelines/metal/metal_kernel_bridge.h"
@@ -762,12 +761,6 @@ void MetalRenderer::init_bucket_renderers_jak2() {
         m_bucket_renderers[bucket_id] = std::make_unique<MetalSkipRenderer>(
             "jak2-host-texture-upload-direct-unavailable", descriptor.id);
       }
-    } else if (descriptor.behavior ==
-               metal_renderer::Jak2MetalBucketBehavior::SubtitleHudSpriteDirect) {
-      ASSERT(bucket_id == static_cast<std::size_t>(jak2::BucketId::SUBTITLE));
-      ASSERT(batch_size == 1024 * 6);
-      m_bucket_renderers[bucket_id] = std::make_unique<MetalJak2SubtitleHudSpriteRenderer>(
-          "subtitle-hud-sprite", descriptor.id, batch_size);
     } else if (descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::Direct) {
       ASSERT(batch_size != 0);
       const char* name = "direct";
@@ -1612,7 +1605,6 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.jak2_common_pris_plan = opts.jak2_common_pris_plan;
     m_shared_state.jak2_gmerc_warp_bucket317_plan = opts.jak2_gmerc_warp_bucket317_plan;
     m_shared_state.jak2_shadow_bucket195_plan = opts.jak2_shadow_bucket195_plan;
-    m_shared_state.jak2_subtitle_bucket322_plan = opts.jak2_subtitle_bucket322_plan;
     m_shared_state.jak2_shadow195_frame_capture = opts.jak2_shadow195_frame_capture;
     m_shared_state.render_target_view_id = view_id;
     m_shared_state.render_target_external = external_target;
@@ -1628,7 +1620,6 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         state->jak2_common_pris_plan = nullptr;
         state->jak2_gmerc_warp_bucket317_plan = nullptr;
         state->jak2_shadow_bucket195_plan = nullptr;
-        state->jak2_subtitle_bucket322_plan = nullptr;
         state->jak2_shadow195_frame_capture = nullptr;
         state->render_target_view_id = 0;
         state->render_target_external = false;

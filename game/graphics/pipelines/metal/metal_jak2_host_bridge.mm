@@ -110,7 +110,6 @@ bool jak2_metal_host_policy_table_is_audited() {
         descriptor.behavior != Jak2MetalBucketBehavior::Direct &&
         descriptor.behavior != Jak2MetalBucketBehavior::HostTextureUpload &&
         descriptor.behavior != Jak2MetalBucketBehavior::HostTextureUploadDirect &&
-        descriptor.behavior != Jak2MetalBucketBehavior::SubtitleHudSpriteDirect &&
         descriptor.behavior != Jak2MetalBucketBehavior::Visibility &&
         descriptor.behavior != Jak2MetalBucketBehavior::Sprite &&
         descriptor.behavior != Jak2MetalBucketBehavior::TFragment &&
@@ -2031,12 +2030,6 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &host->metrics.subtitle_bucket322_typed, live_subtitle_plan, live_subtitle_rejection,
         live_subtitle_rejection_transfer_index, copied_subtitle_plan, copied_subtitle_rejection,
         copied_subtitle_rejection_transfer_index);
-    const bool execute_subtitle_hud_sprite =
-        live_subtitle_plan && copied_subtitle_plan &&
-        metal_renderer::jak2_subtitle_bucket322_plans_match(*live_subtitle_plan,
-                                                            *copied_subtitle_plan) &&
-        metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(
-            *copied_subtitle_plan);
 
     const auto copied_shadow_bucket195_plan = metal_renderer::plan_jak2_shadow_bucket195(
         copied.data.data(), copied.data.size(), copied.start_offset,
@@ -2441,8 +2434,6 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.jak2_gmerc_warp_bucket317_plan = &*copied_gmerc_warp_bucket317_plan;
     render_options.jak2_shadow_bucket195_plan =
         execute_shadow_bucket195 ? &*copied_shadow_bucket195_plan : nullptr;
-    render_options.jak2_subtitle_bucket322_plan =
-        execute_subtitle_hud_sprite ? &*copied_subtitle_plan : nullptr;
     render_options.jak2_shadow195_frame_capture =
         shadow195_frame_capture_selected ? host->shadow195_frame_capture.get() : nullptr;
     const u64 warp_texture_upload_executions_before =

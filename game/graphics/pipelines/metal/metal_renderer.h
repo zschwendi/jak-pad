@@ -43,7 +43,6 @@ struct MetalPresentationState;
 namespace metal_renderer {
 class Jak2Shadow195FrameCapture;
 class MetalJak2Shadow2Renderer;
-struct Jak2SubtitleBucket322Plan;
 }
 
 // Backs metal_renderer::set_s7_override (see metal_pipeline.h).
@@ -97,7 +96,6 @@ struct MetalRenderOptions {
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;
   const metal_renderer::Jak2GmercWarpBucket317Plan* jak2_gmerc_warp_bucket317_plan = nullptr;
   const metal_renderer::Jak2ShadowBucket195Plan* jak2_shadow_bucket195_plan = nullptr;
-  const metal_renderer::Jak2SubtitleBucket322Plan* jak2_subtitle_bucket322_plan = nullptr;
   metal_renderer::Jak2Shadow195FrameCapture* jak2_shadow195_frame_capture = nullptr;
   float target_fps = 60.f;
 };

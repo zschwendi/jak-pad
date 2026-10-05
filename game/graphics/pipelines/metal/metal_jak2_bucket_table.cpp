@@ -104,9 +104,6 @@ constexpr Table make_table() {
   const auto warp = [&table](BucketId id) {
     table[index(id)].behavior = Jak2MetalBucketBehavior::Warp;
   };
-  const auto subtitle_hud_sprite_direct = [&table](BucketId id) {
-    table[index(id)].behavior = Jak2MetalBucketBehavior::SubtitleHudSpriteDirect;
-  };
   // Mirror every renderer explicitly installed by OpenGLRenderer::init_bucket_renderers_jak2.
   visibility(BucketId::BUCKET_2);
   blit_display(BucketId::BUCKET_3);
@@ -173,7 +170,7 @@ constexpr Table make_table() {
   host_texture_upload_direct(BucketId::TEX_ALL_MAP);
   direct(BucketId::PROGRESS);
   direct(BucketId::SCREEN_FILTER);
-  subtitle_hud_sprite_direct(BucketId::SUBTITLE);
+  defer(BucketId::SUBTITLE);
   defer(BucketId::DEBUG2);
   direct(BucketId::DEBUG_NO_ZBUF2);
   defer(BucketId::DEBUG3);
@@ -210,7 +207,7 @@ constexpr std::uint64_t fingerprint(const Table& table) {
 constexpr auto kTable = make_table();
 constexpr auto kTableFingerprint = fingerprint(kTable);
 static_assert(kTable.size() == 327);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 16);
+static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::DeferredSkip) == 17);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::StrictEmpty) == 127);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Direct) == 4);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::HostTextureUpload) == 31);
@@ -239,7 +236,6 @@ static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::CommonPris) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::EffectsLightning) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Warp) == 1);
 static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::Shadow2) == 0);
-static_assert(count_behavior(kTable, Jak2MetalBucketBehavior::SubtitleHudSpriteDirect) == 1);
 static_assert(kTableFingerprint == kJak2MetalBucketExpectedFingerprint);
 
 }  // namespace
@@ -260,8 +256,7 @@ bool jak2_metal_bucket_allows_content(std::size_t bucket_id) {
 int jak2_metal_direct_batch_size(std::size_t bucket_id) {
   if (bucket_id >= kTable.size() ||
       (kTable[bucket_id].behavior != Jak2MetalBucketBehavior::Direct &&
-       kTable[bucket_id].behavior != Jak2MetalBucketBehavior::HostTextureUploadDirect &&
-       kTable[bucket_id].behavior != Jak2MetalBucketBehavior::SubtitleHudSpriteDirect)) {
+       kTable[bucket_id].behavior != Jak2MetalBucketBehavior::HostTextureUploadDirect)) {
     return 0;
   }
   switch (static_cast<BucketId>(bucket_id)) {
@@ -273,7 +268,6 @@ int jak2_metal_direct_batch_size(std::size_t bucket_id) {
       return 0x1000;
     case BucketId::DEBUG_NO_ZBUF1:
     case BucketId::TEX_ALL_MAP:
-    case BucketId::SUBTITLE:
       return 1024 * 6;
     case BucketId::DEBUG_NO_ZBUF2:
       return 0x8000;

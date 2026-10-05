@@ -515,7 +515,7 @@ typedef struct goal_jak2_metal_host_metrics {
   goal_jak2_warp_texture_upload_metrics warp_texture_upload;
   // Append-only capture and execution telemetry for exact common-water bucket 306.
   goal_jak2_tfrag_texture_upload_metrics common_water_texture_upload;
-  // Append-only capture metadata. Only exact typed HUD-sprite Direct plans execute.
+  // Append-only passive metadata. Bucket 322 remains DeferredSkip with no execution route.
   goal_jak2_tfrag_texture_upload_metrics subtitle_capture;
   // Append-only passive metadata. Bucket 195 remains DeferredSkip with no execution route.
   goal_jak2_shadow_bucket195_metrics shadow_bucket195;
@@ -544,7 +544,7 @@ typedef struct goal_jak2_metal_host_metrics {
   // Append-only retained identities for the first and latest palette-health events.
   goal_jak2_merc_palette_health_event first_merc_palette_health_event;
   goal_jak2_merc_palette_health_event last_merc_palette_health_event;
-  // Append-only typed telemetry. Only exact HUD-sprite plans receive a Direct execution route.
+  // Append-only passive typed telemetry. Bucket 322 remains DeferredSkip with no execution route.
   goal_jak2_subtitle_bucket322_typed_metrics subtitle_bucket322_typed;
   // Append-only renderer A/B telemetry. These distinguish generated ocean work from loaded
   // background geometry and identify the merged eye renderer's transient-stream vertex upload.

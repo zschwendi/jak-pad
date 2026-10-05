@@ -32,16 +32,15 @@ std::optional<Plan> plan(const Fixture& fixture,
       rejection_transfer_index);
 }
 
-void test_policy_routes_only_hud_sprites() {
+void test_policy_stays_deferred() {
   static_assert(metal_renderer::kJak2SubtitleBucket322 ==
                 static_cast<u32>(jak2::BucketId::SUBTITLE));
   const auto& descriptor =
       metal_renderer::jak2_metal_bucket_table()[metal_renderer::kJak2SubtitleBucket322];
   check(
-      descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::SubtitleHudSpriteDirect &&
-          metal_renderer::jak2_metal_direct_batch_size(metal_renderer::kJak2SubtitleBucket322) ==
-              1024 * 6,
-      "bucket 322 exposes only its typed HUD-sprite Direct route");
+      descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
+          metal_renderer::jak2_metal_direct_batch_size(metal_renderer::kJak2SubtitleBucket322) == 0,
+      "the passive plan does not promote bucket 322 to execution");
 }
 
 void test_empty_forms() {
@@ -103,31 +102,14 @@ void test_intro_hud_sprite_family() {
   auto result = plan(fixture);
   check(result && result->variant == Variant::HudSpriteDirect && result->hud_sprite_pairs == 1 &&
             result->direct_transfers == 2 && result->opaque_direct_transfers == 0 &&
-            result->image_upload_count == 0 &&
-            metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(*result),
+            result->image_upload_count == 0,
         "the source hud-sprite qwc-6/qwc-13 pair is classified exactly");
 
   fixture = metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::IntroTwoHudSprites);
   result = plan(fixture);
   check(result && result->variant == Variant::HudSpriteDirect && result->hud_sprite_pairs == 2 &&
-            result->direct_transfers == 4 && result->opaque_direct_transfers == 0 &&
-            metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(*result),
+            result->direct_transfers == 4 && result->opaque_direct_transfers == 0,
         "the intro's source-valid two-sprite form stays one passive family");
-}
-
-void test_only_hud_sprite_plans_are_executable() {
-  for (const auto layout : {Layout::OpaqueDirect, Layout::SourceExactFontGlyph,
-                            Layout::SubtitleImage, Layout::Mixed}) {
-    const auto result = plan(metal_renderer::make_jak2_subtitle_bucket322_fixture(layout));
-    check(result &&
-              !metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(*result),
-          "non-HUD subtitle variants remain non-executable");
-  }
-  auto result = plan(metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::IntroHudSprite));
-  check(result.has_value(), "the HUD-sprite fixture produces a plan for guard mutation");
-  result->direct_transfers++;
-  check(!metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(*result),
-        "inconsistent HUD-sprite counts fail the execution guard");
 }
 
 void test_subtitle_image_family() {
@@ -241,12 +223,11 @@ void test_rejections() {
 }  // namespace
 
 int main() {
-  test_policy_routes_only_hud_sprites();
+  test_policy_stays_deferred();
   test_empty_forms();
   test_opaque_direct_family();
   test_source_exact_font_glyph_family();
   test_intro_hud_sprite_family();
-  test_only_hud_sprite_plans_are_executable();
   test_subtitle_image_family();
   test_mixed_source_families();
   test_semantic_match();

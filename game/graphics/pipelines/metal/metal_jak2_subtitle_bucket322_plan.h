@@ -63,9 +63,9 @@ struct Jak2SubtitleBucket322Plan {
  * - the exact PC_PORT 12/16/16/13 subtitle-image upload followed by its qwc-7/qwc-6/qwc-6 draw.
  *
  * Multiple producer chains may be linked into the bucket in any order. Unknown PC_PORT records,
- * non-CNT payloads, malformed known packets, and inputs beyond the fixed bounds fail closed. The
- * plan remains passive for opaque text and image variants. Only the exact HUD-sprite variant can
- * become an execution contract through jak2_subtitle_bucket322_hud_sprite_plan_is_executable.
+ * non-CNT payloads, malformed known packets, and inputs beyond the fixed bounds fail closed. This
+ * plan is intentionally passive: opaque text grammar and live upload contents are not exhaustive,
+ * so it is not an execution contract.
  */
 std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
     const u8* dma_packet_snapshot,
@@ -76,14 +76,5 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
 
 bool jak2_subtitle_bucket322_plans_match(const Jak2SubtitleBucket322Plan& live,
                                           const Jak2SubtitleBucket322Plan& copied);
-
-inline bool jak2_subtitle_bucket322_hud_sprite_plan_is_executable(
-    const Jak2SubtitleBucket322Plan& plan) {
-  return plan.variant == Jak2SubtitleBucket322Variant::HudSpriteDirect &&
-         plan.image_upload_count == 0 && plan.opaque_direct_transfers == 0 &&
-         plan.source_exact_font_glyph_transfers == 0 && plan.hud_sprite_pairs != 0 &&
-         plan.direct_transfers == plan.hud_sprite_pairs * 2 &&
-         plan.transfer_count == plan.linker_transfers + plan.direct_transfers;
-}
 
 }  // namespace metal_renderer

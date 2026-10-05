@@ -40,7 +40,6 @@ struct Jak2PrisEyeTextureUploadPlan;
 struct Jak2CommonPrisTextureUploadPlan;
 struct Jak2GmercWarpBucket317Plan;
 struct Jak2ShadowBucket195Plan;
-struct Jak2SubtitleBucket322Plan;
 class Jak2Shadow195FrameCapture;
 }
 
@@ -135,7 +134,6 @@ struct MetalSharedRenderState {
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;
   const metal_renderer::Jak2GmercWarpBucket317Plan* jak2_gmerc_warp_bucket317_plan = nullptr;
   const metal_renderer::Jak2ShadowBucket195Plan* jak2_shadow_bucket195_plan = nullptr;
-  const metal_renderer::Jak2SubtitleBucket322Plan* jak2_subtitle_bucket322_plan = nullptr;
   metal_renderer::Jak2Shadow195FrameCapture* jak2_shadow195_frame_capture = nullptr;
   u64 render_target_view_id = 0;
   bool render_target_external = false;
