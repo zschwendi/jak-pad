@@ -110,6 +110,7 @@ bool jak2_metal_host_policy_table_is_audited() {
         descriptor.behavior != Jak2MetalBucketBehavior::Direct &&
         descriptor.behavior != Jak2MetalBucketBehavior::HostTextureUpload &&
         descriptor.behavior != Jak2MetalBucketBehavior::HostTextureUploadDirect &&
+        descriptor.behavior != Jak2MetalBucketBehavior::SubtitleHudSpriteDirect &&
         descriptor.behavior != Jak2MetalBucketBehavior::Visibility &&
         descriptor.behavior != Jak2MetalBucketBehavior::Sprite &&
         descriptor.behavior != Jak2MetalBucketBehavior::TFragment &&
