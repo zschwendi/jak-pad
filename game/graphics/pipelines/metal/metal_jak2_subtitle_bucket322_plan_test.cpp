@@ -32,15 +32,16 @@ std::optional<Plan> plan(const Fixture& fixture,
       rejection_transfer_index);
 }
 
-void test_policy_stays_deferred() {
+void test_policy_routes_only_exact_hud_sprite_plans() {
   static_assert(metal_renderer::kJak2SubtitleBucket322 ==
                 static_cast<u32>(jak2::BucketId::SUBTITLE));
   const auto& descriptor =
       metal_renderer::jak2_metal_bucket_table()[metal_renderer::kJak2SubtitleBucket322];
-  check(
-      descriptor.behavior == metal_renderer::Jak2MetalBucketBehavior::DeferredSkip &&
-          metal_renderer::jak2_metal_direct_batch_size(metal_renderer::kJak2SubtitleBucket322) == 0,
-      "the passive plan does not promote bucket 322 to execution");
+  check(descriptor.behavior ==
+                metal_renderer::Jak2MetalBucketBehavior::SubtitleHudSpriteDirect &&
+            metal_renderer::jak2_metal_direct_batch_size(
+                metal_renderer::kJak2SubtitleBucket322) == 1024 * 6,
+        "bucket 322 uses the guarded HUD-sprite Direct route");
 }
 
 void test_empty_forms() {
@@ -112,6 +113,36 @@ void test_intro_hud_sprite_family() {
         "the intro's source-valid two-sprite form stays one passive family");
 }
 
+void test_capture_sized_intro_font_hud_sprite_family() {
+  auto fixture =
+      metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::CaptureSizedIntroFontHudSprite);
+  RejectReason rejection = RejectReason::None;
+  u32 rejection_transfer_index = metal_renderer::kJak2SubtitleNoTransferIndex;
+  auto result = plan(fixture, &rejection, &rejection_transfer_index);
+  if (!result) {
+    std::fprintf(stderr, "live fixture rejection=%u index=%u\n", static_cast<u32>(rejection),
+                 rejection_transfer_index);
+  }
+  check(result.has_value(), "the captured intro bucket parses");
+  check(result->variant == Variant::Mixed && result->transfer_count == 155 &&
+            result->linker_transfers == 4 && result->direct_transfers == 151,
+        "the capture-sized intro model reaches the observed terminal-reset index");
+  check(result->direct_reset_transfers == 1 && result->opaque_direct_transfers == 148 &&
+            result->source_exact_font_glyph_transfers == 148 && result->hud_sprite_pairs == 1 &&
+            result->image_upload_count == 0,
+        "the capture-sized model contains only synthetic source font, HUD, and reset packets");
+  check(metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(*result),
+        "the source font chain, inserted HUD sprite, and source default reset execute exactly");
+
+  metal_renderer::jak2_subtitle_bucket322_fixture_detail::put_u64(
+      fixture.ee_memory, fixture.payload_offset + 24, 0);
+  result = plan(fixture);
+  check(result && result->variant == Variant::Mixed &&
+            result->source_exact_font_glyph_transfers == 147 &&
+            !metal_renderer::jak2_subtitle_bucket322_hud_sprite_plan_is_executable(*result),
+        "one non-source font packet keeps the capture-sized mixed family passive");
+}
+
 void test_subtitle_image_family() {
   const auto fixture = metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::SubtitleImage);
   const auto before = fixture.ee_memory;
@@ -161,6 +192,21 @@ void test_semantic_match() {
 }
 
 void test_rejections() {
+  {
+    auto fixture =
+        metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::CaptureSizedIntroFontHudSprite);
+    constexpr u32 kResetTransferIndex = 153;
+    constexpr u32 kResetTagOffset = 0x10000 + 112 + 224;
+    metal_renderer::jak2_subtitle_bucket322_fixture_detail::put_u64(
+        fixture.ee_memory, kResetTagOffset + 16 + 24,
+        static_cast<u64>(GsRegisterAddress::FRAME_1));
+    RejectReason rejection = RejectReason::None;
+    u32 rejection_transfer_index = metal_renderer::kJak2SubtitleNoTransferIndex;
+    check(!plan(fixture, &rejection, &rejection_transfer_index) &&
+              rejection == RejectReason::TransferEnvelope &&
+              rejection_transfer_index == kResetTransferIndex,
+          "a non-source default reset fails at the captured transfer index");
+  }
   {
     auto fixture = metal_renderer::make_jak2_subtitle_bucket322_fixture(Layout::SubtitleImage);
     const u16 wrong_clut_width = 3;
@@ -223,11 +269,12 @@ void test_rejections() {
 }  // namespace
 
 int main() {
-  test_policy_stays_deferred();
+  test_policy_routes_only_exact_hud_sprite_plans();
   test_empty_forms();
   test_opaque_direct_family();
   test_source_exact_font_glyph_family();
   test_intro_hud_sprite_family();
+  test_capture_sized_intro_font_hud_sprite_family();
   test_subtitle_image_family();
   test_mixed_source_families();
   test_semantic_match();

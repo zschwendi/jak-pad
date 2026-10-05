@@ -79,8 +79,11 @@ bool is_cnt(const CheckedTransfer& transfer,
          vif1.num == 0 && !vif1.interrupt;
 }
 
-bool is_direct(const CheckedTransfer& transfer, u16 qwc) {
-  return qwc != 0 && is_cnt(transfer, qwc, VifCode::Kind::NOP, 0, VifCode::Kind::DIRECT, qwc);
+bool is_direct(const CheckedTransfer& transfer,
+               u16 qwc,
+               VifCode::Kind vif0_kind = VifCode::Kind::NOP) {
+  return qwc != 0 &&
+         is_cnt(transfer, qwc, vif0_kind, 0, VifCode::Kind::DIRECT, qwc);
 }
 
 bool gif_header_matches(const u8* payload,
@@ -233,6 +236,30 @@ bool source_exact_font_glyph_matches(const CheckedTransfer& transfer) {
          read_unaligned<u64>(payload + 24) == static_cast<u64>(GsRegisterAddress::TEX0_1);
 }
 
+bool source_default_reset_matches(const CheckedTransfer& transfer) {
+  if (!is_direct(transfer, 10, VifCode::Kind::FLUSHA) || !transfer.data.data ||
+      !gif_header_matches(transfer.data.data, 1, false, GsPrim::Kind::POINT, false, false,
+                          false, 9,
+                          {GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                           GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                           GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                           GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                           GifTag::RegisterDescriptor::AD})) {
+    return false;
+  }
+  constexpr std::array<GsRegisterAddress, 9> kAddresses = {
+      GsRegisterAddress::ZBUF_1,   GsRegisterAddress::TEST_1,    GsRegisterAddress::ALPHA_1,
+      GsRegisterAddress::PABE,     GsRegisterAddress::CLAMP_1,   GsRegisterAddress::TEX1_1,
+      GsRegisterAddress::TEXA,     GsRegisterAddress::TEXCLUT,   GsRegisterAddress::FOGCOL};
+  for (u32 index = 0; index < kAddresses.size(); ++index) {
+    if (read_unaligned<u64>(transfer.data.data + 24 + index * 16) !=
+        static_cast<u64>(kAddresses[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 UploadRecord read_upload_record(const CheckedTransfer& transfer) {
   UploadRecord result;
   result.source_offset = read_unaligned<u32>(transfer.data.data);
@@ -383,6 +410,22 @@ std::optional<Jak2SubtitleBucket322Plan> plan_jak2_subtitle_bucket322(
         return std::nullopt;
       }
 
+      if (source_default_reset_matches(transfer)) {
+        if (plan.direct_reset_transfers != 0 || index + 2 != transfer_count ||
+            !is_inert(transfers[index + 1]) ||
+            transfers[index + 1].tag.kind != DmaTag::Kind::NEXT) {
+          set_rejection(out_rejection, out_rejection_transfer_index,
+                        Jak2SubtitleBucket322RejectReason::TransferEnvelope,
+                        static_cast<u32>(index));
+          return std::nullopt;
+        }
+        plan.direct_transfers++;
+        plan.direct_reset_transfers++;
+        plan.direct_payload_bytes += transfer.data.size_bytes;
+        index++;
+        continue;
+      }
+
       if (index + 2 <= transfer_count && hud_sprite_pair_matches(transfer, transfers[index + 1])) {
         plan.hud_sprite_pairs++;
         plan.direct_transfers += 2;
@@ -439,6 +482,7 @@ bool jak2_subtitle_bucket322_plans_match(const Jak2SubtitleBucket322Plan& live,
       live.transfer_count != copied.transfer_count ||
       live.linker_transfers != copied.linker_transfers ||
       live.direct_transfers != copied.direct_transfers ||
+      live.direct_reset_transfers != copied.direct_reset_transfers ||
       live.opaque_direct_transfers != copied.opaque_direct_transfers ||
       live.source_exact_font_glyph_transfers != copied.source_exact_font_glyph_transfers ||
       live.hud_sprite_pairs != copied.hud_sprite_pairs ||

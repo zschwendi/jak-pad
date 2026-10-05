@@ -16,6 +16,7 @@ enum class Jak2SubtitleBucket322FixtureLayout {
   SourceExactFontGlyph,
   IntroHudSprite,
   IntroTwoHudSprites,
+  CaptureSizedIntroFontHudSprite,
   SubtitleImage,
   Mixed,
 };
@@ -179,6 +180,28 @@ inline void emit_hud_sprite(std::vector<u8>& memory, u32* cursor) {
   *cursor += 224;
 }
 
+inline void emit_source_default_reset(std::vector<u8>& memory, u32* cursor) {
+  put_tag(memory, *cursor, DmaTag::Kind::CNT, 10, 0, vif(VifCode::Kind::FLUSHA),
+          vif(VifCode::Kind::DIRECT, 10));
+  const u32 payload = *cursor + 16;
+  put_u64(memory, payload, gif_tag(1, true, false, GsPrim{}, GifTag::Format::PACKED, 9));
+  put_u64(memory, payload + 8,
+          registers({GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                     GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                     GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                     GifTag::RegisterDescriptor::AD, GifTag::RegisterDescriptor::AD,
+                     GifTag::RegisterDescriptor::AD}));
+  constexpr GsRegisterAddress kAddresses[9] = {
+      GsRegisterAddress::ZBUF_1, GsRegisterAddress::TEST_1,  GsRegisterAddress::ALPHA_1,
+      GsRegisterAddress::PABE,   GsRegisterAddress::CLAMP_1, GsRegisterAddress::TEX1_1,
+      GsRegisterAddress::TEXA,   GsRegisterAddress::TEXCLUT, GsRegisterAddress::FOGCOL};
+  for (u32 index = 0; index < 9; ++index) {
+    put_u64(memory, payload + 16 + index * 16, 0);
+    put_u64(memory, payload + 24 + index * 16, static_cast<u64>(kAddresses[index]));
+  }
+  *cursor += 176;
+}
+
 inline void emit_image_sprite(std::vector<u8>& memory,
                               u32* cursor,
                               u16 width,
@@ -266,6 +289,8 @@ inline Jak2SubtitleBucket322Fixture make_jak2_subtitle_bucket322_fixture(
   constexpr u32 kChainOffset = 0x100;
   constexpr u32 kPayloadOffset = 0x3000;
   constexpr u32 kSecondPayloadOffset = 0x5000;
+  constexpr u32 kSecondFontPayloadOffset = 0x8000;
+  constexpr u32 kLiveHudPayloadOffset = 0x10000;
   constexpr u32 kClutSourceOffset = 0x20000;
   constexpr u32 kImageSourceOffset = 0x21000;
   constexpr std::size_t kMemorySize = 0x30000;
@@ -297,6 +322,20 @@ inline Jak2SubtitleBucket322Fixture make_jak2_subtitle_bucket322_fixture(
     case Jak2SubtitleBucket322FixtureLayout::IntroTwoHudSprites:
       emit_hud_sprite(fixture.ee_memory, &cursor);
       emit_hud_sprite(fixture.ee_memory, &cursor);
+      break;
+    case Jak2SubtitleBucket322FixtureLayout::CaptureSizedIntroFontHudSprite:
+      for (u32 glyph = 0; glyph < 60; ++glyph) {
+        emit_source_exact_font_glyph(fixture.ee_memory, &cursor);
+      }
+      put_tag(fixture.ee_memory, cursor, DmaTag::Kind::NEXT, 0, kSecondFontPayloadOffset);
+      cursor = kSecondFontPayloadOffset;
+      for (u32 glyph = 0; glyph < 88; ++glyph) {
+        emit_source_exact_font_glyph(fixture.ee_memory, &cursor);
+      }
+      put_tag(fixture.ee_memory, cursor, DmaTag::Kind::NEXT, 0, kLiveHudPayloadOffset);
+      cursor = kLiveHudPayloadOffset;
+      emit_hud_sprite(fixture.ee_memory, &cursor);
+      emit_source_default_reset(fixture.ee_memory, &cursor);
       break;
     case Jak2SubtitleBucket322FixtureLayout::SubtitleImage:
       emit_subtitle_image(&fixture, &cursor);
