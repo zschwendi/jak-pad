@@ -728,6 +728,12 @@ bool render_last_chain_to_external_target(int width,
     stereo_right.view_id = 0x4255494c44313452ull;  // "BUILD14R"
     stereo_right.color_slice = 2;
     stereo_right.depth_slice = 2;
+    // The legacy stereo contract rejects identical matrices so a caller cannot accidentally ship
+    // a mono pair. A uniform homogeneous scale is projectively identical, retaining this test's
+    // exact-pixel identity oracle while exercising two distinct contracts.
+    for (int diagonal = 0; diagonal < 4; ++diagonal) {
+      stereo_right.view_transform.clip_from_game_clip[diagonal * 4 + diagonal] = 2.f;
+    }
 
     auto aliased_right = stereo_right;
     aliased_right.color_slice = stereo_left.color_slice;
@@ -835,6 +841,7 @@ bool render_last_chain_to_external_target(int width,
     // deterministic diagnostic oracle. The post-clip transform is
     // x' = x + eye_slope * (z - convergence_depth * w), with c = 0.05 converged.
     // This proves the candidate math reaches world pixels; it does not establish physical comfort.
+    stereo_right.view_transform = {};
     constexpr float kProductDepthDisparitySlope = 0.05f;
     constexpr float kProductConvergenceDepth = 0.05f;
     constexpr float kLeftEyeSlope = -kProductDepthDisparitySlope * 0.5f;

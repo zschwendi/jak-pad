@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <tuple>
@@ -21,6 +22,7 @@
 #include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_eye_renderer.h"
 #include "game/graphics/pipelines/metal/metal_generic2.h"
+#include "game/graphics/pipelines/metal/metal_immersive_camera.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.h"
@@ -306,6 +308,43 @@ bool valid_external_slice(id<MTLTexture> texture, NSUInteger slice) {
   }
 }
 
+bool immersive_contract_enabled(const MetalExternalRenderTargetDescriptor& target) {
+  return target.immersive_camera.view.enabled || target.immersive_camera.binocular_cull.enabled;
+}
+
+bool valid_external_camera_contract(const MetalExternalRenderTargetDescriptor& target) {
+  const auto& contract = target.immersive_camera;
+  if (!metal_renderer::is_finite_immersive_contract(contract) ||
+      contract.view.enabled != contract.binocular_cull.enabled) {
+    return false;
+  }
+  return !contract.view.enabled ||
+         target.view_transform.clip_from_game_clip == metal_renderer::kIdentityMatrix4;
+}
+
+bool valid_stereo_camera_contracts(const MetalExternalRenderTargetDescriptor& left,
+                                   const MetalExternalRenderTargetDescriptor& right) {
+  const bool left_physical = immersive_contract_enabled(left);
+  const bool right_physical = immersive_contract_enabled(right);
+  if (left_physical != right_physical) {
+    return false;
+  }
+  if (!left_physical) {
+    return left.view_transform.clip_from_game_clip !=
+           right.view_transform.clip_from_game_clip;
+  }
+  const auto& left_contract = left.immersive_camera;
+  const auto& right_contract = right.immersive_camera;
+  const bool same_binocular_cull =
+      left_contract.binocular_cull.clip_from_game_camera_meters ==
+      right_contract.binocular_cull.clip_from_game_camera_meters;
+  const bool distinct_views =
+      left_contract.view.clip_from_eye != right_contract.view.clip_from_eye ||
+      left_contract.view.eye_from_game_camera_meters !=
+          right_contract.view.eye_from_game_camera_meters;
+  return same_binocular_cull && distinct_views;
+}
+
 bool valid_external_target(id<MTLDevice> device,
                            const MetalRenderOptions& opts,
                            const MetalExternalRenderTargetDescriptor& target) {
@@ -323,7 +362,8 @@ bool valid_external_target(id<MTLDevice> device,
   }
 
   const auto& viewport = target.viewport;
-  return metal_renderer::is_finite(target.view_transform) && opts.game_res_w > 0 &&
+  return metal_renderer::is_finite(target.view_transform) &&
+         valid_external_camera_contract(target) && opts.game_res_w > 0 &&
          opts.game_res_h > 0 && std::isfinite(viewport.originX) &&
          std::isfinite(viewport.originY) && std::isfinite(viewport.width) &&
          std::isfinite(viewport.height) && std::isfinite(viewport.znear) &&
@@ -339,6 +379,192 @@ bool external_targets_are_distinct(const MetalExternalRenderTargetDescriptor& a,
   const bool color_alias = a.color_texture == b.color_texture && a.color_slice == b.color_slice;
   const bool depth_alias = a.depth_texture == b.depth_texture && a.depth_slice == b.depth_slice;
   return a.view_id != b.view_id && !color_alias && !depth_alias;
+}
+
+struct Jak1ImmersivePacketProbe {
+  enum class Status {
+    Valid,
+    NoPacket,
+    InconsistentPacket,
+    InvalidChain,
+  };
+
+  Status status = Status::InvalidChain;
+  MetalGoalBackgroundCameraData camera = {};
+  metal_camera_trace::RenderSnapshot snapshot;
+  int packet_count = 0;
+  bool has_world_content = false;
+};
+
+bool jak1_bucket_may_contain_background_camera(int bucket) {
+  using BucketId = jak1::BucketId;
+  switch (bucket) {
+    case static_cast<int>(BucketId::TFRAG_LEVEL0):
+    case static_cast<int>(BucketId::TIE_LEVEL0):
+    case static_cast<int>(BucketId::TFRAG_LEVEL1):
+    case static_cast<int>(BucketId::TIE_LEVEL1):
+    case static_cast<int>(BucketId::SHRUB_NORMAL_LEVEL0):
+    case static_cast<int>(BucketId::SHRUB_NORMAL_LEVEL1):
+    case static_cast<int>(BucketId::TFRAG_TRANS0_AND_SKY_BLEND_LEVEL0):
+    case static_cast<int>(BucketId::TFRAG_DIRT_LEVEL0):
+    case static_cast<int>(BucketId::TFRAG_ICE_LEVEL0):
+    case static_cast<int>(BucketId::TFRAG_TRANS1_AND_SKY_BLEND_LEVEL1):
+    case static_cast<int>(BucketId::TFRAG_DIRT_LEVEL1):
+    case static_cast<int>(BucketId::TFRAG_ICE_LEVEL1):
+      return true;
+    default:
+      return false;
+  }
+}
+
+metal_renderer::ImmersivePacketCamera immersive_packet_camera(
+    const MetalGoalBackgroundCameraData& camera) {
+  metal_renderer::ImmersivePacketCamera out;
+  for (int lane = 0; lane < 4; ++lane) {
+    out.hvdf_off[lane] = camera.hvdf_off[lane];
+    out.fog[lane] = camera.fog[lane];
+    out.trans[lane] = camera.trans[lane];
+    for (int column = 0; column < 4; ++column) {
+      out.rot[lane][column] = camera.rot[lane][column];
+      out.perspective[lane][column] = camera.perspective[lane][column];
+    }
+  }
+  return out;
+}
+
+bool try_probe_jak1_background_packet(const DmaFollower& source,
+                                      MetalGoalBackgroundCameraData* camera) {
+  if (!camera || source.current_tag().qwc * 16 != sizeof(MetalTfragPcPortData) ||
+      source.current_tag_vifcode1().kind != VifCode::Kind::PC_PORT) {
+    return false;
+  }
+  try {
+    DmaFollower candidate = source;
+    const auto pc_port = candidate.read_and_advance();
+    if (!pc_port.data || pc_port.size_bytes != sizeof(MetalTfragPcPortData)) {
+      return false;
+    }
+    std::memcpy(camera, pc_port.data, sizeof(*camera));
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
+Jak1ImmersivePacketProbe::Status probe_jak1_immersive_packet(
+    const u8* chain_data,
+    u32 chain_offset,
+    std::size_t chain_size,
+    Jak1ImmersivePacketProbe* out) {
+  if (!chain_data || !out) {
+    return Jak1ImmersivePacketProbe::Status::InvalidChain;
+  }
+  *out = {};
+  const auto validation = validate_dma_chain(chain_data, chain_size, chain_offset);
+  if (!validation) {
+    return out->status;
+  }
+  try {
+    DmaFollower dma(chain_data, chain_offset, chain_size);
+    const u64 buckets_base_64 = static_cast<u64>(dma.current_tag_offset()) + 16;
+    if (buckets_base_64 > std::numeric_limits<u32>::max() - 16 ||
+        dma.current_tag().kind != DmaTag::Kind::CALL) {
+      return out->status;
+    }
+    const u32 buckets_base = static_cast<u32>(buckets_base_64);
+    dma.read_and_advance();
+    const u32 default_regs_buffer = dma.current_tag_offset();
+    if (dma.current_tag().kind != DmaTag::Kind::CNT || dma.current_tag().qwc != 10) {
+      return out->status;
+    }
+    dma.read_and_advance();
+    if (dma.current_tag().kind != DmaTag::Kind::RET || dma.current_tag().qwc != 0) {
+      return out->status;
+    }
+    dma.read_and_advance();
+    if (dma.current_tag_offset() != buckets_base) {
+      return out->status;
+    }
+
+    metal_camera_trace::RenderSnapshot first_snapshot;
+    bool have_first = false;
+    u32 next_bucket = buckets_base + 16;
+    for (int bucket = 0; bucket < static_cast<int>(jak1::BucketId::MAX_BUCKETS); ++bucket) {
+      u64 content_bytes = 0;
+      while (dma.current_tag_offset() != next_bucket) {
+        MetalGoalBackgroundCameraData candidate = {};
+        if (jak1_bucket_may_contain_background_camera(bucket) &&
+            try_probe_jak1_background_packet(dma, &candidate)) {
+          const auto snapshot = metal_camera_trace::make_render_snapshot(
+              candidate.camera, &candidate.hvdf_off, &candidate.fog, &candidate.trans,
+              candidate.rot, candidate.perspective);
+          if (!have_first) {
+            have_first = true;
+            first_snapshot = snapshot;
+            out->camera = candidate;
+          } else if (snapshot != first_snapshot) {
+            out->status = Jak1ImmersivePacketProbe::Status::InconsistentPacket;
+            return out->status;
+          }
+          out->packet_count++;
+        }
+        content_bytes += dma.read_and_advance().size_bytes;
+        if (dma.current_tag_offset() == default_regs_buffer) {
+          dma.read_and_advance();  // CNT payload
+          dma.read_and_advance();  // RET
+        }
+      }
+      if (content_bytes > 0 &&
+          metal_renderer::jak1_bucket_content_requires_world_camera(bucket)) {
+        out->has_world_content = true;
+      }
+      if (bucket + 1 < static_cast<int>(jak1::BucketId::MAX_BUCKETS)) {
+        if (next_bucket > std::numeric_limits<u32>::max() - 16) {
+          return out->status;
+        }
+        next_bucket += 16;
+      }
+    }
+    if (!have_first) {
+      out->status = Jak1ImmersivePacketProbe::Status::NoPacket;
+      return out->status;
+    }
+    out->snapshot = first_snapshot;
+    out->status = Jak1ImmersivePacketProbe::Status::Valid;
+    return out->status;
+  } catch (const std::exception&) {
+    return out->status;
+  }
+}
+
+bool prepare_immersive_stereo_camera(const MetalExternalRenderTargetDescriptor& left,
+                                     const MetalExternalRenderTargetDescriptor& right,
+                                     const Jak1ImmersivePacketProbe& probe,
+                                     metal_renderer::ImmersiveStereoFrameCamera* out,
+                                     metal_renderer::ImmersiveCameraError* error) {
+  if (!out || !error) {
+    return false;
+  }
+  *error = metal_renderer::ImmersiveCameraError::None;
+  if (probe.status != Jak1ImmersivePacketProbe::Status::Valid) {
+    *error = metal_renderer::ImmersiveCameraError::PacketUnavailable;
+    return false;
+  }
+  const auto packet = immersive_packet_camera(probe.camera);
+  if (!metal_renderer::derive_immersive_view_transform(
+          packet, metal_renderer::kJak1MetalScissorAdjust, left.immersive_camera.view,
+          &out->left, error) ||
+      !metal_renderer::derive_immersive_view_transform(
+          packet, metal_renderer::kJak1MetalScissorAdjust, right.immersive_camera.view,
+          &out->right, error) ||
+      !metal_renderer::derive_immersive_cull_planes(
+          packet, left.immersive_camera.binocular_cull, &out->binocular_cull, error) ||
+      out->left.clip_from_game_clip == out->right.clip_from_game_clip) {
+    return false;
+  }
+  out->packet_fingerprint = metal_camera_trace::fingerprint(probe.snapshot);
+  out->packet_count = probe.packet_count;
+  return true;
 }
 
 id<MTLTexture> make_checker_texture(id<MTLDevice> device) {
@@ -1320,8 +1546,8 @@ bool MetalRenderer::render_chain_frame(const MetalRenderOptions& opts,
                                        const u8* chain_data,
                                        u32 chain_offset,
                                        std::size_t chain_size) {
-  return render_chain_frame_impl(opts, layer, nil, 0, nil, 0, nullptr, 0.0, 0, {}, true, nil,
-                                 chain_data, chain_offset, chain_size);
+  return render_chain_frame_impl(opts, layer, nil, 0, nil, 0, nullptr, 0.0, 0, {}, nullptr, true,
+                                 nil, chain_data, chain_offset, chain_size);
 }
 
 bool MetalRenderer::render_chain_frame_to_external_target(
@@ -1330,13 +1556,14 @@ bool MetalRenderer::render_chain_frame_to_external_target(
     const u8* chain_data,
     u32 chain_offset,
     std::size_t chain_size) {
-  if (!chain_data || !valid_external_target(m_device, opts, target)) {
+  if (!chain_data || !valid_external_target(m_device, opts, target) ||
+      immersive_contract_enabled(target)) {
     return false;
   }
   return render_chain_frame_impl(opts, nil, target.color_texture, target.color_slice,
                                  target.depth_texture, target.depth_slice, &target.viewport,
-                                 target.clear_depth, target.view_id, target.view_transform, true,
-                                 nil, chain_data, chain_offset, chain_size);
+                                 target.clear_depth, target.view_id, target.view_transform, nullptr,
+                                 true, nil, chain_data, chain_offset, chain_size);
 }
 
 MetalExternalFrameReservation MetalRenderer::reserve_external_stereo_frame() {
@@ -1368,6 +1595,7 @@ MetalExternalFrameReservation MetalRenderer::reserve_external_stereo_frame() {
       break;
   }
   m_external_stream.reset();
+  m_immersive_frame_camera.clear();
   return MetalExternalFrameReservation::reserved;
 }
 
@@ -1385,29 +1613,124 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
     const u8* chain_data,
     u32 chain_offset,
     std::size_t chain_size) {
+  const bool physical_requested =
+      immersive_contract_enabled(left) || immersive_contract_enabled(right);
+  m_last_immersive_camera_error = metal_renderer::ImmersiveCameraError::None;
+  const auto reject_physical = [&](metal_renderer::ImmersiveCameraError error) {
+    m_last_immersive_camera_error = error;
+    m_chain_stats.immersive_camera_rejections++;
+    if (error != m_last_reported_immersive_camera_error) {
+      m_last_reported_immersive_camera_error = error;
+      lg::error("Metal physical stereo camera rejected before encode: {}",
+                metal_renderer::immersive_camera_error_name(error));
+    }
+    return false;
+  };
+
+  if (physical_requested &&
+      (!valid_external_camera_contract(left) || !valid_external_camera_contract(right) ||
+       !valid_stereo_camera_contracts(left, right))) {
+    return reject_physical(metal_renderer::ImmersiveCameraError::StereoContractInvalid);
+  }
   const bool reserved = m_presentation_state &&
                         m_presentation_state->external_submission_gate.is_reserved();
   if (!reserved || command_buffer == nil || command_buffer.device != m_device ||
       command_buffer.status != MTLCommandBufferStatusNotEnqueued || !chain_data ||
       !valid_external_target(m_device, opts, left) ||
       !valid_external_target(m_device, opts, right) ||
-      !external_targets_are_distinct(left, right)) {
-    return false;
+      !external_targets_are_distinct(left, right) ||
+      !valid_stereo_camera_contracts(left, right)) {
+    return physical_requested
+               ? reject_physical(
+                     metal_renderer::ImmersiveCameraError::ExternalStereoStateInvalid)
+               : false;
   }
+
+  metal_renderer::ImmersiveStereoFrameCamera physical_camera;
+  const bool physical = immersive_contract_enabled(left);
+  bool used_same_frame_camera = false;
+  bool screen_only_chain = false;
+  int current_chain_packet_count = 0;
+  metal_renderer::ImmersiveCameraError physical_error =
+      metal_renderer::ImmersiveCameraError::None;
+  if (physical && m_shared_state.version != GameVersion::Jak1) {
+    return reject_physical(metal_renderer::ImmersiveCameraError::UnsupportedGameVersion);
+  }
+  if (physical) {
+    Jak1ImmersivePacketProbe probe;
+    switch (probe_jak1_immersive_packet(chain_data, chain_offset, chain_size, &probe)) {
+      case Jak1ImmersivePacketProbe::Status::Valid:
+        if (!prepare_immersive_stereo_camera(left, right, probe, &physical_camera,
+                                             &physical_error)) {
+          return reject_physical(physical_error);
+        }
+        current_chain_packet_count = probe.packet_count;
+        m_immersive_frame_camera.store(opts.host_tick_id, opts.engine_frame_id,
+                                       left.immersive_camera, right.immersive_camera,
+                                       physical_camera);
+        break;
+      case Jak1ImmersivePacketProbe::Status::NoPacket:
+        if (!probe.has_world_content) {
+          screen_only_chain = true;
+          break;
+        }
+        if (const auto* cached = m_immersive_frame_camera.find(
+                opts.host_tick_id, opts.engine_frame_id, left.immersive_camera,
+                right.immersive_camera)) {
+          physical_camera = *cached;
+          used_same_frame_camera = true;
+          break;
+        }
+        return reject_physical(
+            metal_renderer::ImmersiveCameraError::WorldPacketUnavailableThisFrame);
+      case Jak1ImmersivePacketProbe::Status::InconsistentPacket:
+        return reject_physical(metal_renderer::ImmersiveCameraError::PacketInconsistent);
+      case Jak1ImmersivePacketProbe::Status::InvalidChain:
+        return reject_physical(metal_renderer::ImmersiveCameraError::DmaChainInvalid);
+    }
+  }
+  const auto& left_transform =
+      physical && !screen_only_chain ? physical_camera.left : left.view_transform;
+  const auto& right_transform =
+      physical && !screen_only_chain ? physical_camera.right : right.view_transform;
+  const auto* binocular_cull =
+      physical && !screen_only_chain ? &physical_camera.binocular_cull : nullptr;
 
   const bool left_rendered =
       render_chain_frame_impl(opts, nil, left.color_texture, left.color_slice, left.depth_texture,
                               left.depth_slice, &left.viewport, left.clear_depth, left.view_id,
-                              left.view_transform, true, command_buffer, chain_data, chain_offset,
-                              chain_size);
+                              left_transform, binocular_cull, true, command_buffer, chain_data,
+                              chain_offset, chain_size);
   const bool right_rendered =
       left_rendered && render_chain_frame_impl(
                            opts, nil, right.color_texture, right.color_slice, right.depth_texture,
                            right.depth_slice, &right.viewport, right.clear_depth, right.view_id,
-                           right.view_transform, false, command_buffer, chain_data, chain_offset,
-                           chain_size);
+                           right_transform, binocular_cull, false, command_buffer, chain_data,
+                           chain_offset, chain_size);
   if (right_rendered) {
     m_chain_stats.last_views_rendered = 2;
+    if (physical) {
+      m_chain_stats.last_immersive_camera_enabled = true;
+      m_chain_stats.last_immersive_used_same_frame_camera = used_same_frame_camera;
+      m_chain_stats.last_immersive_screen_only_chain = screen_only_chain;
+      m_chain_stats.last_immersive_packet_fingerprint =
+          screen_only_chain ? 0 : physical_camera.packet_fingerprint;
+      m_chain_stats.last_immersive_packet_count = current_chain_packet_count;
+      if (!m_has_counted_immersive_host_tick ||
+          m_last_counted_immersive_host_tick != opts.host_tick_id) {
+        m_has_counted_immersive_host_tick = true;
+        m_last_counted_immersive_host_tick = opts.host_tick_id;
+        m_chain_stats.immersive_frames_rendered++;
+      }
+      m_chain_stats.immersive_same_frame_camera_reuses += used_same_frame_camera ? 1 : 0;
+      m_chain_stats.immersive_screen_only_chains += screen_only_chain ? 1 : 0;
+      if (!m_reported_immersive_occlusion_policy) {
+        m_reported_immersive_occlusion_policy = true;
+        lg::info("Metal physical stereo uses one packet-derived camera and shared binocular "
+                 "frustum for both eyes; authored single-camera occlusion is disabled only for "
+                 "these immersive replays");
+      }
+    }
 #if GOALPAD_VISION_STEREO_EYE_MARKERS
     encode_stereo_eye_markers(command_buffer, left, right);
 #endif
@@ -1544,6 +1867,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
                                             double clear_depth,
                                             u64 view_id,
                                             const metal_renderer::ViewTransform& view_transform,
+                                            const metal_renderer::ImmersiveCullPlanes*
+                                                immersive_cull_planes,
                                             bool frame_global_side_effects,
                                             id<MTLCommandBuffer> borrowed_command_buffer,
                                             const u8* chain_data,
@@ -1662,6 +1987,9 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.game_res_w = opts.game_res_w;
     m_shared_state.game_res_h = opts.game_res_h;
     m_shared_state.view_transform = view_transform;
+    m_shared_state.immersive_camera_enabled = immersive_cull_planes != nullptr;
+    m_shared_state.immersive_cull_planes =
+        immersive_cull_planes ? *immersive_cull_planes : metal_renderer::ImmersiveCullPlanes{};
     m_shared_state.detailed_frame_stats_enabled = m_detailed_frame_stats_enabled;
     m_shared_state.secondary_view = !frame_global_side_effects;
     m_shared_state.frame_resource_slot = frame_resource_slot;
@@ -1714,29 +2042,35 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
                                               static_cast<unsigned long long>(view_id)];
     }
 
-    // Start the game-target pass. Jak 2 retains color across submitted frames
-    // until bucket 3 snapshots it and restarts with a clear; Jak 1 and newly
-    // allocated targets keep the original frame-start clear.
+    // Start the game-target pass. Jak 2 retains color across submitted frames until bucket 3
+    // snapshots it and restarts with a clear. Jak 1 clears the first chain and loads later chains
+    // encoded into the same borrowed stereo frame so a HUD continuation cannot erase World draws.
     auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = game_color;
     pass.colorAttachments[0].slice = color_slice;
     const bool load_previous_jak2_color =
         m_shared_state.version == GameVersion::Jak2 &&
         (external_target ? external_target_has_history : !m_game_target_fresh);
+    const bool continue_jak1_borrowed_frame = m_shared_state.version == GameVersion::Jak1 &&
+                                              external_target && borrowed_command_buffer != nil &&
+                                              opts.chain_ordinal > 1;
     pass.colorAttachments[0].loadAction =
-        load_previous_jak2_color ? MTLLoadActionLoad : MTLLoadActionClear;
+        load_previous_jak2_color || continue_jak1_borrowed_frame ? MTLLoadActionLoad
+                                                                 : MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
     pass.depthAttachment.texture = game_depth;
     pass.depthAttachment.slice = depth_slice;
-    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.loadAction =
+        continue_jak1_borrowed_frame ? MTLLoadActionLoad : MTLLoadActionClear;
     // stored, not discarded: the sprite distorter may split the pass and
     // reload depth/stencil (MetalFrameContext::resume_pass_with_framebuffer_copy)
     pass.depthAttachment.storeAction = MTLStoreActionStore;
     pass.depthAttachment.clearDepth = clear_depth;
     pass.stencilAttachment.texture = game_depth;
     pass.stencilAttachment.slice = depth_slice;
-    pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    pass.stencilAttachment.loadAction =
+        continue_jak1_borrowed_frame ? MTLLoadActionLoad : MTLLoadActionClear;
     pass.stencilAttachment.storeAction = MTLStoreActionStore;
     pass.stencilAttachment.clearStencil = 0;
 
@@ -1806,6 +2140,16 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       m_chain_stats.last_host_tick_id = opts.host_tick_id;
       m_chain_stats.last_chain_ordinal = opts.chain_ordinal;
       m_chain_stats.last_engine_frame_id = opts.engine_frame_id;
+      m_chain_stats.last_immersive_camera_enabled = immersive_cull_planes != nullptr;
+      m_chain_stats.last_immersive_used_same_frame_camera = false;
+      m_chain_stats.last_immersive_screen_only_chain = false;
+      m_chain_stats.last_immersive_packet_fingerprint = 0;
+      m_chain_stats.last_immersive_packet_count = 0;
+      m_chain_stats.last_immersive_cull_overrides = m_background.immersive_cull_overrides;
+      m_chain_stats.last_immersive_occlusion_suppressions =
+          m_background.immersive_occlusion_suppressions;
+      m_chain_stats.immersive_occlusion_suppressions +=
+          m_background.immersive_occlusion_suppressions;
     }
     if (frame_global_side_effects && m_detailed_frame_stats_enabled) {
       m_chain_stats.last_camera_fingerprint = m_background.camera_trace.first_packet_fingerprint();
@@ -2695,6 +3039,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.background = &m_background;
     m_shared_state.secondary_view = false;
     m_shared_state.view_transform = {};
+    m_shared_state.immersive_camera_enabled = false;
+    m_shared_state.immersive_cull_planes = {};
   }
   return external_target || drawable_acquired;
 }

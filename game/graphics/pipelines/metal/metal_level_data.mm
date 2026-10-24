@@ -136,6 +136,27 @@ void metal_finish_bucket(DmaFollower& dma, const MetalSharedRenderState& state) 
   }
 }
 
+void metal_apply_immersive_culling(const MetalSharedRenderState& state,
+                                   MetalTfragRenderSettings* settings,
+                                   MetalBackgroundState* background) {
+  if (!settings || !state.immersive_camera_enabled) {
+    return;
+  }
+  if (settings->occlusion_culling && background) {
+    background->immersive_occlusion_suppressions++;
+  }
+  settings->occlusion_culling = nullptr;
+  for (int coordinate = 0; coordinate < 4; ++coordinate) {
+    for (int plane = 0; plane < 4; ++plane) {
+      settings->camera.planes[coordinate][plane] =
+          state.immersive_cull_planes[coordinate][plane];
+    }
+  }
+  if (background) {
+    background->immersive_cull_overrides++;
+  }
+}
+
 void MetalBackgroundState::reset_frame(
     bool enable_camera_trace,
     const metal_camera_trace::Snapshot* expected_camera,
@@ -154,6 +175,8 @@ void MetalBackgroundState::reset_frame(
   missing_textures = 0;
   anim_slot_draws = 0;
   unexpected_dma = 0;
+  immersive_cull_overrides = 0;
+  immersive_occlusion_suppressions = 0;
   camera_trace_enabled = enable_camera_trace;
   camera_trace.reset(enable_camera_trace ? expected_camera : nullptr);
   render_camera_trace.reset(enable_camera_trace ? expected_render_camera : nullptr);

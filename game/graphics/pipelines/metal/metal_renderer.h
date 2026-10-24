@@ -124,7 +124,10 @@ struct MetalExternalRenderTargetDescriptor {
   MTLViewport viewport = {0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
   double clear_depth = 0.0;
   // Host-owned transform from the game's final Metal clip coordinates into this view.
+  // Physical immersive views leave this identity; the renderer derives it from the current DMA
+  // packet and immersive_camera instead.
   metal_renderer::ViewTransform view_transform;
+  metal_renderer::ImmersiveCameraContract immersive_camera;
 };
 
 enum class MetalExternalFrameReservation {
@@ -235,6 +238,9 @@ class MetalRenderer {
 
   metal_renderer::ScaffoldStats stats();
   metal_renderer::ChainStats chain_stats();
+  metal_renderer::ImmersiveCameraError last_immersive_camera_error() const {
+    return m_last_immersive_camera_error;
+  }
   void set_detailed_frame_stats_enabled(bool enabled) {
     m_detailed_frame_stats_enabled = enabled;
   }
@@ -293,6 +299,7 @@ class MetalRenderer {
                                double clear_depth,
                                u64 view_id,
                                const metal_renderer::ViewTransform& view_transform,
+                               const metal_renderer::ImmersiveCullPlanes* immersive_cull_planes,
                                bool frame_global_side_effects,
                                id<MTLCommandBuffer> borrowed_command_buffer,
                                const u8* chain_data,
@@ -351,8 +358,16 @@ class MetalRenderer {
   // level-geometry frame state, shared with the tfrag/tie/shrub renderers
   MetalBackgroundState m_background;
   metal_renderer::ChainStats m_chain_stats;
+  metal_renderer::ImmersiveStereoFrameCameraCache m_immersive_frame_camera;
+  bool m_has_counted_immersive_host_tick = false;
+  u64 m_last_counted_immersive_host_tick = 0;
   bool m_detailed_frame_stats_enabled = true;
   bool m_reported_camera_mismatch = false;
+  bool m_reported_immersive_occlusion_policy = false;
+  metal_renderer::ImmersiveCameraError m_last_immersive_camera_error =
+      metal_renderer::ImmersiveCameraError::None;
+  metal_renderer::ImmersiveCameraError m_last_reported_immersive_camera_error =
+      metal_renderer::ImmersiveCameraError::None;
   std::shared_ptr<MetalPresentationState> m_presentation_state;
   u64 m_submission_count = 0;
   metal_renderer::PresentCoalescer m_present_coalescer;

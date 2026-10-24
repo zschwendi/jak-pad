@@ -177,6 +177,7 @@ bool MetalTie3::set_up_common_data_from_dma(DmaFollower& dma,
       (bg && bg->visibility.levels[m_level_id].valid)
           ? bg->visibility.levels[m_level_id].data.data()
           : nullptr;
+  metal_apply_immersive_culling(*render_state, &m_settings, bg);
   return true;
 }
 
@@ -348,6 +349,7 @@ bool MetalTie3::set_up_jak2_common_data_from_dma(DmaFollower& dma,
       (bg && bg->visibility.levels[m_level_id].valid)
           ? bg->visibility.levels[m_level_id].data.data()
           : nullptr;
+  metal_apply_immersive_culling(*render_state, &m_settings, bg);
   return true;
 }
 

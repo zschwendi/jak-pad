@@ -201,6 +201,18 @@ struct ChainStats {
   u16 last_render_camera_packet_mismatch_qwords = 0;
   u64 render_camera_live_mismatches = 0;
   u64 render_camera_packet_mismatches = 0;
+  bool last_immersive_camera_enabled = false;
+  bool last_immersive_used_same_frame_camera = false;
+  bool last_immersive_screen_only_chain = false;
+  u64 last_immersive_packet_fingerprint = 0;
+  int last_immersive_packet_count = 0;
+  int last_immersive_cull_overrides = 0;
+  int last_immersive_occlusion_suppressions = 0;
+  u64 immersive_frames_rendered = 0;
+  u64 immersive_same_frame_camera_reuses = 0;
+  u64 immersive_screen_only_chains = 0;
+  u64 immersive_camera_rejections = 0;
+  u64 immersive_occlusion_suppressions = 0;
   u64 render_camera_alternations = 0;
   metal_camera_trace::RetainedAlternationObservation last_render_camera_alternation;
   u64 producer_camera_alternations = 0;

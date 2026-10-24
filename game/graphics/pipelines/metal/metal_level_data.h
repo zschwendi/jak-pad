@@ -116,6 +116,8 @@ struct MetalBackgroundState {
   int missing_textures = 0; // a draw's texture index had no MTLTexture
   int anim_slot_draws = 0;  // draws asking for a texture-animator slot (Jak 2/3)
   int unexpected_dma = 0;   // a bucket's DMA did not match this renderer
+  int immersive_cull_overrides = 0;
+  int immersive_occlusion_suppressions = 0;
 
   // One frame's camera provenance. The producer snapshot contains exactly the four camera-temp
   // qwords and one trans qword available from the live GOAL producer. The render snapshot also
@@ -143,6 +145,13 @@ bool metal_background_expect(bool condition,
 // Consumes whatever is left of the current bucket, so the top-level dispatch
 // still lands exactly on the next one.
 void metal_finish_bucket(DmaFollower& dma, const MetalSharedRenderState& state);
+
+// Physical head views invalidate the authored single-camera frustum and occlusion string. Replace
+// only those CPU visibility inputs with the shared conservative binocular volume; conventional
+// frames retain the packet inputs byte-for-byte.
+void metal_apply_immersive_culling(const MetalSharedRenderState& state,
+                                   MetalTfragRenderSettings* settings,
+                                   MetalBackgroundState* background);
 
 // ---------------------------------------------------------------------------
 // GPU-resident level data (the Metal LevelData).

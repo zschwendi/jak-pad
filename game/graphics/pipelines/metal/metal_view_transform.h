@@ -5,6 +5,13 @@
 
 namespace metal_renderer {
 
+inline constexpr std::array<float, 16> kIdentityMatrix4 = {
+    1.f, 0.f, 0.f, 0.f,
+    0.f, 1.f, 0.f, 0.f,
+    0.f, 0.f, 1.f, 0.f,
+    0.f, 0.f, 0.f, 1.f,
+};
+
 enum class StereoSpace {
   World,
   Screen,
@@ -59,12 +66,28 @@ constexpr bool receives_view_transform(StereoDrawPath path) {
 // clip coordinates. A visionOS host can supply projection(view) * inverse(game projection and
 // view) once it has resolved the eye/head pose relative to the game window.
 struct ViewTransform {
-  std::array<float, 16> clip_from_game_clip = {
-      1.f, 0.f, 0.f, 0.f,
-      0.f, 1.f, 0.f, 0.f,
-      0.f, 0.f, 1.f, 0.f,
-      0.f, 0.f, 0.f, 1.f,
-  };
+  std::array<float, 16> clip_from_game_clip = kIdentityMatrix4;
+};
+
+// Same-frame physical view contract for native immersive rendering. The game-camera basis is
+// right/up/back. Rotation is dimensionless; translation is in meters. The renderer combines this
+// with the current DMA packet's game camera and the 4096 game-units-per-meter scale.
+struct PhysicalViewCamera {
+  bool enabled = false;
+  std::array<float, 16> clip_from_eye = kIdentityMatrix4;
+  std::array<float, 16> eye_from_game_camera_meters = kIdentityMatrix4;
+};
+
+// Conservative binocular matrix from the same game-camera meter basis. It is used only to derive
+// one shared culling volume for both eye replays and is never sent to a vertex shader.
+struct PhysicalBinocularCull {
+  bool enabled = false;
+  std::array<float, 16> clip_from_game_camera_meters = kIdentityMatrix4;
+};
+
+struct ImmersiveCameraContract {
+  PhysicalViewCamera view;
+  PhysicalBinocularCull binocular_cull;
 };
 
 inline bool is_finite(const ViewTransform& transform) {
@@ -74,6 +97,34 @@ inline bool is_finite(const ViewTransform& transform) {
     }
   }
   return true;
+}
+
+inline bool is_finite_physical_view(const PhysicalViewCamera& camera) {
+  for (float value : camera.clip_from_eye) {
+    if (!std::isfinite(value)) {
+      return false;
+    }
+  }
+  for (float value : camera.eye_from_game_camera_meters) {
+    if (!std::isfinite(value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline bool is_finite_binocular_cull(const PhysicalBinocularCull& cull) {
+  for (float value : cull.clip_from_game_camera_meters) {
+    if (!std::isfinite(value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline bool is_finite_immersive_contract(const ImmersiveCameraContract& contract) {
+  return is_finite_physical_view(contract.view) &&
+         is_finite_binocular_cull(contract.binocular_cull);
 }
 
 inline std::array<float, 4> apply(const ViewTransform& transform,

@@ -24,6 +24,7 @@
 
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
 #include "game/graphics/pipelines/metal/metal_frame_resources.h"
+#include "game/graphics/pipelines/metal/metal_immersive_camera.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/pipelines/metal/metal_texture_upload_handler.h"
 #include "game/graphics/pipelines/metal/metal_view_transform.h"
@@ -119,6 +120,8 @@ struct MetalSharedRenderState {
   int game_res_w = 640;
   int game_res_h = 480;
   metal_renderer::ViewTransform view_transform;
+  bool immersive_camera_enabled = false;
+  metal_renderer::ImmersiveCullPlanes immersive_cull_planes = {};
   // Production hosts can disable expensive renderer diagnostics while retaining validation and
   // functional frame counters. Desktop and tests keep the detailed path by default.
   bool detailed_frame_stats_enabled = true;

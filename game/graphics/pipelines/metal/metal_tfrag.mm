@@ -203,6 +203,7 @@ void MetalTFragment::render(DmaFollower& dma,
   if (bg && bg->visibility.levels[m_level_id].valid) {
     settings.occlusion_culling = bg->visibility.levels[m_level_id].data.data();
   }
+  metal_apply_immersive_culling(*render_state, &settings, bg);
   m_stats.occlusion_valid = settings.occlusion_culling != nullptr;
   m_stats.all_visible_override = bg && bg->debug_all_visible;
 

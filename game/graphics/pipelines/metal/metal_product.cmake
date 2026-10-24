@@ -11,6 +11,7 @@ set(OPENGOAL_METAL_RENDERER_SOURCES
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_eye_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_generic2.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_glow_renderer.mm"
+    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_immersive_camera.cpp"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_blit_display_plan.cpp"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_blit_display_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_fog_texture_convert.cpp"
