@@ -24,24 +24,24 @@ bool finite(const Matrix4d& matrix) {
                      [](double value) { return std::isfinite(value); });
 }
 
-bool finite(const ImmersivePacketCamera& packet) {
-  const auto finite_float = [](float value) { return std::isfinite(value); };
-  if (!std::all_of(packet.hvdf_off.begin(), packet.hvdf_off.end(), finite_float) ||
-      !std::all_of(packet.fog.begin(), packet.fog.end(), finite_float) ||
-      !std::all_of(packet.trans.begin(), packet.trans.end(), finite_float)) {
-    return false;
-  }
-  for (const auto& row : packet.rot) {
-    if (!std::all_of(row.begin(), row.end(), finite_float)) {
-      return false;
-    }
-  }
-  for (const auto& row : packet.perspective) {
-    if (!std::all_of(row.begin(), row.end(), finite_float)) {
+// Only the lanes read by game_camera_meters_from_world and shader_clip are validated. The rest are
+// not inputs to any derivation, and some are never written by the producer: add-pc-tfrag3-data
+// leaves fog.w as stale DMA-buffer bytes, which can be any bit pattern.
+bool finite_camera_pose(const ImmersivePacketCamera& packet) {
+  for (int axis = 0; axis < 3; ++axis) {
+    if (!std::isfinite(packet.trans[axis]) || !std::isfinite(packet.rot[axis][0]) ||
+        !std::isfinite(packet.rot[axis][1]) || !std::isfinite(packet.rot[axis][2])) {
       return false;
     }
   }
   return true;
+}
+
+bool finite_camera_projection(const ImmersivePacketCamera& packet) {
+  return finite_camera_pose(packet) && std::isfinite(packet.fog[0]) &&
+         std::isfinite(packet.hvdf_off[2]) && std::isfinite(packet.perspective[0][0]) &&
+         std::isfinite(packet.perspective[1][1]) && std::isfinite(packet.perspective[2][2]) &&
+         std::isfinite(packet.perspective[2][3]) && std::isfinite(packet.perspective[3][2]);
 }
 
 Matrix4d from_float(const std::array<float, 16>& matrix) {
@@ -329,7 +329,7 @@ bool packet_clip_from_game_camera_meters(const ImmersivePacketCamera& packet,
                                          std::array<float, 16>* out,
                                          ImmersiveCameraError* error) {
   set_error(ImmersiveCameraError::None, error);
-  if (!out || !finite(packet) || !std::isfinite(scissor_adjust)) {
+  if (!out || !finite_camera_projection(packet) || !std::isfinite(scissor_adjust)) {
     set_error(ImmersiveCameraError::NonFiniteInput, error);
     return false;
   }
@@ -358,7 +358,8 @@ bool derive_immersive_view_transform(const ImmersivePacketCamera& packet,
     set_error(ImmersiveCameraError::DisabledContract, error);
     return false;
   }
-  if (!out || !finite(packet) || !std::isfinite(scissor_adjust) || !is_finite_physical_view(view)) {
+  if (!out || !finite_camera_projection(packet) || !std::isfinite(scissor_adjust) ||
+      !is_finite_physical_view(view)) {
     set_error(ImmersiveCameraError::NonFiniteInput, error);
     return false;
   }
@@ -389,7 +390,7 @@ bool derive_immersive_cull_planes(const ImmersivePacketCamera& packet,
     set_error(ImmersiveCameraError::DisabledContract, error);
     return false;
   }
-  if (!out || !finite(packet) || !is_finite_binocular_cull(cull)) {
+  if (!out || !finite_camera_pose(packet) || !is_finite_binocular_cull(cull)) {
     set_error(ImmersiveCameraError::NonFiniteInput, error);
     return false;
   }

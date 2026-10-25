@@ -204,6 +204,110 @@ int fail(const std::string& message) {
   return 1;
 }
 
+constexpr std::array<float, 3> kNonFiniteValues = {
+    std::numeric_limits<float>::quiet_NaN(),
+    std::numeric_limits<float>::infinity(),
+    -std::numeric_limits<float>::infinity(),
+};
+
+struct StereoOutputs {
+  Matrix4 packet_projection = {};
+  Matrix4 left = {};
+  Matrix4 right = {};
+  metal_renderer::ImmersiveCullPlanes cull = {};
+};
+
+bool derive_all(const metal_renderer::ImmersivePacketCamera& packet,
+                const metal_renderer::PhysicalViewCamera& left,
+                const metal_renderer::PhysicalViewCamera& right,
+                const metal_renderer::PhysicalBinocularCull& cull,
+                StereoOutputs* out) {
+  metal_renderer::ViewTransform left_transform;
+  metal_renderer::ViewTransform right_transform;
+  if (!metal_renderer::packet_clip_from_game_camera_meters(
+          packet, metal_renderer::kJak1MetalScissorAdjust, &out->packet_projection) ||
+      !metal_renderer::derive_immersive_view_transform(
+          packet, metal_renderer::kJak1MetalScissorAdjust, left, &left_transform) ||
+      !metal_renderer::derive_immersive_view_transform(
+          packet, metal_renderer::kJak1MetalScissorAdjust, right, &right_transform) ||
+      !metal_renderer::derive_immersive_cull_planes(packet, cull, &out->cull)) {
+    return false;
+  }
+  out->left = left_transform.clip_from_game_clip;
+  out->right = right_transform.clip_from_game_clip;
+  return true;
+}
+
+bool same_outputs(const StereoOutputs& actual, const StereoOutputs& expected) {
+  return actual.packet_projection == expected.packet_projection && actual.left == expected.left &&
+         actual.right == expected.right && actual.cull == expected.cull;
+}
+
+// Every packet lane that add-pc-tfrag3-data leaves unwritten or that no camera derivation reads.
+void poison_ignored_lanes(metal_renderer::ImmersivePacketCamera* packet) {
+  std::size_t next = 0;
+  const auto poison = [&](float& value) {
+    value = kNonFiniteValues[next++ % kNonFiniteValues.size()];
+  };
+  poison(packet->hvdf_off[0]);
+  poison(packet->hvdf_off[1]);
+  poison(packet->hvdf_off[3]);
+  poison(packet->fog[1]);
+  poison(packet->fog[2]);
+  poison(packet->fog[3]);
+  poison(packet->trans[3]);
+  for (int row = 0; row < 4; ++row) {
+    for (int column = 0; column < 4; ++column) {
+      if (row == 3 || column == 3) {
+        poison(packet->rot[row][column]);
+      }
+      const bool projection_lane = (row == 0 && column == 0) || (row == 1 && column == 1) ||
+                                   (row == 2 && column == 2) || (row == 2 && column == 3) ||
+                                   (row == 3 && column == 2);
+      if (!projection_lane) {
+        poison(packet->perspective[row][column]);
+      }
+    }
+  }
+}
+
+// Rejects when the shared view/projection inputs are nonfinite. Pose lanes are also consumed by
+// binocular culling; projection-only lanes are not.
+template <typename Mutate>
+bool consumed_lane_rejected(const metal_renderer::ImmersivePacketCamera& packet,
+                            const metal_renderer::PhysicalViewCamera& view,
+                            const metal_renderer::PhysicalBinocularCull& cull,
+                            bool pose_lane,
+                            Mutate mutate) {
+  for (const float value : kNonFiniteValues) {
+    auto invalid = packet;
+    mutate(invalid, value);
+    Matrix4 projection = {};
+    metal_renderer::ViewTransform transform;
+    metal_renderer::ImmersiveCullPlanes planes = {};
+    auto error = metal_renderer::ImmersiveCameraError::None;
+    if (metal_renderer::packet_clip_from_game_camera_meters(
+            invalid, metal_renderer::kJak1MetalScissorAdjust, &projection, &error) ||
+        error != metal_renderer::ImmersiveCameraError::NonFiniteInput) {
+      return false;
+    }
+    error = metal_renderer::ImmersiveCameraError::None;
+    if (metal_renderer::derive_immersive_view_transform(
+            invalid, metal_renderer::kJak1MetalScissorAdjust, view, &transform, &error) ||
+        error != metal_renderer::ImmersiveCameraError::NonFiniteInput) {
+      return false;
+    }
+    error = metal_renderer::ImmersiveCameraError::None;
+    const bool cull_accepted =
+        metal_renderer::derive_immersive_cull_planes(invalid, cull, &planes, &error);
+    if (pose_lane &&
+        (cull_accepted || error != metal_renderer::ImmersiveCameraError::NonFiniteInput)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -345,6 +449,57 @@ int main() {
     return fail("shared binocular culling did not retain the in-front subject");
   }
 
+  StereoOutputs clean_outputs;
+  if (!derive_all(packet, left, right, binocular, &clean_outputs)) {
+    return fail("clean packet stereo outputs");
+  }
+  // add-pc-tfrag3-data writes only fog x/y/z, so fog.w is stale DMA-buffer bytes in real frames.
+  for (const float value : kNonFiniteValues) {
+    auto stale_fog_w = packet;
+    stale_fog_w.fog[3] = value;
+    StereoOutputs stale_outputs;
+    if (!derive_all(stale_fog_w, left, right, binocular, &stale_outputs) ||
+        !same_outputs(stale_outputs, clean_outputs)) {
+      return fail("unwritten fog.w lane rejected or changed the camera");
+    }
+  }
+  auto padded = packet;
+  poison_ignored_lanes(&padded);
+  StereoOutputs padded_outputs;
+  if (!derive_all(padded, left, right, binocular, &padded_outputs) ||
+      !same_outputs(padded_outputs, clean_outputs)) {
+    return fail("ignored packet lanes rejected or changed the camera");
+  }
+  for (int row = 0; row < 3; ++row) {
+    for (int column = 0; column < 3; ++column) {
+      if (!consumed_lane_rejected(packet, left, binocular, true,
+                                  [&](auto& p, float value) { p.rot[row][column] = value; })) {
+        return fail("nonfinite consumed camera-rot lane was accepted");
+      }
+    }
+    if (!consumed_lane_rejected(packet, left, binocular, true,
+                                [&](auto& p, float value) { p.trans[row] = value; })) {
+      return fail("nonfinite consumed trans lane was accepted");
+    }
+  }
+  constexpr std::array<std::array<int, 2>, 5> kConsumedPerspective = {
+      {{{0, 0}}, {{1, 1}}, {{2, 2}}, {{2, 3}}, {{3, 2}}}};
+  for (const auto& lane : kConsumedPerspective) {
+    const int row = lane[0];
+    const int column = lane[1];
+    if (!consumed_lane_rejected(packet, left, binocular, false, [&](auto& p, float value) {
+          p.perspective[row][column] = value;
+        })) {
+      return fail("nonfinite consumed perspective lane was accepted");
+    }
+  }
+  if (!consumed_lane_rejected(packet, left, binocular, false,
+                              [](auto& p, float value) { p.fog[0] = value; }) ||
+      !consumed_lane_rejected(packet, left, binocular, false,
+                              [](auto& p, float value) { p.hvdf_off[2] = value; })) {
+    return fail("nonfinite consumed fog.x or hvdf-off.z was accepted");
+  }
+
   auto singular = packet;
   singular.perspective[0][0] = 0.f;
   if (metal_renderer::derive_immersive_view_transform(
@@ -419,7 +574,8 @@ int main() {
 
   std::cout << "PASS real GOAL camera signs, left/up/forward to right/up/back conversion, "
                "third-person subject depth, mono identity, current-packet dual replay, 64 mm "
-               "per-eye disparity, head yaw, shared binocular culling, invalid rejection, HUD "
+               "per-eye disparity, head yaw, shared binocular culling, ignored-lane tolerance, "
+               "consumed-lane rejection, invalid rejection, HUD "
                "identity, strict same-frame cache identity, and HUD-chain continuation\n";
   return 0;
 }
