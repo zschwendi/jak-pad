@@ -9,6 +9,7 @@
 
 #include "common/util/Assert.h"
 
+#include "game/graphics/pipelines/metal/metal_jak1_sprite_stereo_oracle.h"
 #include "game/graphics/pipelines/metal/metal_sprite_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
@@ -1204,12 +1205,12 @@ void append_one_sprite_chunk(SyntheticChain& chain,
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::MSCAL, program));
 }
 
-// The Jak 1 sprite bucket: distorter setup with no distorters, frame setup,
-// one group-0 2D sprite, then one group-1 HUD sprite.
-SyntheticChain make_jak1_stereo_sprite_chain(const Jak1StereoSpriteFixture& fixture) {
+// The Jak 1 sprite bucket up to the group-0 chunks: distorter setup with no distorters, frame
+// setup, then the group-0 camera matrix.
+void append_jak1_sprite_setup(SyntheticChain& chain,
+                              const SpriteFrameDataJak1& frame,
+                              const Sprite3DMatrixData& matrix) {
   static_assert(sizeof(SpriteFrameDataJak1) % 16 == 0);
-  static_assert(sizeof(SpriteHudMatrixData) == 80 * 16);
-  SyntheticChain chain;
   chain.empty_next();
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 7),
                  make_distorter_setup(0x1c0, 8));
@@ -1221,13 +1222,21 @@ SyntheticChain make_jak1_stereo_sprite_chain(const Jak1StereoSpriteFixture& fixt
   chain.transfer(vif_stcycl(4, 4),
                  vif_unpack_v4_32(sizeof(SpriteFrameDataJak1) / 16, SpriteDataMem::FrameData,
                                   false),
-                 bytes_of(fixture.frame));
+                 bytes_of(frame));
   chain.transfer(vif_code(VifCode::Kind::MSCALF, SpriteProgMem::Init),
                  vif_code(VifCode::Kind::FLUSHE));
   chain.transfer(vif_code(VifCode::Kind::BASE, SpriteDataMem::Buffer0),
                  vif_code(VifCode::Kind::OFFSET, SpriteDataMem::Buffer1));
   chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(5, SpriteDataMem::Matrix, false),
-                 bytes_of(fixture.matrix));
+                 bytes_of(matrix));
+}
+
+// The Jak 1 sprite bucket: distorter setup with no distorters, frame setup,
+// one group-0 2D sprite, then one group-1 HUD sprite.
+SyntheticChain make_jak1_stereo_sprite_chain(const Jak1StereoSpriteFixture& fixture) {
+  static_assert(sizeof(SpriteHudMatrixData) == 80 * 16);
+  SyntheticChain chain;
+  append_jak1_sprite_setup(chain, fixture.frame, fixture.matrix);
   append_one_sprite_chunk(chain, fixture.world, fixture.adgif, SpriteProgMem::Sprites2dGrp0);
   chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
   chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(80, SpriteDataMem::Matrix, false),
@@ -1516,6 +1525,554 @@ void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
   std::puts("jak2-metal-sprite-renderer-test: jak1 group-0 2D stereo/HUD screen PASS");
 }
 
+// ---------------------------------------------------------------------------
+// A Jak 1 footprint (Mode3D, ground-aligned quaternion) and a run-poof billboard (Mode2D) seen
+// by physically derived stereo eyes, through the production DMA parser, uniforms, shader and
+// PSOs. Camera, frame and matrix data are built as the EE builds them; the eye transforms come
+// from production derive_immersive_view_transform. Expected pixels come from
+// metal_jak1_sprite_stereo_oracle.h, which ray-casts each pixel from the physical eye into the
+// authored world geometry and never inverts the game projection.
+//
+// The renderer keeps its default sprite state (GEQUAL test, no depth write). Each eye renders
+// three times into a depth buffer preloaded per pixel with:
+//   ground: the analytic ground depth, so occlusion by the ground is tested;
+//   below/above: the expected sprite depth scaled by 1 -/+ kPhysicalDepthBracket, so every
+//   stable sprite pixel must pass and then fail, bracketing the GPU sprite depth.
+// ---------------------------------------------------------------------------
+
+namespace stereo_oracle = jak1_sprite_stereo_oracle;
+
+constexpr double kPhysicalDepthBracket = 1e-4;
+
+constexpr const char* kDepthPreloadShaderSource = R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct PreloadVertexOut {
+  float4 position [[position]];
+};
+
+vertex PreloadVertexOut depth_preload_vs(uint vid [[vertex_id]]) {
+  const float2 corner = float2(float((vid << 1) & 2u), float(vid & 2u));
+  PreloadVertexOut out;
+  out.position = float4(corner * 2.0 - 1.0, 0.0, 1.0);
+  return out;
+}
+
+struct PreloadDepthOut {
+  float depth [[depth(any)]];
+};
+
+fragment PreloadDepthOut depth_preload_fs(PreloadVertexOut in [[stage_in]],
+                                          const device float* depths [[buffer(0)]],
+                                          constant uint& width [[buffer(1)]]) {
+  const uint2 pixel = uint2(in.position.xy);
+  PreloadDepthOut out;
+  out.depth = depths[pixel.y * width + pixel.x];
+  return out;
+}
+)";
+
+constexpr Pixel kPhysicalClear = {16, 32, 48, 255};
+
+struct PhysicalStereoSpriteFixture {
+  SpriteFrameDataJak1 frame = {};
+  Sprite3DMatrixData matrix = {};
+  SpriteHudMatrixData hud_matrix = {};
+  SpriteVecData2d footprint = {};
+  SpriteVecData2d billboard = {};
+  AdGifData adgif = make_opaque_stereo_adgif();
+
+  explicit PhysicalStereoSpriteFixture(const stereo_oracle::Scene& scene) {
+    const auto& cam = scene.cam;
+    // sprite-setup-frame-data (sprite.gc:140-318).
+    constexpr float kCornerData[16][3] = {
+        {-0.5f, -0.5f, 0.f}, {0.5f, -0.5f, 0.f}, {0.5f, 0.5f, 0.f},  {-0.5f, 0.5f, 0.f},
+        {0.f, -0.5f, 0.f},   {1.f, -0.5f, 0.f},  {1.f, 0.5f, 0.f},   {0.f, 0.5f, 0.f},
+        {0.f, 0.f, 1.f},     {1.f, 0.f, 1.f},    {1.f, 1.f, 1.f},    {0.f, 1.f, 1.f},
+        {-0.5f, 0.f, -0.5f}, {0.5f, 0.f, -0.5f}, {0.5f, 0.f, 0.5f},  {-0.5f, 0.f, 0.5f},
+    };
+    const auto corner = [&](int i) {
+      return math::Vector4f(kCornerData[i][0], kCornerData[i][1], kCornerData[i][2], 0.f);
+    };
+    for (int i = 0; i < 8; i++) {
+      frame.xy_array[i] = corner(i);
+    }
+    for (int i = 0; i < 4; i++) {
+      frame.st_array[i] = corner(8 + i);
+      frame.xyz_array[i] = corner(12 + i);
+    }
+    frame.basis_x = math::Vector4f(-cam.perspective[0][0], 0.f, 0.f, 0.f);
+    frame.basis_y = math::Vector4f(0.f, -cam.perspective[1][1], 0.f, 0.f);
+    frame.min_scale = std::sqrt((1.f / frame.basis_x.x()) * (1.f / frame.basis_y.y()));
+    frame.inv_area = 1.f / (frame.min_scale * frame.min_scale);
+    frame.pfog0 = cam.pfog0;
+    frame.deg_to_rad = 0.000095873795f;
+    frame.fog_min = cam.fog_min;
+    frame.fog_max = cam.fog_max;
+    frame.max_scale = 2048.f;
+
+    // sprite-add-matrix-data mode 0 (sprite.gc:435-448): camera-temp rows, then hvdf-off.
+    float camera[16];
+    for (int row = 0; row < 4; row++) {
+      for (int column = 0; column < 4; column++) {
+        camera[row * 4 + column] = cam.camera_temp[row][column];
+      }
+    }
+    static_assert(sizeof(camera) == sizeof(matrix.camera));
+    std::memcpy(&matrix.camera, camera, sizeof(camera));
+    matrix.hvdf_offset = math::Vector4f(cam.hvdf[0], cam.hvdf[1], cam.hvdf[2], cam.hvdf[3]);
+    hud_matrix.matrix = math::Matrix4f::identity();
+    hud_matrix.hvdf_offset = math::Vector4f(2048.f, 2048.f, 0.f, 0.f);
+
+    const auto& fp = scene.footprint;
+    footprint.xyz_sx = math::Vector4f(fp.center[0], fp.center[1], fp.center[2], fp.sx);
+    footprint.flag_rot_sy = math::Vector4f(fp.quat[0], fp.quat[1], fp.quat[2], fp.sy);
+    footprint.rgba = math::Vector4f(128.f, 0.f, 0.f, 128.f);
+    const auto& bb = scene.billboard;
+    billboard.xyz_sx = math::Vector4f(bb.center[0], bb.center[1], bb.center[2], bb.sx);
+    billboard.flag_rot_sy = math::Vector4f(0.f, 0.f, 0.f, bb.sy);
+    billboard.rgba = math::Vector4f(0.f, 0.f, 128.f, 128.f);
+  }
+};
+
+// sprite-draw order (sprite.gc:751-763): camera matrix, the 3D array, group-0 2D, fake shadows,
+// then the HUD matrix with no group-1 sprites.
+SyntheticChain make_physical_stereo_sprite_chain(const PhysicalStereoSpriteFixture& fixture) {
+  SyntheticChain chain;
+  append_jak1_sprite_setup(chain, fixture.frame, fixture.matrix);
+  append_one_sprite_chunk(chain, fixture.footprint, fixture.adgif, SpriteProgMem::Sprites3d);
+  append_one_sprite_chunk(chain, fixture.billboard, fixture.adgif, SpriteProgMem::Sprites2dGrp0);
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+  chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(80, SpriteDataMem::Matrix, false),
+                 bytes_of(fixture.hud_matrix));
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+  return chain;
+}
+
+struct PhysicalStereoGpu {
+  id<MTLDevice> device = nil;
+  id<MTLCommandQueue> queue = nil;
+  MetalPsoCache pso_cache;
+  MetalSamplerCache sampler_cache;
+  MetalStreamBuffer stream;
+  id<MTLRenderPipelineState> preload_pso = nil;
+  id<MTLDepthStencilState> preload_depth = nil;
+};
+
+struct PhysicalStereoFrame {
+  std::vector<u8> bgra;
+  std::vector<float> depth;
+};
+
+PhysicalStereoFrame render_physical_stereo_frame(PhysicalStereoGpu& gpu,
+                                                 TexturePool& texture_pool,
+                                                 const PhysicalStereoSpriteFixture& fixture,
+                                                 const metal_renderer::ViewTransform& view,
+                                                 const std::vector<float>& preload,
+                                                 int width,
+                                                 int height) {
+  gpu.stream.reset();
+  auto chain = make_physical_stereo_sprite_chain(fixture);
+  const u32 next_bucket = chain.finish();
+
+  auto* color_desc =
+      [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                         width:width
+                                                        height:height
+                                                     mipmapped:NO];
+  color_desc.usage = MTLTextureUsageRenderTarget;
+  color_desc.storageMode = MTLStorageModePrivate;
+  id<MTLTexture> color = [gpu.device newTextureWithDescriptor:color_desc];
+  auto* depth_desc =
+      [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                                         width:width
+                                                        height:height
+                                                     mipmapped:NO];
+  depth_desc.usage = MTLTextureUsageRenderTarget;
+  depth_desc.storageMode = MTLStorageModePrivate;
+  id<MTLTexture> depth = [gpu.device newTextureWithDescriptor:depth_desc];
+  const std::size_t pixel_count = static_cast<std::size_t>(width) * height;
+  ASSERT(preload.size() == pixel_count);
+  for (float value : preload) {
+    ASSERT(std::isfinite(value) && value >= 0.f && value <= 1.f);
+  }
+  id<MTLBuffer> preload_buffer =
+      [gpu.device newBufferWithBytes:preload.data()
+                              length:pixel_count * sizeof(float)
+                             options:MTLResourceStorageModeShared];
+  id<MTLBuffer> color_readback = [gpu.device newBufferWithLength:pixel_count * 4
+                                                         options:MTLResourceStorageModeShared];
+  id<MTLBuffer> depth_readback = [gpu.device newBufferWithLength:pixel_count * sizeof(float)
+                                                         options:MTLResourceStorageModeShared];
+  ASSERT(color && depth && preload_buffer && color_readback && depth_readback);
+
+  id<MTLCommandBuffer> commands = [gpu.queue commandBuffer];
+
+  auto* preload_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  preload_pass.depthAttachment.texture = depth;
+  preload_pass.depthAttachment.loadAction = MTLLoadActionClear;
+  preload_pass.depthAttachment.storeAction = MTLStoreActionStore;
+  preload_pass.depthAttachment.clearDepth = 0;
+  preload_pass.stencilAttachment.texture = depth;
+  preload_pass.stencilAttachment.loadAction = MTLLoadActionClear;
+  preload_pass.stencilAttachment.storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> preload_encoder =
+      [commands renderCommandEncoderWithDescriptor:preload_pass];
+  const u32 preload_width = static_cast<u32>(width);
+  [preload_encoder setRenderPipelineState:gpu.preload_pso];
+  [preload_encoder setDepthStencilState:gpu.preload_depth];
+  [preload_encoder setFragmentBuffer:preload_buffer offset:0 atIndex:0];
+  [preload_encoder setFragmentBytes:&preload_width length:sizeof(preload_width) atIndex:1];
+  [preload_encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [preload_encoder endEncoding];
+
+  auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = color;
+  pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  pass.colorAttachments[0].clearColor =
+      MTLClearColorMake(kPhysicalClear.r / 255.0, kPhysicalClear.g / 255.0,
+                        kPhysicalClear.b / 255.0, 1.0);
+  pass.depthAttachment.texture = depth;
+  pass.depthAttachment.loadAction = MTLLoadActionLoad;
+  pass.depthAttachment.storeAction = MTLStoreActionStore;
+  pass.stencilAttachment.texture = depth;
+  pass.stencilAttachment.loadAction = MTLLoadActionLoad;
+  pass.stencilAttachment.storeAction = MTLStoreActionStore;
+
+  MetalFrameContext ctx;
+  ctx.cmds = commands;
+  ctx.enc = [commands renderCommandEncoderWithDescriptor:pass];
+  ctx.pso_cache = &gpu.pso_cache;
+  ctx.sampler_cache = &gpu.sampler_cache;
+  ctx.stream = &gpu.stream;
+  ctx.color_format = MTLPixelFormatBGRA8Unorm;
+  ctx.depth_format = MTLPixelFormatDepth32Float_Stencil8;
+  ctx.game_color = color;
+  ctx.game_depth = depth;
+  ctx.game_viewport = {0.0, 0.0, static_cast<double>(width), static_cast<double>(height), 0.0,
+                       1.0};
+  [ctx.enc setCullMode:MTLCullModeNone];
+  [ctx.enc setViewport:ctx.game_viewport];
+
+  MetalSharedRenderState state;
+  state.version = GameVersion::Jak1;
+  state.next_bucket = next_bucket;
+  state.texture_pool = &texture_pool;
+  state.game_res_w = width;
+  state.game_res_h = height;
+  state.view_transform = view;
+  DmaFollower dma(chain.bytes.data(), 0, chain.bytes.size());
+  MetalSpriteRenderer renderer("synthetic-jak1-physical-stereo-sprite", 63);
+  renderer.render(dma, &state, ctx);
+
+  ASSERT(dma.current_tag_offset() == next_bucket);
+  ASSERT(renderer.stats().count_2d_grp0 == 2);
+  ASSERT(renderer.stats().sprites_3d == 1);
+  ASSERT(renderer.stats().count_2d_grp1 == 0);
+  ASSERT(renderer.stats().normal_sprites_submitted == 2);
+  ASSERT(renderer.stats().missing_textures == 0);
+  [ctx.enc endEncoding];
+
+  id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+  [blit copyFromTexture:color
+                   sourceSlice:0
+                   sourceLevel:0
+                  sourceOrigin:MTLOriginMake(0, 0, 0)
+                    sourceSize:MTLSizeMake(width, height, 1)
+                      toBuffer:color_readback
+             destinationOffset:0
+        destinationBytesPerRow:width * 4
+      destinationBytesPerImage:pixel_count * 4];
+  [blit copyFromTexture:depth
+                   sourceSlice:0
+                   sourceLevel:0
+                  sourceOrigin:MTLOriginMake(0, 0, 0)
+                    sourceSize:MTLSizeMake(width, height, 1)
+                      toBuffer:depth_readback
+             destinationOffset:0
+        destinationBytesPerRow:width * sizeof(float)
+      destinationBytesPerImage:pixel_count * sizeof(float)
+                       options:MTLBlitOptionDepthFromDepthStencil];
+  [blit endEncoding];
+  [commands commit];
+  [commands waitUntilCompleted];
+  if (commands.status != MTLCommandBufferStatusCompleted && commands.error) {
+    std::printf("Metal command-buffer error: %s\n",
+                commands.error.localizedDescription.UTF8String);
+  }
+  ASSERT(commands.status == MTLCommandBufferStatusCompleted);
+
+  PhysicalStereoFrame frame;
+  frame.bgra.resize(pixel_count * 4);
+  std::memcpy(frame.bgra.data(), color_readback.contents, frame.bgra.size());
+  frame.depth.resize(pixel_count);
+  std::memcpy(frame.depth.data(), depth_readback.contents, pixel_count * sizeof(float));
+  return frame;
+}
+
+stereo_oracle::Cover classify_physical_pixel(const PhysicalStereoFrame& frame,
+                                             int width,
+                                             int x,
+                                             int y,
+                                             bool* recognized) {
+  const std::size_t offset = (static_cast<std::size_t>(y) * width + x) * 4;
+  const Pixel pixel = {frame.bgra[offset + 2], frame.bgra[offset + 1], frame.bgra[offset],
+                       frame.bgra[offset + 3]};
+  *recognized = true;
+  if (pixel.r >= 250 && pixel.g <= 5 && pixel.b <= 5) {
+    return stereo_oracle::Cover::Footprint;
+  }
+  if (pixel.b >= 250 && pixel.r <= 5 && pixel.g <= 5) {
+    return stereo_oracle::Cover::Billboard;
+  }
+  *recognized = pixel_near(pixel, kPhysicalClear, 0);
+  return stereo_oracle::Cover::Clear;
+}
+
+const char* cover_name(stereo_oracle::Cover cover) {
+  switch (cover) {
+    case stereo_oracle::Cover::Clear:
+      return "clear";
+    case stereo_oracle::Cover::Footprint:
+      return "footprint";
+    case stereo_oracle::Cover::Billboard:
+      return "billboard";
+  }
+  return "?";
+}
+
+struct PhysicalEyeExpectation {
+  metal_renderer::ViewTransform view;
+  std::vector<stereo_oracle::PixelExpectation> pixels;
+  std::vector<u8> stable;
+  std::vector<float> ground;
+  std::vector<float> below;
+  std::vector<float> above;
+  double footprint_centroid_x = 0;
+};
+
+PhysicalEyeExpectation expect_physical_eye(const stereo_oracle::Scene& scene, int eye_index) {
+  const auto& eye = scene.eyes[eye_index];
+  PhysicalEyeExpectation out;
+  metal_renderer::PhysicalViewCamera view;
+  view.enabled = true;
+  view.clip_from_eye = stereo_oracle::clip_from_eye(eye);
+  view.eye_from_game_camera_meters = stereo_oracle::eye_from_game_camera(eye);
+  auto error = metal_renderer::ImmersiveCameraError::None;
+  const bool derived = metal_renderer::derive_immersive_view_transform(
+      stereo_oracle::packet(scene.cam), metal_renderer::kJak1MetalScissorAdjust, view, &out.view,
+      &error);
+  ASSERT(derived && error == metal_renderer::ImmersiveCameraError::None);
+
+  const std::size_t pixel_count = static_cast<std::size_t>(scene.width) * scene.height;
+  out.pixels.resize(pixel_count);
+  out.stable.resize(pixel_count);
+  out.ground.resize(pixel_count);
+  out.below.resize(pixel_count);
+  out.above.resize(pixel_count);
+  int footprint = 0, billboard = 0, behind_ground = 0;
+  for (int y = 0; y < scene.height; y++) {
+    for (int x = 0; x < scene.width; x++) {
+      const std::size_t i = static_cast<std::size_t>(y) * scene.width + x;
+      auto& expected = out.pixels[i];
+      out.stable[i] = stereo_oracle::stable_expectation(scene.cam, eye, scene.ground_y,
+                                                        scene.footprint, scene.billboard, x, y,
+                                                        scene.width, scene.height, &expected);
+      out.ground[i] = static_cast<float>(expected.ground_depth);
+      out.below[i] = out.ground[i];
+      out.above[i] = out.ground[i];
+      if (!out.stable[i]) {
+        continue;
+      }
+      if (expected.cover != stereo_oracle::Cover::Clear) {
+        out.below[i] = static_cast<float>(expected.depth * (1.0 - kPhysicalDepthBracket));
+        out.above[i] = static_cast<float>(expected.depth * (1.0 + kPhysicalDepthBracket));
+      }
+      if (expected.cover == stereo_oracle::Cover::Footprint) {
+        footprint++;
+        out.footprint_centroid_x += x + 0.5;
+      } else if (expected.cover == stereo_oracle::Cover::Billboard) {
+        billboard++;
+      }
+      behind_ground += expected.billboard_behind_ground;
+    }
+  }
+  std::printf("  physical eye %d: stable footprint %d, billboard %d, billboard behind ground %d\n",
+              eye_index, footprint, billboard, behind_ground);
+  // The scene must exercise every case it claims to.
+  ASSERT(footprint >= 150);
+  ASSERT(billboard >= 500);
+  ASSERT(behind_ground >= 100);
+  out.footprint_centroid_x /= footprint;
+  return out;
+}
+
+enum class PhysicalPreload { Ground, Below, Above };
+
+// Mismatches between a rendered frame and an eye expectation over the stable pixels. The
+// sprite state never writes depth, so when `preload` is given the depth buffer must still hold
+// it everywhere.
+int count_physical_mismatches(const PhysicalStereoFrame& frame,
+                              const PhysicalEyeExpectation& expected,
+                              const std::vector<float>* preload,
+                              PhysicalPreload kind,
+                              int width,
+                              int height,
+                              bool report) {
+  int mismatches = 0;
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      const std::size_t i = static_cast<std::size_t>(y) * width + x;
+      if (preload && std::memcmp(&frame.depth[i], &(*preload)[i], sizeof(float)) != 0) {
+        if (report && mismatches < 8) {
+          std::printf("    pixel (%d, %d): depth %.9g changed from preload %.9g\n", x, y,
+                      frame.depth[i], (*preload)[i]);
+        }
+        mismatches++;
+        continue;
+      }
+      if (!expected.stable[i]) {
+        continue;
+      }
+      const auto& pixel = expected.pixels[i];
+      const auto want = kind == PhysicalPreload::Above ? stereo_oracle::Cover::Clear : pixel.cover;
+      bool recognized = false;
+      const auto got = classify_physical_pixel(frame, width, x, y, &recognized);
+      if (!recognized || got != want) {
+        if (report && mismatches < 8) {
+          std::printf(
+              "    pixel (%d, %d): got %s%s, expected %s (sprite depth %.9f, ground %.9f, "
+              "billboard behind ground %d)\n",
+              x, y, recognized ? "" : "unrecognized ", cover_name(got), cover_name(want),
+              pixel.depth, pixel.ground_depth, pixel.billboard_behind_ground ? 1 : 0);
+        }
+        mismatches++;
+      }
+    }
+  }
+  return mismatches;
+}
+
+void test_jak1_physical_stereo_footprint_and_billboard_against_ground() {
+  PhysicalStereoGpu gpu;
+  gpu.device = MTLCreateSystemDefaultDevice();
+  ASSERT(gpu.device);
+  gpu.queue = [gpu.device newCommandQueue];
+  ASSERT(gpu.queue);
+
+  dispatch_data_t library_data = dispatch_data_create(
+      g_goalpad_metallib, g_goalpad_metallib_size, nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  NSError* library_error = nil;
+  id<MTLLibrary> library = [gpu.device newLibraryWithData:library_data error:&library_error];
+  if (!library && library_error) {
+    std::printf("Metal library error: %s\n", library_error.localizedDescription.UTF8String);
+  }
+  ASSERT(library);
+  ASSERT(gpu.pso_cache.init(gpu.device, library));
+  gpu.sampler_cache.init(gpu.device);
+  gpu.stream.init(gpu.device);
+
+  NSError* preload_error = nil;
+  id<MTLLibrary> preload_library =
+      [gpu.device newLibraryWithSource:@(kDepthPreloadShaderSource)
+                               options:nil
+                                 error:&preload_error];
+  if (!preload_library && preload_error) {
+    std::printf("depth preload shader error: %s\n",
+                preload_error.localizedDescription.UTF8String);
+  }
+  ASSERT(preload_library);
+  auto* preload_desc = [[MTLRenderPipelineDescriptor alloc] init];
+  preload_desc.vertexFunction = [preload_library newFunctionWithName:@"depth_preload_vs"];
+  preload_desc.fragmentFunction = [preload_library newFunctionWithName:@"depth_preload_fs"];
+  preload_desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  preload_desc.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  gpu.preload_pso = [gpu.device newRenderPipelineStateWithDescriptor:preload_desc
+                                                               error:&preload_error];
+  ASSERT(gpu.preload_pso);
+  auto* preload_depth_desc = [[MTLDepthStencilDescriptor alloc] init];
+  preload_depth_desc.depthCompareFunction = MTLCompareFunctionAlways;
+  preload_depth_desc.depthWriteEnabled = YES;
+  gpu.preload_depth = [gpu.device newDepthStencilStateWithDescriptor:preload_depth_desc];
+  ASSERT(gpu.preload_depth);
+
+  const std::size_t initial_live_textures = metal_texture_live_count();
+  TexturePool texture_pool(GameVersion::Jak1);
+  ASSERT(metal_setup_placeholder(gpu.device, gpu.queue, texture_pool));
+  const u64 placeholder = texture_pool.get_placeholder_texture();
+  std::vector<u8> source(kJak1StereoTextureSize * kJak1StereoTextureSize * 4, 255);
+  const u64 source_handle = metal_upload_texture_rgba8(
+      gpu.device, gpu.queue, source.data(), kJak1StereoTextureSize, kJak1StereoTextureSize);
+  ASSERT(source_handle);
+  PcTextureId source_id;
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+    TextureInput input;
+    input.debug_page_name = "SYNTHETIC";
+    input.debug_name = "jak1-physical-stereo-sprite";
+    input.id = PcTextureId::from_combo_id(
+        (static_cast<u32>(kJak1StereoTexturePage) << 16) | kJak1StereoTextureIndex);
+    source_id = input.id;
+    input.gpu_texture = source_handle;
+    input.src_data = source.data();
+    input.w = kJak1StereoTextureSize;
+    input.h = kJak1StereoTextureSize;
+    texture_pool.give_texture(input);
+  }
+  publish_synthetic_texture(texture_pool, kJak1StereoTexturePage, kJak1StereoTextureIndex,
+                            kJak1StereoTextureTbp);
+  ASSERT(texture_pool.lookup(kJak1StereoTextureTbp).value_or(0) == source_handle);
+
+  const stereo_oracle::Scene scene = stereo_oracle::make_scene();
+  const PhysicalStereoSpriteFixture fixture(scene);
+  const PhysicalEyeExpectation eyes[2] = {expect_physical_eye(scene, 0),
+                                          expect_physical_eye(scene, 1)};
+  // The two eyes must see the footprint far enough apart that a swapped or shared transform
+  // cannot pass.
+  ASSERT(std::abs(eyes[0].footprint_centroid_x - eyes[1].footprint_centroid_x) > 20.0);
+
+  constexpr const char* kPreloadNames[] = {"ground", "below", "above"};
+  int total_mismatches = 0;
+  for (int eye = 0; eye < 2; eye++) {
+    const auto& expected = eyes[eye];
+    const std::vector<float>* preloads[] = {&expected.ground, &expected.below, &expected.above};
+    for (int kind = 0; kind < 3; kind++) {
+      const auto frame = render_physical_stereo_frame(gpu, texture_pool, fixture, expected.view,
+                                                      *preloads[kind], scene.width, scene.height);
+      const int mismatches = count_physical_mismatches(
+          frame, expected, preloads[kind], static_cast<PhysicalPreload>(kind), scene.width,
+          scene.height, true);
+      std::printf("  physical eye %d %s preload: %d mismatched pixels\n", eye, kPreloadNames[kind],
+                  mismatches);
+      total_mismatches += mismatches;
+      if (kind == 0) {
+        // Discrimination control: this eye's image must not satisfy the other eye's oracle.
+        const auto& other = eyes[1 - eye];
+        const int crossed = count_physical_mismatches(frame, other, nullptr,
+                                                      PhysicalPreload::Ground, scene.width,
+                                                      scene.height, false);
+        std::printf("  physical eye %d image against eye %d oracle: %d mismatched pixels\n", eye,
+                    1 - eye, crossed);
+        ASSERT(crossed > 300);
+      }
+    }
+  }
+  ASSERT(total_mismatches == 0);
+
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+    texture_pool.unload_texture(source_id, source_handle);
+  }
+  metal_texture_release(source_handle);
+  metal_texture_release(placeholder);
+  texture_pool.set_placeholder(0);
+  ASSERT(metal_texture_live_count() == initial_live_textures);
+  std::puts(
+      "jak2-metal-sprite-renderer-test: jak1 physical stereo footprint/billboard vs ground PASS");
+}
+
 }  // namespace
 
 int main() {
@@ -1533,6 +2090,7 @@ int main() {
     test_mech_flame_identity_publication_and_alpha();
     test_multi_distorter_spatial_sampling_and_alpha();
     test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not();
+    test_jak1_physical_stereo_footprint_and_billboard_against_ground();
   }
   std::puts("jak2-metal-sprite-renderer-test: PASS");
   return 0;
