@@ -27,6 +27,39 @@ void blend_sky_accumulate(u8 intensity, u8* out, const u8* in, u32 size) {
   }
 }
 
+// sky-tng and its screen-gradient fallback draw the camera-centred sky at GS z = 0, Jak's
+// "infinitely far" depth. A physical-immersive replay reprojects that depth through the finite
+// packet projection to a plane ~13 km ahead, beyond the compositor eye's far plane, so Metal
+// would clip the whole sky. For exactly these sky draws, clamp depth instead of clipping:
+// the direction keeps its per-eye projection and reverse-Z stores the far value 0. Windowed,
+// Comfort, and non-physical stereo encoders are never touched. Metal has no depth-clip-mode
+// getter and nothing else in the renderer changes it, so the restored value is the default.
+class ImmersiveSkyDepthClampScope {
+ public:
+  ImmersiveSkyDepthClampScope(const MetalSharedRenderState& state, const MetalFrameContext& ctx)
+      : m_ctx(ctx), m_enc(state.immersive_camera_enabled ? ctx.enc : nil) {
+    if (m_enc) {
+      [m_enc setDepthClipMode:MTLDepthClipModeClamp];
+    }
+  }
+
+  ~ImmersiveSkyDepthClampScope() {
+    if (m_enc) {
+      // The sky's plain direct renderer never splits the pass (only the Jak 2 progress renderer
+      // overrides handle_frame), so every sky draw used this encoder.
+      ASSERT(m_ctx.enc == m_enc);
+      [m_enc setDepthClipMode:MTLDepthClipModeClip];
+    }
+  }
+
+  ImmersiveSkyDepthClampScope(const ImmersiveSkyDepthClampScope&) = delete;
+  ImmersiveSkyDepthClampScope& operator=(const ImmersiveSkyDepthClampScope&) = delete;
+
+ private:
+  const MetalFrameContext& m_ctx;
+  id<MTLRenderCommandEncoder> m_enc;
+};
+
 }  // namespace
 
 MetalSkyBlendCPU::MetalSkyBlendCPU(id<MTLDevice> device) {
@@ -162,6 +195,7 @@ MetalSkyRenderer::MetalSkyRenderer(const std::string& name, int my_id)
 void MetalSkyRenderer::render(DmaFollower& dma,
                               MetalSharedRenderState* render_state,
                               MetalFrameContext& ctx) {
+  const ImmersiveSkyDepthClampScope depth_clamp(*render_state, ctx);
   m_direct_renderer.reset_state();
 
   // first thing should be a NEXT with two nops: the jump from buckets to sprite data

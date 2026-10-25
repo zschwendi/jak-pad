@@ -46,7 +46,7 @@ int main() {
 
   static_assert(metal_renderer::stereo_space_for(StereoDrawPath::Direct) == StereoSpace::Screen);
   static_assert(metal_renderer::stereo_space_for(StereoDrawPath::Sprite3d) == StereoSpace::World);
-  static_assert(metal_renderer::stereo_space_for(StereoDrawPath::Sprite2d) == StereoSpace::Screen);
+  static_assert(metal_renderer::stereo_space_for(StereoDrawPath::Sprite2d) == StereoSpace::World);
   static_assert(metal_renderer::stereo_space_for(StereoDrawPath::SpriteHud) == StereoSpace::Screen);
   static_assert(metal_renderer::stereo_space_for(StereoDrawPath::SpriteDistortion) ==
                 StereoSpace::Screen);
@@ -60,6 +60,8 @@ int main() {
                 StereoSpace::World);
   static_assert(metal_renderer::stereo_space_for(StereoDrawPath::ShadowOverlay) ==
                 StereoSpace::Screen);
+  // Sprite render modes 1 (group-0 2D) and 3 (3D) are World; mode 2 (HUD) is Screen.
+  static_assert(metal_renderer::sprite_view_transform_mode_mask() == ((1u << 1) | (1u << 3)));
 
   const std::array<float, 4> clip = {0.25f, -0.5f, 0.75f, 1.f};
   const auto identity = metal_renderer::apply({}, clip);

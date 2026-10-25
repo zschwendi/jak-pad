@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -116,14 +117,15 @@ struct SyntheticChain {
   }
 };
 
-std::vector<u8> make_distorter_setup() {
+// Jak 2 defaults; Jak 1 uses zbp 0x1c0 and th 8 (MetalSpriteRenderer::distort_dma).
+std::vector<u8> make_distorter_setup(u32 zbp = 0x130, u32 th = 9) {
   std::vector<u8> data(7 * 16, 0);
   const u64 gif_tag_lo = 1 | (1ull << 15) | (6ull << 60);
   const u64 gif_tag_hi = static_cast<u64>(GifTag::RegisterDescriptor::AD);
   write_u64(data, 0, gif_tag_lo);
   write_u64(data, 8, gif_tag_hi);
-  write_u64(data, 16, gs_zbuf(0x130, true));
-  write_u64(data, 32, gs_tex0(0, 8, 0, 9, 9));
+  write_u64(data, 16, gs_zbuf(zbp, true));
+  write_u64(data, 32, gs_tex0(0, 8, 0, 9, th));
   write_u64(data, 48, (1ull << 5) | (1ull << 6));
   write_u64(data, 96, gs_alpha(0, 1, 0, 1));
   return data;
@@ -685,29 +687,33 @@ bool pixel_near(Pixel actual, Pixel expected, int tolerance = 2) {
          near(actual.b, expected.b) && near(actual.a, expected.a);
 }
 
-void publish_synthetic_mech_flame(TexturePool& texture_pool) {
+void publish_synthetic_texture(TexturePool& texture_pool, u16 page_id, u16 index, u32 tbp) {
   constexpr u32 kGoalFalse = 0xffffffff;
-  constexpr std::size_t kTexturePointerCount = kMechFlameTextureIndex + 1;
-  constexpr std::size_t kTextureDescriptionOffset =
-      sizeof(GoalTexturePage) + kTexturePointerCount * sizeof(u32);
-  std::vector<u8> memory(kTextureDescriptionOffset + sizeof(GoalTexture), 0);
+  const std::size_t texture_pointer_count = index + 1;
+  const std::size_t texture_description_offset =
+      sizeof(GoalTexturePage) + texture_pointer_count * sizeof(u32);
+  std::vector<u8> memory(texture_description_offset + sizeof(GoalTexture), 0);
 
   GoalTexturePage page = {};
-  page.id = kEffectsTexturePage;
-  page.length = kTexturePointerCount;
+  page.id = page_id;
+  page.length = texture_pointer_count;
   std::memcpy(memory.data(), &page, sizeof(page));
-  for (std::size_t index = 0; index < kTexturePointerCount; index++) {
-    write_u32(memory, sizeof(GoalTexturePage) + index * sizeof(u32), kGoalFalse);
+  for (std::size_t pointer = 0; pointer < texture_pointer_count; pointer++) {
+    write_u32(memory, sizeof(GoalTexturePage) + pointer * sizeof(u32), kGoalFalse);
   }
-  write_u32(memory,
-            sizeof(GoalTexturePage) + kMechFlameTextureIndex * sizeof(u32),
-            kTextureDescriptionOffset);
+  write_u32(memory, sizeof(GoalTexturePage) + index * sizeof(u32),
+            static_cast<u32>(texture_description_offset));
 
   GoalTexture texture = {};
   texture.num_mips = 1;
-  texture.dest[0] = kMechFlameTextureTbp;
-  std::memcpy(memory.data() + kTextureDescriptionOffset, &texture, sizeof(texture));
+  texture.dest[0] = tbp;
+  std::memcpy(memory.data() + texture_description_offset, &texture, sizeof(texture));
   texture_pool.handle_upload_now(memory.data(), -1, memory.data(), kGoalFalse, false);
+}
+
+void publish_synthetic_mech_flame(TexturePool& texture_pool) {
+  publish_synthetic_texture(texture_pool, kEffectsTexturePage, kMechFlameTextureIndex,
+                            kMechFlameTextureTbp);
 }
 
 void test_mech_flame_identity_publication_and_alpha() {
@@ -1085,6 +1091,431 @@ void test_multi_distorter_spatial_sampling_and_alpha() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Jak 1 group-0 2D sprites (world billboards such as particles) under per-eye
+// view transforms. The expected eye position is computed from the billboard's
+// camera-space corner points with the true depth as w. The sprite VU program
+// instead divides by depth and then emits w = depth + hvdf.w, so the GPU result
+// only matches when the transform is applied to that whole homogeneous output.
+// ---------------------------------------------------------------------------
+
+constexpr u16 kJak1StereoTexturePage = 3;
+constexpr u16 kJak1StereoTextureIndex = 5;
+constexpr u32 kJak1StereoTextureTbp = 0x1200;
+constexpr u16 kJak1StereoTextureSize = 8;
+constexpr float kJak1ScissorAdjust = 512.f / 448.f;
+
+// Sprite camera columns: VU position = (256 x, 128 y, kStereoDepthTerm, depth).
+constexpr float kStereoCameraX = 256.f;
+constexpr float kStereoCameraY = 128.f;
+constexpr float kStereoDepthTerm = 33554432.f;
+constexpr float kStereoPfog0 = 1.f;
+constexpr float kStereoHvdfW = 12.f;  // VU w is depth + 12, never the true depth
+constexpr float kStereoBasisX = 128.f;
+constexpr float kStereoBasisY = 64.f;
+
+// World billboard, in sprite-camera space.
+constexpr float kStereoWorldX = -1.f;
+constexpr float kStereoWorldY = 0.5f;
+constexpr float kStereoWorldDepth = 4.f;
+constexpr float kStereoWorldScale = 1.f;
+
+// HUD sprite, authored through an identity HUD matrix.
+constexpr float kStereoHudX = 128.f;
+constexpr float kStereoHudY = 64.f;
+constexpr float kStereoHudZ = 8388608.f;
+constexpr float kStereoHudScale = 0.25f;
+
+AdGifData make_opaque_stereo_adgif() {
+  AdGifData adgif = {};
+  adgif.tex0_data = gs_tex0(kJak1StereoTextureTbp, 1, 0, 3, 3);
+  adgif.tex0_addr = static_cast<u64>(GsRegisterAddress::TEX0_1);
+  adgif.tex1_addr = static_cast<u64>(GsRegisterAddress::TEX1_1);
+  adgif.mip_addr = static_cast<u64>(GsRegisterAddress::MIPTBP1_1);
+  adgif.clamp_data = 0b101;
+  adgif.clamp_addr = static_cast<u64>(GsRegisterAddress::CLAMP_1);
+  adgif.alpha_data = gs_alpha(0, 1, 0, 1);
+  adgif.alpha_addr = static_cast<u64>(GsRegisterAddress::ALPHA_1);
+  return adgif;
+}
+
+struct Jak1StereoSpriteFixture {
+  SpriteFrameDataJak1 frame = {};
+  Sprite3DMatrixData matrix = {};
+  SpriteHudMatrixData hud_matrix = {};
+  SpriteVecData2d world = {};
+  SpriteVecData2d hud = {};
+  AdGifData adgif = make_opaque_stereo_adgif();
+
+  Jak1StereoSpriteFixture() {
+    // Cyclic corner order as in sprite-setup-frame-data; the renderer strips
+    // vertex ids 0, 1, 3, 2 into a full quad.
+    frame.xy_array[0] = math::Vector4f(-1.f, -1.f, 0.f, 0.f);
+    frame.xy_array[1] = math::Vector4f(1.f, -1.f, 0.f, 0.f);
+    frame.xy_array[2] = math::Vector4f(1.f, 1.f, 0.f, 0.f);
+    frame.xy_array[3] = math::Vector4f(-1.f, 1.f, 0.f, 0.f);
+    frame.st_array[0] = math::Vector4f(0.f, 0.f, 0.f, 0.f);
+    frame.st_array[1] = math::Vector4f(1.f, 0.f, 0.f, 0.f);
+    frame.st_array[2] = math::Vector4f(1.f, 1.f, 0.f, 0.f);
+    frame.st_array[3] = math::Vector4f(0.f, 1.f, 0.f, 0.f);
+    frame.basis_x = math::Vector4f(kStereoBasisX, 0.f, 0.f, 0.f);
+    frame.basis_y = math::Vector4f(0.f, kStereoBasisY, 0.f, 0.f);
+    frame.pfog0 = kStereoPfog0;
+    frame.deg_to_rad = 0.017453292519943295f;
+    frame.inv_area = 1000000.f;  // no distance fade
+    frame.min_scale = 0.f;
+    frame.max_scale = 1000000000.f;
+    frame.fog_min = 0.f;
+    frame.fog_max = 1000000000.f;
+
+    const float camera[16] = {
+        kStereoCameraX, 0.f, 0.f, 0.f,  0.f, kStereoCameraY, 0.f, 0.f,
+        0.f, 0.f, 0.f, 1.f,             0.f, 0.f, kStereoDepthTerm, 0.f,
+    };
+    static_assert(sizeof(camera) == sizeof(matrix.camera));
+    std::memcpy(&matrix.camera, camera, sizeof(camera));
+    matrix.hvdf_offset = math::Vector4f(2048.f, 2048.f, 0.f, kStereoHvdfW);
+
+    hud_matrix.matrix = math::Matrix4f::identity();
+    hud_matrix.hvdf_offset = math::Vector4f(2048.f, 2048.f, 0.f, 0.f);
+
+    world.xyz_sx =
+        math::Vector4f(kStereoWorldX, kStereoWorldY, kStereoWorldDepth, kStereoWorldScale);
+    world.flag_rot_sy = math::Vector4f(0.f, 0.f, 0.f, kStereoWorldScale);
+    world.rgba = math::Vector4f(128.f, 0.f, 0.f, 128.f);
+    hud.xyz_sx = math::Vector4f(kStereoHudX, kStereoHudY, kStereoHudZ, kStereoHudScale);
+    hud.flag_rot_sy = math::Vector4f(0.f, 0.f, 0.f, kStereoHudScale);
+    hud.rgba = math::Vector4f(0.f, 128.f, 0.f, 128.f);
+  }
+};
+
+void append_one_sprite_chunk(SyntheticChain& chain,
+                             const SpriteVecData2d& vector,
+                             const AdGifData& adgif,
+                             u16 program) {
+  std::vector<u8> header(16, 0);
+  const u32 sprite_count = 1;
+  std::memcpy(header.data(), &sprite_count, sizeof(sprite_count));
+  chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(1, SpriteDataMem::Header, true), header);
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_unpack_v4_32(3, SpriteDataMem::Vector, true),
+                 bytes_of(vector));
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_unpack_v4_32(5, SpriteDataMem::Adgif, true),
+                 bytes_of(adgif));
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::MSCAL, program));
+}
+
+// The Jak 1 sprite bucket: distorter setup with no distorters, frame setup,
+// one group-0 2D sprite, then one group-1 HUD sprite.
+SyntheticChain make_jak1_stereo_sprite_chain(const Jak1StereoSpriteFixture& fixture) {
+  static_assert(sizeof(SpriteFrameDataJak1) % 16 == 0);
+  static_assert(sizeof(SpriteHudMatrixData) == 80 * 16);
+  SyntheticChain chain;
+  chain.empty_next();
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 7),
+                 make_distorter_setup(0x1c0, 8));
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::PC_PORT),
+                 std::vector<u8>(16, 0));
+  chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(0x8b, 0x160, false), make_sine_tables());
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::DIRECT, 3),
+                 make_sprite_direct_setup());
+  chain.transfer(vif_stcycl(4, 4),
+                 vif_unpack_v4_32(sizeof(SpriteFrameDataJak1) / 16, SpriteDataMem::FrameData,
+                                  false),
+                 bytes_of(fixture.frame));
+  chain.transfer(vif_code(VifCode::Kind::MSCALF, SpriteProgMem::Init),
+                 vif_code(VifCode::Kind::FLUSHE));
+  chain.transfer(vif_code(VifCode::Kind::BASE, SpriteDataMem::Buffer0),
+                 vif_code(VifCode::Kind::OFFSET, SpriteDataMem::Buffer1));
+  chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(5, SpriteDataMem::Matrix, false),
+                 bytes_of(fixture.matrix));
+  append_one_sprite_chunk(chain, fixture.world, fixture.adgif, SpriteProgMem::Sprites2dGrp0);
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+  chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(80, SpriteDataMem::Matrix, false),
+                 bytes_of(fixture.hud_matrix));
+  append_one_sprite_chunk(chain, fixture.hud, fixture.adgif, SpriteProgMem::Sprites2dHud_Jak1);
+  chain.transfer(vif_code(VifCode::Kind::NOP), vif_code(VifCode::Kind::FLUSHE));
+  return chain;
+}
+
+struct PixelExtent {
+  int count = 0;
+  float min_x = 1e9f;
+  float max_x = -1e9f;
+  float min_y = 1e9f;
+  float max_y = -1e9f;
+
+  void include(float x, float y) {
+    count++;
+    min_x = std::min(min_x, x);
+    max_x = std::max(max_x, x);
+    min_y = std::min(min_y, y);
+    max_y = std::max(max_y, y);
+  }
+};
+
+void include_ndc(PixelExtent* extent, float ndc_x, float ndc_y) {
+  extent->include((ndc_x + 1.f) * 0.5f * kDistortTargetWidth,
+                  (1.f - ndc_y) * 0.5f * kDistortTargetHeight);
+}
+
+// Covered pixel centers must reach the projected corners to within one pixel.
+bool extent_matches(const PixelExtent& covered, const PixelExtent& expected) {
+  return covered.count > 0 && std::abs(covered.min_x - expected.min_x) <= 1.f &&
+         std::abs(covered.max_x - expected.max_x) <= 1.f &&
+         std::abs(covered.min_y - expected.min_y) <= 1.f &&
+         std::abs(covered.max_y - expected.max_y) <= 1.f;
+}
+
+// Projects the billboard's camera-space corners through the true game clip
+// (w = depth), then through the eye transform.
+PixelExtent expected_world_extent(const metal_renderer::ViewTransform& transform) {
+  PixelExtent extent;
+  for (float corner_x : {-1.f, 1.f}) {
+    for (float corner_y : {-1.f, 1.f}) {
+      const float x =
+          kStereoWorldX + kStereoBasisX * kStereoWorldScale * corner_x / kStereoCameraX;
+      const float y =
+          kStereoWorldY + kStereoBasisY * kStereoWorldScale * corner_y / kStereoCameraY;
+      const std::array<float, 4> game_clip = {
+          kStereoPfog0 * kStereoCameraX * x / 256.f,
+          -kStereoPfog0 * kStereoCameraY * y / 128.f * kJak1ScissorAdjust,
+          kStereoPfog0 * kStereoDepthTerm / 16777216.f,
+          kStereoWorldDepth,
+      };
+      const auto eye_clip = metal_renderer::apply(transform, game_clip);
+      ASSERT(eye_clip[3] > 0.f);
+      include_ndc(&extent, eye_clip[0] / eye_clip[3], eye_clip[1] / eye_clip[3]);
+    }
+  }
+  return extent;
+}
+
+// HUD corners in authored screen space; no eye transform applies.
+PixelExtent expected_hud_extent() {
+  PixelExtent extent;
+  for (float corner_x : {-1.f, 1.f}) {
+    for (float corner_y : {-1.f, 1.f}) {
+      include_ndc(&extent, (kStereoHudX + kStereoBasisX * kStereoHudScale * corner_x) / 256.f,
+                  -(kStereoHudY + kStereoBasisY * kStereoHudScale * corner_y) / 128.f *
+                      kJak1ScissorAdjust);
+    }
+  }
+  return extent;
+}
+
+void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
+  id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+  ASSERT(device);
+  id<MTLCommandQueue> queue = [device newCommandQueue];
+  ASSERT(queue);
+
+  dispatch_data_t library_data = dispatch_data_create(
+      g_goalpad_metallib, g_goalpad_metallib_size, nullptr,
+      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  NSError* library_error = nil;
+  id<MTLLibrary> library = [device newLibraryWithData:library_data error:&library_error];
+  if (!library && library_error) {
+    std::printf("Metal library error: %s\n", library_error.localizedDescription.UTF8String);
+  }
+  ASSERT(library);
+
+  MetalPsoCache pso_cache;
+  MetalSamplerCache sampler_cache;
+  MetalStreamBuffer stream;
+  ASSERT(pso_cache.init(device, library));
+  sampler_cache.init(device);
+  stream.init(device);
+
+  const std::size_t initial_live_textures = metal_texture_live_count();
+  TexturePool texture_pool(GameVersion::Jak1);
+  ASSERT(metal_setup_placeholder(device, queue, texture_pool));
+  const u64 placeholder = texture_pool.get_placeholder_texture();
+
+  std::vector<u8> source(kJak1StereoTextureSize * kJak1StereoTextureSize * 4, 255);
+  const u64 source_handle = metal_upload_texture_rgba8(
+      device, queue, source.data(), kJak1StereoTextureSize, kJak1StereoTextureSize);
+  ASSERT(source_handle);
+  PcTextureId source_id;
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+    TextureInput input;
+    input.debug_page_name = "SYNTHETIC";
+    input.debug_name = "jak1-stereo-sprite";
+    input.id = PcTextureId::from_combo_id(
+        (static_cast<u32>(kJak1StereoTexturePage) << 16) | kJak1StereoTextureIndex);
+    source_id = input.id;
+    input.gpu_texture = source_handle;
+    input.src_data = source.data();
+    input.w = kJak1StereoTextureSize;
+    input.h = kJak1StereoTextureSize;
+    texture_pool.give_texture(input);
+  }
+  publish_synthetic_texture(texture_pool, kJak1StereoTexturePage, kJak1StereoTextureIndex,
+                            kJak1StereoTextureTbp);
+  ASSERT(texture_pool.lookup(kJak1StereoTextureTbp).value_or(0) == source_handle);
+
+  // Column-major clip_from_game_clip. Left: x' = x + 0.5w, y' = y + 0.25w.
+  // Right: x' = 0.75x - 0.25w, w' = w + 0.5x (not affine, so the result
+  // depends on using the full homogeneous VU output).
+  metal_renderer::ViewTransform left;
+  left.clip_from_game_clip[3 * 4 + 0] = 0.5f;
+  left.clip_from_game_clip[3 * 4 + 1] = 0.25f;
+  metal_renderer::ViewTransform right;
+  right.clip_from_game_clip[0 * 4 + 0] = 0.75f;
+  right.clip_from_game_clip[3 * 4 + 0] = -0.25f;
+  right.clip_from_game_clip[0 * 4 + 3] = 0.5f;
+  const metal_renderer::ViewTransform identity;
+
+  constexpr Pixel clear = {16, 32, 48, 255};
+  const PixelExtent hud_expected = expected_hud_extent();
+  const Jak1StereoSpriteFixture fixture;
+  const metal_renderer::ViewTransform* views[] = {&identity, &left, &right};
+  PixelExtent world_by_view[3];
+  int view_index = 0;
+  for (const auto* transform : views) {
+    stream.reset();
+    auto chain = make_jak1_stereo_sprite_chain(fixture);
+    const u32 next_bucket = chain.finish();
+
+    auto* color_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                     width:kDistortTargetWidth
+                                    height:kDistortTargetHeight
+                                 mipmapped:NO];
+    color_desc.usage = MTLTextureUsageRenderTarget;
+#if TARGET_OS_OSX
+    color_desc.storageMode = MTLStorageModeManaged;
+#else
+    color_desc.storageMode = MTLStorageModeShared;
+#endif
+    id<MTLTexture> color = [device newTextureWithDescriptor:color_desc];
+    ASSERT(color);
+
+    auto* depth_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                     width:kDistortTargetWidth
+                                    height:kDistortTargetHeight
+                                 mipmapped:NO];
+    depth_desc.usage = MTLTextureUsageRenderTarget;
+    depth_desc.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> depth = [device newTextureWithDescriptor:depth_desc];
+    ASSERT(depth);
+
+    id<MTLCommandBuffer> commands = [queue commandBuffer];
+    auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = color;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.colorAttachments[0].clearColor =
+        MTLClearColorMake(clear.r / 255.f, clear.g / 255.f, clear.b / 255.f, 1.f);
+    pass.depthAttachment.texture = depth;
+    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.storeAction = MTLStoreActionStore;
+    pass.depthAttachment.clearDepth = 0;
+    pass.stencilAttachment.texture = depth;
+    pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    pass.stencilAttachment.clearStencil = 0;
+
+    MetalFrameContext ctx;
+    ctx.cmds = commands;
+    ctx.enc = [commands renderCommandEncoderWithDescriptor:pass];
+    ctx.pso_cache = &pso_cache;
+    ctx.sampler_cache = &sampler_cache;
+    ctx.stream = &stream;
+    ctx.color_format = MTLPixelFormatBGRA8Unorm;
+    ctx.depth_format = MTLPixelFormatDepth32Float_Stencil8;
+    ctx.game_color = color;
+    ctx.game_depth = depth;
+    ctx.game_viewport = {0.0, 0.0, kDistortTargetWidth, kDistortTargetHeight, 0.0, 1.0};
+    [ctx.enc setCullMode:MTLCullModeNone];
+    [ctx.enc setViewport:ctx.game_viewport];
+
+    MetalSharedRenderState state;
+    state.version = GameVersion::Jak1;
+    state.next_bucket = next_bucket;
+    state.texture_pool = &texture_pool;
+    state.game_res_w = kDistortTargetWidth;
+    state.game_res_h = kDistortTargetHeight;
+    state.view_transform = *transform;
+    DmaFollower dma(chain.bytes.data(), 0, chain.bytes.size());
+    MetalSpriteRenderer renderer("synthetic-jak1-stereo-sprite", 63);
+    renderer.render(dma, &state, ctx);
+
+    ASSERT(dma.current_tag_offset() == next_bucket);
+    ASSERT(renderer.stats().count_2d_grp0 == 1);
+    ASSERT(renderer.stats().count_2d_grp1 == 1);
+    ASSERT(renderer.stats().normal_sprites_submitted == 2);
+    ASSERT(renderer.stats().missing_textures == 0);
+    [ctx.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> sync = [commands blitCommandEncoder];
+    [sync synchronizeResource:color];
+    [sync endEncoding];
+#endif
+    [commands commit];
+    [commands waitUntilCompleted];
+    if (commands.status != MTLCommandBufferStatusCompleted && commands.error) {
+      std::printf("Metal command-buffer error: %s\n",
+                  commands.error.localizedDescription.UTF8String);
+    }
+    ASSERT(commands.status == MTLCommandBufferStatusCompleted);
+
+    std::vector<u8> pixels(kDistortTargetWidth * kDistortTargetHeight * 4);
+    [color getBytes:pixels.data()
+        bytesPerRow:kDistortTargetWidth * 4
+         fromRegion:MTLRegionMake2D(0, 0, kDistortTargetWidth, kDistortTargetHeight)
+        mipmapLevel:0];
+
+    PixelExtent world_covered;
+    PixelExtent hud_covered;
+    for (int y = 0; y < kDistortTargetHeight; y++) {
+      for (int x = 0; x < kDistortTargetWidth; x++) {
+        const Pixel pixel = read_bgra_pixel(pixels, x, y);
+        if (pixel.r >= 250 && pixel.g <= 5 && pixel.b <= 5) {
+          world_covered.include(x + 0.5f, y + 0.5f);
+        } else if (pixel.g >= 250 && pixel.r <= 5 && pixel.b <= 5) {
+          hud_covered.include(x + 0.5f, y + 0.5f);
+        } else {
+          ASSERT(pixel_near(pixel, clear, 0));
+        }
+      }
+    }
+    const PixelExtent world_expected = expected_world_extent(*transform);
+    if (!extent_matches(world_covered, world_expected) ||
+        !extent_matches(hud_covered, hud_expected)) {
+      std::printf(
+          "jak1 stereo sprite view %d: world covered x[%.1f, %.1f] y[%.1f, %.1f] expected "
+          "x[%.1f, %.1f] y[%.1f, %.1f]; hud covered x[%.1f, %.1f] y[%.1f, %.1f] expected "
+          "x[%.1f, %.1f] y[%.1f, %.1f]\n",
+          view_index, world_covered.min_x, world_covered.max_x, world_covered.min_y,
+          world_covered.max_y, world_expected.min_x, world_expected.max_x, world_expected.min_y,
+          world_expected.max_y, hud_covered.min_x, hud_covered.max_x, hud_covered.min_y,
+          hud_covered.max_y, hud_expected.min_x, hud_expected.max_x, hud_expected.min_y,
+          hud_expected.max_y);
+    }
+    ASSERT(extent_matches(world_covered, world_expected));
+    ASSERT(extent_matches(hud_covered, hud_expected));
+    world_by_view[view_index++] = world_covered;
+  }
+
+  // The fixture must actually separate the views; otherwise an untransformed
+  // sprite could satisfy every case.
+  ASSERT(std::abs(world_by_view[1].min_x - world_by_view[0].min_x) > 8.f);
+  ASSERT(std::abs(world_by_view[2].min_x - world_by_view[0].min_x) > 8.f);
+  ASSERT(std::abs(world_by_view[2].min_x - world_by_view[1].min_x) > 8.f);
+
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+    texture_pool.unload_texture(source_id, source_handle);
+  }
+  metal_texture_release(source_handle);
+  metal_texture_release(placeholder);
+  texture_pool.set_placeholder(0);
+  ASSERT(metal_texture_live_count() == initial_live_textures);
+  std::puts("jak2-metal-sprite-renderer-test: jak1 group-0 2D stereo/HUD screen PASS");
+}
+
 }  // namespace
 
 int main() {
@@ -1101,6 +1532,7 @@ int main() {
     test_control_led_glow_without_constants_remains_explicitly_unsupported();
     test_mech_flame_identity_publication_and_alpha();
     test_multi_distorter_spatial_sampling_and_alpha();
+    test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not();
   }
   std::puts("jak2-metal-sprite-renderer-test: PASS");
   return 0;

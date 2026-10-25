@@ -19,7 +19,9 @@ enum class StereoSpace {
 
 // The renderer receives a mixture of game-camera geometry and authored screen overlays. Keep the
 // split explicit so new two-view paths cannot accidentally give HUD/subtitle content parallax or
-// leave world geometry monoscopic.
+// leave world geometry monoscopic. A draw is World when its final clip position is a positive
+// per-primitive multiple of the frame's game clip of a world point, even if the VU program
+// divided by w first; Sprite2d (group-0 billboards such as particles) is such a draw.
 enum class StereoDrawPath {
   Direct,
   Sprite3d,
@@ -37,13 +39,13 @@ enum class StereoDrawPath {
 constexpr StereoSpace stereo_space_for(StereoDrawPath path) {
   switch (path) {
     case StereoDrawPath::Sprite3d:
+    case StereoDrawPath::Sprite2d:
     case StereoDrawPath::Sky:
     case StereoDrawPath::Ocean:
     case StereoDrawPath::GenericWorld:
     case StereoDrawPath::ShadowVolume:
       return StereoSpace::World;
     case StereoDrawPath::Direct:
-    case StereoDrawPath::Sprite2d:
     case StereoDrawPath::SpriteHud:
     case StereoDrawPath::SpriteDistortion:
     case StereoDrawPath::GenericHud:
@@ -59,6 +61,18 @@ constexpr bool receives_view_transform(StereoSpace space) {
 
 constexpr bool receives_view_transform(StereoDrawPath path) {
   return receives_view_transform(stereo_space_for(path));
+}
+
+// Per-vertex sprite render modes (SpriteVertexIn.info[3] in shaders/sprite.metal).
+inline constexpr unsigned kSpriteRenderMode2d = 1;   // group-0 world billboard
+inline constexpr unsigned kSpriteRenderModeHud = 2;  // group-1 HUD
+inline constexpr unsigned kSpriteRenderMode3d = 3;   // group-0 world-oriented quad
+
+// Bit N is set when sprite vertices of render mode N receive the view transform.
+constexpr unsigned sprite_view_transform_mode_mask() {
+  return (receives_view_transform(StereoDrawPath::Sprite2d) ? 1u << kSpriteRenderMode2d : 0u) |
+         (receives_view_transform(StereoDrawPath::SpriteHud) ? 1u << kSpriteRenderModeHud : 0u) |
+         (receives_view_transform(StereoDrawPath::Sprite3d) ? 1u << kSpriteRenderMode3d : 0u);
 }
 
 // Column-major transform from the game's final Metal homogeneous clip coordinates into one

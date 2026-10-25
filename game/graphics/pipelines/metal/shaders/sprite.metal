@@ -41,6 +41,8 @@ struct SpriteVsParams {
   float inv_area;
   float height_scale;    // 1.0 for Jak 1
   float scissor_adjust;  // 512/448 for Jak 1
+  // Bit N set: rendermode N receives view_clip_from_game_clip (metal_view_transform.h).
+  uint view_transform_mode_mask;
   float4x4 view_clip_from_game_clip;
 };
 
@@ -183,7 +185,10 @@ vertex SpriteVSOut sprite3_vs(uint vid [[vertex_id]],
   transformed.y /= -128.0;
   transformed.xyz *= transformed.w;
   transformed.y *= p.scissor_adjust * p.height_scale;
-  out.pos = rendermode == 3 ? p.view_clip_from_game_clip * transformed : transformed;
+  // 2D sprites already divided by w, but their output is a positive multiple of the world
+  // point's game clip, so the same linear view transform applies.
+  const bool view_space = ((p.view_transform_mode_mask >> rendermode) & 1u) != 0u;
+  out.pos = view_space ? p.view_clip_from_game_clip * transformed : transformed;
 
   out.fragment_color *= 2.0;
   out.fragment_color.w *= 2.0;

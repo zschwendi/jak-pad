@@ -405,10 +405,12 @@ struct SpriteVsParams {
   float inv_area;
   float height_scale;
   float scissor_adjust;
-  float pad[3];
+  u32 view_transform_mode_mask;  // metal_renderer::sprite_view_transform_mode_mask()
+  float pad[2];
   float view_clip_from_game_clip[16];
 };
 static_assert(sizeof(SpriteVsParams) == 560);
+static_assert(offsetof(SpriteVsParams, view_transform_mode_mask) == 484);
 static_assert(offsetof(SpriteVsParams, view_clip_from_game_clip) == 496);
 
 // Must match SpriteFsParams in shaders/sprite.metal.
@@ -1601,6 +1603,11 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
   vs_params.inv_area = m_frame_data.inv_area;
   vs_params.height_scale = metal_height_scale(render_state->version);
   vs_params.scissor_adjust = metal_scissor_adjust(render_state->version);
+  // The shader indexes the policy mask by each vertex's SpriteMode.
+  static_assert(Mode2D == metal_renderer::kSpriteRenderMode2d);
+  static_assert(ModeHUD == metal_renderer::kSpriteRenderModeHud);
+  static_assert(Mode3D == metal_renderer::kSpriteRenderMode3d);
+  vs_params.view_transform_mode_mask = metal_renderer::sprite_view_transform_mode_mask();
   memcpy(vs_params.view_clip_from_game_clip,
          render_state->view_transform.clip_from_game_clip.data(),
          sizeof(vs_params.view_clip_from_game_clip));

@@ -432,6 +432,11 @@ if(GOAL_HOST_TESTS_ENABLED)
             graphics/pipelines/metal/metal_view_transform_test.cpp)
     add_test(NAME metal-view-transform-test COMMAND metal-view-transform-test)
 
+    add_executable(metal-jak1-sky-depth-math-test
+        graphics/pipelines/metal/metal_immersive_camera.cpp
+        graphics/pipelines/metal/metal_jak1_sky_depth_math_test.cpp)
+    add_test(NAME metal-jak1-sky-depth-math-test COMMAND metal-jak1-sky-depth-math-test)
+
     add_executable(metal-stereo-eye-marker-test
             graphics/pipelines/metal/metal_stereo_eye_marker_test.cpp)
     add_test(NAME metal-stereo-eye-marker-test COMMAND metal-stereo-eye-marker-test)
@@ -1272,6 +1277,16 @@ if(APPLE)
         target_link_libraries(jak2-metal-sprite-renderer-test
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak2-metal-sprite-renderer-test COMMAND jak2-metal-sprite-renderer-test)
+
+        add_executable(jak1-metal-sky-immersive-depth-test
+            graphics/pipelines/metal/metal_jak1_sky_immersive_depth_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak1_sky_immersive_depth_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak1-metal-sky-immersive-depth-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak1-metal-sky-immersive-depth-test
+            COMMAND jak1-metal-sky-immersive-depth-test)
 
         add_executable(jak2-mech-flame-identity-test
             graphics/pipelines/metal/metal_jak2_mech_flame_identity_test.cpp)
