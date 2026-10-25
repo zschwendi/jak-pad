@@ -119,7 +119,7 @@ class MetalOceanEnvmap {
  *
  * Faithfulness note kept from the GL renderer: both ocean buckets own one of
  * these and both publish to the same slot (8160 on Jak 1), so the last bucket
- * of the frame wins.
+ * of the frame wins. A secondary stereo view republishes without regenerating.
  */
 class MetalOceanTexture : public OceanTextureVu {
  public:
@@ -173,6 +173,7 @@ class MetalOceanTexture : public OceanTextureVu {
   PcTextureId m_texture_id;
   GpuTexture* m_tex0_gpu = nullptr;
   u32 m_tbp = 0;
+  bool m_primary_generated = false;  // Jak 1: this frame's primary view produced the texture
   bool m_force_command_buffer_failure_for_testing = false;
   Stats m_stats;
 };

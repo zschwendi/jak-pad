@@ -696,15 +696,18 @@ void MetalOceanTexture::handle_ocean_texture_jak1(DmaFollower& dma,
     ASSERT(data.vifcode1().kind == VifCode::Kind::STMOD);
   }
 
+  // Generate once per engine frame; the secondary view reuses the primary's result.
   if (!render_state->secondary_view) {
-    if (!run_gpu_passes(render_state, ctx)) {
-      return;
-    }
-
-    // Publish once per engine frame. The secondary view samples the result prepared by primary.
-    render_state->texture_pool->move_existing_to_vram(m_tex0_gpu, m_tbp);
-    m_stats.published_vram_slot = m_tbp;
+    m_primary_generated = run_gpu_passes(render_state, ctx);
   }
+  if (!m_primary_generated) {
+    return;
+  }
+
+  // Both ocean buckets publish to this slot, so after the primary view it holds whichever bucket
+  // ran last. Republish on every view so each bucket's draws sample its own texture.
+  render_state->texture_pool->move_existing_to_vram(m_tex0_gpu, m_tbp);
+  m_stats.published_vram_slot = m_tbp;
 }
 
 /*!

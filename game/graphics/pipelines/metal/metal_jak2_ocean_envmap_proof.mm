@@ -322,6 +322,34 @@ void append_ocean_texture(std::vector<u8>* chain,
                       vif(VifCode::Kind::STMOD, 0));
 }
 
+// Same packets as append_ocean_texture, in the order handle_ocean_texture_jak1 walks them.
+void append_ocean_texture_jak1(std::vector<u8>* chain, u32 source_tbp) {
+  append_transfer(chain, make_display_setup(128, 128, 0x40).data);
+  append_vif_transfer(chain, {}, vif(VifCode::Kind::BASE, 0), vif(VifCode::Kind::OFFSET, 0xc0));
+  append_vif_transfer(chain, std::vector<u8>(112), vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 985, 7));
+  append_transfer(chain, make_ocean_adgif(source_tbp).data);
+  append_vif_transfer(chain, make_texture_vertices(192), vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 0x8000, 192));
+  append_vif_transfer(chain, {}, vif(VifCode::Kind::MSCALF, 0),
+                      vif(VifCode::Kind::STMOD, 0));
+  for (int loop = 0; loop < 9; loop++) {
+    append_vif_transfer(chain, make_texture_vertices(192), vif(VifCode::Kind::STCYCL, 0x404),
+                        vif(VifCode::Kind::UNPACK_V4_32, 0x8000, 192));
+    append_vif_transfer(chain, {}, vif(VifCode::Kind::MSCALF, 2),
+                        vif(VifCode::Kind::STMOD, 0));
+  }
+  append_vif_transfer(chain, make_texture_vertices(128), vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 0x8000, 128));
+  append_vif_transfer(chain, make_texture_vertices(64, 128),
+                      vif(VifCode::Kind::STCYCL, 0x404),
+                      vif(VifCode::Kind::UNPACK_V4_32, 0x8080, 64));
+  append_vif_transfer(chain, {}, vif(VifCode::Kind::MSCALF, 2),
+                      vif(VifCode::Kind::STMOD, 0));
+  append_vif_transfer(chain, {}, vif(VifCode::Kind::MSCALF, 4),
+                      vif(VifCode::Kind::STMOD, 0));
+}
+
 struct Fixture {
   std::vector<u8> chain;
   u32 ocean_texture_offset = 0;
@@ -1132,6 +1160,74 @@ int main() {
     texture_pool.set_placeholder(0);
     check(metal_texture_live_count() == initial_live_textures,
           "released all standalone proof textures");
+
+    {
+      // Jak 1 stereo replay: ocean-mid-far and ocean-near both publish to slot 8160. Each view
+      // must give each bucket its own texture, and only the primary view may regenerate it.
+      TexturePool stereo_pool(GameVersion::Jak1);
+      check(metal_setup_placeholder(device, queue, stereo_pool),
+            "published the Jak 1 stereo ocean placeholder");
+      const u32 slot = MetalOceanTexture::vram_slot(GameVersion::Jak1);
+      MetalOceanTexture mid_far_texture(true, device, queue);
+      MetalOceanTexture near_texture(false, device, queue);
+      mid_far_texture.init_textures(stereo_pool, GameVersion::Jak1);
+      near_texture.init_textures(stereo_pool, GameVersion::Jak1);
+
+      std::vector<u8> jak1_chain;
+      append_ocean_texture_jak1(&jak1_chain, kSourceTbp);
+      append_vif_transfer(&jak1_chain, {}, 0, 0, DmaTag::Kind::END);
+
+      MetalSharedRenderState state;
+      state.version = GameVersion::Jak1;
+      state.texture_pool = &stereo_pool;
+      MetalFrameContext ctx;
+      ctx.pso_cache = &pso_cache;
+      ctx.sampler_cache = &sampler_cache;
+      ctx.stream = &stream;
+      stream.reset();
+      auto run = [&](MetalOceanTexture& texture) {
+        DmaFollower dma(jak1_chain.data(), 0, jak1_chain.size());
+        texture.handle_ocean_texture_jak1(dma, &state, ctx);
+        return stereo_pool.lookup(slot).value_or(0);
+      };
+
+      state.secondary_view = false;
+      check(run(mid_far_texture) == mid_far_texture.result_handle() &&
+                mid_far_texture.stats().vertices == 2112 &&
+                mid_far_texture.stats().command_buffers_committed == 1 &&
+                mid_far_texture.stats().published_vram_slot == slot,
+            "primary ocean-mid-far generated and published its mipmapped texture");
+      check(run(near_texture) == near_texture.result_handle() &&
+                near_texture.stats().command_buffers_committed == 1 &&
+                near_texture.stats().published_vram_slot == slot,
+            "primary ocean-near generated and published its own texture over the shared slot");
+
+      state.secondary_view = true;
+      check(run(mid_far_texture) == mid_far_texture.result_handle() &&
+                mid_far_texture.stats().command_buffers_committed == 0 &&
+                mid_far_texture.stats().published_vram_slot == slot,
+            "secondary ocean-mid-far republished its own texture without regenerating it");
+      check(run(near_texture) == near_texture.result_handle() &&
+                near_texture.stats().command_buffers_committed == 0 &&
+                near_texture.stats().published_vram_slot == slot,
+            "secondary ocean-near republished its own texture without regenerating it");
+
+      mid_far_texture.force_command_buffer_failure_for_testing(true);
+      state.secondary_view = false;
+      check(run(mid_far_texture) == near_texture.result_handle() &&
+                mid_far_texture.stats().published_vram_slot == 0,
+            "a failed primary ocean-mid-far generation left slot 8160 unchanged");
+      state.secondary_view = true;
+      check(run(mid_far_texture) == near_texture.result_handle() &&
+                mid_far_texture.stats().published_vram_slot == 0,
+            "the secondary view did not republish a texture the primary failed to generate");
+      mid_far_texture.force_command_buffer_failure_for_testing(false);
+
+      mid_far_texture.detach_pool();
+      near_texture.detach_pool();
+      metal_texture_release(stereo_pool.get_placeholder_texture());
+      stereo_pool.set_placeholder(0);
+    }
 
     {
       auto lifecycle_pool = std::make_unique<TexturePool>(GameVersion::Jak1);
