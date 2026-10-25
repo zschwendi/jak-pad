@@ -187,14 +187,20 @@ Matrix4d game_clip_from_world(const ImmersivePacketCamera& packet, float scissor
 
 Matrix4d game_camera_meters_from_world(const ImmersivePacketCamera& packet) {
   Matrix4d out = {};
+  // Jak's math-camera uses the clip-equivalent left/up/forward basis: real packet-local +Z is in
+  // front of the camera, and packet-local +X projects toward screen-left. CompositorServices'
+  // rightUpBack contract uses the opposite X and Z axes. Keep this conversion in the shared
+  // game-camera basis so rendering and binocular culling cannot disagree.
+  constexpr std::array<double, 3> kRightUpBackFromJakCamera = {-1.0, 1.0, -1.0};
   for (int axis = 0; axis < 3; ++axis) {
     for (int world_axis = 0; world_axis < 3; ++world_axis) {
-      element(out, world_axis, axis) = packet.rot[world_axis][axis] / kJakWorldUnitsPerMeter;
+      element(out, world_axis, axis) =
+          kRightUpBackFromJakCamera[axis] * packet.rot[world_axis][axis] / kJakWorldUnitsPerMeter;
     }
     double translated = 0.0;
     for (int world_axis = 0; world_axis < 3; ++world_axis) {
-      translated -=
-          packet.rot[world_axis][axis] * packet.trans[world_axis] / kJakWorldUnitsPerMeter;
+      translated -= kRightUpBackFromJakCamera[axis] * packet.rot[world_axis][axis] *
+                    packet.trans[world_axis] / kJakWorldUnitsPerMeter;
     }
     element(out, 3, axis) = translated;
   }

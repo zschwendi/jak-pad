@@ -81,9 +81,9 @@ class ImmersiveStereoFrameCameraCache {
   ImmersiveStereoFrameCamera m_camera;
 };
 
-// Reconstructs the packet's projection from its right/up/back game-camera meter basis. This is
-// primarily useful for deterministic equivalence tests; production supplies clip_from_eye from
-// the current compositor drawable.
+// Reconstructs the packet's projection after converting Jak's left/up/forward camera coordinates
+// to the host's right/up/back game-camera meter basis. This is primarily useful for deterministic
+// equivalence tests; production supplies clip_from_eye from the current compositor drawable.
 bool packet_clip_from_game_camera_meters(const ImmersivePacketCamera& packet,
                                          float scissor_adjust,
                                          std::array<float, 16>* out,

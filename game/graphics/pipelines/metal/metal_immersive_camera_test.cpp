@@ -14,6 +14,8 @@ namespace {
 using Matrix4 = std::array<float, 16>;
 using Vector4 = std::array<float, 4>;
 
+constexpr float kPi = 3.14159265358979323846f;
+
 float& element(Matrix4& matrix, int column, int row) {
   return matrix[column * 4 + row];
 }
@@ -54,18 +56,113 @@ bool projectively_close(const Vector4& actual, const Vector4& expected, float to
 }
 
 metal_renderer::ImmersivePacketCamera make_packet(float yaw) {
+  constexpr float kNear = 1024.f;
+  constexpr float kFar = 40960000.f;
+  constexpr float kFogStart = 40960.f;
+  constexpr float kFogEnd = 819200.f;
+  constexpr float kFogMinimum = 150.f;
+  constexpr float kFogMaximum = 255.f;
+  constexpr float kDepthMinimum = 100.f;
+  constexpr float kDepthMaximum = 16760631.f;
+  const float x_ratio = std::tan(32.f * kPi / 180.f);
+  const float y_ratio = x_ratio * 0.75f;
+  const float fog_slope = kNear * (kFogMinimum - kFogMaximum) / (kFogEnd - kFogStart);
+  const float depth_half_range = -0.5f * (kDepthMaximum - kDepthMinimum);
+  const float half_depth_slope = depth_half_range / (kNear * (kFar - kNear));
+
   metal_renderer::ImmersivePacketCamera packet;
-  packet.hvdf_off = {2048.f, 1984.f, 16384.f, 17.f};
-  packet.fog = {-4096.f, 8.f, 240.f, 3.f};
+  packet.hvdf_off = {2048.f, 2048.f, 0.5f * (kDepthMaximum + kDepthMinimum), 17.f};
+  packet.fog = {fog_slope, kFogMinimum, kFogMaximum, 0.f};
   packet.trans = {1234.f, -567.f, 9101.f, 1.f};
   const float c = std::cos(yaw);
   const float s = std::sin(yaw);
   packet.rot = {{{c, 0.f, -s, 0.f}, {0.f, 1.f, 0.f, 0.f}, {s, 0.f, c, 0.f}, {0.f, 0.f, 0.f, 1.f}}};
-  packet.perspective[0][0] = 256.f;
-  packet.perspective[1][1] = 128.f;
-  packet.perspective[2][3] = 4096.f;
-  packet.perspective[3][2] = -1000.f;
+  packet.perspective[0][0] = -256.f / (x_ratio * kNear);
+  packet.perspective[1][1] = -112.f / (y_ratio * kNear);
+  packet.perspective[2][2] = (kFar + kNear) * half_depth_slope;
+  packet.perspective[2][3] = fog_slope / kNear;
+  packet.perspective[3][2] = -2.f * half_depth_slope * kFar * kNear;
   return packet;
+}
+
+Vector4 conventional_game_clip(const metal_renderer::ImmersivePacketCamera& packet,
+                               const Vector4& world) {
+  const float fog_scale = packet.fog[0];
+  const std::array<float, 3> scale = {
+      fog_scale * packet.perspective[0][0] / 256.f,
+      -fog_scale * packet.perspective[1][1] / 128.f,
+      fog_scale * packet.perspective[2][2] / 8388608.f +
+          (packet.hvdf_off[2] / 8388608.f - 1.f) * packet.perspective[2][3],
+  };
+  float pc_camera[4][4] = {};
+  for (int column = 0; column < 3; ++column) {
+    for (int lane = 0; lane < 3; ++lane) {
+      pc_camera[column][lane] = packet.rot[column][lane] * scale[lane];
+    }
+    pc_camera[column][3] = packet.rot[column][2] * packet.perspective[2][3];
+  }
+  pc_camera[3][2] = fog_scale * packet.perspective[3][2] / 8388608.f;
+
+  const Vector4 relative = {
+      world[0] - packet.trans[0] * world[3],
+      world[1] - packet.trans[1] * world[3],
+      world[2] - packet.trans[2] * world[3],
+      0.f,
+  };
+  Vector4 clip = {};
+  for (int lane = 0; lane < 4; ++lane) {
+    clip[lane] = -pc_camera[3][lane] * world[3];
+    for (int column = 0; column < 3; ++column) {
+      clip[lane] -= pc_camera[column][lane] * relative[column];
+    }
+  }
+  clip[1] *= metal_renderer::kJak1MetalScissorAdjust;
+  clip[2] = (clip[2] + clip[3]) * 0.5f;
+  return clip;
+}
+
+Vector4 source_camera_from_world(const metal_renderer::ImmersivePacketCamera& packet,
+                                 const Vector4& world) {
+  Vector4 camera = {0.f, 0.f, 0.f, world[3]};
+  for (int axis = 0; axis < 3; ++axis) {
+    for (int world_axis = 0; world_axis < 3; ++world_axis) {
+      camera[axis] += packet.rot[world_axis][axis] *
+                      (world[world_axis] - packet.trans[world_axis] * world[3]) /
+                      metal_renderer::kJakWorldUnitsPerMeter;
+    }
+  }
+  return camera;
+}
+
+Vector4 right_up_back_from_source_camera(const Vector4& source_camera) {
+  return {-source_camera[0], source_camera[1], -source_camera[2], source_camera[3]};
+}
+
+Vector4 world_from_source_camera(const metal_renderer::ImmersivePacketCamera& packet,
+                                 float yaw,
+                                 const Vector4& source_camera) {
+  const float c = std::cos(yaw);
+  const float s = std::sin(yaw);
+  return {
+      packet.trans[0] +
+          (c * source_camera[0] - s * source_camera[2]) * metal_renderer::kJakWorldUnitsPerMeter,
+      packet.trans[1] + source_camera[1] * metal_renderer::kJakWorldUnitsPerMeter,
+      packet.trans[2] +
+          (s * source_camera[0] + c * source_camera[2]) * metal_renderer::kJakWorldUnitsPerMeter,
+      source_camera[3],
+  };
+}
+
+Matrix4 right_up_back_projection() {
+  constexpr float kNearMeters = 0.1f;
+  constexpr float kFarMeters = 5000.f;
+  Matrix4 projection = {};
+  element(projection, 0, 0) = 1.2f;
+  element(projection, 1, 1) = 1.35f;
+  element(projection, 2, 2) = kNearMeters / (kFarMeters - kNearMeters);
+  element(projection, 2, 3) = -1.f;
+  element(projection, 3, 2) = kNearMeters * kFarMeters / (kFarMeters - kNearMeters);
+  return projection;
 }
 
 Matrix4 translation(float x, float y, float z) {
@@ -110,23 +207,56 @@ int fail(const std::string& message) {
 }  // namespace
 
 int main() {
-  const auto packet = make_packet(0.23f);
+  constexpr float kPacketYaw = 0.23f;
+  const auto packet = make_packet(kPacketYaw);
+  const Vector4 subject_source_camera = {0.45f, -0.25f, 4.f, 1.f};
+  const Vector4 subject_world = world_from_source_camera(packet, kPacketYaw, subject_source_camera);
+  const Vector4 decoded_source_camera = source_camera_from_world(packet, subject_world);
+  if (!close(decoded_source_camera[0], subject_source_camera[0], 2e-5f) ||
+      !close(decoded_source_camera[1], subject_source_camera[1], 2e-5f) ||
+      !close(decoded_source_camera[2], subject_source_camera[2], 2e-5f)) {
+    return fail("real packet rot/trans camera decode");
+  }
+  const Vector4 subject_right_up_back = right_up_back_from_source_camera(decoded_source_camera);
+  const Vector4 subject_game_clip = conventional_game_clip(packet, subject_world);
+  if (!(subject_game_clip[3] > 0.f)) {
+    return fail("real GOAL +Z-forward subject was not conventionally visible");
+  }
+
   Matrix4 packet_projection = {};
   metal_renderer::ImmersiveCameraError error = {};
   if (!metal_renderer::packet_clip_from_game_camera_meters(
           packet, metal_renderer::kJak1MetalScissorAdjust, &packet_projection, &error)) {
     return fail("packet projection reconstruction");
   }
+  if (!projectively_close(multiply(packet_projection, subject_right_up_back), subject_game_clip,
+                          2e-4f)) {
+    return fail("Jak left/up/forward to host right/up/back conversion");
+  }
 
   metal_renderer::PhysicalViewCamera center;
   center.enabled = true;
-  center.clip_from_eye = packet_projection;
+  center.clip_from_eye = right_up_back_projection();
   metal_renderer::ViewTransform center_transform;
   if (!metal_renderer::derive_immersive_view_transform(
-          packet, metal_renderer::kJak1MetalScissorAdjust, center, &center_transform, &error) ||
-      !matrix_close(center_transform.clip_from_game_clip, metal_renderer::kIdentityMatrix4,
-                    2e-5f)) {
-    return fail("zero-baseline physical view was not mono identity");
+          packet, metal_renderer::kJak1MetalScissorAdjust, center, &center_transform, &error)) {
+    return fail("independent right/up/back physical projection");
+  }
+  const Vector4 center_clip = multiply(center_transform.clip_from_game_clip, subject_game_clip);
+  const Vector4 expected_center_clip = multiply(center.clip_from_eye, subject_right_up_back);
+  if (!projectively_close(center_clip, expected_center_clip, 2e-4f) || !(center_clip[3] > 0.f) ||
+      !(center_clip[2] / center_clip[3] > 0.f) || !(center_clip[2] / center_clip[3] < 1.f)) {
+    return fail("third-person subject did not remain in front with valid Metal depth");
+  }
+
+  metal_renderer::PhysicalViewCamera packet_view;
+  packet_view.enabled = true;
+  packet_view.clip_from_eye = packet_projection;
+  metal_renderer::ViewTransform packet_identity;
+  if (!metal_renderer::derive_immersive_view_transform(
+          packet, metal_renderer::kJak1MetalScissorAdjust, packet_view, &packet_identity, &error) ||
+      !matrix_close(packet_identity.clip_from_game_clip, metal_renderer::kIdentityMatrix4, 2e-5f)) {
+    return fail("packet-matched physical view was not mono identity");
   }
 
   auto left = center;
@@ -141,17 +271,22 @@ int main() {
           packet, metal_renderer::kJak1MetalScissorAdjust, right, &right_transform, &error)) {
     return fail("64 mm eye transforms");
   }
-  const Vector4 one_meter_center_clip = multiply(packet_projection, Vector4{0.f, 0.f, -1.f, 1.f});
-  const auto left_clip = multiply(left_transform.clip_from_game_clip, one_meter_center_clip);
-  const auto right_clip = multiply(right_transform.clip_from_game_clip, one_meter_center_clip);
+  const auto left_clip = multiply(left_transform.clip_from_game_clip, subject_game_clip);
+  const auto right_clip = multiply(right_transform.clip_from_game_clip, subject_game_clip);
+  const auto expected_left_clip = multiply(
+      left.clip_from_eye, multiply(left.eye_from_game_camera_meters, subject_right_up_back));
+  const auto expected_right_clip = multiply(
+      right.clip_from_eye, multiply(right.eye_from_game_camera_meters, subject_right_up_back));
   const float disparity = right_clip[0] / right_clip[3] - left_clip[0] / left_clip[3];
-  if (!close(std::abs(disparity), 0.064f, 2e-4f) ||
+  if (!projectively_close(left_clip, expected_left_clip, 2e-4f) ||
+      !projectively_close(right_clip, expected_right_clip, 2e-4f) ||
+      !close(std::abs(disparity), 1.2f * 0.064f / subject_source_camera[2], 2e-4f) ||
       left_transform.clip_from_game_clip == right_transform.clip_from_game_clip) {
     return fail("64 mm physical disparity");
   }
 
   auto next_packet = packet;
-  next_packet.perspective[0][0] = 240.f;
+  next_packet.perspective[0][0] *= 0.95f;
   metal_renderer::ViewTransform next_packet_left;
   if (!metal_renderer::derive_immersive_view_transform(
           next_packet, metal_renderer::kJak1MetalScissorAdjust, left, &next_packet_left, &error) ||
@@ -159,23 +294,22 @@ int main() {
     return fail("view transform did not follow the current packet camera");
   }
   auto followed_packet = packet;
-  followed_packet.trans[0] += 8192.f;
-  followed_packet.trans[2] -= 4096.f;
+  followed_packet.trans[0] += 1024.f;
+  followed_packet.trans[2] += 512.f;
   metal_renderer::ViewTransform followed_left;
-  Matrix4 followed_projection = {};
   if (!metal_renderer::derive_immersive_view_transform(
-          followed_packet, metal_renderer::kJak1MetalScissorAdjust, left, &followed_left, &error) ||
-      !metal_renderer::packet_clip_from_game_camera_meters(
-          followed_packet, metal_renderer::kJak1MetalScissorAdjust, &followed_projection, &error)) {
-    return fail("native third-person follow-camera translation was replaced");
+          followed_packet, metal_renderer::kJak1MetalScissorAdjust, left, &followed_left, &error)) {
+    return fail("translated third-person camera derivation");
   }
-  const Vector4 follow_point = {0.2f, 0.1f, -2.f, 1.f};
-  const auto base_follow_clip =
-      multiply(left_transform.clip_from_game_clip, multiply(packet_projection, follow_point));
-  const auto moved_follow_clip =
-      multiply(followed_left.clip_from_game_clip, multiply(followed_projection, follow_point));
-  if (!projectively_close(base_follow_clip, moved_follow_clip, 2e-4f)) {
-    return fail("native third-person follow-camera translation was replaced");
+  const Vector4 followed_source_camera = source_camera_from_world(followed_packet, subject_world);
+  const Vector4 followed_right_up_back = right_up_back_from_source_camera(followed_source_camera);
+  const Vector4 followed_game_clip = conventional_game_clip(followed_packet, subject_world);
+  const Vector4 followed_clip = multiply(followed_left.clip_from_game_clip, followed_game_clip);
+  const Vector4 expected_followed_clip = multiply(
+      left.clip_from_eye, multiply(left.eye_from_game_camera_meters, followed_right_up_back));
+  if (!projectively_close(followed_clip, expected_followed_clip, 2e-4f) ||
+      projectively_close(followed_clip, left_clip, 2e-4f)) {
+    return fail("packet trans was not preserved as the third-person camera origin");
   }
 
   auto yawed = left;
@@ -188,28 +322,27 @@ int main() {
                    1e-3f)) {
     return fail("head-recenter yaw did not change the world transform");
   }
+  const Vector4 yawed_clip = multiply(yawed_transform.clip_from_game_clip, subject_game_clip);
+  const Vector4 expected_yawed_clip = multiply(
+      yawed.clip_from_eye, multiply(yawed.eye_from_game_camera_meters, subject_right_up_back));
+  if (!projectively_close(yawed_clip, expected_yawed_clip, 2e-4f)) {
+    return fail("head-recenter yaw used the wrong camera basis");
+  }
 
   metal_renderer::PhysicalBinocularCull binocular;
   binocular.enabled = true;
-  binocular.clip_from_game_camera_meters = metal_renderer::kIdentityMatrix4;
-  // A one-meter-wide right/up/back box in camera space. Side-plane extraction is independent of
-  // the depth rows; this synthetic clip retains an edge sphere and rejects a farther one.
+  binocular.clip_from_game_camera_meters = right_up_back_projection();
   metal_renderer::ImmersiveCullPlanes planes = {};
   if (!metal_renderer::derive_immersive_cull_planes(packet, binocular, &planes, &error)) {
     return fail("binocular cull derivation");
   }
-  const float c = std::cos(0.23f);
-  const float s = std::sin(0.23f);
-  const auto world_from_camera = [&](float camera_x) {
-    return Vector4{packet.trans[0] + c * camera_x * metal_renderer::kJakWorldUnitsPerMeter,
-                   packet.trans[1],
-                   packet.trans[2] + s * camera_x * metal_renderer::kJakWorldUnitsPerMeter, 1.f};
-  };
-  const auto edge = world_from_camera(0.95f);
-  const auto outside = world_from_camera(1.2f);
-  if (!sphere_visible(planes, edge[0], edge[1], edge[2], 0.1f * 4096.f) ||
-      sphere_visible(planes, outside[0], outside[1], outside[2], 0.05f * 4096.f)) {
-    return fail("shared conservative binocular culling");
+  const Vector4 behind_world =
+      world_from_source_camera(packet, kPacketYaw, Vector4{0.f, 0.f, -4.f, 1.f});
+  if (!sphere_visible(planes, subject_world[0], subject_world[1], subject_world[2],
+                      0.2f * metal_renderer::kJakWorldUnitsPerMeter) ||
+      sphere_visible(planes, behind_world[0], behind_world[1], behind_world[2],
+                     0.1f * metal_renderer::kJakWorldUnitsPerMeter)) {
+    return fail("shared binocular culling did not retain the in-front subject");
   }
 
   auto singular = packet;
@@ -284,8 +417,9 @@ int main() {
     return fail("HUD/world transform classification");
   }
 
-  std::cout << "PASS mono identity, current-packet dual replay, native follow camera, 64 mm "
-               "per-eye disparity, head yaw, shared binocular culling, invalid rejection, and "
-               "HUD identity, strict same-frame cache identity, and HUD-chain continuation\n";
+  std::cout << "PASS real GOAL camera signs, left/up/forward to right/up/back conversion, "
+               "third-person subject depth, mono identity, current-packet dual replay, 64 mm "
+               "per-eye disparity, head yaw, shared binocular culling, invalid rejection, HUD "
+               "identity, strict same-frame cache identity, and HUD-chain continuation\n";
   return 0;
 }
