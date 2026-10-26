@@ -180,11 +180,15 @@ if(OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY)
             "OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY requires BUILD_TESTING=OFF.")
   endif()
   string(TOLOWER "${CMAKE_OSX_SYSROOT}" OPENGOAL_APPLE_SYSROOT)
-  if(NOT APPLE OR NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" OR
-     NOT OPENGOAL_APPLE_SYSROOT MATCHES "iphone(os|simulator)")
+  if(NOT APPLE OR NOT
+     ((CMAKE_SYSTEM_NAME STREQUAL "iOS" AND
+       OPENGOAL_APPLE_SYSROOT MATCHES "iphone(os|simulator)") OR
+      (CMAKE_SYSTEM_NAME STREQUAL "visionOS" AND
+       OPENGOAL_APPLE_SYSROOT MATCHES "xr(os|simulator)")))
     message(FATAL_ERROR
-            "OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY requires an iOS SDK; set "
-            "CMAKE_SYSTEM_NAME=iOS and CMAKE_OSX_SYSROOT=iphoneos or iphonesimulator.")
+            "OPENGOAL_BUILD_JAK2_IPHONEOS_AOT_LINK_ONLY requires an iOS or visionOS SDK; set "
+            "CMAKE_SYSTEM_NAME=iOS with CMAKE_OSX_SYSROOT=iphoneos or iphonesimulator, or "
+            "CMAKE_SYSTEM_NAME=visionOS with CMAKE_OSX_SYSROOT=xros or xrsimulator.")
   endif()
   if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
     message(FATAL_ERROR
