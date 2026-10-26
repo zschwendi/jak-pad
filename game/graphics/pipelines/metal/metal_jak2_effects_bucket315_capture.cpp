@@ -57,18 +57,24 @@ struct CheckedTransfer {
 
 class CheckedDmaFollower {
  public:
-  CheckedDmaFollower(const u8* memory, std::size_t memory_size, u32 start_offset)
+  CheckedDmaFollower(const u8* memory,
+                     std::size_t memory_size,
+                     u32 start_offset,
+                     u32* visited,
+                     std::size_t visited_capacity)
       : m_memory(memory),
         m_memory_size(std::min<std::size_t>(memory_size, kMaximumEeSnapshotBytes)),
-        m_offset(start_offset) {}
+        m_offset(start_offset),
+        m_visited(visited),
+        m_visited_capacity(visited ? visited_capacity : 0) {}
 
   u32 offset() const { return m_offset; }
 
   bool read(CheckedTransfer* out) {
-    if (!out || !m_memory || m_visited_count == m_visited.size() ||
+    if (!out || !m_memory || m_visited_count == m_visited_capacity ||
         !range_is_valid(m_offset, 16, m_memory_size) || (m_offset & 15) != 0 ||
-        std::find(m_visited.begin(), m_visited.begin() + m_visited_count, m_offset) !=
-            m_visited.begin() + m_visited_count) {
+        std::find(m_visited, m_visited + m_visited_count, m_offset) !=
+            m_visited + m_visited_count) {
       return false;
     }
     const DmaTag tag(read_unaligned<u64>(m_memory + m_offset));
@@ -124,9 +130,49 @@ class CheckedDmaFollower {
   const u8* m_memory = nullptr;
   std::size_t m_memory_size = 0;
   u32 m_offset = 0;
-  std::array<u32, kJak2EffectsBucket315MaximumTransfers> m_visited = {};
+  u32* m_visited = nullptr;
+  std::size_t m_visited_capacity = 0;
   std::size_t m_visited_count = 0;
 };
+
+// Rebuilds the checked rows from the capture metadata and the scratch payload pointers.
+class CheckedTransfers {
+ public:
+  CheckedTransfers(const Jak2EffectsBucket315Capture& capture,
+                   const Jak2EffectsBucket315CaptureScratch& scratch)
+      : m_capture(capture), m_scratch(scratch) {}
+
+  CheckedTransfer operator[](u32 index) const {
+    const auto& metadata = m_capture.transfers[index];
+    CheckedTransfer result;
+    result.payload = m_scratch.payloads[index];
+    result.payload_bytes = metadata.payload_bytes;
+    result.vif0 = metadata.vif0;
+    result.vif1 = metadata.vif1;
+    return result;
+  }
+
+ private:
+  const Jak2EffectsBucket315Capture& m_capture;
+  const Jak2EffectsBucket315CaptureScratch& m_scratch;
+};
+
+void reset_capture(Jak2EffectsBucket315Capture* capture, u32 bucket_id) {
+  capture->valid = false;
+  capture->present = false;
+  capture->classification = Jak2EffectsBucket315CaptureClass::Malformed;
+  capture->malformed_reason = Jak2EffectsBucket315MalformedReason::None;
+  capture->malformed_relative_tag_offset = 0;
+  capture->bucket_id = bucket_id;
+  capture->transfers.fill({});
+  capture->transfer_count = 0;
+  capture->fragment_count = 0;
+  capture->vertex_count = 0;
+  capture->adgif_count = 0;
+  capture->draw_count = 0;
+  capture->total_payload_bytes = 0;
+  capture->semantic_fingerprint = 0;
+}
 
 bool is_absent(const Jak2EffectsBucket315Capture& capture) {
   const auto& transfer = capture.transfers[0];
@@ -226,9 +272,8 @@ bool is_source_lightning_unpack(const CheckedTransfer& transfer,
          !fields.use_tops_flag;
 }
 
-std::optional<Jak2EffectsBucket315Plan> make_exact_plan(
-    const std::array<CheckedTransfer, kJak2EffectsBucket315MaximumTransfers>& transfers,
-    u32 transfer_count) {
+std::optional<Jak2EffectsBucket315Plan> make_exact_plan(const CheckedTransfers& transfers,
+                                                        u32 transfer_count) {
   if (transfer_count == 1 && is_nop_zero(transfers[0])) {
     return Jak2EffectsBucket315Plan{};
   }
@@ -318,30 +363,47 @@ std::optional<Jak2EffectsBucket315Plan> make_exact_plan(
 
 }  // namespace
 
-Jak2EffectsBucket315Capture capture_jak2_effects_bucket315(const u8* dma_packet_snapshot,
-                                                            std::size_t dma_packet_snapshot_size,
-                                                            u32 chain_offset,
-                                                            u32 bucket_id) {
-  Jak2EffectsBucket315Capture result;
-  result.bucket_id = bucket_id;
+void capture_jak2_effects_bucket315(const u8* dma_packet_snapshot,
+                                    std::size_t dma_packet_snapshot_size,
+                                    u32 chain_offset,
+                                    u32 bucket_id,
+                                    Jak2EffectsBucket315Capture* out_capture,
+                                    Jak2EffectsBucket315CaptureScratch* scratch) {
+  if (!out_capture) {
+    return;
+  }
+  reset_capture(out_capture, bucket_id);
+  if (!scratch) {
+    return;
+  }
+  auto& result = *out_capture;
   if (bucket_id != kJak2EffectsBucket || chain_offset >
           std::numeric_limits<u32>::max() - (kJak2EffectsBucket + 1) * 16) {
-    return result;
+    result.malformed_reason = Jak2EffectsBucket315MalformedReason::InvalidBucket;
+    return;
   }
   const u32 bucket_offset = chain_offset + kJak2EffectsBucket * 16;
   const u32 next_bucket = chain_offset + (kJak2EffectsBucket + 1) * 16;
-  CheckedDmaFollower dma(dma_packet_snapshot, dma_packet_snapshot_size, bucket_offset);
-  std::array<CheckedTransfer, kJak2EffectsBucket315MaximumTransfers> checked_transfers = {};
+  CheckedDmaFollower dma(dma_packet_snapshot, dma_packet_snapshot_size, bucket_offset,
+                         scratch->visited_tag_offsets.data(),
+                         scratch->visited_tag_offsets.size());
   u64 fingerprint = kOffsetBasis;
   while (dma.offset() != next_bucket) {
     if (result.transfer_count == result.transfers.size()) {
-      return result;
+      result.malformed_reason = Jak2EffectsBucket315MalformedReason::TransferBudget;
+      return;
     }
     CheckedTransfer transfer;
-    if (!dma.read(&transfer) || transfer.tag_offset < bucket_offset) {
-      return result;
+    const u32 tag_offset = dma.offset();
+    const bool read = dma.read(&transfer);
+    if (!read || transfer.tag_offset < bucket_offset) {
+      result.malformed_reason = read ? Jak2EffectsBucket315MalformedReason::TagBeforeBucket
+                                     : Jak2EffectsBucket315MalformedReason::DmaRead;
+      // Wraps for tags before the bucket; the reason disambiguates that case.
+      result.malformed_relative_tag_offset = tag_offset - bucket_offset;
+      return;
     }
-    checked_transfers[result.transfer_count] = transfer;
+    scratch->payloads[result.transfer_count] = transfer.payload;
     auto& metadata = result.transfers[result.transfer_count++];
     metadata.relative_tag_offset = transfer.tag_offset - bucket_offset;
     metadata.payload_bytes = transfer.payload_bytes;
@@ -360,6 +422,7 @@ Jak2EffectsBucket315Capture capture_jak2_effects_bucket315(const u8* dma_packet_
     }
     result.total_payload_bytes += transfer.payload_bytes;
   }
+  const CheckedTransfers checked_transfers(result, *scratch);
   const auto plan = make_exact_plan(checked_transfers, result.transfer_count);
   if (!plan) {
     result.valid = true;
@@ -367,7 +430,7 @@ Jak2EffectsBucket315Capture capture_jak2_effects_bucket315(const u8* dma_packet_
     result.classification = is_absent(result) ? Jak2EffectsBucket315CaptureClass::Absent
                                                : Jak2EffectsBucket315CaptureClass::Other;
     result.semantic_fingerprint = fingerprint;
-    return result;
+    return;
   }
   result.valid = true;
   result.present = plan->variant != Jak2EffectsBucket315Variant::Absent;
@@ -382,7 +445,9 @@ Jak2EffectsBucket315Capture capture_jak2_effects_bucket315(const u8* dma_packet_
     const bool exact_adgif = is_source_lightning_adgif(
         checked_transfers[i], checked_transfers[i + 1].payload_bytes / 48, &effective_tbp);
     if (!exact_adgif) {
-      return {};
+      reset_capture(out_capture, bucket_id);
+      result.malformed_reason = Jak2EffectsBucket315MalformedReason::AdgifMismatch;
+      return;
     }
     const float mat_33 = read_unaligned<float>(checked_transfers[i].payload + 60);
     if (mat_33 == 0.f) {
@@ -393,7 +458,6 @@ Jak2EffectsBucket315Capture capture_jak2_effects_bucket315(const u8* dma_packet_
   }
   result.draw_count += static_cast<u32>(non_hud_draws.size());
   result.semantic_fingerprint = fingerprint;
-  return result;
 }
 
 bool jak2_effects_bucket315_captures_match(const Jak2EffectsBucket315Capture& live,
@@ -427,6 +491,8 @@ void observe_jak2_effects_bucket315_capture(Jak2EffectsBucket315Telemetry* telem
   ++telemetry->captures;
   if (!capture.valid) {
     ++telemetry->malformed_captures;
+    telemetry->last_malformed_reason = static_cast<u8>(capture.malformed_reason);
+    telemetry->last_malformed_transfer_count = capture.transfer_count;
     return;
   }
   ++telemetry->valid_captures;

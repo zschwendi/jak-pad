@@ -88,10 +88,20 @@ struct goal_jak2_metal_host {
   std::array<metal_renderer::Jak2PrisEyeTextureUploadRejectReason, 2>
       pris2_metadata_reasons = {};
   std::size_t pris2_metadata_reason_count = 0;
+  std::array<metal_renderer::Jak2EffectsBucket315MalformedReason, 2> effects315_metadata_reasons =
+      {};
+  std::size_t effects315_metadata_reason_count = 0;
   // Per-frame PRIS eye planning storage. The source-bounded PRIS2 forms make these about 230 KB,
   // so send_chain uses this heap-owned host storage instead of its stack. Every entry is
   // overwritten by its planner before use in each frame.
   metal_renderer::Jak2Pris2TextureUploadCapture pris2_capture;
+  // Per-frame effects bucket 315 storage. The source-bounded 2312-transfer captures are about
+  // 74 KB each, so send_chain uses heap-owned host storage instead of its stack. Live and copied
+  // captures are compared with each other, so both are kept; their sequential walks share one
+  // scratch. Each capture call resets its capture before use in each frame.
+  metal_renderer::Jak2EffectsBucket315Capture live_effects_bucket315_capture;
+  metal_renderer::Jak2EffectsBucket315Capture copied_effects_bucket315_capture;
+  metal_renderer::Jak2EffectsBucket315CaptureScratch effects_bucket315_capture_scratch;
   std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan,
              metal_renderer::kJak2PrisTextureUploadBuckets.size()>
       live_pris_eye_plans = {};
@@ -1066,6 +1076,65 @@ void maybe_log_pris2_rejection_metadata(
   }
 }
 
+const char* format_effects315_malformed_reason(
+    metal_renderer::Jak2EffectsBucket315MalformedReason reason) {
+  using Reason = metal_renderer::Jak2EffectsBucket315MalformedReason;
+  switch (reason) {
+    case Reason::None:
+      return "none";
+    case Reason::InvalidBucket:
+      return "invalid-bucket";
+    case Reason::TransferBudget:
+      return "transfer-budget";
+    case Reason::DmaRead:
+      return "dma-read";
+    case Reason::TagBeforeBucket:
+      return "tag-before-bucket";
+    case Reason::AdgifMismatch:
+      return "adgif-mismatch";
+  }
+  return "unknown";
+}
+
+void maybe_log_effects315_rejection_metadata(
+    goal_jak2_metal_host* host,
+    const metal_renderer::Jak2EffectsBucket315Capture& capture) {
+  const char* enabled = std::getenv("GOALPAD_JAK2_DEBUG_CAPTURE_EFFECTS315");
+  if (!host || !enabled || std::strcmp(enabled, "1") != 0 ||
+      host->effects315_metadata_reason_count >= host->effects315_metadata_reasons.size()) {
+    return;
+  }
+  const auto end =
+      host->effects315_metadata_reasons.begin() + host->effects315_metadata_reason_count;
+  if (std::find(host->effects315_metadata_reasons.begin(), end, capture.malformed_reason) != end) {
+    return;
+  }
+  host->effects315_metadata_reasons[host->effects315_metadata_reason_count++] =
+      capture.malformed_reason;
+  // Header rows only: tag/VIF words and sizes, never payload bytes or payload fingerprints.
+  constexpr std::size_t kMaximumRows = 64;
+  const auto count = std::min<std::size_t>({capture.transfer_count, capture.transfers.size(),
+                                            kMaximumRows});
+  lg::info(
+      "GOALPAD_JAK2_EFFECTS315_REJECTION_CAPTURE tick={} reason={} valid={} class={} "
+      "transfers={}/{} rejected-rel={} payload-bytes={} rows={}",
+      host->metrics.chains, format_effects315_malformed_reason(capture.malformed_reason),
+      capture.valid, static_cast<u32>(capture.classification), capture.transfer_count,
+      capture.transfers.size(), capture.malformed_relative_tag_offset,
+      capture.total_payload_bytes, count);
+  // The tail shows where traversal stopped; the head shows the fixed Lightning setup.
+  const std::size_t head = std::min<std::size_t>(count, kMaximumRows / 2);
+  for (std::size_t row = 0; row < count; ++row) {
+    const std::size_t index = row < head ? row : capture.transfer_count - (count - row);
+    const auto& transfer = capture.transfers[index];
+    lg::info(
+        "GOALPAD_JAK2_EFFECTS315_REJECTION_TRANSFER index={} rel={} tag={} qwc={} bytes={} "
+        "vif0={:08x} vif1={:08x}",
+        index, transfer.relative_tag_offset, transfer.tag_kind, transfer.qwc,
+        transfer.payload_bytes, transfer.vif0, transfer.vif1);
+  }
+}
+
 void record_effects_bucket315_metrics(
     goal_jak2_effects_bucket315_metrics* out,
     const metal_renderer::Jak2EffectsBucket315Capture& capture) {
@@ -1859,15 +1928,18 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     host->options.chain_ordinal = host->metrics.chains;
     host->options.engine_frame_id = host->metrics.chains;
     // Observe immutable live DMA before validation, copying, or any host texture mutation.
-    const auto effects_bucket315_capture = metal_renderer::capture_jak2_effects_bucket315(
+    metal_renderer::capture_jak2_effects_bucket315(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
-        metal_renderer::kJak2EffectsBucket);
+        metal_renderer::kJak2EffectsBucket, &host->live_effects_bucket315_capture,
+        &host->effects_bucket315_capture_scratch);
+    const auto& effects_bucket315_capture = host->live_effects_bucket315_capture;
     record_effects_bucket315_metrics(&host->metrics.effects_bucket315, effects_bucket315_capture);
     if (!effects_bucket315_capture.valid ||
         (effects_bucket315_capture.classification !=
              metal_renderer::Jak2EffectsBucket315CaptureClass::Absent &&
          effects_bucket315_capture.classification !=
              metal_renderer::Jak2EffectsBucket315CaptureClass::Lightning)) {
+      maybe_log_effects315_rejection_metadata(host, effects_bucket315_capture);
       record_failure(host, "Jak 2 effects bucket 315 live DMA failed exact preflight");
       return;
     }
@@ -2198,10 +2270,11 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     }
     retain_first_shadow_bucket195_plan(host, *copied_shadow_bucket195_plan);
 
-    const auto copied_effects_bucket315_capture =
-        metal_renderer::capture_jak2_effects_bucket315(
-            copied.data.data(), copied.data.size(), copied.start_offset,
-            metal_renderer::kJak2EffectsBucket);
+    metal_renderer::capture_jak2_effects_bucket315(
+        copied.data.data(), copied.data.size(), copied.start_offset,
+        metal_renderer::kJak2EffectsBucket, &host->copied_effects_bucket315_capture,
+        &host->effects_bucket315_capture_scratch);
+    const auto& copied_effects_bucket315_capture = host->copied_effects_bucket315_capture;
     if (!copied_effects_bucket315_capture.valid ||
         (copied_effects_bucket315_capture.classification !=
              metal_renderer::Jak2EffectsBucket315CaptureClass::Absent &&
