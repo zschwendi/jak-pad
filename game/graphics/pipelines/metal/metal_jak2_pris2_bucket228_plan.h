@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <optional>
@@ -16,6 +17,14 @@ inline constexpr std::array<u32, 6> kJak2Pris2MercBuckets = {
     225, 229, 233, 237, 241, 245};
 constexpr std::size_t kJak2PrisEyeProducerCount =
     kJak2PrisTextureUploadBuckets.size() + 1 + kJak2Pris2TextureUploadBuckets.size();
+inline constexpr std::array<u32, kJak2PrisEyeProducerCount> kJak2PrisEyeProducerOrder = {
+    kJak2PrisTextureUploadBuckets[0],  kJak2PrisTextureUploadBuckets[1],
+    kJak2PrisTextureUploadBuckets[2],  kJak2PrisTextureUploadBuckets[3],
+    kJak2PrisTextureUploadBuckets[4],  kJak2PrisTextureUploadBuckets[5],
+    kJak2CommonPrisTextureUploadBucket, kJak2Pris2TextureUploadBuckets[0],
+    kJak2Pris2TextureUploadBuckets[1], kJak2Pris2TextureUploadBuckets[2],
+    kJak2Pris2TextureUploadBuckets[3], kJak2Pris2TextureUploadBuckets[4],
+    kJak2Pris2TextureUploadBuckets[5]};
 
 // Retained for the existing passive 228/229 ABI fields and focused fixtures.
 constexpr u32 kJak2Pris2TextureUploadBucket = 228;
@@ -114,12 +123,22 @@ bool jak2_pris_eye_plan_sequence_is_valid(
     std::size_t pris2_plan_count);
 
 /*! True only for two different audited PRIS producers in source bucket order. */
-bool jak2_pris_eye_producer_precedes(u32 earlier_bucket, u32 later_bucket);
+inline bool jak2_pris_eye_producer_precedes(u32 earlier_bucket, u32 later_bucket) {
+  const auto earlier = std::find(kJak2PrisEyeProducerOrder.begin(), kJak2PrisEyeProducerOrder.end(),
+                                 earlier_bucket);
+  const auto later = std::find(kJak2PrisEyeProducerOrder.begin(), kJak2PrisEyeProducerOrder.end(),
+                               later_bucket);
+  return earlier != kJak2PrisEyeProducerOrder.end() && later != kJak2PrisEyeProducerOrder.end() &&
+         earlier < later;
+}
 
 /*!
  * True only for PRIS2 texture producers, whose validated plans may contain ordered same-resolution
  * rewrites of one eye pair. No consumer runs between chunks of one producer.
  */
-bool jak2_pris_eye_producer_allows_same_resolution_rewrite(u32 producer_bucket);
+inline bool jak2_pris_eye_producer_allows_same_resolution_rewrite(u32 producer_bucket) {
+  return std::find(kJak2Pris2TextureUploadBuckets.begin(), kJak2Pris2TextureUploadBuckets.end(),
+                   producer_bucket) != kJak2Pris2TextureUploadBuckets.end();
+}
 
 }  // namespace metal_renderer

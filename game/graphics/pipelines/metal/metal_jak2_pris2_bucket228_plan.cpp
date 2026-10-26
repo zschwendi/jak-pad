@@ -15,15 +15,6 @@ bool is_pris2_texture_bucket(u32 bucket_id) {
          kJak2Pris2TextureUploadBuckets.end();
 }
 
-constexpr std::array<u32, kJak2PrisEyeProducerCount> kPrisEyeProducerOrder = {
-    kJak2PrisTextureUploadBuckets[0],  kJak2PrisTextureUploadBuckets[1],
-    kJak2PrisTextureUploadBuckets[2],  kJak2PrisTextureUploadBuckets[3],
-    kJak2PrisTextureUploadBuckets[4],  kJak2PrisTextureUploadBuckets[5],
-    kJak2CommonPrisTextureUploadBucket, kJak2Pris2TextureUploadBuckets[0],
-    kJak2Pris2TextureUploadBuckets[1], kJak2Pris2TextureUploadBuckets[2],
-    kJak2Pris2TextureUploadBuckets[3], kJak2Pris2TextureUploadBuckets[4],
-    kJak2Pris2TextureUploadBuckets[5]};
-
 template <typename Plan>
 bool eye_plan_mask_is_owned(const Plan& plan,
                             bool present,
@@ -246,19 +237,6 @@ bool jak2_pris_eye_plan_sequence_is_valid(
     }
   }
   return true;
-}
-
-bool jak2_pris_eye_producer_precedes(u32 earlier_bucket, u32 later_bucket) {
-  const auto earlier = std::find(kPrisEyeProducerOrder.begin(), kPrisEyeProducerOrder.end(),
-                                 earlier_bucket);
-  const auto later =
-      std::find(kPrisEyeProducerOrder.begin(), kPrisEyeProducerOrder.end(), later_bucket);
-  return earlier != kPrisEyeProducerOrder.end() && later != kPrisEyeProducerOrder.end() &&
-         earlier < later;
-}
-
-bool jak2_pris_eye_producer_allows_same_resolution_rewrite(u32 producer_bucket) {
-  return is_pris2_texture_bucket(producer_bucket);
 }
 
 }  // namespace metal_renderer
