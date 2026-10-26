@@ -25,13 +25,16 @@ enum class Jak2Pris2Bucket228Variant : u8 {
   OrdinaryOnly,
   OneEyeChunk,
   TwoEyeChunks,
+  // Three through kJak2Pris2EyeMaximumChunks chunks; chunk_count is authoritative.
+  ManyEyeChunks,
 };
 
 struct Jak2Pris2Bucket228Plan {
   u32 bucket_id = kJak2Pris2TextureUploadBucket;
   Jak2Pris2Bucket228Variant variant = Jak2Pris2Bucket228Variant::Absent;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
-  std::array<Jak2PrisEyeChunkPlan, kJak2PrisEyeMaximumChunks> chunks = {};
+  // Every source chunk in DMA order, including same-resolution rewrites of one eye pair.
+  std::array<Jak2PrisEyeChunkPlan, kJak2Pris2EyeMaximumChunks> chunks = {};
   std::size_t chunk_count = 0;
   u32 direct_reset_transfer_index = 0;
   u32 direct_reset_relative_tag_offset = 0;
@@ -43,9 +46,13 @@ struct Jak2Pris2Bucket228Plan {
 
 /*!
  * Preflight the exact source PRIS2 envelope for any dynamic level slot without mutating renderer
- * state: absence, ordinary descriptor/reset, or ordinary plus one or two different-eyes chunks.
- * The returned plan owns the ordinary page header and bounded eye metadata. Animator, malformed,
- * and otherwise extended forms are rejected.
+ * state: absence, ordinary descriptor/reset, or ordinary plus 1..kJak2Pris2EyeMaximumChunks
+ * different-eyes chunks in DMA order. A repeated eye pair is accepted only at the same resolution
+ * (source last-writer-wins); mixed resolutions on one pair are rejected. The returned plan owns
+ * the ordinary page header and bounded eye metadata. Animator, malformed, and otherwise extended
+ * forms are rejected. The capture is written to out_capture when provided; hot-path callers must
+ * provide it because the source-sized capture is too large for the stack. A null out_capture uses
+ * one bounded heap capture for this call.
  */
 std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_texture_upload(
     const u8* dma_packet_snapshot,
@@ -54,7 +61,7 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_texture_upload(
     u32 bucket_id,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
-    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr,
+    Jak2Pris2TextureUploadCapture* out_capture = nullptr,
     Jak2PrisEyeTextureUploadRejection* out_rejection = nullptr);
 
 // Compatibility wrapper for the original bucket-228 fixture/API.
@@ -65,7 +72,7 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_bucket228(
     u32 bucket_id,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
-    Jak2CommonTfragTextureUploadCapture* out_capture = nullptr,
+    Jak2Pris2TextureUploadCapture* out_capture = nullptr,
     Jak2PrisEyeTextureUploadRejection* out_rejection = nullptr);
 
 /*!
@@ -95,7 +102,9 @@ inline Jak2PrisEyeTextureUploadPlan adapt_jak2_pris2_bucket228_to_pris_eye_plan(
 /*!
  * Validate the complete source-ordered PRIS producer sequence and each producer's owned eye mask.
  * Cross-producer reuse is source-valid: every producer is followed by its Merc consumer before the
- * next producer. Duplicate slots within one producer remain invalid.
+ * next producer. Duplicate slots within a per-level or common producer remain invalid. Within one
+ * PRIS2 producer a later same-resolution chunk may rewrite an earlier pair; mixed resolutions on
+ * one pair remain invalid.
  */
 bool jak2_pris_eye_plan_sequence_is_valid(
     const Jak2PrisEyeTextureUploadPlan* per_level_plans,
@@ -106,5 +115,11 @@ bool jak2_pris_eye_plan_sequence_is_valid(
 
 /*! True only for two different audited PRIS producers in source bucket order. */
 bool jak2_pris_eye_producer_precedes(u32 earlier_bucket, u32 later_bucket);
+
+/*!
+ * True only for PRIS2 texture producers, whose validated plans may contain ordered same-resolution
+ * rewrites of one eye pair. No consumer runs between chunks of one producer.
+ */
+bool jak2_pris_eye_producer_allows_same_resolution_rewrite(u32 producer_bucket);
 
 }  // namespace metal_renderer

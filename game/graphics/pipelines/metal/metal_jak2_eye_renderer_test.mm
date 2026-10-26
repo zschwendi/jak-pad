@@ -1017,6 +1017,36 @@ int main() {
                 renderer.stats().command_buffers_completed == 1,
             "a repeated write from producer 200 remains fail-closed");
 
+      // PRIS2 bucket 228 may contain two same-resolution chunks for one pair (live build-250
+      // tick 11972). The later chunk must replace the earlier one in place before Merc 229.
+      renderer.start_frame();
+      const auto pris2_first_chain = make_eye_chain(12, kSourceTbp);
+      DmaFollower pris2_first_dma(pris2_first_chain.data(), 0, pris2_first_chain.size());
+      renderer.render_from_texture_bucket(pris2_first_dma, &state, context, 228);
+      const auto pris2_first_handle = renderer.lookup_eye_texture(24);
+      const auto pris2_second_chain = make_eye_chain(12, kSecondSourceTbp);
+      DmaFollower pris2_second_dma(pris2_second_chain.data(), 0, pris2_second_chain.size());
+      renderer.render_from_texture_bucket(pris2_second_dma, &state, context, 228);
+      const auto pris2_second_handle = renderer.lookup_eye_texture(24);
+      id<MTLCommandBuffer> pris2_consumer_commands = [queue commandBuffer];
+      id<MTLTexture> pris2_consumer = make_eye_consumer_target(device);
+      const bool pris2_consumer_encoded =
+          pris2_second_handle &&
+          encode_eye_consumer(pris2_consumer_commands, pris2_consumer, *pris2_second_handle,
+                              &pso_cache, &sampler_cache);
+      [pris2_consumer_commands commit];
+      [pris2_consumer_commands waitUntilCompleted];
+      const auto pris2_rewrite = renderer.stats();
+      check(pris2_consumer_encoded && pris2_first_handle && pris2_second_handle &&
+                *pris2_first_handle == *pris2_second_handle &&
+                pris2_consumer_commands.status == MTLCommandBufferStatusCompleted &&
+                read_eye_consumer_center(pris2_consumer) == second_source_pixels[0] &&
+                pris2_rewrite.eyes == 4 && pris2_rewrite.duplicate_slot_writes == 0 &&
+                pris2_rewrite.versioned_slot_writes == 0 &&
+                pris2_rewrite.same_producer_slot_rewrites == 2 &&
+                pris2_rewrite.command_buffers_completed == 2,
+            "a later same-resolution PRIS2 chunk rewrites its slot in place as the last writer");
+
       renderer.start_frame();
       const auto producer_200_chain = make_eye_chain(12, kSourceTbp);
       DmaFollower producer_200_dma(producer_200_chain.data(), 0,

@@ -2416,8 +2416,29 @@ void test_subtitle_capture_is_metadata_only() {
 
 }  // namespace
 
+// The PRIS2 contract widening must not reach per-level PRIS: zero to two chunks, no repeated pair.
+void test_per_level_pris_grammar_is_unchanged() {
+  static_assert(metal_renderer::Jak2CommonTfragTextureUploadCapture::kMaximumTransfers ==
+                metal_renderer::kJak2CommonTfragTextureUploadMaximumTransfers);
+  static_assert(metal_renderer::kJak2PrisEyeMaximumChunks == 2);
+  const std::vector<std::vector<EyeChunkSpec>> duplicates = {{{true, 8}, {true, 9}},
+                                                             {{false, 8}, {true, 8}}};
+  for (const auto& chunks : duplicates) {
+    auto fixture = make_pris_eye_fixture(196, chunks);
+    metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
+    check(!metal_renderer::plan_jak2_pris_eye_texture_upload(
+              fixture.packet.data(), fixture.packet.size(), kChainOffset, 196,
+              fixture.packet.data(), fixture.packet.size(), nullptr, &rejection) &&
+              rejection.reason ==
+                  metal_renderer::Jak2PrisEyeTextureUploadRejectReason::DuplicateEyeSlots &&
+              rejection.chunk_index == 1 && rejection.previous_pair_index == 8,
+          "per-level PRIS still rejects any repeated eye pair within one producer");
+  }
+}
+
 int main() {
   test_exact_empty_and_ordinary_metadata();
+  test_per_level_pris_grammar_is_unchanged();
   test_texture_bucket_allowlist();
   test_pris2_diagnostic_capture();
   test_common_water_execution_plan();

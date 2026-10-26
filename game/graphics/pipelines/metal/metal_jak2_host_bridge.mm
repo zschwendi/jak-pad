@@ -8,6 +8,7 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <type_traits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -84,6 +85,29 @@ struct goal_jak2_metal_host {
       pris2_texture_upload_executions = {};
   u64 placeholder_handle = 0;
   bool subtitle322_metadata_capture_logged = false;
+  std::array<metal_renderer::Jak2PrisEyeTextureUploadRejectReason, 2>
+      pris2_metadata_reasons = {};
+  std::size_t pris2_metadata_reason_count = 0;
+  // Per-frame PRIS eye planning storage. The source-bounded PRIS2 forms make these about 230 KB,
+  // so send_chain uses this heap-owned host storage instead of its stack. Every entry is
+  // overwritten by its planner before use in each frame.
+  metal_renderer::Jak2Pris2TextureUploadCapture pris2_capture;
+  std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan,
+             metal_renderer::kJak2PrisTextureUploadBuckets.size()>
+      live_pris_eye_plans = {};
+  std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan,
+             metal_renderer::kJak2PrisTextureUploadBuckets.size()>
+      copied_pris_eye_plans = {};
+  std::array<metal_renderer::Jak2Pris2Bucket228Plan,
+             metal_renderer::kJak2Pris2TextureUploadBuckets.size()>
+      live_pris2_plans = {};
+  std::array<metal_renderer::Jak2Pris2Bucket228Plan,
+             metal_renderer::kJak2Pris2TextureUploadBuckets.size()>
+      copied_pris2_plans = {};
+  std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan,
+             metal_renderer::kJak2PrisTextureUploadBuckets.size() +
+                 metal_renderer::kJak2Pris2TextureUploadBuckets.size()>
+      copied_pris_eye_renderer_plans = {};
   bool configuration_attempted = false;
   bool configured = false;
   bool callbacks_copied = false;
@@ -816,10 +840,10 @@ std::string map_texture_upload_rejection_message(
   return message;
 }
 
-void record_texture_upload_metrics(
-    goal_jak2_tfrag_texture_upload_metrics* out,
-    u32 bucket_id,
-    const metal_renderer::Jak2CommonTfragTextureUploadCapture& capture) {
+template <typename Capture>
+void record_texture_upload_metrics(goal_jak2_tfrag_texture_upload_metrics* out,
+                                   u32 bucket_id,
+                                   const Capture& capture) {
   static_assert(GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_BUCKET_COUNT ==
                 metal_renderer::kJak2NormalTfragTextureUploadBuckets.size());
   static_assert(GOAL_JAK2_TFRAG_TEXTURE_UPLOAD_CLASS_COUNT == 7);
@@ -994,6 +1018,47 @@ void maybe_log_subtitle_bucket322_metadata_capture(
     const auto& transfer = capture.transfers[index];
     lg::info(
         "GOALPAD_JAK2_SUBTITLE322_CAPTURE_TRANSFER index={} rel={} tag={} qwc={} bytes={} "
+        "vif0={}/{} vif1={}/{}",
+        index, transfer.relative_tag_offset, transfer.tag_kind, transfer.qwc,
+        transfer.payload_bytes, transfer.vif0_kind, transfer.vif0_immediate,
+        transfer.vif1_kind, transfer.vif1_immediate);
+  }
+}
+
+void maybe_log_pris2_rejection_metadata(
+    goal_jak2_metal_host* host,
+    u32 bucket_id,
+    const metal_renderer::Jak2Pris2TextureUploadCapture& capture,
+    const metal_renderer::Jak2PrisEyeTextureUploadRejection& rejection) {
+  const char* enabled = std::getenv("GOALPAD_JAK2_DEBUG_CAPTURE_PRIS2");
+  if (!host || !enabled || std::strcmp(enabled, "1") != 0 ||
+      host->pris2_metadata_reason_count >= host->pris2_metadata_reasons.size()) {
+    return;
+  }
+  const auto end = host->pris2_metadata_reasons.begin() + host->pris2_metadata_reason_count;
+  if (std::find(host->pris2_metadata_reasons.begin(), end, rejection.reason) != end) {
+    return;
+  }
+  host->pris2_metadata_reasons[host->pris2_metadata_reason_count++] = rejection.reason;
+  // The opt-in log keeps its original 64-row bound even though PRIS2 captures can hold 2597.
+  const auto count =
+      std::min({capture.transfer_count, capture.transfers.size(),
+                metal_renderer::kJak2CommonTfragTextureUploadMaximumTransfers});
+  lg::info(
+      "GOALPAD_JAK2_PRIS2_REJECTION_CAPTURE tick={} bucket={} reason={} chunk={} body={} "
+      "valid={} present={} class={} transfers={}/{} malformed={} eye={} other={} "
+      "pair={}/res{} previous-pair={}/res{} previous-mask={:016x} rows={}",
+      host->metrics.chains, bucket_id, format_pris_eye_rejection(rejection),
+      rejection.chunk_index, rejection.body_index, capture.valid, capture.present,
+      static_cast<u32>(capture.classification), capture.transfer_count, capture.transfers.size(),
+      capture.malformed_transfers, capture.eye_markers, capture.other_transfers,
+      rejection.duplicate_pair_index, rejection.duplicate_resolution,
+      rejection.previous_pair_index, rejection.previous_resolution,
+      rejection.previous_eye_slot_mask, count);
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto& transfer = capture.transfers[index];
+    lg::info(
+        "GOALPAD_JAK2_PRIS2_REJECTION_TRANSFER index={} rel={} tag={} qwc={} bytes={} "
         "vif0={}/{} vif1={}/{}",
         index, transfer.relative_tag_offset, transfer.tag_kind, transfer.qwc,
         transfer.payload_bytes, transfer.vif0_kind, transfer.vif0_immediate,
@@ -1194,6 +1259,16 @@ using Jak2PrisEyeRendererPlans =
     std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan,
                metal_renderer::kJak2PrisTextureUploadBuckets.size() +
                    metal_renderer::kJak2Pris2TextureUploadBuckets.size()>;
+static_assert(std::is_same_v<decltype(goal_jak2_metal_host::live_pris_eye_plans),
+                             Jak2PerLevelPrisEyeTextureUploadPlans>);
+static_assert(std::is_same_v<decltype(goal_jak2_metal_host::copied_pris_eye_plans),
+                             Jak2PerLevelPrisEyeTextureUploadPlans>);
+static_assert(std::is_same_v<decltype(goal_jak2_metal_host::live_pris2_plans),
+                             Jak2Pris2TextureUploadPlans>);
+static_assert(std::is_same_v<decltype(goal_jak2_metal_host::copied_pris2_plans),
+                             Jak2Pris2TextureUploadPlans>);
+static_assert(std::is_same_v<decltype(goal_jak2_metal_host::copied_pris_eye_renderer_plans),
+                             Jak2PrisEyeRendererPlans>);
 
 struct Jak2TextureUploadDispatch {
   goal_jak2_metal_host* host = nullptr;
@@ -1926,7 +2001,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       }
       alpha_texture_plans[i] = *plan;
     }
-    Jak2PerLevelPrisEyeTextureUploadPlans live_pris_eye_plans;
+    auto& live_pris_eye_plans = host->live_pris_eye_plans;
     static_assert(GOAL_JAK2_PRIS_TEXTURE_UPLOAD_BUCKET_COUNT ==
                   metal_renderer::kJak2PrisTextureUploadBuckets.size());
     for (std::size_t i = 0; i < metal_renderer::kJak2PrisTextureUploadBuckets.size(); ++i) {
@@ -1948,10 +2023,10 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     }
     static_assert(GOAL_JAK2_PRIS2_CAPTURE_BUCKET_COUNT ==
                   metal_renderer::kJak2Pris2CaptureBuckets.size());
-    Jak2Pris2TextureUploadPlans live_pris2_plans;
+    auto& live_pris2_plans = host->live_pris2_plans;
     for (std::size_t i = 0; i < metal_renderer::kJak2Pris2TextureUploadBuckets.size(); ++i) {
       const u32 bucket_id = metal_renderer::kJak2Pris2TextureUploadBuckets[i];
-      metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+      auto& capture = host->pris2_capture;
       metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
       const auto plan = metal_renderer::plan_jak2_pris2_texture_upload(
           static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, bucket_id,
@@ -1961,6 +2036,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                                       capture);
       }
       if (!plan) {
+        maybe_log_pris2_rejection_metadata(host, bucket_id, capture, rejection);
         const std::string error =
             fmt::format("Jak 2 PRIS2 bucket {} plan rejected live DMA: {}", bucket_id,
                         format_pris_eye_rejection(rejection));
@@ -2209,13 +2285,13 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       return;
     }
 
-    Jak2Pris2TextureUploadPlans copied_pris2_plans;
+    auto& copied_pris2_plans = host->copied_pris2_plans;
     for (std::size_t i = 0; i < metal_renderer::kJak2Pris2TextureUploadBuckets.size(); ++i) {
       const u32 bucket_id = metal_renderer::kJak2Pris2TextureUploadBuckets[i];
       metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
       const auto copied_plan = metal_renderer::plan_jak2_pris2_texture_upload(
           copied.data.data(), copied.data.size(), copied.start_offset, bucket_id,
-          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, nullptr, &rejection);
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &host->pris2_capture, &rejection);
       if (!copied_plan || !metal_renderer::jak2_pris2_texture_upload_plans_match(
                               live_pris2_plans[i], *copied_plan)) {
         record_send_chain_failure(
@@ -2228,7 +2304,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       copied_pris2_plans[i] = *copied_plan;
     }
 
-    Jak2PerLevelPrisEyeTextureUploadPlans copied_pris_eye_plans;
+    auto& copied_pris_eye_plans = host->copied_pris_eye_plans;
     for (std::size_t i = 0; i < metal_renderer::kJak2PrisTextureUploadBuckets.size(); ++i) {
       const u32 bucket_id = metal_renderer::kJak2PrisTextureUploadBuckets[i];
       metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
@@ -2255,7 +2331,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
       copied_pris_eye_plans[i] = *copied_plan;
     }
 
-    Jak2PrisEyeRendererPlans copied_pris_eye_renderer_plans;
+    auto& copied_pris_eye_renderer_plans = host->copied_pris_eye_renderer_plans;
     std::copy(copied_pris_eye_plans.begin(), copied_pris_eye_plans.end(),
               copied_pris_eye_renderer_plans.begin());
     std::transform(copied_pris2_plans.begin(), copied_pris2_plans.end(),

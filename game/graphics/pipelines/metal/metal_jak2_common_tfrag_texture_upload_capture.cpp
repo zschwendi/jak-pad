@@ -63,6 +63,7 @@ bool range_is_valid(u64 offset, u64 size, std::size_t memory_size) {
   return offset <= memory_size && size <= memory_size - offset;
 }
 
+template <std::size_t MaximumTransfers>
 class CheckedDmaFollower {
  public:
   CheckedDmaFollower(const u8* memory, std::size_t memory_size, u32 start_offset)
@@ -139,7 +140,7 @@ class CheckedDmaFollower {
   const u8* m_memory = nullptr;
   std::size_t m_memory_size = 0;
   u32 m_offset = 0;
-  std::array<u32, kJak2CommonTfragTextureUploadMaximumTransfers> m_visited = {};
+  std::array<u32, MaximumTransfers> m_visited = {};
   std::size_t m_visited_count = 0;
 };
 
@@ -174,9 +175,8 @@ bool is_exact_gs_setup(const CheckedTransfer& transfer) {
          transfer.vif1 == (kDirectVif | 2);
 }
 
-bool record_transfer(const CheckedTransfer& transfer,
-                     u32 bucket_offset,
-                     Jak2CommonTfragTextureUploadCapture* out) {
+template <typename Capture>
+bool record_transfer(const CheckedTransfer& transfer, u32 bucket_offset, Capture* out) {
   if (transfer.tag_offset < bucket_offset) {
     return false;
   }
@@ -196,7 +196,7 @@ bool record_transfer(const CheckedTransfer& transfer,
 }
 
 Jak2CommonTfragTextureUploadClass classify(
-    const Jak2CommonTfragTextureUploadCapture& capture) {
+    const Jak2TfragTextureUploadCaptureCounters& capture) {
   if (capture.eye_markers != 0 || capture.other_transfers != 0) {
     return Jak2CommonTfragTextureUploadClass::EyeOrOther;
   }
@@ -407,7 +407,7 @@ bool metadata_is_animator_finish(const Jak2CommonTfragTransferMetadata& transfer
          transfer.vif1_immediate == 0;
 }
 
-bool has_exact_opcode27_counts(const Jak2CommonTfragTextureUploadCapture& capture) {
+bool has_exact_opcode27_counts(const Jak2TfragTextureUploadCaptureCounters& capture) {
   for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
     const u32 expected =
         i == kStartAnimatorArray || i == kFinishAnimatorArray || i == kSkullGemOpcode;
@@ -418,7 +418,7 @@ bool has_exact_opcode27_counts(const Jak2CommonTfragTextureUploadCapture& captur
   return true;
 }
 
-bool has_exact_bomb_counts(const Jak2CommonTfragTextureUploadCapture& capture) {
+bool has_exact_bomb_counts(const Jak2TfragTextureUploadCaptureCounters& capture) {
   for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
     const u32 expected =
         i == kStartAnimatorArray || i == kFinishAnimatorArray || i == kBombOpcode;
@@ -429,7 +429,7 @@ bool has_exact_bomb_counts(const Jak2CommonTfragTextureUploadCapture& capture) {
   return true;
 }
 
-bool has_exact_security_counts(const Jak2CommonTfragTextureUploadCapture& capture) {
+bool has_exact_security_counts(const Jak2TfragTextureUploadCaptureCounters& capture) {
   for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
     const u32 expected =
         i == kStartAnimatorArray || i == kFinishAnimatorArray || i == kSecurityOpcode;
@@ -440,7 +440,7 @@ bool has_exact_security_counts(const Jak2CommonTfragTextureUploadCapture& captur
   return true;
 }
 
-bool has_exact_jak_clut_counts(const Jak2CommonTfragTextureUploadCapture& capture,
+bool has_exact_jak_clut_counts(const Jak2TfragTextureUploadCaptureCounters& capture,
                                u16 opcode,
                                bool present) {
   for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
@@ -453,7 +453,7 @@ bool has_exact_jak_clut_counts(const Jak2CommonTfragTextureUploadCapture& captur
   return true;
 }
 
-bool has_exact_dark_jak_counts(const Jak2CommonTfragTextureUploadCapture& capture) {
+bool has_exact_dark_jak_counts(const Jak2TfragTextureUploadCaptureCounters& capture) {
   for (std::size_t i = 0; i < capture.opcode_counts.size(); ++i) {
     const u32 expected = i == kStartAnimatorArray || i == kFinishAnimatorArray ||
                                  i == kDarkJakOpcode
@@ -860,11 +860,12 @@ bool validate_eye_sprite(const u8* payload,
   return true;
 }
 
+template <typename Capture>
 bool parse_pris_eye_chunk(const u8* snapshot,
                           std::size_t snapshot_size,
                           u32 chain_offset,
                           u32 bucket_id,
-                          const Jak2CommonTfragTextureUploadCapture& capture,
+                          const Capture& capture,
                           u32 start_transfer_index,
                           u8 chunk_index,
                           Jak2PrisEyeChunkPlan* out,
@@ -1084,11 +1085,12 @@ bool parse_pris_eye_chunk(const u8* snapshot,
   return true;
 }
 
+template <typename Capture>
 bool parse_pris_jak_clut_animator(const u8* snapshot,
                                   std::size_t snapshot_size,
                                   u32 chain_offset,
                                   u32 bucket_id,
-                                  const Jak2CommonTfragTextureUploadCapture& capture,
+                                  const Capture& capture,
                                   u32 start_transfer_index,
                                   Jak2PrisPrisonJakAnimatorPlan* out) {
   if (!out || start_transfer_index + 3 >= capture.transfer_count ||
@@ -1291,16 +1293,29 @@ const char* jak2_pris_eye_texture_upload_reject_reason_name(
       return "terminal";
     case Jak2PrisEyeTextureUploadRejectReason::ChunkFingerprint:
       return "chunk-fingerprint";
+    case Jak2PrisEyeTextureUploadRejectReason::MixedResolutionEyeSlots:
+      return "mixed-resolution-eye-slots";
   }
   return "unknown";
 }
 
-Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
-    const u8* dma_packet_snapshot,
-    std::size_t dma_packet_snapshot_size,
-    u32 chain_offset,
-    u32 bucket_id) {
-  Jak2CommonTfragTextureUploadCapture out;
+namespace {
+
+// Resets in place so the large PRIS2 storage is never materialized as a stack temporary.
+template <typename Capture>
+void reset_capture(Capture* out) {
+  static_cast<Jak2TfragTextureUploadCaptureCounters&>(*out) = {};
+  out->transfers.fill({});
+}
+
+template <typename Capture>
+void capture_tfrag_texture_upload_into(const u8* dma_packet_snapshot,
+                                       std::size_t dma_packet_snapshot_size,
+                                       u32 chain_offset,
+                                       u32 bucket_id,
+                                       Capture* out_storage) {
+  reset_capture(out_storage);
+  Capture& out = *out_storage;
   const u64 bucket_offset64 = static_cast<u64>(chain_offset) + bucket_id * 16;
   const u64 end_offset64 = bucket_offset64 + 16;
   const std::size_t checked_packet_size =
@@ -1311,28 +1326,28 @@ Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
       end_offset64 > std::numeric_limits<u32>::max() ||
       !range_is_valid(bucket_offset64, 16, checked_packet_size)) {
     out.malformed_transfers = 1;
-    return out;
+    return;
   }
 
   const u32 bucket_offset = static_cast<u32>(bucket_offset64);
   const u32 end_offset = static_cast<u32>(end_offset64);
-  CheckedDmaFollower dma(dma_packet_snapshot, dma_packet_snapshot_size,
-                         bucket_offset);
+  CheckedDmaFollower<Capture::kMaximumTransfers> dma(dma_packet_snapshot,
+                                                    dma_packet_snapshot_size, bucket_offset);
   bool inside_animator = false;
   while (dma.offset() != end_offset) {
     if (out.transfer_count == out.transfers.size()) {
       out.malformed_transfers++;
-      return out;
+      return;
     }
 
     CheckedTransfer transfer;
     if (!dma.read(&transfer)) {
       out.malformed_transfers++;
-      return out;
+      return;
     }
     if (!record_transfer(transfer, bucket_offset, &out)) {
       out.malformed_transfers++;
-      return out;
+      return;
     }
 
     const VifCode vif0(transfer.vif0);
@@ -1345,13 +1360,13 @@ Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
       if (vif0.kind == VifCode::Kind::PC_PORT &&
           vif0.immediate == kStartAnimatorArray) {
         out.malformed_transfers++;
-        return out;
+        return;
       }
       if (vif0.kind == VifCode::Kind::PC_PORT &&
           vif0.immediate == kFinishAnimatorArray) {
         if (!is_exact_animator_finish(transfer)) {
           out.malformed_transfers++;
-          return out;
+          return;
         }
         inside_animator = false;
         continue;
@@ -1365,7 +1380,7 @@ Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
         vif0.immediate == kStartAnimatorArray) {
       if (!is_exact_animator_start(transfer)) {
         out.malformed_transfers++;
-        return out;
+        return;
       }
       out.present = true;
       out.animator_arrays++;
@@ -1408,11 +1423,23 @@ Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
 
   if (inside_animator) {
     out.malformed_transfers++;
-    return out;
+    return;
   }
 
   out.valid = true;
   out.classification = classify(out);
+}
+
+}  // namespace
+
+Jak2CommonTfragTextureUploadCapture capture_jak2_tfrag_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id) {
+  Jak2CommonTfragTextureUploadCapture out;
+  capture_tfrag_texture_upload_into(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                                    bucket_id, &out);
   return out;
 }
 
@@ -1488,23 +1515,20 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
   return plan;
 }
 
-std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
+namespace {
+
+template <typename Capture>
+std::optional<Jak2PrisEyeTextureUploadPlan> plan_pris_eye_from_capture(
     const u8* dma_packet_snapshot,
     std::size_t dma_packet_snapshot_size,
     u32 chain_offset,
     u32 bucket_id,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
-    Jak2CommonTfragTextureUploadCapture* out_capture,
+    const Capture& capture,
+    std::size_t maximum_chunks,
+    bool allow_same_resolution_rewrite,
     Jak2PrisEyeTextureUploadRejection* out_rejection) {
-  if (out_rejection) {
-    *out_rejection = {};
-  }
-  const auto capture = capture_jak2_tfrag_texture_upload(
-      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, bucket_id);
-  if (out_capture) {
-    *out_capture = capture;
-  }
   if (!is_pris_texture_upload_bucket(bucket_id)) {
     set_pris_eye_rejection(out_rejection,
                            Jak2PrisEyeTextureUploadRejectReason::UnsupportedBucket);
@@ -1529,26 +1553,37 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
     return plan;
   }
 
+  // Opening NEXT/descriptor/NEXT plus default reset/terminal, an optional four-transfer animator,
+  // then 26 transfers and one NEXT linker per chunk. Both residues are disjoint modulo 27, so the
+  // observed 5/32/59 and 9/36/63 forms are unchanged and every other count is rejected.
+  constexpr std::size_t kChunkStride = kJak2PrisEyeChunkTransferCount + 1;
+  constexpr std::size_t kBaseTransfers = 5;
+  constexpr std::size_t kAnimatorTransfers = 4;
+  const std::size_t transfer_count = capture.transfer_count;
   const bool has_jak_clut_animator =
-      capture.transfer_count == 9 || capture.transfer_count == 36 || capture.transfer_count == 63;
+      transfer_count >= kBaseTransfers + kAnimatorTransfers &&
+      (transfer_count - kBaseTransfers - kAnimatorTransfers) % kChunkStride == 0;
+  const bool plain_envelope =
+      transfer_count >= kBaseTransfers && (transfer_count - kBaseTransfers) % kChunkStride == 0;
   const u16 animator_opcode =
       has_jak_clut_animator && capture.transfer_count > 4 ? capture.transfers[4].vif0_immediate : 0;
-  const std::size_t chunk_count = capture.transfer_count == (has_jak_clut_animator ? 36 : 32)   ? 1
-                                  : capture.transfer_count == (has_jak_clut_animator ? 63 : 59) ? 2
-                                                                                                : 0;
+  const std::size_t chunk_count =
+      has_jak_clut_animator ? (transfer_count - kBaseTransfers - kAnimatorTransfers) / kChunkStride
+      : plain_envelope      ? (transfer_count - kBaseTransfers) / kChunkStride
+                            : 0;
+  if (chunk_count > maximum_chunks || chunk_count > kJak2Pris2EyeMaximumChunks) {
+    set_pris_eye_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::Counts);
+    return std::nullopt;
+  }
   const bool ordinary_only = capture.transfer_count == (has_jak_clut_animator ? 9 : 5);
-  const u32 expected_base_transfer_count = chunk_count == 0 ? 5 : chunk_count == 1 ? 32 : 59;
   const u32 expected_transfer_count =
-      expected_base_transfer_count + (has_jak_clut_animator ? 4 : 0);
+      static_cast<u32>(kBaseTransfers + kChunkStride * chunk_count) +
+      (has_jak_clut_animator ? 4 : 0);
   const u64 expected_payload_bytes =
-      (chunk_count == 0   ? 176
-       : chunk_count == 1 ? 2032
-                          : 3888) +
+      176 + static_cast<u64>(kJak2PrisEyeChunkPayloadBytes) * chunk_count +
       (has_jak_clut_animator ? kJak2PrisPrisonJakAnimatorBodyBytes : 0);
-  const u32 expected_inert = (chunk_count == 0   ? 3
-                              : chunk_count == 1 ? 4
-                                                 : 5) +
-                             (has_jak_clut_animator ? 1 : 0);
+  const u32 expected_inert =
+      3 + static_cast<u32>(chunk_count) + (has_jak_clut_animator ? 1 : 0);
   const u32 expected_eye_markers = static_cast<u32>(chunk_count) * 2;
   const u32 expected_gs = static_cast<u32>(chunk_count) * 11;
   const u32 expected_other = static_cast<u32>(chunk_count) * 13;
@@ -1616,6 +1651,8 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
   }
   plan.chunk_count = chunk_count;
   u32 common_source_fbp = 0;
+  // Most recent earlier chunk for each eye pair; parse_pris_eye_chunk bounds pair_index below 20.
+  std::array<u8, 20> previous_chunk_for_pair = {};
   for (std::size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
     u32 source_fbp = 0;
     auto& chunk = plan.chunks[chunk_index];
@@ -1638,11 +1675,27 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
       return std::nullopt;
     }
     if ((plan.eye_slot_mask & chunk.eye_slot_mask) != 0) {
-      set_pris_eye_rejection(
-          out_rejection, Jak2PrisEyeTextureUploadRejectReason::DuplicateEyeSlots,
-          static_cast<u8>(chunk_index));
-      return std::nullopt;
+      // Masks are exactly one pair, so an overlap always has an earlier same-pair chunk.
+      const auto& previous = plan.chunks[previous_chunk_for_pair[chunk.pair_index]];
+      const bool same_resolution = previous.resolution == chunk.resolution;
+      if (!allow_same_resolution_rewrite || !same_resolution) {
+        set_pris_eye_rejection(
+            out_rejection,
+            allow_same_resolution_rewrite
+                ? Jak2PrisEyeTextureUploadRejectReason::MixedResolutionEyeSlots
+                : Jak2PrisEyeTextureUploadRejectReason::DuplicateEyeSlots,
+            static_cast<u8>(chunk_index));
+        if (out_rejection) {
+          out_rejection->duplicate_pair_index = chunk.pair_index;
+          out_rejection->duplicate_resolution = static_cast<u8>(chunk.resolution);
+          out_rejection->previous_pair_index = previous.pair_index;
+          out_rejection->previous_resolution = static_cast<u8>(previous.resolution);
+          out_rejection->previous_eye_slot_mask = plan.eye_slot_mask;
+        }
+        return std::nullopt;
+      }
     }
+    previous_chunk_for_pair[chunk.pair_index] = static_cast<u8>(chunk_index);
     common_source_fbp = source_fbp;
     plan.eye_slot_mask |= chunk.eye_slot_mask;
     start_transfer_index = chunk.linker_transfer_index + 1;
@@ -1699,10 +1752,59 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
   return plan;
 }
 
+}  // namespace
+
+std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 chain_offset,
+    u32 bucket_id,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2CommonTfragTextureUploadCapture* out_capture,
+    Jak2PrisEyeTextureUploadRejection* out_rejection) {
+  if (out_rejection) {
+    *out_rejection = {};
+  }
+  const auto capture = capture_jak2_tfrag_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, bucket_id);
+  if (out_capture) {
+    *out_capture = capture;
+  }
+  return plan_pris_eye_from_capture(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                                    bucket_id, live_ee_memory, live_ee_memory_size, capture,
+                                    kJak2PrisEyeMaximumChunks, false, out_rejection);
+}
+
+std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris2_alias_eye_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 alias_chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2Pris2TextureUploadCapture* capture_storage,
+    Jak2PrisEyeTextureUploadRejection* out_rejection) {
+  constexpr u32 kAliasBucket = kJak2PrisTextureUploadBuckets[0];
+  if (out_rejection) {
+    *out_rejection = {};
+  }
+  if (!capture_storage) {
+    set_pris_eye_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::CaptureInvalid);
+    return std::nullopt;
+  }
+  capture_tfrag_texture_upload_into(dma_packet_snapshot, dma_packet_snapshot_size,
+                                    alias_chain_offset, kAliasBucket, capture_storage);
+  return plan_pris_eye_from_capture(dma_packet_snapshot, dma_packet_snapshot_size,
+                                    alias_chain_offset, kAliasBucket, live_ee_memory,
+                                    live_ee_memory_size, *capture_storage,
+                                    kJak2Pris2EyeMaximumChunks, true, out_rejection);
+}
+
 bool jak2_pris_eye_texture_upload_plans_match(
     const Jak2PrisEyeTextureUploadPlan& live,
     const Jak2PrisEyeTextureUploadPlan& copied) {
   if (live.bucket_id != copied.bucket_id || live.present != copied.present ||
+      live.chunk_count > live.chunks.size() ||
       live.chunk_count != copied.chunk_count || live.eye_slot_mask != copied.eye_slot_mask ||
       live.semantic_fingerprint != copied.semantic_fingerprint) {
     return false;

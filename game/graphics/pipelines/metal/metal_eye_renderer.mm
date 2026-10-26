@@ -830,18 +830,28 @@ bool MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
   std::array<bool, METAL_NUM_EYE_PAIRS * 2> pending_slots = {};
   std::array<bool, METAL_NUM_EYE_PAIRS * 2> versioned_slots = {};
   int duplicate_slots = 0;
+  int same_producer_rewrites = 0;
   for (const auto& draw : draws) {
     const int slot = draw.tex_slot();
     if (slot < 0 || slot >= METAL_NUM_EYE_PAIRS * 2) {
       eye_expect(false, "an in-range eye texture slot", &m_stats.unexpected_dma, &m_warned_dma);
       return false;
     }
+    const auto& composed = m_gpu_eye_textures[slot];
     if (pending_slots[slot]) {
       duplicate_slots++;
-    } else if (m_gpu_eye_textures[slot].composed_this_frame) {
-      if (metal_renderer::jak2_pris_eye_producer_precedes(
-              m_frame_producer_buckets[slot], producer_bucket)) {
+    } else if (composed.composed_this_frame) {
+      const u32 previous_producer = m_frame_producer_buckets[slot];
+      if (metal_renderer::jak2_pris_eye_producer_precedes(previous_producer, producer_bucket)) {
         versioned_slots[slot] = true;
+      } else if (previous_producer == producer_bucket &&
+                 metal_renderer::jak2_pris_eye_producer_allows_same_resolution_rewrite(
+                     producer_bucket) &&
+                 composed.composed_using_64 == draw.using_64) {
+        // A later chunk of the same PRIS2 producer: the source redraws this VRAM row in DMA
+        // order and its Merc consumer runs only after the whole bucket. Each pass clears and
+        // fully redraws the target, so rendering in place leaves exactly the last writer.
+        same_producer_rewrites++;
       } else {
         duplicate_slots++;
       }
@@ -1134,12 +1144,14 @@ bool MetalEyeRenderer::run_gpu(const std::vector<SingleEyeDraws>& draws,
     out_tex.lr = draw.lr;
     out_tex.composed_once = true;
     out_tex.composed_this_frame = true;
+    out_tex.composed_using_64 = draw.using_64;
     m_frame_producer_buckets[draw.tex_slot()] = producer_bucket;
     if (!m_stats.first_texture) {
       m_stats.first_texture = out_tex.handle;
     }
   }
   m_stats.eyes += static_cast<int>(draws.size());
+  m_stats.same_producer_slot_rewrites += same_producer_rewrites;
   m_stats.draw_calls += encoded_draw_calls;
   m_stats.triangles += encoded_triangles;
   return true;

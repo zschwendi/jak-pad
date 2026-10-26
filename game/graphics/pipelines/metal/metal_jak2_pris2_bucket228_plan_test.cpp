@@ -23,7 +23,7 @@ constexpr std::size_t kMemorySize = 0x24000;
 constexpr u32 kPcPortVif = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
 constexpr u32 kDirectVif = static_cast<u32>(VifCode::Kind::DIRECT) << 24;
 
-using Capture = metal_renderer::Jak2CommonTfragTextureUploadCapture;
+using Capture = metal_renderer::Jak2Pris2TextureUploadCapture;
 using RejectReason = metal_renderer::Jak2PrisEyeTextureUploadRejectReason;
 using Variant = metal_renderer::Jak2Pris2Bucket228Variant;
 
@@ -577,6 +577,266 @@ void test_source_grammar_and_rejections() {
   }
 }
 
+constexpr u32 kManyFirstEyeOffset = 0x30000;
+constexpr u32 kManyEyeStride = 0x1000;
+constexpr u32 kManyDirectOffset = 0xa0000;
+constexpr std::size_t kManyMemorySize = 0x100000;
+constexpr u32 kEyeTex0Offset = 224;
+constexpr u32 kEyeFirstScissorValueOffset = 336;
+
+struct ManyFixture {
+  std::vector<u8> packet;
+  std::vector<u32> chunk_offsets;
+  std::vector<u32> linker_offsets;
+};
+
+// Source-shaped PRIS2 envelope with any number of chunks, each in its own update-eyes DMA block.
+ManyFixture make_many_fixture(const std::vector<EyeChunkSpec>& chunks, u32 dma_relocation = 0) {
+  ManyFixture fixture{std::vector<u8>(kManyMemorySize), {}, {}};
+  const u32 ordinary_offset = kOrdinaryOffset + dma_relocation;
+  const u32 direct_offset = kManyDirectOffset + dma_relocation;
+  const u32 end_offset = bucket_offset() + 16;
+  for (std::size_t i = 0; i < chunks.size(); ++i) {
+    fixture.chunk_offsets.push_back(kManyFirstEyeOffset + dma_relocation +
+                                    static_cast<u32>(i) * kManyEyeStride);
+  }
+  put_tag(&fixture.packet, bucket_offset(), DmaTag::Kind::NEXT, 0, ordinary_offset, 0, 0);
+  put_tag(&fixture.packet, ordinary_offset, DmaTag::Kind::CNT, 1, 0, kPcPortVif, 3);
+  put_u64(&fixture.packet, ordinary_offset + 16, kPageOffset);
+  put_u64(&fixture.packet, ordinary_offset + 24, static_cast<u64>(-1));
+  put_tag(&fixture.packet, ordinary_offset + 32, DmaTag::Kind::NEXT, 0,
+          chunks.empty() ? direct_offset : fixture.chunk_offsets[0], 0, 0);
+  for (std::size_t i = 0; i < chunks.size(); ++i) {
+    const u32 linker = put_eye_chunk(&fixture.packet, fixture.chunk_offsets[i], chunks[i]);
+    fixture.linker_offsets.push_back(linker);
+    put_tag(&fixture.packet, linker, DmaTag::Kind::NEXT, 0,
+            i + 1 < chunks.size() ? fixture.chunk_offsets[i + 1] : direct_offset, 0, 0);
+  }
+  put_tag(&fixture.packet, direct_offset, DmaTag::Kind::CNT, 10, 0,
+          static_cast<u32>(VifCode::Kind::FLUSHA) << 24, kDirectVif | 10);
+  std::fill_n(fixture.packet.begin() + direct_offset + 16, 160, 0x52);
+  put_tag(&fixture.packet, direct_offset + 176, DmaTag::Kind::NEXT, 0, end_offset, 0, 0);
+  fixture.packet[kPageOffset + 8] = 0x44;
+  return fixture;
+}
+
+std::optional<metal_renderer::Jak2Pris2Bucket228Plan> plan_many(
+    const ManyFixture& fixture,
+    Capture* capture = nullptr,
+    metal_renderer::Jak2PrisEyeTextureUploadRejection* rejection = nullptr) {
+  return metal_renderer::plan_jak2_pris2_texture_upload(
+      fixture.packet.data(), fixture.packet.size(), kChainOffset,
+      metal_renderer::kJak2Pris2TextureUploadBucket, fixture.packet.data(),
+      fixture.packet.size(), capture, rejection);
+}
+
+void mutate_tex0(std::vector<u8>* packet, u32 chunk_offset) {
+  const u64 tex0 = get_u64(*packet, chunk_offset + kEyeTex0Offset);
+  put_u64(packet, chunk_offset + kEyeTex0Offset, (tex0 & ~0x3fffull) | 0x321);
+}
+
+bool sequence_accepts_pris2(const metal_renderer::Jak2Pris2Bucket228Plan& plan) {
+  std::array<metal_renderer::Jak2PrisEyeTextureUploadPlan, 6> per_level;
+  for (std::size_t i = 0; i < per_level.size(); ++i) {
+    per_level[i].bucket_id = metal_renderer::kJak2PrisTextureUploadBuckets[i];
+  }
+  metal_renderer::Jak2CommonPrisTextureUploadPlan common;
+  std::array<metal_renderer::Jak2Pris2Bucket228Plan, 6> pris2;
+  for (std::size_t i = 0; i < pris2.size(); ++i) {
+    pris2[i].bucket_id = metal_renderer::kJak2Pris2TextureUploadBuckets[i];
+  }
+  pris2[1] = plan;
+  return metal_renderer::jak2_pris_eye_plan_sequence_is_valid(
+      per_level.data(), per_level.size(), common, pris2.data(), pris2.size());
+}
+
+void test_source_bounded_chunk_count() {
+  auto three = make_many_fixture({{false, 0}, {false, 1}, {true, 8}});
+  Capture capture;
+  const auto three_plan = plan_many(three, &capture);
+  check(three_plan && three_plan->variant == Variant::ManyEyeChunks &&
+            three_plan->chunk_count == 3 && three_plan->chunks[0].pair_index == 0 &&
+            three_plan->chunks[1].pair_index == 1 && three_plan->chunks[2].pair_index == 8 &&
+            three_plan->chunks[2].resolution == metal_renderer::Jak2PrisEyeResolution::Eye64 &&
+            three_plan->chunks[0].start_transfer_index == 3 &&
+            three_plan->chunks[1].start_transfer_index == 30 &&
+            three_plan->chunks[2].start_transfer_index == 57 &&
+            three_plan->eye_slot_mask == (0x3ull | (0x3ull << 2) | (0x3ull << 16)) &&
+            three_plan->direct_reset_transfer_index == 84 &&
+            three_plan->terminal_transfer_index == 85 && capture.valid &&
+            capture.transfer_count == 86 && capture.total_payload_bytes == 5744 &&
+            capture.inert_transfers == 6 && capture.eye_markers == 6 &&
+            capture.gs_setup_transfers == 33 && capture.other_transfers == 39 &&
+            capture.malformed_transfers == 0,
+        "PRIS2 owns the live third eye chunk that overflowed the generic 64-transfer capture");
+  const auto three_renderer =
+      metal_renderer::adapt_jak2_pris2_to_pris_eye_plan(*three_plan);
+  check(three_renderer.present && three_renderer.chunk_count == 3 &&
+            three_renderer.chunks[2].semantic_fingerprint ==
+                three_plan->chunks[2].semantic_fingerprint &&
+            three_renderer.chunks[2].start_relative_tag_offset ==
+                three_plan->chunks[2].start_relative_tag_offset &&
+            three_renderer.semantic_fingerprint == three_plan->semantic_fingerprint,
+        "the renderer adapter keeps every PRIS2 chunk in DMA order");
+  check(sequence_accepts_pris2(*three_plan),
+        "the producer sequence accepts an owned three-chunk PRIS2 plan");
+
+  std::vector<EyeChunkSpec> maximum;
+  for (std::size_t i = 0; i < metal_renderer::kJak2Pris2EyeMaximumChunks; ++i) {
+    maximum.push_back({false, static_cast<u32>(i % 16)});
+  }
+  auto maximum_fixture = make_many_fixture(maximum);
+  const auto maximum_plan = plan_many(maximum_fixture, &capture);
+  check(maximum_plan && maximum_plan->variant == Variant::ManyEyeChunks &&
+            maximum_plan->chunk_count == 96 && maximum_plan->eye_slot_mask == 0xffffffffull &&
+            capture.transfer_count == metal_renderer::kJak2Pris2TextureUploadMaximumTransfers &&
+            sequence_accepts_pris2(*maximum_plan),
+        "PRIS2 accepts the update-eyes 6x16 emission bound with repeated same-resolution pairs");
+
+  maximum.push_back({false, 0});
+  auto overflow = make_many_fixture(maximum);
+  metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
+  check(!plan_many(overflow, &capture, &rejection) &&
+            rejection.reason == RejectReason::CaptureInvalid && !capture.valid &&
+            capture.malformed_transfers == 1 &&
+            capture.transfer_count == metal_renderer::kJak2Pris2TextureUploadMaximumTransfers,
+        "a 97th chunk is rejected explicitly at the source-derived capture bound");
+}
+
+void test_same_resolution_last_writer() {
+  // Live build-250 tick 11972: two Eye64 chunks from different actors both target hi-res row 0.
+  auto live = make_many_fixture({{true, 0}, {true, 1}});
+  metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
+  const auto plan = plan_many(live, nullptr, &rejection);
+  check(plan && rejection.reason == RejectReason::None &&
+            plan->variant == Variant::TwoEyeChunks && plan->chunk_count == 2 &&
+            plan->chunks[0].pair_index == 0 && plan->chunks[1].pair_index == 0 &&
+            plan->chunks[0].resolution == metal_renderer::Jak2PrisEyeResolution::Eye64 &&
+            plan->chunks[1].resolution == metal_renderer::Jak2PrisEyeResolution::Eye64 &&
+            plan->chunks[0].semantic_fingerprint != plan->chunks[1].semantic_fingerprint &&
+            plan->eye_slot_mask == 0x3 && sequence_accepts_pris2(*plan),
+        "same-resolution hi-res row reuse in one PRIS2 producer is planned as ordered writes");
+
+  auto swapped = make_many_fixture({{true, 1}, {true, 0}});
+  const auto swapped_plan = plan_many(swapped);
+  check(swapped_plan && swapped_plan->semantic_fingerprint != plan->semantic_fingerprint &&
+            !metal_renderer::jak2_pris2_texture_upload_plans_match(*plan, *swapped_plan),
+        "the final writer is order-sensitive in the plan fingerprint");
+
+  auto identical = make_many_fixture({{false, 3}, {false, 3}, {false, 3}});
+  const auto identical_plan = plan_many(identical);
+  check(identical_plan && identical_plan->variant == Variant::ManyEyeChunks &&
+            identical_plan->chunk_count == 3 && identical_plan->eye_slot_mask == (0x3ull << 6),
+        "repeated lo-res writes of one pair remain owned per chunk");
+
+  const std::vector<std::vector<EyeChunkSpec>> mixed = {
+      {{false, 0}, {true, 0}}, {{true, 4}, {false, 4}}, {{true, 0}, {true, 1}, {false, 0}}};
+  const std::array<u8, 3> mixed_chunk = {1, 1, 2};
+  for (std::size_t i = 0; i < mixed.size(); ++i) {
+    auto fixture = make_many_fixture(mixed[i]);
+    rejection = {};
+    const bool rejected = !plan_many(fixture, nullptr, &rejection);
+    const auto& later = mixed[i][mixed_chunk[i]];
+    check(rejected && rejection.reason == RejectReason::MixedResolutionEyeSlots &&
+              rejection.chunk_index == mixed_chunk[i] &&
+              rejection.duplicate_resolution == static_cast<u8>(later.eye64) &&
+              rejection.previous_resolution == static_cast<u8>(!later.eye64) &&
+              rejection.duplicate_pair_index == rejection.previous_pair_index,
+          "mixed-resolution writes of one PRIS2 eye pair remain rejected");
+  }
+}
+
+void test_many_chunk_live_copy_and_corruption() {
+  const std::vector<EyeChunkSpec> specs = {{false, 0}, {true, 0}, {true, 1}, {false, 9}};
+  auto live = make_many_fixture(specs);
+  auto copied = make_many_fixture(specs, 0x4000);
+  const auto live_plan = plan_many(live);
+  auto copied_plan = plan_many(copied);
+  check(!live_plan, "a lo-res pair 0 followed by hi-res row 0 is mixed and rejected");
+
+  const std::vector<EyeChunkSpec> valid_specs = {{false, 0}, {true, 4}, {true, 5}, {false, 9}};
+  live = make_many_fixture(valid_specs);
+  copied = make_many_fixture(valid_specs, 0x4000);
+  const auto valid_live = plan_many(live);
+  copied_plan = plan_many(copied);
+  check(valid_live && copied_plan && valid_live->chunk_count == 4 &&
+            valid_live->chunks[3].start_relative_tag_offset !=
+                copied_plan->chunks[3].start_relative_tag_offset &&
+            metal_renderer::jak2_pris2_texture_upload_plans_match(*valid_live, *copied_plan),
+        "relocated four-chunk PRIS2 plans match by owned semantics");
+  for (const std::size_t chunk : {std::size_t(2), std::size_t(3)}) {
+    auto mutated = make_many_fixture(valid_specs, 0x4000);
+    mutate_tex0(&mutated.packet, mutated.chunk_offsets[chunk]);
+    const auto mutated_plan = plan_many(mutated);
+    check(mutated_plan && mutated_plan->chunks[chunk].semantic_fingerprint !=
+                              valid_live->chunks[chunk].semantic_fingerprint &&
+              !metal_renderer::jak2_pris2_texture_upload_plans_match(*valid_live, *mutated_plan),
+          "a copied mutation in a later or rewritten chunk fails live/copy matching");
+  }
+
+  const std::vector<EyeChunkSpec> three = {{false, 0}, {false, 1}, {false, 2}};
+  auto bad_scissor = make_many_fixture(three);
+  put_u64(&bad_scissor.packet, bad_scissor.chunk_offsets[2] + kEyeFirstScissorValueOffset,
+          make_scissor(0, 63, 65, 96));
+  metal_renderer::Jak2PrisEyeTextureUploadRejection rejection;
+  check(!plan_many(bad_scissor, nullptr, &rejection) &&
+            rejection.reason == RejectReason::BodyScissor && rejection.chunk_index == 2 &&
+            rejection.body_index == 1,
+        "a corrupt third-chunk scissor is rejected with its chunk index");
+
+  auto skipped_setup = make_many_fixture(three);
+  put_tag(&skipped_setup.packet, skipped_setup.linker_offsets[1], DmaTag::Kind::NEXT, 0,
+          skipped_setup.chunk_offsets[2] + 144, 0, 0);
+  rejection = {};
+  check(!plan_many(skipped_setup, nullptr, &rejection) &&
+            rejection.reason == RejectReason::Counts,
+        "a truncated later chunk cannot be counted as a complete chunk");
+
+  auto cycle = make_many_fixture(three);
+  put_tag(&cycle.packet, cycle.linker_offsets[2], DmaTag::Kind::NEXT, 0, cycle.chunk_offsets[0],
+          0, 0);
+  rejection = {};
+  Capture capture;
+  check(!plan_many(cycle, &capture, &rejection) &&
+            rejection.reason == RejectReason::CaptureInvalid && capture.malformed_transfers == 1,
+        "a looping PRIS2 chain is rejected before the capture bound");
+
+  auto extra = make_many_fixture(three);
+  put_tag(&extra.packet, extra.linker_offsets[1], DmaTag::Kind::NEXT, 0, kExtraOffset, 0, 0);
+  put_tag(&extra.packet, kExtraOffset, DmaTag::Kind::CNT, 0, 0, 0, 0);
+  put_tag(&extra.packet, kExtraOffset + 16, DmaTag::Kind::NEXT, 0, extra.chunk_offsets[2], 0, 0);
+  rejection = {};
+  check(!plan_many(extra, nullptr, &rejection) && rejection.reason == RejectReason::Counts,
+        "an inert extension between later chunks is rejected");
+}
+
+void test_pris2_sequence_contract() {
+  auto three = make_many_fixture({{false, 0}, {false, 1}, {false, 2}});
+  auto plan = *plan_many(three);
+  auto forged = plan;
+  forged.variant = Variant::TwoEyeChunks;
+  check(!sequence_accepts_pris2(forged), "a PRIS2 variant must agree with its chunk count");
+  forged = plan;
+  forged.chunk_count = metal_renderer::kJak2Pris2EyeMaximumChunks + 1;
+  check(!sequence_accepts_pris2(forged), "a PRIS2 chunk count beyond the source bound fails");
+  forged = plan;
+  forged.chunks[2].pair_index = 0;
+  forged.chunks[2].eye_slot_mask = 0x3;
+  forged.eye_slot_mask = 0x3 | (0x3ull << 2);
+  check(sequence_accepts_pris2(forged), "a same-resolution PRIS2 rewrite is owned");
+  forged.chunks[2].resolution = metal_renderer::Jak2PrisEyeResolution::Eye64;
+  check(!sequence_accepts_pris2(forged), "a mixed-resolution PRIS2 rewrite is not owned");
+
+  check(metal_renderer::jak2_pris_eye_producer_allows_same_resolution_rewrite(224) &&
+            metal_renderer::jak2_pris_eye_producer_allows_same_resolution_rewrite(228) &&
+            metal_renderer::jak2_pris_eye_producer_allows_same_resolution_rewrite(244) &&
+            !metal_renderer::jak2_pris_eye_producer_allows_same_resolution_rewrite(196) &&
+            !metal_renderer::jak2_pris_eye_producer_allows_same_resolution_rewrite(220) &&
+            !metal_renderer::jak2_pris_eye_producer_allows_same_resolution_rewrite(229) &&
+            !metal_renderer::jak2_pris_eye_producer_allows_same_resolution_rewrite(0),
+        "only PRIS2 texture producers may rewrite their own eye pairs");
+}
+
 }  // namespace
 
 int main() {
@@ -584,6 +844,10 @@ int main() {
   test_live_copy_matching();
   test_source_ordered_eye_slot_ownership();
   test_source_grammar_and_rejections();
+  test_source_bounded_chunk_count();
+  test_same_resolution_last_writer();
+  test_many_chunk_live_copy_and_corruption();
+  test_pris2_sequence_contract();
   std::puts("metal_jak2_pris2_bucket228_plan_test: PASS");
   return 0;
 }

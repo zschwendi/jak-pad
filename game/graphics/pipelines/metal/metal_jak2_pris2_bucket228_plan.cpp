@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 
 namespace metal_renderer {
 namespace {
@@ -24,26 +25,45 @@ constexpr std::array<u32, kJak2PrisEyeProducerCount> kPrisEyeProducerOrder = {
     kJak2Pris2TextureUploadBuckets[5]};
 
 template <typename Plan>
-bool eye_plan_mask_is_owned(const Plan& plan, bool present) {
-  if (plan.chunk_count > kJak2PrisEyeMaximumChunks) {
+bool eye_plan_mask_is_owned(const Plan& plan,
+                            bool present,
+                            std::size_t maximum_chunks,
+                            bool allow_same_resolution_rewrite) {
+  if (plan.chunk_count > maximum_chunks || plan.chunk_count > plan.chunks.size()) {
     return false;
   }
   if (!present) {
     return plan.chunk_count == 0 && plan.eye_slot_mask == 0;
   }
+  constexpr u8 kNoResolution = 0xff;
+  std::array<u8, 20> pair_resolution;
+  pair_resolution.fill(kNoResolution);
   u64 owned_mask = 0;
   for (std::size_t i = 0; i < plan.chunk_count; ++i) {
     const auto& chunk = plan.chunks[i];
-    if (chunk.pair_index >= 20) {
+    if (chunk.pair_index >= pair_resolution.size()) {
       return false;
     }
     const u64 chunk_mask = 3ull << (chunk.pair_index * 2);
-    if (chunk.eye_slot_mask != chunk_mask || (owned_mask & chunk_mask) != 0) {
+    const u8 resolution = static_cast<u8>(chunk.resolution);
+    if (chunk.eye_slot_mask != chunk_mask) {
       return false;
     }
+    if ((owned_mask & chunk_mask) != 0 &&
+        (!allow_same_resolution_rewrite || pair_resolution[chunk.pair_index] != resolution)) {
+      return false;
+    }
+    pair_resolution[chunk.pair_index] = resolution;
     owned_mask |= chunk_mask;
   }
   return owned_mask == plan.eye_slot_mask;
+}
+
+Jak2Pris2Bucket228Variant variant_for_chunk_count(std::size_t chunk_count) {
+  return chunk_count == 0   ? Jak2Pris2Bucket228Variant::OrdinaryOnly
+         : chunk_count == 1 ? Jak2Pris2Bucket228Variant::OneEyeChunk
+         : chunk_count == 2 ? Jak2Pris2Bucket228Variant::TwoEyeChunks
+                            : Jak2Pris2Bucket228Variant::ManyEyeChunks;
 }
 
 void set_rejection(Jak2PrisEyeTextureUploadRejection* rejection,
@@ -74,11 +94,8 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_texture_upload(
     u32 bucket_id,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
-    Jak2CommonTfragTextureUploadCapture* out_capture,
+    Jak2Pris2TextureUploadCapture* out_capture,
     Jak2PrisEyeTextureUploadRejection* out_rejection) {
-  if (out_capture) {
-    *out_capture = {};
-  }
   if (out_rejection) {
     *out_rejection = {};
   }
@@ -96,13 +113,17 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_texture_upload(
   // grammar start at the exact PRIS2 bucket byte. This reuses its bounded GIF/source validation
   // without broadening the common parser's audited bucket set.
   const u32 alias_chain_offset = chain_offset + alias_chain_delta;
-  const auto source_plan = plan_jak2_pris_eye_texture_upload(
-      dma_packet_snapshot, dma_packet_snapshot_size, alias_chain_offset,
-      kPrisGrammarAliasBucket, live_ee_memory, live_ee_memory_size, out_capture,
-      out_rejection);
+  std::unique_ptr<Jak2Pris2TextureUploadCapture> owned_capture;
+  if (!out_capture) {
+    owned_capture = std::make_unique<Jak2Pris2TextureUploadCapture>();
+    out_capture = owned_capture.get();
+  }
+  const auto source_plan = plan_jak2_pris2_alias_eye_texture_upload(
+      dma_packet_snapshot, dma_packet_snapshot_size, alias_chain_offset, live_ee_memory,
+      live_ee_memory_size, out_capture, out_rejection);
   if (!source_plan || source_plan->has_prison_jak_animator ||
       source_plan->has_highres_jak_animator ||
-      source_plan->chunk_count > kJak2PrisEyeMaximumChunks) {
+      source_plan->chunk_count > kJak2Pris2EyeMaximumChunks) {
     if (source_plan && out_rejection &&
         out_rejection->reason == Jak2PrisEyeTextureUploadRejectReason::None) {
       set_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::Counts);
@@ -116,12 +137,7 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_texture_upload(
     plan.variant = Jak2Pris2Bucket228Variant::Absent;
     return plan;
   }
-  const bool ordinary_only = source_plan->chunk_count == 0;
-  plan.variant = ordinary_only
-                     ? Jak2Pris2Bucket228Variant::OrdinaryOnly
-                     : source_plan->chunk_count == 1
-                           ? Jak2Pris2Bucket228Variant::OneEyeChunk
-                           : Jak2Pris2Bucket228Variant::TwoEyeChunks;
+  plan.variant = variant_for_chunk_count(source_plan->chunk_count);
   plan.ordinary = source_plan->ordinary;
   plan.chunks = source_plan->chunks;
   plan.chunk_count = source_plan->chunk_count;
@@ -141,7 +157,7 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_bucket228(
     u32 bucket_id,
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
-    Jak2CommonTfragTextureUploadCapture* out_capture,
+    Jak2Pris2TextureUploadCapture* out_capture,
     Jak2PrisEyeTextureUploadRejection* out_rejection) {
   if (bucket_id != kJak2Pris2TextureUploadBucket) {
     set_rejection(out_rejection, Jak2PrisEyeTextureUploadRejectReason::UnsupportedBucket);
@@ -155,7 +171,8 @@ std::optional<Jak2Pris2Bucket228Plan> plan_jak2_pris2_bucket228(
 bool jak2_pris2_texture_upload_plans_match(const Jak2Pris2Bucket228Plan& live,
                                            const Jak2Pris2Bucket228Plan& copied) {
   if (!is_pris2_texture_bucket(live.bucket_id) || live.bucket_id != copied.bucket_id ||
-      live.variant != copied.variant || live.chunk_count != copied.chunk_count ||
+      live.variant != copied.variant || live.chunk_count > live.chunks.size() ||
+      live.chunk_count != copied.chunk_count ||
       live.ordinary.page_offset != copied.ordinary.page_offset ||
       live.ordinary.mode != copied.ordinary.mode ||
       live.ordinary.page_header != copied.ordinary.page_header ||
@@ -207,26 +224,24 @@ bool jak2_pris_eye_plan_sequence_is_valid(
       per_level_plan_count != kJak2PrisTextureUploadBuckets.size() ||
       pris2_plan_count != kJak2Pris2TextureUploadBuckets.size() ||
       common_plan.bucket_id != kJak2CommonPrisTextureUploadBucket ||
-      !eye_plan_mask_is_owned(common_plan, common_plan.present)) {
+      !eye_plan_mask_is_owned(common_plan, common_plan.present, kJak2PrisEyeMaximumChunks,
+                              false)) {
     return false;
   }
   for (std::size_t i = 0; i < per_level_plan_count; ++i) {
     const auto& plan = per_level_plans[i];
     if (plan.bucket_id != kJak2PrisTextureUploadBuckets[i] ||
-        !eye_plan_mask_is_owned(plan, plan.present)) {
+        !eye_plan_mask_is_owned(plan, plan.present, kJak2PrisEyeMaximumChunks, false)) {
       return false;
     }
   }
   for (std::size_t i = 0; i < pris2_plan_count; ++i) {
     const auto& plan = pris2_plans[i];
     const bool present = plan.variant != Jak2Pris2Bucket228Variant::Absent;
-    const std::size_t expected_chunk_count =
-        plan.variant == Jak2Pris2Bucket228Variant::OneEyeChunk
-            ? 1
-            : plan.variant == Jak2Pris2Bucket228Variant::TwoEyeChunks ? 2 : 0;
-    if (plan.bucket_id != kJak2Pris2TextureUploadBuckets[i] ||
-        plan.chunk_count != expected_chunk_count ||
-        !eye_plan_mask_is_owned(plan, present)) {
+    const bool variant_matches = present ? plan.variant == variant_for_chunk_count(plan.chunk_count)
+                                         : plan.chunk_count == 0;
+    if (plan.bucket_id != kJak2Pris2TextureUploadBuckets[i] || !variant_matches ||
+        !eye_plan_mask_is_owned(plan, present, kJak2Pris2EyeMaximumChunks, true)) {
       return false;
     }
   }
@@ -240,6 +255,10 @@ bool jak2_pris_eye_producer_precedes(u32 earlier_bucket, u32 later_bucket) {
       std::find(kPrisEyeProducerOrder.begin(), kPrisEyeProducerOrder.end(), later_bucket);
   return earlier != kPrisEyeProducerOrder.end() && later != kPrisEyeProducerOrder.end() &&
          earlier < later;
+}
+
+bool jak2_pris_eye_producer_allows_same_resolution_rewrite(u32 producer_bucket) {
+  return is_pris2_texture_bucket(producer_bucket);
 }
 
 }  // namespace metal_renderer

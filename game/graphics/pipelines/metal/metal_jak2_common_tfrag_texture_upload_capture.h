@@ -27,6 +27,15 @@ constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
 constexpr std::size_t kJak2PrisEyeMaximumChunks = 2;
 constexpr u32 kJak2PrisEyeChunkTransferCount = 26;
 constexpr u32 kJak2PrisEyeChunkPayloadBytes = 1856;
+// update-eyes (eye.gc:1015) visits 6 eye-control arrays of 16 controls, and each visible control
+// appends at most one chunk to its own level bucket. One PRIS2 bucket can therefore receive at
+// most 96 chunks per frame; repeated destinations do not reduce that emission bound. Per-level and
+// common PRIS keep their observed zero-to-two chunk grammar.
+constexpr std::size_t kJak2Pris2EyeMaximumChunks = 6 * 16;
+// Opening NEXT, descriptor and NEXT; each chunk plus its NEXT linker; default reset and terminal.
+constexpr std::size_t kJak2Pris2TextureUploadMaximumTransfers =
+    3 + (kJak2PrisEyeChunkTransferCount + 1) * kJak2Pris2EyeMaximumChunks + 2;
+static_assert(kJak2Pris2TextureUploadMaximumTransfers == 2597);
 constexpr u16 kJak2CommonPrisDarkJakAnimatorOpcode = 22;
 constexpr u32 kJak2CommonPrisDarkJakAnimatorBodyBytes = 32;
 constexpr std::size_t kJak2CommonPrisDarkJakAnimatorTbpCount = 4;
@@ -62,15 +71,12 @@ struct Jak2CommonTfragTransferMetadata {
   u8 vif1_kind = 0;
 };
 
-struct Jak2CommonTfragTextureUploadCapture {
+struct Jak2TfragTextureUploadCaptureCounters {
   bool valid = false;
   bool present = false;
   Jak2CommonTfragTextureUploadClass classification =
       Jak2CommonTfragTextureUploadClass::Malformed;
 
-  std::array<Jak2CommonTfragTransferMetadata,
-             kJak2CommonTfragTextureUploadMaximumTransfers>
-      transfers = {};
   std::size_t transfer_count = 0;
   u64 total_payload_bytes = 0;
   u32 inert_transfers = 0;
@@ -85,6 +91,19 @@ struct Jak2CommonTfragTextureUploadCapture {
   u32 other_transfers = 0;
   u32 malformed_transfers = 0;
 };
+
+template <std::size_t MaximumTransfers>
+struct Jak2TfragTextureUploadCaptureStorage : Jak2TfragTextureUploadCaptureCounters {
+  static constexpr std::size_t kMaximumTransfers = MaximumTransfers;
+  std::array<Jak2CommonTfragTransferMetadata, MaximumTransfers> transfers = {};
+};
+
+using Jak2CommonTfragTextureUploadCapture =
+    Jak2TfragTextureUploadCaptureStorage<kJak2CommonTfragTextureUploadMaximumTransfers>;
+// PRIS2 only. At 20 bytes per transfer this is about 52 KB, so hot-path callers own one instance
+// instead of placing it on the stack.
+using Jak2Pris2TextureUploadCapture =
+    Jak2TfragTextureUploadCaptureStorage<kJak2Pris2TextureUploadMaximumTransfers>;
 
 struct Jak2NormalTfragTextureUploadPlan {
   u32 bucket_id = 0;
@@ -125,6 +144,8 @@ enum class Jak2PrisEyeTextureUploadRejectReason : u8 {
   DefaultReset,
   Terminal,
   ChunkFingerprint,
+  // A PRIS2 chunk wrote an eye pair already written by the other resolution in the same producer.
+  MixedResolutionEyeSlots,
 };
 
 constexpr u8 kJak2PrisEyeRejectIndexNotApplicable = 0xff;
@@ -134,6 +155,11 @@ struct Jak2PrisEyeTextureUploadRejection {
       Jak2PrisEyeTextureUploadRejectReason::None;
   u8 chunk_index = kJak2PrisEyeRejectIndexNotApplicable;
   u8 body_index = kJak2PrisEyeRejectIndexNotApplicable;
+  u32 duplicate_pair_index = 0xffffffff;
+  u32 previous_pair_index = 0xffffffff;
+  u8 duplicate_resolution = 0xff;
+  u8 previous_resolution = 0xff;
+  u64 previous_eye_slot_mask = 0;
 };
 
 struct Jak2PrisEyeChunkPlan {
@@ -207,7 +233,9 @@ struct Jak2PrisEyeTextureUploadPlan {
   bool has_prison_jak_animator = false;
   bool has_highres_jak_animator = false;
   Jak2PrisPrisonJakAnimatorPlan prison_jak_animator;
-  std::array<Jak2PrisEyeChunkPlan, kJak2PrisEyeMaximumChunks> chunks = {};
+  // Sized for adapted PRIS2 plans. The per-level planner still accepts at most
+  // kJak2PrisEyeMaximumChunks.
+  std::array<Jak2PrisEyeChunkPlan, kJak2Pris2EyeMaximumChunks> chunks = {};
   std::size_t chunk_count = 0;
   u32 direct_reset_transfer_index = 0;
   u32 direct_reset_relative_tag_offset = 0;
@@ -386,6 +414,24 @@ std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris_eye_texture_upload(
     const u8* live_ee_memory,
     std::size_t live_ee_memory_size,
     Jak2CommonTfragTextureUploadCapture* out_capture = nullptr,
+    Jak2PrisEyeTextureUploadRejection* out_rejection = nullptr);
+
+/*!
+ * PRIS2 form of the per-level grammar above, read through the same bucket-196 alias. The capture
+ * uses the source-derived PRIS2 capacity and is written into caller-owned storage. Up to
+ * kJak2Pris2EyeMaximumChunks chunks are owned in DMA order. A later chunk may repeat an earlier
+ * chunk's eye pair only at the same resolution; that is the source's in-bucket last-writer-wins
+ * (PS2 VRAM and GL EyeRenderer both redraw in DMA order). Mixed resolutions on one pair are
+ * rejected. Animator forms are planned exactly as for per-level PRIS so the PRIS2 caller can
+ * reject them.
+ */
+std::optional<Jak2PrisEyeTextureUploadPlan> plan_jak2_pris2_alias_eye_texture_upload(
+    const u8* dma_packet_snapshot,
+    std::size_t dma_packet_snapshot_size,
+    u32 alias_chain_offset,
+    const u8* live_ee_memory,
+    std::size_t live_ee_memory_size,
+    Jak2Pris2TextureUploadCapture* capture_storage,
     Jak2PrisEyeTextureUploadRejection* out_rejection = nullptr);
 
 const char* jak2_pris_eye_texture_upload_reject_reason_name(

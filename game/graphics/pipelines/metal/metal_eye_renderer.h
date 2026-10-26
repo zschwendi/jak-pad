@@ -58,6 +58,7 @@ class MetalEyeRenderer : public MetalBucketRenderer {
     int unexpected_dma = 0;    // bucket did not match: consumed and reported
     int duplicate_slot_writes = 0;
     int versioned_slot_writes = 0;
+    int same_producer_slot_rewrites = 0;  // PRIS2 same-resolution last-writer-wins, in place
     int command_buffers_committed = 0;
     int command_buffers_completed = 0;
     int command_buffer_errors = 0;
@@ -143,6 +144,7 @@ class MetalEyeRenderer : public MetalBucketRenderer {
     bool lr = false;
     bool composed_once = false;
     bool composed_this_frame = false;
+    bool composed_using_64 = false;  // resolution of this frame's latest write
   };
 
   struct SingleEyeDraws {
