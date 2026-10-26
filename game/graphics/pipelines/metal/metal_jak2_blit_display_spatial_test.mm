@@ -231,6 +231,32 @@ std::vector<std::vector<u8>> make_source_pause_sky_draw(bool include_final_tint)
   return packets;
 }
 
+// sky-tng.gc menu-mode final sprite (PC port): the top-left vertex carries
+// UV (0, game_height * 16) and the bottom-right vertex carries
+// (game_width * 16, 0). Upstream OpenGL samples a bottom-up FramebufferCopier
+// texture, so this V-descending sprite presents the captured world upright.
+std::vector<std::vector<u8>> make_source_pause_orientation_draw() {
+  constexpr u64 kZbuf = 0x130 | (1ull << 24);
+  constexpr u64 kTest = 1ull | (1ull << 1) | (1ull << 16) | (1ull << 17);
+  constexpr u64 kTex1 = (1ull << 5) | (1ull << 6);
+  constexpr u64 kClamp = 0b101;
+  constexpr u32 kGameExtent = kTargetSize * 16;
+
+  std::vector<std::vector<u8>> packets;
+  packets.push_back(make_ad_packet({
+      {GsRegisterAddress::ZBUF_1, kZbuf},
+      {GsRegisterAddress::TEST_1, kTest},
+      {GsRegisterAddress::ALPHA_1, 0},
+      {GsRegisterAddress::TEX0_1, source_tex0(metal_renderer::kJak2BlitDisplayTbp)},
+      {GsRegisterAddress::TEX1_1, kTex1},
+      {GsRegisterAddress::CLAMP_1, kClamp},
+      {GsRegisterAddress::TEXFLUSH, 0},
+  }));
+  packets.push_back(make_source_pause_sprite(0, kGameExtent, 0x7000, 0x7300, kGameExtent, 0,
+                                             0x9000, 0x8d00, {128, 128, 128, 128}));
+  return packets;
+}
+
 void append_source_progress_sprite(std::vector<u8>* payload,
                                    u32 x0,
                                    u32 y0,
@@ -264,6 +290,17 @@ std::vector<u8> make_spatial_frame_a() {
   return payload;
 }
 
+// Frame A's four colors rotated one quadrant clockwise, so neither a stale
+// frame A snapshot nor a vertically flipped frame B capture can match it.
+std::vector<u8> make_spatial_frame_b() {
+  std::vector<u8> payload;
+  append_basic_sprite(&payload, 0x7000, 0x7300, 0x8000, 0x8000, {20, 40, 180, 128}, false);
+  append_basic_sprite(&payload, 0x8000, 0x7300, 0x9000, 0x8000, {180, 40, 20, 128}, false);
+  append_basic_sprite(&payload, 0x7000, 0x8000, 0x8000, 0x8d00, {160, 120, 60, 128}, false);
+  append_basic_sprite(&payload, 0x8000, 0x8000, 0x9000, 0x8d00, {40, 180, 40, 128});
+  return payload;
+}
+
 std::vector<u8> make_snapshot_sky_draw() {
   std::vector<u8> payload;
   constexpr u64 kAd = static_cast<u64>(GifTag::RegisterDescriptor::AD);
@@ -282,10 +319,11 @@ std::vector<u8> make_snapshot_sky_draw() {
   constexpr u64 kPrim = static_cast<u64>(GsPrim::Kind::SPRITE) | (1ull << 4);
   constexpr std::array<u8, 4> kSepiaTint = {128, 96, 64, 64};
   append_gif_tag(&payload, 1, kRegisters, 6, true, kPrim);
-  append_st(&payload, 0.f, 0.f);
+  // The PC-BLIT snapshot follows OpenGL's bottom-up texture coordinates in both UV and ST mode.
+  append_st(&payload, 0.f, 1.f);
   append_rgbaq(&payload, kSepiaTint);
   append_xyzf2(&payload, 0x7000, 0x7300);
-  append_st(&payload, 1.f, 1.f);
+  append_st(&payload, 1.f, 0.f);
   append_rgbaq(&payload, kSepiaTint);
   append_xyzf2(&payload, 0x9000, 0x8d00);
   return payload;
@@ -1176,6 +1214,129 @@ int main() {
                 panel_stats.last_batch.blend_b == 1 && panel_stats.last_batch.blend_c == 0 &&
                 panel_stats.last_batch.blend_d == 1,
             "the page panel keeps the Direct source-over blend equation");
+
+      stream.reset();
+      auto orientation_source_ctx =
+          begin_frame(queue, color, depth, &pso_cache, &sampler_cache, &stream, false);
+      render_blit(&blit, metal_renderer::Jak2BlitDisplayCommand::None, &state,
+                  &orientation_source_ctx);
+      render_direct(&sky, make_spatial_frame_a(), &state, &orientation_source_ctx);
+      std::vector<u8> orientation_source;
+      check(finish_frame(&orientation_source_ctx, &blit, color, &orientation_source),
+            "pause orientation source frame completed");
+
+      stream.reset();
+      auto orientation_ctx =
+          begin_frame(queue, color, depth, &pso_cache, &sampler_cache, &stream, true);
+      render_blit(&blit, metal_renderer::Jak2BlitDisplayCommand::Snapshot, &state,
+                  &orientation_ctx);
+      render_direct_packets(&sky, make_source_pause_orientation_draw(), &state, &orientation_ctx);
+      const auto orientation_stats = sky.stats();
+      std::vector<u8> orientation_frame;
+      check(finish_frame(&orientation_ctx, &blit, color, &orientation_frame),
+            "source-shaped V-descending pause sprite completed");
+      check(orientation_stats.last_batch.textured &&
+                orientation_stats.last_batch.tex0_tbp == metal_renderer::kJak2BlitDisplayTbp &&
+                orientation_stats.last_batch.texture_lookup_hit &&
+                !orientation_stats.last_batch.used_placeholder,
+            "the source pause sprite samples the bucket-3 snapshot");
+      bool pause_upright = true;
+      for (const auto& sample : std::array<std::array<int, 2>, 4>{
+               std::array<int, 2>{16, 16}, {48, 16}, {16, 48}, {48, 48}}) {
+        Pixel expected = pixel_at(orientation_source, sample[0], sample[1]);
+        Pixel actual = pixel_at(orientation_frame, sample[0], sample[1]);
+        expected.a = actual.a;
+        const bool match = near_pixel(actual, expected, 4);
+        if (!match) {
+          std::printf("pause orientation (%d,%d): got %d,%d,%d expected %d,%d,%d\n", sample[0],
+                      sample[1], actual.r, actual.g, actual.b, expected.r, expected.g,
+                      expected.b);
+        }
+        pause_upright &= match;
+      }
+      check(pause_upright,
+            "the source V-descending pause sprite keeps every captured quadrant upright");
+
+      // Two source menu cycles: SnapshotThenCopyBack -> CopyBack -> None with the
+      // V-descending UV sprite every frame, then gameplay resumes on a different
+      // world before the second pause captures again.
+      const auto run_pause_frame = [&](metal_renderer::Jak2BlitDisplayCommand command,
+                                       const std::vector<u8>* world, std::vector<u8>* pixels) {
+        stream.reset();
+        auto ctx = begin_frame(queue, color, depth, &pso_cache, &sampler_cache, &stream,
+                               command != metal_renderer::Jak2BlitDisplayCommand::None);
+        render_blit(&blit, command, &state, &ctx);
+        if (world) {
+          render_direct(&sky, *world, &state, &ctx);
+        } else {
+          render_direct_packets(&sky, make_source_pause_orientation_draw(), &state, &ctx);
+        }
+        const auto uv_stats = sky.stats();
+        return finish_frame(&ctx, &blit, color, pixels) &&
+               (world || (uv_stats.last_batch.textured &&
+                          uv_stats.last_batch.tex0_tbp == metal_renderer::kJak2BlitDisplayTbp &&
+                          uv_stats.last_batch.texture_lookup_hit &&
+                          !uv_stats.last_batch.used_placeholder));
+      };
+      // Compares actual(ax, ay) against expected(ex, ey), ignoring alpha.
+      const auto same_rgb_at = [](const std::vector<u8>& actual, int ax, int ay,
+                                  const std::vector<u8>& expected, int ex, int ey,
+                                  int tolerance) {
+        Pixel want = pixel_at(expected, ex, ey);
+        const Pixel got = pixel_at(actual, ax, ay);
+        want.a = got.a;
+        return near_pixel(got, want, tolerance);
+      };
+      const auto same_rgb = [&](const std::vector<u8>& actual, const std::vector<u8>& expected,
+                                int x, int y, int tolerance) {
+        return same_rgb_at(actual, x, y, expected, x, y, tolerance);
+      };
+      const std::array<std::array<int, 2>, 4> pause_samples = {
+          std::array<int, 2>{16, 16}, {48, 16}, {16, 48}, {48, 48}};
+      const std::array<std::vector<u8>, 2> pause_worlds = {make_spatial_frame_a(),
+                                                           make_spatial_frame_b()};
+      std::vector<u8> previous_world;
+      for (int cycle = 0; cycle < 2; cycle++) {
+        std::vector<u8> world;
+        bool cycle_ok = run_pause_frame(metal_renderer::Jak2BlitDisplayCommand::None,
+                                        &pause_worlds[cycle], &world);
+        cycle_ok &= !blit.stats().snapshot_requested && !blit.stats().copy_back_requested &&
+                    !blit.stats().copy_back_performed;
+        std::vector<u8> entry;
+        cycle_ok &= run_pause_frame(metal_renderer::Jak2BlitDisplayCommand::SnapshotThenCopyBack,
+                                    nullptr, &entry);
+        cycle_ok &= blit.stats().snapshot_requested && blit.stats().copy_back_performed &&
+                    blit.stats().texture_lookup_hit && !blit.stats().used_placeholder;
+        std::vector<u8> countdown;
+        cycle_ok &= run_pause_frame(metal_renderer::Jak2BlitDisplayCommand::CopyBack, nullptr,
+                                    &countdown);
+        cycle_ok &= !blit.stats().snapshot_requested && blit.stats().copy_back_performed;
+        std::vector<u8> steady;
+        cycle_ok &= run_pause_frame(metal_renderer::Jak2BlitDisplayCommand::None, nullptr, &steady);
+        // The stable consumer must sample the snapshot, not be masked by a lingering copy-back.
+        cycle_ok &= !blit.stats().snapshot_requested && !blit.stats().copy_back_requested &&
+                    !blit.stats().copy_back_performed;
+        bool fresh_upright = true;
+        for (const auto& sample : pause_samples) {
+          const int x = sample[0];
+          const int y = sample[1];
+          const int mirrored_y = kTargetSize - 1 - y;
+          fresh_upright &= same_rgb(entry, world, x, y, 0) && same_rgb(countdown, world, x, y, 0) &&
+                           same_rgb(steady, world, x, y, 4) &&
+                           !same_rgb_at(steady, x, y, world, x, mirrored_y, 4) &&
+                           (previous_world.empty() || !same_rgb(steady, previous_world, x, y, 4));
+          if (!same_rgb(steady, world, x, y, 4)) {
+            const Pixel got = pixel_at(steady, x, y);
+            const Pixel want = pixel_at(world, x, y);
+            std::printf("repeated pause %d (%d,%d): got %d,%d,%d expected %d,%d,%d\n", cycle, x,
+                        y, got.r, got.g, got.b, want.r, want.g, want.b);
+          }
+        }
+        check(cycle_ok && fresh_upright,
+              cycle == 0 ? "first UV pause entry, copy-back, and None consumer stay upright"
+                         : "second UV pause recaptures the resumed world upright, not stale");
+        previous_world = world;
+      }
 
       stream.reset();
       auto frame_a_ctx =

@@ -4,6 +4,7 @@
 #include "common/util/Assert.h"
 
 #include "game/graphics/pipelines/metal/metal_bucket_chain_semantics.h"
+#include "game/graphics/pipelines/metal/metal_jak2_blit_display_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_subtitle_bucket322_plan.h"
 #include "game/graphics/texture/TexturePool.h"
 
@@ -624,6 +625,18 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
       mtl_tex = metal_texture_lookup(placeholder);
     }
     ASSERT(mtl_tex);
+
+    // PC-BLIT uses OpenGL's bottom-up framebuffer coordinates; the Metal snapshot is top-down.
+    if (render_state->version == GameVersion::Jak2 &&
+        batch_tex.texture_base_ptr == metal_renderer::kJak2BlitDisplayTbp &&
+        !last_batch.used_placeholder) {
+      auto* vertices = static_cast<Vertex*>(dst);
+      for (int i = 0; i < m_prim_buffer.vert_count; ++i) {
+        auto& vertex = vertices[i];
+        vertex.stq[1] = vertex.use_uv ? 16.f * static_cast<float>(mtl_tex.height) - vertex.stq[1]
+                                     : vertex.stq[2] - vertex.stq[1];
+      }
+    }
 
     MetalSamplerKey sampler_key;
     // the GL renderer runs with mipmaps disabled for direct (disable_mipmap
