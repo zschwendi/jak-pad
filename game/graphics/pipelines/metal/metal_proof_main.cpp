@@ -198,6 +198,36 @@ void check_pixel_stable_across_stereo(const metal_renderer::FramePixels& referen
   }
 }
 
+void check_region_stable_across_stereo(const metal_renderer::FramePixels& reference,
+                                       const metal_renderer::FramePixels& left,
+                                       const metal_renderer::FramePixels& right,
+                                       int x0,
+                                       int y0,
+                                       int x1,
+                                       int y1,
+                                       const char* what) {
+  bool ok = x0 < x1 && y0 < y1 && rgba_pixel_at(reference, x0, y0) &&
+            rgba_pixel_at(reference, x1 - 1, y1 - 1) && reference.width == left.width &&
+            reference.height == left.height && reference.width == right.width &&
+            reference.height == right.height;
+  int mismatch_x = -1, mismatch_y = -1;
+  for (int y = y0; y < y1 && ok; y++) {
+    for (int x = x0; x < x1; x++) {
+      if (!pixels_match_at(reference, left, x, y) || !pixels_match_at(reference, right, x, y)) {
+        ok = false;
+        mismatch_x = x;
+        mismatch_y = y;
+        break;
+      }
+    }
+  }
+  printf("[%s] %s in [%d,%d) x [%d,%d); first mismatch (%d,%d)\n", ok ? "PASS" : "FAIL",
+         what, x0, x1, y0, y1, mismatch_x, mismatch_y);
+  if (!ok) {
+    g_fail_count++;
+  }
+}
+
 void check_pixel_differs_across_stereo(const metal_renderer::FramePixels& left,
                                        const metal_renderer::FramePixels& right,
                                        int x,
@@ -2034,12 +2064,26 @@ void test_sprite_chain(const GfxRendererModule* mod, std::shared_ptr<GfxDisplay>
     metal_renderer::ExternalRenderTargetProofResult stereo;
     const bool stereo_rendered = metal_renderer::render_last_chain_to_external_target(
         frame.width, frame.height, &stereo);
-    check(stereo_rendered, "stereo pixels: replayed the synthetic screen/HUD sprite chain");
-    check(!stereo.stereo_nonidentity_views_differ,
-          "stereo pixels: screen-space Sprite2d and HUD eye frames stayed identical");
+    check(stereo_rendered, "stereo pixels: replayed the synthetic world-2D/HUD sprite chain");
+    check(stereo.stereo_nonidentity_views_differ,
+          "stereo pixels: opposing nonidentity transforms separated the world-2D/HUD eye frames");
     check(stereo.stereo_nonidentity_side_effects_single_shot,
           "stereo pixels: transformed two-view sprite replay kept frame-global work single-shot");
     if (stereo_rendered) {
+      // Group-0 Sprite2d is a world billboard; only the group-1 HUD stays screen-locked.
+      check_color_centroid_disparity(stereo.stereo_transformed_left_slice,
+                                     stereo.stereo_transformed_right_slice, 100, 50, 25,
+                                     kExpectedOneMeterRasterizedPixelsAt640,
+                                     "stereo pixels: world Sprite2d at Jak one-meter depth");
+      // Include every HUD quad edge and a clear border, not only the sampled texels.
+      const int hud_centers[3][2] = {{col_h0, row_h0}, {gs_to_col(2048), gs_to_row(2048)},
+                                   {col_h1, row_h0}};
+      for (const auto& center : hud_centers) {
+        check_region_stable_across_stereo(frame, stereo.stereo_transformed_left_slice,
+                                         stereo.stereo_transformed_right_slice, center[0] - 45,
+                                         center[1] - 75, center[0] + 45, center[1] + 75,
+                                         "stereo pixels: complete HUD quad stayed screen-locked");
+      }
       check_pixel_stable_across_stereo(frame, stereo.stereo_transformed_left_slice,
                                        stereo.stereo_transformed_right_slice, col_h0 - 20,
                                        row_h0 - 34,
