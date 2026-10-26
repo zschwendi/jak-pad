@@ -198,7 +198,8 @@ class MetalRenderer {
   void cancel_external_stereo_frame();
   bool submit_external_stereo_frame(id<MTLCommandBuffer> command_buffer);
   // Detach a still-in-flight external frame from the stream allocator before falling back to the
-  // ordinary presentation path. The submitted command buffer retains its old stream pages.
+  // ordinary presentation path. The submitted command buffer retains its old stream pages, and
+  // reservations report busy until that submission completes.
   void prepare_external_stereo_fallback();
 
   // Presents the newest committed chain when the last layer-backed chain was deferred. Otherwise,
@@ -339,7 +340,7 @@ class MetalRenderer {
   u64 m_last_internal_frame_submission = 0;
   MetalOrdinaryFrameSlotRing m_ordinary_stream_slots;
   u64 m_external_stream_submission = 0;
-  bool m_external_stereo_disabled = false;
+  metal_renderer::ExternalStreamQuarantine m_external_stream_quarantine;
   u64 m_stream_reuse_wait_count = 0;
 
   // --- DMA chain path (stage 4) ---------------------------------------------

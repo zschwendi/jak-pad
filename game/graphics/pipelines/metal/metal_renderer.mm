@@ -1571,20 +1571,16 @@ MetalExternalFrameReservation MetalRenderer::reserve_external_stereo_frame() {
     return MetalExternalFrameReservation::failed;
   }
 
-  u64 external_stream_submission;
-  {
-    std::lock_guard<std::mutex> lock(m_frame_mutex);
-    if (m_external_stereo_disabled) {
-      return MetalExternalFrameReservation::failed;
-    }
-    external_stream_submission = m_external_stream_submission;
-  }
   bool prior_stream_busy;
   {
-    std::lock_guard<std::mutex> lock(m_presentation_state->mutex);
+    std::scoped_lock lock(m_frame_mutex, m_presentation_state->mutex);
+    const auto& completion = m_presentation_state->external_stream_completion;
+    if (m_external_stream_quarantine.still_in_flight(completion)) {
+      return MetalExternalFrameReservation::busy;
+    }
+    m_external_stream.release_quarantined_pages();
     prior_stream_busy =
-        external_stream_submission &&
-        !m_presentation_state->external_stream_completion.includes(external_stream_submission);
+        m_external_stream_submission && !completion.includes(m_external_stream_submission);
   }
   switch (m_presentation_state->external_submission_gate.reserve(prior_stream_busy)) {
     case metal_renderer::ExternalSubmissionReservation::busy:
@@ -1853,8 +1849,8 @@ void MetalRenderer::prepare_external_stereo_fallback() {
     return;
   }
   m_external_stream.quarantine_in_flight_pages();
+  m_external_stream_quarantine.hold(external_submission);
   m_external_stream_submission = 0;
-  m_external_stereo_disabled = true;
 }
 
 bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,

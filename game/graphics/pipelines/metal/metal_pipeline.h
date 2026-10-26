@@ -105,6 +105,9 @@ struct ExternalRenderTargetProofResult {
   bool stereo_poison_after_encode_preserved = false;
   bool stereo_nonidentity_views_differ = false;
   bool stereo_nonidentity_side_effects_single_shot = false;
+  bool stereo_reentry_busy_while_exit_frame_pending = false;
+  bool stereo_reentry_after_exit_frame_completion = false;
+  bool stereo_reentry_after_idle_fallback = false;
 };
 
 enum MercPaletteHealthIssue : u8 {

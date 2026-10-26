@@ -1583,6 +1583,12 @@ void test_dma_chain(const GfxRendererModule* mod,
         "external target: submitted views survived poisoning the copied DMA input");
   check(external.stereo_nonidentity_side_effects_single_shot,
         "external target: nonidentity two-view replay kept frame-global work single-shot");
+  check(external.stereo_reentry_busy_while_exit_frame_pending,
+        "external target: re-entry is busy, not failed, while the exit frame is still pending");
+  check(external.stereo_reentry_after_exit_frame_completion,
+        "external target: three exit/re-entry cycles reserved and rendered identical eye pixels");
+  check(external.stereo_reentry_after_idle_fallback,
+        "external target: fallback with no pending frame leaves the stereo stream available");
   if (external_rendered) {
     check(external.rendered_slice.width == frame.width &&
               external.rendered_slice.height == frame.height &&

@@ -71,9 +71,9 @@ class MetalStreamBuffer {
     m_offset = 0;
   }
 
-  // If an external presentation submission stops completing, permanently retain its pages while
-  // detaching them from this allocator. The ordinary renderer then allocates a fresh page set
-  // without reusing storage that the stalled command buffer may still reference.
+  // If an external presentation submission is still in flight at fallback, retain its pages while
+  // detaching them from this allocator. Later frames allocate a fresh page set without reusing
+  // storage that the pending command buffer may still reference.
   void quarantine_in_flight_pages() {
     if (!m_pages.empty()) {
       m_quarantined_page_sets.emplace_back(std::move(m_pages));
@@ -81,6 +81,9 @@ class MetalStreamBuffer {
     m_pages.clear();
     reset();
   }
+
+  // Only call once every quarantined submission has completed.
+  void release_quarantined_pages() { m_quarantined_page_sets.clear(); }
 
   // Returns a CPU-writable pointer of `size` bytes and the buffer/offset to
   // bind. Alignment is 16 bytes.

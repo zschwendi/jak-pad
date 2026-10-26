@@ -11,6 +11,7 @@
 #include "metal_pipeline.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -897,6 +898,90 @@ bool render_last_chain_to_external_target(int width,
     out->stereo_nonidentity_views_differ =
         nonidentity_stereo_completed &&
         out->stereo_transformed_left_slice.rgba != out->stereo_transformed_right_slice.rgba;
+
+    // Immersive exit while its last stereo frame is still on the GPU, then re-entry. A shared
+    // event holds each exit frame, so the fallback deterministically observes pending work.
+    id<MTLSharedEvent> exit_frame_release = [g_renderer->device() newSharedEvent];
+    const auto submit_held_stereo_batch = [&](u64 release_value) {
+      if (g_renderer->reserve_external_stereo_frame() !=
+          MetalExternalFrameReservation::reserved) {
+        return false;
+      }
+      id<MTLCommandBuffer> command_buffer = [g_renderer->queue() commandBuffer];
+      [command_buffer encodeWaitForEvent:exit_frame_release value:release_value];
+      const bool rendered = command_buffer &&
+                            g_renderer->render_chain_frame_to_external_stereo_targets(
+                                opts, stereo_left, stereo_right, command_buffer, chain.data.data(),
+                                chain.start_offset, chain.data.size());
+      if (!rendered || !g_renderer->submit_external_stereo_frame(command_buffer)) {
+        g_renderer->cancel_external_stereo_frame();
+        return false;
+      }
+      return true;
+    };
+    const auto reserve_within = [&](double timeout_seconds) {
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::duration<double>(timeout_seconds);
+      auto reservation = g_renderer->reserve_external_stereo_frame();
+      while (reservation == MetalExternalFrameReservation::busy &&
+             std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        reservation = g_renderer->reserve_external_stereo_frame();
+      }
+      return reservation;
+    };
+    const auto read_slice = [&](NSUInteger slice) {
+      std::vector<u8> pixels(sentinel.size());
+      [color getBytes:pixels.data()
+           bytesPerRow:width * 4
+         bytesPerImage:pixels.size()
+            fromRegion:MTLRegionMake2D(0, 0, width, height)
+           mipmapLevel:0
+                 slice:slice];
+      return pixels;
+    };
+
+    constexpr u64 kReentryCycles = 3;
+    bool busy_while_pending = exit_frame_release != nil && nonidentity_stereo_completed;
+    bool reentry_rendered = busy_while_pending;
+    for (u64 cycle = 1; cycle <= kReentryCycles && busy_while_pending && reentry_rendered;
+         ++cycle) {
+      const bool held = submit_held_stereo_batch(cycle);
+      g_renderer->prepare_external_stereo_fallback();
+      const auto first_reentry = g_renderer->reserve_external_stereo_frame();
+      const auto second_reentry = g_renderer->reserve_external_stereo_frame();
+      busy_while_pending = held && first_reentry == MetalExternalFrameReservation::busy &&
+                           second_reentry == MetalExternalFrameReservation::busy;
+      exit_frame_release.signaledValue = cycle;
+      if (first_reentry == MetalExternalFrameReservation::reserved ||
+          second_reentry == MetalExternalFrameReservation::reserved) {
+        g_renderer->cancel_external_stereo_frame();
+      }
+      const bool released = busy_while_pending &&
+                            reserve_within(5.0) == MetalExternalFrameReservation::reserved;
+      if (released) {
+        g_renderer->cancel_external_stereo_frame();
+      }
+      reentry_rendered = released && render_stereo_batch(chain.data) &&
+                         g_renderer->wait_for_last_chain_frame(5.0) &&
+                         read_slice(1) == transformed_left_bgra &&
+                         read_slice(2) == transformed_right_bgra;
+    }
+    if (exit_frame_release != nil) {
+      exit_frame_release.signaledValue = kReentryCycles;
+    }
+    const bool drained = g_renderer->wait_for_last_chain_frame(5.0);
+    out->stereo_reentry_busy_while_exit_frame_pending = busy_while_pending;
+    out->stereo_reentry_after_exit_frame_completion = reentry_rendered && drained;
+
+    g_renderer->prepare_external_stereo_fallback();
+    const bool idle_reserved =
+        drained &&
+        g_renderer->reserve_external_stereo_frame() == MetalExternalFrameReservation::reserved;
+    if (idle_reserved) {
+      g_renderer->cancel_external_stereo_frame();
+    }
+    out->stereo_reentry_after_idle_fallback = idle_reserved;
     return true;
   }
 }

@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <mutex>
 
+#include "game/graphics/pipelines/metal/metal_frame_resources.h"
+
 namespace metal_renderer {
 
 enum class ExternalSubmissionReservation {
@@ -69,6 +71,30 @@ class ExternalSubmissionGate {
   State m_state = State::idle;
   std::uint64_t m_submission_id = 0;
   bool m_failure_latched = false;
+};
+
+// Holds back external frames after presentation fell back while an external submission was still
+// in flight. That submission may still read the quarantined stream pages and the external
+// frame-resource slot, so reservations stay busy until its completion is observed. Nothing waits
+// on the GPU. Callers serialize access.
+class ExternalStreamQuarantine {
+ public:
+  void hold(std::uint64_t submission) {
+    if (submission > m_submission) {
+      m_submission = submission;
+    }
+  }
+
+  // Ends the hold once the held submission has completed; returns whether it is still in flight.
+  bool still_in_flight(const MetalMonotonicSubmissionCompletion& completion) {
+    if (m_submission && completion.includes(m_submission)) {
+      m_submission = 0;
+    }
+    return m_submission != 0;
+  }
+
+ private:
+  std::uint64_t m_submission = 0;
 };
 
 }  // namespace metal_renderer
