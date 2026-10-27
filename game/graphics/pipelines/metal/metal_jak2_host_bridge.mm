@@ -96,6 +96,7 @@ struct goal_jak2_metal_host {
   std::array<metal_renderer::Jak2EffectsBucket315MalformedReason, 2> effects315_metadata_reasons =
       {};
   std::size_t effects315_metadata_reason_count = 0;
+  std::size_t common_pris_rejection_capture_count = 0;
   // Per-frame PRIS eye planning storage. The source-bounded PRIS2 forms make these about 230 KB,
   // so send_chain uses this heap-owned host storage instead of its stack. Every entry is
   // overwritten by its planner before use in each frame.
@@ -1128,6 +1129,37 @@ void maybe_log_pris2_rejection_metadata(
     const auto& transfer = capture.transfers[index];
     lg::info(
         "GOALPAD_JAK2_PRIS2_REJECTION_TRANSFER index={} rel={} tag={} qwc={} bytes={} "
+        "vif0={}/{} vif1={}/{}",
+        index, transfer.relative_tag_offset, transfer.tag_kind, transfer.qwc,
+        transfer.payload_bytes, transfer.vif0_kind, transfer.vif0_immediate,
+        transfer.vif1_kind, transfer.vif1_immediate);
+  }
+}
+
+// Opt-in (GOALPAD_JAK2_DEBUG_CAPTURE_COMMON_PRIS=1 exactly), at most two records per host,
+// metadata-only view of the owned bucket-220 capture that the common-PRIS planner rejected.
+void maybe_log_common_pris_rejection_metadata(
+    goal_jak2_metal_host* host,
+    const metal_renderer::Jak2CommonTfragTextureUploadCapture& capture) {
+  const char* enabled = std::getenv("GOALPAD_JAK2_DEBUG_CAPTURE_COMMON_PRIS");
+  if (!host || !enabled || std::strcmp(enabled, "1") != 0 ||
+      host->common_pris_rejection_capture_count >= 2) {
+    return;
+  }
+  ++host->common_pris_rejection_capture_count;
+  const auto count =
+      std::min({capture.transfer_count, capture.transfers.size(),
+                metal_renderer::kJak2CommonTfragTextureUploadMaximumTransfers});
+  lg::info(
+      "GOALPAD_JAK2_COMMON_PRIS_REJECTION_CAPTURE tick={} bucket={} valid={} present={} "
+      "class={} transfers={} inert={} malformed={} rows={}",
+      host->metrics.chains, metal_renderer::kJak2CommonPrisTextureUploadBucket, capture.valid,
+      capture.present, static_cast<u32>(capture.classification), capture.transfer_count,
+      capture.inert_transfers, capture.malformed_transfers, count);
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto& transfer = capture.transfers[index];
+    lg::info(
+        "GOALPAD_JAK2_COMMON_PRIS_REJECTION_TRANSFER index={} rel={} tag={} qwc={} bytes={} "
         "vif0={}/{} vif1={}/{}",
         index, transfer.relative_tag_offset, transfer.tag_kind, transfer.qwc,
         transfer.payload_bytes, transfer.vif0_kind, transfer.vif0_immediate,
@@ -2254,6 +2286,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
                                   metal_renderer::kJak2CommonPrisTextureUploadBucket,
                                   common_pris_texture_capture);
     if (!live_common_pris_plan) {
+      maybe_log_common_pris_rejection_metadata(host, common_pris_texture_capture);
       record_failure(host, "Jak 2 common PRIS texture plan rejected bucket 220 DMA");
       return;
     }
