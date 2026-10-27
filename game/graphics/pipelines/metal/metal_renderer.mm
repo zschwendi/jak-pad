@@ -314,6 +314,10 @@ bool immersive_contract_enabled(const MetalExternalRenderTargetDescriptor& targe
 
 bool valid_external_camera_contract(const MetalExternalRenderTargetDescriptor& target) {
   const auto& contract = target.immersive_camera;
+  if (target.hud_plane.enabled &&
+      (!contract.view.enabled || !metal_renderer::is_finite_hud_plane(target.hud_plane))) {
+    return false;
+  }
   if (!metal_renderer::is_finite_immersive_contract(contract) ||
       contract.view.enabled != contract.binocular_cull.enabled) {
     return false;
@@ -326,6 +330,9 @@ bool valid_stereo_camera_contracts(const MetalExternalRenderTargetDescriptor& le
                                    const MetalExternalRenderTargetDescriptor& right) {
   const bool left_physical = immersive_contract_enabled(left);
   const bool right_physical = immersive_contract_enabled(right);
+  if (left.hud_plane.enabled != right.hud_plane.enabled) {
+    return false;
+  }
   if (left_physical != right_physical) {
     return false;
   }
@@ -794,12 +801,18 @@ void MetalRenderer::init_bucket_renderers_jak1() {
   tex(BucketId::PRE_SPRITE_TEX, "common-tex");
   set(BucketId::SPRITE, std::make_unique<MetalSpriteRenderer>("sprite", (int)BucketId::SPRITE));
 
+  constexpr auto kDirectStereoSpace =
+      metal_renderer::stereo_space_for(metal_renderer::StereoDrawPath::Direct);
+  constexpr bool kDirectHudPlane = true;
   set(BucketId::DEBUG,
-      std::make_unique<MetalDirectRenderer>("debug", (int)BucketId::DEBUG, 0x20000));
+      std::make_unique<MetalDirectRenderer>("debug", (int)BucketId::DEBUG, 0x20000,
+                                            kDirectStereoSpace, kDirectHudPlane));
   set(BucketId::DEBUG_NO_ZBUF,
-      std::make_unique<MetalDirectRenderer>("debug-no-zbuf", (int)BucketId::DEBUG_NO_ZBUF, 0x8000));
+      std::make_unique<MetalDirectRenderer>("debug-no-zbuf", (int)BucketId::DEBUG_NO_ZBUF, 0x8000,
+                                            kDirectStereoSpace, kDirectHudPlane));
   set(BucketId::SUBTITLE,
-      std::make_unique<MetalDirectRenderer>("subtitle", (int)BucketId::SUBTITLE, 6000));
+      std::make_unique<MetalDirectRenderer>("subtitle", (int)BucketId::SUBTITLE, 6000,
+                                            kDirectStereoSpace, kDirectHudPlane));
 
   for (size_t i = 0; i < m_bucket_renderers.size(); i++) {
     if (!m_bucket_renderers[i]) {
@@ -1696,13 +1709,13 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
       render_chain_frame_impl(opts, nil, left.color_texture, left.color_slice, left.depth_texture,
                               left.depth_slice, &left.viewport, left.clear_depth, left.view_id,
                               left_transform, binocular_cull, true, command_buffer, chain_data,
-                              chain_offset, chain_size);
+                              chain_offset, chain_size, left.hud_plane);
   const bool right_rendered =
       left_rendered && render_chain_frame_impl(
                            opts, nil, right.color_texture, right.color_slice, right.depth_texture,
                            right.depth_slice, &right.viewport, right.clear_depth, right.view_id,
                            right_transform, binocular_cull, false, command_buffer, chain_data,
-                           chain_offset, chain_size);
+                           chain_offset, chain_size, right.hud_plane);
   if (right_rendered) {
     m_chain_stats.last_views_rendered = 2;
     if (physical) {
@@ -1869,7 +1882,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
                                             id<MTLCommandBuffer> borrowed_command_buffer,
                                             const u8* chain_data,
                                             u32 chain_offset,
-                                            std::size_t chain_size) {
+                                            std::size_t chain_size,
+                                            const metal_renderer::HudPlaneTransform& hud_plane) {
   if (m_shared_state.version == GameVersion::Jak2) {
     const auto validation =
         metal_renderer::validate_jak2_metal_dma_chain(chain_data, chain_size, chain_offset);
@@ -1983,6 +1997,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.game_res_w = opts.game_res_w;
     m_shared_state.game_res_h = opts.game_res_h;
     m_shared_state.view_transform = view_transform;
+    m_shared_state.hud_plane = hud_plane;
     m_shared_state.immersive_camera_enabled = immersive_cull_planes != nullptr;
     m_shared_state.immersive_cull_planes =
         immersive_cull_planes ? *immersive_cull_planes : metal_renderer::ImmersiveCullPlanes{};
@@ -3035,6 +3050,7 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.background = &m_background;
     m_shared_state.secondary_view = false;
     m_shared_state.view_transform = {};
+    m_shared_state.hud_plane = {};
     m_shared_state.immersive_camera_enabled = false;
     m_shared_state.immersive_cull_planes = {};
   }

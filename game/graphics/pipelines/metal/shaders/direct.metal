@@ -34,6 +34,9 @@ struct DirectVsParams {
   int offscreen_mode;
   uint apply_view_transform;
   float4x4 view_clip_from_game_clip;
+  // Opt-in head-locked HUD plane; mutually exclusive with apply_view_transform for Direct.
+  uint apply_hud_plane;
+  float4x4 hud_clip_from_screen_clip;
 };
 
 struct DirectFsParams {
@@ -93,8 +96,9 @@ vertex DirectBasicVSOut direct_basic_vs(uint vid [[vertex_id]],
                             -(v.xyzf.y - 0.5) * 32.0 * params.height_scale *
                                 params.scissor_adjust,
                             v.xyzf.z, 1.0);
-  out.pos = params.apply_view_transform != 0 ? params.view_clip_from_game_clip * game_clip
-                                            : game_clip;
+  out.pos = params.apply_hud_plane != 0      ? params.hud_clip_from_screen_clip * game_clip
+            : params.apply_view_transform != 0 ? params.view_clip_from_game_clip * game_clip
+                                               : game_clip;
   float4 rgba = float4(v.rgba) / 255.0;
   out.fragment_color = float4(rgba.xyz, rgba.w * 2.0);
   out.gs_scissor = v.scissor;
@@ -124,8 +128,9 @@ vertex DirectTexturedVSOut direct_textured_vs(uint vid [[vertex_id]],
                            params.scissor_adjust,
                        v.xyzf.z, 1.0);
   }
-  out.pos = params.apply_view_transform != 0 ? params.view_clip_from_game_clip * game_clip
-                                            : game_clip;
+  out.pos = params.apply_hud_plane != 0      ? params.hud_clip_from_screen_clip * game_clip
+            : params.apply_view_transform != 0 ? params.view_clip_from_game_clip * game_clip
+                                               : game_clip;
   float4 rgba = float4(v.rgba) / 255.0;
   out.fragment_color = float4(rgba.xyz, rgba.w * 2.0);
   out.tex_coord = float3(v.stq);

@@ -408,8 +408,13 @@ struct SpriteVsParams {
   u32 view_transform_mode_mask;  // metal_renderer::sprite_view_transform_mode_mask()
   float pad[2];
   float view_clip_from_game_clip[16];
+  u32 apply_hud_plane;  // rendermode kSpriteRenderModeHud only
+  u32 pad2[3];
+  float hud_clip_from_screen_clip[16];
 };
-static_assert(sizeof(SpriteVsParams) == 560);
+static_assert(sizeof(SpriteVsParams) == 640);
+static_assert(offsetof(SpriteVsParams, apply_hud_plane) == 560);
+static_assert(offsetof(SpriteVsParams, hud_clip_from_screen_clip) == 576);
 static_assert(offsetof(SpriteVsParams, view_transform_mode_mask) == 484);
 static_assert(offsetof(SpriteVsParams, view_clip_from_game_clip) == 496);
 
@@ -1611,6 +1616,12 @@ void MetalSpriteRenderer::flush_sprites(MetalSharedRenderState* render_state,
   memcpy(vs_params.view_clip_from_game_clip,
          render_state->view_transform.clip_from_game_clip.data(),
          sizeof(vs_params.view_clip_from_game_clip));
+  vs_params.apply_hud_plane =
+      metal_renderer::hud_plane_eligible(metal_renderer::StereoDrawPath::SpriteHud, false) &&
+      render_state->version == GameVersion::Jak1 && render_state->hud_plane.enabled;
+  memcpy(vs_params.hud_clip_from_screen_clip,
+         render_state->hud_plane.clip_from_screen_clip.data(),
+         sizeof(vs_params.hud_clip_from_screen_clip));
 
   id<MTLRenderCommandEncoder> enc = ctx.enc;
   [enc setVertexBuffer:vbuf offset:voffset atIndex:0];

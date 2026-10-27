@@ -158,4 +158,36 @@ inline std::array<float, 4> apply(const ViewTransform& transform,
   return receives_view_transform(space) ? apply(transform, clip) : clip;
 }
 
+// Opt-in head-locked HUD plane contract. The host supplies, per eye,
+// P_eye * inverse(deviceFromView) * planeFromScreen, where planeFromScreen maps game NDC to a
+// 1.6x1.2 m plane 2 m in front of the device. It is parallel to the World view transform and is
+// never written into clip_from_game_clip. Disabled/identity is the conventional one-view path.
+struct HudPlaneTransform {
+  bool enabled = false;
+  std::array<float, 16> clip_from_screen_clip = kIdentityMatrix4;
+};
+
+inline bool is_finite_hud_plane(const HudPlaneTransform& hud) {
+  for (float value : hud.clip_from_screen_clip) {
+    if (!std::isfinite(value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Only an explicitly tagged Direct registration or group-1 sprite HUD vertices may use the HUD
+// plane. Screen stereo space alone is not HUD: ShadowOverlay, GenericHud, SpriteDistortion and
+// untagged Direct renderers keep their existing behavior.
+constexpr bool hud_plane_eligible(StereoDrawPath path, bool direct_hud_opt_in) {
+  switch (path) {
+    case StereoDrawPath::Direct:
+      return direct_hud_opt_in;
+    case StereoDrawPath::SpriteHud:
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace metal_renderer

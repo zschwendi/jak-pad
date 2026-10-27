@@ -39,9 +39,14 @@ struct DirectVsParams {
   s32 offscreen_mode;
   u32 apply_view_transform;
   float view_clip_from_game_clip[16];
+  u32 apply_hud_plane;
+  u32 pad[3];
+  float hud_clip_from_screen_clip[16];
 };
-static_assert(sizeof(DirectVsParams) == 80);
+static_assert(sizeof(DirectVsParams) == 160);
 static_assert(offsetof(DirectVsParams, view_clip_from_game_clip) == 16);
+static_assert(offsetof(DirectVsParams, apply_hud_plane) == 80);
+static_assert(offsetof(DirectVsParams, hud_clip_from_screen_clip) == 96);
 
 // must match DirectFsParams in shaders/direct.metal (float4s are 16-aligned)
 struct DirectFsParams {
@@ -83,10 +88,12 @@ u32 get_direct_qwc_or_nop(const VifCode& code) {
 MetalDirectRenderer::MetalDirectRenderer(const std::string& name,
                                          int my_id,
                                          int batch_size,
-                                         metal_renderer::StereoSpace stereo_space)
+                                         metal_renderer::StereoSpace stereo_space,
+                                         bool hud_plane_opt_in)
     : MetalBucketRenderer(name, my_id),
       m_prim_buffer(batch_size),
-      m_stereo_space(stereo_space) {}
+      m_stereo_space(stereo_space),
+      m_hud_plane_opt_in(hud_plane_opt_in) {}
 
 MetalProgressRenderer::MetalProgressRenderer(const std::string& name,
                                              int my_id,
@@ -596,6 +603,14 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
   memcpy(vs_params.view_clip_from_game_clip,
          render_state->view_transform.clip_from_game_clip.data(),
          sizeof(vs_params.view_clip_from_game_clip));
+  vs_params.apply_hud_plane =
+      metal_renderer::hud_plane_eligible(metal_renderer::StereoDrawPath::Direct,
+                                         m_hud_plane_opt_in) &&
+      !m_offscreen_mode && render_state->version == GameVersion::Jak1 &&
+      render_state->hud_plane.enabled;
+  memcpy(vs_params.hud_clip_from_screen_clip,
+         render_state->hud_plane.clip_from_screen_clip.data(),
+         sizeof(vs_params.hud_clip_from_screen_clip));
 
   DirectFsParams fs_params = {};
   fs_params.fog_color[0] = render_state->fog_color[0] / 255.f;

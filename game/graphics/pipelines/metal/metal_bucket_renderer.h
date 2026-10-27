@@ -123,6 +123,7 @@ struct MetalSharedRenderState {
   int game_res_w = 640;
   int game_res_h = 480;
   metal_renderer::ViewTransform view_transform;
+  metal_renderer::HudPlaneTransform hud_plane;
   bool immersive_camera_enabled = false;
   metal_renderer::ImmersiveCullPlanes immersive_cull_planes = {};
   // Production hosts can disable expensive renderer diagnostics while retaining validation and

@@ -37,7 +37,8 @@ class MetalDirectRenderer : public MetalBucketRenderer {
       int my_id,
       int batch_size,
       metal_renderer::StereoSpace stereo_space = metal_renderer::stereo_space_for(
-          metal_renderer::StereoDrawPath::Direct));
+          metal_renderer::StereoDrawPath::Direct),
+      bool hud_plane_opt_in = false);
 
   void render(DmaFollower& dma,
               MetalSharedRenderState* render_state,
@@ -305,6 +306,7 @@ class MetalDirectRenderer : public MetalBucketRenderer {
   Stats m_stats;
   bool m_warned_unsupported_blend = false;
   metal_renderer::StereoSpace m_stereo_space;
+  bool m_hud_plane_opt_in = false;
 };
 
 /*!

@@ -44,6 +44,9 @@ struct SpriteVsParams {
   // Bit N set: rendermode N receives view_clip_from_game_clip (metal_view_transform.h).
   uint view_transform_mode_mask;
   float4x4 view_clip_from_game_clip;
+  // Opt-in head-locked HUD plane for rendermode 2 only.
+  uint apply_hud_plane;
+  float4x4 hud_clip_from_screen_clip;
 };
 
 struct SpriteFsParams {
@@ -188,7 +191,10 @@ vertex SpriteVSOut sprite3_vs(uint vid [[vertex_id]],
   // 2D sprites already divided by w, but their output is a positive multiple of the world
   // point's game clip, so the same linear view transform applies.
   const bool view_space = ((p.view_transform_mode_mask >> rendermode) & 1u) != 0u;
-  out.pos = view_space ? p.view_clip_from_game_clip * transformed : transformed;
+  const bool hud_plane = p.apply_hud_plane != 0u && rendermode == 2u;
+  out.pos = hud_plane    ? p.hud_clip_from_screen_clip * transformed
+            : view_space ? p.view_clip_from_game_clip * transformed
+                         : transformed;
 
   out.fragment_color *= 2.0;
   out.fragment_color.w *= 2.0;

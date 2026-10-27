@@ -121,5 +121,31 @@ int main() {
   if (!metal_renderer::is_finite({}) || metal_renderer::is_finite(invalid)) {
     return 1;
   }
+  {
+    using metal_renderer::hud_plane_eligible;
+    static_assert(!hud_plane_eligible(StereoDrawPath::Direct, false));
+    static_assert(hud_plane_eligible(StereoDrawPath::Direct, true));
+    static_assert(hud_plane_eligible(StereoDrawPath::SpriteHud, false));
+    for (auto path : {StereoDrawPath::Sprite3d, StereoDrawPath::Sprite2d,
+                      StereoDrawPath::SpriteDistortion, StereoDrawPath::Sky, StereoDrawPath::Ocean,
+                      StereoDrawPath::GenericWorld, StereoDrawPath::GenericHud,
+                      StereoDrawPath::ShadowVolume, StereoDrawPath::ShadowOverlay}) {
+      if (hud_plane_eligible(path, false) || hud_plane_eligible(path, true)) {
+        return 1;
+      }
+    }
+    static_assert(metal_renderer::sprite_view_transform_mode_mask() ==
+                  ((1u << metal_renderer::kSpriteRenderMode2d) |
+                   (1u << metal_renderer::kSpriteRenderMode3d)));
+    metal_renderer::HudPlaneTransform hud;
+    if (hud.enabled || hud.clip_from_screen_clip != metal_renderer::kIdentityMatrix4 ||
+        !metal_renderer::is_finite_hud_plane(hud)) {
+      return 1;
+    }
+    hud.clip_from_screen_clip[5] = std::numeric_limits<float>::infinity();
+    if (metal_renderer::is_finite_hud_plane(hud)) {
+      return 1;
+    }
+  }
   return 0;
 }

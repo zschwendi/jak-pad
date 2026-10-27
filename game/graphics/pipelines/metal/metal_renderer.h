@@ -128,6 +128,9 @@ struct MetalExternalRenderTargetDescriptor {
   // packet and immersive_camera instead.
   metal_renderer::ViewTransform view_transform;
   metal_renderer::ImmersiveCameraContract immersive_camera;
+  // Opt-in head-locked HUD plane, parallel to view_transform. Only explicitly eligible Jak 1 HUD
+  // draws use it; disabled keeps every draw on its existing path.
+  metal_renderer::HudPlaneTransform hud_plane;
 };
 
 enum class MetalExternalFrameReservation {
@@ -305,7 +308,8 @@ class MetalRenderer {
                                id<MTLCommandBuffer> borrowed_command_buffer,
                                const u8* chain_data,
                                u32 chain_offset,
-                               std::size_t chain_size);
+                               std::size_t chain_size,
+                               const metal_renderer::HudPlaneTransform& hud_plane = {});
 #if GOALPAD_VISION_STEREO_EYE_MARKERS
   void encode_stereo_eye_markers(
       id<MTLCommandBuffer> command_buffer,

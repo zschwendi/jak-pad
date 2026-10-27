@@ -11,6 +11,7 @@
 
 #include "game/graphics/pipelines/metal/metal_jak1_sprite_stereo_oracle.h"
 #include "game/graphics/pipelines/metal/metal_sprite_renderer.h"
+#include "game/graphics/pipelines/metal/metal_direct_renderer.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
 #include "game/graphics/texture/TexturePool.h"
 
@@ -1299,17 +1300,62 @@ PixelExtent expected_world_extent(const metal_renderer::ViewTransform& transform
   return extent;
 }
 
-// HUD corners in authored screen space; no eye transform applies.
-PixelExtent expected_hud_extent() {
+// Independent screen corner oracle; only the selected HUD plane changes these coordinates.
+PixelExtent expected_screen_extent(const metal_renderer::ViewTransform& transform,
+                                    float x0, float y0, float x1, float y1) {
   PixelExtent extent;
-  for (float corner_x : {-1.f, 1.f}) {
-    for (float corner_y : {-1.f, 1.f}) {
-      include_ndc(&extent, (kStereoHudX + kStereoBasisX * kStereoHudScale * corner_x) / 256.f,
-                  -(kStereoHudY + kStereoBasisY * kStereoHudScale * corner_y) / 128.f *
-                      kJak1ScissorAdjust);
+  for (float x : {x0, x1}) {
+    for (float y : {y0, y1}) {
+      const auto clip = metal_renderer::apply(transform, {x, y, 0.f, 1.f});
+      ASSERT(clip[3] > 0.f);
+      include_ndc(&extent, clip[0] / clip[3], clip[1] / clip[3]);
     }
   }
   return extent;
+}
+
+PixelExtent expected_hud_extent(const metal_renderer::ViewTransform& transform) {
+  return expected_screen_extent(transform,
+      (kStereoHudX - kStereoBasisX * kStereoHudScale) / 256.f,
+      -(kStereoHudY - kStereoBasisY * kStereoHudScale) / 128.f * kJak1ScissorAdjust,
+      (kStereoHudX + kStereoBasisX * kStereoHudScale) / 256.f,
+      -(kStereoHudY + kStereoBasisY * kStereoHudScale) / 128.f * kJak1ScissorAdjust);
+}
+
+void draw_screen_control(MetalSharedRenderState* state, MetalFrameContext& ctx,
+                         bool hud_opt_in, float x0, float y0, float x1, float y1,
+                         Pixel color) {
+  struct Qw { u64 lo; u64 hi; };
+  using Reg = GifTag::RegisterDescriptor;
+  const auto tag = [](u32 loops, u32 regs) {
+    return loops | (1ull << 15) | (static_cast<u64>(regs) << 60);
+  };
+  const Qw setup[] = {
+      {tag(2, 1), static_cast<u64>(Reg::AD)},
+      {448 | (1ull << 24) | (1ull << 32), static_cast<u64>(GsRegisterAddress::ZBUF_1)},
+      {1 | (1 << 1) | (1 << 16) | (1 << 17), static_cast<u64>(GsRegisterAddress::TEST_1)},
+  };
+  const Reg regs[] = {Reg::PRIM, Reg::RGBAQ, Reg::XYZF2, Reg::RGBAQ, Reg::XYZF2,
+                      Reg::RGBAQ, Reg::XYZF2, Reg::RGBAQ, Reg::XYZF2};
+  u64 packed_regs = 0;
+  for (int i = 0; i < 9; ++i) packed_regs |= static_cast<u64>(regs[i]) << (i * 4);
+  std::vector<Qw> gif = {{tag(1, 9), packed_regs},
+                         {static_cast<u64>(GsPrim::Kind::TRI_STRIP) | 8, 0}};
+  const float corners[4][2] = {{x0, y0}, {x1, y0}, {x0, y1}, {x1, y1}};
+  for (const auto& corner : corners) {
+    gif.push_back({color.r | (static_cast<u64>(color.g) << 32),
+                   color.b | (0x80ull << 32)});
+    const u64 x = static_cast<u64>((2048.f + 256.f * corner[0]) * 16.f);
+    const u64 y = static_cast<u64>((2048.f - 112.f * corner[1]) * 16.f);
+    gif.push_back({x | (y << 32), 0});
+  }
+  MetalDirectRenderer direct("synthetic-screen-control", 1, 100,
+                             metal_renderer::StereoSpace::Screen, hud_opt_in);
+  direct.reset_state();
+  direct.render_gif(reinterpret_cast<const u8*>(setup), sizeof(setup), state, ctx);
+  direct.render_gif(reinterpret_cast<const u8*>(gif.data()), gif.size() * 16, state, ctx);
+  direct.flush_pending(state, ctx);
+  ASSERT(direct.stats().draw_calls == 1);
 }
 
 void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
@@ -1376,10 +1422,9 @@ void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
   const metal_renderer::ViewTransform identity;
 
   constexpr Pixel clear = {16, 32, 48, 255};
-  const PixelExtent hud_expected = expected_hud_extent();
   const Jak1StereoSpriteFixture fixture;
-  const metal_renderer::ViewTransform* views[] = {&identity, &left, &right};
-  PixelExtent world_by_view[3];
+  const metal_renderer::ViewTransform* views[] = {&identity, &left, &right, &identity, &identity};
+  PixelExtent world_by_view[5];
   int view_index = 0;
   for (const auto* transform : views) {
     stream.reset();
@@ -1447,6 +1492,17 @@ void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
     state.game_res_w = kDistortTargetWidth;
     state.game_res_h = kDistortTargetHeight;
     state.view_transform = *transform;
+    metal_renderer::ViewTransform hud_transform;
+    if (view_index >= 3) {
+      hud_transform.clip_from_game_clip = {
+          0.4f, 0, 0, 0, 0, 0.4f, 0, 0, 0, 0, 0, 0,
+          view_index == 3 ? -0.25f : 0.25f, -0.25f, 0.2f, 1};
+      state.hud_plane.enabled = true;
+      state.hud_plane.clip_from_screen_clip = hud_transform.clip_from_game_clip;
+    }
+    const auto hud_expected = expected_hud_extent(hud_transform);
+    const auto direct_expected = expected_screen_extent(hud_transform, 0.4f, 0.45f, 0.7f, 0.7f);
+    const auto overlay_expected = expected_screen_extent(identity, -0.9f, -0.8f, -0.7f, -0.6f);
     DmaFollower dma(chain.bytes.data(), 0, chain.bytes.size());
     MetalSpriteRenderer renderer("synthetic-jak1-stereo-sprite", 63);
     renderer.render(dma, &state, ctx);
@@ -1456,6 +1512,8 @@ void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
     ASSERT(renderer.stats().count_2d_grp1 == 1);
     ASSERT(renderer.stats().normal_sprites_submitted == 2);
     ASSERT(renderer.stats().missing_textures == 0);
+    draw_screen_control(&state, ctx, true, 0.4f, 0.45f, 0.7f, 0.7f, {0, 0, 255, 255});
+    draw_screen_control(&state, ctx, false, -0.9f, -0.8f, -0.7f, -0.6f, {255, 255, 0, 255});
     [ctx.enc endEncoding];
 #if TARGET_OS_OSX
     id<MTLBlitCommandEncoder> sync = [commands blitCommandEncoder];
@@ -1478,6 +1536,8 @@ void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
 
     PixelExtent world_covered;
     PixelExtent hud_covered;
+    PixelExtent direct_covered;
+    PixelExtent overlay_covered;
     for (int y = 0; y < kDistortTargetHeight; y++) {
       for (int x = 0; x < kDistortTargetWidth; x++) {
         const Pixel pixel = read_bgra_pixel(pixels, x, y);
@@ -1485,11 +1545,17 @@ void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
           world_covered.include(x + 0.5f, y + 0.5f);
         } else if (pixel.g >= 250 && pixel.r <= 5 && pixel.b <= 5) {
           hud_covered.include(x + 0.5f, y + 0.5f);
+        } else if (pixel.b >= 250 && pixel.r <= 5 && pixel.g <= 5) {
+          direct_covered.include(x + 0.5f, y + 0.5f);
+        } else if (pixel.r >= 250 && pixel.g >= 250 && pixel.b <= 5) {
+          overlay_covered.include(x + 0.5f, y + 0.5f);
         } else {
           ASSERT(pixel_near(pixel, clear, 0));
         }
       }
     }
+    ASSERT(extent_matches(direct_covered, direct_expected));
+    ASSERT(extent_matches(overlay_covered, overlay_expected));
     const PixelExtent world_expected = expected_world_extent(*transform);
     if (!extent_matches(world_covered, world_expected) ||
         !extent_matches(hud_covered, hud_expected)) {
@@ -1508,6 +1574,8 @@ void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
     world_by_view[view_index++] = world_covered;
   }
 
+  ASSERT(extent_matches(world_by_view[3], world_by_view[0]));
+  ASSERT(extent_matches(world_by_view[4], world_by_view[0]));
   // The fixture must actually separate the views; otherwise an untransformed
   // sprite could satisfy every case.
   ASSERT(std::abs(world_by_view[1].min_x - world_by_view[0].min_x) > 8.f);
