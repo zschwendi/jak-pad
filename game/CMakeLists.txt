@@ -1362,6 +1362,8 @@ if(APPLE)
             graphics/pipelines/metal/metal_jak2_raw_image_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_sky_post_texture_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_map_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_map_copied_plan.cpp
             graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.cpp)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_host_bridge.mm
@@ -1506,8 +1508,6 @@ if(APPLE)
             COMMAND jak2-map-layer-convert-test)
 
         add_executable(jak2-map-layer-executor-readback-test
-            graphics/pipelines/metal/metal_jak2_map_layer_executor.mm
-            graphics/pipelines/metal/metal_jak2_map_layer_convert.cpp
             graphics/pipelines/metal/metal_jak2_map_layer_executor_readback_test.mm)
         set_source_files_properties(
             graphics/pipelines/metal/metal_jak2_map_layer_executor.mm

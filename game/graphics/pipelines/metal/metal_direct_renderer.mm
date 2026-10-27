@@ -269,8 +269,10 @@ void MetalHostTextureUploadDirectRenderer::render(DmaFollower& dma,
                                                   MetalFrameContext& ctx) {
   ASSERT(metal_renderer::bucket_chain_layout(render_state->version) ==
          metal_renderer::MetalBucketChainLayout::Jak2Direct);
+  const bool map_marker_dispatch =
+      m_my_id == 319 && render_state->host_map_marker_callback != nullptr;
   if (m_callback_point == CallbackPoint::BucketEntry &&
-      render_state->host_bucket_callback) {
+      render_state->host_bucket_callback && !map_marker_dispatch) {
     render_state->host_bucket_callback(render_state->host_bucket_context,
                                        static_cast<u32>(m_my_id));
   }
@@ -278,7 +280,13 @@ void MetalHostTextureUploadDirectRenderer::render(DmaFollower& dma,
   reset_state();
   while (dma.current_tag_offset() != render_state->next_bucket) {
     const auto vif0 = dma.current_tag_vifcode0();
-    if (m_callback_point == CallbackPoint::PcPort12 &&
+    if (map_marker_dispatch && vif0.kind == VifCode::Kind::PC_PORT) {
+      // Every mixed map marker, including zero-payload START/FINISH, runs before read/advance.
+      flush_pending(render_state, ctx);
+      render_state->host_map_marker_callback(render_state->host_map_marker_context,
+                                             dma.current_tag_offset(), dma.current_tag_vif0(),
+                                             dma.current_tag_vif1());
+    } else if (m_callback_point == CallbackPoint::PcPort12 &&
         vif0.kind == VifCode::Kind::PC_PORT && vif0.immediate == 12) {
       flush_pending(render_state, ctx);
       if (render_state->host_bucket_callback) {

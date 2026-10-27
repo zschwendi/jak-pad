@@ -92,6 +92,9 @@ struct MetalRenderOptions {
   // Optional synchronous host work that must stay ordered with Jak II bucket dispatch.
   void* host_bucket_context = nullptr;
   MetalHostBucketCallback host_bucket_callback = nullptr;
+  // Mixed Jak II map bucket 319 only; legacy ordinary map keeps host_bucket_callback.
+  void* host_map_marker_context = nullptr;
+  MetalHostMapMarkerCallback host_map_marker_callback = nullptr;
   const metal_renderer::Jak2PrisEyeTextureUploadPlan* jak2_pris_eye_plans = nullptr;
   std::size_t jak2_pris_eye_plan_count = 0;
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;

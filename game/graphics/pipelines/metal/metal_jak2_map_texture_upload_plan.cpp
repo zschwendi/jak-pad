@@ -57,6 +57,28 @@ constexpr s32 kSpriteZ = 0xfffff0;
 constexpr s32 kSpriteU1 = 8192;
 constexpr s32 kSpriteV1 = 3328;
 
+// bigmap-h.gc:237-241 adgif-tmpl: five A+D writes in texture.gc:2683-2687 register order.
+constexpr u64 kAdgifGifTag = 0x5 | (0x1ull << 15) | (0x1ull << 60);
+constexpr u64 kAdgifGifRegs = 0xe;
+constexpr u64 kGsMiptbp1_1 = 0x34;
+constexpr u64 kAdgifClamp = 0x1 | (0x1ull << 2);
+constexpr u64 kAdgifAlpha = (0x1ull << 2) | (0x1ull << 6);
+// The simple texture writer changes only mxl, mmag, mmin and l after zero initialization.
+constexpr u64 kTex1FieldMask = (0x7ull << 2) | (0x1ull << 5) | (0x7ull << 6) | (0x3ull << 19);
+constexpr u64 kMiptbpFieldMask = (0x1ull << 60) - 1;
+
+// draw-from-minimap (bigmap.gc:437-544) atlas cells and constant Z.
+constexpr s32 kIconCell = 320;
+constexpr s32 kIconInset = 8;
+constexpr s32 kIconSpan = 312;
+constexpr s32 kIconZ = 0xffffff;
+constexpr s32 kGsUvMaximum = 0x3fff;
+
+// bigmap-h.gc:211-235 draw-tmpl: TRI_STRIP tme/abe/fst, RGBAQ + four UV/XYZ2 pairs.
+constexpr u64 kTargetGifTag = 0x1 | (0x1ull << 15) | (0x1ull << 46) | (0x154ull << 47) |
+                              (0x9ull << 60);
+constexpr u64 kTargetGifRegs = 0x535353531;
+
 struct GsWrite {
   u64 reg;
   u64 value;
@@ -232,6 +254,154 @@ bool sprite_ok(const Transfer& t, Jak2MapLayerSpriteRect* rect) {
   rect->y1 = q(5, 1);
   return position_ok(rect->x0) && position_ok(rect->y0) && position_ok(rect->x1) &&
          position_ok(rect->y1);
+}
+
+s32 lane(const Transfer& t, int quad, int index) {
+  return read<s32>(t.data + 16 * quad + 4 * index);
+}
+
+bool xy_ok(s32 v) {
+  return v >= 0 && v <= 0xffff;
+}
+
+// texture.gc:2466-2506: tcc 1, tfx 0, csm 0, csa 0, cld 1; dynamic fields must be legal GS values.
+bool adgif_tex0_ok(u64 v) {
+  const u64 psm = (v >> 20) & 0x3f;
+  const u64 tw = (v >> 26) & 0xf;
+  const u64 th = (v >> 30) & 0xf;
+  const u64 cpsm = (v >> 51) & 0xf;
+  const bool psm_ok = psm == 0x00 || psm == 0x01 || psm == 0x02 || psm == 0x0a || psm == 0x13 ||
+                      psm == 0x14 || psm == 0x1b || psm == 0x24 || psm == 0x2c || psm == 0x30 ||
+                      psm == 0x31 || psm == 0x32 || psm == 0x3a;
+  return psm_ok && tw <= 10 && th <= 10 && (cpsm == 0x00 || cpsm == 0x02 || cpsm == 0x0a) &&
+         ((v >> 34) & 0x1) == 1 && ((v >> 35) & 0x3) == 0 && ((v >> 55) & 0x1) == 0 &&
+         ((v >> 56) & 0x1f) == 0 && (v >> 61) == 1;
+}
+
+// adgif-shader<-texture-simple!: TEX0_1, TEX1_1, MIPTBP1_1, CLAMP_1 clamp/clamp, ALPHA_1 b1 d1.
+bool adgif_ok(const Transfer& t) {
+  if (!is_direct(t, 0, 6) || read<u64>(t.data) != kAdgifGifTag ||
+      read<u64>(t.data + 8) != kAdgifGifRegs) {
+    return false;
+  }
+  constexpr std::array<u64, 5> regs = {kGsTex0_1, kGsTex1_1, kGsMiptbp1_1, kGsClamp1, kGsAlpha1};
+  for (std::size_t i = 0; i < regs.size(); i++) {
+    if (read<u64>(t.data + 16 * (i + 1) + 8) != regs[i]) {
+      return false;
+    }
+  }
+  const u64 tex1 = read<u64>(t.data + 32);
+  return adgif_tex0_ok(read<u64>(t.data + 16)) && (tex1 & ~kTex1FieldMask) == 0 &&
+         ((tex1 >> 2) & 0x7) <= 6 && ((tex1 >> 6) & 0x7) <= 5 &&
+         (read<u64>(t.data + 48) & ~kMiptbpFieldMask) == 0 &&
+         read<u64>(t.data + 64) == kAdgifClamp && read<u64>(t.data + 80) == kAdgifAlpha;
+}
+
+// draw-from-minimap sprite: class RGB, alpha 128, atlas cell UVs, XYZ2 z #xffffff w 0. The first
+// corner is an integer pixel (16-aligned); the far corner adds a scaled float extent.
+bool icon_sprite_ok(const Transfer& t) {
+  if (!is_direct(t, 0, 6) || read<u64>(t.data) != kSpriteGifTag ||
+      read<u64>(t.data + 8) != kSpriteGifRegs) {
+    return false;
+  }
+  for (int i = 0; i < 3; i++) {
+    if (lane(t, 1, i) < 0 || lane(t, 1, i) > 0xff) {
+      return false;
+    }
+  }
+  const s32 u0 = lane(t, 2, 0);
+  const s32 v0 = lane(t, 2, 1);
+  const auto cell_ok = [](s32 c) {
+    return c >= kIconInset && c <= kGsUvMaximum - kIconSpan && (c - kIconInset) % kIconCell == 0;
+  };
+  return lane(t, 1, 3) == 128 && cell_ok(u0) && cell_ok(v0) && lane(t, 2, 2) == 0 &&
+         lane(t, 2, 3) == 0 && position_ok(lane(t, 3, 0)) && position_ok(lane(t, 3, 1)) &&
+         lane(t, 3, 2) == kIconZ && lane(t, 3, 3) == 0 && lane(t, 4, 0) == u0 + kIconSpan &&
+         lane(t, 4, 1) == v0 + kIconSpan && lane(t, 4, 2) == 0 && lane(t, 4, 3) == 0 &&
+         xy_ok(lane(t, 5, 0)) && xy_ok(lane(t, 5, 1)) && lane(t, 5, 2) == kIconZ &&
+         lane(t, 5, 3) == 0;
+}
+
+// bigmap.gc:796-818 target marker: color (0,255,255,128), fixed 256-texel UVs, rotated corners
+// that are float*16 (not 16-aligned), z #xffffff w 0.
+bool target_draw_ok(const Transfer& t) {
+  if (!is_direct(t, 0, 10) || read<u64>(t.data) != kTargetGifTag ||
+      read<u64>(t.data + 8) != kTargetGifRegs) {
+    return false;
+  }
+  constexpr s32 kColor[4] = {0, 255, 255, 128};
+  constexpr s32 kUv[4][2] = {{0, 0}, {256, 0}, {0, 256}, {256, 256}};
+  for (int i = 0; i < 4; i++) {
+    if (lane(t, 1, i) != kColor[i]) {
+      return false;
+    }
+  }
+  for (int corner = 0; corner < 4; corner++) {
+    const int uv = 2 + 2 * corner;
+    const int xyz = uv + 1;
+    if (lane(t, uv, 0) != kUv[corner][0] || lane(t, uv, 1) != kUv[corner][1] ||
+        lane(t, uv, 2) != 0 || lane(t, uv, 3) != 0 || !xy_ok(lane(t, xyz, 0)) ||
+        !xy_ok(lane(t, xyz, 1)) || lane(t, xyz, 2) != kIconZ || lane(t, xyz, 3) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Second with-dma-buffer-add-bucket (bigmap.gc:710-825), entered on its first transfer and left
+// on the closing inert NEXT: [icon ADGIF sprite*] [target ADGIF target-draw]. Empty is the old form.
+bool parse_icon_chunk(Walk* w, std::size_t* direct) {
+  bool icon_adgif = false;
+  bool target = false;
+  std::size_t sprites = 0;
+  while (!is_inert_next(w->t)) {
+    const Transfer item = w->t;
+    if (item.tag.kind != DmaTag::Kind::CNT) {
+      return w->fail(Jak2MapMixedRejection::Transition, item.ordinal);
+    }
+    if (target) {
+      return w->fail(Jak2MapMixedRejection::IconOrder, item.ordinal);
+    }
+    if (is_direct(item, 0, 6) && read<u64>(item.data) == kAdgifGifTag) {
+      if (!adgif_ok(item)) {
+        return w->fail(Jak2MapMixedRejection::IconAdgif, item.ordinal);
+      }
+      if (!w->next()) {
+        return false;
+      }
+      if (is_direct(w->t, 0, 10)) {
+        if (!target_draw_ok(w->t)) {
+          return w->fail(Jak2MapMixedRejection::IconTarget, w->t.ordinal);
+        }
+        target = true;
+        *direct += 2;
+      } else {
+        if (icon_adgif || sprites != 0) {
+          return w->fail(Jak2MapMixedRejection::IconOrder, item.ordinal);
+        }
+        icon_adgif = true;
+        *direct += 1;
+        continue;  // w->t is already the following transfer.
+      }
+    } else if (is_direct(item, 0, 6) && read<u64>(item.data) == kSpriteGifTag) {
+      if (!icon_adgif) {
+        return w->fail(Jak2MapMixedRejection::IconOrder, item.ordinal);
+      }
+      if (!icon_sprite_ok(item)) {
+        return w->fail(Jak2MapMixedRejection::IconSprite, item.ordinal);
+      }
+      sprites++;
+      *direct += 1;
+    } else if (is_direct(item, 0, 10)) {
+      return w->fail(Jak2MapMixedRejection::IconOrder, item.ordinal);
+    } else {
+      return w->fail(Jak2MapMixedRejection::IconShape, item.ordinal);
+    }
+    if (!w->next()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 struct UploadRecord {
@@ -479,17 +649,19 @@ std::optional<Jak2MapTextureUploadTypedPlan> plan_jak2_map_texture_upload_typed(
     return std::nullopt;
   }
 
-  // with-dma-buffer-add-bucket closes the bigmap chunk with two inert links.
-  for (int i = 0; i < 2; i++) {
-    if (!w.next()) {
-      return std::nullopt;
-    }
-    if (!is_inert_next(w.t)) {
-      w.fail(i == 0 && is_anim_marker(w.t, kAnimStart, 0) ? Jak2MapMixedRejection::LayerCount
-                                                           : Jak2MapMixedRejection::Transition,
-             w.t.ordinal);
-      return std::nullopt;
-    }
+  // with-dma-buffer-add-bucket closes the bigmap chunk with an inert link; the second bucket
+  // chunk (icons, possibly empty) is closed by another.
+  if (!w.next()) {
+    return std::nullopt;
+  }
+  if (!is_inert_next(w.t)) {
+    w.fail(is_anim_marker(w.t, kAnimStart, 0) ? Jak2MapMixedRejection::LayerCount
+                                              : Jak2MapMixedRejection::Transition,
+           w.t.ordinal);
+    return std::nullopt;
+  }
+  if (!w.next() || !parse_icon_chunk(&w, &direct)) {
+    return std::nullopt;
   }
 
   // Legacy ordinary tail: Direct q2, PC_PORT descriptor, inert NEXT; then FLUSHA Direct q10.
@@ -592,6 +764,11 @@ const char* jak2_map_mixed_rejection_name(Jak2MapMixedRejection rejection) {
     case Jak2MapMixedRejection::FinalBoundary: return "final_boundary";
     case Jak2MapMixedRejection::BucketEnd: return "bucket_end";
     case Jak2MapMixedRejection::Legacy: return "legacy";
+    case Jak2MapMixedRejection::IconAdgif: return "icon_adgif";
+    case Jak2MapMixedRejection::IconSprite: return "icon_sprite";
+    case Jak2MapMixedRejection::IconTarget: return "icon_target";
+    case Jak2MapMixedRejection::IconOrder: return "icon_order";
+    case Jak2MapMixedRejection::IconShape: return "icon_shape";
   }
   return "unknown";
 }

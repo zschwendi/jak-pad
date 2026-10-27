@@ -15,6 +15,8 @@ set(OPENGOAL_METAL_RENDERER_SOURCES
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_blit_display_renderer.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_fog_texture_convert.cpp"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_bucket4_mixed_executor.mm"
+    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_map_layer_convert.cpp"
+    "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_map_layer_executor.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_opcode27_skull_gem_cpu.cpp"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_opcode27_skull_gem_executor.mm"
     "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_opcode41_cloud_cpu.cpp"

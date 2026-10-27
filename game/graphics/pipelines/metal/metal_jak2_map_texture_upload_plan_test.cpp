@@ -125,6 +125,41 @@ struct Fixture {
     for (u32 i = 0; i < 4 * 0x1a000; i++) mem[kImage0 + i] = u8((i * 7 + i / 0x1a000 * 31) & 0xff);
     for (u32 i = 0; i < 512; i++) put<u32>(kClutA + 4 * i, 0x80000000u | (i * 0x010203));
   }
+  // bigmap.gc:710-825 icon chunk between the two NEXT links (Build 261 39-transfer form).
+  void adgif(u64 tex0) {
+    const u32 d = cnt(6, 0, kDirect | 6);
+    put<u64>(d, 0x1000000000008005ull); put<u64>(d + 8, 0xe);
+    const u64 w[5][2] = {{tex0, 0x06}, {0x60, 0x14}, {0, 0x34}, {0x5, 0x08}, {0x44, 0x42}};
+    std::memcpy(mem.data() + d + 16, w, sizeof(w));
+  }
+  void icon(s32 cx, s32 cy, s32 x, s32 y) {
+    const u32 d = cnt(6, 0, kDirect | 6);
+    put<u64>(d, kSpriteGif); put<u64>(d + 8, kSpriteRegs);
+    const s32 u = 320 * cx + 8, v = 320 * cy + 8;
+    const s32 q[5][4] = {{255, 64, 0, 128}, {u, v, 0, 0}, {x * 16, y * 16, 0xffffff, 0},
+                         {u + 312, v + 312, 0, 0}, {x * 16 + 333, y * 16 + 333, 0xffffff, 0}};
+    std::memcpy(mem.data() + d + 16, q, sizeof(q));
+  }
+  void target_draw() {
+    const u32 d = cnt(10, 0, kDirect | 10);
+    put<u64>(d, 0x90aa400000008001ull); put<u64>(d + 8, 0x535353531ull);
+    const s32 q[9][4] = {{0, 255, 255, 128}, {0, 0, 0, 0},     {28001, 30003, 0xffffff, 0},
+                         {256, 0, 0, 0},     {28113, 29891, 0xffffff, 0}, {0, 256, 0, 0},
+                         {27889, 30115, 0xffffff, 0}, {256, 256, 0, 0}, {28001, 30227, 0xffffff, 0}};
+    std::memcpy(mem.data() + d + 16, q, sizeof(q));
+  }
+  static constexpr u64 kIconTex0 = 0x100 | (4ull << 14) | (6ull << 26) | (6ull << 30) | (1ull << 34) | (1ull << 61);
+  void build_icons(int sprites) {
+    build_mixed();
+    tags.resize(27);  // keep through the first transition NEXT; rebuild the rest.
+    cursor = tags[26] + 16;
+    adgif(kIconTex0);
+    for (int i = 0; i < sprites; i++) icon(i % 3, 1, 100 + 20 * i, 200);
+    adgif(kIconTex0);
+    target_draw();
+    next(kChunkB);
+    ordinary_groups(kChunkB);
+  }
   void build_legacy() {
     cursor = kBucketEntry;
     next(kChunkB);
@@ -288,6 +323,87 @@ void test_mutations() {
         d.rejection == R::Chain);
 }
 
+void expect_icon_reject(const char* name, int sprites,
+                        const std::function<void(Fixture&)>& mutate, Jak2MapMixedRejection expected) {
+  Fixture f;
+  f.build_icons(sprites);
+  mutate(f);
+  Jak2MapMixedDiagnostic d;
+  const auto plan = f.plan(&d);
+  if (plan || d.rejection != expected) {
+    std::fprintf(stderr, "icon reject %s: present=%d got=%s want=%s ordinal=%u\n", name,
+                 plan ? 1 : 0, jak2_map_mixed_rejection_name(d.rejection),
+                 jak2_map_mixed_rejection_name(expected), d.transfer_ordinal);
+    g_failures++;
+  }
+}
+
+void test_icon_chunk() {
+  for (int sprites : {0, 1, 5, 25}) {
+    Fixture f;
+    f.build_icons(sprites);
+    const std::size_t n = 39 + sprites;
+    CHECK(f.tags.size() == n);
+    Jak2MapMixedDiagnostic d;
+    const auto plan = f.plan(&d);
+    CHECK(plan.has_value());
+    if (!plan) {
+      std::fprintf(stderr, "icons(%d) rejected: %s ordinal=%u\n", sprites,
+                   jak2_map_mixed_rejection_name(d.rejection), d.transfer_ordinal);
+      continue;
+    }
+    CHECK(plan->transfer_count == n && plan->pc_port_marker_count == 18);
+    CHECK(plan->direct_replay_count == 15 + std::size_t(sprites));
+    CHECK(plan->op_count == 6 && plan->layer_count == 4 && plan->ordinary_count == 2);
+    CHECK(plan->ops[4].marker_transfer_ordinals[0] == 32 + sprites);
+    CHECK(plan->ops[5].marker_transfer_ordinals[0] == 35 + sprites);
+    CHECK(plan->ops[5].marker_tag_offsets[0] == f.tags[35 + sprites]);
+  }
+  using R = Jak2MapMixedRejection;
+  expect_icon_reject("65-transfer icon chain", 26, [](Fixture&) {}, R::Chain);
+  // Observed 39 ordinals: 27 icon ADGIF, 28 target ADGIF, 29 target draw, 30 NEXT.
+  expect_icon_reject("adgif nloop", 0, [](Fixture& f) { f.put<u8>(f.data(27), 4); }, R::IconShape);
+  expect_icon_reject("adgif nreg", 0, [](Fixture& f) { f.put<u64>(f.data(27), 0x2000000000008005ull); }, R::IconShape);
+  expect_icon_reject("adgif regs", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 8, 0xee); }, R::IconAdgif);
+  expect_icon_reject("adgif address", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 24, 0x07); }, R::IconAdgif);
+  expect_icon_reject("adgif order", 0, [](Fixture& f) {
+    f.put<u64>(f.data(27) + 72, 0x42); f.put<u64>(f.data(27) + 88, 0x08); }, R::IconAdgif);
+  expect_icon_reject("adgif clamp", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 64, 0x0); }, R::IconAdgif);
+  expect_icon_reject("adgif alpha", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 80, 0x48); }, R::IconAdgif);
+  expect_icon_reject("tex0 tfx", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 16, Fixture::kIconTex0 | (1ull << 35)); }, R::IconAdgif);
+  expect_icon_reject("tex0 psm", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 16, Fixture::kIconTex0 | (0x3ull << 20)); }, R::IconAdgif);
+  expect_icon_reject("tex0 tw", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 16, Fixture::kIconTex0 | (0xfull << 26)); }, R::IconAdgif);
+  expect_icon_reject("tex1 reserved", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 32, 0x60 | (1ull << 12)); }, R::IconAdgif);
+  expect_icon_reject("tex1 lcm not written", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 32, 0x61); }, R::IconAdgif);
+  expect_icon_reject("tex1 mtba not written", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 32, 0x60 | (1ull << 9)); }, R::IconAdgif);
+  expect_icon_reject("tex1 k not written", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 32, 0x60 | (1ull << 32)); }, R::IconAdgif);
+  expect_icon_reject("miptbp reserved", 0, [](Fixture& f) { f.put<u64>(f.data(27) + 48, 1ull << 62); }, R::IconAdgif);
+  expect_icon_reject("target prim", 0, [](Fixture& f) { f.put<u64>(f.data(29), 0x90a6000000008001ull); }, R::IconTarget);
+  expect_icon_reject("wrong untextured target prim", 0, [](Fixture& f) { f.put<u64>(f.data(29), 0x90a6400000008001ull); }, R::IconTarget);
+  expect_icon_reject("target regs", 0, [](Fixture& f) { f.put<u64>(f.data(29) + 8, 0x535353533ull); }, R::IconTarget);
+  expect_icon_reject("target uv", 0, [](Fixture& f) { f.put<s32>(f.data(29) + 64, 255); }, R::IconTarget);
+  expect_icon_reject("target z", 0, [](Fixture& f) { f.put<s32>(f.data(29) + 56, 0xfffff0); }, R::IconTarget);
+  expect_icon_reject("target w", 0, [](Fixture& f) { f.put<s32>(f.data(29) + 60, 1); }, R::IconTarget);
+  expect_icon_reject("target color", 0, [](Fixture& f) { f.put<s32>(f.data(29) + 16, 1); }, R::IconTarget);
+  expect_icon_reject("target xy range", 0, [](Fixture& f) { f.put<s32>(f.data(29) + 48, -1); }, R::IconTarget);
+  expect_icon_reject("unknown direct q6", 0, [](Fixture& f) { f.put<u64>(f.data(27), 0x1000000000008003ull); }, R::IconShape);
+  expect_icon_reject("unknown direct q8", 0, [](Fixture& f) {
+    f.put<u32>(f.tags[27] + 12, kDirect | 8); }, R::IconShape);
+  expect_icon_reject("unpaired target adgif", 0, [](Fixture& f) {
+    f.put<u64>(f.data(29), 0x1000000000008005ull); }, R::IconTarget);
+  expect_icon_reject("stray icon without adgif", 1, [](Fixture& f) {
+    f.put<u64>(f.data(27), 0x50ab400000008001ull); f.put<u64>(f.data(27) + 8, 0x53531); }, R::IconOrder);
+  expect_icon_reject("sprite uv cell", 1, [](Fixture& f) { f.put<s32>(f.data(28) + 32, 9); }, R::IconSprite);
+  expect_icon_reject("sprite uv span", 1, [](Fixture& f) { f.put<s32>(f.data(28) + 64, 8 + 311); }, R::IconSprite);
+  expect_icon_reject("sprite alpha", 1, [](Fixture& f) { f.put<s32>(f.data(28) + 28, 127); }, R::IconSprite);
+  expect_icon_reject("sprite z", 1, [](Fixture& f) { f.put<s32>(f.data(28) + 56, 0xfffff0); }, R::IconSprite);
+  expect_icon_reject("sprite xy0 align", 1, [](Fixture& f) { f.put<s32>(f.data(28) + 48, 1601); }, R::IconSprite);
+  expect_icon_reject("item after target", 0, [](Fixture& f) {
+    f.put<u64>(f.tags[30], 0x10000000ull | (6ull)); f.put<u32>(f.tags[30] + 12, kDirect | 6);
+    f.put<u64>(f.data(30), 0x1000000000008005ull); }, R::IconOrder);
+  expect_icon_reject("closing link cycle", 0, [](Fixture& f) { f.put<u32>(f.tags[30] + 4, kChunkA); }, R::Chain);
+}
+
 void test_cursor() {
   Fixture f;
   f.build_mixed();
@@ -322,6 +438,7 @@ int main() {
   test_empty_and_legacy();
   test_mutations();
   test_cursor();
+  test_icon_chunk();
   if (g_failures) {
     std::fprintf(stderr, "metal_jak2_map_texture_upload_plan_test: %d failure(s)\n", g_failures);
     return 1;

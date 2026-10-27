@@ -62,10 +62,13 @@ struct Jak2MapUploadOp {
 /*!
  * Typed bucket-319 plan. `mixed == false` wraps the existing ordinary-only planner unchanged.
  * `mixed == true` is the source-shaped non-city bigmap form: GS setup, exactly four indexed layers,
- * two inert NEXT links, one to eight ordinary groups, FLUSHA tail, final NEXT. Direct GS state and
- * sprite draws are validated against their GOAL templates but remain normal Direct replay; this
- * plan does not execute them. City maps (bigmap-index 20) and icon blocks are not represented and
- * fail closed.
+ * two inert NEXT links, one to eight ordinary groups, FLUSHA tail, final NEXT. Between the two
+ * NEXT links the bigmap.gc:710-825 icon chunk may appear: an optional mini-map-icons ADGIF followed
+ * by its draw-from-minimap sprites, then an optional map-target-marker ADGIF + TRI_STRIP pair.
+ * Icon sprites without the preceding icon ADGIF (the source's missing-texture error path) are not
+ * accepted. Direct GS state, sprite and icon draws are validated against their GOAL templates but
+ * remain normal Direct replay; this plan does not execute them. City maps (bigmap-index 20) fail
+ * closed.
  */
 struct Jak2MapTextureUploadTypedPlan {
   bool present = false;
@@ -105,6 +108,11 @@ enum class Jak2MapMixedRejection : u8 {
   FinalBoundary,
   BucketEnd,
   Legacy,
+  IconAdgif,
+  IconSprite,
+  IconTarget,
+  IconOrder,
+  IconShape,
 };
 
 struct Jak2MapMixedDiagnostic {

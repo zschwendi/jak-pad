@@ -45,6 +45,8 @@ class Jak2Shadow195FrameCapture;
 }
 
 using MetalHostBucketCallback = void (*)(void* context, u32 bucket_id);
+// Jak II mixed map bucket 319 only: invoked before each PC_PORT tag is read, with copied tag offset.
+using MetalHostMapMarkerCallback = void (*)(void* context, u32 tag_offset, u32 vif0, u32 vif1);
 
 /*!
  * Per-frame bump allocator for dynamic vertex data. The GL renderers stream
@@ -130,6 +132,8 @@ struct MetalSharedRenderState {
   std::size_t animated_texture_slot_count = 0;
   void* host_bucket_context = nullptr;
   MetalHostBucketCallback host_bucket_callback = nullptr;
+  void* host_map_marker_context = nullptr;
+  MetalHostMapMarkerCallback host_map_marker_callback = nullptr;
   const metal_renderer::Jak2PrisEyeTextureUploadPlan* jak2_pris_eye_plans = nullptr;
   std::size_t jak2_pris_eye_plan_count = 0;
   const metal_renderer::Jak2CommonPrisTextureUploadPlan* jak2_common_pris_plan = nullptr;

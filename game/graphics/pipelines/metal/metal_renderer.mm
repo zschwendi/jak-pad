@@ -1607,6 +1607,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.animated_texture_slot_count = opts.animated_texture_slot_count;
     m_shared_state.host_bucket_context = opts.host_bucket_context;
     m_shared_state.host_bucket_callback = opts.host_bucket_callback;
+    m_shared_state.host_map_marker_context = opts.host_map_marker_context;
+    m_shared_state.host_map_marker_callback = opts.host_map_marker_callback;
     m_shared_state.jak2_pris_eye_plans = opts.jak2_pris_eye_plans;
     m_shared_state.jak2_pris_eye_plan_count = opts.jak2_pris_eye_plan_count;
     m_shared_state.jak2_common_pris_plan = opts.jak2_common_pris_plan;
@@ -1623,6 +1625,8 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         state->animated_texture_slot_count = 0;
         state->host_bucket_context = nullptr;
         state->host_bucket_callback = nullptr;
+        state->host_map_marker_context = nullptr;
+        state->host_map_marker_callback = nullptr;
         state->jak2_pris_eye_plans = nullptr;
         state->jak2_pris_eye_plan_count = 0;
         state->jak2_common_pris_plan = nullptr;

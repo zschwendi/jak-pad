@@ -23,6 +23,9 @@
 
 #include "game/graphics/pipelines/metal/metal_jak2_bucket_table.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_mixed_executor.h"
+#include "game/graphics/pipelines/metal/metal_jak2_map_copied_plan.h"
+#include "game/graphics/pipelines/metal/metal_jak2_map_layer_executor.h"
+#include "game/graphics/pipelines/metal/metal_jak2_map_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_capture.h"
 #include "game/graphics/pipelines/metal/metal_jak2_bucket4_texture_upload_plan.h"
 #include "game/graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.h"
@@ -60,6 +63,7 @@ struct goal_jak2_metal_host {
   TexturePool textures{GameVersion::Jak2};
   MetalRenderer renderer;
   std::unique_ptr<metal_renderer::Jak2Bucket4MixedExecutor> bucket4_mixed_executor;
+  std::unique_ptr<metal_renderer::Jak2MapLayerExecutor> map_layer_executor;
   std::unique_ptr<metal_renderer::Jak2Opcode27SkullGemExecutor> skull_gem_executor;
   std::unique_ptr<metal_renderer::Jak2PrisonClutExecutor> prison_clut_executor;
   std::unique_ptr<metal_renderer::Jak2DarkJakClutExecutor> dark_jak_clut_executor;
@@ -1043,7 +1047,8 @@ static_assert(metal_renderer::kJak2MapChainDiagnosticBucket ==
 // after the map texture-upload plan rejects. Image payloads and embedded source pointers are never dereferenced.
 void maybe_log_map_chain_rejection_metadata(goal_jak2_metal_host* host,
                                             const void* ee_base,
-                                            u32 chain_offset) {
+                                            u32 chain_offset,
+                                            const metal_renderer::Jak2MapMixedDiagnostic& diagnostic) {
   const char* enabled = std::getenv("GOALPAD_JAK2_DEBUG_LOG_MAP_CHAIN");
   if (!host || !ee_base || !enabled || std::strcmp(enabled, "1") != 0) {
     return;
@@ -1068,13 +1073,15 @@ void maybe_log_map_chain_rejection_metadata(goal_jak2_metal_host* host,
   lg::info(
       "GOALPAD_JAK2_MAP_CHAIN_CAPTURE tick={} bucket={} walk={} valid={} present={} class={} "
       "xfer={} cap={} bytes={} inert={} ordinary={} direct={} gs={} animator={}/body{}/bytes{} "
-      "eye={} other={} malformed={} logged={}",
+      "eye={} other={} malformed={} logged={} mixed-stage={} mixed-transfer={}",
       host->metrics.chains, metal_renderer::kJak2MapChainDiagnosticBucket, walk, capture.valid,
       capture.present, static_cast<u32>(capture.classification), capture.transfer_count,
       capture.transfers.size(), capture.total_payload_bytes, capture.inert_transfers,
       capture.ordinary_descriptors, capture.direct_setup_transfers, capture.gs_setup_transfers,
       capture.animator_arrays, capture.animator_body_transfers, capture.animator_payload_bytes,
-      capture.eye_markers, capture.other_transfers, capture.malformed_transfers, logged_transfers);
+      capture.eye_markers, capture.other_transfers, capture.malformed_transfers, logged_transfers,
+      metal_renderer::jak2_map_mixed_rejection_name(diagnostic.rejection),
+      diagnostic.transfer_ordinal);
   for (std::size_t index = 0; index < logged_transfers; ++index) {
     const auto& transfer = capture.transfers[index];
     const bool pc_port = transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT);
@@ -1438,6 +1445,71 @@ struct Jak2TextureUploadDispatch {
   const metal_renderer::Jak2GmercWarpBucket317Plan* gmerc_warp_bucket317_plan = nullptr;
   bool* gmerc_warp_bucket317_callback_executed = nullptr;
 };
+
+struct Jak2MapMarkerDispatch {
+  goal_jak2_metal_host* host = nullptr;
+  const metal_renderer::Jak2MapTextureUploadTypedPlan* plan = nullptr;
+  const u8* live_ee_memory = nullptr;
+  std::size_t op_index = 0;
+  u8 marker_index = 0;
+  std::size_t marker_total = 0;
+  std::size_t ordinary_executed = 0;
+  bool failed = false;
+  bool* mutation_started = nullptr;
+};
+
+void execute_jak2_map_marker(void* opaque, u32 tag_offset, u32 vif0, u32 vif1) {
+  auto* dispatch = static_cast<Jak2MapMarkerDispatch*>(opaque);
+  const auto fail = [&](const char* what) {
+    dispatch->failed = true;
+    throw std::runtime_error(std::string("Jak 2 mixed map marker ") + what + " at op " +
+                             std::to_string(dispatch->op_index) + " marker " +
+                             std::to_string(dispatch->marker_index) + " tag " +
+                             std::to_string(tag_offset));
+  };
+  const auto& plan = *dispatch->plan;
+  if (dispatch->failed || dispatch->op_index >= plan.op_count) {
+    fail("past planned ops");
+  }
+  const auto& op = plan.ops[dispatch->op_index];
+  if (dispatch->marker_index >= op.marker_count ||
+      tag_offset != op.marker_tag_offsets[dispatch->marker_index] ||
+      (vif1 != 0 && op.kind == metal_renderer::Jak2MapUploadOpKind::AnimationLayer)) {
+    fail("offset/order mismatch");
+  }
+  constexpr u32 kPcPort = 8u << 24;
+  if (op.kind == metal_renderer::Jak2MapUploadOpKind::AnimationLayer) {
+    static constexpr u32 kQuartet[4] = {12, 15, 16, 13};
+    if (op.marker_count != 4 || vif0 != (kPcPort | kQuartet[dispatch->marker_index])) {
+      fail("animation quartet mismatch");
+    }
+    if (dispatch->marker_index == 0) {
+      *dispatch->mutation_started = true;
+      if (!dispatch->host->map_layer_executor->publish_layer(op.index)) {
+        fail("layer publish failed");
+      }
+    }
+    ++dispatch->marker_total;
+    if (++dispatch->marker_index == 4) {
+      dispatch->marker_index = 0;
+      ++dispatch->op_index;
+    }
+    return;
+  }
+  if (op.kind != metal_renderer::Jak2MapUploadOpKind::OrdinaryUpload ||
+      op.marker_count != 1 || vif0 != kPcPort || vif1 != 3 ||
+      op.index >= plan.ordinary_count) {
+    fail("ordinary marker mismatch");
+  }
+  ++dispatch->marker_total;
+  execute_ordinary_texture_upload_or_throw(dispatch->host, plan.ordinary[op.index],
+                                           dispatch->live_ee_memory,
+                                           &dispatch->host->metrics.map_texture_uploads,
+                                           "Jak 2 mixed map ordinary", dispatch->mutation_started);
+  ++dispatch->ordinary_executed;
+  dispatch->marker_index = 0;
+  ++dispatch->op_index;
+}
 
 void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
   auto* dispatch = static_cast<Jak2TextureUploadDispatch*>(opaque);
@@ -2266,9 +2338,19 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &map_texture_diagnostic);
     copy_map_texture_upload_metrics(host, map_texture_plan);
+    std::optional<metal_renderer::Jak2MapTextureUploadTypedPlan> live_map_mixed_plan;
+    metal_renderer::Jak2MapMixedDiagnostic map_mixed_diagnostic;
     if (!map_texture_plan) {
+      live_map_mixed_plan = metal_renderer::plan_jak2_map_texture_upload_typed(
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, &map_mixed_diagnostic);
+      if (!live_map_mixed_plan || !live_map_mixed_plan->mixed) {
+        live_map_mixed_plan.reset();
+      }
+    }
+    if (!map_texture_plan && !live_map_mixed_plan) {
       const std::string message = map_texture_upload_rejection_message(map_texture_diagnostic);
-      maybe_log_map_chain_rejection_metadata(host, ee_base, chain_offset);
+      maybe_log_map_chain_rejection_metadata(host, ee_base, chain_offset, map_mixed_diagnostic);
       record_failure(host, message.c_str());
       return;
     }
@@ -2287,6 +2369,38 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
               " (" + dma_chain_validation_error_message(copied_chain_validation.dma.error) + ")",
           host_texture_mutated);
       return;
+    }
+
+    std::optional<metal_renderer::Jak2MapTextureUploadTypedPlan> copied_map_mixed_plan;
+    struct MapPreparedFrameScope {
+      metal_renderer::Jak2MapLayerExecutor* executor = nullptr;
+      ~MapPreparedFrameScope() {
+        if (executor) {
+          executor->abandon_frame();
+        }
+      }
+    } map_prepared_frame;
+    if (live_map_mixed_plan) {
+      auto parity = metal_renderer::validate_jak2_map_copied_plan(
+          *live_map_mixed_plan, static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+          copied.data.data(), copied.data.size(), copied.start_offset,
+          static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE);
+      if (!parity.plan) {
+        record_send_chain_failure(
+            host,
+            std::string("Jak 2 mixed map copied parity rejected (stage ") +
+                std::to_string(static_cast<int>(parity.rejection)) + ", ordinal " +
+                std::to_string(parity.transfer_ordinal) + ")",
+            host_texture_mutated);
+        return;
+      }
+      copied_map_mixed_plan = std::move(parity.plan);
+      map_prepared_frame.executor = host->map_layer_executor.get();
+      if (!host->map_layer_executor || !host->map_layer_executor->prepare(*copied_map_mixed_plan)) {
+        record_send_chain_failure(host, "Jak 2 mixed map layer prepare failed",
+                                  host_texture_mutated);
+        return;
+      }
     }
 
     metal_renderer::Jak2SubtitleBucket322RejectReason copied_subtitle_rejection =
@@ -2657,7 +2771,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         &*copied_warp_texture_upload_plan,
         &*common_tfrag_texture_plan,
         &*sprite_texture_plan,
-        &*map_texture_plan,
+        map_texture_plan ? &*map_texture_plan : nullptr,
         &*copied_sky_post_plan,
         common_tfrag_texture_plan->present ? &skull_gem_prepared : nullptr,
         security_plan ? &security_prepared : nullptr,
@@ -2709,6 +2823,15 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     render_options.animated_texture_slot_count = host->animated_texture_slots.size();
     render_options.host_bucket_context = &texture_dispatch;
     render_options.host_bucket_callback = execute_planned_texture_upload;
+    Jak2MapMarkerDispatch map_marker_dispatch;
+    if (copied_map_mixed_plan) {
+      map_marker_dispatch.host = host;
+      map_marker_dispatch.plan = &*copied_map_mixed_plan;
+      map_marker_dispatch.live_ee_memory = static_cast<const u8*>(ee_base);
+      map_marker_dispatch.mutation_started = &host_texture_mutated;
+      render_options.host_map_marker_context = &map_marker_dispatch;
+      render_options.host_map_marker_callback = execute_jak2_map_marker;
+    }
     render_options.jak2_pris_eye_plans = copied_pris_eye_renderer_plans.data();
     render_options.jak2_pris_eye_plan_count = copied_pris_eye_renderer_plans.size();
     render_options.jak2_common_pris_plan = &*copied_common_pris_plan;
@@ -2748,6 +2871,17 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     const auto renderer_before = host->renderer.chain_stats();
     const bool acquired = host->renderer.render_chain_frame(
         render_options, host->layer, copied.data.data(), copied.start_offset, copied.data.size());
+    if (copied_map_mixed_plan &&
+        (map_marker_dispatch.failed ||
+         map_marker_dispatch.op_index != copied_map_mixed_plan->op_count ||
+         map_marker_dispatch.marker_index != 0 ||
+         map_marker_dispatch.marker_total != copied_map_mixed_plan->pc_port_marker_count ||
+         map_marker_dispatch.ordinary_executed != copied_map_mixed_plan->ordinary_count ||
+         !host->map_layer_executor->frame_complete())) {
+      record_send_chain_failure(host, "Jak 2 mixed map violated its ordered execution gate",
+                                host_texture_mutated);
+      return;
+    }
     const auto renderer_after = host->renderer.chain_stats();
     warp_execution.last_snapshot_publications = static_cast<uint32_t>(
         renderer_after.warp317_snapshot_publications -
@@ -3159,6 +3293,8 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
   host->renderer.init_bucket_renderers(&host->textures, GameVersion::Jak2,
                                        /*host_texture_uploads=*/true);
   host->bucket4_mixed_executor = std::make_unique<metal_renderer::Jak2Bucket4MixedExecutor>(
+      host->renderer.device(), host->renderer.queue(), &host->textures);
+  host->map_layer_executor = std::make_unique<metal_renderer::Jak2MapLayerExecutor>(
       host->renderer.device(), host->renderer.queue(), &host->textures);
   host->skull_gem_executor =
       std::make_unique<metal_renderer::Jak2Opcode27SkullGemExecutor>(
@@ -3659,6 +3795,9 @@ void goal_jak2_metal_host_destroy(goal_jak2_metal_host* host) {
   }
   host->loaded_level_keys.clear();
   host->common_level = nullptr;
+  if (host->map_layer_executor) {
+    host->map_layer_executor->detach_pool();
+  }
   if (host->bucket4_mixed_executor) {
     host->bucket4_mixed_executor->detach_pool();
   }
