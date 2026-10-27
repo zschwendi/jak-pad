@@ -8,7 +8,9 @@
 // the sky keeps its per-eye direction and writes the reverse-Z far depth 0. Controls cover the
 // Comfort identity path, a non-physical transform that must stay clipped, eye translation and
 // yaw, and a later out-of-frustum World draw that must stay clipped (the clamp cannot leak).
-// All geometry and colours are synthetic.
+// Large yaw/pitch poses characterise the finite +/-4 game-NDC sky support at the eye border:
+// a CPU oracle over the exact emitted triangles predicts which pixels are sky and which keep the
+// clear colour and depth sentinel. All geometry and colours are synthetic.
 
 #include <array>
 #include <cmath>
@@ -140,6 +142,25 @@ Matrix4 eye_from_game_camera(float right_meters, float yaw) {
   // -R^T * t, t = (right_meters, 0, 0)
   element(out, 3, 0) = -c * right_meters;
   element(out, 3, 2) = -s * right_meters;
+  return out;
+}
+
+// eye_from_game_camera_meters for an untranslated eye yawed about game-camera up, then pitched
+// up about its right axis: inverse(rotate_y(yaw) * rotate_x(pitch)).
+Matrix4 eye_from_game_camera_rotated(float yaw, float pitch) {
+  const float cy = std::cos(yaw);
+  const float sy = std::sin(yaw);
+  const float cp = std::cos(pitch);
+  const float sp = std::sin(pitch);
+  // game_from_eye rows: rotate_y(yaw) * rotate_x(pitch)
+  const float game_from_eye[3][3] = {
+      {cy, sy * sp, sy * cp}, {0.f, cp, -sp}, {-sy, cy * sp, cy * cp}};
+  Matrix4 out = metal_renderer::kIdentityMatrix4;
+  for (int row = 0; row < 3; row++) {
+    for (int column = 0; column < 3; column++) {
+      element(out, column, row) = game_from_eye[column][row];
+    }
+  }
   return out;
 }
 
@@ -358,6 +379,216 @@ SkyChain make_sky_chain(SkyLayout layout) {
   chain.patch_tag(call, dma_tag(DmaTag::Kind::CALL, 0, chain.default_regs));
   chain.patch_tag(next, dma_tag(DmaTag::Kind::NEXT, 0, chain.next_bucket));
   return chain;
+}
+
+// ---------------------------------------------------------------------------------------------
+// CPU coverage oracle, independent of the shaders and rasterizer.
+
+struct ClipTriangle {
+  std::array<Vector4, 3> v;
+  Pixel color;
+};
+
+// Game clip of an encoded packed XYZF2, decoded like MetalDirectRenderer and direct_basic_vs
+// (XYOFFSET left at its default zero).
+Vector4 decode_game_clip(const Qw& xyzf2) {
+  const u32 x = static_cast<u32>(xyzf2.lo & 0xffff) << 16;
+  const u32 y = static_cast<u32>((xyzf2.lo >> 32) & 0xffff) << 16;
+  const u32 z = (xyzf2.hi >> 4) & 0xffffff;
+  const float xf = static_cast<float>(x) / static_cast<float>(UINT32_MAX);
+  const float yf = static_cast<float>(y) / static_cast<float>(UINT32_MAX);
+  return {(xf - 0.5f) * 16.f, -(yf - 0.5f) * 32.f * metal_renderer::kJak1MetalScissorAdjust,
+          static_cast<float>(z) / static_cast<float>(0xffffff), 1.f};
+}
+
+// The game-clip triangles of one sky_fan_gif TRI_FAN, decoded from its emitted qwords.
+void append_fan_triangles(const std::vector<Qw>& gif, std::vector<ClipTriangle>* out) {
+  std::vector<Vector4> fan;
+  for (std::size_t i = 3; i < gif.size(); i += 3) {
+    fan.push_back(decode_game_clip(gif[i]));
+  }
+  const Pixel color = {static_cast<u8>(gif[2].lo), static_cast<u8>(gif[2].lo >> 32),
+                       static_cast<u8>(gif[2].hi)};
+  for (std::size_t i = 2; i < fan.size(); i++) {
+    out->push_back({{fan[0], fan[i - 1], fan[i]}, color});
+  }
+}
+
+// make_sky_chain(SkyTng)'s dome triangles, transformed into one eye's clip space.
+std::vector<ClipTriangle> sky_tng_eye_triangles(const metal_renderer::ViewTransform& transform) {
+  std::vector<ClipTriangle> out;
+  append_fan_triangles(sky_fan_gif(gs_x(-4.f), gs_y(-4.f), gs_x(0.f), gs_y(4.f), kSkyLeft), &out);
+  append_fan_triangles(sky_fan_gif(gs_x(0.f), gs_y(-4.f), gs_x(4.f), gs_y(4.f), kSkyRight), &out);
+  for (auto& triangle : out) {
+    for (auto& vertex : triangle.v) {
+      vertex = eye_clip(transform, vertex);
+    }
+  }
+  return out;
+}
+
+// The triangle point on the eye ray through eye NDC (nx, ny): barycentrics b with sum(b) = 1,
+// sum(b_i (x_i - nx w_i)) = 0 and sum(b_i (y_i - ny w_i)) = 0, so b is parallel to the cross
+// product of those two rows. No vertex is divided by its w, so triangles with vertices behind
+// the eye (w <= 0) are handled exactly: the sample is covered iff all b_i >= 0 and the point's
+// interpolated w > 0. Depth is ignored for coverage because the sky draws with depth clamp.
+struct RayHit {
+  bool covered = false;
+  double ndc_z = 0.0;
+};
+
+RayHit ray_hit(const ClipTriangle& triangle, double nx, double ny) {
+  double a[3];
+  double c[3];
+  for (int i = 0; i < 3; i++) {
+    const auto& v = triangle.v[i];
+    a[i] = static_cast<double>(v[0]) - nx * v[3];
+    c[i] = static_cast<double>(v[1]) - ny * v[3];
+  }
+  const double k[3] = {a[1] * c[2] - a[2] * c[1], a[2] * c[0] - a[0] * c[2],
+                       a[0] * c[1] - a[1] * c[0]};
+  const double sum = k[0] + k[1] + k[2];
+  RayHit hit;
+  if (std::abs(sum) < 1e-12) {
+    return hit;  // ray parallel to the triangle's plane
+  }
+  double z = 0.0;
+  double w = 0.0;
+  for (int i = 0; i < 3; i++) {
+    const double b = k[i] / sum;
+    if (b < 0.0) {
+      return hit;
+    }
+    z += b * triangle.v[i][2];
+    w += b * triangle.v[i][3];
+  }
+  hit.covered = w > 0.0;
+  hit.ndc_z = hit.covered ? z / w : 0.0;
+  return hit;
+}
+
+enum class Coverage { Clear, Sky, Ambiguous };
+
+struct Expected {
+  Coverage coverage = Coverage::Ambiguous;
+  Pixel color;
+  bool far_depth = false;  // every covering hit is beyond the eye far plane (clamps to 0)
+};
+
+// Coverage of the triangle union at one eye-NDC point; Ambiguous on a colour seam.
+Expected point_coverage(const std::vector<ClipTriangle>& triangles, double nx, double ny) {
+  Expected out;
+  out.coverage = Coverage::Clear;
+  out.far_depth = true;
+  for (const auto& triangle : triangles) {
+    const RayHit hit = ray_hit(triangle, nx, ny);
+    if (!hit.covered) {
+      continue;
+    }
+    if (out.coverage == Coverage::Sky && !pixel_near(out.color, triangle.color, 0)) {
+      out.coverage = Coverage::Ambiguous;
+      return out;
+    }
+    out.coverage = Coverage::Sky;
+    out.color = triangle.color;
+    out.far_depth = out.far_depth && hit.ndc_z < 0.0;
+  }
+  return out;
+}
+
+// Expected result for target pixel (x, y), using the production viewport's top-down y. The
+// pixel centre and four points 0.4 px away must agree, so no raster edge tie decides the answer.
+Expected pixel_coverage(const std::vector<ClipTriangle>& triangles, int x, int y) {
+  constexpr double kOffsets[5][2] = {{0, 0}, {-0.4, -0.4}, {0.4, -0.4}, {-0.4, 0.4}, {0.4, 0.4}};
+  Expected out;
+  for (int i = 0; i < 5; i++) {
+    const double px = x + 0.5 + kOffsets[i][0];
+    const double py = y + 0.5 + kOffsets[i][1];
+    const Expected at = point_coverage(triangles, px * 2.0 / kTargetSize - 1.0,
+                                       1.0 - py * 2.0 / kTargetSize);
+    if (at.coverage == Coverage::Ambiguous ||
+        (i > 0 && (at.coverage != out.coverage ||
+                   (at.coverage == Coverage::Sky && !pixel_near(at.color, out.color, 0))))) {
+      return {};
+    }
+    out.far_depth = i == 0 ? at.far_depth : out.far_depth && at.far_depth;
+    out.coverage = at.coverage;
+    out.color = at.color;
+  }
+  return out;
+}
+
+struct CoverageCounts {
+  int sky = 0;
+  int clear = 0;
+  int ambiguous = 0;
+  int sky_near_depth = 0;  // robust sky pixels whose depth does not clamp to far 0
+  int mixed_w_triangles = 0;
+};
+
+CoverageCounts count_coverage(const std::vector<ClipTriangle>& triangles) {
+  CoverageCounts counts;
+  for (int y = 0; y < kTargetSize; y++) {
+    for (int x = 0; x < kTargetSize; x++) {
+      const Expected e = pixel_coverage(triangles, x, y);
+      counts.sky += e.coverage == Coverage::Sky;
+      counts.clear += e.coverage == Coverage::Clear;
+      counts.ambiguous += e.coverage == Coverage::Ambiguous;
+      counts.sky_near_depth += e.coverage == Coverage::Sky && !e.far_depth;
+    }
+  }
+  for (const auto& triangle : triangles) {
+    bool positive = false;
+    bool nonpositive = false;
+    for (const auto& vertex : triangle.v) {
+      (vertex[3] > 0.f ? positive : nonpositive) = true;
+    }
+    counts.mixed_w_triangles += positive && nonpositive;
+  }
+  return counts;
+}
+
+// Oracle self-checks on hand-built clip triangles (identity eye, z = 0).
+void check_oracle_sanity() {
+  auto tri = [](Vector4 a, Vector4 b, Vector4 c) { return ClipTriangle{{a, b, c}, kSkyLeft}; };
+  auto covers = [](const ClipTriangle& t, double nx, double ny) {
+    return ray_hit(t, nx, ny).covered;
+  };
+  const metal_renderer::ViewTransform identity;
+  const auto dome = sky_tng_eye_triangles(identity);
+  check(dome.size() == 4, "oracle: sky-tng emits four triangles");
+  for (const auto& triangle : dome) {
+    for (const auto& vertex : triangle.v) {
+      check(std::abs(std::abs(vertex[0]) - 4.f) < 1e-5f || std::abs(vertex[0]) < 1e-5f,
+            "oracle: decoded GS x lands on game NDC 0 or +/-4");
+      check(std::abs(std::abs(vertex[1]) - 4.f) < 1e-5f && vertex[2] == 0.f && vertex[3] == 1.f,
+            "oracle: decoded GS y/z lands on game NDC +/-4 at GS z 0");
+    }
+  }
+  const Expected centre_left = point_coverage(dome, -0.01, 0.0);
+  check(centre_left.coverage == Coverage::Sky && pixel_near(centre_left.color, kSkyLeft, 0),
+        "oracle: identity centre-left is left sky");
+  check(point_coverage(dome, 0.01, 0.0).coverage == Coverage::Sky,
+        "oracle: identity centre-right is sky");
+  check(point_coverage(dome, 4.5, 0.0).coverage == Coverage::Clear &&
+            point_coverage(dome, 0.0, -4.5).coverage == Coverage::Clear,
+        "oracle: outside the +/-4 source square is uncovered");
+  // Two disjoint triangles: their convex hull covers the origin, their union does not.
+  const std::vector<ClipTriangle> split = {
+      tri({-1, -1, 0, 1}, {-0.5, -1, 0, 1}, {-0.5, 1, 0, 1}),
+      tri({0.5, -1, 0, 1}, {1, -1, 0, 1}, {1, 1, 0, 1})};
+  check(point_coverage(split, 0.0, 0.0).coverage == Coverage::Clear &&
+            point_coverage(split, -0.6, 0.0).coverage == Coverage::Sky &&
+            point_coverage(split, 0.9, 0.0).coverage == Coverage::Sky,
+        "oracle: disjoint triangles leave their hull gap uncovered");
+  // All w < 0: dividing by w would put the origin inside, but nothing is in front of the eye.
+  check(!covers(tri({1, 1, 0, -1}, {-1, 1, 0, -1}, {0, -1, 0, -1}), 0.0, 0.0),
+        "oracle: an all-negative-w triangle covers nothing");
+  // Mixed w: C = (0, 1, 0, -1) divides to (0, -1), which would wrongly cover (0, -0.8) and miss
+  // (0, 0.5). The true w > 0 part is the wedge above y = -0.5 opening upward.
+  const auto mixed = tri({-0.5, -0.5, 0, 1}, {0.5, -0.5, 0, 1}, {0, 1, 0, -1});
+  check(covers(mixed, 0.0, 0.5) && !covers(mixed, 0.0, -0.8) && covers(mixed, 0.0, 50.0),
+        "oracle: mixed-sign-w triangle covers its w > 0 wedge only");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -659,6 +890,78 @@ int main() {
     if (frame.ok) {
       expect_sky(frame, boundary[0] - 4, kMid, kSkyLeft, "left of the forward direction");
       expect_sky(frame, boundary[0] + 4, kMid, kSkyRight, "right of the forward direction");
+    }
+  }
+
+  // 5b. Large eye rotations against the finite +/-4 game-NDC sky support. The oracle decides
+  //     each robust 1 px-inset border pixel from the exact emitted triangles: sky colour and far
+  //     depth 0 where the union covers it, clear colour and the depth sentinel where it does not.
+  //     This characterises the current input's border gaps; it does not fix them.
+  check_oracle_sanity();
+  struct WidePose {
+    const char* name;
+    float yaw_degrees;
+    float pitch_degrees;
+    bool expect_gap;
+  };
+  constexpr WidePose wide_poses[] = {
+      {"eye yawed 20 degrees (support covers the border)", 20.f, 0.f, false},
+      {"eye yawed 45 degrees (finite support gap)", 45.f, 0.f, true},
+      {"eye yawed -45 degrees (finite support gap)", -45.f, 0.f, true},
+      {"eye pitched 45 degrees (finite support gap)", 0.f, 45.f, true},
+      {"eye pitched -45 degrees (finite support gap)", 0.f, -45.f, true},
+      {"eye yawed 60 degrees (mixed-sign w triangles)", 60.f, 0.f, true},
+  };
+  for (const auto& pose : wide_poses) {
+    begin_case(pose.name);
+    const auto transform = derive_eye(
+        eye_from_game_camera_rotated(pose.yaw_degrees * kPi / 180.f, pose.pitch_degrees * kPi / 180.f));
+    const auto triangles = sky_tng_eye_triangles(transform);
+    std::vector<std::array<int, 2>> border;
+    for (int i = 1; i < kTargetSize - 1; i++) {
+      border.push_back({i, 1});
+      border.push_back({i, kTargetSize - 2});
+      border.push_back({1, i});
+      border.push_back({kTargetSize - 2, i});
+    }
+    int sky = 0;
+    int clear = 0;
+    int ambiguous = 0;
+    for (const auto& at : border) {
+      const Expected e = pixel_coverage(triangles, at[0], at[1]);
+      sky += e.coverage == Coverage::Sky && e.far_depth;
+      clear += e.coverage == Coverage::Clear;
+      ambiguous += e.coverage == Coverage::Ambiguous || (e.coverage == Coverage::Sky && !e.far_depth);
+    }
+    const CoverageCounts whole = count_coverage(triangles);
+    std::printf("  oracle border sky %d clear %d skipped %d; frame sky %d clear %d ambiguous %d "
+                "near-depth sky %d; mixed-w triangles %d\n",
+                sky, clear, ambiguous, whole.sky, whole.clear, whole.ambiguous,
+                whole.sky_near_depth, whole.mixed_w_triangles);
+    if (pose.expect_gap) {
+      check(sky > 0 && clear > 0, "oracle: border has both sky and finite-support gap pixels");
+    } else {
+      check(sky > 0 && clear == 0 && whole.clear == 0, "oracle: support covers the whole eye");
+    }
+    const auto frame = render(gpu, SkyLayout::SkyTng, transform, true);
+    check(frame.ok, "command buffer completed");
+    if (!frame.ok) {
+      continue;
+    }
+    int mismatches = 0;
+    for (const auto& at : border) {
+      const Expected e = pixel_coverage(triangles, at[0], at[1]);
+      const int before = g_failures;
+      if (e.coverage == Coverage::Sky && e.far_depth) {
+        expect_sky(frame, at[0], at[1], e.color, "border sky");
+      } else if (e.coverage == Coverage::Clear) {
+        expect_clipped(frame, at[0], at[1], "border outside sky support");
+      }
+      mismatches += g_failures != before;
+      if (mismatches >= 8) {
+        std::printf("  (stopping after 8 mismatching border pixels)\n");
+        break;
+      }
     }
   }
 
