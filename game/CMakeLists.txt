@@ -1483,6 +1483,41 @@ if(APPLE)
         add_test(NAME jak2-sprite-texture-upload-plan-test
             COMMAND jak2-sprite-texture-upload-plan-test)
 
+        add_executable(jak2-map-texture-upload-plan-test
+            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_map_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_map_texture_upload_plan_test.cpp)
+        add_test(NAME jak2-map-texture-upload-plan-test
+            COMMAND jak2-map-texture-upload-plan-test)
+
+        add_executable(jak2-map-copied-plan-test
+            graphics/pipelines/metal/metal_jak2_sprite_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_map_texture_upload_plan.cpp
+            graphics/pipelines/metal/metal_jak2_map_copied_plan.cpp
+            graphics/pipelines/metal/metal_jak2_map_copied_plan_test.cpp)
+        add_test(NAME jak2-map-copied-plan-test
+            COMMAND jak2-map-copied-plan-test)
+
+        add_executable(jak2-map-layer-convert-test
+            graphics/pipelines/metal/metal_jak2_fog_texture_convert.cpp
+            graphics/pipelines/metal/metal_jak2_map_layer_convert.cpp
+            graphics/pipelines/metal/metal_jak2_map_layer_convert_test.cpp)
+        add_test(NAME jak2-map-layer-convert-test
+            COMMAND jak2-map-layer-convert-test)
+
+        add_executable(jak2-map-layer-executor-readback-test
+            graphics/pipelines/metal/metal_jak2_map_layer_executor.mm
+            graphics/pipelines/metal/metal_jak2_map_layer_convert.cpp
+            graphics/pipelines/metal/metal_jak2_map_layer_executor_readback_test.mm)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak2_map_layer_executor.mm
+            graphics/pipelines/metal/metal_jak2_map_layer_executor_readback_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak2-map-layer-executor-readback-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak2-map-layer-executor-readback-test
+            COMMAND jak2-map-layer-executor-readback-test)
+
         add_executable(jak2-warp-texture-upload-plan-test
             graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan.cpp
             graphics/pipelines/metal/metal_jak2_warp_texture_upload_plan_test.cpp)
