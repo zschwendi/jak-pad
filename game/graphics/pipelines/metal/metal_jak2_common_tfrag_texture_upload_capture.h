@@ -196,6 +196,8 @@ struct Jak2CommonPrisDarkJakAnimatorPlan {
 struct Jak2CommonPrisTextureUploadPlan {
   u32 bucket_id = kJak2CommonPrisTextureUploadBucket;
   bool present = false;
+  // False for the eye-only form: opening NEXT, eye chunks, DIRECT reset, NEXT.
+  bool ordinary_and_animator_present = false;
   Jak2Bucket4OrdinaryUploadPlan ordinary;
   Jak2CommonPrisDarkJakAnimatorPlan dark_jak_animator;
   std::array<Jak2PrisEyeChunkPlan, kJak2PrisEyeMaximumChunks> chunks = {};
@@ -383,7 +385,8 @@ std::optional<Jak2NormalTfragTextureUploadPlan> plan_jak2_normal_tfrag_texture_u
 
 /*!
  * Preflight common PRIS bucket 220. Apart from the exact empty form, only the observed source
- * forms are accepted: ordinary/Dark-Jak/reset with zero, one, or two eye chunks. The returned plan
+ * forms are accepted: ordinary/Dark-Jak/reset with zero, one, or two eye chunks, and the exact
+ * 57-transfer two-chunk eye-only/reset form. The returned plan
  * owns the ordinary header and opcode-22 scalars and fingerprints every eye chunk. No texture-pool
  * or renderer mutation occurs.
  */

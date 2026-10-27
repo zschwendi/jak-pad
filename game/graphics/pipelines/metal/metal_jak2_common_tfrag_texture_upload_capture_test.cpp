@@ -574,6 +574,13 @@ std::vector<u8> make_common_pris_combined_fixture() {
   return packet;
 }
 
+std::vector<u8> make_common_pris_eye_only_fixture() {
+  auto packet = make_common_pris_combined_fixture();
+  put_tag(&packet, bucket_offset(metal_renderer::kJak2CommonPrisTextureUploadBucket),
+          DmaTag::Kind::NEXT, 0, kEyeFirstOffset, 0, 0);
+  return packet;
+}
+
 std::vector<u8> make_common_pris_one_eye_fixture() {
   auto packet = make_common_pris_fixture();
   constexpr u32 bucket_id = metal_renderer::kJak2CommonPrisTextureUploadBucket;
@@ -1684,6 +1691,74 @@ void test_common_pris_execution_plan() {
         "common PRIS rejects a non-source animator start");
 }
 
+void test_common_pris_eye_only_execution_plan() {
+  metal_renderer::Jak2CommonTfragTextureUploadCapture capture;
+  auto packet = make_common_pris_eye_only_fixture();
+  const auto plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+      packet.data(), packet.size(), kChainOffset, nullptr, 0, &capture);
+  check(plan.has_value() && plan->present && !plan->ordinary_and_animator_present &&
+            plan->chunk_count == 2 && plan->chunks[0].start_transfer_index == 1 &&
+            plan->chunks[1].start_transfer_index == 28 &&
+            plan->direct_reset_transfer_index == 55 && plan->terminal_transfer_index == 56 &&
+            capture.transfer_count == 57 && capture.inert_transfers == 4 &&
+            capture.total_payload_bytes == 3872 && capture.ordinary_descriptors == 0 &&
+            capture.animator_arrays == 0 && capture.animator_body_transfers == 0,
+        "the exact two-chunk eye-only form needs no live page memory");
+  if (!plan) {
+    return;
+  }
+
+  auto copied = make_common_pris_eye_only_fixture();
+  auto copied_plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+      copied.data(), copied.size(), kChainOffset, nullptr, 0);
+  check(copied_plan.has_value() &&
+            metal_renderer::jak2_common_pris_texture_upload_plans_match(*plan, *copied_plan),
+        "copied eye-only plans match semantically");
+  copied[kDirectSetupOffset + 16] ^= 1;
+  copied_plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+      copied.data(), copied.size(), kChainOffset, nullptr, 0);
+  check(copied_plan.has_value() &&
+            !metal_renderer::jak2_common_pris_texture_upload_plans_match(*plan, *copied_plan),
+        "a changed reset fails the eye-only semantic barrier");
+  auto forged = *plan;
+  forged.ordinary_and_animator_present = true;
+  check(!metal_renderer::jak2_common_pris_texture_upload_plans_match(*plan, forged),
+        "a prefix flag mismatch fails the eye-only semantic barrier");
+
+  const auto rejected = [](const std::vector<u8>& value) {
+    return !metal_renderer::plan_jak2_common_pris_texture_upload(
+                value.data(), value.size(), kChainOffset, nullptr, 0).has_value();
+  };
+  packet = make_common_pris_eye_only_fixture();
+  packet[kEyeFirstOffset + 8] ^= 1;
+  check(rejected(packet), "an incorrect eye marker remains rejected");
+  packet = make_common_pris_eye_only_fixture();
+  const auto linker = put_different_eyes_chunk(&packet, kEyeFirstOffset, {false, 0});
+  put_tag(&packet, linker, DmaTag::Kind::NEXT, 0, kDirectSetupOffset, 0, 0);
+  check(rejected(packet), "the unobserved 30-transfer one-chunk form remains rejected");
+  packet = make_common_pris_eye_only_fixture();
+  put_tag(&packet, bucket_offset(metal_renderer::kJak2CommonPrisTextureUploadBucket),
+          DmaTag::Kind::NEXT, 0, kExtraTransferOffset, 0, 0);
+  put_tag(&packet, kExtraTransferOffset, DmaTag::Kind::NEXT, 0, kEyeFirstOffset, 0, 0);
+  check(rejected(packet), "an extra NEXT transfer remains rejected");
+  packet = make_common_pris_eye_only_fixture();
+  put_tag(&packet, bucket_offset(metal_renderer::kJak2CommonPrisTextureUploadBucket),
+          DmaTag::Kind::NEXT, 0, 0x7ffffff0, 0, 0);
+  check(rejected(packet), "an out-of-range NEXT pointer remains rejected");
+  packet = make_common_pris_eye_only_fixture();
+  packet[kDirectSetupOffset + 12] ^= 1;
+  check(rejected(packet), "an incorrect reset marker remains rejected");
+  for (const auto& ordinary_packet : {make_common_pris_fixture(),
+                                     make_common_pris_one_eye_fixture(),
+                                     make_common_pris_combined_fixture()}) {
+    const auto ordinary_plan = metal_renderer::plan_jak2_common_pris_texture_upload(
+        ordinary_packet.data(), ordinary_packet.size(), kChainOffset,
+        ordinary_packet.data(), ordinary_packet.size());
+    check(ordinary_plan.has_value() && ordinary_plan->ordinary_and_animator_present,
+          "existing 9/36/63 forms retain the ordinary and animator prefix");
+  }
+}
+
 void test_common_pris_opcode22_capture() {
   const auto result =
       capture(make_common_pris_opcode22_capture_fixture(),
@@ -2501,6 +2576,7 @@ int main() {
   test_pris_eye_shape_fails_closed();
   test_normal_tfrag_execution_plan();
   test_common_pris_execution_plan();
+  test_common_pris_eye_only_execution_plan();
   test_common_pris_opcode22_capture();
   test_normal_shrub_execution_plan();
   test_alpha_execution_plan();

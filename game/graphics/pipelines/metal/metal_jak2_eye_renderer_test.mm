@@ -335,11 +335,12 @@ struct CommonPrisFixture {
   metal_renderer::Jak2CommonPrisTextureUploadPlan plan;
 };
 
-CommonPrisFixture make_common_pris_fixture(std::size_t chunk_count) {
+CommonPrisFixture make_common_pris_fixture(std::size_t chunk_count, bool with_prefix = true) {
   constexpr u32 kPcPort = static_cast<u32>(VifCode::Kind::PC_PORT) << 24;
   auto base = make_pris_fixture(chunk_count);
   CommonPrisFixture fixture{std::move(base.data), {}};
   fixture.plan.present = true;
+  fixture.plan.ordinary_and_animator_present = with_prefix;
   fixture.plan.ordinary = base.plan.ordinary;
   fixture.plan.chunk_count = chunk_count;
 
@@ -399,6 +400,18 @@ CommonPrisFixture make_common_pris_fixture(std::size_t chunk_count) {
   fixture.plan.terminal_relative_tag_offset = terminal_offset - kCommonPrisBucketOffset;
   put_tag(&fixture.data, terminal_offset, DmaTag::Kind::NEXT, 0,
           kCommonPrisBucketOffset + 16, 0, 0);
+  if (!with_prefix) {
+    put_tag(&fixture.data, kCommonPrisBucketOffset, DmaTag::Kind::NEXT, 0,
+            kPrisChunkOffset, 0, 0);
+    fixture.plan.ordinary = {};
+    fixture.plan.dark_jak_animator = {};
+    for (std::size_t i = 0; i < chunk_count; ++i) {
+      fixture.plan.chunks[i].start_transfer_index -= 6;
+      fixture.plan.chunks[i].linker_transfer_index -= 6;
+    }
+    fixture.plan.direct_reset_transfer_index -= 6;
+    fixture.plan.terminal_transfer_index -= 6;
+  }
   return fixture;
 }
 
@@ -1353,6 +1366,28 @@ int main() {
                 common_form_b_stats.command_buffers_completed == 2 &&
                 common_form_b_stats.command_buffer_errors == 0,
             "common PRIS Form B calls the host once then completes both detached eye chunks");
+
+      auto common_eye_only = make_common_pris_fixture(2, false);
+      const auto eye_only_capture = metal_renderer::capture_jak2_tfrag_texture_upload(
+          common_eye_only.data.data(), common_eye_only.data.size(), 0, kCommonPrisBucket);
+      check(eye_only_capture.valid && eye_only_capture.transfer_count == 57 &&
+                eye_only_capture.ordinary_descriptors == 0 && eye_only_capture.animator_arrays == 0,
+            "the GPU eye-only fixture has the captured 57-transfer envelope");
+      host_counter = {};
+      state.jak2_common_pris_plan = &common_eye_only.plan;
+      renderer.start_frame();
+      DmaFollower common_eye_only_dma(common_eye_only.data.data(), kCommonPrisBucketOffset,
+                                      common_eye_only.data.size());
+      common_pris_renderer.render(common_eye_only_dma, &state, context);
+      const auto eye_only_stats = renderer.stats();
+      check(host_counter.calls == 1 && host_counter.bucket_id == kCommonPrisBucket &&
+                common_eye_only_dma.current_tag_offset() == state.next_bucket &&
+                eye_only_stats.eyes == 4 && eye_only_stats.draw_calls == 16 &&
+                eye_only_stats.triangles == 32 && eye_only_stats.missing_textures == 0 &&
+                eye_only_stats.unexpected_dma == 0 && eye_only_stats.duplicate_slot_writes == 0 &&
+                eye_only_stats.command_buffers_committed == 2 &&
+                eye_only_stats.command_buffers_completed == 2 && eye_only_stats.command_buffer_errors == 0,
+            "common PRIS eye-only form calls the host once and renders both chunks without a prefix");
     }
 
     bool detached_all_eye_slots = true;

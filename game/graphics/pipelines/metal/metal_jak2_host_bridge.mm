@@ -1707,6 +1707,12 @@ void execute_planned_texture_upload(void* opaque, u32 bucket_id) {
     if (!plan.present) {
       return;
     }
+    if (!plan.ordinary_and_animator_present) {
+      if (dispatch->dark_jak_clut_prepared) {
+        throw std::runtime_error("Jak 2 eye-only common PRIS has Dark Jak CLUT dispatch");
+      }
+      return;
+    }
     if (!dispatch->dark_jak_clut_prepared || !dispatch->host->dark_jak_clut_executor) {
       throw std::runtime_error("Jak 2 Dark Jak CLUT dispatch is incomplete");
     }
@@ -2665,6 +2671,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
 
     metal_renderer::Jak2DarkJakClutExecutor::Prepared dark_jak_clut_prepared;
     if (copied_common_pris_plan->present &&
+        copied_common_pris_plan->ordinary_and_animator_present &&
         (!host->common_level || !host->common_level->level ||
          !host->dark_jak_clut_executor ||
          !host->dark_jak_clut_executor->prepare(copied_common_pris_plan->dark_jak_animator,
@@ -2818,7 +2825,10 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
             : nullptr,
         &prison_clut_prepared,
         &highres_jak_clut_prepared,
-        copied_common_pris_plan->present ? &dark_jak_clut_prepared : nullptr,
+        copied_common_pris_plan->present &&
+                copied_common_pris_plan->ordinary_and_animator_present
+            ? &dark_jak_clut_prepared
+            : nullptr,
         static_cast<const u8*>(ee_base),
         &host_texture_mutated,
         &sprite_callback_executed,

@@ -445,50 +445,52 @@ void MetalJak2CommonPrisBucketRenderer::render(DmaFollower& dma,
 
   pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
             "opening linker");
-  const auto descriptor =
-      pris_take(dma, DmaTag::Kind::CNT, 1, VifCode::Kind::PC_PORT, 0,
-                VifCode::Kind::NOP, 3, "ordinary descriptor");
-  u64 page_offset = 0;
-  s64 mode = 0;
-  std::memcpy(&page_offset, descriptor.data, sizeof(page_offset));
-  std::memcpy(&mode, descriptor.data + sizeof(page_offset), sizeof(mode));
-  if (page_offset != plan.ordinary.page_offset || mode != plan.ordinary.mode) {
-    throw std::runtime_error("Jak 2 common PRIS ordinary descriptor changed after preflight");
-  }
-  pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
-            "ordinary linker");
+  if (plan.ordinary_and_animator_present) {
+    const auto descriptor =
+        pris_take(dma, DmaTag::Kind::CNT, 1, VifCode::Kind::PC_PORT, 0,
+                  VifCode::Kind::NOP, 3, "ordinary descriptor");
+    u64 page_offset = 0;
+    s64 mode = 0;
+    std::memcpy(&page_offset, descriptor.data, sizeof(page_offset));
+    std::memcpy(&mode, descriptor.data + sizeof(page_offset), sizeof(mode));
+    if (page_offset != plan.ordinary.page_offset || mode != plan.ordinary.mode) {
+      throw std::runtime_error("Jak 2 common PRIS ordinary descriptor changed after preflight");
+    }
+    pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+              "ordinary linker");
 
-  const auto& animator = plan.dark_jak_animator;
-  if (animator.semantic_fingerprint == 0) {
-    throw std::runtime_error("Jak 2 common PRIS Dark Jak animator is not fingerprinted");
+    const auto& animator = plan.dark_jak_animator;
+    if (animator.semantic_fingerprint == 0) {
+      throw std::runtime_error("Jak 2 common PRIS Dark Jak animator is not fingerprinted");
+    }
+    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                                 animator.start_relative_tag_offset),
+                       "Dark Jak animator start");
+    pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::PC_PORT,
+              metal_renderer::kJak2PrisPrisonJakAnimatorStartOpcode, VifCode::Kind::NOP, 0,
+              "Dark Jak animator start");
+    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                                 animator.body_relative_tag_offset),
+                       "Dark Jak animator body");
+    const auto body = pris_take(
+        dma, DmaTag::Kind::CNT, metal_renderer::kJak2CommonPrisDarkJakAnimatorBodyBytes / 16,
+        VifCode::Kind::PC_PORT, metal_renderer::kJak2CommonPrisDarkJakAnimatorOpcode,
+        VifCode::Kind::NOP, 0, "Dark Jak animator body");
+    if (!dark_jak_animator_body_matches(body, animator)) {
+      throw std::runtime_error("Jak 2 common PRIS Dark Jak animator changed after preflight");
+    }
+    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                                 animator.finish_relative_tag_offset),
+                       "Dark Jak animator finish");
+    pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::PC_PORT,
+              metal_renderer::kJak2PrisPrisonJakAnimatorFinishOpcode,
+              VifCode::Kind::NOP, 0, "Dark Jak animator finish");
+    pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
+                                                 animator.linker_relative_tag_offset),
+                       "Dark Jak animator linker");
+    pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
+              "Dark Jak animator linker");
   }
-  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
-                                               animator.start_relative_tag_offset),
-                     "Dark Jak animator start");
-  pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::PC_PORT,
-            metal_renderer::kJak2PrisPrisonJakAnimatorStartOpcode, VifCode::Kind::NOP, 0,
-            "Dark Jak animator start");
-  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
-                                               animator.body_relative_tag_offset),
-                     "Dark Jak animator body");
-  const auto body = pris_take(
-      dma, DmaTag::Kind::CNT, metal_renderer::kJak2CommonPrisDarkJakAnimatorBodyBytes / 16,
-      VifCode::Kind::PC_PORT, metal_renderer::kJak2CommonPrisDarkJakAnimatorOpcode,
-      VifCode::Kind::NOP, 0, "Dark Jak animator body");
-  if (!dark_jak_animator_body_matches(body, animator)) {
-    throw std::runtime_error("Jak 2 common PRIS Dark Jak animator changed after preflight");
-  }
-  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
-                                               animator.finish_relative_tag_offset),
-                     "Dark Jak animator finish");
-  pris_take(dma, DmaTag::Kind::CNT, 0, VifCode::Kind::PC_PORT,
-            metal_renderer::kJak2PrisPrisonJakAnimatorFinishOpcode,
-            VifCode::Kind::NOP, 0, "Dark Jak animator finish");
-  pris_expect_offset(dma, pris_expected_offset(*render_state, bucket_id,
-                                               animator.linker_relative_tag_offset),
-                     "Dark Jak animator linker");
-  pris_take(dma, DmaTag::Kind::NEXT, 0, VifCode::Kind::NOP, 0, VifCode::Kind::NOP, 0,
-            "Dark Jak animator linker");
 
   for (std::size_t i = 0; i < plan.chunk_count; ++i) {
     const auto& chunk = plan.chunks[i];

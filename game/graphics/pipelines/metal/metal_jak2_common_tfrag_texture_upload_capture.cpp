@@ -2138,50 +2138,69 @@ std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upl
     return plan;
   }
 
+  const bool eye_only = capture.transfer_count == 57;
   const bool one_eye = capture.transfer_count == 36;
-  const bool two_eye = capture.transfer_count == 63;
+  const bool two_eye = capture.transfer_count == 63 || eye_only;
   const bool eyes = one_eye || two_eye;
   const std::size_t chunk_count = one_eye ? 1 : two_eye ? 2 : 0;
   const bool exact_counts =
       (capture.transfer_count == 9 || eyes) &&
       capture.classification == (eyes ? Jak2CommonTfragTextureUploadClass::EyeOrOther
                                       : Jak2CommonTfragTextureUploadClass::OrdinaryAndAnimator) &&
-      capture.total_payload_bytes == 208 + chunk_count * 1856 &&
-      capture.inert_transfers == 4 + chunk_count &&
-      capture.ordinary_descriptors == 1 && capture.direct_setup_transfers == 1 &&
       capture.gs_setup_transfers == chunk_count * 11 &&
+      capture.eye_markers == chunk_count * 2 &&
+      capture.other_transfers == chunk_count * 13 && capture.malformed_transfers == 0 &&
+      capture.direct_setup_transfers == 1;
+  const bool exact_ordinary_and_animator_counts =
+      !eye_only && capture.total_payload_bytes == 208 + chunk_count * 1856 &&
+      capture.inert_transfers == 4 + chunk_count && capture.ordinary_descriptors == 1 &&
       capture.animator_arrays == 1 && capture.animator_body_transfers == 1 &&
       capture.animator_payload_bytes == kJak2CommonPrisDarkJakAnimatorBodyBytes &&
-      has_exact_dark_jak_counts(capture) && capture.eye_markers == chunk_count * 2 &&
-      capture.other_transfers == chunk_count * 13 && capture.malformed_transfers == 0;
-  if (!exact_counts || !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size,
-                                            chain_offset, kJak2CommonPrisTextureUploadBucket,
-                                            capture.transfers[0]) ||
+      has_exact_dark_jak_counts(capture);
+  bool exact_eye_only_counts =
+      eye_only && capture.total_payload_bytes == 160 + chunk_count * 1856 &&
+      capture.inert_transfers == 2 + chunk_count && capture.ordinary_descriptors == 0 &&
+      capture.animator_arrays == 0 && capture.animator_body_transfers == 0 &&
+      capture.animator_payload_bytes == 0;
+  for (std::size_t i = 0; exact_eye_only_counts && i < capture.opcode_counts.size(); ++i) {
+    exact_eye_only_counts = capture.opcode_counts[i] == 0;
+  }
+  if (!exact_counts || !(exact_ordinary_and_animator_counts || exact_eye_only_counts) ||
       !has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
-                          kJak2CommonPrisTextureUploadBucket, capture.transfers[2])) {
+                          kJak2CommonPrisTextureUploadBucket, capture.transfers[0])) {
     return std::nullopt;
   }
 
-  const u8* descriptor_payload = nullptr;
-  if (!get_plain_cnt_payload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
-                             kJak2CommonPrisTextureUploadBucket, capture.transfers[1], 1,
-                             kPcPortVif, 3, &descriptor_payload)) {
-    return std::nullopt;
-  }
-  const u64 page_offset = read_unaligned<u64>(descriptor_payload);
-  const s64 mode = read_unaligned<s64>(descriptor_payload + sizeof(u64));
-  if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
-    return std::nullopt;
-  }
+  u64 page_offset = 0;
+  s64 mode = 0;
+  u32 start_transfer_index = 1;
+  if (!eye_only) {
+    if (!has_plain_next_tag(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                            kJak2CommonPrisTextureUploadBucket, capture.transfers[2])) {
+      return std::nullopt;
+    }
+    const u8* descriptor_payload = nullptr;
+    if (!get_plain_cnt_payload(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                               kJak2CommonPrisTextureUploadBucket, capture.transfers[1], 1,
+                               kPcPortVif, 3, &descriptor_payload)) {
+      return std::nullopt;
+    }
+    page_offset = read_unaligned<u64>(descriptor_payload);
+    mode = read_unaligned<s64>(descriptor_payload + sizeof(u64));
+    if (mode != -1 || !page_header_is_valid(live_ee_memory, live_ee_memory_size, page_offset)) {
+      return std::nullopt;
+    }
 
-  if (!parse_common_pris_dark_jak_animator(
-          dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, capture, 3,
-          &plan.dark_jak_animator)) {
-    return std::nullopt;
+    if (!parse_common_pris_dark_jak_animator(
+            dma_packet_snapshot, dma_packet_snapshot_size, chain_offset, capture, 3,
+            &plan.dark_jak_animator)) {
+      return std::nullopt;
+    }
+    plan.ordinary_and_animator_present = true;
+    start_transfer_index = plan.dark_jak_animator.linker_transfer_index + 1;
   }
 
   plan.chunk_count = chunk_count;
-  u32 start_transfer_index = plan.dark_jak_animator.linker_transfer_index + 1;
   u32 common_source_fbp = 0;
   for (std::size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
     u32 source_fbp = 0;
@@ -2224,13 +2243,17 @@ std::optional<Jak2CommonPrisTextureUploadPlan> plan_jak2_common_pris_texture_upl
       capture.transfers[plan.terminal_transfer_index].relative_tag_offset;
 
   plan.present = true;
-  plan.ordinary.page_offset = page_offset;
-  plan.ordinary.mode = mode;
-  std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
-              plan.ordinary.page_header.size());
+  if (plan.ordinary_and_animator_present) {
+    plan.ordinary.page_offset = page_offset;
+    plan.ordinary.mode = mode;
+    std::memcpy(plan.ordinary.page_header.data(), live_ee_memory + page_offset,
+                plan.ordinary.page_header.size());
+  }
 
   u64 fingerprint = kFnvOffsetBasis;
   hash_bytes(&fingerprint, &plan.bucket_id, sizeof(plan.bucket_id));
+  hash_bytes(&fingerprint, &plan.ordinary_and_animator_present,
+             sizeof(plan.ordinary_and_animator_present));
   hash_bytes(&fingerprint, &plan.ordinary.page_offset, sizeof(plan.ordinary.page_offset));
   hash_bytes(&fingerprint, &plan.ordinary.mode, sizeof(plan.ordinary.mode));
   hash_bytes(&fingerprint, plan.ordinary.page_header.data(), plan.ordinary.page_header.size());
@@ -2253,6 +2276,7 @@ bool jak2_common_pris_texture_upload_plans_match(
     const Jak2CommonPrisTextureUploadPlan& live,
     const Jak2CommonPrisTextureUploadPlan& copied) {
   if (live.bucket_id != copied.bucket_id || live.present != copied.present ||
+      live.ordinary_and_animator_present != copied.ordinary_and_animator_present ||
       live.chunk_count != copied.chunk_count || live.eye_slot_mask != copied.eye_slot_mask ||
       live.semantic_fingerprint != copied.semantic_fingerprint) {
     return false;
