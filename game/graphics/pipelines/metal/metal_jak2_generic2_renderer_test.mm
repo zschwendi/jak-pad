@@ -314,7 +314,8 @@ RenderResult render(id<MTLDevice> device,
                     TexturePool* texture_pool,
                     MetalGeneric2BucketRenderer* renderer,
                     SyntheticChain* chain,
-                    GameVersion version) {
+                    GameVersion version,
+                    const metal_renderer::ViewTransform* view_transform = nullptr) {
   RenderResult result;
   auto* color_desc = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -376,6 +377,9 @@ RenderResult render(id<MTLDevice> device,
   state.next_bucket = chain->next_bucket;
   state.game_res_w = kTargetSize;
   state.game_res_h = kTargetSize;
+  if (view_transform) {
+    state.view_transform = *view_transform;
+  }
 
   DmaFollower dma(chain->bytes.data(), 0, chain->bytes.size());
   renderer->render(dma, &state, context);
@@ -493,6 +497,20 @@ bool is_one_quad(const RenderResult& result) {
          result.stats.draw_calls == 1 && result.stats.triangles == 2 &&
          result.stats.unexpected_dma == 0 && result.stats.overflow == 0 &&
          result.draw_calls == 1 && result.triangles == 2;
+}
+
+// Column-major clip-space matrix (Metal float4x4 layout) that translates clip x by
+// clip_x_per_w * w, i.e. a horizontal per-eye NDC offset of clip_x_per_w.
+metal_renderer::ViewTransform eye_view_transform(float clip_x_per_w) {
+  metal_renderer::ViewTransform transform;
+  transform.clip_from_game_clip[12] = clip_x_per_w;
+  return transform;
+}
+
+PixelBounds shifted_x(PixelBounds bounds, int dx) {
+  bounds.min_x += dx;
+  bounds.max_x += dx;
+  return bounds;
 }
 
 }  // namespace
@@ -725,6 +743,36 @@ int main() {
     check(is_one_quad(jak1) && jak1.final_offset == jak1_chain.next_bucket &&
               changed_pixel_bounds(jak1.pixels).count > 0,
           "the existing Jak 1 NORMAL Generic2 walk remains renderable");
+
+    // Each eye's clip_from_game_clip must reach the per-bucket Generic2 draw: a +/-0.25 NDC
+    // translation moves the 64-pixel-wide target by exactly +/-8 pixels.
+    constexpr float kEyeClipShift = 0.25f;
+    constexpr int kEyePixelShift = 8;
+    const PixelBounds jak1_bounds = changed_pixel_bounds(jak1.pixels);
+    const auto identity_view = eye_view_transform(0.f);
+    const auto left_view = eye_view_transform(-kEyeClipShift);
+    const auto right_view = eye_view_transform(kEyeClipShift);
+    auto identity_chain = make_jak1_chain();
+    auto left_chain = make_jak1_chain();
+    auto right_chain = make_jak1_chain();
+    const auto identity_eye =
+        render(device, queue, &pso_cache, &sampler_cache, &texture_pool, &jak1_renderer,
+               &identity_chain, GameVersion::Jak1, &identity_view);
+    const auto left_eye = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                 &jak1_renderer, &left_chain, GameVersion::Jak1, &left_view);
+    const auto right_eye = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
+                                  &jak1_renderer, &right_chain, GameVersion::Jak1, &right_view);
+    check(jak1_bounds.count > 0 && jak1_bounds.min_x >= kEyePixelShift &&
+              jak1_bounds.max_x < kTargetSize - kEyePixelShift && is_one_quad(identity_eye) &&
+              changed_pixel_bounds(identity_eye.pixels) == jak1_bounds,
+          "Jak 1 NORMAL Generic2 world draw with an identity eye transform matches the control");
+    check(is_one_quad(left_eye) && is_one_quad(right_eye) &&
+              left_eye.final_offset == left_chain.next_bucket &&
+              right_eye.final_offset == right_chain.next_bucket &&
+              changed_pixel_bounds(left_eye.pixels) == shifted_x(jak1_bounds, -kEyePixelShift) &&
+              changed_pixel_bounds(right_eye.pixels) == shifted_x(jak1_bounds, kEyePixelShift),
+          "Jak 1 NORMAL Generic2 world draw applies each eye's view_clip_from_game_clip "
+          "(+/-8 pixel x shift)");
 
     auto malformed_chain = make_jak2_chain(false, true, true);
     const auto malformed = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,

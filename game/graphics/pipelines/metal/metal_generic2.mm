@@ -1669,6 +1669,11 @@ void MetalGeneric2::draw_bucket(const Bucket& bucket,
   vs.height_scale = metal_height_scale(render_state->version);
   vs.scissor_adjust = metal_scissor_adjust(render_state->version);
   vs.warp_off = warp_sample ? (1.f - 416.f / 512.f) : 0.f;
+  vs.apply_view_transform = metal_renderer::receives_view_transform(
+      uses_hud ? metal_renderer::StereoDrawPath::GenericHud
+               : metal_renderer::StereoDrawPath::GenericWorld);
+  memcpy(vs.view_clip_from_game_clip, render_state->view_transform.clip_from_game_clip.data(),
+         sizeof(vs.view_clip_from_game_clip));
   [enc setVertexBytes:&vs length:sizeof(vs) atIndex:1];
 
   GenericFsParams fs = {};
