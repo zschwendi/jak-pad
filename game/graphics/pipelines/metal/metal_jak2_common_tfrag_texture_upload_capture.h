@@ -23,6 +23,9 @@ constexpr std::array<u32, 2> kJak2Pris2CaptureBuckets = {228, 229};
 constexpr std::array<u32, 6> kJak2WaterTextureUploadBuckets = {252, 261, 270, 279, 288, 297};
 constexpr u32 kJak2CommonWaterTextureUploadBucket = 306;
 constexpr std::size_t kJak2CommonTfragTextureUploadMaximumTransfers = 64;
+// Bucket 319 (map) is admitted to the metadata walker for an opt-in rejection diagnostic only. No
+// planner accepts it; each planner gates on its own bucket predicate or a fixed bucket constant.
+constexpr u32 kJak2MapChainDiagnosticBucket = 319;
 constexpr std::size_t kJak2CommonTfragTextureAnimatorOpcodeCount = 44;
 constexpr std::size_t kJak2PrisEyeMaximumChunks = 2;
 constexpr u32 kJak2PrisEyeChunkTransferCount = 26;

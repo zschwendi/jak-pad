@@ -1,7 +1,9 @@
 #include "game/kernel/core/jak2_runtime.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <string>
@@ -72,6 +74,7 @@ uint32_t g_dispatcher = 0;
 uint64_t g_current_tick = 0;
 int32_t g_target_frame_rate = 60;
 goal_jak2_display_timing g_display_timing = {};
+bool g_log_player_position = false;
 bool g_owns_kernel = false;
 jak2_face_prompt_touch_reader::Reader g_face_prompt_touch_reader;
 
@@ -658,6 +661,118 @@ jak2_player_context_reader::Inputs player_context_inputs() {
   return inputs;
 }
 
+// GOALPAD_JAK2_DEBUG_LOG_PLAYER_POSITION=1 logs the player's world position at most once per
+// second so ordinary walk routes can be documented. Read-only; off unless the value is exactly "1".
+// decompiler/config/jak2/all-types.gc: process-drawable root :offset-assert 128 (target control
+// overlays it), trs trans :inline vector :offset-assert 16, control-info :flag-assert
+// #x4400001910 (size 0x1910). Offsets below are relative to the basic pointer.
+constexpr std::size_t kPlayerPositionTargetRoot = 128 - BASIC_OFFSET;
+constexpr std::size_t kPlayerPositionTrans = 16 - BASIC_OFFSET;
+constexpr uint16_t kPlayerPositionControlInfoSize = 0x1910;
+static_assert(kPlayerPositionTargetRoot + sizeof(uint32_t) <=
+              jak2_player_context_reader::layout::kTargetSize - BASIC_OFFSET);
+static_assert(kPlayerPositionTrans + 3 * sizeof(float) <=
+              kPlayerPositionControlInfoSize - BASIC_OFFSET);
+
+// MemoryView only bounds the upper end; like copy_goal_bytes, refuse the PROT_NONE low span before
+// any read. Symbols are compared, never dereferenced.
+constexpr uint64_t kPlayerPositionMinObject =
+    static_cast<uint64_t>(EE_MAIN_MEM_LOW_PROTECT) + BASIC_OFFSET;
+
+bool player_position_object_readable(uint32_t object) {
+  return object >= kPlayerPositionMinObject;
+}
+
+bool player_position_logging_enabled(const char* value) {
+  return value && std::strcmp(value, "1") == 0;
+}
+
+struct PlayerPosition {
+  uint32_t root = 0;
+  float x = 0;
+  float y = 0;
+  float z = 0;
+};
+
+bool read_player_position(const jak2_player_context_reader::MemoryView& memory,
+                          const jak2_player_context_reader::Inputs& inputs,
+                          uint32_t control_info_type_symbol,
+                          uint32_t control_info_type,
+                          PlayerPosition* out) {
+  using namespace jak2_player_context_reader;
+  PlayerPosition position;
+  uint32_t root_type = 0;
+  uint32_t type_symbol = 0;
+  uint16_t allocated_size = 0;
+  float trans[3] = {};
+  if (!out || !control_info_type_symbol || !player_position_object_readable(control_info_type) ||
+      !player_position_object_readable(inputs.target) ||
+      !player_position_object_readable(inputs.target_type) || !valid_target(memory, inputs) ||
+      !memory.read(inputs.target, kPlayerPositionTargetRoot, &position.root) ||
+      !memory.is_object(position.root) || !player_position_object_readable(position.root) ||
+      !memory.read_absolute(position.root - BASIC_OFFSET, &root_type) ||
+      root_type != control_info_type ||
+      !memory.read(control_info_type, layout::kTypeSymbol, &type_symbol) ||
+      type_symbol != control_info_type_symbol ||
+      !memory.read(control_info_type, layout::kTypeAllocatedSize, &allocated_size) ||
+      allocated_size != kPlayerPositionControlInfoSize ||
+      !memory.span_fits(position.root - BASIC_OFFSET, allocated_size) ||
+      !memory.read(position.root, kPlayerPositionTrans, &trans)) {
+    return false;
+  }
+  if (!std::isfinite(trans[0]) || !std::isfinite(trans[1]) || !std::isfinite(trans[2])) {
+    return false;
+  }
+  position.x = trans[0];
+  position.y = trans[1];
+  position.z = trans[2];
+  *out = position;
+  return true;
+}
+
+struct PlayerPositionThrottle {
+  bool has_logged = false;
+  std::chrono::steady_clock::time_point last_logged = {};
+
+  bool ready(std::chrono::steady_clock::time_point now) const {
+    return !has_logged || now - last_logged >= std::chrono::seconds(1);
+  }
+  void mark(std::chrono::steady_clock::time_point now) {
+    has_logged = true;
+    last_logged = now;
+  }
+  void reset() { *this = {}; }
+};
+
+PlayerPositionThrottle g_player_position_throttle;
+
+void log_player_position() {
+  if (!g_log_player_position) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (!g_player_position_throttle.ready(now)) {
+    return;
+  }
+  const jak2_player_context_reader::MemoryView memory = {
+      reinterpret_cast<const uint8_t*>(g_ee_main_mem), EE_MAIN_MEM_SIZE, goal_game_false_offset()};
+  const auto inputs = player_context_inputs();
+  uint32_t control_info_type = 0;
+  const uint32_t control_info_type_symbol =
+      goal_game_find_symbol("control-info", &control_info_type);
+  PlayerPosition position;
+  if (!read_player_position(memory, inputs, control_info_type_symbol, control_info_type,
+                            &position)) {
+    return;
+  }
+  g_player_position_throttle.mark(now);
+  constexpr float kMeter = 4096.0f;
+  lg::info("GOALPAD_JAK2_PLAYER_POSITION tick={} target=0x{:x} root=0x{:x} x={:.1f} y={:.1f} "
+           "z={:.1f} xm={:.2f} ym={:.2f} zm={:.2f}",
+           g_current_tick, inputs.target, position.root, position.x, position.y, position.z,
+           position.x / kMeter, position.y / kMeter, position.z / kMeter);
+}
+
 jak2_face_prompt_touch_reader::Inputs face_prompt_touch_inputs() {
   jak2_face_prompt_touch_reader::Inputs inputs;
   inputs.snapshot = symbol_value_if_present("*goalpad-face-prompt-touch-snapshot*");
@@ -698,6 +813,8 @@ goal_jak2_runtime_status fail_start(std::string message) {
   g_dispatcher = 0;
   g_current_tick = 0;
   g_target_frame_rate = 60;
+  g_log_player_position = false;
+  g_player_position_throttle.reset();
   goal_jak2_display_timing_init(&g_display_timing, 60);
   goal_kernel_core_set_portable_display_refresh_rate(60);
   g_face_prompt_touch_reader.reset();
@@ -826,6 +943,9 @@ goal_jak2_runtime_status goal_jak2_runtime_start(const goal_jak2_runtime_config*
     g_dispatcher = 0;
     g_current_tick = 0;
     g_face_prompt_touch_reader.reset();
+    g_log_player_position =
+        player_position_logging_enabled(std::getenv("GOALPAD_JAK2_DEBUG_LOG_PLAYER_POSITION"));
+    g_player_position_throttle.reset();
     g_target_frame_rate = requested_target_frame_rate;
     goal_jak2_display_timing_init(&g_display_timing, requested_target_frame_rate);
     goal_kernel_core_set_portable_display_refresh_rate(requested_target_frame_rate);
@@ -1108,6 +1228,9 @@ goal_jak2_runtime_status goal_jak2_runtime_tick_at(double target_presentation_ti
       remaining_sound_frames--;
     }
     update_metrics();
+    if (timing.dispatcher_frames) {
+      log_player_position();
+    }
     return GOAL_JAK2_RUNTIME_OK;
   } catch (const std::exception& e) {
     return fail_start(std::string("Jak 2 runtime tick threw: ") + e.what());

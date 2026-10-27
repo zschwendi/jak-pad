@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -1032,6 +1033,57 @@ void maybe_log_subtitle_bucket322_metadata_capture(
         index, transfer.relative_tag_offset, transfer.tag_kind, transfer.qwc,
         transfer.payload_bytes, transfer.vif0_kind, transfer.vif0_immediate,
         transfer.vif1_kind, transfer.vif1_immediate);
+  }
+}
+
+static_assert(metal_renderer::kJak2MapChainDiagnosticBucket ==
+              metal_renderer::kJak2MapTextureUploadBucket);
+
+// Opt-in (GOALPAD_JAK2_DEBUG_LOG_MAP_CHAIN=1 exactly), one-shot, metadata-only view of bucket 319
+// after the map texture-upload plan rejects. Image payloads and embedded source pointers are never dereferenced.
+void maybe_log_map_chain_rejection_metadata(goal_jak2_metal_host* host,
+                                            const void* ee_base,
+                                            u32 chain_offset) {
+  const char* enabled = std::getenv("GOALPAD_JAK2_DEBUG_LOG_MAP_CHAIN");
+  if (!host || !ee_base || !enabled || std::strcmp(enabled, "1") != 0) {
+    return;
+  }
+  static std::atomic<bool> logged{false};
+  if (logged.exchange(true)) {
+    return;
+  }
+
+  const auto capture = metal_renderer::capture_jak2_tfrag_texture_upload(
+      static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
+      metal_renderer::kJak2MapChainDiagnosticBucket);
+  // valid means the walk safely reached the bucket end; it never implies executable support. The
+  // row cap check precedes each read, so a stop at the cap cannot be told apart from a grammar stop
+  // on the final row.
+  const char* walk = capture.valid ? "complete_reached_end"
+                     : capture.transfer_count >= capture.transfers.size()
+                         ? "stopped_at_row_cap_or_malformed_final_row"
+                         : "malformed_before_end";
+  const std::size_t logged_transfers =
+      std::min<std::size_t>(capture.transfer_count, capture.transfers.size());
+  lg::info(
+      "GOALPAD_JAK2_MAP_CHAIN_CAPTURE tick={} bucket={} walk={} valid={} present={} class={} "
+      "xfer={} cap={} bytes={} inert={} ordinary={} direct={} gs={} animator={}/body{}/bytes{} "
+      "eye={} other={} malformed={} logged={}",
+      host->metrics.chains, metal_renderer::kJak2MapChainDiagnosticBucket, walk, capture.valid,
+      capture.present, static_cast<u32>(capture.classification), capture.transfer_count,
+      capture.transfers.size(), capture.total_payload_bytes, capture.inert_transfers,
+      capture.ordinary_descriptors, capture.direct_setup_transfers, capture.gs_setup_transfers,
+      capture.animator_arrays, capture.animator_body_transfers, capture.animator_payload_bytes,
+      capture.eye_markers, capture.other_transfers, capture.malformed_transfers, logged_transfers);
+  for (std::size_t index = 0; index < logged_transfers; ++index) {
+    const auto& transfer = capture.transfers[index];
+    const bool pc_port = transfer.vif0_kind == static_cast<u8>(VifCode::Kind::PC_PORT);
+    lg::info(
+        "GOALPAD_JAK2_MAP_CHAIN_CAPTURE_TRANSFER index={} rel={} tag={} qwc={} bytes={} "
+        "vif0={}/{} vif1={}/{} pc_port_opcode={}",
+        index, transfer.relative_tag_offset, transfer.tag_kind, transfer.qwc,
+        transfer.payload_bytes, transfer.vif0_kind, transfer.vif0_immediate, transfer.vif1_kind,
+        transfer.vif1_immediate, pc_port ? static_cast<int>(transfer.vif0_immediate) : -1);
   }
 }
 
@@ -2216,6 +2268,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     copy_map_texture_upload_metrics(host, map_texture_plan);
     if (!map_texture_plan) {
       const std::string message = map_texture_upload_rejection_message(map_texture_diagnostic);
+      maybe_log_map_chain_rejection_metadata(host, ee_base, chain_offset);
       record_failure(host, message.c_str());
       return;
     }

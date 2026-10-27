@@ -1,7 +1,10 @@
 #include "game/graphics/pipelines/metal/metal_jak2_blit_display_renderer.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 
+#include "common/log/log.h"
 #include "common/util/Assert.h"
 
 #include "game/graphics/texture/TexturePool.h"
@@ -110,6 +113,76 @@ bool Jak2BlitDisplayExecutor::ensure_snapshot(MetalSharedRenderState* render_sta
   return true;
 }
 
+namespace {
+
+// DIAGNOSTIC ONLY (not a fix): bounded numeric snapshot/copy-back metadata. No pixel readback.
+// copyFromTexture copies texel rows in memory order (origin 0,0 -> 0,0); it neither flips nor
+// reveals the orientation of the pixels already in game_color.
+bool g_jak2_blit_copy_diag = false;
+
+// DIAGNOSTIC ONLY: default-off PC-BLIT logging. Only GOALPAD_JAK2_DEBUG_LOG_PC_BLIT=1 enables it;
+// unset, empty, "0", or any other value disables it.
+bool jak2_pc_blit_debug_log_value_enabled(const char* value) {
+  return value && std::strcmp(value, "1") == 0;
+}
+
+bool jak2_pc_blit_debug_log_enabled() {
+  static const bool enabled =
+      jak2_pc_blit_debug_log_value_enabled(std::getenv("GOALPAD_JAK2_DEBUG_LOG_PC_BLIT"));
+  return enabled;
+}
+
+void log_jak2_blit_copy_event(const char* event,
+                              int command,
+                              bool snapshot_requested,
+                              bool copy_back_requested,
+                              id<MTLTexture> src,
+                              NSUInteger src_slice,
+                              id<MTLTexture> dst,
+                              NSUInteger dst_slice) {
+  if (!jak2_pc_blit_debug_log_enabled() || !g_jak2_blit_copy_diag) {
+    return;
+  }
+  // <=6 distinct signatures per process, plus 2 fixed-index heartbeats.
+  static u64 s_sigs[6] = {};
+  static int s_sig_count = 0;
+  static u64 s_events = 0;
+  const u64 event_index = ++s_events;
+  const u64 sw = src ? src.width : 0, sh = src ? src.height : 0;
+  const u64 dw = dst ? dst.width : 0, dh = dst ? dst.height : 0;
+  u64 sig = 1469598103934665603ull;
+  const auto mix = [&sig](u64 v) { sig = (sig ^ v) * 1099511628211ull; };
+  for (const char* c = event; *c; ++c) {
+    mix(static_cast<u8>(*c));
+  }
+  mix(static_cast<u64>(command) | (snapshot_requested ? 0x100u : 0u) |
+      (copy_back_requested ? 0x200u : 0u));
+  mix(sw | (sh << 16) | (static_cast<u64>(src_slice) << 32));
+  mix(dw | (dh << 16) | (static_cast<u64>(dst_slice) << 32));
+  bool seen = false;
+  for (int i = 0; i < s_sig_count; ++i) {
+    seen |= s_sigs[i] == sig;
+  }
+  const bool heartbeat = event_index == 240 || event_index == 1200;
+  const bool emit_distinct = !seen && s_sig_count < 6;
+  if (emit_distinct) {
+    s_sigs[s_sig_count++] = sig;
+  }
+  if (!emit_distinct && !heartbeat) {
+    return;
+  }
+  lg::info(
+      "GOALPAD_JAK2_BLIT_COPY_DIAG reason={} event_index={} event={} command={} "
+      "snapshot_requested={} copy_back_requested={} src={}x{} src_slice={} dst={}x{} "
+      "dst_slice={} sourceOrigin=(0,0,0) destinationOrigin=(0,0,0) copied={}x{} "
+      "(copyFromTexture preserves row order; pixel orientation not measurable from metadata)",
+      emit_distinct ? "distinct" : "heartbeat", event_index, event, command,
+      snapshot_requested ? 1 : 0, copy_back_requested ? 1 : 0, sw, sh, (u64)src_slice, dw, dh,
+      (u64)dst_slice, sw, sh);
+}
+
+}  // namespace
+
 void Jak2BlitDisplayExecutor::restart_with_clear(MetalFrameContext& ctx, bool copy_snapshot) {
   ASSERT(ctx.enc && ctx.cmds && ctx.game_color && ctx.game_depth);
   [ctx.enc endEncoding];
@@ -127,6 +200,8 @@ void Jak2BlitDisplayExecutor::restart_with_clear(MetalFrameContext& ctx, bool co
          destinationLevel:0
         destinationOrigin:MTLOriginMake(0, 0, 0)];
     [blit endEncoding];
+    log_jak2_blit_copy_event("snapshot_copy", -1, true, false, ctx.game_color,
+                             ctx.game_color_slice, m_snapshot, 0);
   }
   begin_game_pass(ctx, MTLLoadActionClear);
 }
@@ -145,6 +220,8 @@ void Jak2BlitDisplayExecutor::restore_snapshot(MetalFrameContext& ctx) {
        destinationLevel:0
       destinationOrigin:MTLOriginMake(0, 0, 0)];
   [blit endEncoding];
+  log_jak2_blit_copy_event("copy_back_restore", -1, false, true, m_snapshot, 0, ctx.game_color,
+                           ctx.game_color_slice);
   begin_game_pass(ctx, MTLLoadActionLoad);
 }
 
@@ -165,6 +242,13 @@ bool Jak2BlitDisplayExecutor::execute(const Jak2BlitDisplayPlan& plan,
   m_stats.snapshot_requested = snapshot;
   m_stats.copy_back_requested = plan.command == Jak2BlitDisplayCommand::CopyBack ||
                                 plan.command == Jak2BlitDisplayCommand::SnapshotThenCopyBack;
+  g_jak2_blit_copy_diag = jak2_pc_blit_debug_log_enabled() &&
+                         render_state->detailed_frame_stats_enabled &&
+                         !render_state->secondary_view &&
+                         render_state->version == GameVersion::Jak2;
+  log_jak2_blit_copy_event("execute_plan", static_cast<int>(plan.command), snapshot,
+                           m_stats.copy_back_requested, ctx.game_color, ctx.game_color_slice,
+                           m_snapshot, 0);
   if (snapshot && !ensure_snapshot(render_state, ctx)) {
     return false;
   }
@@ -194,6 +278,8 @@ void Jak2BlitDisplayExecutor::finish_frame(MetalFrameContext& ctx) {
   m_copy_back_pending = false;
   if (!m_snapshot || !ctx.game_color || m_snapshot.width != ctx.game_color.width ||
       m_snapshot.height != ctx.game_color.height) {
+    log_jak2_blit_copy_event("copy_back_skipped_mismatch", -1, false, true, m_snapshot, 0,
+                             ctx.game_color, ctx.game_color_slice);
     return;
   }
   restore_snapshot(ctx);

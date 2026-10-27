@@ -1,5 +1,8 @@
 #include "metal_direct_renderer.h"
 
+#include <cstdlib>
+#include <cstring>
+
 #include "common/log/log.h"
 #include "common/util/Assert.h"
 
@@ -16,6 +19,18 @@ namespace {
 
 constexpr PerGameVersion<int> game_height(448, 416, 416, 416);
 constexpr PerGameVersion<u32> normal_zbp(448, 304, 304, 304);
+
+// DIAGNOSTIC ONLY: default-off PC-BLIT logging. Only GOALPAD_JAK2_DEBUG_LOG_PC_BLIT=1 enables it;
+// unset, empty, "0", or any other value disables it.
+bool jak2_pc_blit_debug_log_value_enabled(const char* value) {
+  return value && std::strcmp(value, "1") == 0;
+}
+
+bool jak2_pc_blit_debug_log_enabled() {
+  static const bool enabled =
+      jak2_pc_blit_debug_log_value_enabled(std::getenv("GOALPAD_JAK2_DEBUG_LOG_PC_BLIT"));
+  return enabled;
+}
 
 // must match DirectVsParams in shaders/direct.metal
 struct DirectVsParams {
@@ -626,15 +641,145 @@ void MetalDirectRenderer::flush_pending(MetalSharedRenderState* render_state,
     }
     ASSERT(mtl_tex);
 
+    // DIAGNOSTIC ONLY (not a fix): bounded metadata for the Jak2 PC-BLIT TBP batch. Gated by the
+    // default-off GOALPAD_JAK2_DEBUG_LOG_PC_BLIT=1 env flag, detailed_frame_stats_enabled, primary
+    // view, Jak2, and TBP==0x3300.
+    const bool jak2_blit_diag = jak2_pc_blit_debug_log_enabled() &&
+                                render_state->detailed_frame_stats_enabled &&
+                                !render_state->secondary_view &&
+                                render_state->version == GameVersion::Jak2 &&
+                                batch_tex.texture_base_ptr == metal_renderer::kJak2BlitDisplayTbp;
+    struct Jak2BlitUvSummary {
+      int uv = 0, stq = 0;
+      float min_x = 0, max_x = 0, min_y = 0, max_y = 0, min_t = 0, max_t = 0;
+      float t_at_min_y = 0, t_at_max_y = 0, q_at_min_y = 0, q_at_max_y = 0;
+    };
+    const auto summarize_jak2_blit = [&](const Vertex* vs) {
+      Jak2BlitUvSummary r;
+      for (int i = 0; i < m_prim_buffer.vert_count; ++i) {
+        const auto& v = vs[i];
+        (v.use_uv ? r.uv : r.stq)++;
+        const float t = v.stq[1];
+        if (i == 0 || v.xyzf[0] < r.min_x) r.min_x = v.xyzf[0];
+        if (i == 0 || v.xyzf[0] > r.max_x) r.max_x = v.xyzf[0];
+        if (i == 0 || t < r.min_t) r.min_t = t;
+        if (i == 0 || t > r.max_t) r.max_t = t;
+        if (i == 0 || v.xyzf[1] < r.min_y) {
+          r.min_y = v.xyzf[1];
+          r.t_at_min_y = t;
+          r.q_at_min_y = v.stq[2];
+        }
+        if (i == 0 || v.xyzf[1] > r.max_y) {
+          r.max_y = v.xyzf[1];
+          r.t_at_max_y = t;
+          r.q_at_max_y = v.stq[2];
+        }
+      }
+      return r;
+    };
+    Jak2BlitUvSummary jak2_blit_before;
+    if (jak2_blit_diag) {
+      jak2_blit_before = summarize_jak2_blit(static_cast<const Vertex*>(dst));
+    }
+    bool jak2_blit_mirror_applied = false;
+
     // PC-BLIT uses OpenGL's bottom-up framebuffer coordinates; the Metal snapshot is top-down.
     if (render_state->version == GameVersion::Jak2 &&
         batch_tex.texture_base_ptr == metal_renderer::kJak2BlitDisplayTbp &&
         !last_batch.used_placeholder) {
+      jak2_blit_mirror_applied = true;
       auto* vertices = static_cast<Vertex*>(dst);
       for (int i = 0; i < m_prim_buffer.vert_count; ++i) {
         auto& vertex = vertices[i];
         vertex.stq[1] = vertex.use_uv ? 16.f * static_cast<float>(mtl_tex.height) - vertex.stq[1]
                                      : vertex.stq[2] - vertex.stq[1];
+      }
+    }
+
+    if (jak2_blit_diag) {
+      // <=6 distinct signatures per process, plus 2 fixed-index heartbeats so a stable state
+      // reached after several transient opening signatures is still captured.
+      static u64 s_sigs[6] = {};
+      static int s_sig_count = 0;
+      static u64 s_matches = 0;
+      const u64 match_index = ++s_matches;
+      // Post-gap settled records: when this TBP batch resumes after an engine_frame_id gap > 600
+      // (e.g. title -> gameplay -> pause), emit ONE record 60 matches later (past the initial
+      // copy-back frames), at most 2 per process. A non-increasing frame id never arms a gap.
+      static u64 s_last_frame = 0;
+      static bool s_have_last_frame = false;
+      static u64 s_gap_armed_match = 0;
+      static int s_post_gap_count = 0;
+      const u64 frame_id = render_state->engine_frame_id;
+      if (s_have_last_frame && frame_id > s_last_frame && frame_id - s_last_frame > 600 &&
+          s_post_gap_count < 2) {
+        s_gap_armed_match = match_index;
+      }
+      s_last_frame = frame_id;
+      s_have_last_frame = true;
+      const bool post_gap = s_gap_armed_match != 0 && match_index == s_gap_armed_match + 60;
+      if (post_gap) {
+        s_gap_armed_match = 0;
+        s_post_gap_count++;
+      }
+      const auto after = summarize_jak2_blit(static_cast<const Vertex*>(dst));
+      const auto& before = jak2_blit_before;
+      const auto dir = [](const Jak2BlitUvSummary& r) {
+        return r.t_at_max_y > r.t_at_min_y ? 1 : (r.t_at_max_y < r.t_at_min_y ? 2 : 0);
+      };
+      u64 sig = 1469598103934665603ull;
+      const auto mix = [&sig](u64 v) { sig = (sig ^ v) * 1099511628211ull; };
+      mix(static_cast<u64>(m_my_id));
+      mix(static_cast<u64>(m_prim_buffer.vert_count));
+      mix(static_cast<u64>(before.uv));
+      mix(static_cast<u64>(dir(before)) | (static_cast<u64>(dir(after)) << 4));
+      mix(static_cast<u64>(jak2_blit_mirror_applied) | (last_batch.used_placeholder ? 2u : 0u) |
+          (m_offscreen_mode ? 4u : 0u));
+      mix(static_cast<u64>(mtl_tex.width) | (static_cast<u64>(mtl_tex.height) << 16));
+      mix(static_cast<u64>(static_cast<s64>(before.min_t / 16.f)) & 0xffff);
+      mix(static_cast<u64>(static_cast<s64>(before.max_t / 16.f)) & 0xffff);
+      mix(static_cast<u64>(static_cast<s64>(before.min_y)) & 0xffffff);
+      mix(static_cast<u64>(static_cast<s64>(before.max_y)) & 0xffffff);
+      bool seen = false;
+      for (int i = 0; i < s_sig_count; ++i) {
+        seen |= s_sigs[i] == sig;
+      }
+      const bool heartbeat = match_index == 240 || match_index == 1200;
+      const bool emit_distinct = !seen && s_sig_count < 6;
+      if (emit_distinct) {
+        s_sigs[s_sig_count++] = sig;
+      }
+      if (emit_distinct || heartbeat || post_gap) {
+        const auto* src = m_prim_buffer.vertices.data();
+        const auto* out = static_cast<const Vertex*>(dst);
+        const int n = m_prim_buffer.vert_count;
+        const auto vtx = [](const Vertex& v) {
+          return fmt::format("uv{} xy=({:.1f},{:.1f}) stq=({:.3f},{:.3f},{:.3f})", (int)v.use_uv,
+                             v.xyzf[0], v.xyzf[1], v.stq[0], v.stq[1], v.stq[2]);
+        };
+        lg::info(
+            "GOALPAD_JAK2_BLIT_UV_DIAG reason={} match={} frame={} sig={:016x} renderer={} id={} "
+            "verts={} uv_count={} stq_count={} offscreen={} placeholder={} lookup_hit={} "
+            "mirror_applied={} tex={}x{} game_color={}x{} slice={} game_res={}x{} "
+            "height_scale={:.2f} x=[{:.1f},{:.1f}] y=[{:.1f},{:.1f}] "
+            "before: t=[{:.3f},{:.3f}] t@ymin={:.3f} q@ymin={:.3f} t@ymax={:.3f} q@ymax={:.3f} "
+            "dir={} | after: t=[{:.3f},{:.3f}] t@ymin={:.3f} t@ymax={:.3f} dir={} | "
+            "src_v0 {} | src_v1 {} | src_vlast {} | out_v0 {} | out_vlast {} "
+            "(dir: 1=t ascends with stream y, 2=t descends, 0=flat; y is pre-vertex-shader "
+            "stream xyzf[1], unchanged by mirror)",
+            emit_distinct ? "distinct" : (heartbeat ? "heartbeat" : "post_gap"), match_index,
+            render_state->engine_frame_id,
+            sig, m_name, m_my_id, n, before.uv, before.stq, m_offscreen_mode ? 1 : 0,
+            last_batch.used_placeholder ? 1 : 0, last_batch.texture_lookup_hit ? 1 : 0,
+            jak2_blit_mirror_applied ? 1 : 0, (u64)mtl_tex.width, (u64)mtl_tex.height,
+            ctx.game_color ? (u64)ctx.game_color.width : 0,
+            ctx.game_color ? (u64)ctx.game_color.height : 0, (u64)ctx.game_color_slice,
+            render_state->game_res_w, render_state->game_res_h, vs_params.height_scale,
+            before.min_x, before.max_x, before.min_y, before.max_y, before.min_t, before.max_t,
+            before.t_at_min_y, before.q_at_min_y, before.t_at_max_y, before.q_at_max_y,
+            dir(before), after.min_t, after.max_t, after.t_at_min_y, after.t_at_max_y, dir(after),
+            n > 0 ? vtx(src[0]) : "-", n > 1 ? vtx(src[1]) : "-", n > 0 ? vtx(src[n - 1]) : "-",
+            n > 0 ? vtx(out[0]) : "-", n > 0 ? vtx(out[n - 1]) : "-");
       }
     }
 

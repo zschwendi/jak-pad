@@ -227,6 +227,7 @@ bool is_audited_tfrag_texture_upload_bucket(u32 bucket_id) {
   return bucket_id == kJak2CommonTfragTextureUploadBucket ||
          bucket_id == kJak2CommonPrisTextureUploadBucket ||
          bucket_id == kJak2SubtitleBucket ||
+         bucket_id == kJak2MapChainDiagnosticBucket ||
          std::find(kJak2NormalTfragTextureUploadBuckets.begin(),
                    kJak2NormalTfragTextureUploadBuckets.end(), bucket_id) !=
              kJak2NormalTfragTextureUploadBuckets.end() ||

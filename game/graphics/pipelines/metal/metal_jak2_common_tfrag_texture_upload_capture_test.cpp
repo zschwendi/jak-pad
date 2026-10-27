@@ -2436,6 +2436,58 @@ void test_per_level_pris_grammar_is_unchanged() {
   }
 }
 
+void test_map_chain_diagnostic_capture() {
+  constexpr u32 kMapBucket = metal_renderer::kJak2MapChainDiagnosticBucket;
+  static_assert(kMapBucket == 319);
+  auto empty = make_empty_fixture(kMapBucket);
+  const auto empty_before = empty;
+  auto result = capture(empty, kMapBucket);
+  check(empty == empty_before && result.valid && !result.present &&
+            result.classification == Classification::Absent && result.transfer_count == 1,
+        "diagnostic bucket 319 walks the exact empty form as metadata only");
+
+  auto mixed = make_ordinary_fixture(kMapBucket);
+  const u32 end_offset = bucket_offset(kMapBucket) + 16;
+  put_tag(&mixed, kOrdinaryOffset + 32, DmaTag::Kind::NEXT, 0, kAnimatorOffset, 0, 0);
+  put_animator_array(&mixed, kAnimatorOffset, 22, 1, end_offset);
+  const auto mixed_before = mixed;
+  result = capture(mixed, kMapBucket);
+  check(mixed == mixed_before && result.valid && result.present &&
+            result.animator_arrays == 1 && result.opcode_counts[22] == 1 &&
+            result.transfer_count > 1 &&
+            result.transfers[0].relative_tag_offset == 0,
+        "diagnostic bucket 319 records PC_PORT opcode rows without changing memory");
+
+  auto unterminated = make_empty_fixture(kMapBucket);
+  put_tag(&unterminated, bucket_offset(kMapBucket), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  put_tag(&unterminated, kOrdinaryOffset, DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  result = capture(unterminated, kMapBucket);
+  check(!result.valid && result.malformed_transfers == 1 &&
+            result.transfer_count < metal_renderer::kJak2CommonTfragTextureUploadMaximumTransfers,
+        "diagnostic bucket 319 keeps the existing cycle guard");
+
+  std::vector<u8> capped(kMemorySize);
+  put_tag(&capped, bucket_offset(kMapBucket), DmaTag::Kind::NEXT, 0, kOrdinaryOffset, 0, 0);
+  for (std::size_t i = 0; i < metal_renderer::kJak2CommonTfragTextureUploadMaximumTransfers;
+       ++i) {
+    put_tag(&capped, kOrdinaryOffset + static_cast<u32>(i) * 16, DmaTag::Kind::CNT, 0, 0, 0, 0);
+  }
+  result = capture(capped, kMapBucket);
+  check(!result.valid &&
+            result.transfer_count ==
+                metal_renderer::kJak2CommonTfragTextureUploadMaximumTransfers &&
+            result.malformed_transfers == 1,
+        "diagnostic bucket 319 keeps the fixed 64-row bound");
+
+  check(!metal_renderer::capture_jak2_tfrag_texture_upload(empty.data(), empty.size(),
+                                                           kChainOffset, 318)
+             .valid &&
+            !metal_renderer::capture_jak2_tfrag_texture_upload(empty.data(), empty.size(),
+                                                               kChainOffset, 320)
+                 .valid,
+        "only bucket 319 is added to the metadata walker allowlist");
+}
+
 int main() {
   test_exact_empty_and_ordinary_metadata();
   test_per_level_pris_grammar_is_unchanged();
@@ -2469,6 +2521,7 @@ int main() {
   test_follower_range_alignment_cycle_and_kind_bounds();
   test_transfer_limit_is_enforced();
   test_subtitle_capture_is_metadata_only();
+  test_map_chain_diagnostic_capture();
   std::puts("PASS: Jak II foreground texture-upload metadata capture");
   return 0;
 }
