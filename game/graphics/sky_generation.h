@@ -98,7 +98,11 @@ struct ThreadContext {
 
 inline std::atomic<std::uint64_t> g_epoch_source{0};
 inline std::atomic<std::uint64_t> g_active_epoch{0};
-inline thread_local ThreadContext t_context;
+inline ThreadContext& thread_context() {
+  // Function-local TLS coalesces its initializer across the Apple device link's translation units.
+  static thread_local ThreadContext context;
+  return context;
+}
 
 // Owner thread, uncancelled epoch. Engine identity is checked separately: one armed host tick may
 // run several engine steps under the same immutable H.
@@ -273,7 +277,7 @@ inline bool begin_frame(const Mat4& game_camera_from_current_head,
                         std::uint64_t engine_frame_id,
                         EngineFrameIdFn engine_frame_id_fn,
                         FrameIdentity* out_identity = nullptr) {
-  auto& ctx = detail::t_context;
+  auto& ctx = detail::thread_context();
   if (out_identity) {
     *out_identity = {};
   }
@@ -306,7 +310,7 @@ inline bool begin_frame(const Mat4& game_camera_from_current_head,
 }
 
 inline bool end_frame() {
-  auto& ctx = detail::t_context;
+  auto& ctx = detail::thread_context();
   bool ended = false;
   if (ctx.epoch != 0 && ctx.owner == std::this_thread::get_id()) {
     std::uint64_t expected = ctx.epoch;
@@ -324,11 +328,11 @@ inline void cancel_frame() {
 
 // True between begin_frame and end_frame on this thread, whether or not the context is usable.
 inline bool frame_requested() {
-  return detail::t_context.requested;
+  return detail::thread_context().requested;
 }
 
 inline bool frame_active(FrameIdentity* out_identity = nullptr) {
-  const auto& ctx = detail::t_context;
+  const auto& ctx = detail::thread_context();
   if (!detail::live(ctx) || !detail::engine_current(ctx)) {
     return false;
   }
@@ -342,7 +346,7 @@ inline bool current_frame_head_rotation(Mat4* out, FrameIdentity* out_identity =
   if (!out || !frame_active(out_identity)) {
     return false;
   }
-  *out = detail::t_context.head;
+  *out = detail::thread_context().head;
   return true;
 }
 
@@ -360,7 +364,7 @@ inline bool current_frame_head_rotation(Mat4* out, FrameIdentity* out_identity =
 inline InitToken consume_init(const float camera_rot_rows[16],
                               const float perspective_rows[16],
                               float out_rows[16]) {
-  auto& ctx = detail::t_context;
+  auto& ctx = detail::thread_context();
   ctx.current_init_serial = 0;
   if (!detail::live(ctx) || !detail::sync_engine(ctx)) {
     return {};
@@ -403,7 +407,7 @@ inline InitToken consume_init(const float camera_rot_rows[16],
 
 // Something other than init-sky-regs rewrote the persisted sky rows (init-boundary-regs).
 inline void invalidate_init() {
-  detail::t_context.current_init_serial = 0;
+  detail::thread_context().current_init_serial = 0;
 }
 
 // Producer hook: [ee_begin, ee_end) is the dma-buffer base before/after draw-large-polygon.
@@ -412,7 +416,7 @@ inline bool record_emit(const InitToken& token,
                         SourceKind kind,
                         std::uint32_t ee_begin,
                         std::uint32_t ee_end) {
-  auto& ctx = detail::t_context;
+  auto& ctx = detail::thread_context();
   if (ee_end == ee_begin) {
     return true;  // fully clipped polygon
   }
@@ -496,7 +500,7 @@ inline GeneratedPayload classify_generated_payload(const std::uint8_t* data,
                                                    std::uint32_t ee_begin,
                                                    bool h_requested,
                                                    std::uint64_t sky_transform_epoch) {
-  const auto& ctx = detail::t_context;
+  const auto& ctx = detail::thread_context();
   GeneratedPayload out;
   out.terminator_valid = data && size >= kTerminatorBytes && size % 16 == 0 &&
                          canonical_terminator(data + size - kTerminatorBytes);
