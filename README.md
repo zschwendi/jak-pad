@@ -1,14 +1,27 @@
 # Dark Eco — Apple engine fork
 
-**Dark Eco brings Jak to iPhone, iPad, Mac, and Apple Vision Pro.** This
-repository contains the engine used by Dark Eco: an OpenGOAL fork with native
-ARM64 ahead-of-time game code, a Metal renderer, and Apple-platform runtime
-integration. The Apple app, game library, import UI, settings, and saves live
-in the **[Dark Eco application repository](https://github.com/zschwendi/GOALPad/tree/v2.0)**.
+**Jak on iPhone, iPad, Mac, and Apple Vision Pro—with an app built for Apple
+devices.** Dark Eco combines native Apple game ports with a Swift/SwiftUI app
+for choosing games, importing your own game files, managing controls and
+settings, and syncing saves and settings through optional iCloud sync.
 
-This fork is for **Apple devices**. For installing and playing Dark Eco, use
-the app instructions below. The upstream OpenGOAL PC launcher is a separate
-project and is not the setup path for this app.
+| Apple device | Controls |
+| --- | --- |
+| **iPhone and iPad** | **Touch controls or a gamepad.** |
+| **Mac (Apple silicon)** | **Gamepad or keyboard and mouse.** |
+| **Apple Vision Pro** | **Gamepad or PSVR2 Sense controllers.** Sense motion gestures are currently a Jak 1 feature. |
+
+Vision Pro also has experimental immersive third-person play with Jak visible.
+Availability and remaining work are listed below.
+
+This repository contains Dark Eco's engine: an OpenGOAL fork with native ARM64
+ahead-of-time game code, a Metal renderer, and Apple-platform integration.
+The complete app, library, import UI, settings, and cloud sync live in the
+**[Dark Eco application repository](https://github.com/zschwendi/GOALPad/tree/v2.0)**.
+Start there to install or build Dark Eco for your Apple device.
+
+OpenGOAL supplies the reconstructed game code, compiler, and runtime foundation;
+Dark Eco adds the Apple ports and app experience described above.
 
 ## Game support
 
