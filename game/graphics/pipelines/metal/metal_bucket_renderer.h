@@ -126,6 +126,14 @@ struct MetalSharedRenderState {
   metal_renderer::HudPlaneTransform hud_plane;
   bool immersive_camera_enabled = false;
   metal_renderer::ImmersiveCullPlanes immersive_cull_planes = {};
+  // This view's transform for receipted source sky-tng geometry (original packet, E * H). Valid
+  // only for the sky_generation epoch it was derived for; World/fallback draws never use it.
+  metal_renderer::ViewTransform sky_source_view_transform;
+  bool sky_source_view_transform_valid = false;
+  u64 sky_source_epoch = 0;
+  // An H-enabled sky context was requested for this physical frame: generated sky that is not
+  // fully receipted is skipped, never drawn as ordinary.
+  bool sky_source_expected = false;
   // Production hosts can disable expensive renderer diagnostics while retaining validation and
   // functional frame counters. Desktop and tests keep the detailed path by default.
   bool detailed_frame_stats_enabled = true;

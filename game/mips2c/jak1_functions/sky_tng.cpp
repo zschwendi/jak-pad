@@ -1,11 +1,33 @@
 //--------------------------MIPS2C---------------------
 
+#include "game/graphics/sky_generation.h"
 #include "game/kernel/jak1/kscheme.h"
 #include "game/mips2c/mips2c_private.h"
 using namespace jak1;
 namespace Mips2C::jak1 {
 
 ExecutionContext sky_regs_vfs;
+// Which init-sky-regs produced the rows persisted in sky_regs_vfs (ordinary when epoch == 0).
+sky_generation::InitToken sky_regs_token;
+
+namespace {
+u32 sky_dma_buffer_base(u32 dma_buffer) {
+  u32 base;
+  memcpy(&base, g_ee_main_mem + dma_buffer + 4, 4);  // (-> dma-buffer base), lw a3, 4(a1)
+  return base;
+}
+
+// draw-large-polygon advances the dma-buffer base only past the GIF data it emitted.
+void draw_receipted_sky_polygon(ExecutionContext* c,
+                                void* ctxt,
+                                sky_generation::SourceKind kind,
+                                u64 (*draw)(void*)) {
+  const u32 dma_buffer = c->gprs[a1].du32[0];
+  const u32 old_base = sky_dma_buffer_base(dma_buffer);
+  draw(ctxt);
+  sky_generation::record_emit(sky_regs_token, kind, old_base, sky_dma_buffer_base(dma_buffer));
+}
+}  // namespace
 
 }  // namespace Mips2C::jak1
 
@@ -72,6 +94,22 @@ u64 execute(void* ctxt) {
   c->lqc2(vf28, 620, v1);                           // lqc2 vf28, 620(v1)
   c->lqc2(vf14, 700, v1);                           // lqc2 vf14, 700(v1)
   c->lqc2(vf26, 716, v1);                           // lqc2 vf26, 716(v1)
+  {
+    // Physical immersive: compose the private rows from the loaded camera-rot (364) and
+    // perspective (156) before hmge, never writing *math-camera*.
+    float camera_rot[16];
+    float perspective[16];
+    float rows[16];
+    memcpy(camera_rot, g_ee_main_mem + c->gpr_addr(v1) + 364, sizeof(camera_rot));
+    memcpy(perspective, g_ee_main_mem + c->gpr_addr(v1) + 156, sizeof(perspective));
+    sky_regs_token = sky_generation::consume_init(camera_rot, perspective, rows);
+    if (sky_regs_token.transformed()) {
+      memcpy(&c->vfs[vf31].f[0], rows + 0, 16);
+      memcpy(&c->vfs[vf30].f[0], rows + 4, 16);
+      memcpy(&c->vfs[vf29].f[0], rows + 8, 16);
+      memcpy(&c->vfs[vf28].f[0], rows + 12, 16);
+    }
+  }
   c->lqc2(vf25, 0, a0);                             // lqc2 vf25, 0(a0)
   c->load_symbol(v1, cache.sky_tng_data);           // lw v1, *sky-tng-data*(s7)
   c->lqc2(vf13, 60, v1);                            // lqc2 vf13, 60(v1)
@@ -966,7 +1004,8 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   c->sqc2(vf10, 144, a3);                           // sqc2 vf10, 144(a3)
   c->load_symbol(t9, cache.draw_large_polygon);     // lw t9, draw-large-polygon(s7)
-  draw_large_polygon::execute(ctxt);
+  draw_receipted_sky_polygon(c, ctxt, sky_generation::SourceKind::Quad,
+                             draw_large_polygon::execute);
   // Unknown instr: jr t9
   // nop                                            // sll r0, r0, 0
   //jr ra                                           // jr ra
@@ -1055,7 +1094,8 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   c->sqc2(vf7, 96, a3);                             // sqc2 vf7, 96(a3)
   c->load_symbol(t9, cache.draw_large_polygon);     // lw t9, draw-large-polygon(s7)
-  draw_large_polygon::execute(ctxt);
+  draw_receipted_sky_polygon(c, ctxt, sky_generation::SourceKind::Tri,
+                             draw_large_polygon::execute);
   // Unknown instr: jr t9
   // nop                                            // sll r0, r0, 0
   //jr ra                                           // jr ra
@@ -1159,6 +1199,9 @@ u64 execute(void* ctxt) {
   // nop                                            // sll r0, r0, 0
   end_of_function:
   sky_regs_vfs.copy_vfs_from_other(c);
+  // vf28-vf31 now hold ordinary camera-temp rows; the persisted sky init is no longer current.
+  sky_regs_token = {};
+  sky_generation::invalidate_init();
   return c->gprs[v0].du64[0];
 }
 

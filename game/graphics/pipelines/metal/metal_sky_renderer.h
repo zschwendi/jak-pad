@@ -50,9 +50,11 @@ class MetalSkyRenderer : public MetalBucketRenderer {
               MetalSharedRenderState* render_state,
               MetalFrameContext& ctx) override;
   const MetalDirectRenderer::Stats& direct_stats() const { return m_direct_renderer.stats(); }
+  u64 source_sky_rejected_payloads() const { return m_source_sky_rejected_payloads; }
 
  private:
   MetalDirectRenderer m_direct_renderer;
+  u64 m_source_sky_rejected_payloads = 0;
 };
 
 class MetalSkyBlendHandler : public MetalBucketRenderer {

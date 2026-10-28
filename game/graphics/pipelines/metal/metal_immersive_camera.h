@@ -54,6 +54,15 @@ struct ImmersiveStereoFrameCamera {
   ImmersiveCullPlanes binocular_cull = {};
   std::uint64_t packet_fingerprint = 0;
   int packet_count = 0;
+  // Source sky-tng geometry generated for the head (sky_generation.h) replays with the same
+  // original packet and eye_from_game_camera_meters = E * H. World draws keep left/right.
+  ViewTransform left_sky;
+  ViewTransform right_sky;
+  bool sky_valid = false;
+  std::uint64_t sky_epoch = 0;
+  // An H-enabled frame was requested when this camera was prepared, even if no usable pair
+  // could be derived. Forbids ordinary replay of generated sky for every user of this camera.
+  bool sky_requested = false;
 };
 
 // A camera may be decoded in one DMA chain and consumed by a later World-only chain. The key is

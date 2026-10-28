@@ -364,6 +364,11 @@ class MetalRenderer {
   MetalBackgroundState m_background;
   metal_renderer::ChainStats m_chain_stats;
   metal_renderer::ImmersiveStereoFrameCameraCache m_immersive_frame_camera;
+  // Per-eye source sky transform handed to the next render_chain_frame_impl call only.
+  metal_renderer::ViewTransform m_next_sky_source_view_transform;
+  bool m_next_sky_source_view_transform_valid = false;
+  u64 m_next_sky_source_epoch = 0;
+  bool m_next_sky_source_expected = false;
   bool m_has_counted_immersive_host_tick = false;
   u64 m_last_counted_immersive_host_tick = 0;
   bool m_detailed_frame_stats_enabled = true;

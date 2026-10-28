@@ -39,6 +39,7 @@
 #include "game/graphics/pipelines/metal/metal_shrub.h"
 #include "game/graphics/pipelines/metal/metal_ocean_renderer.h"
 #include "game/graphics/pipelines/metal/metal_sky_renderer.h"
+#include "game/graphics/sky_generation.h"
 #include "game/graphics/pipelines/metal/metal_sprite_renderer.h"
 #include "game/graphics/pipelines/metal/metal_tfrag.h"
 #include "game/graphics/pipelines/metal/metal_tie.h"
@@ -571,6 +572,34 @@ bool prepare_immersive_stereo_camera(const MetalExternalRenderTargetDescriptor& 
   }
   out->packet_fingerprint = metal_camera_trace::fingerprint(probe.snapshot);
   out->packet_count = probe.packet_count;
+
+  // Source sky: same ORIGINAL packet, physical eye E composed with this frame's immutable head
+  // rotation H. Failure only disables source sky pairing (it then fails closed); World is kept.
+  out->left_sky = {};
+  out->right_sky = {};
+  out->sky_valid = false;
+  out->sky_epoch = 0;
+  out->sky_requested = sky_generation::frame_requested();
+  sky_generation::Mat4 head;
+  sky_generation::FrameIdentity sky_identity;
+  if (sky_generation::current_frame_head_rotation(&head, &sky_identity)) {
+    auto left_view = left.immersive_camera.view;
+    auto right_view = right.immersive_camera.view;
+    left_view.eye_from_game_camera_meters =
+        sky_generation::multiply(left_view.eye_from_game_camera_meters, head);
+    right_view.eye_from_game_camera_meters =
+        sky_generation::multiply(right_view.eye_from_game_camera_meters, head);
+    metal_renderer::ImmersiveCameraError sky_error = metal_renderer::ImmersiveCameraError::None;
+    if (metal_renderer::derive_immersive_view_transform(
+            packet, metal_renderer::kJak1MetalScissorAdjust, left_view, &out->left_sky,
+            &sky_error) &&
+        metal_renderer::derive_immersive_view_transform(
+            packet, metal_renderer::kJak1MetalScissorAdjust, right_view, &out->right_sky,
+            &sky_error)) {
+      out->sky_valid = true;
+      out->sky_epoch = sky_identity.epoch;
+    }
+  }
   return true;
 }
 
@@ -1673,6 +1702,17 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
                                              &physical_error)) {
           return reject_physical(physical_error);
         }
+        {
+          // The sky context must label this same host tick / engine frame.
+          sky_generation::FrameIdentity sky_identity;
+          if (physical_camera.sky_valid &&
+              (!sky_generation::frame_active(&sky_identity) ||
+               sky_identity.epoch != physical_camera.sky_epoch ||
+               sky_identity.host_tick_id != opts.host_tick_id ||
+               sky_identity.engine_frame_id != opts.engine_frame_id)) {
+            physical_camera.sky_valid = false;
+          }
+        }
         current_chain_packet_count = probe.packet_count;
         m_immersive_frame_camera.store(opts.host_tick_id, opts.engine_frame_id,
                                        left.immersive_camera, right.immersive_camera,
@@ -1704,18 +1744,40 @@ bool MetalRenderer::render_chain_frame_to_external_stereo_targets(
       physical && !screen_only_chain ? physical_camera.right : right.view_transform;
   const auto* binocular_cull =
       physical && !screen_only_chain ? &physical_camera.binocular_cull : nullptr;
+  // A cached camera is reused only within one host tick; its sky epoch must still be live.
+  sky_generation::FrameIdentity sky_identity;
+  const bool sky_pairing = physical && !screen_only_chain && physical_camera.sky_valid &&
+                           sky_generation::frame_active(&sky_identity) &&
+                           sky_identity.epoch == physical_camera.sky_epoch;
+  // Requested H mode is carried independently of a usable pair: an armed-but-cancelled,
+  // missing-init, stale-engine or failed-derivation frame still forbids ordinary source sky.
+  const bool sky_expected =
+      physical && (sky_generation::frame_requested() ||
+                   (!screen_only_chain && physical_camera.sky_requested));
+  const auto arm_sky_view = [&](const metal_renderer::ViewTransform& sky) {
+    m_next_sky_source_expected = sky_expected;
+    m_next_sky_source_view_transform = sky_pairing ? sky : metal_renderer::ViewTransform{};
+    m_next_sky_source_view_transform_valid = sky_pairing;
+    m_next_sky_source_epoch = sky_pairing ? physical_camera.sky_epoch : 0;
+  };
 
+  arm_sky_view(physical_camera.left_sky);
   const bool left_rendered =
       render_chain_frame_impl(opts, nil, left.color_texture, left.color_slice, left.depth_texture,
                               left.depth_slice, &left.viewport, left.clear_depth, left.view_id,
                               left_transform, binocular_cull, true, command_buffer, chain_data,
                               chain_offset, chain_size, left.hud_plane);
+  arm_sky_view(physical_camera.right_sky);
   const bool right_rendered =
       left_rendered && render_chain_frame_impl(
                            opts, nil, right.color_texture, right.color_slice, right.depth_texture,
                            right.depth_slice, &right.viewport, right.clear_depth, right.view_id,
                            right_transform, binocular_cull, false, command_buffer, chain_data,
                            chain_offset, chain_size, right.hud_plane);
+  m_next_sky_source_view_transform = {};
+  m_next_sky_source_view_transform_valid = false;
+  m_next_sky_source_epoch = 0;
+  m_next_sky_source_expected = false;
   if (right_rendered) {
     m_chain_stats.last_views_rendered = 2;
     if (physical) {
@@ -1998,6 +2060,16 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.game_res_h = opts.game_res_h;
     m_shared_state.view_transform = view_transform;
     m_shared_state.hud_plane = hud_plane;
+    // Consumed once: any other render_chain_frame_impl caller sees no sky pairing.
+    m_shared_state.sky_source_view_transform = m_next_sky_source_view_transform;
+    m_shared_state.sky_source_view_transform_valid =
+        m_next_sky_source_view_transform_valid && immersive_cull_planes != nullptr;
+    m_shared_state.sky_source_epoch = m_next_sky_source_epoch;
+    m_shared_state.sky_source_expected = m_next_sky_source_expected;
+    m_next_sky_source_expected = false;
+    m_next_sky_source_view_transform = {};
+    m_next_sky_source_view_transform_valid = false;
+    m_next_sky_source_epoch = 0;
     m_shared_state.immersive_camera_enabled = immersive_cull_planes != nullptr;
     m_shared_state.immersive_cull_planes =
         immersive_cull_planes ? *immersive_cull_planes : metal_renderer::ImmersiveCullPlanes{};
@@ -3050,6 +3122,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     m_shared_state.background = &m_background;
     m_shared_state.secondary_view = false;
     m_shared_state.view_transform = {};
+    m_shared_state.sky_source_view_transform = {};
+    m_shared_state.sky_source_view_transform_valid = false;
+    m_shared_state.sky_source_epoch = 0;
+    m_shared_state.sky_source_expected = false;
     m_shared_state.hud_plane = {};
     m_shared_state.immersive_camera_enabled = false;
     m_shared_state.immersive_cull_planes = {};

@@ -551,6 +551,18 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_test(NAME jak1-mips2c-sky-register-state-test
                 COMMAND jak1-mips2c-sky-register-state-test)
 
+        add_executable(jak1-sky-generation-lifecycle-test
+                graphics/pipelines/metal/sky_generation_lifecycle_test.cpp)
+        add_test(NAME jak1-sky-generation-lifecycle-test
+                COMMAND jak1-sky-generation-lifecycle-test)
+
+        add_executable(jak1-sky-generation-contract-test
+                graphics/pipelines/metal/jak1_sky_generation_contract_test.cpp)
+        target_include_directories(jak1-sky-generation-contract-test PRIVATE
+                "${CMAKE_SOURCE_DIR}/third-party/fmt/include")
+        add_test(NAME jak1-sky-generation-contract-test
+                COMMAND jak1-sky-generation-contract-test)
+
         add_executable(jak1-kernel-core-smoke-test kernel/core/host_smoke_test.cpp)
         target_link_libraries(jak1-kernel-core-smoke-test jak1-kernel-core)
         add_test(NAME jak1-kernel-core-smoke-test COMMAND jak1-kernel-core-smoke-test)
@@ -1289,6 +1301,17 @@ if(APPLE)
             goalpad-metal-product jak2-kernel-core)
         add_test(NAME jak1-metal-sky-immersive-depth-test
             COMMAND jak1-metal-sky-immersive-depth-test)
+
+        add_executable(jak1-metal-sky-generated-immersive-test
+            graphics/pipelines/metal/metal_jak1_sky_generated_immersive_test.mm
+            graphics/pipelines/metal/jak1_sky_generation_gpu_fixture.cpp)
+        set_source_files_properties(
+            graphics/pipelines/metal/metal_jak1_sky_generated_immersive_test.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(jak1-metal-sky-generated-immersive-test
+            goalpad-metal-product jak2-kernel-core)
+        add_test(NAME jak1-metal-sky-generated-immersive-test
+            COMMAND jak1-metal-sky-generated-immersive-test)
 
         add_executable(jak2-mech-flame-identity-test
             graphics/pipelines/metal/metal_jak2_mech_flame_identity_test.cpp)
