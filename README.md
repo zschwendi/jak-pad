@@ -21,7 +21,7 @@ Availability and remaining work are listed below.
 This repository contains Dark Eco's engine: an OpenGOAL fork with native ARM64
 ahead-of-time game code, a Metal renderer, and Apple-platform integration.
 The Swift/SwiftUI launcher, library, import UI, settings, and cloud sync live in the
-**[Dark Eco application repository](https://github.com/zschwendi/GOALPad/tree/v2.0)**.
+**[Dark Eco application repository](https://github.com/zschwendi/dark-eco/tree/v2.0)**.
 Start there to install or build Dark Eco for your Apple device.
 
 OpenGOAL supplies the reconstructed game code, compiler, and runtime foundation;
@@ -41,9 +41,9 @@ lane. Future Jak II and Jak 3 immersion will use a normal DualSense controller.
 
 ## I want to play
 
-Start with **[Dark Eco: install and play](https://github.com/zschwendi/GOALPad/blob/v2.0/README.md#install-and-play)**.
+Start with **[Dark Eco: install and play](https://github.com/zschwendi/dark-eco/blob/v2.0/README.md#install-and-play)**.
 It covers getting an Apple build, importing your own supported game data,
-controls, and saves. See **[Dark Eco in action](https://github.com/zschwendi/GOALPad/blob/v2.0/README.md#see-dark-eco)**
+controls, and saves. See **[Dark Eco in action](https://github.com/zschwendi/dark-eco/blob/v2.0/README.md#see-dark-eco)**
 for Zach's own Vision Pro footage.
 
 Dark Eco does not include or download the games. Supply compatible data from
@@ -52,19 +52,19 @@ ahead-of-time code; it requires no PS2 emulation, JIT, or jailbreak.
 
 ## I want to build or contribute
 
-Clone the **[application repository](https://github.com/zschwendi/GOALPad/tree/v2.0)**
+Clone the **[application repository](https://github.com/zschwendi/dark-eco/tree/v2.0)**
 on an Apple silicon Mac, including its pinned submodules. Follow its
-**[build-from-source steps](https://github.com/zschwendi/GOALPad/blob/v2.0/README.md#build-from-source)**
-and **[build guide](https://github.com/zschwendi/GOALPad/blob/v2.0/docs/BUILDING.md)**.
+**[build-from-source steps](https://github.com/zschwendi/dark-eco/blob/v2.0/README.md#build-from-source)**
+and **[build guide](https://github.com/zschwendi/dark-eco/blob/v2.0/docs/BUILDING.md)**.
 Build the `GOALPad` Xcode scheme for the intended Apple destination. Building
 this engine repository alone does not produce the Dark Eco app or its setup UI.
 
 ### Coding agents
 
-Read the app repository's **[AGENTS.md](https://github.com/zschwendi/GOALPad/blob/v2.0/AGENTS.md)**,
-**[Project Overview](https://github.com/zschwendi/GOALPad/blob/v2.0/docs/PROJECT_OVERVIEW.md)**,
-**[HANDOFF](https://github.com/zschwendi/GOALPad/blob/v2.0/HANDOFF.md)**, and
-**[ROADMAP](https://github.com/zschwendi/GOALPad/blob/v2.0/ROADMAP.md)** before working.
+Read the app repository's **[AGENTS.md](https://github.com/zschwendi/dark-eco/blob/v2.0/AGENTS.md)**,
+**[Project Overview](https://github.com/zschwendi/dark-eco/blob/v2.0/docs/PROJECT_OVERVIEW.md)**,
+**[HANDOFF](https://github.com/zschwendi/dark-eco/blob/v2.0/HANDOFF.md)**, and
+**[ROADMAP](https://github.com/zschwendi/dark-eco/blob/v2.0/ROADMAP.md)** before working.
 When this is checked out as `OpenGOAL/`, those documents are in the parent
 repository. Also read this repository's `AGENTS.md`; its upstream PC background
 describes OpenGOAL, while the parent overview governs Dark Eco's Apple scope.
