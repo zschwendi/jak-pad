@@ -1,4 +1,4 @@
-# Dark Eco — Apple engine fork
+# Dark Eco — Jak trilogy on Apple platforms
 
 **Dark Eco is a simple launcher for playing Jak on Apple devices.** Once the
 app is installed, add your own game files, choose a title, and play. Import,
