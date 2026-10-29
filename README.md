@@ -1,79 +1,57 @@
-# Dark Eco — Jak trilogy on Apple platforms
+# Jak trilogy on Apple platforms
 
-**Dark Eco is a simple launcher for playing Jak on Apple devices.** Once the
-app is installed, add your own game files, choose a title, and play. Import,
-controls, settings, and saves are managed in the app, with optional iCloud
-save/settings sync. Everyday setup and play require no terminal commands.
+**jak-pad is the OpenGOAL engine fork used by the Dark Eco app.** It is not a
+separate game or app. To install, play, or build, go to
+**[Dark Eco](https://github.com/zschwendi/dark-eco)**.
 
-The main targets are **iPhone, iPad, and Apple Vision Pro**. An **experimental
-Apple silicon Mac version** also exists; its full gameplay and feature parity
-have not been validated.
+Dark Eco is the only application. This repository is one of its components.
+Building jak-pad by itself does not produce an installable app. The Dark Eco
+repository includes jak-pad automatically as its `OpenGOAL` Git submodule, so
+you don't need to install the engine separately.
 
-| Apple device | Controls and availability |
+## Why two repositories?
+
+| Repository | Contains |
 | --- | --- |
-| **iPhone and iPad** | **Touch controls or a gamepad.** |
-| **Mac (Apple silicon) — experimental** | Earlier Jak 1 import and title-screen boot demonstrated; full gameplay unvalidated. |
-| **Apple Vision Pro** | **Gamepad or PSVR2 Sense controllers.** Sense motion gestures are currently a Jak 1 feature. |
+| **[dark-eco](https://github.com/zschwendi/dark-eco)** | The Apple app: Swift/SwiftUI launcher, game library, import UI, settings, saves and cloud sync, touch controls, Xcode project, and install/build documentation |
+| **jak-pad** (this repository) | The engine: an OpenGOAL fork with the GOAL compiler, reconstructed game code, native runtime, and Apple-platform integration including the Metal renderer |
 
-Vision Pro also has experimental immersive third-person play with Jak visible.
-Availability and remaining work are listed below.
+Keeping the engine as a fork preserves OpenGOAL's history, credits, and
+license, and keeps the Apple changes separate from the app shell.
 
-This repository contains Dark Eco's engine: an OpenGOAL fork with native ARM64
-ahead-of-time game code, a Metal renderer, and Apple-platform integration.
-The Swift/SwiftUI launcher, library, import UI, settings, and cloud sync live in the
-**[Dark Eco application repository](https://github.com/zschwendi/dark-eco/tree/v2.0)**.
-Start there to install or build Dark Eco for your Apple device.
+## How to get started
 
-OpenGOAL supplies the reconstructed game code, compiler, and runtime foundation;
-Dark Eco adds the Apple ports and app experience described above.
+- **Players:** start at **[Dark Eco](https://github.com/zschwendi/dark-eco)**.
+  Its README covers getting a build, importing your game data, controls, and
+  saves.
+- **Contributors:** clone the Dark Eco repository on an Apple silicon Mac with
+  its pinned submodules (which includes this engine), then follow its
+  **[build guide](https://github.com/zschwendi/dark-eco/blob/v2.0/docs/BUILDING.md)**.
+  Engine changes are made in this repository, then the app repository updates
+  its submodule pin.
 
-## Game support
+Dark Eco does not include or download any game files. You supply compatible
+data from your own legally obtained PlayStation 2 copy. Game code is compiled
+ahead of time to native ARM64; graphics use Metal. No PS2 emulation is involved.
 
-| Game | Dark Eco status |
+## Platforms and controls
+
+| Apple device | Controls and status |
 | --- | --- |
-| **Jak and Daxter: The Precursor Legacy** | Playable in ordinary windowed mode. Vision Pro third-person immersion is **mostly finished, but incomplete**, with remaining sky, stereo-effect, and HUD issues. |
-| **Jak II** | Ordinary play is **almost finished, but still incomplete**. Immersive support **has not started** and follows the remaining Jak 1 immersive fixes. |
-| **Jak 3** | **Planned; work has not started**, including immersion. |
+| **iPhone and iPad** | Touch controls or a gamepad |
+| **Apple Vision Pro** | Gamepad or PSVR2 Sense controllers. Sense motion gestures are currently Jak 1 only. |
+| **Mac (Apple silicon), experimental** | Earlier Jak 1 import and title-screen boot demonstrated; full gameplay and feature parity not validated |
 
-These are Dark Eco's Apple-port milestones, not the upstream PC project's
-status. Immersive availability depends on the specific app build and source
-lane. Future Jak II and Jak 3 immersion will use a normal DualSense controller.
+## Game status
 
-## I want to play
+| Game | Status |
+| --- | --- |
+| **Jak and Daxter: The Precursor Legacy** | Playable in ordinary windowed mode. Vision Pro third-person immersive mode is mostly finished but incomplete; sky, stereo-effect, and HUD issues remain. |
+| **Jak II** | Ordinary play is almost finished but still incomplete. Immersive work has not started. |
+| **Jak 3** | Planned; work has not started. |
 
-Start with **[Dark Eco: install and play](https://github.com/zschwendi/dark-eco/blob/v2.0/README.md#install-and-play)**.
-It covers getting an Apple build, importing your own supported game data,
-controls, and saves. See **[Dark Eco in action](https://github.com/zschwendi/dark-eco/blob/v2.0/README.md#see-dark-eco)**
-for Zach's own Vision Pro footage.
-
-Dark Eco does not include or download the games. Supply compatible data from
-your own legally obtained PlayStation 2 copy. The app executes normally signed,
-ahead-of-time code; it requires no PS2 emulation, JIT, or jailbreak.
-
-## I want to build or contribute
-
-Clone the **[application repository](https://github.com/zschwendi/dark-eco/tree/v2.0)**
-on an Apple silicon Mac, including its pinned submodules. Follow its
-**[build-from-source steps](https://github.com/zschwendi/dark-eco/blob/v2.0/README.md#build-from-source)**
-and **[build guide](https://github.com/zschwendi/dark-eco/blob/v2.0/docs/BUILDING.md)**.
-Build the `GOALPad` Xcode scheme for the intended Apple destination. Building
-this engine repository alone does not produce the Dark Eco app or its setup UI.
-
-### Coding agents
-
-Read the app repository's **[AGENTS.md](https://github.com/zschwendi/dark-eco/blob/v2.0/AGENTS.md)**,
-**[Project Overview](https://github.com/zschwendi/dark-eco/blob/v2.0/docs/PROJECT_OVERVIEW.md)**,
-**[HANDOFF](https://github.com/zschwendi/dark-eco/blob/v2.0/HANDOFF.md)**, and
-**[ROADMAP](https://github.com/zschwendi/dark-eco/blob/v2.0/ROADMAP.md)** before working.
-When this is checked out as `OpenGOAL/`, those documents are in the parent
-repository. Also read this repository's `AGENTS.md`; its upstream PC background
-describes OpenGOAL, while the parent overview governs Dark Eco's Apple scope.
-
-Inspect both repositories' current branches, pins, and dirty state. The unified
-product uses `v2.0` in the app and engine repositories. Preserve the separate
-experimental immersive lane and per-game data/saves. Run the smallest relevant
-checks, leave exact evidence, and follow current device authorization. Do not
-commit retail game data, saves, signing material, or secrets.
+These are Dark Eco's Apple-port milestones, not the status of the upstream PC
+project. The trilogy is not complete on Apple platforms yet.
 
 ## Engine layout
 
@@ -86,6 +64,12 @@ commit retail game data, saves, signing material, or secrets.
 | `test/` | Compiler/runtime tests and original fixtures |
 | `docs/` | Engine documentation; some retained material describes upstream desktop development |
 
+Coding agents should read the Dark Eco repository's
+[AGENTS.md](https://github.com/zschwendi/dark-eco/blob/v2.0/AGENTS.md) and
+[Project Overview](https://github.com/zschwendi/dark-eco/blob/v2.0/docs/PROJECT_OVERVIEW.md)
+first. This repository's `AGENTS.md` describes upstream OpenGOAL's PC project;
+the Dark Eco overview governs Apple-platform scope.
+
 ## Credits and license
 
 Dark Eco is by Zach Schwendiman / Zephyr Studios and builds on
@@ -94,5 +78,5 @@ tools, reconstructed game code, original runtime, and formats belongs to the
 OpenGOAL contributors. This fork adds the Apple-platform port; OpenGOAL's
 [ISC license](LICENSE) and third-party notices remain in place.
 
-Dark Eco is an unofficial community project, unaffiliated with Sony Interactive
-Entertainment, Naughty Dog, or the OpenGOAL team.
+Dark Eco and jak-pad are unofficial community projects, unaffiliated with Sony
+Interactive Entertainment, Naughty Dog, or the OpenGOAL team.
