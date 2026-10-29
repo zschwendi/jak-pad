@@ -64,11 +64,12 @@ project. The trilogy is not complete on Apple platforms yet.
 | `test/` | Compiler/runtime tests and original fixtures |
 | `docs/` | Engine documentation; some retained material describes upstream desktop development |
 
-Coding agents should read the Dark Eco repository's
-[AGENTS.md](https://github.com/zschwendi/dark-eco/blob/v2.0/AGENTS.md) and
+**Coding agents:** start with [CLAUDE.md](CLAUDE.md) and the routing section in
+[AGENTS.md](AGENTS.md). For Dark Eco/Jak-on-Apple app requests, follow the
+[app's agent rules](https://github.com/zschwendi/dark-eco/blob/v2.0/AGENTS.md) and
 [Project Overview](https://github.com/zschwendi/dark-eco/blob/v2.0/docs/PROJECT_OVERVIEW.md)
-first. This repository's `AGENTS.md` describes upstream OpenGOAL's PC project;
-the Dark Eco overview governs Apple-platform scope.
+without asking the user to reidentify the app. The retained PC-only platform
+description in this repository's `AGENTS.md` is upstream background.
 
 ## Credits and license
 
