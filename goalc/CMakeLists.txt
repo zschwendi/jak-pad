@@ -6,6 +6,7 @@ add_library(compiler
         emitter/ObjectGenerator.cpp
         emitter/Register.cpp
         emitter/IGen.cpp
+        emitter/IGenARM64.cpp
         emitter/IGenX86.cpp
         debugger/disassemble.cpp
         build_level/common/build_level.cpp
