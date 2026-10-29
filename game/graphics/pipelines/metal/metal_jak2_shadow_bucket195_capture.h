@@ -93,4 +93,68 @@ Jak2ShadowBucket195Capture capture_jak2_shadow_bucket195(const u8* dma_packet_sn
                                                           u32 chain_offset,
                                                           u32 bucket_id);
 
+/*
+ * DIAGNOSTIC ONLY. Never supplies render/acceptance plans and never changes the normal-path
+ * 256-transfer capture or plan limits. Walks raw DMA (existing CheckedDmaFollower semantics) up to
+ * a hard bound to classify why the strict capture stopped. Raw traversal validity here does NOT
+ * imply strict shadow grammar validity.
+ */
+constexpr u32 kJak2ShadowBucket195DiagnosticMaximumTransfers = 1024;
+constexpr u32 kJak2ShadowBucket195DiagnosticTailRows = 16;
+
+enum class Jak2ShadowBucket195FollowerReject : u8 {
+  None,
+  InvalidArguments,
+  VisitedCapacity,           // follower's fixed visited table is full
+  TagOutOfSpanOrMisaligned,  // tag offset outside snapshot or not 16-byte aligned
+  Cycle,                     // tag offset already visited
+  InvalidTagOrPayloadSpan,   // SPR/unsupported kind/bad addr, or payload/next out of span
+};
+
+enum class Jak2ShadowBucket195DiagnosticLimit : u8 {
+  None,
+  TransferTable,     // 257th transfer would be needed
+  TransferPayload,   // one payload > 64 KiB
+  TotalPayload,      // cumulative payload > 1 MiB
+  UnpackCount,       // cumulative V4_32 or V4_8 unpack count > 32 Ki
+};
+
+enum class Jak2ShadowBucket195DiagnosticTermination : u8 {
+  Boundary,          // raw walk reached next bucket tag
+  DmaReadFailed,     // follower rejected tag: out-of-span/misaligned/unsupported kind/cycle
+  BeforeBucket,      // tag offset below bucket start
+  WalkBound,         // hard diagnostic bound reached without boundary
+  InvalidArguments,
+};
+
+struct Jak2ShadowBucket195DiagnosticRow {
+  u32 index = 0;
+  u32 tag_offset = 0;
+  u32 vif0 = 0;
+  u32 vif1 = 0;
+  u16 qwc = 0;
+  u8 tag_kind = 0;
+  bool boundary_after = false;
+};
+
+struct Jak2ShadowBucket195Diagnostic {
+  Jak2ShadowBucket195DiagnosticTermination termination =
+      Jak2ShadowBucket195DiagnosticTermination::InvalidArguments;
+  u32 termination_index = 0;  // transfer index at which the walk terminated
+  Jak2ShadowBucket195FollowerReject follower_reject = Jak2ShadowBucket195FollowerReject::None;
+  Jak2ShadowBucket195DiagnosticLimit first_limit = Jak2ShadowBucket195DiagnosticLimit::None;
+  u32 first_limit_transfer_index = 0;
+  u32 transfers_walked = 0;
+  u32 v4_32_unpack_count = 0;
+  u32 v4_8_unpack_count = 0;
+  u32 max_transfer_payload_bytes = 0;
+  u64 total_payload_bytes = 0;
+  u32 tail_row_count = 0;  // rows starting at index kJak2ShadowBucket195MaximumTransfers - 1
+  std::array<Jak2ShadowBucket195DiagnosticRow, kJak2ShadowBucket195DiagnosticTailRows> tail = {};
+};
+
+Jak2ShadowBucket195Diagnostic diagnose_jak2_shadow_bucket195(const u8* dma_packet_snapshot,
+                                                             std::size_t dma_packet_snapshot_size,
+                                                             u32 chain_offset);
+
 }  // namespace metal_renderer

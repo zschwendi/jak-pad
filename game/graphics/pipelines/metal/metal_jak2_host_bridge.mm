@@ -97,6 +97,9 @@ struct goal_jak2_metal_host {
       {};
   std::size_t effects315_metadata_reason_count = 0;
   std::size_t common_pris_rejection_capture_count = 0;
+  // GOALPAD_JAK2_DEBUG_DIAGNOSE_SHADOW195=1, sampled once at host creation. One-shot per host.
+  bool shadow195_diagnose_enabled = false;
+  bool shadow195_diagnose_logged = false;
   // Per-frame PRIS eye planning storage. The source-bounded PRIS2 forms make these about 230 KB,
   // so send_chain uses this heap-owned host storage instead of its stack. Every entry is
   // overwritten by its planner before use in each frame.
@@ -1277,6 +1280,42 @@ void record_warp_texture_upload_metrics(
   }
 }
 
+// Diagnostic-only: one bounded metadata summary for the first failed shadow-195 preflight per
+// host. The extended walk never supplies plans or acceptance data and stores no payload bytes.
+void maybe_log_shadow195_preflight_diagnostic(
+    goal_jak2_metal_host* host,
+    const u8* ee_base,
+    std::size_t ee_size,
+    u32 chain_offset,
+    const metal_renderer::Jak2ShadowBucket195Capture& capture) {
+  if (!host || !host->shadow195_diagnose_enabled || host->shadow195_diagnose_logged) {
+    return;
+  }
+  host->shadow195_diagnose_logged = true;
+  const auto diagnostic =
+      metal_renderer::diagnose_jak2_shadow_bucket195(ee_base, ee_size, chain_offset);
+  lg::info(
+      "GOALPAD_JAK2_SHADOW195_PREFLIGHT_DIAGNOSTIC tick={} capture_status={} "
+      "capture_transfers={} termination={} termination_index={} follower_reject={} "
+      "first_limit={} first_limit_index={} walked={} v4_32_unpacks={} v4_8_unpacks={} "
+      "payload_bytes={} max_transfer_payload_bytes={} tail_rows={}",
+      host->metrics.chains, static_cast<u32>(capture.status), capture.transfer_count,
+      static_cast<u32>(diagnostic.termination), diagnostic.termination_index,
+      static_cast<u32>(diagnostic.follower_reject), static_cast<u32>(diagnostic.first_limit),
+      diagnostic.first_limit_transfer_index, diagnostic.transfers_walked,
+      diagnostic.v4_32_unpack_count, diagnostic.v4_8_unpack_count,
+      diagnostic.total_payload_bytes, diagnostic.max_transfer_payload_bytes,
+      diagnostic.tail_row_count);
+  for (u32 row = 0; row < diagnostic.tail_row_count; ++row) {
+    const auto& transfer = diagnostic.tail[row];
+    lg::info(
+        "GOALPAD_JAK2_SHADOW195_PREFLIGHT_DIAGNOSTIC_ROW index={} tag_offset=0x{:x} tag_kind={} "
+        "qwc={} vif0=0x{:08x} vif1=0x{:08x} boundary_after={}",
+        transfer.index, transfer.tag_offset, transfer.tag_kind, transfer.qwc, transfer.vif0,
+        transfer.vif1, transfer.boundary_after);
+  }
+}
+
 void record_shadow_bucket195_metrics(
     goal_jak2_shadow_bucket195_metrics* out,
     const metal_renderer::Jak2ShadowBucket195Capture& capture) {
@@ -2137,6 +2176,9 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
         metal_renderer::kJak2ShadowBucket195PlanBucket);
     if (!live_shadow_bucket195_plan) {
+      maybe_log_shadow195_preflight_diagnostic(host, static_cast<const u8*>(ee_base),
+                                               EE_MAIN_MEM_SIZE, chain_offset,
+                                               shadow_bucket195_capture);
       record_failure(host, "Jak 2 shadow bucket 195 live DMA failed exact preflight");
       return;
     }
@@ -3323,6 +3365,11 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
   }
 
   auto* host = new goal_jak2_metal_host();
+  {
+    const char* diagnose_shadow195 = std::getenv("GOALPAD_JAK2_DEBUG_DIAGNOSE_SHADOW195");
+    host->shadow195_diagnose_enabled =
+        diagnose_shadow195 && std::strcmp(diagnose_shadow195, "1") == 0;
+  }
   host->layer = presenting ? layer : nil;
   if (!host->renderer.init(device) || !update_draw_region(host)) {
     delete host;

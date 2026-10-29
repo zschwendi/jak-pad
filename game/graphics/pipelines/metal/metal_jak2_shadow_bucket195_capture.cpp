@@ -55,27 +55,36 @@ struct CheckedTransfer {
   u32 vif1 = 0;
 };
 
-class CheckedDmaFollower {
+template <std::size_t Capacity>
+class BasicCheckedDmaFollower {
  public:
-  CheckedDmaFollower(const u8* memory, std::size_t memory_size, u32 start_offset)
+  BasicCheckedDmaFollower(const u8* memory, std::size_t memory_size, u32 start_offset)
       : m_memory(memory),
         m_memory_size(std::min<std::size_t>(memory_size, kMaximumEeSnapshotBytes)),
         m_offset(start_offset) {}
 
   u32 offset() const { return m_offset; }
+  Jak2ShadowBucket195FollowerReject last_reject() const { return m_last_reject; }
   const u8* memory() const { return m_memory; }
 
   bool read(CheckedTransfer* out) {
-    if (!out || !m_memory || m_visited_count == m_visited.size() ||
-        !range_is_valid(m_offset, 16, m_memory_size) || (m_offset & 15) != 0 ||
-        std::find(m_visited.begin(), m_visited.begin() + m_visited_count, m_offset) !=
-            m_visited.begin() + m_visited_count) {
-      return false;
+    if (!out || !m_memory) {
+      return reject(Jak2ShadowBucket195FollowerReject::InvalidArguments);
+    }
+    if (m_visited_count == m_visited.size()) {
+      return reject(Jak2ShadowBucket195FollowerReject::VisitedCapacity);
+    }
+    if (!range_is_valid(m_offset, 16, m_memory_size) || (m_offset & 15) != 0) {
+      return reject(Jak2ShadowBucket195FollowerReject::TagOutOfSpanOrMisaligned);
+    }
+    if (std::find(m_visited.begin(), m_visited.begin() + m_visited_count, m_offset) !=
+        m_visited.begin() + m_visited_count) {
+      return reject(Jak2ShadowBucket195FollowerReject::Cycle);
     }
 
     const DmaTag tag(read_unaligned<u64>(m_memory + m_offset));
     if (tag.spr) {
-      return false;
+      return reject(Jak2ShadowBucket195FollowerReject::InvalidTagOrPayloadSpan);
     }
     const u64 payload_bytes = static_cast<u64>(tag.qwc) * 16;
     u64 payload_offset = 0;
@@ -83,14 +92,14 @@ class CheckedDmaFollower {
     switch (tag.kind) {
       case DmaTag::Kind::CNT:
         if (tag.addr != 0) {
-          return false;
+          return reject(Jak2ShadowBucket195FollowerReject::InvalidTagOrPayloadSpan);
         }
         payload_offset = static_cast<u64>(m_offset) + 16;
         next_offset = payload_offset + payload_bytes;
         break;
       case DmaTag::Kind::NEXT:
         if (tag.addr == 0) {
-          return false;
+          return reject(Jak2ShadowBucket195FollowerReject::InvalidTagOrPayloadSpan);
         }
         payload_offset = static_cast<u64>(m_offset) + 16;
         next_offset = tag.addr;
@@ -98,19 +107,19 @@ class CheckedDmaFollower {
       case DmaTag::Kind::REF:
       case DmaTag::Kind::REFS:
         if (tag.qwc != 0 && tag.addr == 0) {
-          return false;
+          return reject(Jak2ShadowBucket195FollowerReject::InvalidTagOrPayloadSpan);
         }
         payload_offset = tag.addr;
         next_offset = static_cast<u64>(m_offset) + 16;
         break;
       default:
-        return false;
+        return reject(Jak2ShadowBucket195FollowerReject::InvalidTagOrPayloadSpan);
     }
     if ((payload_offset & 15) != 0 ||
         !range_is_valid(payload_offset, payload_bytes, m_memory_size) ||
         next_offset > std::numeric_limits<u32>::max() || (next_offset & 15) != 0 ||
         !range_is_valid(next_offset, 0, m_memory_size)) {
-      return false;
+      return reject(Jak2ShadowBucket195FollowerReject::InvalidTagOrPayloadSpan);
     }
 
     m_visited[m_visited_count++] = m_offset;
@@ -129,9 +138,20 @@ class CheckedDmaFollower {
   const u8* m_memory = nullptr;
   std::size_t m_memory_size = 0;
   u32 m_offset = 0;
-  std::array<u32, kJak2ShadowBucket195MaximumTransfers> m_visited = {};
+  std::array<u32, Capacity> m_visited = {};
   std::size_t m_visited_count = 0;
+  bool reject(Jak2ShadowBucket195FollowerReject reason) {
+    m_last_reject = reason;
+    return false;
+  }
+  Jak2ShadowBucket195FollowerReject m_last_reject = Jak2ShadowBucket195FollowerReject::None;
 };
+
+// Normal path: exactly the pre-existing 256-entry visited table.
+using CheckedDmaFollower = BasicCheckedDmaFollower<kJak2ShadowBucket195MaximumTransfers>;
+// Diagnostic-only walk; never used for capture, plan, or acceptance.
+using DiagnosticDmaFollower =
+    BasicCheckedDmaFollower<kJak2ShadowBucket195DiagnosticMaximumTransfers>;
 
 bool is_kind(const VifCode& code, VifCode::Kind kind) {
   return code.kind == kind;
@@ -316,6 +336,81 @@ Jak2ShadowBucket195Capture capture_jak2_shadow_bucket195(const u8* dma_packet_sn
   result.semantic_fingerprint = fingerprint;
   result.status = is_exact_absent(result) ? Jak2ShadowBucket195CaptureStatus::Absent
                                           : Jak2ShadowBucket195CaptureStatus::Observed;
+  return result;
+}
+
+Jak2ShadowBucket195Diagnostic diagnose_jak2_shadow_bucket195(const u8* dma_packet_snapshot,
+                                                             std::size_t dma_packet_snapshot_size,
+                                                             u32 chain_offset) {
+  using Termination = Jak2ShadowBucket195DiagnosticTermination;
+  using Limit = Jak2ShadowBucket195DiagnosticLimit;
+  Jak2ShadowBucket195Diagnostic result;
+  if (chain_offset > std::numeric_limits<u32>::max() - (kJak2ShadowBucket195 + 1) * 16) {
+    return result;
+  }
+  const u32 bucket_offset = chain_offset + kJak2ShadowBucket195 * 16;
+  const u32 next_bucket = chain_offset + (kJak2ShadowBucket195 + 1) * 16;
+  DiagnosticDmaFollower dma(dma_packet_snapshot, dma_packet_snapshot_size, bucket_offset);
+  const auto note_limit = [&](Limit limit) {
+    if (result.first_limit == Limit::None) {
+      result.first_limit = limit;
+      result.first_limit_transfer_index = result.transfers_walked;
+    }
+  };
+  while (dma.offset() != next_bucket) {
+    if (result.transfers_walked == kJak2ShadowBucket195DiagnosticMaximumTransfers) {
+      result.termination = Termination::WalkBound;
+      result.termination_index = result.transfers_walked;
+      return result;
+    }
+    if (result.transfers_walked == kJak2ShadowBucket195MaximumTransfers) {
+      note_limit(Limit::TransferTable);
+    }
+    CheckedTransfer transfer;
+    if (!dma.read(&transfer)) {
+      result.termination = Termination::DmaReadFailed;
+      result.termination_index = result.transfers_walked;
+      result.follower_reject = dma.last_reject();
+      return result;
+    }
+    if (transfer.tag_offset < bucket_offset) {
+      result.termination = Termination::BeforeBucket;
+      result.termination_index = result.transfers_walked;
+      return result;
+    }
+    if (transfer.payload_bytes > kJak2ShadowBucket195MaximumTransferPayloadBytes) {
+      note_limit(Limit::TransferPayload);
+    } else if (result.total_payload_bytes + transfer.payload_bytes >
+               kJak2ShadowBucket195MaximumPayloadBytes) {
+      note_limit(Limit::TotalPayload);
+    }
+    const VifCode vif1(transfer.vif1);
+    if (vif1.kind == VifCode::Kind::UNPACK_V4_32 || vif1.kind == VifCode::Kind::UNPACK_V4_8) {
+      u32& count = vif1.kind == VifCode::Kind::UNPACK_V4_32 ? result.v4_32_unpack_count
+                                                            : result.v4_8_unpack_count;
+      if (count + vif1.num > kJak2ShadowBucket195MaximumUnpackCount) {
+        note_limit(Limit::UnpackCount);
+      }
+      count += vif1.num;  // bounded: <= 1024 * 255
+    }
+    result.total_payload_bytes += transfer.payload_bytes;
+    result.max_transfer_payload_bytes =
+        std::max(result.max_transfer_payload_bytes, transfer.payload_bytes);
+    if (result.transfers_walked + 1 >= kJak2ShadowBucket195MaximumTransfers &&
+        result.tail_row_count < result.tail.size()) {
+      auto& row = result.tail[result.tail_row_count++];
+      row.index = result.transfers_walked;
+      row.tag_offset = transfer.tag_offset;
+      row.vif0 = transfer.vif0;
+      row.vif1 = transfer.vif1;
+      row.qwc = transfer.tag.qwc;
+      row.tag_kind = static_cast<u8>(transfer.tag.kind);
+      row.boundary_after = transfer.next_offset == next_bucket;
+    }
+    ++result.transfers_walked;
+  }
+  result.termination = Termination::Boundary;
+  result.termination_index = result.transfers_walked;
   return result;
 }
 

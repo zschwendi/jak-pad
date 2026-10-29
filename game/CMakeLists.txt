@@ -1438,6 +1438,12 @@ if(APPLE)
         add_test(NAME jak2-shadow-bucket195-capture-test
             COMMAND jak2-shadow-bucket195-capture-test)
 
+        add_executable(jak2-shadow195-diagnostic-test
+            graphics/pipelines/metal/metal_jak2_shadow_bucket195_capture.cpp
+            graphics/pipelines/metal/metal_jak2_shadow195_diagnostic_test.cpp)
+        add_test(NAME jak2-shadow195-diagnostic-test
+            COMMAND jak2-shadow195-diagnostic-test)
+
         add_executable(jak2-shadow-bucket195-plan-test
             graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan.cpp
             graphics/pipelines/metal/metal_jak2_shadow_bucket195_plan_test.cpp)

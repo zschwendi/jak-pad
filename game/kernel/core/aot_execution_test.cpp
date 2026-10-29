@@ -12,6 +12,8 @@
  * No writable-executable memory is used anywhere.
  */
 
+#include <chrono>
+#include <cstdlib>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
@@ -260,6 +262,240 @@ u32 count_dirty_bytes(const u8* region, s32 size, s32* out_depth) {
   return dirty;
 }
 
+u64 lkreg_fn_a(u64, u64, u64, u64, u64, u64) {
+  return 0xa;
+}
+u64 lkreg_fn_b(u64, u64, u64, u64, u64, u64) {
+  return 0xb;
+}
+
+u64 g_lkreg_link_static = 0;
+u64 g_lkreg_link_function = 0;
+void lkreg_link_probe() {
+  g_lkreg_link_static = goal_static_addr("lkreg-link", 0);
+  g_lkreg_link_function = goal_function_addr("lkreg-link", 0);
+}
+
+const u8 lkreg_data16[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+const goal_static_desc lkreg_statics2[2] = {
+    {16, 16, 0, lkreg_data16, 0, nullptr},
+    {4, 4, 0, lkreg_data16, 0, nullptr},
+};
+const void* const lkreg_functions2[2] = {(const void*)&lkreg_fn_a, (const void*)&lkreg_fn_b};
+const void* const lkreg_functions_hole[3] = {(const void*)&lkreg_fn_a, nullptr,
+                                             (const void*)&lkreg_fn_b};
+
+constexpr int kLkregMany = 96;
+char g_lkreg_names[kLkregMany][24];
+u32 g_lkreg_static0[kLkregMany];
+u32 g_lkreg_func0[kLkregMany];
+
+void check_lookup_registry() {
+  std::printf("\n== AOT loader tag registry ==\n");
+
+  goal_aot_object_file a = {"lkreg-a", lkreg_statics2, 2, lkreg_functions2, 2, nullptr};
+  if (goal_aot_load(&a) != GOAL_KERNEL_CORE_OK) {
+    fail("goal_aot_load(lkreg-a)");
+    return;
+  }
+  const u32 a_s0 = (u32)goal_static_addr("lkreg-a", 0);
+  const u32 a_s1 = (u32)goal_static_addr("lkreg-a", 1);
+  const u32 a_f0 = (u32)goal_function_addr("lkreg-a", 0);
+  const u32 a_f1 = (u32)goal_function_addr("lkreg-a", 1);
+  if (!a_s0 || !a_s1 || !a_f0 || !a_f1) {
+    fail("lkreg-a lookups returned 0");
+  }
+  check_u64("static 0 is 16-aligned", a_s0 & 15, 0);
+  check_u64("static 0 data copied", *Ptr<u8>(a_s0 + 15).c(), 16);
+  check_u64("static 1 follows static 0", a_s1, a_s0 + 16);
+  check_u64("function addr == function_object", a_f1, goal_aot_function_object("lkreg-a", 1));
+  check_u64("top-level is last function", goal_aot_top_level_object("lkreg-a"), a_f1);
+  check_u64("function 0 runs", goal_aot_call(a_f0, 0, 0, 0), 0xa);
+  check_u64("function 1 runs", goal_aot_call(a_f1, 0, 0, 0), 0xb);
+  check_u64("is_loaded(lkreg-a)", goal_aot_is_loaded("lkreg-a"), 1);
+
+  check_u64("prefix tag misses", goal_static_addr("lkreg-", 0), 0);
+  check_u64("longer tag misses", goal_static_addr("lkreg-ab", 0), 0);
+  check_u64("case differs misses", goal_static_addr("LKREG-A", 0), 0);
+  check_u64("empty tag misses", goal_static_addr("", 0), 0);
+  check_u64("is_loaded(nullptr)", goal_aot_is_loaded(nullptr), 0);
+  char copy[] = "lkreg-a";
+  check_u64("lookup by contents, not pointer", goal_static_addr(copy, 0), a_s0);
+
+  check_u64("static index -1", goal_static_addr("lkreg-a", -1), 0);
+  check_u64("static index == count", goal_static_addr("lkreg-a", 2), 0);
+  check_u64("function index -1", goal_function_addr("lkreg-a", -1), 0);
+  check_u64("function index == count", goal_function_addr("lkreg-a", 2), 0);
+  check_u64("function_object index == count", goal_aot_function_object("lkreg-a", 2), 0);
+
+  goal_aot_object_file hole = {"lkreg-hole", nullptr, 0, lkreg_functions_hole, 3, nullptr};
+  if (goal_aot_load(&hole) != GOAL_KERNEL_CORE_OK) {
+    fail("goal_aot_load(lkreg-hole)");
+  } else {
+    check_u64("hole stays 0", goal_function_addr("lkreg-hole", 1), 0);
+    check_u64("index after hole runs", goal_aot_call(goal_function_addr("lkreg-hole", 2), 0, 0, 0),
+              0xb);
+    check_u64("no statics -> static 0 misses", goal_static_addr("lkreg-hole", 0), 0);
+  }
+
+  goal_aot_object_file a_again = {"lkreg-a", lkreg_statics2, 1, lkreg_functions2, 1, nullptr};
+  check_u64("duplicate load rejected", goal_aot_load(&a_again),
+            GOAL_KERNEL_CORE_ALREADY_INITIALIZED);
+  check_u64("original static survives duplicate", goal_static_addr("lkreg-a", 1), a_s1);
+  check_u64("original function survives duplicate", goal_function_addr("lkreg-a", 1), a_f1);
+
+  static const goal_static_desc zero_size[1] = {{4, 0, 0, lkreg_data16, 0, nullptr}};
+  goal_aot_object_file bad = {"lkreg-bad", zero_size, 1, nullptr, 0, nullptr};
+  check_u64("zero-size static rejected", goal_aot_load(&bad), GOAL_KERNEL_CORE_INVALID_ARGUMENT);
+  check_u64("rejected file not loaded", goal_aot_is_loaded("lkreg-bad"), 0);
+  check_u64("rejected file static misses", goal_static_addr("lkreg-bad", 0), 0);
+
+  static const goal_static_reloc bad_reloc[1] = {{GOAL_RELOC_STATIC_PTR, 0, 0, 7, 0, 0}};
+  static const goal_static_desc reloc_fail[1] = {{4, 4, 0, lkreg_data16, 1, bad_reloc}};
+  goal_aot_object_file rf = {"lkreg-relocfail", reloc_fail, 1, nullptr, 0, nullptr};
+  check_u64("bad static reloc rejected", goal_aot_load(&rf), GOAL_KERNEL_CORE_NOT_FOUND);
+  check_u64("relocfail stays registered (current)", goal_aot_is_loaded("lkreg-relocfail"), 1);
+  const u32 rf_s0 = (u32)goal_static_addr("lkreg-relocfail", 0);
+  if (!rf_s0) {
+    fail("relocfail static lookup returned 0 (current behaviour expects its address)");
+  }
+  goal_aot_forget("lkreg-relocfail");
+  check_u64("relocfail forgotten", goal_aot_is_loaded("lkreg-relocfail"), 0);
+
+  goal_aot_object_file link = {"lkreg-link", lkreg_statics2, 1, lkreg_functions2, 1,
+                               &lkreg_link_probe};
+  if (goal_aot_load(&link) != GOAL_KERNEL_CORE_OK) {
+    fail("goal_aot_load(lkreg-link)");
+  } else {
+    check_u64("link() saw own static", g_lkreg_link_static, goal_static_addr("lkreg-link", 0));
+    check_u64("link() saw own function", g_lkreg_link_function,
+              goal_function_addr("lkreg-link", 0));
+    if (!g_lkreg_link_static || !g_lkreg_link_function) {
+      fail("link() lookups returned 0");
+    }
+  }
+
+  static goal_aot_object_file many[kLkregMany];
+  for (int i = 0; i < kLkregMany; i++) {
+    std::snprintf(g_lkreg_names[i], sizeof(g_lkreg_names[i]), "lkreg-many-%03d", i);
+    many[i] = {g_lkreg_names[i], lkreg_statics2, 1, lkreg_functions2, 1, nullptr};
+    if (goal_aot_load(&many[i]) != GOAL_KERNEL_CORE_OK) {
+      fail("goal_aot_load(lkreg-many-*)");
+      return;
+    }
+    g_lkreg_static0[i] = (u32)goal_static_addr(g_lkreg_names[i], 0);
+    g_lkreg_func0[i] = (u32)goal_function_addr(g_lkreg_names[i], 0);
+  }
+  int unstable = 0;
+  for (int i = 0; i < kLkregMany; i++) {
+    unstable += goal_static_addr(g_lkreg_names[i], 0) != g_lkreg_static0[i];
+    unstable += goal_function_addr(g_lkreg_names[i], 0) != g_lkreg_func0[i];
+    for (int j = 0; j < i; j++) {
+      unstable += g_lkreg_static0[i] == g_lkreg_static0[j];  // distinct allocations
+    }
+  }
+  check_u64("many: stable + distinct after growth", unstable, 0);
+  check_u64("lkreg-a stable after growth", goal_static_addr("lkreg-a", 0), a_s0);
+  check_u64("lkreg-a function stable after growth", goal_function_addr("lkreg-a", 1), a_f1);
+
+  const int mid = kLkregMany / 2;
+  goal_aot_forget(g_lkreg_names[mid]);
+  goal_aot_forget("lkreg-never-loaded");  // no-op, must not disturb anything
+  check_u64("forgotten tag not loaded", goal_aot_is_loaded(g_lkreg_names[mid]), 0);
+  check_u64("forgotten static misses", goal_static_addr(g_lkreg_names[mid], 0), 0);
+  check_u64("forgotten function misses", goal_function_addr(g_lkreg_names[mid], 0), 0);
+  check_u64("forgotten function_object misses", goal_aot_function_object(g_lkreg_names[mid], 0),
+            0);
+  check_u64("forgotten top-level misses", goal_aot_top_level_object(g_lkreg_names[mid]), 0);
+  unstable = 0;
+  for (int i = 0; i < kLkregMany; i++) {
+    if (i == mid) {
+      continue;
+    }
+    unstable += goal_static_addr(g_lkreg_names[i], 0) != g_lkreg_static0[i];
+    unstable += goal_function_addr(g_lkreg_names[i], 0) != g_lkreg_func0[i];
+  }
+  check_u64("survivors stable after middle forget", unstable, 0);
+  check_u64("lkreg-a stable after forget", goal_static_addr("lkreg-a", 1), a_s1);
+
+  if (goal_aot_load(&many[mid]) != GOAL_KERNEL_CORE_OK) {
+    fail("reload after forget");
+  } else {
+    const u32 re_s0 = (u32)goal_static_addr(g_lkreg_names[mid], 0);
+    if (!re_s0) {
+      fail("reloaded static lookup returned 0");
+    }
+    check_u64("reloaded function runs",
+              goal_aot_call(goal_function_addr(g_lkreg_names[mid], 0), 0, 0, 0), 0xa);
+  }
+
+  goal_aot_forget(g_lkreg_names[0]);
+  goal_aot_forget(g_lkreg_names[kLkregMany - 1]);
+  check_u64("first forgotten", goal_static_addr(g_lkreg_names[0], 0), 0);
+  check_u64("last forgotten", goal_static_addr(g_lkreg_names[kLkregMany - 1], 0), 0);
+  check_u64("neighbour of first intact", goal_static_addr(g_lkreg_names[1], 0),
+            g_lkreg_static0[1]);
+  check_u64("neighbour of last intact", goal_static_addr(g_lkreg_names[kLkregMany - 2], 0),
+            g_lkreg_static0[kLkregMany - 2]);
+
+  for (int i = 0; i < kLkregMany; i++) {
+    goal_aot_forget(g_lkreg_names[i]);
+  }
+  for (const char* t : {"lkreg-a", "lkreg-hole", "lkreg-link"}) {
+    goal_aot_forget(t);
+  }
+  check_u64("lkreg-a gone after cleanup", goal_aot_is_loaded("lkreg-a"), 0);
+  check_u64("gcommon untouched by cleanup", goal_aot_is_loaded("gcommon"), 1);
+}
+
+void check_lookup_reset_clears_registry() {
+  std::printf("\n== goal_aot_reset clears the registry ==\n");
+  const int had_gcommon = goal_aot_is_loaded("gcommon");
+  goal_aot_reset();
+  if (!had_gcommon) {
+    fail("gcommon was not loaded before reset (precondition)");
+  }
+  check_u64("gcommon not loaded after reset", goal_aot_is_loaded("gcommon"), 0);
+  check_u64("gcommon static misses after reset", goal_static_addr("gcommon", 0), 0);
+  check_u64("gcommon function misses after reset", goal_function_addr("gcommon", 0), 0);
+  check_u64("gcommon top-level misses after reset", goal_aot_top_level_object("gcommon"), 0);
+}
+
+void run_lookup_benchmark() {
+  constexpr int count = 400;
+  constexpr int iterations = 2000000;
+  const u8 data[16] = {};
+  const goal_static_desc statics[] = {{16, 16, 0, data, 0, nullptr}};
+  const void* const functions[] = {(const void*)&lkreg_fn_a};
+  char names[count][24];
+  for (int i = 0; i < count; ++i) {
+    std::snprintf(names[i], sizeof(names[i]), "lookup-bench-%04d", i);
+    goal_aot_object_file file = {names[i], statics, 1, functions, 1, nullptr};
+    if (goal_aot_load(&file) != GOAL_KERNEL_CORE_OK) {
+      fail("benchmark fixture load");
+      return;
+    }
+  }
+  volatile u64 sink = 0;
+  const auto start = std::chrono::steady_clock::now();
+  for (int i = 0; i < iterations; ++i) {
+    sink = sink + goal_static_addr(names[count - 1], 0);
+  }
+  const auto statics_end = std::chrono::steady_clock::now();
+  for (int i = 0; i < iterations; ++i) {
+    sink = sink + goal_function_addr(names[count - 1], 0);
+  }
+  const auto functions_end = std::chrono::steady_clock::now();
+  const auto ns_per_lookup = [](auto a, auto b) {
+    return std::chrono::duration<double, std::nano>(b - a).count() / iterations;
+  };
+  std::printf("LOOKUP_BENCH {\"tags\":%d,\"iterations\":%d,"
+              "\"static_ns\":%.2f,\"function_ns\":%.2f,\"sink\":%llu}\n",
+              count, iterations, ns_per_lookup(start, statics_end),
+              ns_per_lookup(statics_end, functions_end), (unsigned long long)sink);
+  for (const auto& name : names) goal_aot_forget(name);
+}
+
 }  // namespace
 
 int main() {
@@ -303,6 +539,8 @@ int main() {
 
   std::printf("\n== the remaining V3 relocation kinds, against the real symbol table ==\n");
   check_remaining_relocation_kinds();
+  check_lookup_registry();
+  if (std::getenv("GOALPAD_AOT_LOOKUP_BENCHMARK")) run_lookup_benchmark();
 
   std::printf("\n== running each object file's top-level through call_goal ==\n");
   if (symbol_value("identity")) {
@@ -479,6 +717,7 @@ int main() {
   check_s64("(+ 3 4) on the native stack", call_symbol("+", 3, 4), 7);
   check_live_arena_protection("after AOT calls");
 
+  check_lookup_reset_clears_registry();
   goal_aot_reset();
   goal_kernel_core_shutdown();
 

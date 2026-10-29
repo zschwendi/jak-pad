@@ -1,7 +1,11 @@
 #include "aot_loader.h"
 
+#include <cstddef>
 #include <cstring>
+#include <functional>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -39,16 +43,32 @@ struct LoadedFile {
 std::vector<LoadedFile> g_loaded;
 std::string g_error;
 
+/*! Lets the tag index be searched with a string_view, so a lookup never builds a std::string. */
+struct TagHash {
+  using is_transparent = void;
+  size_t operator()(std::string_view tag) const noexcept {
+    return std::hash<std::string_view>{}(tag);
+  }
+};
+
+/*!
+ * Tag -> current position in g_loaded, for the per-static goal_static_addr lookups. Owned tags and
+ * indices stay valid when g_loaded reallocates; forget and reset keep them in step.
+ */
+std::unordered_map<std::string, size_t, TagHash, std::equal_to<>> g_loaded_index;
+
 /*! DGO object name -> the AOT translation unit that stands in for its code. */
 std::vector<std::pair<std::string, goal_aot_object_file>> g_registered;
 
 LoadedFile* find_file(const char* tag) {
-  for (auto& file : g_loaded) {
-    if (file.tag == tag) {
-      return &file;
-    }
+  if (!tag) {
+    return nullptr;
   }
-  return nullptr;
+  const auto it = g_loaded_index.find(std::string_view(tag));
+  if (it == g_loaded_index.end()) {
+    return nullptr;
+  }
+  return &g_loaded.at(it->second);
 }
 
 void set_error(const std::string& message) {
@@ -218,6 +238,13 @@ goal_kernel_core_status goal_aot_load_into(const goal_aot_object_file* file, uin
   // Register before relocating: relocations and the file's own link step both resolve through the
   // tag-keyed tables above.
   g_loaded.push_back(std::move(loaded));
+  try {
+    g_loaded_index.emplace(g_loaded.back().tag, g_loaded.size() - 1);
+  } catch (...) {
+    // keep g_loaded and its index in step before anything can run against them
+    g_loaded.pop_back();
+    throw;
+  }
   const auto& placed = g_loaded.back();
 
   if (file->link) {
@@ -296,10 +323,20 @@ int goal_aot_is_loaded(const char* tag) {
 }
 
 void goal_aot_forget(const char* tag) {
-  for (auto it = g_loaded.begin(); it != g_loaded.end(); ++it) {
-    if (it->tag == tag) {
-      g_loaded.erase(it);
-      return;
+  if (!tag) {
+    return;
+  }
+  const auto found = g_loaded_index.find(std::string_view(tag));
+  if (found == g_loaded_index.end()) {
+    return;
+  }
+  const size_t removed = found->second;
+  g_loaded_index.erase(found);
+  g_loaded.erase(g_loaded.begin() + (std::ptrdiff_t)removed);
+  // every file after the erased one moved down a slot
+  for (auto& entry : g_loaded_index) {
+    if (entry.second > removed) {
+      entry.second--;
     }
   }
 }
@@ -416,6 +453,7 @@ goal_kernel_core_status goal_aot_call_symbol(const char* name,
 
 void goal_aot_reset(void) {
   g_loaded.clear();
+  g_loaded_index.clear();
   g_registered.clear();
   g_goal_mem = nullptr;
   g_goal_s7 = 0;
