@@ -98,6 +98,17 @@ metal_renderer::Jak2ShadowBucket195Plan wall_plan() {
   return plan;
 }
 
+metal_renderer::Jak2ShadowBucket195Plan full_small_batch_plan() {
+  using namespace metal_renderer;
+  auto plan = ready_plan();
+  const auto batch = plan.batches[0];
+  plan.batches.assign(kJak2ShadowBucket195PlanMaximumBatches, batch);
+  plan.vertex_count = static_cast<u32>(plan.batches.size() *
+                                       (batch.top_vertices.size() + batch.bottom_vertices.size()));
+  plan.record_count = static_cast<u32>(plan.batches.size() * batch.commands[0].records.size());
+  return plan;
+}
+
 std::vector<u8> one_transfer_chain() {
   std::vector<u8> chain(kNextBucket + 16, 0);
   const u64 next = static_cast<u64>(DmaTag::Kind::NEXT) << 28 |
@@ -454,6 +465,27 @@ int main() {
               wall_stats.darken_draws == 1 && wall_stats.lighten_draws == 1 &&
               wall_stats.invalid_plan == 0 && wall_stats.reached_boundary,
           "a wall quad uses one desktop-equivalent stencil-side classification for both triangles");
+    metal_renderer::MetalJak2Shadow2Renderer::Stats full_stats;
+    metal_renderer::MetalJak2Shadow2Renderer::Stats full_repeat_stats;
+    const auto full_plan = full_small_batch_plan();
+    const auto full = render_plan(device, queue, library, full_plan, &full_stats);
+    const auto full_repeat = render_plan(device, queue, library, full_plan, &full_repeat_stats);
+    const u32 full_batches = metal_renderer::kJak2ShadowBucket195PlanMaximumBatches;
+    check(full == full_repeat && full_stats.executions == 1 && full_stats.ready == 1 &&
+              full_stats.input_batches == full_batches &&
+              full_stats.input_vertices == full_batches * first_stats.input_vertices &&
+              full_stats.input_records == full_batches * first_stats.input_records &&
+              full_stats.output_vertices == full_batches * first_stats.output_vertices &&
+              full_stats.front_triangles == full_batches * first_stats.front_triangles &&
+              full_stats.back_triangles == full_batches * first_stats.back_triangles &&
+              full_stats.draw_calls == first_stats.draw_calls &&
+              full_stats.darken_draws == 1 && full_stats.lighten_draws == 1 &&
+              full_stats.reached_boundary && full_stats.unexpected_dma == 0 &&
+              full_stats.invalid_plan == 0 && full_stats.nonfinite_projection == 0 &&
+              full_stats.overflow == 0 && full_stats.pipeline_failures == 0 &&
+              full_repeat_stats.output_vertices == full_stats.output_vertices &&
+              full_repeat_stats.draw_calls == full_stats.draw_calls,
+          "128 tiny source-shaped batches execute every command deterministically within bounds");
     check_no_draw_disposition(
         metal_renderer::Jak2ShadowBucket195PlanDisposition::Absent,
         "an Absent plan consumes exactly to the follower boundary without drawing");

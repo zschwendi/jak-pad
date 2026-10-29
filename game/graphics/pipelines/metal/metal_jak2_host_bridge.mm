@@ -100,6 +100,9 @@ struct goal_jak2_metal_host {
   // GOALPAD_JAK2_DEBUG_DIAGNOSE_SHADOW195=1, sampled once at host creation. One-shot per host.
   bool shadow195_diagnose_enabled = false;
   bool shadow195_diagnose_logged = false;
+  // Per-frame live bucket 195 passive capture storage (28,200 bytes at 781 transfers), host-owned so
+  // send_chain does not place it on the GOAL thread stack. Reset and refilled every frame.
+  metal_renderer::Jak2ShadowBucket195Capture shadow_bucket195_live_capture;
   // Per-frame PRIS eye planning storage. The source-bounded PRIS2 forms make these about 230 KB,
   // so send_chain uses this heap-owned host storage instead of its stack. Every entry is
   // overwritten by its planner before use in each frame.
@@ -2168,9 +2171,11 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     const auto live_subtitle_plan = metal_renderer::plan_jak2_subtitle_bucket322(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset, &live_subtitle_rejection,
         &live_subtitle_rejection_transfer_index);
-    const auto shadow_bucket195_capture = metal_renderer::capture_jak2_shadow_bucket195(
+    metal_renderer::capture_jak2_shadow_bucket195(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,
-        metal_renderer::kJak2ShadowBucket195);
+        metal_renderer::kJak2ShadowBucket195, &host->shadow_bucket195_live_capture);
+    const metal_renderer::Jak2ShadowBucket195Capture& shadow_bucket195_capture =
+        host->shadow_bucket195_live_capture;
     record_shadow_bucket195_metrics(&host->metrics.shadow_bucket195, shadow_bucket195_capture);
     const auto live_shadow_bucket195_plan = metal_renderer::plan_jak2_shadow_bucket195(
         static_cast<const u8*>(ee_base), EE_MAIN_MEM_SIZE, chain_offset,

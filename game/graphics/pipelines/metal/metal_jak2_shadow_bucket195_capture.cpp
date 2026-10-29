@@ -147,7 +147,7 @@ class BasicCheckedDmaFollower {
   Jak2ShadowBucket195FollowerReject m_last_reject = Jak2ShadowBucket195FollowerReject::None;
 };
 
-// Normal path: exactly the pre-existing 256-entry visited table.
+// Normal path: visited storage follows the shared grammar-derived transfer capacity.
 using CheckedDmaFollower = BasicCheckedDmaFollower<kJak2ShadowBucket195MaximumTransfers>;
 // Diagnostic-only walk; never used for capture, plan, or acceptance.
 using DiagnosticDmaFollower =
@@ -228,6 +228,31 @@ void hash_metadata(u64* fingerprint, const Jak2ShadowBucket195TransferMetadata& 
   hash_byte(fingerprint, static_cast<u8>(metadata.role));
 }
 
+// Resets caller storage in place to the default-constructed state without materializing a
+// full-size temporary; every transfer row is cleared so no stale trailing metadata survives.
+void reset_capture(Jak2ShadowBucket195Capture* capture) {
+  capture->status = Jak2ShadowBucket195CaptureStatus::Malformed;
+  capture->bucket_id = kJak2ShadowBucket195;
+  capture->transfers.fill(Jak2ShadowBucket195TransferMetadata{});
+  capture->transfer_count = 0;
+  capture->v4_32_transfer_count = 0;
+  capture->v4_8_transfer_count = 0;
+  capture->v4_32_unpack_count = 0;
+  capture->v4_8_unpack_count = 0;
+  capture->direct_transfer_count = 0;
+  capture->total_payload_bytes = 0;
+  capture->direct_payload_bytes = 0;
+  capture->flusha_direct_payload_bytes = 0;
+  capture->semantic_fingerprint = 0;
+  capture->boundary_transfer_index = 0;
+  capture->terminal_payload_bytes = 0;
+  capture->terminal_qwc = 0;
+  capture->terminal_tag_kind = 0;
+  capture->terminal_vif0_kind = 0;
+  capture->terminal_vif1_kind = 0;
+  capture->reached_boundary = false;
+}
+
 }  // namespace
 
 Jak2ShadowBucket195Capture capture_jak2_shadow_bucket195(const u8* dma_packet_snapshot,
@@ -235,10 +260,25 @@ Jak2ShadowBucket195Capture capture_jak2_shadow_bucket195(const u8* dma_packet_sn
                                                           u32 chain_offset,
                                                           u32 bucket_id) {
   Jak2ShadowBucket195Capture result;
+  capture_jak2_shadow_bucket195(dma_packet_snapshot, dma_packet_snapshot_size, chain_offset,
+                                bucket_id, &result);
+  return result;
+}
+
+void capture_jak2_shadow_bucket195(const u8* dma_packet_snapshot,
+                                   std::size_t dma_packet_snapshot_size,
+                                   u32 chain_offset,
+                                   u32 bucket_id,
+                                   Jak2ShadowBucket195Capture* out) {
+  if (!out) {
+    return;
+  }
+  reset_capture(out);
+  Jak2ShadowBucket195Capture& result = *out;
   result.bucket_id = bucket_id;
   if (bucket_id != kJak2ShadowBucket195 ||
       chain_offset > std::numeric_limits<u32>::max() - (kJak2ShadowBucket195 + 1) * 16) {
-    return result;
+    return;
   }
 
   const u32 bucket_offset = chain_offset + kJak2ShadowBucket195 * 16;
@@ -248,18 +288,18 @@ Jak2ShadowBucket195Capture capture_jak2_shadow_bucket195(const u8* dma_packet_sn
   while (dma.offset() != next_bucket) {
     if (result.transfer_count == result.transfers.size()) {
       result.status = Jak2ShadowBucket195CaptureStatus::LimitExceeded;
-      return result;
+      return;
     }
 
     CheckedTransfer transfer;
     if (!dma.read(&transfer) || transfer.tag_offset < bucket_offset) {
-      return result;
+      return;
     }
     if (transfer.payload_bytes > kJak2ShadowBucket195MaximumTransferPayloadBytes ||
         result.total_payload_bytes >
             kJak2ShadowBucket195MaximumPayloadBytes - transfer.payload_bytes) {
       result.status = Jak2ShadowBucket195CaptureStatus::LimitExceeded;
-      return result;
+      return;
     }
 
     auto& metadata = result.transfers[result.transfer_count++];
@@ -289,7 +329,7 @@ Jak2ShadowBucket195Capture capture_jak2_shadow_bucket195(const u8* dma_packet_sn
                                     : result.v4_8_unpack_count;
       if (current_count > kJak2ShadowBucket195MaximumUnpackCount - unpack_count) {
         result.status = Jak2ShadowBucket195CaptureStatus::LimitExceeded;
-        return result;
+        return;
       }
       if (vif1.kind == VifCode::Kind::UNPACK_V4_32) {
         ++result.v4_32_transfer_count;
@@ -336,7 +376,6 @@ Jak2ShadowBucket195Capture capture_jak2_shadow_bucket195(const u8* dma_packet_sn
   result.semantic_fingerprint = fingerprint;
   result.status = is_exact_absent(result) ? Jak2ShadowBucket195CaptureStatus::Absent
                                           : Jak2ShadowBucket195CaptureStatus::Observed;
-  return result;
 }
 
 Jak2ShadowBucket195Diagnostic diagnose_jak2_shadow_bucket195(const u8* dma_packet_snapshot,

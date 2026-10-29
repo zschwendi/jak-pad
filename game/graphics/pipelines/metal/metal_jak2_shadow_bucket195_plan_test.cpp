@@ -416,6 +416,99 @@ void check_codec_round_trip(const Plan& plan, const char* message) {
         message);
 }
 
+// One source-shaped normal shadow_execute packet: top+bottom uploads, then at most the four
+// Caps/Walls/FlippableCaps/Walls index tags in producer order.
+void full_small_batch(Fixture* fixture, u8 fill, std::size_t command_count = 4) {
+  fixture->vertices(4, 3, VifCode::Kind::FLUSH, fill);
+  fixture->vertices(174, 3, VifCode::Kind::NOP, static_cast<u8>(fill + 1));
+  if (command_count > 0) {
+    fixture->indices(344, 2, {{{0, 1, 2, 1}}});
+  }
+  if (command_count > 1) {
+    fixture->indices(600, 4, {{{0, 1, 0, 0xa5}}});
+  }
+  if (command_count > 2) {
+    fixture->indices(344, 6, {{{0, 1, 2, 0}}});
+  }
+  if (command_count > 3) {
+    fixture->indices(600, 4, {{{1, 2, 1, 0xa5}}});
+  }
+}
+
+Fixture full_small_batches(std::size_t batches, std::size_t command_count = 4) {
+  Fixture fixture;
+  fixture.fixed_prefix(true);
+  for (std::size_t batch = 0; batch < batches; ++batch) {
+    full_small_batch(&fixture, static_cast<u8>(batch * 2), command_count);
+  }
+  return fixture;
+}
+
+void test_source_derived_transfer_capacity() {
+  auto forty = full_small_batches(40);
+  forty.tail();
+  const auto forty_plan = plan(forty);
+  check(forty_plan && forty_plan->disposition == Disposition::Ready &&
+            forty_plan->batches.size() == 40 && forty_plan->transfer_count == 253 &&
+            forty_plan->v4_32_transfer_count == 83 && forty_plan->v4_8_transfer_count == 160 &&
+            forty_plan->vertex_count == 240 && forty_plan->record_count == 160,
+        "40 full source-shaped batches parse as 12+1+6*40=253 transfers");
+
+  auto at_old_cap = full_small_batches(40);
+  full_small_batch(&at_old_cap, 0xf0, 1);
+  at_old_cap.tail();
+  const auto at_old_cap_plan = plan(at_old_cap);
+  check(at_old_cap_plan && at_old_cap_plan->disposition == Disposition::Ready &&
+            at_old_cap_plan->batches.size() == 41 && at_old_cap_plan->transfer_count == 256 &&
+            at_old_cap_plan->batches.back().commands.size() == 1 &&
+            at_old_cap_plan->batches.back().commands[0].kind == CommandKind::Caps,
+        "a 41st batch with one Caps command reaches exactly 256 transfers");
+
+  auto past_old_cap = full_small_batches(40);
+  full_small_batch(&past_old_cap, 0xf0, 2);
+  past_old_cap.tail();
+  const auto past_old_cap_plan = plan(past_old_cap);
+  check(past_old_cap_plan && past_old_cap_plan->disposition == Disposition::Ready &&
+            past_old_cap_plan->batches.size() == 41 && past_old_cap_plan->transfer_count == 257 &&
+            past_old_cap_plan->batches.back().commands.size() == 2 &&
+            past_old_cap_plan->batches.back().commands[1].kind == CommandKind::Walls,
+        "a source-emittable 41st Caps+Walls batch at 257 transfers is not cut by a 256 cap");
+
+  auto maximum = full_small_batches(metal_renderer::kJak2ShadowBucket195PlanMaximumBatches);
+  maximum.tail();
+  const auto maximum_plan = plan(maximum);
+  check(maximum_plan && maximum_plan->disposition == Disposition::Ready &&
+            maximum_plan->batches.size() == 128 && maximum_plan->transfer_count == 781 &&
+            maximum_plan->direct_transfer_count == 5 &&
+            maximum_plan->direct_payload_bytes == 1504 &&
+            maximum_plan->v4_32_transfer_count == 259 &&
+            maximum_plan->v4_8_transfer_count == 512 && maximum_plan->vertex_count == 768 &&
+            maximum_plan->record_count == 512 && maximum_plan->payload_bytes == 30512,
+        "128 full small batches parse as the source-derived 12+1+6*128=781 transfer maximum");
+  check(maximum_plan->batches.back().commands.size() == 4 &&
+            maximum_plan->batches.back().commands[2].kind == CommandKind::FlippableCaps &&
+            maximum_plan->batches.back().commands[3].kind == CommandKind::Walls &&
+            maximum_plan->batches.back().commands[3].records[0].bytes[3] == 0xa5,
+        "the 128th batch retains all four typed producer-ordered commands");
+  check_codec_round_trip(*maximum_plan, "the 781-transfer maximum plan round trips exactly");
+
+  auto command_free = full_small_batches(metal_renderer::kJak2ShadowBucket195PlanMaximumBatches, 0);
+  command_free.tail();
+  const auto command_free_plan = plan(command_free);
+  check(command_free_plan && command_free_plan->disposition == Disposition::Ready &&
+            command_free_plan->batches.size() == 128 &&
+            command_free_plan->transfer_count == 269 && command_free_plan->vertex_count == 768 &&
+            command_free_plan->record_count == 0 && command_free_plan->v4_8_transfer_count == 0 &&
+            command_free_plan->payload_bytes == 14128,
+        "128 command-free batches at 269 transfers are accepted as the batch-limit control");
+
+  auto too_many =
+      full_small_batches(metal_renderer::kJak2ShadowBucket195PlanMaximumBatches + 1, 0);
+  too_many.tail();
+  check(!plan(too_many),
+        "a 129th command-free batch (271 transfers, 774 vertices) is rejected by the batch limit");
+}
+
 void test_plan_codec_round_trips() {
   Fixture absent;
   put_tag(&absent.memory, bucket_offset(), DmaTag::Kind::CNT, 0, 0, 0, 0);
@@ -572,6 +665,7 @@ int main() {
   test_plan_codec_round_trips();
   test_plan_codec_rejects_truncation_and_corruption();
   test_plan_codec_rejects_invalid_owned_limits();
+  test_source_derived_transfer_capacity();
   std::puts("jak2 shadow bucket-195 source-exact plan tests passed");
   return 0;
 }

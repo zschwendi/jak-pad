@@ -87,45 +87,74 @@ auto cap(const std::vector<u8>& m) {
 }
 }  // namespace
 
+// The raw chain always contains the initial bucket NEXT tag and the finish NEXT tag, so a chain
+// with `cap - 2` appended transfers is exactly at the normal-path transfer capacity.
+constexpr u32 kCap = static_cast<u32>(metal_renderer::kJak2ShadowBucket195MaximumTransfers);
+constexpr u32 kOverAppended = kCap + 20;
+constexpr u32 kOverWalked = kOverAppended + 2;
+constexpr u32 kBoundAppended = metal_renderer::kJak2ShadowBucket195DiagnosticMaximumTransfers + 76;
+static_assert(kCap == 781);
+static_assert(kOverWalked < metal_renderer::kJak2ShadowBucket195DiagnosticMaximumTransfers);
+static_assert(kBoundAppended > metal_renderer::kJak2ShadowBucket195DiagnosticMaximumTransfers);
+static_assert((kBoundAppended + 2) * 16 + kDataOffset < kMemorySize);
+
 int main() {
-  ChainBuilder ok;  // 255 + finish tag = 256 transfers: normal acceptance unchanged
-  for (int i = 0; i < 254; ++i) ok.append(0, 0, 0);
+  ChainBuilder ok;  // initial + (cap - 2) + finish = cap transfers: normal acceptance unchanged
+  for (u32 i = 0; i < kCap - 2; ++i) ok.append(0, 0, 0);
   ok.finish();
   check(cap(ok.memory).status == metal_renderer::Jak2ShadowBucket195CaptureStatus::Observed,
-        "256-transfer chain still observed by strict capture");
+        "cap-transfer chain still observed by strict capture");
   auto d = diag(ok.memory);
-  check(d.termination == T::Boundary && d.first_limit == L::None && d.transfers_walked == 256,
-        "256 diag boundary, no limit");
+  check(d.termination == T::Boundary && d.first_limit == L::None && d.transfers_walked == kCap,
+        "cap-transfer diag boundary, no limit");
 
-  ChainBuilder over;  // 300 transfers + finish: valid raw continuation beyond 256
-  for (int i = 0; i < 300; ++i) over.append(1, 0, vif(VifCode::Kind::UNPACK_V4_32, 1, 4));
+  ChainBuilder over;  // cap + 20 transfers + finish: valid raw continuation beyond cap
+  for (u32 i = 0; i < kOverAppended; ++i)
+    over.append(1, 0, vif(VifCode::Kind::UNPACK_V4_32, 1, 4));
   over.finish();
   check(cap(over.memory).status == metal_renderer::Jak2ShadowBucket195CaptureStatus::LimitExceeded,
         "strict capture still LimitExceeded");
   d = diag(over.memory);
-  check(d.termination == T::Boundary && d.transfers_walked == 302, "raw continuation reaches boundary");
-  check(d.first_limit == L::TransferTable && d.first_limit_transfer_index == 256, "exact first limit index");
-  check(d.tail_row_count == 16 && d.tail[0].index == 255 && d.tail[1].index == 256, "bounded tail rows");
-  check(d.v4_32_unpack_count == 300 && d.total_payload_bytes == 300 * 16, "accounting");
+  check(d.termination == T::Boundary && d.transfers_walked == kOverWalked,
+        "raw continuation beyond cap reaches boundary");
+  check(d.first_limit == L::TransferTable && d.first_limit_transfer_index == kCap,
+        "exact first limit index at cap");
+  check(d.tail_row_count == metal_renderer::kJak2ShadowBucket195DiagnosticTailRows &&
+            d.tail[0].index == kCap - 1 && d.tail[1].index == kCap,
+        "bounded tail rows start at cap - 1");
+  check(d.v4_32_unpack_count == kOverAppended && d.total_payload_bytes == kOverAppended * 16ull,
+        "accounting beyond cap");
 
   ChainBuilder cyc;
-  for (int i = 0; i < 300; ++i) cyc.append(0, 0, 0);
+  for (u32 i = 0; i < kOverAppended; ++i) cyc.append(0, 0, 0);
   put_tag(&cyc.memory, cyc.cursor, DmaTag::Kind::NEXT, 0, cyc.cursor, 0, 0);
   d = diag(cyc.memory);
-  check(d.termination == T::DmaReadFailed && d.follower_reject == metal_renderer::Jak2ShadowBucket195FollowerReject::Cycle && d.first_limit == L::TransferTable, "cycle beyond 256 not boundary");
+  check(d.termination == T::DmaReadFailed &&
+            d.follower_reject == metal_renderer::Jak2ShadowBucket195FollowerReject::Cycle &&
+            d.first_limit == L::TransferTable && d.first_limit_transfer_index == kCap &&
+            d.termination_index == kOverWalked,
+        "cycle beyond cap not boundary");
   std::printf("cycle termination=%u index=%u\n", (unsigned)d.termination, d.termination_index);
 
   ChainBuilder span;
-  for (int i = 0; i < 300; ++i) span.append(0, 0, 0);
+  for (u32 i = 0; i < kOverAppended; ++i) span.append(0, 0, 0);
   put_tag(&span.memory, span.cursor, DmaTag::Kind::NEXT, 0, kMemorySize + 0x1000, 0, 0);
   d = diag(span.memory);
-  check(d.termination == T::DmaReadFailed && d.termination_index == 301 && d.follower_reject == metal_renderer::Jak2ShadowBucket195FollowerReject::InvalidTagOrPayloadSpan, "out-of-span after 256");
+  check(d.termination == T::DmaReadFailed && d.termination_index == kCap + 21 &&
+            d.follower_reject ==
+                metal_renderer::Jak2ShadowBucket195FollowerReject::InvalidTagOrPayloadSpan &&
+            d.first_limit == L::TransferTable && d.first_limit_transfer_index == kCap,
+        "out-of-span after cap");
 
   ChainBuilder bound;
-  for (int i = 0; i < 1100; ++i) bound.append(0, 0, 0);
+  for (u32 i = 0; i < kBoundAppended; ++i) bound.append(0, 0, 0);
   bound.finish();
   d = diag(bound.memory);
-  check(d.termination == T::WalkBound && d.transfers_walked == 1024 && cap(bound.memory).status == metal_renderer::Jak2ShadowBucket195CaptureStatus::LimitExceeded, "hard diagnostic bound");
+  check(d.termination == T::WalkBound &&
+            d.transfers_walked == metal_renderer::kJak2ShadowBucket195DiagnosticMaximumTransfers &&
+            cap(bound.memory).status ==
+                metal_renderer::Jak2ShadowBucket195CaptureStatus::LimitExceeded,
+        "hard diagnostic bound");
   std::puts("jak2 shadow bucket-195 diagnostic tests passed");
   return 0;
 }

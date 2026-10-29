@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 #include "common/dma/dma.h"
@@ -249,12 +250,245 @@ void test_malformed_and_limits() {
         "the capture does not broaden its allowlist to bucket 314");
 }
 
+using Capture = metal_renderer::Jak2ShadowBucket195Capture;
+using Status = metal_renderer::Jak2ShadowBucket195CaptureStatus;
+constexpr u32 kCap = static_cast<u32>(metal_renderer::kJak2ShadowBucket195MaximumTransfers);
+
+void capture_into(const std::vector<u8>& memory, Capture* out, u32 chain_offset = kChainOffset) {
+  metal_renderer::capture_jak2_shadow_bucket195(memory.data(), memory.size(), chain_offset,
+                                                metal_renderer::kJak2ShadowBucket195, out);
+}
+
+void seed_row(metal_renderer::Jak2ShadowBucket195TransferMetadata* row) {
+  row->payload_bytes = 0xdead;
+  row->vif0 = 0xbeef;
+  row->vif1 = 0xcafe;
+  row->trailing_marker = 0xf00d;
+  row->qwc = 7;
+  row->vif0_immediate = 7;
+  row->vif1_immediate = 7;
+  row->unpack_address = 7;
+  row->trailing_mscalf_immediate = 7;
+  row->tag_kind = 7;
+  row->vif0_kind = 7;
+  row->vif1_kind = 7;
+  row->vif0_num = 7;
+  row->vif1_num = 7;
+  row->trailing_zero_words = 7;
+  row->trailing_marker_in_bounds = true;
+  row->boundary_after = true;
+  row->role = Role::WallIndices;
+}
+
+// Poisons every scalar and the first, middle, and last rows so a reset must clear them even when
+// the previous capture retained fewer rows.
+void seed_capture(Capture* c) {
+  c->status = Status::Observed;
+  c->bucket_id = 0x5a5a;
+  seed_row(&c->transfers[0]);
+  seed_row(&c->transfers[1]);
+  seed_row(&c->transfers[kCap / 2]);
+  seed_row(&c->transfers[kCap - 1]);
+  c->transfer_count = 99;
+  c->v4_32_transfer_count = 99;
+  c->v4_8_transfer_count = 99;
+  c->v4_32_unpack_count = 99;
+  c->v4_8_unpack_count = 99;
+  c->direct_transfer_count = 99;
+  c->total_payload_bytes = 99;
+  c->direct_payload_bytes = 99;
+  c->flusha_direct_payload_bytes = 99;
+  c->semantic_fingerprint = 99;
+  c->boundary_transfer_index = 99;
+  c->terminal_payload_bytes = 99;
+  c->terminal_qwc = 99;
+  c->terminal_tag_kind = 99;
+  c->terminal_vif0_kind = 99;
+  c->terminal_vif1_kind = 99;
+  c->reached_boundary = true;
+}
+
+bool row_is_clear(const metal_renderer::Jak2ShadowBucket195TransferMetadata& row) {
+  return row.payload_bytes == 0 && row.vif0 == 0 && row.vif1 == 0 && row.trailing_marker == 0 &&
+         row.qwc == 0 && row.vif0_immediate == 0 && row.vif1_immediate == 0 &&
+         row.unpack_address == 0 && row.trailing_mscalf_immediate == 0 && row.tag_kind == 0 &&
+         row.vif0_kind == 0 && row.vif1_kind == 0 && row.vif0_num == 0 && row.vif1_num == 0 &&
+         row.trailing_zero_words == 0 && !row.trailing_marker_in_bounds && !row.boundary_after &&
+         row.role == Role::Other;
+}
+
+bool rows_clear_from(const Capture& c, u32 first) {
+  for (u32 i = first; i < kCap; ++i) {
+    if (!row_is_clear(c.transfers[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Field-wise (never memcmp: struct padding is unspecified).
+bool rows_equal(const metal_renderer::Jak2ShadowBucket195TransferMetadata& a,
+                const metal_renderer::Jak2ShadowBucket195TransferMetadata& b) {
+  return a.payload_bytes == b.payload_bytes && a.vif0 == b.vif0 && a.vif1 == b.vif1 &&
+         a.trailing_marker == b.trailing_marker && a.qwc == b.qwc &&
+         a.vif0_immediate == b.vif0_immediate && a.vif1_immediate == b.vif1_immediate &&
+         a.unpack_address == b.unpack_address &&
+         a.trailing_mscalf_immediate == b.trailing_mscalf_immediate && a.tag_kind == b.tag_kind &&
+         a.vif0_kind == b.vif0_kind && a.vif1_kind == b.vif1_kind && a.vif0_num == b.vif0_num &&
+         a.vif1_num == b.vif1_num && a.trailing_zero_words == b.trailing_zero_words &&
+         a.trailing_marker_in_bounds == b.trailing_marker_in_bounds &&
+         a.boundary_after == b.boundary_after && a.role == b.role;
+}
+
+bool captures_equal(const Capture& a, const Capture& b) {
+  if (!(a.status == b.status && a.bucket_id == b.bucket_id &&
+        a.transfer_count == b.transfer_count &&
+        a.v4_32_transfer_count == b.v4_32_transfer_count &&
+        a.v4_8_transfer_count == b.v4_8_transfer_count &&
+        a.v4_32_unpack_count == b.v4_32_unpack_count &&
+        a.v4_8_unpack_count == b.v4_8_unpack_count &&
+        a.direct_transfer_count == b.direct_transfer_count &&
+        a.total_payload_bytes == b.total_payload_bytes &&
+        a.direct_payload_bytes == b.direct_payload_bytes &&
+        a.flusha_direct_payload_bytes == b.flusha_direct_payload_bytes &&
+        a.semantic_fingerprint == b.semantic_fingerprint &&
+        a.boundary_transfer_index == b.boundary_transfer_index &&
+        a.terminal_payload_bytes == b.terminal_payload_bytes &&
+        a.terminal_qwc == b.terminal_qwc && a.terminal_tag_kind == b.terminal_tag_kind &&
+        a.terminal_vif0_kind == b.terminal_vif0_kind &&
+        a.terminal_vif1_kind == b.terminal_vif1_kind &&
+        a.reached_boundary == b.reached_boundary)) {
+    return false;
+  }
+  for (u32 i = 0; i < kCap; ++i) {
+    if (!rows_equal(a.transfers[i], b.transfers[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Every counter, fingerprint, terminal, and boundary field is back at its default.
+bool scalars_reset(const Capture& c) {
+  return c.transfer_count == 0 && c.v4_32_transfer_count == 0 && c.v4_8_transfer_count == 0 &&
+         c.v4_32_unpack_count == 0 && c.v4_8_unpack_count == 0 && c.direct_transfer_count == 0 &&
+         c.total_payload_bytes == 0 && c.direct_payload_bytes == 0 &&
+         c.flusha_direct_payload_bytes == 0 && c.semantic_fingerprint == 0 &&
+         c.boundary_transfer_index == 0 && c.terminal_payload_bytes == 0 && c.terminal_qwc == 0 &&
+         c.terminal_tag_kind == 0 && c.terminal_vif0_kind == 0 && c.terminal_vif1_kind == 0 &&
+         !c.reached_boundary;
+}
+
+ChainBuilder source_shaped_chain() {
+  ChainBuilder chain;
+  append_fixed_prefix(&chain, true);
+  chain.append(2, vif(VifCode::Kind::FLUSH), vif(VifCode::Kind::UNPACK_V4_32, 2, 4), 0x66);
+  chain.append(2, 0, vif(VifCode::Kind::UNPACK_V4_32, 2, 174), 0x77);
+  append_v4_8(&chain, 4, 344, 2);
+  append_v4_8(&chain, 8, 600, 4);
+  chain.append(35, vif(VifCode::Kind::FLUSHA), vif(VifCode::Kind::DIRECT, 0, 35), 0x88);
+  chain.finish();
+  return chain;
+}
+
+// Initial bucket NEXT + `appended` CNT tags + finish NEXT.
+ChainBuilder zero_tag_chain(u32 appended) {
+  ChainBuilder chain;
+  for (u32 i = 0; i < appended; ++i) {
+    chain.append(0, 0, 0);
+  }
+  chain.finish();
+  return chain;
+}
+
+void test_exact_transfer_capacity() {
+  const ChainBuilder exact = zero_tag_chain(kCap - 2);
+  const auto observed = capture(exact.memory);
+  check(observed.status == Status::Observed && observed.reached_boundary &&
+            observed.transfer_count == kCap && observed.boundary_transfer_index == kCap - 1 &&
+            observed.transfers[kCap - 1].boundary_after &&
+            observed.transfers[kCap - 1].tag_kind == static_cast<u8>(DmaTag::Kind::NEXT),
+        "a chain of exactly the shared transfer capacity is observed in full");
+
+  const ChainBuilder over = zero_tag_chain(kCap - 1);
+  check(capture(over.memory).status == Status::LimitExceeded,
+        "one transfer beyond the shared capacity reports LimitExceeded");
+}
+
+void test_out_param_reuse_and_reset() {
+  const auto storage = std::make_unique<Capture>();
+  Capture& reused = *storage;
+  const ChainBuilder source = source_shaped_chain();
+  const auto by_value = capture(source.memory);
+  check(by_value.status == Status::Observed && by_value.transfer_count == 13,
+        "by-value wrapper still observes the source-shaped chain");
+
+  seed_capture(&reused);
+  capture_into(source.memory, &reused);
+  check(captures_equal(reused, by_value),
+        "out-param capture matches the by-value wrapper field for field");
+  check(rows_clear_from(reused, reused.transfer_count),
+        "rows beyond transfer_count are cleared after a full capture into seeded storage");
+
+  const ChainBuilder exact = zero_tag_chain(kCap - 2);
+  capture_into(exact.memory, &reused);
+  check(reused.status == Status::Observed && reused.transfer_count == kCap &&
+            captures_equal(reused, capture(exact.memory)),
+        "out-param capture at exact capacity matches the by-value wrapper");
+
+  std::vector<u8> empty(kMemorySize);
+  put_tag(&empty, bucket_offset(), DmaTag::Kind::CNT, 0, 0, 0, 0);
+  seed_row(&reused.transfers[kCap - 1]);
+  capture_into(empty, &reused);
+  check(reused.status == Status::Absent && reused.transfer_count == 1 &&
+            reused.reached_boundary && reused.boundary_transfer_index == 0 &&
+            captures_equal(reused, capture(empty)),
+        "absent capture after a full-capacity capture matches the by-value wrapper");
+  check(rows_clear_from(reused, 1),
+        "absent capture clears every stale trailing row of a previous full-capacity capture");
+
+  capture_into(source.memory, &reused);
+  seed_capture(&reused);
+  metal_renderer::capture_jak2_shadow_bucket195(nullptr, kMemorySize, kChainOffset,
+                                                metal_renderer::kJak2ShadowBucket195, &reused);
+  check(reused.status == Status::Malformed &&
+            reused.bucket_id == metal_renderer::kJak2ShadowBucket195 && scalars_reset(reused) &&
+            rows_clear_from(reused, 0),
+        "a null snapshot resets every counter, fingerprint, terminal, and row");
+
+  capture_into(exact.memory, &reused);
+  seed_capture(&reused);
+  std::vector<u8> short_memory(bucket_offset() + 8);
+  capture_into(short_memory, &reused);
+  check(reused.status == Status::Malformed && scalars_reset(reused) && rows_clear_from(reused, 0),
+        "an out-of-bounds bucket tag resets every counter, fingerprint, terminal, and row");
+
+  capture_into(source.memory, &reused);
+  seed_capture(&reused);
+  metal_renderer::capture_jak2_shadow_bucket195(empty.data(), empty.size(), kChainOffset,
+                                                metal_renderer::kJak2ShadowBucket195 + 119,
+                                                &reused);
+  check(reused.status == Status::Malformed &&
+            reused.bucket_id == metal_renderer::kJak2ShadowBucket195 + 119 &&
+            scalars_reset(reused) && rows_clear_from(reused, 0),
+        "an invalid bucket resets every counter, fingerprint, terminal, and row");
+
+  metal_renderer::capture_jak2_shadow_bucket195(source.memory.data(), source.memory.size(),
+                                                kChainOffset, metal_renderer::kJak2ShadowBucket195,
+                                                nullptr);
+  capture_into(source.memory, &reused);
+  check(captures_equal(reused, by_value),
+        "a null out pointer is ignored and storage stays reusable afterwards");
+}
+
 }  // namespace
 
 int main() {
   test_empty_and_source_shaped_observations();
   test_top_only_mscalf6_stays_observational();
   test_malformed_and_limits();
+  test_exact_transfer_capacity();
+  test_out_param_reuse_and_reset();
   std::puts("jak2 shadow bucket-195 passive capture tests passed");
   return 0;
 }

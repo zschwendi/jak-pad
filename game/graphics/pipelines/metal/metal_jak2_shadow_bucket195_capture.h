@@ -4,11 +4,13 @@
 #include <cstddef>
 
 #include "common/common_types.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_limits.h"
 
 namespace metal_renderer {
 
 constexpr u32 kJak2ShadowBucket195 = 195;
-constexpr std::size_t kJak2ShadowBucket195MaximumTransfers = 256;
+constexpr std::size_t kJak2ShadowBucket195MaximumTransfers =
+    kJak2ShadowBucket195SharedMaximumTransfers;
 constexpr u64 kJak2ShadowBucket195MaximumPayloadBytes = 1 << 20;
 constexpr u32 kJak2ShadowBucket195MaximumTransferPayloadBytes = 64 << 10;
 constexpr u32 kJak2ShadowBucket195MaximumUnpackCount = 32 << 10;
@@ -93,9 +95,16 @@ Jak2ShadowBucket195Capture capture_jak2_shadow_bucket195(const u8* dma_packet_sn
                                                           u32 chain_offset,
                                                           u32 bucket_id);
 
+// Production form: resets and fills caller-owned storage in place every call. Null `out` returns.
+void capture_jak2_shadow_bucket195(const u8* dma_packet_snapshot,
+                                   std::size_t dma_packet_snapshot_size,
+                                   u32 chain_offset,
+                                   u32 bucket_id,
+                                   Jak2ShadowBucket195Capture* out);
+
 /*
  * DIAGNOSTIC ONLY. Never supplies render/acceptance plans and never changes the normal-path
- * 256-transfer capture or plan limits. Walks raw DMA (existing CheckedDmaFollower semantics) up to
+ * 781-transfer capture or plan limits. Walks raw DMA (existing CheckedDmaFollower semantics) up to
  * a hard bound to classify why the strict capture stopped. Raw traversal validity here does NOT
  * imply strict shadow grammar validity.
  */
@@ -113,7 +122,7 @@ enum class Jak2ShadowBucket195FollowerReject : u8 {
 
 enum class Jak2ShadowBucket195DiagnosticLimit : u8 {
   None,
-  TransferTable,     // 257th transfer would be needed
+  TransferTable,     // transfer kJak2ShadowBucket195MaximumTransfers + 1 would be needed
   TransferPayload,   // one payload > 64 KiB
   TotalPayload,      // cumulative payload > 1 MiB
   UnpackCount,       // cumulative V4_32 or V4_8 unpack count > 32 Ki

@@ -6,13 +6,14 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "game/graphics/pipelines/metal/metal_jak2_shadow_bucket195_limits.h"
 
 namespace metal_renderer {
 
 constexpr u32 kJak2ShadowBucket195PlanBucket = 195;
-constexpr u32 kJak2ShadowBucket195PlanMaximumTransfers = 256;
+constexpr u32 kJak2ShadowBucket195PlanMaximumTransfers = kJak2ShadowBucket195SharedMaximumTransfers;
 constexpr u64 kJak2ShadowBucket195PlanMaximumPayloadBytes = 1 << 20;
-constexpr u32 kJak2ShadowBucket195PlanMaximumBatches = 128;
+constexpr u32 kJak2ShadowBucket195PlanMaximumBatches = kJak2ShadowBucket195SharedMaximumBatches;
 constexpr u32 kJak2ShadowBucket195PlanMaximumVertices = 32 << 10;
 constexpr u32 kJak2ShadowBucket195PlanMaximumRecords = 32 << 10;
 constexpr u16 kJak2ShadowBucket195PlanSerializationVersion = 1;
