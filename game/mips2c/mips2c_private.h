@@ -19,13 +19,38 @@
 // This is only useful for
 
 extern u8* g_ee_main_mem;
+extern u8* g_ee_main_mem_exec;
 
 extern "C" {
-// defined in game/kernel/asm_funcs_arm64.s
-u64 call_goal8_asm_arm64(void* func, u64* arg_array, u64 zero, u64 pp, u64 st, void* off);
+#if defined __aarch64__ && defined __APPLE__
+// Apple AOT: defined in game/kernel/asm_funcs_arm64.s. There is no executable mapping of EE memory
+// on Apple targets, so exec_off (loaded into x27, never read by AOT code) is passed as null.
+u64 _call_goal8_asm_arm64(void* func,
+                          u64* arg_array,
+                          u64 zero,
+                          u64 pp,
+                          u64 st,
+                          void* off,
+                          void* exec_off) asm("_call_goal8_asm_arm64");
 //! Ahead-of-time compiled GOAL code reads the current process out of this rather than out of a
 //! pinned register, so a call from mips2c back into GOAL has to set it the way call_goal does.
 extern u64 g_goal_current_process;
+#elif defined __aarch64__
+u64 _call_goal8_asm_arm64(void* func,
+                          u64* arg_array,
+                          u64 zero,
+                          u64 pp,
+                          u64 st,
+                          void* off,
+                          void* exec_off);
+#elif defined __linux__
+u64 _call_goal8_asm_systemv(void* func, u64* arg_array, u64 zero, u64 pp, u64 st, void* off);
+#elif defined __APPLE__ && defined __x86_64__
+u64 _call_goal8_asm_systemv(void* func, u64* arg_array, u64 zero, u64 pp, u64 st, void* off) asm(
+    "_call_goal8_asm_systemv");
+#elif _WIN32
+u64 _call_goal8_asm_win32(void* func, u64* arg_array, u64 zero, u64 pp, u64 st, void* off);
+#endif
 }
 
 namespace Mips2C {
@@ -351,7 +376,8 @@ struct ExecutionContext {
     u64 args[8] = {gprs[a0].du64[0], gprs[a1].du64[0], gprs[a2].du64[0], gprs[a3].du64[0],
                    gprs[t0].du64[0], gprs[t1].du64[0], gprs[t2].du64[0], gprs[t3].du64[0]};
     ASSERT(addr);
-    // On ARM64 a GOAL function object holds the 64-bit native entry point of its code rather than
+#if defined __aarch64__ && defined __APPLE__
+    // On Apple ARM64 (AOT) a GOAL function object holds the 64-bit native entry point of its code rather than
     // the code itself, so the call goes through that pointer instead of through the object. This is
     // the same load call_goal does; see goal_function_entry_point in kernel/common/kscheme.cpp.
     void* entry = nullptr;
@@ -359,9 +385,26 @@ struct ExecutionContext {
     ASSERT_MSG(entry, "mips2c called a GOAL function object with no native entry point");
     const u64 saved_process = g_goal_current_process;
     g_goal_current_process = gprs[s6].du64[0];
-    gprs[v0].du64[0] =
-        call_goal8_asm_arm64(entry, args, 0, gprs[s6].du64[0], gprs[s7].du64[0], g_ee_main_mem);
+    gprs[v0].du64[0] = _call_goal8_asm_arm64(entry, args, 0, gprs[s6].du64[0], gprs[s7].du64[0],
+                                             g_ee_main_mem, nullptr);
     g_goal_current_process = saved_process;
+#elif defined __aarch64__
+    // use the executable mapping for the function and GOAL base
+    gprs[v0].du64[0] = _call_goal8_asm_arm64(g_ee_main_mem_exec + addr, args, 0, gprs[s6].du64[0],
+                                             gprs[s7].du64[0], g_ee_main_mem, g_ee_main_mem_exec);
+#elif defined __linux__
+    gprs[v0].du64[0] = _call_goal8_asm_systemv(g_ee_main_mem + addr, args, 0, gprs[s6].du64[0],
+                                               gprs[s7].du64[0], g_ee_main_mem);
+#elif defined __APPLE__ && defined __x86_64__
+    gprs[v0].du64[0] = _call_goal8_asm_systemv(g_ee_main_mem + addr, args, 0, gprs[s6].du64[0],
+                                               gprs[s7].du64[0], g_ee_main_mem);
+#elif _WIN32
+    gprs[v0].du64[0] = _call_goal8_asm_win32(g_ee_main_mem + addr, args, 0, gprs[s6].du64[0],
+                                             gprs[s7].du64[0], g_ee_main_mem);
+#else
+    ASSERT_MSG(false, "jalr: no GOAL call trampoline for this architecture or platform");
+    return;
+#endif
   }
 
   void sb(int src, int offset, int addr) {

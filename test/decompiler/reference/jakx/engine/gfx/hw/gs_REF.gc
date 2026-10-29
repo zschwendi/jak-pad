@@ -295,15 +295,51 @@ pixel is performed."
    )
   )
 
-;; type gs-rgbaq is defined here, but it is unknown to the decompiler
+;; definition of type gs-rgbaq
+(deftype gs-rgbaq (uint64)
+  "The GS's RGBAQ register sets the RGBA value of the vertex and the Q value of the normalized
+texture coordinates."
+  ((r uint8 :offset   0 :size   8)
+   (g uint8 :offset   8 :size   8)
+   (b uint8 :offset  16 :size   8)
+   (a uint8 :offset  24 :size   8)
+   (q float :offset  32 :size  32)
+   )
+  )
 
-;; type gs-xyz is defined here, but it is unknown to the decompiler
+;; definition of type gs-xyz
+(deftype gs-xyz (uint64)
+  ((x uint16 :offset   0 :size  16)
+   (y uint16 :offset  16 :size  16)
+   (z uint32 :offset  32 :size  32)
+   )
+  )
 
-;; type gs-uv is defined here, but it is unknown to the decompiler
+;; definition of type gs-uv
+(deftype gs-uv (uint64)
+  "The GS's UV register specifies the texel coordinate (UV) values of the vertex."
+  ((u uint16 :offset   0 :size  16)
+   (v uint16 :offset  16 :size  16)
+   )
+  )
 
-;; type gs-st is defined here, but it is unknown to the decompiler
+;; definition of type gs-st
+(deftype gs-st (uint64)
+  "The GS's ST register sets the S and T values of the vertex texture coordinates.
+The value Q is specified by the RGBAQ register."
+  ((s float :offset   0 :size  32)
+   (t float :offset  32 :size  32)
+   )
+  )
 
-;; type gs-xyzf is defined here, but it is unknown to the decompiler
+;; definition of type gs-xyzf
+(deftype gs-xyzf (uint64)
+  ((x uint16 :offset   0 :size  16)
+   (y uint16 :offset  16 :size  16)
+   (z uint32 :offset  32 :size  24)
+   (f uint8  :offset  56 :size   8)
+   )
+  )
 
 ;; definition of type gs-adcmd
 (deftype gs-adcmd (structure)
@@ -920,7 +956,7 @@ MIPMAP. MIPTBP1 sets levels 1 to 3, MIPTBP2 sets levels 4 to 6."
     (goto cfg-4)
     )
   (format #t "[~8x] ~A~%" this 'gs-packed-stq)
-  (format #t "~1Tdata[4] @ #x~X~%" (-> this data))
+  (format #t "~1Tdata[4] @ #x~X~%" (&-> this x))
   (format #t "~1Tx: ~f~%" (-> this x))
   (format #t "~1Ty: ~f~%" (-> this y))
   (format #t "~1Tz: ~f~%" (-> this z))
@@ -949,7 +985,7 @@ MIPMAP. MIPTBP1 sets levels 1 to 3, MIPTBP2 sets levels 4 to 6."
     (goto cfg-4)
     )
   (format #t "[~8x] ~A~%" this 'gs-packed-uv)
-  (format #t "~1Tdata[4] @ #x~X~%" (-> this data))
+  (format #t "~1Tdata[4] @ #x~X~%" (&-> this x))
   (format #t "~1Tx: ~f~%" (-> this x))
   (format #t "~1Ty: ~f~%" (-> this y))
   (format #t "~1Tz: ~f~%" (-> this z))
@@ -1004,7 +1040,3 @@ MIPMAP. MIPTBP1 sets levels 1 to 3, MIPTBP2 sets levels 4 to 6."
 
 ;; failed to figure out what this is:
 0
-
-
-
-

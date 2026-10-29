@@ -169,7 +169,7 @@ It type checks the arguments for the entry function.
       (when (and (> (length body) 1) (string? (first body)))
         (set! docstring (first body)))
       (when (not (null? *defstate-type-stack*))
-        (fmt #t "*defstate-type-stack* leaked! An error probably happened in a previous defstate. stack is: {}"
+        (fmt #t "*defstate-type-stack* leaked! An error probably happened in a previous defstate. stack is: {}\n"
                  *defstate-type-stack*)
         )
       (set! *defstate-type-stack* '())
@@ -342,6 +342,9 @@ It type checks the arguments for the entry function.
   this
   )
 
+;; GOALPad: x86-only. Its sole caller is the #t (non-arm64) branch of enter-state below; the arm64
+;; branch there is upstream's inline version and does not use it.
+(#unless (eq? INSTRUCTION_SET 'arm64)
 (defun enter-state-run-code ((code function) (arg0 object) (arg1 object) (arg2 object) (arg3 object))
   "GOALPad: the machine-level tail of enter-state, moved into a function of its own.
 
@@ -385,6 +388,7 @@ It type checks the arguments for the entry function.
     ;; stupid hack so the compiler doesn't throw away these registers.
     (.add carg0 carg1)
     (.add carg2 carg3)))
+)
 
 (define-extern enter-state (function object object object object object object object))
 (defun enter-state (arg0 arg1 arg2 arg3 arg4 arg5)
@@ -476,8 +480,44 @@ It type checks the arguments for the entry function.
          ;; we need to:
          ;; - make sure that when this code returns, we do a deactivate
          ;; - reset the stack to the top, so we can't just call the code.
-         (enter-state-run-code (the function (-> new-state code)) arg0 arg1 arg2 arg3)
-         #f ;; can't get here
+         ;; GOALPad: the AOT C backend (INSTRUCTION_SET x86) takes the #t branch, which calls
+         ;; enter-state-run-code (a native routine in the AOT build). The arm64 branch is upstream's
+         ;; inline version for the ARM64 JIT backend.
+         (#cond
+          ((eq? INSTRUCTION_SET 'arm64)
+           (rlet ((func)
+                  (sp :reg sp :type uint)
+                  (off :reg off :type uint)
+                  (xoff :reg exec-off :type uint)
+                  (ra :reg lr :type uint)
+                  (carg0 :reg carg0)
+                  (carg1 :reg carg1)
+                  (carg2 :reg carg2)
+                  (carg3 :reg carg3))
+             ;; load the arguments before discarding their stack slots
+             (.mov carg0 arg0)
+             (.mov carg1 arg1)
+             (.mov carg2 arg2)
+             (.mov carg3 arg3)
+             ;; convert the code pointer to the executable alias before branching
+             (.mov func (-> new-state code))
+             (.add func xoff)
+             ;; reset sp through the writable alias
+             (.mov sp (-> pp main-thread stack-top))
+             (.add sp off)
+             ;; return through deactivate
+             (.mov ra return-from-thread-dead)
+             (.add ra xoff)
+             (.jr func)
+             ;; keep the argument registers live until the branch
+             (.add carg0 carg1)
+             (.add carg2 carg3)
+             #f ;; can't get here
+             ))
+          (#t
+           (enter-state-run-code (the function (-> new-state code)) arg0 arg1 arg2 arg3)
+           #f ;; can't get here
+           ))
          )
        )
       (else
@@ -565,4 +605,3 @@ It type checks the arguments for the entry function.
         (send-event-function ,proc event-data)
         )
   )
-

@@ -5,6 +5,7 @@
 
 #include "common/type_system/TypeSystem.h"
 
+#include "goalc/emitter/InstructionSet.h"
 #include "goalc/emitter/Register.h"
 
 struct CallingConvention {
@@ -14,9 +15,7 @@ struct CallingConvention {
 
 std::vector<emitter::Register> get_arg_registers(const TypeSystem& type_system,
                                                  const std::vector<TypeSpec>& arg_types,
-                                                 emitter::InstructionSet instruction_set =
-                                                     emitter::InstructionSet::X86);
+                                                 emitter::InstructionSet instr_set);
 CallingConvention get_function_calling_convention(const TypeSpec& function_type,
                                                   const TypeSystem& type_system,
-                                                  emitter::InstructionSet instruction_set =
-                                                      emitter::InstructionSet::X86);
+                                                  emitter::InstructionSet instr_set);

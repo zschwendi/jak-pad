@@ -7,6 +7,7 @@
 #include "common/symbols.h"
 #include "common/util/Timer.h"
 
+#include "game/kernel/common/codegen.h"
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kdgo.h"
 #include "game/kernel/common/kdsnetm.h"
@@ -263,6 +264,151 @@ u64 make_string_from_c(const char* c_str) {
   return mem;
 }
 
+#if !(defined __aarch64__ && defined __APPLE__)
+/*!
+ * Upstream (x86-64 and non-Apple ARM64 JIT): dynamic stubs written into executable GOAL memory.
+ * This creates an OpenGOAL function from a C++ function. Only 6 arguments can be accepted.
+ * But calling this function is fast. It used to be really fast but wrong.
+ */
+Ptr<Function> make_function_from_c_systemv(void* func, bool arg3_is_pp) {
+  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
+                                       *(s7 + FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
+  auto f = (uint64_t)func;
+  auto target_function = (u8*)&f;
+#ifndef __aarch64__
+  auto trampoline_function_addr = _arg_call_systemv;
+#else
+  auto trampoline_function_addr = _arg_call_arm64;
+#endif
+  auto trampoline = (u8*)&trampoline_function_addr;
+
+  int offset = 0;
+#ifdef __aarch64__
+  u64 tramp;
+  memcpy(&tramp, trampoline, 8);
+  offset = emit_arm64_c_stub(mem.c(), (u64)func, tramp, arg3_is_pp);
+#else
+  // movabs rax, target_function
+  mem.c()[offset++] = 0x48;
+  mem.c()[offset++] = 0xb8;
+  for (int i = 0; i < 8; i++) {
+    mem.c()[offset++] = target_function[i];
+  }
+
+  // push rax
+  mem.c()[offset++] = 0x50;
+
+  // movabs rax, trampoline
+  mem.c()[offset++] = 0x48;
+  mem.c()[offset++] = 0xb8;
+  for (int i = 0; i < 8; i++) {
+    mem.c()[offset++] = trampoline[i];
+  }
+
+  if (arg3_is_pp) {
+    // mov rcx, r13. Puts pp in the third argument.
+    mem.c()[offset++] = 0x4c;
+    mem.c()[offset++] = 0x89;
+    mem.c()[offset++] = 0xe9;
+  }
+
+  // jmp rax
+  mem.c()[offset++] = 0xff;
+  mem.c()[offset++] = 0xe0;
+  // the asm function's ret will return to the caller of this (GOAL code) directlyz.
+#endif
+
+  flush_icache_goal(mem.offset, offset);
+
+  return mem.cast<Function>();
+}
+
+Ptr<Function> make_stack_arg_function_from_c_systemv(void* func) {
+  // allocate a function object on the global heap
+  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
+                                       *(s7 + FIX_SYM_FUNCTION_TYPE), 0x40, UNKNOWN_PP));
+  auto f = (uint64_t)func;
+  auto target_function = (u8*)&f;
+#ifndef __aarch64__
+  auto trampoline_function_addr = _stack_call_systemv;
+#else
+  auto trampoline_function_addr = _stack_call_arm64;
+#endif
+  auto trampoline = (u8*)&trampoline_function_addr;
+
+  int offset = 0;
+#ifdef __aarch64__
+  u64 tramp;
+  memcpy(&tramp, trampoline, 8);
+  offset = emit_arm64_c_stub(mem.c(), (u64)func, tramp, false);
+#else
+  // movabs rax, target_function
+  mem.c()[offset++] = 0x48;
+  mem.c()[offset++] = 0xb8;
+  for (int i = 0; i < 8; i++) {
+    mem.c()[offset++] = target_function[i];
+  }
+
+  // push rax
+  mem.c()[offset++] = 0x50;
+
+  // movabs rax, trampoline
+  mem.c()[offset++] = 0x48;
+  mem.c()[offset++] = 0xb8;
+  for (int i = 0; i < 8; i++) {
+    mem.c()[offset++] = trampoline[i];
+  }
+
+  // jmp rax
+  mem.c()[offset++] = 0xff;
+  mem.c()[offset++] = 0xe0;
+#endif
+
+  flush_icache_goal(mem.offset, offset);
+
+  return mem.cast<Function>();
+}
+
+// TODO(merge): upstream make_function_from_c_win32 / make_stack_arg_function_from_c_win32 were
+// dropped by the downstream side; restore from upstream if a Windows build is required.
+Ptr<Function> make_function_from_c(void* func, bool arg3_is_pp = false) {
+  return make_function_from_c_systemv(func, arg3_is_pp);
+}
+
+/*! Upstream passes pp to the C function through the stub's 4th argument. */
+Ptr<Function> make_function_from_c_pp(void* with_pp, void* without_pp) {
+  (void)without_pp;
+  return make_function_from_c(with_pp, true);
+}
+
+Ptr<Function> make_stack_arg_function_from_c(void* func) {
+  return make_stack_arg_function_from_c_systemv(func);
+}
+
+/*!
+ * Create a GOAL function which does nothing and immediately returns.
+ */
+Ptr<Function> make_nothing_func() {
+  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
+                                       *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
+
+  const int written = emit_return_stub(mem.c());
+  // flush the executable view
+  flush_icache_goal(mem.offset, written);
+  return mem.cast<Function>();
+}
+
+/*!
+ * Create a GOAL function which returns 0.
+ */
+Ptr<Function> make_zero_func() {
+  auto mem = Ptr<u8>(alloc_heap_object(s7.offset + FIX_SYM_GLOBAL_HEAP,
+                                       *(s7 + FIX_SYM_FUNCTION_TYPE), 0x14, UNKNOWN_PP));
+  const int written = emit_zero_stub(mem.c());
+  flush_icache_goal(mem.offset, written);
+  return mem.cast<Function>();
+}
+#else  // Apple ARM64 AOT
 /*!
  * GOALPad's ARM64 function-object representation: nothing is generated. The object holds the
  * 64-bit native entry point of the C or AOT-compiled function, which is what `call_goal` and every
@@ -340,6 +486,7 @@ Ptr<Function> make_nothing_func() {
 Ptr<Function> make_zero_func() {
   return make_function_from_native((void*)native_zero_func);
 }
+#endif  // Apple ARM64 AOT
 
 /*!
  * Given a C function and a name, create a GOAL function and store it in the symbol with the given

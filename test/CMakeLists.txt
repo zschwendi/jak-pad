@@ -13,6 +13,11 @@ add_executable(goalc-test
         ${CMAKE_CURRENT_LIST_DIR}/test_emitter_x86.cpp
         ${CMAKE_CURRENT_LIST_DIR}/test_emitter_avx.cpp
         ${CMAKE_CURRENT_LIST_DIR}/test_emitter_neon.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/test_emitter_arm64.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/test_emitter_arm64_memory.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/test_emitter_arm64_alu.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/test_sky_blend.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/test_goal_trampolines_arm64.cpp
         ${CMAKE_CURRENT_LIST_DIR}/test_common_util.cpp
         ${CMAKE_CURRENT_LIST_DIR}/test_ps2_vu_float.cpp
         ${CMAKE_CURRENT_LIST_DIR}/test_pretty_print.cpp
@@ -38,7 +43,7 @@ add_executable(goalc-test
         ${GOALC_TEST_CASES}
         )
 
-target_link_libraries(goalc-test common runtime compiler gtest decomp Zydis libzstd_static tree-sitter)
+target_link_libraries(goalc-test common runtime compiler gtest decomp Zydis capstone libzstd_static tree-sitter)
 
 if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
   add_executable(draw-mode-test ${CMAKE_CURRENT_LIST_DIR}/common/test_draw_mode.cpp)

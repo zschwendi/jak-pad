@@ -346,7 +346,7 @@ std::string FileEmitter::emit_statics() {
 void FileEmitter::find_machine_state_regs(const FunctionEnv& func) {
   m_machine_state_regs.clear();
   m_stack_pointer_regs.clear();
-  const auto& info = emitter::get_register_info(emitter::InstructionSet::X86);
+  const auto& info = emitter::reg_info(emitter::InstructionSet::X86);
   for (const auto& rv : func.reg_vals()) {
     if (!rv->rlet_constraint().has_value()) {
       continue;
@@ -376,7 +376,7 @@ void FileEmitter::find_machine_state_regs(const FunctionEnv& func) {
     } else if (info.get_info(constrained).special) {
       throw std::runtime_error(
           fmt::format("rlet binds machine register {}, which has no C equivalent",
-                      constrained.print()));
+                      constrained.print(emitter::InstructionSet::X86)));
     }
   }
 }
@@ -423,13 +423,14 @@ bool FileEmitter::is_machine_state(const RegVal* rv) const {
  * holds. Registers that name machine state directly never reach this; they are rewritten instead.
  */
 std::string FileEmitter::rlet_reset_expr(const RegVal* rv) {
-  const auto& info = emitter::get_register_info(emitter::InstructionSet::X86);
+  const auto& info = emitter::reg_info(emitter::InstructionSet::X86);
   const auto constrained = rv->rlet_constraint().value();
   if (constrained == info.get_offset_reg()) {
     return "GOAL_ADDR_OF(g_goal_mem)";
   }
   throw std::runtime_error(fmt::format(
-      "rlet :reset-here on machine register {}, which has no C equivalent", constrained.print()));
+      "rlet :reset-here on machine register {}, which has no C equivalent",
+      constrained.print(emitter::InstructionSet::X86)));
 }
 
 std::string FileEmitter::reg(const RegVal* rv) const {
@@ -553,7 +554,7 @@ std::string FileEmitter::emit_instruction(const FunctionEnv& func, IR* ir) {
           throw std::runtime_error(
               fmt::format("argument bound to machine register {}, which the C calling convention "
                           "cannot express",
-                          arg->rlet_constraint().value().print()));
+                          arg->rlet_constraint().value().print(emitter::InstructionSet::X86)));
         }
         out += fmt::format("{} = a{}; ", reg(arg), arg_index++);
       }

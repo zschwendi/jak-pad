@@ -91,10 +91,10 @@
    (func-id       symbol              :overlay-at func)
    (init-func     (function texture-anim int))
    (init-func-id  symbol              :overlay-at init-func)
-   (mip-func      basic)
-   (mip-func-id   basic               :overlay-at mip-func)
-   (time-func     basic)
-   (time-func-id  basic               :overlay-at time-func)
+   (mip-func      function)
+   (mip-func-id   symbol              :overlay-at mip-func)
+   (time-func     function)
+   (time-func-id  symbol              :overlay-at time-func)
    (tex           texture)
    (tex-name      string)
    (extra         vector              :inline)
@@ -108,8 +108,8 @@
    (data          texture-anim-layer  :dynamic)
    )
   (:methods
-    (texture-anim-method-9 () none)
-    (texture-anim-method-10 () none)
+    (init-textures! (_type_) _type_)
+    (clear-textures! (_type_) _type_)
     )
   )
 
@@ -686,7 +686,3 @@
 
 ;; failed to figure out what this is:
 0
-
-
-
-

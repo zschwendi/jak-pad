@@ -465,16 +465,27 @@ endif()
 
 function(build_third_party_lib dir_name target_name)
     add_subdirectory(third-party/${dir_name} EXCLUDE_FROM_ALL)
-    # Convert all public include dirs to SYSTEM
+    # Treat third-party headers as system headers.
     get_target_property(INCLUDES ${target_name} INTERFACE_INCLUDE_DIRECTORIES)
     if(INCLUDES)
         set_target_properties(${target_name} PROPERTIES
             INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${INCLUDES}"
         )
     endif()
+    # Suppress all warnings while compiling the third-party library itself.
+    target_compile_options(${target_name} PRIVATE
+        -w
+    )
 endfunction()
 
 # Dependencies and Libraries
+# - for reasons outside of my understanding, on some distros CMake can't find a library if it's
+# in `/usr/lib64` instead of `/usr/lib`.  This problem was encountered for libcurl not being able
+# to find OpenSSL even though its most definitely installed!
+if(UNIX AND NOT APPLE)
+    list(APPEND CMAKE_LIBRARY_PATH "/usr/lib64")
+endif()
+
 # includes relative to top level jak-project folder
 include_directories(./)
 
@@ -490,8 +501,9 @@ set(CURL_USE_LIBSSH2 OFF)
 set(CURL_USE_LIBPSL OFF)
 set(CURL_ZLIB OFF)
 # these default to AUTO since curl 8.10 and would silently pick up system libs
-set(CURL_BROTLI OFF)
-set(CURL_ZSTD OFF)
+set(CURL_BROTLI OFF CACHE BOOL "Disable Brotli support" FORCE)
+set(CURL_ZSTD OFF CACHE BOOL "Disable zstd support" FORCE)
+set(USE_NGHTTP2 OFF CACHE BOOL "Disable nghttp2 support" FORCE)
 # curl's BUILD_EXAMPLES cache option (default ON) would otherwise leak into
 # discord-rpc's identically named option and break its examples add_subdirectory
 set(BUILD_EXAMPLES OFF)
@@ -615,6 +627,32 @@ else()
 endif()
 
 build_third_party_lib(zydis Zydis)
+
+# Capstone (zydis replacement eventually)
+option(CAPSTONE_ARCHITECTURE_DEFAULT "Capstone: Disable all by default" OFF)
+option(CAPSTONE_X86_SUPPORT "Capstone: x86 support" ON)
+option(CAPSTONE_ARM_SUPPORT "Capstone: ARM support" ON)
+option(CAPSTONE_AARCH64_SUPPORT "Capstone: ARM64 support" ON)
+
+if(STATICALLY_LINK)
+    message(STATUS "Statically linking capstone")
+    option(CAPSTONE_BUILD_SHARED_LIBS "Capstone: Build shared library" OFF)
+    option(CAPSTONE_BUILD_STATIC_LIBS "Capstone: Build static library" ON)
+else()
+    message(STATUS "dynamically linking capstone")
+    option(CAPSTONE_BUILD_SHARED_LIBS "Capstone: Build shared library" ON)
+    option(CAPSTONE_BUILD_STATIC_LIBS "Capstone: Build static library" OFF)
+endif()
+
+# Capstone forces a universal2 (x86_64;arm64) build on Apple unless this is set; keep the
+# parent's CMAKE_OSX_ARCHITECTURES selection. Capstone requires CMake 3.15 (CMP0077 NEW),
+# so its option() honors this normal variable.
+if(APPLE)
+    set(CAPSTONE_BUILD_MACOS_THIN ON)
+endif()
+
+include_directories(third-party/capstone/include)
+build_third_party_lib(capstone capstone)
 
 # windows memory management lib
 if(WIN32)

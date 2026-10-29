@@ -105,6 +105,7 @@ target_link_libraries(decomp
         stb_image
         xdelta3
         tiny_gltf
+        sound
 )
 
 add_executable(decompiler
@@ -116,7 +117,9 @@ target_link_libraries(decompiler
         lzokay
         fmt
         stb_image
-        tiny_gltf)
+        tiny_gltf
+        sound
+)
 
 add_executable(jak1-fr3-prepare
         extractor/jak1_fr3_prepare_main.cpp)
@@ -151,7 +154,9 @@ target_link_libraries(extractor
         fmt
         compiler
         stb_image
-        tiny_gltf)
+        tiny_gltf
+        sound
+)
 
 if(BUILD_TESTING AND GOAL_HOST_TESTS_ENABLED)
   add_executable(jak1-iso-database-test

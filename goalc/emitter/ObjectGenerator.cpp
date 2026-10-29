@@ -23,6 +23,8 @@
 
 #include "goalc/debugger/DebugInfo.h"
 
+#include "fmt/format.h"
+
 namespace emitter {
 
 ObjectGenerator::ObjectGenerator(GameVersion version)
@@ -398,6 +400,7 @@ void ObjectGenerator::handle_temp_static_ptr_links(int seg) {
  * m_jump_temp_links_by_seg patching after memory layout is done
  */
 void ObjectGenerator::handle_temp_jump_links(int seg) {
+  // x86 rel32 jump: patch the immediate relative to the instruction after the jump.
   const auto patch_jump = [this, seg](const InstructionRecord& jump,
                                      const InstructionRecord& destination) {
     // we need to compute three offsets, all relative to the start of data.
@@ -429,12 +432,69 @@ void ObjectGenerator::handle_temp_jump_links(int seg) {
     InstructionRecord destination = link.jump_instr;
     destination.ir_id = link.dest.ir_id;
     destination.instr_id = function.ir_to_instruction.at(link.dest.ir_id);
+
+    if (m_instruction_set == InstructionSet::ARM64) {
+      // ARM64 branch deltas use words relative to the branch instruction.
+      ASSERT(link.jump_instr.func_id == link.dest.func_id);
+      ASSERT(link.jump_instr.seg == seg);
+      ASSERT(link.dest.seg == seg);
+      const auto& jump_instr = function.instructions.at(link.jump_instr.instr_id);
+      const auto* arm = std::get_if<InstructionARM64>(&jump_instr.instr);
+      ASSERT_MSG(arm, "ARM64 object generator received an x86 jump instruction");
+      int dest = function.instruction_to_byte_in_data.at(destination.instr_id);
+      int branch_loc =
+          function.instruction_to_byte_in_data.at(link.jump_instr.instr_id) + 4 * arm->reloc_word;
+      patch_arm64_branch(seg, branch_loc, dest - branch_loc, arm->reloc_kind);
+      continue;
+    }
+
     patch_jump(link.jump_instr, destination);
   }
 
   for (const auto& link : m_instruction_jump_temp_links_by_seg.at(seg)) {
+    // instruction-to-instruction links are only produced by x86 lowerings
+    ASSERT_MSG(m_instruction_set == InstructionSet::X86,
+               "instruction jump links are only implemented for x86");
     patch_jump(link.jump_instr, link.dest);
   }
+}
+
+/*!
+ * Patch a byte delta relative to an ARM64 branch instruction.
+ */
+void ObjectGenerator::patch_arm64_branch(int seg,
+                                         int patch_location,
+                                         int delta,
+                                         ARM64::RelocKind kind) {
+  ASSERT_MSG((delta & 3) == 0, "ARM64 branch delta must contain a whole number of instructions");
+  int words = delta / 4;
+
+  u32 mask = 0;
+  int shift = 0;
+  switch (kind) {
+    case ARM64::RelocKind::BRANCH26:
+      ASSERT_MSG(words >= -(1 << 25) && words < (1 << 25),
+                 fmt::format("ARM64 B delta of {} bytes requires a veneer", delta));
+      mask = 0x3ffffff;
+      shift = 0;
+      break;
+    case ARM64::RelocKind::BRANCH19:
+      ASSERT_MSG(words >= -(1 << 18) && words < (1 << 18),
+                 fmt::format("ARM64 B.cond delta of {} bytes requires a veneer", delta));
+      mask = 0x7ffff;
+      shift = 5;
+      break;
+    default:
+      ASSERT_MSG(false, "ARM64 jump link requires a branch instruction");
+  }
+
+  auto& data = m_data_by_seg.at(seg);
+  ASSERT(patch_location >= 0 && size_t(patch_location) + 4 <= data.size());
+  u32 word;
+  memcpy(&word, data.data() + patch_location, 4);
+  word &= ~(mask << shift);
+  word |= (u32(words) & mask) << shift;
+  memcpy(data.data() + patch_location, &word, 4);
 }
 
 /*!
@@ -450,6 +510,17 @@ void ObjectGenerator::handle_temp_instr_sym_links(int seg) {
       const auto& function = m_function_data_by_seg.at(seg).at(link.rec.func_id);
       const auto& instruction = function.instructions.at(link.rec.instr_id);
       int offset_of_instruction = function.instruction_to_byte_in_data.at(link.rec.instr_id);
+
+      if (m_instruction_set == InstructionSet::ARM64) {
+        // ARM64 symbol links use a separate movz/movk relocation list.
+        const auto* arm = std::get_if<InstructionARM64>(&instruction.instr);
+        ASSERT_MSG(arm && arm->reloc_kind == ARM64::RelocKind::MOV32,
+                   "ARM64 symbol link requires a movz/movk pair");
+        m_sym_mov32_links_by_seg.at(seg)[sym_name].push_back(offset_of_instruction +
+                                                             4 * arm->reloc_word);
+        continue;
+      }
+
       int offset_in_instruction =
           link.is_mem_access ? instruction.offset_of_disp() : instruction.offset_of_imm();
       if (link.is_mem_access) {
@@ -537,19 +608,27 @@ void ObjectGenerator::emit_link_type_pointer(int seg, const TypeSystem* ts) {
 
 void ObjectGenerator::emit_link_symbol(int seg) {
   auto& out = m_link_by_seg.at(seg);
-  for (auto& rec : m_sym_links_by_seg.at(seg)) {
-    out.push_back(LINK_SYMBOL_OFFSET);
-    for (char c : rec.first) {
+  auto emit = [&out](LinkKind kind, const std::string& name, const std::vector<int>& locs) {
+    out.push_back(kind);
+    for (char c : name) {
       out.push_back(c);
     }
     out.push_back(0);
 
     // number of links
-    push_data<u32>(rec.second.size(), out);
+    push_data<u32>(locs.size(), out);
 
-    for (auto& r : rec.second) {
+    for (auto& r : locs) {
       push_data<s32>(r, out);
     }
+  };
+
+  for (auto& rec : m_sym_links_by_seg.at(seg)) {
+    emit(LINK_SYMBOL_OFFSET, rec.first, rec.second);
+  }
+  // emit movz/movk link records
+  for (auto& rec : m_sym_mov32_links_by_seg.at(seg)) {
+    emit(LINK_ARM64_SYMBOL_MOV32, rec.first, rec.second);
   }
 }
 
@@ -567,6 +646,23 @@ void ObjectGenerator::emit_link_ptr(int seg) {
 void ObjectGenerator::emit_link_rip(int seg) {
   auto& out = m_link_by_seg.at(seg);
   for (auto& rec : m_rip_links_by_seg.at(seg)) {
+    const auto& func = m_function_data_by_seg.at(rec.instr.seg).at(rec.instr.func_id);
+
+    if (m_instruction_set == InstructionSet::ARM64) {
+      // record the GOAL address link for this movz/movk pair
+      const auto& src_instr = func.instructions.at(rec.instr.instr_id);
+      const auto* arm = std::get_if<InstructionARM64>(&src_instr.instr);
+      ASSERT_MSG(arm && arm->reloc_kind == ARM64::RelocKind::MOV32,
+                 "ARM64 cross-segment link requires a movz/movk pair");
+      out.push_back(LINK_ARM64_OTHER_SEG_MOV32);
+      out.push_back(rec.target_segment);
+      ASSERT(rec.offset_in_segment >= 0);
+      push_data<u32>(rec.offset_in_segment, out);
+      push_data<u32>(func.instruction_to_byte_in_data.at(rec.instr.instr_id) + 4 * arm->reloc_word,
+                     out);
+      continue;
+    }
+
     // kind (u8)
     // target segment (u8)
     // offset in current (u32)

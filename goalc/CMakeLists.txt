@@ -85,7 +85,7 @@ add_library(compiler
         regalloc/Allocator_v2.cpp
         compiler/docs/DocTypes.cpp)
 
-target_link_libraries(compiler common Zydis tiny_gltf decomp)
+target_link_libraries(compiler common Zydis capstone tiny_gltf decomp)
 
 include("${CMAKE_SOURCE_DIR}/common/custom_data/jak1_output_recipe_core.cmake")
 include("${CMAKE_SOURCE_DIR}/common/custom_data/jak2_output_graph.cmake")
@@ -143,13 +143,13 @@ add_executable(goalc-cbackend-sweep aot/c_backend_sweep_main.cpp)
 add_executable(build_level build_level/main.cpp)
 add_executable(build_actor build_actor/main.cpp)
 
-target_link_libraries(goalc common Zydis compiler)
-target_link_libraries(goalc-simple common Zydis compiler)
-target_link_libraries(goalc-cbackend common Zydis compiler)
+target_link_libraries(goalc common Zydis capstone compiler)
+target_link_libraries(goalc-simple common Zydis capstone compiler)
+target_link_libraries(goalc-cbackend common Zydis capstone compiler)
 target_link_libraries(goalc-cbackend-sweep
-                      common Zydis compiler jak2-source-object-pack)
-target_link_libraries(build_level common Zydis compiler)
-target_link_libraries(build_actor common Zydis compiler)
+                      common Zydis capstone compiler jak2-source-object-pack)
+target_link_libraries(build_level common Zydis capstone compiler)
+target_link_libraries(build_actor common Zydis capstone compiler)
 
 if(OPENGOAL_JAK1_SOURCE_OBJECT_PACK_OUTPUT)
   get_filename_component(OPENGOAL_JAK1_SOURCE_OBJECT_PACK_PARENT

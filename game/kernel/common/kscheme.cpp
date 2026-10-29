@@ -8,7 +8,7 @@
 #include "game/kernel/common/kmalloc.h"
 #include "game/kernel/common/kprint.h"
 
-#ifdef __aarch64__
+#if defined __aarch64__ && defined __APPLE__
 // ahead-of-time compiled GOAL keeps the current process here instead of in a pinned register
 #include "goalc/aot/goal_c_runtime.h"
 #endif
@@ -19,7 +19,7 @@ s32 NumSymbols;
 // value of the GOAL s7 register, pointing to the middle of the symbol table
 Ptr<u32> s7;
 
-#ifdef __aarch64__
+#if defined __aarch64__ && defined __APPLE__
 // GOAL address of the running process: the r13 the x86-64 backend pins, for code that cannot pin a
 // register. Declared by goalc/aot/goal_c_runtime.h; it belongs with the rest of GOAL's machine
 // state, which is why it is defined here rather than in the AOT loader.
@@ -99,22 +99,70 @@ u64 goal_malloc(u32 heap, u32 size, u32 flags, u32 name) {
 }
 
 extern "C" {
-// defined in asm_funcs_arm64.s
-uint64_t call_goal_asm_arm64(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset);
-uint64_t call_goal_on_stack_asm_arm64(u64 rsp,
-                                      u64 u0,
-                                      u64 u1,
-                                      void* fptr,
-                                      void* st_ptr,
-                                      void* offset,
-                                      u64* native_host_sp);
+#if defined __aarch64__ && defined __APPLE__
+// defined in asm_funcs_arm64.s. The ahead-of-time runtime enters native GOAL entry points. The raw
+// call takes the upstream exec_offset argument (loaded into x27), which AOT code never reads, so
+// it is passed as null. The on-stack call uses its own entry, whose x6 is the native host sp slot.
+uint64_t _call_goal_asm_arm64(u64 a0,
+                              u64 a1,
+                              u64 a2,
+                              void* fptr,
+                              void* st_ptr,
+                              void* offset,
+                              void* exec_offset) asm("_call_goal_asm_arm64");
+uint64_t _call_goal_on_stack_aot_asm_arm64(u64 rsp,
+                                           u64 u0,
+                                           u64 u1,
+                                           void* fptr,
+                                           void* st_ptr,
+                                           void* offset,
+                                           u64* native_host_sp) asm("_call_goal_on_stack_aot_asm_arm64");
+#elif defined __aarch64__
+uint64_t _call_goal_asm_arm64(u64 a0,
+                              u64 a1,
+                              u64 a2,
+                              void* fptr,
+                              void* st_ptr,
+                              void* offset,
+                              void* exec_offset);
+uint64_t _call_goal_on_stack_asm_arm64(u64 rsp,
+                                       u64 u0,
+                                       u64 u1,
+                                       void* fptr,
+                                       void* st_ptr,
+                                       void* offset,
+                                       void* exec_offset);
+// defined in asm_funcs.asm
+#elif defined __linux__
+uint64_t _call_goal_asm_systemv(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset);
+uint64_t _call_goal_on_stack_asm_systemv(u64 rsp,
+                                         u64 u0,
+                                         u64 u1,
+                                         void* fptr,
+                                         void* st_ptr,
+                                         void* offset);
+#elif defined __APPLE__ && defined __x86_64__
+uint64_t _call_goal_asm_systemv(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset) asm(
+    "_call_goal_asm_systemv");
+uint64_t _call_goal_on_stack_asm_systemv(u64 rsp,
+                                         u64 u0,
+                                         u64 u1,
+                                         void* fptr,
+                                         void* st_ptr,
+                                         void* offset) asm("_call_goal_on_stack_asm_systemv");
+#elif _WIN32
+uint64_t _call_goal_asm_win32(u64 a0, u64 a1, u64 a2, void* fptr, void* st_ptr, void* offset);
+uint64_t _call_goal_on_stack_asm_win32(u64 rsp, void* fptr, void* st_ptr, void* offset);
+#endif
 }
 
+#if defined __aarch64__ && defined __APPLE__
 /*!
- * On ARM64 a GOAL function object holds the 64-bit native entry point of its code rather than the
- * code itself, because ahead-of-time compiled GOAL code lives in __TEXT and no 32-bit GOAL pointer
- * can reach it. This is the one place the runtime turns a function object into something callable;
- * every AOT call site does the same load through GOAL_FN (goalc/aot/goal_c_runtime.h).
+ * On Apple ARM64 (AOT) a GOAL function object holds the 64-bit native entry point of its code
+ * rather than the code itself, because ahead-of-time compiled GOAL code lives in __TEXT and no
+ * 32-bit GOAL pointer can reach it. This is the one place the runtime turns a function object into
+ * something callable; every AOT call site does the same load through GOAL_FN
+ * (goalc/aot/goal_c_runtime.h).
  */
 static void* goal_function_entry_point(Ptr<Function> f) {
   void* entry = nullptr;
@@ -122,7 +170,6 @@ static void* goal_function_entry_point(Ptr<Function> f) {
   return entry;
 }
 
-#ifdef __aarch64__
 namespace {
 thread_local u64 g_native_host_sp = 0;
 
@@ -158,11 +205,28 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
   // auto st_ptr = (void*)((uint8_t*)(offset) + st); updated for the new compiler!
   void* st_ptr = (void*)st;
 
+#if defined __aarch64__ && defined __APPLE__
   void* fptr = goal_function_entry_point(f);
-#ifdef __aarch64__
   ScopedCurrentProcess pp(st);
+  // no executable mapping: x27 gets null, and AOT code does not read it
+  return _call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset, nullptr);
+#elif defined __aarch64__
+  // use the executable mapping for the function and GOAL base
+  return _call_goal_asm_arm64(a, b, c, (void*)(g_ee_main_mem_exec + f.offset), st_ptr, offset,
+                              g_ee_main_mem_exec);
+#elif defined __linux__
+  void* fptr = f.c();
+  return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
+#elif defined __APPLE__ && defined __x86_64__
+  void* fptr = f.c();
+  return _call_goal_asm_systemv(a, b, c, fptr, st_ptr, offset);
+#elif _WIN32
+  void* fptr = f.c();
+  return _call_goal_asm_win32(a, b, c, fptr, st_ptr, offset);
+#else
+  ASSERT_MSG(false, "call_goal: no GOAL call trampoline for this architecture or platform");
+  return 0;
 #endif
-  return call_goal_asm_arm64(a, b, c, fptr, st_ptr, offset);
 }
 
 /*!
@@ -171,22 +235,37 @@ u64 call_goal(Ptr<Function> f, u64 a, u64 b, u64 c, u64 st, void* offset) {
 u64 call_goal_on_stack(Ptr<Function> f, u64 rsp, u64 st, void* offset) {
   void* st_ptr = (void*)st;
 
+#if defined __aarch64__ && defined __APPLE__
   void* fptr = goal_function_entry_point(f);
-#ifdef __aarch64__
   ScopedCurrentProcess pp(st);
   const auto frame = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
   const auto ee_begin = reinterpret_cast<uintptr_t>(g_ee_main_mem);
   const bool caller_is_goal =
       g_ee_main_mem && frame >= ee_begin && frame < ee_begin + EE_MAIN_MEM_SIZE;
-  return call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset,
-                                      caller_is_goal ? nullptr : &g_native_host_sp);
+  return _call_goal_on_stack_aot_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset,
+                                           caller_is_goal ? nullptr : &g_native_host_sp);
+#elif defined __aarch64__
+  // use the executable mapping for the function and GOAL base
+  return _call_goal_on_stack_asm_arm64(rsp, 0, 0, (void*)(g_ee_main_mem_exec + f.offset), st_ptr,
+                                       offset, g_ee_main_mem_exec);
+#elif defined __linux__
+  void* fptr = f.c();
+  return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
+#elif defined __APPLE__ && defined __x86_64__
+  void* fptr = f.c();
+  return _call_goal_on_stack_asm_systemv(rsp, 0, 0, fptr, st_ptr, offset);
+#elif _WIN32
+  void* fptr = f.c();
+  return _call_goal_on_stack_asm_win32(rsp, fptr, st_ptr, offset);
 #else
-  return call_goal_on_stack_asm_arm64(rsp, 0, 0, fptr, st_ptr, offset, nullptr);
+  ASSERT_MSG(false,
+             "call_goal_on_stack: no GOAL call trampoline for this architecture or platform");
+  return 0;
 #endif
 }
 
 u64 goal_native_host_stack_pointer() {
-#ifdef __aarch64__
+#if defined __aarch64__ && defined __APPLE__
   return g_native_host_sp;
 #else
   return 0;

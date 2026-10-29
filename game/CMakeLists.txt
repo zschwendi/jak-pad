@@ -1,4 +1,7 @@
-if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+# match the __aarch64__ source guards
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" OG_PROCESSOR_LOWER)
+if(NOT OG_PROCESSOR_LOWER MATCHES "^(arm64|aarch64)$" AND
+   NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
     message(FATAL_ERROR "The GOALPad runtime is ARM64-only.")
 endif()
 set(ARM64_ARCH TRUE)
@@ -6,7 +9,12 @@ set(ARM64_ARCH TRUE)
 set(OG_ASM_FUNCS_FILE kernel/asm_funcs_arm64.s)
 enable_language(ASM)
 set(CMAKE_ASM_SOURCE_FILE_EXTENSIONS ${CMAKE_ASM_SOURCE_FILE_EXTENSIONS} s)
-set_source_files_properties(${OG_ASM_FUNCS_FILE} PROPERTIES COMPILE_FLAGS "-arch arm64 -g")
+# pass -arch only to Apple Clang
+if(APPLE)
+    set_source_files_properties(${OG_ASM_FUNCS_FILE} PROPERTIES COMPILE_FLAGS "-arch arm64 -g")
+else()
+    set_source_files_properties(${OG_ASM_FUNCS_FILE} PROPERTIES COMPILE_FLAGS "-g")
+endif()
 
 set(RUNTIME_SOURCE
         external/discord_jak1.cpp
@@ -226,6 +234,31 @@ set(RUNTIME_SOURCE
         mips2c/jak3_functions/ocean.cpp
         mips2c/jak3_functions/ocean_vu0.cpp
         mips2c/jak3_functions/generic_merc.cpp
+        mips2c/jakx_functions/collide_func.cpp
+        mips2c/jakx_functions/debug.cpp
+        mips2c/jakx_functions/font.cpp
+        mips2c/jakx_functions/foreground.cpp
+        mips2c/jakx_functions/generic_effect.cpp
+        mips2c/jakx_functions/joint.cpp
+        mips2c/jakx_functions/lights.cpp
+        mips2c/jakx_functions/sky.cpp
+        mips2c/jakx_functions/texture.cpp
+        mips2c/jakx_functions/particle_curves.cpp
+        mips2c/jakx_functions/cloth.cpp
+        mips2c/jakx_functions/collide_cache.cpp
+        mips2c/jakx_functions/collide_hash.cpp
+        mips2c/jakx_functions/collide_mesh.cpp
+        mips2c/jakx_functions/spatial_hash.cpp
+        mips2c/jakx_functions/sparticle.cpp
+        mips2c/jakx_functions/sparticle_launcher.cpp
+        mips2c/jakx_functions/nav_control.cpp
+        mips2c/jakx_functions/nav_engine.cpp
+        mips2c/jakx_functions/merc_blend_shape.cpp
+        mips2c/jakx_functions/wvehicle_part.cpp
+        mips2c/jakx_functions/ripple.cpp
+        mips2c/jakx_functions/shadow.cpp
+        mips2c/jakx_functions/ocean.cpp
+        mips2c/jakx_functions/generic_merc.cpp
         mips2c/mips2c_table.cpp
         overlord/common/dma.cpp
         overlord/common/fake_iso.cpp
