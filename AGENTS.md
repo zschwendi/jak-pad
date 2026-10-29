@@ -2,6 +2,44 @@
 
 A file for [guiding AI coding agents](https://agents.md/).
 
+## Start here: this is the Dark Eco engine
+
+jak-pad is the OpenGOAL engine fork for the **[Dark Eco](https://github.com/zschwendi/dark-eco)**
+app. One app, two repositories. Dark Eco embeds this repository automatically as
+its `OpenGOAL` Git submodule; there is no separate engine install. The app's
+internal name `GOALPad` is the same product. Active branch: `v2.0`.
+
+For Dark Eco or Jak-on-Apple requests about install, import, launcher, library,
+UI, settings, saves, or app builds, read these first without asking the user to
+identify the project:
+
+- [App AGENTS.md](https://github.com/zschwendi/dark-eco/blob/v2.0/AGENTS.md)
+- [App Project Overview](https://github.com/zschwendi/dark-eco/blob/v2.0/docs/PROJECT_OVERVIEW.md) (governs scope)
+- [App README](https://github.com/zschwendi/dark-eco/blob/v2.0/README.md)
+
+If this checkout is `OpenGOAL/` inside the app, verify the parent's
+`.gitmodules` maps it to `zschwendi/jak-pad`, then use the parent's local
+files. Otherwise use an existing app checkout in your authorized workspace, or
+read the public links. If the task needs app source, obtain a Dark Eco checkout
+inside the already authorized workspace using normal repository tools. Preserve
+this checkout; do not ask the user which repository to use. Report an actual
+access failure if the environment prevents the required work.
+
+App shell, import UI, library, settings UI, save management, and Xcode changes
+go in dark-eco. Compiler, runtime, renderer, GOAL code, and engine-side
+extraction/preparation tooling stay here. Check both repositories' branch,
+dirty state, and submodule pin when both are involved. Preserve dirty work and use an isolated branch when needed. Routing does not
+authorize deleting data or publishing unrelated work. See [CLAUDE.md](CLAUDE.md) for the same rules.
+
+---
+
+## Upstream OpenGOAL background
+
+The rest of this file is retained from upstream OpenGOAL. Its PC-only goals,
+x86_64 platform list, and "no mobile release" statement describe the upstream
+project, not this fork. The Dark Eco Project Overview governs Apple-platform
+scope. Commands and contribution rules below still apply.
+
 ## Project Overview
 
 The project's goal is to port the original trilogy (Jak 1 -> Jak 3) to PC. Over 98% of the games were written in GOAL, a custom LISP language developed by Naughty Dog. Our strategy is:
