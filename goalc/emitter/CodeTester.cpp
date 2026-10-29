@@ -262,6 +262,12 @@ void CodeTester::emit_pop_all_gprs(bool exclude_return_register) {
         emit(IGen::pop_gpr64(m_gen, i));
       }
     }
+  } else if (m_gen.instr_set() == InstructionSet::ARM64) {
+    for (int i = 31; i-- > 0;) {
+      if (i != X0 || !exclude_return_register) {
+        emit(IGen::pop_gpr64(m_gen, i));
+      }
+    }
   } else {
     throw std::runtime_error("CodeTester::emit_pop_all_gprs unhandled instruction set");
   }
@@ -275,6 +281,12 @@ void CodeTester::emit_push_all_gprs(bool exclude_return_register) {
   if (m_gen.instr_set() == InstructionSet::X86) {
     for (int i = 0; i < 16; i++) {
       if (i != RAX || !exclude_return_register) {
+        emit(IGen::push_gpr64(m_gen, i));
+      }
+    }
+  } else if (m_gen.instr_set() == InstructionSet::ARM64) {
+    for (int i = 0; i < 31; i++) {
+      if (i != X0 || !exclude_return_register) {
         emit(IGen::push_gpr64(m_gen, i));
       }
     }
