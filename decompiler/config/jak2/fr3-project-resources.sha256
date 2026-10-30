@@ -2,8 +2,8 @@
 # This exact closure contains 16 FR3 inputs and 13 generated-artifact inputs.
 # The supported disc revision uses the ntsc_v1 decompiler configuration.
 # Keep paths sorted. The bundle generator verifies Git tracking, closure, and SHA-256.
-4ab20e4af2ef341b2c259e11fb79ca05d5aa0f52f64693181d4688be8ad68244  decompiler/config/jak2/all-types.gc
-7e489e8b3da35c25544e512dea5c72deec0a4c058f1c636712a2056f5d6ce5f0  decompiler/config/jak2/jak2_config.jsonc
+89192255155b15018b644cb356434fdc70931dbc579ff3e91834ec29683260f1  decompiler/config/jak2/all-types.gc
+775f3d17251e858f5a72ad188dc32c2f0d2d60f925b330c5af82103f5b7a1e1d  decompiler/config/jak2/jak2_config.jsonc
 077e6b1941fa35885c7157511262e63efc343dc10a0bf3dadf9e45fdb120c9f0  decompiler/config/jak2/ntsc_v1/anonymous_function_types.jsonc
 61a66f41676284121b06e4a8b2cd12bcec31ed3d338d20381b21325dcbaa532a  decompiler/config/jak2/ntsc_v1/art-group-info.min.json
 faaf3831a9af6e216488cf525e1b1e88aafca4280040964745130f86fc2d268f  decompiler/config/jak2/ntsc_v1/art_info.jsonc
@@ -16,8 +16,8 @@ ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356  decompiler/con
 290d6f344babaec9537ac49d9bb333f9d2323c510f939670eb35e7892c57ffbc  decompiler/config/jak2/ntsc_v1/process_stack_size_overrides.jsonc
 3c8418e8dd2970600573b19ab7013d245cb63bb0234f62b87917b2aa92123a62  decompiler/config/jak2/ntsc_v1/stack_structures.jsonc
 4f5fa21bc61251d7bbc9e8668757f4a4ab80e5467a4d6c93408862fc14042948  decompiler/config/jak2/ntsc_v1/tex-info.min.json
-4450b7eb6ab82ba2c38b5456f1e0453949eb73f62bbb551952989630aa412833  decompiler/config/jak2/ntsc_v1/type_casts.jsonc
-fc45fc608ebf08c109a1bfd177e0fb55a56744198623917176dc7da0bd90b3a4  decompiler/config/jak2/ntsc_v1/var_names.jsonc
+280962425b3e913e852d3ee5c8d4689b799da7f324fd5fa049e63463baf3a2b1  decompiler/config/jak2/ntsc_v1/type_casts.jsonc
+6d643f8371a402b70522f93f05764b333e6a15771b1241bc2f6db9e78a987da1  decompiler/config/jak2/ntsc_v1/var_names.jsonc
 0624feae8e3db0046bb5184a46a566d069bcd86751e205e4b3b524de2668304a  game/assets/fonts/jak2_jak3_korean_db.json
 252c334a790d8918517b26366fb5763b249d47f4d3702c6b095ad1d675c99bc0  game/assets/jak2/game_subtitle.gp
 e0d00318b12dba35a69b033d20fec3a9c0d0b040cb7a5af08c3c4696e721f5fc  game/assets/jak2/game_text.gp
