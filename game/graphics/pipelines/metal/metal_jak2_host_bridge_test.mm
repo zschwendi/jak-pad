@@ -88,7 +88,10 @@ static_assert(offsetof(goal_jak2_metal_host_metrics, last_eye_first_placeholder_
               offsetof(goal_jak2_metal_host_metrics, last_eye_source_vertex_fingerprint));
 static_assert(offsetof(goal_jak2_metal_host_metrics, last_eye_diagnostic_lid_source_corners) +
                   sizeof(((goal_jak2_metal_host_metrics*)nullptr)
-                             ->last_eye_diagnostic_lid_source_corners) ==
+                             ->last_eye_diagnostic_lid_source_corners) <=
+              offsetof(goal_jak2_metal_host_metrics, presentation_deferrals));
+static_assert(offsetof(goal_jak2_metal_host_metrics, present_only_command_buffer_errors) +
+                  sizeof(uint64_t) ==
               sizeof(goal_jak2_metal_host_metrics));
 
 constexpr u32 kChainOffset = 0x100000;
@@ -3013,6 +3016,150 @@ int main() {
     check(!goal_jak2_metal_host_metrics_pass_frame_gate(&recovery_metrics, 0),
           "recovering presentation does not erase the cumulative drawable-miss diagnostic");
     goal_jak2_metal_host_destroy(recovery_host);
+  }
+
+  // Catch-up presentation coalescing. Every run sends the identical three-chain sequence; only the
+  // deferral and finish hooks differ, so rendered contents and side effects must match exactly.
+  {
+    enum class Batch { plain, final_presents, all_deferred, cancelled, final_miss };
+    struct CoalesceRun {
+      goal_jak2_metal_host_metrics before_finish = {};
+      goal_jak2_metal_host_metrics metrics = {};
+      goal_jak2_metal_frame_summary frame = {};
+      bool waited = false;
+      bool read = false;
+    };
+    const auto send_chain_number = [](const goal_gfx_host& callbacks, int index) {
+      if (index == 1) {
+        make_empty_chain();
+      } else {
+        write_texture_page();
+        make_sprite_texture_upload_chain();
+      }
+      callbacks.send_chain(g_ee_main_mem, kChainOffset);
+    };
+    const auto run_batch = [&](Batch batch) {
+      CoalesceRun out;
+      @autoreleasepool {
+        GoalJak2TransientDrawableLayer* layer = [GoalJak2TransientDrawableLayer layer];
+        layer.drawableSize = CGSizeMake(64, 64);
+        goal_jak2_metal_host* host = goal_jak2_metal_host_create_presenting(layer);
+        goal_gfx_host callbacks = {};
+        check(host && goal_jak2_metal_host_copy_gfx_host(host, &callbacks) &&
+                  callbacks.set_presentation_deferred && callbacks.finish_presentation_batch,
+              "a presenting host exports both catch-up presentation hooks");
+        // A finish with nothing pending is an exact no-op (single-tick and zero-tick callbacks).
+        callbacks.finish_presentation_batch(1);
+        callbacks.finish_presentation_batch(0);
+        goal_jak2_metal_host_metrics idle = {};
+        check(goal_jak2_metal_host_get_metrics(host, &idle) && idle.drawables_acquired == 0 &&
+                  idle.submissions == 0 && idle.present_only_command_buffers_committed == 0 &&
+                  idle.present_flush_skips == 0 && idle.presentation_batch_cancellations == 0,
+              "finishing an empty batch acquires nothing and counts nothing");
+        for (int i = 0; i < 3; ++i) {
+          const bool final_chain = i == 2;
+          if (batch != Batch::plain) {
+            const bool defer = !final_chain || batch == Batch::all_deferred ||
+                               batch == Batch::cancelled;
+            callbacks.set_presentation_deferred(defer ? 1 : 0);
+          }
+          if (final_chain && batch == Batch::final_miss) {
+            [layer withholdNextDrawable];
+          }
+          send_chain_number(callbacks, i);
+        }
+        goal_jak2_metal_host_get_metrics(host, &out.before_finish);
+        if (batch == Batch::cancelled) {
+          callbacks.finish_presentation_batch(0);
+        } else if (batch != Batch::plain) {
+          callbacks.finish_presentation_batch(1);
+        }
+        out.waited = batch != Batch::final_miss &&
+                     goal_jak2_metal_host_wait_for_last_frame(host, 10.0, 0);
+        out.read = goal_jak2_metal_host_read_last_frame(host, &out.frame);
+        goal_jak2_metal_host_get_metrics(host, &out.metrics);
+        if (batch == Batch::cancelled) {
+          // The cancelled batch leaves nothing stale: the next ordinary finish is a no-op.
+          callbacks.finish_presentation_batch(1);
+          goal_jak2_metal_host_metrics after = {};
+          check(goal_jak2_metal_host_get_metrics(host, &after) &&
+                    after.drawables_acquired == out.metrics.drawables_acquired &&
+                    after.present_only_command_buffers_committed == 0 &&
+                    after.submissions == out.metrics.submissions,
+                "a cancelled batch leaves no stale pending present for the next batch");
+        }
+        goal_jak2_metal_host_destroy(host);
+      }
+      return out;
+    };
+
+    const CoalesceRun plain = run_batch(Batch::plain);
+    const CoalesceRun final_presents = run_batch(Batch::final_presents);
+    const CoalesceRun all_deferred = run_batch(Batch::all_deferred);
+    const CoalesceRun cancelled = run_batch(Batch::cancelled);
+    const CoalesceRun final_miss = run_batch(Batch::final_miss);
+
+    const auto same_render_side_effects = [&](const CoalesceRun& run) {
+      return run.metrics.chains == plain.metrics.chains &&
+             run.metrics.completed_chains == plain.metrics.completed_chains &&
+             run.metrics.sprite_texture_uploads == plain.metrics.sprite_texture_uploads &&
+             run.metrics.texture_uploads == plain.metrics.texture_uploads &&
+             run.metrics.last_buckets_dispatched == plain.metrics.last_buckets_dispatched &&
+             run.metrics.command_buffers_committed == plain.metrics.command_buffers_committed &&
+             run.metrics.command_buffer_errors == 0 && run.read && plain.read &&
+             run.frame.hash == plain.frame.hash && run.frame.byte_count == plain.frame.byte_count;
+    };
+    check(plain.waited && plain.metrics.chains == 3 && plain.metrics.completed_chains == 3 &&
+              plain.metrics.command_buffers_committed == 3 &&
+              plain.metrics.drawables_acquired == 3 && plain.metrics.submissions == 3 &&
+              plain.metrics.presentation_deferrals == 0 &&
+              plain.metrics.present_only_command_buffers_committed == 0 &&
+              goal_jak2_metal_host_metrics_pass_frame_gate(&plain.metrics, 0),
+          "an uncoalesced batch presents every chain exactly as before");
+
+    check(same_render_side_effects(final_presents) && final_presents.waited &&
+              final_presents.metrics.presentation_deferrals == 2 &&
+              final_presents.metrics.drawables_acquired == 1 &&
+              final_presents.metrics.submissions == 1 &&
+              final_presents.metrics.drawable_misses == 0 &&
+              final_presents.metrics.present_flush_drawables_acquired == 0 &&
+              final_presents.metrics.present_only_command_buffers_committed == 0 &&
+              goal_jak2_metal_host_metrics_pass_frame_gate(&final_presents.metrics, 0),
+          "deferred catch-up chains render identically and only the final chain presents");
+
+    check(same_render_side_effects(all_deferred) && all_deferred.waited &&
+              all_deferred.before_finish.drawables_acquired == 0 &&
+              all_deferred.before_finish.submissions == 0 &&
+              all_deferred.metrics.presentation_deferrals == 3 &&
+              all_deferred.metrics.present_flush_drawables_acquired == 1 &&
+              all_deferred.metrics.drawables_acquired == 1 &&
+              all_deferred.metrics.submissions == 1 &&
+              all_deferred.metrics.present_only_command_buffers_committed == 1 &&
+              all_deferred.metrics.present_only_command_buffers_completed == 1 &&
+              all_deferred.metrics.present_only_command_buffer_errors == 0 &&
+              goal_jak2_metal_host_metrics_pass_frame_gate(&all_deferred.metrics, 0),
+          "a batch whose final tick sent no presenting chain flushes the newest frame once, as a "
+          "present-only buffer that is never counted as a chain buffer");
+
+    check(same_render_side_effects(cancelled) &&
+              cancelled.metrics.presentation_deferrals == 3 &&
+              cancelled.metrics.presentation_batch_cancellations == 1 &&
+              cancelled.metrics.drawables_acquired == 0 && cancelled.metrics.submissions == 0 &&
+              cancelled.metrics.drawable_misses == 0 &&
+              cancelled.metrics.present_flush_drawables_acquired == 0 &&
+              cancelled.metrics.present_only_command_buffers_committed == 0,
+          "a cancelled batch keeps every rendered chain but acquires no drawable and submits no "
+          "GPU work");
+
+    check(final_miss.metrics.presentation_deferrals == 2 &&
+              final_miss.metrics.drawable_misses == 1 &&
+              final_miss.metrics.drawables_acquired == 0 &&
+              final_miss.metrics.present_flush_drawables_acquired == 0 &&
+              final_miss.metrics.present_flush_drawable_misses == 0 &&
+              final_miss.metrics.present_only_command_buffers_committed == 0 &&
+              final_miss.metrics.command_buffers_committed == 3,
+          "a final presenting-chain miss clears the pending present; finish makes no second "
+          "drawable request");
   }
   check(metal_texture_live_count() == initial_texture_count,
         "layer-backed recovery released its mutated host texture state");

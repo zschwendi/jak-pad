@@ -166,9 +166,20 @@ struct ChainStats {
   int last_command_buffer_status = 0;
   s64 last_command_buffer_error_code = 0;
   u64 last_buckets_dispatched = 0;
+  // Aggregate drawable outcomes: chain presents plus present-only catch-up flushes.
   u64 drawables_acquired = 0;
   u64 drawable_misses = 0;
   u64 late_present_submissions = 0;
+  // Catch-up coalescing. Deferred chains commit in full (counted in command_buffers_committed) but
+  // request no drawable. Present-only flush buffers are never counted as chain command buffers.
+  u64 presentation_deferrals = 0;
+  u64 present_flush_drawables_acquired = 0;
+  u64 present_flush_drawable_misses = 0;
+  u64 present_flush_skips = 0;
+  u64 presentation_batch_cancellations = 0;
+  u64 present_only_command_buffers_committed = 0;
+  u64 present_only_command_buffers_completed = 0;
+  u64 present_only_command_buffer_errors = 0;
   // End-to-end provenance for the last chain. Live camera qwords are camera-temp[0...3] then
   // trans. Render qwords are camera-temp[0...3], hvdf-off, fog.x, trans, camera-rot[0...3], then
   // perspective[0...3].

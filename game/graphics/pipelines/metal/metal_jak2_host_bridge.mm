@@ -74,6 +74,8 @@ struct goal_jak2_metal_host {
   goal_jak2_metal_host_metrics metrics = {};
   MetalRenderOptions options;
   CAMetalLayer* layer = nil;
+  // Set by set_presentation_deferred inside a catch-up batch; cleared by finish_presentation_batch.
+  bool defer_next_presentation = false;
   std::string error;
   std::string fr3_directory;
   std::string fatal_chain_error;
@@ -457,6 +459,16 @@ void copy_renderer_metrics(goal_jak2_metal_host* host) {
   host->metrics.drawables_acquired = stats.drawables_acquired;
   host->metrics.drawable_misses = stats.drawable_misses;
   host->metrics.late_present_submissions = stats.late_present_submissions;
+  host->metrics.presentation_deferrals = stats.presentation_deferrals;
+  host->metrics.present_flush_drawables_acquired = stats.present_flush_drawables_acquired;
+  host->metrics.present_flush_drawable_misses = stats.present_flush_drawable_misses;
+  host->metrics.present_flush_skips = stats.present_flush_skips;
+  host->metrics.presentation_batch_cancellations = stats.presentation_batch_cancellations;
+  host->metrics.present_only_command_buffers_committed =
+      stats.present_only_command_buffers_committed;
+  host->metrics.present_only_command_buffers_completed =
+      stats.present_only_command_buffers_completed;
+  host->metrics.present_only_command_buffer_errors = stats.present_only_command_buffer_errors;
   host->metrics.draws = stats.draw_calls;
   host->metrics.triangles = stats.triangles;
   host->metrics.last_tie_draws = background.tie_draws;
@@ -2908,6 +2920,7 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
     const bool execute_shadow_bucket195 =
         production_shadow_bucket195 || shadow195_frame_capture_selected;
     auto render_options = host->options;
+    render_options.defer_presentation = host->defer_next_presentation;
     merge_animated_texture_slots(host);
     render_options.animated_texture_slots = host->animated_texture_slots.data();
     render_options.animated_texture_slot_count = host->animated_texture_slots.size();
@@ -3207,6 +3220,19 @@ void send_chain(const void* ee_base, uint32_t chain_offset) {
             host_texture_mutated);
         return;
       }
+    } else if (render_options.defer_presentation) {
+      // Catch-up coalescing: the chain rendered and committed in full, and requested no drawable.
+      const bool exact_deferral = counter_advanced_by(renderer_before.presentation_deferrals,
+                                                      renderer_after.presentation_deferrals, 1);
+      if (host->metrics.unsupported_blends != 0 || !exact_render_attempt ||
+          !exact_presenting_commit_count || !no_drawable_acquisition || !no_drawable_miss ||
+          !no_submission || !exact_deferral || host->metrics.late_present_submissions != 0 ||
+          host->metrics.command_buffer_errors != 0) {
+        record_send_chain_failure(
+            host, "Jak 2 deferred catch-up chain counters violated their gate",
+            host_texture_mutated);
+        return;
+      }
     } else if (!acquired) {
       if (host->metrics.unsupported_blends != 0 || !exact_render_attempt ||
           !exact_presenting_commit_count || !no_drawable_acquisition ||
@@ -3343,6 +3369,43 @@ void set_levels(const char* const* names, int count) {
 }
 void set_active_levels(const char* const*, int) {}
 
+void set_presentation_deferred(int deferred) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  if (auto* host = active_host()) {
+    host->defer_next_presentation = deferred != 0;
+  }
+}
+
+// Ends a catch-up batch. allow_present != 0 presents the newest deferred chain, if the last chain
+// was deferred. allow_present == 0 (cancelled batch) only discards the flag and pending state: no
+// drawable, command buffer, or GPU work. Never throws across the C boundary.
+void finish_presentation_batch(int allow_present) {
+  std::lock_guard<std::mutex> lock(g_host_mutex);
+  auto* host = active_host();
+  if (!host) {
+    return;
+  }
+  host->defer_next_presentation = false;
+  if (!allow_present) {
+    host->renderer.cancel_pending_presentation();
+    copy_renderer_metrics(host);
+    return;
+  }
+  try {
+    host->renderer.present_latest(host->layer);
+    copy_renderer_metrics(host);
+  } catch (const std::exception& error) {
+    host->renderer.cancel_pending_presentation();
+    copy_renderer_metrics(host);
+    record_failure(
+        host, (std::string("Jak 2 catch-up presentation threw: ") + error.what()).c_str());
+  } catch (...) {
+    host->renderer.cancel_pending_presentation();
+    copy_renderer_metrics(host);
+    record_failure(host, "Jak 2 catch-up presentation threw an unknown exception");
+  }
+}
+
 void set_pmode_alpha(float alpha) {
   std::lock_guard<std::mutex> lock(g_host_mutex);
   if (auto* host = active_host()) {
@@ -3412,6 +3475,8 @@ goal_jak2_metal_host* create_host(CAMetalLayer* layer, bool presenting) {
   host->callbacks.set_levels = set_levels;
   host->callbacks.set_pmode_alp = set_pmode_alpha;
   host->callbacks.set_active_levels = set_active_levels;
+  host->callbacks.set_presentation_deferred = set_presentation_deferred;
+  host->callbacks.finish_presentation_batch = finish_presentation_batch;
   g_active_host = host;
   return host;
 }
@@ -3782,8 +3847,15 @@ int goal_jak2_metal_host_metrics_pass_frame_gate(const goal_jak2_metal_host_metr
          metrics->ocean_command_buffers_committed ==
              metrics->ocean_command_buffers_completed &&
          metrics->ocean_command_buffer_errors == 0 &&
-         metrics->drawables_acquired == metrics->chains &&
-         metrics->drawable_misses == 0 && metrics->submissions == metrics->chains &&
+         metrics->presentation_deferrals <= metrics->chains &&
+         metrics->drawables_acquired == metrics->chains - metrics->presentation_deferrals +
+                                            metrics->present_flush_drawables_acquired &&
+         metrics->drawable_misses == 0 && metrics->submissions == metrics->drawables_acquired &&
+         metrics->present_only_command_buffers_committed ==
+             metrics->present_flush_drawables_acquired &&
+         metrics->present_only_command_buffers_completed ==
+             metrics->present_only_command_buffers_committed &&
+         metrics->present_only_command_buffer_errors == 0 &&
          metrics->late_present_submissions == 0 && metrics->unsupported_blends == 0 &&
          (!require_presentation || presentation_exact);
 }
@@ -3884,6 +3956,9 @@ void goal_jak2_metal_host_destroy(goal_jak2_metal_host* host) {
   }
   host->inactive = true;
   g_active_host = nullptr;
+  // A pending catch-up present is discarded, never presented, during teardown.
+  host->defer_next_presentation = false;
+  host->renderer.cancel_pending_presentation();
   for (auto key = host->loaded_level_keys.rbegin(); key != host->loaded_level_keys.rend(); ++key) {
     metal_merc_models().remove_level(*key);
     metal_level_data::unload(host->textures, *key);

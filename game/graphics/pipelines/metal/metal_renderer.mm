@@ -58,6 +58,9 @@ struct MetalPresentationState {
   u64 last_chain_ordinal = 0;
   u64 command_buffers_completed = 0;
   u64 command_buffer_errors = 0;
+  // Present-only catch-up flush buffers, kept apart from chain command buffers.
+  u64 present_only_command_buffers_completed = 0;
+  u64 present_only_command_buffer_errors = 0;
   std::array<u64, kMetalOrdinaryFrameResourceSlotCount> ordinary_stream_submissions_completed = {};
   MetalMonotonicSubmissionCompletion external_stream_completion;
   int last_command_buffer_status = 0;
@@ -200,19 +203,73 @@ std::optional<std::string> jak2_generic2_bucket_name(std::size_t bucket_id) {
   }
 }
 
+metal_renderer::PresentSnapshot present_snapshot(const MetalRenderOptions& opts) {
+  metal_renderer::PresentSnapshot out;
+  out.game_res_w = opts.game_res_w;
+  out.game_res_h = opts.game_res_h;
+  out.draw_region_w = opts.draw_region_w;
+  out.draw_region_h = opts.draw_region_h;
+  out.pmode_alp = opts.pmode_alp;
+  out.brightness_contrast_color = opts.brightness_contrast_color;
+  out.brightness_contrast_alpha = opts.brightness_contrast_alpha;
+  out.min_present_duration = opts.min_present_duration;
+  out.presentation_time = opts.presentation_time;
+  return out;
+}
+
 void schedule_present(id<MTLCommandBuffer> cmds,
                       id<CAMetalDrawable> drawable,
-                      const MetalRenderOptions& opts) {
-  if (opts.presentation_time > 0.0) {
-    [cmds presentDrawable:drawable atTime:opts.presentation_time];
+                      const metal_renderer::PresentSnapshot& present) {
+  if (present.presentation_time > 0.0) {
+    [cmds presentDrawable:drawable atTime:present.presentation_time];
 #if !TARGET_OS_SIMULATOR
-  } else if (opts.min_present_duration > 0.0) {
-    [cmds presentDrawable:drawable afterMinimumDuration:opts.min_present_duration];
+  } else if (present.min_present_duration > 0.0) {
+    [cmds presentDrawable:drawable afterMinimumDuration:present.min_present_duration];
 #endif
   } else {
     [cmds presentDrawable:drawable];
   }
 }
+
+void schedule_present(id<MTLCommandBuffer> cmds,
+                      id<CAMetalDrawable> drawable,
+                      const MetalRenderOptions& opts) {
+  schedule_present(cmds, drawable, present_snapshot(opts));
+}
+
+#if !TARGET_OS_SIMULATOR
+// Presentation-order proof telemetry for one submitted drawable. Shared by chain presents and
+// present-only catch-up flushes so both enter the same ordered submission history.
+void attach_presentation_trace(id<CAMetalDrawable> drawable,
+                               const std::shared_ptr<MetalPresentationState>& state,
+                               u64 submission_id,
+                               u64 engine_frame_id,
+                               u64 host_tick_id,
+                               u64 chain_ordinal) {
+  const auto presentation_state = state;
+  [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
+    const double presented_time = presented.presentedTime;
+    const u64 presented_drawable_id = static_cast<u64>(presented.drawableID);
+    std::lock_guard<std::mutex> lock(presentation_state->mutex);
+    if (!presentation_state->order.observe(submission_id, presented_time)) {
+      if (!presentation_state->mismatch_reported) {
+        presentation_state->mismatch_reported = true;
+        lg::error(
+            "Metal presentation order mismatch: submission {} drawable {} at {:.6f} "
+            "disagrees with retained successful presentation history",
+            submission_id, presented_drawable_id, presented_time);
+      }
+    }
+    if (presented_time > 0.0 && presentation_state->order.last_submission_id() == submission_id) {
+      presentation_state->last_drawable_id = presented_drawable_id;
+      presentation_state->last_engine_frame_id = engine_frame_id;
+      presentation_state->last_host_tick_id = host_tick_id;
+      presentation_state->last_chain_ordinal = chain_ordinal;
+    }
+    presentation_state->presentation_cv.notify_all();
+  }];
+}
+#endif
 
 id<MTLTexture> make_color_target(id<MTLDevice> device, int w, int h, bool sampled) {
   auto* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:kColorFormat
@@ -1055,10 +1112,17 @@ void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
                                         id<MTLTexture> target,
                                         const MetalRenderOptions& opts,
                                         id<MTLTexture> source) {
+  encode_present_pass(cmds, target, present_snapshot(opts), source);
+}
+
+void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
+                                        id<MTLTexture> target,
+                                        const metal_renderer::PresentSnapshot& present,
+                                        id<MTLTexture> source) {
   int target_w = (int)target.width;
   int target_h = (int)target.height;
-  int region_w = opts.draw_region_w;
-  int region_h = opts.draw_region_h;
+  int region_w = present.draw_region_w;
+  int region_h = present.draw_region_h;
   if (region_w <= 0 || region_h <= 0) {
     // trying to draw to 0 size region (same fallback as the GL renderer)
     region_w = 320;
@@ -1085,12 +1149,12 @@ void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
   present_key.color_format = (u32)target.pixelFormat;
   [enc setRenderPipelineState:m_pso_cache.get_pipeline(present_key)];
   PresentParams params =
-      make_present_params(opts.brightness_contrast_color, opts.brightness_contrast_alpha);
+      make_present_params(present.brightness_contrast_color, present.brightness_contrast_alpha);
   [enc setFragmentBytes:&params length:sizeof(params) atIndex:0];
   [enc setFragmentTexture:source atIndex:0];
   [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
 
-  if (opts.pmode_alp < 1.f) {
+  if (present.pmode_alp < 1.f) {
     // blackout: alpha-blended black quad over the draw region
     // (OpenGLRenderer::do_pcrtc_effects / BlackoutRenderer)
     MetalPsoKey blackout_key;
@@ -1104,7 +1168,7 @@ void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
     [enc setRenderPipelineState:m_pso_cache.get_pipeline(blackout_key)];
 
     std::vector<ScaffoldVertex> quad;
-    add_quad(quad, -1.f, -1.f, 1.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f - opts.pmode_alp, 0.f);
+    add_quad(quad, -1.f, -1.f, 1.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f - present.pmode_alp, 0.f);
     [enc setVertexBytes:quad.data() length:quad.size() * sizeof(ScaffoldVertex) atIndex:0];
     [enc setFragmentTexture:m_checker_texture atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
@@ -1114,6 +1178,8 @@ void MetalRenderer::encode_present_pass(id<MTLCommandBuffer> cmds,
 
 void MetalRenderer::render_frame(const MetalRenderOptions& opts, CAMetalLayer* layer) {
   @autoreleasepool {
+    // This path presents its own target; a pending catch-up present would be stale after it.
+    m_present_coalescer.reset();
     id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
 
     const bool jak2_fallback = m_shared_state.version == GameVersion::Jak2;
@@ -1880,7 +1946,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
     }
 #endif
 
-    id<CAMetalDrawable> drawable = layer ? [layer nextDrawable] : nil;
+    // A deferred catch-up chain keeps its layer, so the commit and stream-ring paths below are
+    // unchanged; only the drawable request and present are skipped.
+    const bool defer_present = ordinary_drawable_frame && opts.defer_presentation;
+    id<CAMetalDrawable> drawable = layer && !defer_present ? [layer nextDrawable] : nil;
     if (drawable) {
       drawable_acquired = true;
       m_chain_stats.drawables_acquired++;
@@ -1907,35 +1976,13 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
       // This callback feeds presentation proof telemetry only. Command completion below owns
       // submission errors and stream reuse regardless of the detailed-stats setting.
       if (trace_presentation) {
-        const u64 engine_frame_id = opts.engine_frame_id;
-        const u64 host_tick_id = opts.host_tick_id;
-        const u64 chain_ordinal = opts.chain_ordinal;
-        const auto presentation_state = m_presentation_state;
-        [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
-          const double presented_time = presented.presentedTime;
-          const u64 presented_drawable_id = static_cast<u64>(presented.drawableID);
-          std::lock_guard<std::mutex> lock(presentation_state->mutex);
-          if (!presentation_state->order.observe(submission_id, presented_time)) {
-            if (!presentation_state->mismatch_reported) {
-              presentation_state->mismatch_reported = true;
-              lg::error(
-                  "Metal presentation order mismatch: submission {} drawable {} at {:.6f} "
-                  "disagrees with retained successful presentation history",
-                  submission_id, presented_drawable_id, presented_time);
-            }
-          }
-          if (presented_time > 0.0 &&
-              presentation_state->order.last_submission_id() == submission_id) {
-            presentation_state->last_drawable_id = presented_drawable_id;
-            presentation_state->last_engine_frame_id = engine_frame_id;
-            presentation_state->last_host_tick_id = host_tick_id;
-            presentation_state->last_chain_ordinal = chain_ordinal;
-          }
-          presentation_state->presentation_cv.notify_all();
-        }];
+        attach_presentation_trace(drawable, m_presentation_state, submission_id,
+                                  opts.engine_frame_id, opts.host_tick_id, opts.chain_ordinal);
       }
 #endif
       schedule_present(cmds, drawable, opts);
+    } else if (defer_present) {
+      m_chain_stats.presentation_deferrals++;
     } else if (layer) {
       m_chain_stats.drawable_misses++;
     }
@@ -2010,6 +2057,10 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
         m_external_target_history.emplace(view_id, std::move(history));
       } else if (!external_target) {
         m_game_target_fresh = false;
+      }
+      if (ordinary_drawable_frame) {
+        // Any non-deferred chain, acquired or missed, clears a pending deferred present.
+        m_present_coalescer.on_chain_committed(defer_present, present_snapshot(opts));
       }
       m_chain_stats.command_buffers_committed++;
       {
@@ -2648,6 +2699,86 @@ bool MetalRenderer::render_chain_frame_impl(const MetalRenderOptions& opts,
   return external_target || drawable_acquired;
 }
 
+bool MetalRenderer::present_latest(CAMetalLayer* layer) {
+  metal_renderer::PresentSnapshot present;
+  const int color_w = m_game_color ? (int)m_game_color.width : 0;
+  const int color_h = m_game_color ? (int)m_game_color.height : 0;
+  const auto action = m_present_coalescer.take_flush(color_w, color_h, &present);
+  if (action == metal_renderer::PresentFlushAction::None) {
+    return false;
+  }
+  if (action == metal_renderer::PresentFlushAction::Skip || !layer || !m_game_color ||
+      !m_presentation_state) {
+    m_chain_stats.present_flush_skips++;
+    return false;
+  }
+  @autoreleasepool {
+    id<MTLCommandBuffer> cmds = [m_queue commandBuffer];
+    if (!cmds) {
+      m_chain_stats.present_flush_skips++;
+      return false;
+    }
+    // One drawable request only: a miss here is recorded, never retried.
+    id<CAMetalDrawable> drawable = [layer nextDrawable];
+    if (!drawable) {
+      m_chain_stats.drawable_misses++;
+      m_chain_stats.present_flush_drawable_misses++;
+      return false;
+    }
+    m_chain_stats.drawables_acquired++;
+    m_chain_stats.present_flush_drawables_acquired++;
+    // Same encoder and same source as the inline chain present: the current game target, which the
+    // last committed chain finished writing earlier on this queue.
+    encode_present_pass(cmds, drawable.texture, present, m_game_color);
+    if (present.presentation_time > 0.0 && present.presentation_time <= CACurrentMediaTime()) {
+      m_chain_stats.late_present_submissions++;
+    }
+    const u64 submission_id = ++m_submission_count;
+#if TARGET_OS_SIMULATOR
+    const u64 drawable_id = 0;
+#else
+    const bool trace_presentation =
+        metal_camera_trace::should_attach_presentation_handler(m_detailed_frame_stats_enabled);
+    const u64 drawable_id = trace_presentation ? static_cast<u64>(drawable.drawableID) : 0;
+#endif
+    m_chain_stats.submissions = submission_id;
+    m_chain_stats.last_submission_id = submission_id;
+    m_chain_stats.last_drawable_id = drawable_id;
+    m_chain_stats.last_requested_presentation_time = present.presentation_time;
+#if !TARGET_OS_SIMULATOR
+    if (trace_presentation) {
+      attach_presentation_trace(drawable, m_presentation_state, submission_id,
+                                m_chain_stats.last_engine_frame_id,
+                                m_chain_stats.last_host_tick_id, m_chain_stats.last_chain_ordinal);
+    }
+#endif
+    schedule_present(cmds, drawable, present);
+    // Present-only completion is tracked apart from chain command buffers; it never touches the
+    // stream ring and is waited for by wait_for_last_chain_frame.
+    const auto completion_state = m_presentation_state;
+    [cmds addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+      const MTLCommandBufferStatus status = completed.status;
+      const s64 error_code = completed.error ? completed.error.code : 0;
+      {
+        std::lock_guard<std::mutex> lock(completion_state->mutex);
+        if (status == MTLCommandBufferStatusCompleted) {
+          completion_state->present_only_command_buffers_completed++;
+        } else {
+          completion_state->present_only_command_buffer_errors++;
+        }
+      }
+      if (status != MTLCommandBufferStatusCompleted) {
+        lg::error("Metal present-only command buffer failed with status {} and error code {}",
+                  static_cast<int>(status), error_code);
+      }
+      completion_state->command_buffer_cv.notify_all();
+    }];
+    [cmds commit];
+    m_chain_stats.present_only_command_buffers_committed++;
+  }
+  return true;
+}
+
 bool MetalRenderer::wait_for_last_chain_frame(double timeout_seconds) {
   if (!m_presentation_state || timeout_seconds <= 0.0) {
     return false;
@@ -2656,14 +2787,19 @@ bool MetalRenderer::wait_for_last_chain_frame(double timeout_seconds) {
   if (expected_completions == 0) {
     return false;
   }
+  const u64 expected_present_only = m_chain_stats.present_only_command_buffers_committed;
   std::unique_lock<std::mutex> lock(m_presentation_state->mutex);
   const bool finished = m_presentation_state->command_buffer_cv.wait_for(
       lock, std::chrono::duration<double>(timeout_seconds), [&] {
         return m_presentation_state->command_buffers_completed +
-                   m_presentation_state->command_buffer_errors >=
-               expected_completions;
+                       m_presentation_state->command_buffer_errors >=
+                   expected_completions &&
+               m_presentation_state->present_only_command_buffers_completed +
+                       m_presentation_state->present_only_command_buffer_errors >=
+                   expected_present_only;
       });
-  return finished && m_presentation_state->command_buffer_errors == 0;
+  return finished && m_presentation_state->command_buffer_errors == 0 &&
+         m_presentation_state->present_only_command_buffer_errors == 0;
 }
 
 bool MetalRenderer::wait_for_last_presentation(double timeout_seconds) {
@@ -2689,6 +2825,10 @@ metal_renderer::ChainStats MetalRenderer::chain_stats() {
     std::lock_guard<std::mutex> lock(m_presentation_state->mutex);
     out.command_buffers_completed = m_presentation_state->command_buffers_completed;
     out.command_buffer_errors = m_presentation_state->command_buffer_errors;
+    out.present_only_command_buffers_completed =
+        m_presentation_state->present_only_command_buffers_completed;
+    out.present_only_command_buffer_errors =
+        m_presentation_state->present_only_command_buffer_errors;
     out.last_command_buffer_status = m_presentation_state->last_command_buffer_status;
     out.last_command_buffer_error_code =
         m_presentation_state->last_command_buffer_error_code;

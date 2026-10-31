@@ -27,6 +27,7 @@
 #include "game/graphics/pipelines/metal/metal_external_submission_gate.h"
 #include "game/graphics/pipelines/metal/metal_level_data.h"
 #include "game/graphics/pipelines/metal/metal_pipeline.h"
+#include "game/graphics/pipelines/metal/metal_present_coalescer.h"
 #include "game/graphics/pipelines/metal/metal_pso_cache.h"
 #include "game/graphics/pipelines/metal/metal_stereo_eye_marker.h"
 #include "game/graphics/pipelines/metal/metal_texture.h"
@@ -76,6 +77,9 @@ struct MetalRenderOptions {
   // Absolute Core Animation host time for this drawable. When nonzero this takes precedence over
   // min_present_duration, so a CADisplayLink-driven host can use the link as its only clock.
   double presentation_time = 0.0;
+  // Jak II catch-up coalescing: render and commit this chain in full, but request no drawable and
+  // present nothing. present_latest() later presents the newest such chain.
+  bool defer_presentation = false;
 
   // Diagnostic identity supplied by the host at the synchronous DMA-send seam. These fields do
   // not affect rendering or presentation.
@@ -194,7 +198,23 @@ class MetalRenderer {
   // ordinary presentation path. The submitted command buffer retains its old stream pages.
   void prepare_external_stereo_fallback();
 
-  // Waits for the most recently committed chain frame's completion handler, with a timeout.
+  // Presents the newest committed chain when the last layer-backed chain was deferred. Otherwise,
+  // and when nothing is pending, it creates no command buffer and requests no drawable. Makes at most
+  // one nextDrawable call. Returns true only when a present-only command buffer was committed.
+  bool present_latest(CAMetalLayer* layer);
+  // Drops a pending deferred present without presenting or touching the GPU (cancelled batch,
+  // detach, destroy). Returns whether a present was pending.
+  bool cancel_pending_presentation() {
+    const bool had_pending = m_present_coalescer.has_pending();
+    m_present_coalescer.reset();
+    if (had_pending) {
+      m_chain_stats.presentation_batch_cancellations++;
+    }
+    return had_pending;
+  }
+
+  // Waits for the most recently committed chain frame's completion handler, and every committed
+  // present-only flush buffer, with a timeout.
   bool wait_for_last_chain_frame(double timeout_seconds);
 
   // Physical-device gate: waits for the most recently submitted drawable callback.
@@ -255,6 +275,10 @@ class MetalRenderer {
   void encode_present_pass(id<MTLCommandBuffer> cmds,
                            id<MTLTexture> target,
                            const MetalRenderOptions& opts,
+                           id<MTLTexture> source);
+  void encode_present_pass(id<MTLCommandBuffer> cmds,
+                           id<MTLTexture> target,
+                           const metal_renderer::PresentSnapshot& present,
                            id<MTLTexture> source);
   void build_validation_scene();
   bool read_color_target(id<MTLTexture> tex, metal_renderer::FramePixels* out);
@@ -330,6 +354,7 @@ class MetalRenderer {
   bool m_reported_camera_mismatch = false;
   std::shared_ptr<MetalPresentationState> m_presentation_state;
   u64 m_submission_count = 0;
+  metal_renderer::PresentCoalescer m_present_coalescer;
   bool m_game_target_fresh = true;
   std::unordered_map<u64, std::unique_ptr<ExternalTargetHistory>> m_external_target_history;
 };

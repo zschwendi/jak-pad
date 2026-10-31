@@ -585,6 +585,16 @@ typedef struct goal_jak2_metal_host_metrics {
   uint32_t last_eye_diagnostic_lid_source_width;
   uint32_t last_eye_diagnostic_lid_source_height;
   uint32_t last_eye_diagnostic_lid_source_corners[4];
+  /* Catch-up presentation coalescing. drawables_acquired, drawable_misses, and submissions above
+   * include present-only flush outcomes; command_buffers_* above remain chain buffers only. */
+  uint64_t presentation_deferrals;
+  uint64_t present_flush_drawables_acquired;
+  uint64_t present_flush_drawable_misses;
+  uint64_t present_flush_skips;
+  uint64_t presentation_batch_cancellations;
+  uint64_t present_only_command_buffers_committed;
+  uint64_t present_only_command_buffers_completed;
+  uint64_t present_only_command_buffer_errors;
 } goal_jak2_metal_host_metrics;
 
 typedef struct goal_jak2_metal_frame_summary {
