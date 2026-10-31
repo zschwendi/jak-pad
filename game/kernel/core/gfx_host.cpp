@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "common/goal_constants.h"
+#include "common/log/log.h"
 #include "common/util/Assert.h"
 
 #include "game/kernel/common/Ptr.h"
@@ -262,6 +263,28 @@ goal_kernel_core_status goal_gfx_host_install(const goal_gfx_host* host) {
   goal_game_make_function_symbol("gs-store-image", (void*)nothing_to_do);
 
   return GOAL_KERNEL_CORE_OK;
+}
+
+void goal_gfx_host_set_presentation_deferred(int deferred) noexcept {
+  if (!g_host.set_presentation_deferred) {
+    return;
+  }
+  try {
+    g_host.set_presentation_deferred(deferred);
+  } catch (...) {
+    lg::error("[gfx-host] set_presentation_deferred({}) threw", deferred);
+  }
+}
+
+void goal_gfx_host_finish_presentation_batch(int allow_present) noexcept {
+  if (!g_host.finish_presentation_batch) {
+    return;
+  }
+  try {
+    g_host.finish_presentation_batch(allow_present);
+  } catch (...) {
+    lg::error("[gfx-host] finish_presentation_batch({}) threw", allow_present);
+  }
 }
 
 void goal_gfx_host_stats_get(goal_gfx_host_stats* out) {

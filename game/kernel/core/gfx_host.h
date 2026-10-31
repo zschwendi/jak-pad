@@ -64,6 +64,14 @@ typedef struct goal_gfx_host {
    *  lifetime as `set_levels`. Jak 1 never calls this entry. Appended to preserve existing member
    *  offsets. */
   void (*set_active_levels)(const char* const* names, int count);
+
+  /*! Catch-up presentation coalescing. Nonzero: the following chains render and commit fully but
+   *  do not acquire or present a drawable. Optional; NULL keeps every chain presenting. */
+  void (*set_presentation_deferred)(int deferred);
+  /*! Ends a deferred batch and clears the deferral. Nonzero `allow_present` presents the newest
+   *  committed frame if the last chain was deferred; zero only discards that pending present and
+   *  must do no drawable or GPU work. Optional. */
+  void (*finish_presentation_batch)(int allow_present);
 } goal_gfx_host;
 
 /*!
@@ -78,6 +86,18 @@ typedef struct goal_gfx_host {
  * first frame. Passing NULL puts every one of them back on the stub path.
  */
 goal_kernel_core_status goal_gfx_host_install(const goal_gfx_host* host);
+
+#ifdef __cplusplus
+#define GOAL_GFX_HOST_NOEXCEPT noexcept
+#else
+#define GOAL_GFX_HOST_NOEXCEPT
+#endif
+
+/*! Forward to the installed host's optional presentation hooks. Without a hook these do nothing,
+ *  and an exception from a hook is logged rather than propagated, so both are safe to call while
+ *  unwinding. */
+void goal_gfx_host_set_presentation_deferred(int deferred) GOAL_GFX_HOST_NOEXCEPT;
+void goal_gfx_host_finish_presentation_batch(int allow_present) GOAL_GFX_HOST_NOEXCEPT;
 
 /*! What the seam was asked for, so a run can report it instead of assuming it. */
 typedef struct goal_gfx_host_stats {
