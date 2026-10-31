@@ -995,6 +995,88 @@ bool retail_catalog_selection_is_exact_and_cancellable() {
   return true;
 }
 
+fs::path repository_root() {
+  return fs::path(__FILE__).parent_path().parent_path().parent_path();
+}
+
+fs::path stage_checked_project_resources(const fs::path& destination) {
+  for (const auto& relative : composer::internal::checked_project_resource_paths()) {
+    fs::create_directories((destination / relative).parent_path());
+    fs::copy_file(repository_root() / relative, destination / relative);
+  }
+  return destination;
+}
+
+std::set<std::string> packaging_manifest_paths() {
+  std::ifstream manifest(repository_root() / "decompiler/config/jak2/fr3-project-resources.sha256");
+  std::set<std::string> paths;
+  std::string line;
+  while (std::getline(manifest, line)) {
+    if (line.empty() || line.front() == '#') {
+      continue;
+    }
+    const auto separator = line.find("  ");
+    if (separator != std::string::npos) {
+      paths.insert(line.substr(separator + 2));
+    }
+  }
+  return paths;
+}
+
+bool checked_project_resource_pins_match_repository_files() {
+  std::set<std::string> pinned;
+  for (const auto& relative : composer::internal::checked_project_resource_paths()) {
+    pinned.insert(relative.generic_string());
+  }
+  CHECK(pinned.size() == 29);
+  CHECK(pinned == packaging_manifest_paths());
+
+  TemporaryRoot temporary;
+  const auto resources = stage_checked_project_resources(temporary.root / "resources");
+  const auto error = composer::internal::validate_checked_project_resources(resources);
+  if (error) {
+    std::cerr << "pinned project resources drifted from repository files: " << error->message
+              << '\n';
+  }
+  CHECK(!error);
+  return true;
+}
+
+bool corrupted_project_resources_are_rejected() {
+  TemporaryRoot temporary;
+  const auto resources = stage_checked_project_resources(temporary.root / "resources");
+  const auto target = resources / "decompiler/config/jak2/all-types.gc";
+  const auto original = fs::file_size(target);
+
+  {
+    std::fstream file(target, std::ios::binary | std::ios::in | std::ios::out);
+    char byte = 0;
+    file.read(&byte, 1);
+    file.seekp(0);
+    byte = static_cast<char>(byte ^ 0x01);
+    file.write(&byte, 1);
+  }
+  CHECK(fs::file_size(target) == original);
+  auto error = composer::internal::validate_checked_project_resources(resources);
+  CHECK(error && error->code == composer::ErrorCode::project_resources_failed);
+  CHECK(error->message ==
+        "A checked project resource has drifted: decompiler/config/jak2/all-types.gc");
+
+  {
+    std::ofstream file(target, std::ios::binary | std::ios::app);
+    file.put('\n');
+  }
+  error = composer::internal::validate_checked_project_resources(resources);
+  CHECK(error && error->code == composer::ErrorCode::project_resources_failed);
+  CHECK(error->message == "A checked project resource has an unexpected size.");
+
+  fs::remove(target);
+  error = composer::internal::validate_checked_project_resources(resources);
+  CHECK(error && error->code == composer::ErrorCode::project_resources_failed);
+  CHECK(error->message == "The project-resource bundle does not match its exact 29-file closure.");
+  return true;
+}
+
 bool optional_real_import_oracle() {
   constexpr std::array variables = {
       "OPENGOAL_JAK2_IMPORT_TEST_ISO",
@@ -1074,6 +1156,8 @@ int main() {
       checked_graph_contains_the_iso_launch_contract,
       retail_catalog_progress_is_truthful_and_bounded,
       retail_catalog_selection_is_exact_and_cancellable,
+      checked_project_resource_pins_match_repository_files,
+      corrupted_project_resources_are_rejected,
       optional_real_import_oracle,
   };
   for (const auto test : tests) {

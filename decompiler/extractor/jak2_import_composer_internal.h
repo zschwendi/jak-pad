@@ -83,4 +83,8 @@ Result<Summary> compose_in_fresh_candidate(const std::filesystem::path& candidat
                                            const std::optional<Summary>* produced_summary,
                                            const std::optional<FinalContract>* produced_contract);
 
+std::vector<std::filesystem::path> checked_project_resource_paths();
+std::optional<Error> validate_checked_project_resources(const std::filesystem::path& root,
+                                                        const Options& options = {});
+
 }  // namespace jak2_import_composer::internal

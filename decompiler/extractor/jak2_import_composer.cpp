@@ -74,8 +74,8 @@ struct ProjectResource {
 };
 
 constexpr std::array<ProjectResource, 29> kProjectResources = {{
-    {"decompiler/config/jak2/all-types.gc", 2139642, 0xf1c9cc80ffeaacbeull},
-    {"decompiler/config/jak2/jak2_config.jsonc", 6990, 0xecc26e8aea74739bull},
+    {"decompiler/config/jak2/all-types.gc", 2139657, 0x12e350e408c2562cull},
+    {"decompiler/config/jak2/jak2_config.jsonc", 7142, 0x9d8675629607ba42ull},
     {"decompiler/config/jak2/ntsc_v1/anonymous_function_types.jsonc", 74737,
      0x095ac93fd8222a52ull},
     {"decompiler/config/jak2/ntsc_v1/art-group-info.min.json", 159832,
@@ -95,10 +95,10 @@ constexpr std::array<ProjectResource, 29> kProjectResources = {{
      0xf9b6f9fda9ecd31full},
     {"decompiler/config/jak2/ntsc_v1/tex-info.min.json", 1192038,
      0x6d2836f7d424886aull},
-    {"decompiler/config/jak2/ntsc_v1/type_casts.jsonc", 360255,
-     0x20f5980bc47c3aaeull},
-    {"decompiler/config/jak2/ntsc_v1/var_names.jsonc", 116280,
-     0x4ecfcd34d8a160d0ull},
+    {"decompiler/config/jak2/ntsc_v1/type_casts.jsonc", 360488,
+     0x2da05d30977fc4a5ull},
+    {"decompiler/config/jak2/ntsc_v1/var_names.jsonc", 116414,
+     0x68d5cb33b2662288ull},
     {"game/assets/fonts/jak2_jak3_korean_db.json", 474061, 0xe505eaa129be8496ull},
     {"game/assets/jak2/game_subtitle.gp", 7390, 0x3ce05a2fde3f4212ull},
     {"game/assets/jak2/game_text.gp", 2780, 0xa2e69ffc238c08d1ull},
@@ -2265,6 +2265,19 @@ Result<Summary> compose_in_fresh_candidate(const fs::path& candidate_root,
     return Result<Summary>::failure(candidate_created ? preserve_error(std::move(error), paths)
                                                       : std::move(error));
   }
+}
+
+std::vector<fs::path> checked_project_resource_paths() {
+  std::vector<fs::path> paths;
+  for (const auto& resource : kProjectResources) {
+    paths.emplace_back(resource.relative_path);
+  }
+  return paths;
+}
+
+std::optional<Error> validate_checked_project_resources(const fs::path& root,
+                                                        const Options& options) {
+  return validate_project_resources(root, options);
 }
 
 }  // namespace internal
