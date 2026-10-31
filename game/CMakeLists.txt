@@ -508,6 +508,10 @@ if(GOAL_HOST_TESTS_ENABLED)
     add_executable(metal-chain-handoff-state-test
             graphics/pipelines/metal/metal_chain_handoff_state_test.cpp)
     add_test(NAME metal-chain-handoff-state-test COMMAND metal-chain-handoff-state-test)
+
+    add_executable(metal-present-coalescer-test
+            graphics/pipelines/metal/metal_present_coalescer_test.cpp)
+    add_test(NAME metal-present-coalescer-test COMMAND metal-present-coalescer-test)
 endif()
 
 # The portable kernel core is built the same way here as it is for iOS, so that host runs keep the
@@ -628,6 +632,14 @@ if(ARM64_ARCH OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
         add_executable(jak2-gfx-host-test kernel/core/jak2_gfx_host_test.cpp)
         target_link_libraries(jak2-gfx-host-test jak2-kernel-core)
         add_test(NAME jak2-gfx-host-test COMMAND jak2-gfx-host-test)
+
+        add_executable(jak2-gfx-host-presentation-test kernel/core/gfx_host_presentation_test.cpp)
+        target_link_libraries(jak2-gfx-host-presentation-test jak2-kernel-core)
+        add_test(NAME jak2-gfx-host-presentation-test COMMAND jak2-gfx-host-presentation-test)
+
+        add_executable(jak2-presentation-batch-test kernel/core/jak2_presentation_batch_test.cpp)
+        target_link_libraries(jak2-presentation-batch-test jak2-kernel-core)
+        add_test(NAME jak2-presentation-batch-test COMMAND jak2-presentation-batch-test)
 
         add_executable(jak2-display-tick-coordinator-test
                 kernel/core/jak2_display_tick_coordinator_test.cpp)
