@@ -3029,12 +3029,16 @@ int main() {
       bool waited = false;
       bool read = false;
     };
+    // Chain 0 publishes a host texture upload, chain 1 is empty, and chain 2 draws the existing
+    // deterministic green SCREEN_FILTER Direct triangle, so the newest frame has visible content.
     const auto send_chain_number = [](const goal_gfx_host& callbacks, int index) {
-      if (index == 1) {
-        make_empty_chain();
-      } else {
+      if (index == 0) {
         write_texture_page();
         make_sprite_texture_upload_chain();
+      } else if (index == 1) {
+        make_empty_chain();
+      } else {
+        make_screen_filter_chain();
       }
       callbacks.send_chain(g_ee_main_mem, kChainOffset);
     };
@@ -3106,9 +3110,21 @@ int main() {
              run.metrics.texture_uploads == plain.metrics.texture_uploads &&
              run.metrics.last_buckets_dispatched == plain.metrics.last_buckets_dispatched &&
              run.metrics.command_buffers_committed == plain.metrics.command_buffers_committed &&
-             run.metrics.command_buffer_errors == 0 && run.read && plain.read &&
+             run.metrics.command_buffer_errors == 0 &&
+             run.metrics.last_screen_filter_draws == 1 &&
+             run.metrics.last_screen_filter_triangles == 1 && run.read && plain.read &&
+             run.frame.width == plain.frame.width && run.frame.height == plain.frame.height &&
+             run.frame.non_black_pixels == plain.frame.non_black_pixels &&
              run.frame.hash == plain.frame.hash && run.frame.byte_count == plain.frame.byte_count;
     };
+    // Parity must compare visible content, not two cleared frames: the plain run's newest frame
+    // holds the drawn triangle and also keeps black (cleared) pixels outside it.
+    check(plain.read && plain.metrics.sprite_texture_uploads == 1 &&
+              plain.metrics.last_screen_filter_draws == 1 && plain.frame.byte_count > 0 &&
+              plain.frame.non_black_pixels > 0 &&
+              plain.frame.non_black_pixels <
+                  static_cast<u64>(plain.frame.width) * plain.frame.height,
+          "the parity fixture's newest frame contains the drawn triangle over a cleared target");
     check(plain.waited && plain.metrics.chains == 3 && plain.metrics.completed_chains == 3 &&
               plain.metrics.command_buffers_committed == 3 &&
               plain.metrics.drawables_acquired == 3 && plain.metrics.submissions == 3 &&
@@ -3148,8 +3164,8 @@ int main() {
               cancelled.metrics.drawable_misses == 0 &&
               cancelled.metrics.present_flush_drawables_acquired == 0 &&
               cancelled.metrics.present_only_command_buffers_committed == 0,
-          "a cancelled batch keeps every rendered chain but acquires no drawable and submits no "
-          "GPU work");
+          "a cancelled batch keeps every rendered chain; its cleanup acquires no drawable and "
+          "submits no additional GPU work");
 
     check(final_miss.metrics.presentation_deferrals == 2 &&
               final_miss.metrics.drawable_misses == 1 &&
@@ -3163,8 +3179,12 @@ int main() {
 
     // A synchronously known failure later in the batch discards the pending present, even though
     // the runtime returns normally and calls finish(1): only successfully completed color is shown.
+    struct FailedBatch {
+      goal_jak2_metal_host_metrics after_failure = {};
+      goal_jak2_metal_host_metrics final = {};
+    };
     const auto failed_batch = [&](bool fatal) {
-      goal_jak2_metal_host_metrics out = {};
+      FailedBatch out;
       @autoreleasepool {
         CAMetalLayer* layer = [CAMetalLayer layer];
         layer.drawableSize = CGSizeMake(64, 64);
@@ -3184,24 +3204,53 @@ int main() {
           make_sprite_texture_upload_chain(1, -2);
           callbacks.send_chain(g_ee_main_mem, kChainOffset);
         }
+        goal_jak2_metal_host_get_metrics(host, &out.after_failure);
+        // A later deferred chain: after a recoverable rejection it renders and re-arms the flush;
+        // after fail_closed it is rejected before rendering and cannot re-arm.
+        make_screen_filter_chain();
+        callbacks.send_chain(g_ee_main_mem, kChainOffset);
         callbacks.set_presentation_deferred(0);
         callbacks.finish_presentation_batch(1);
-        goal_jak2_metal_host_get_metrics(host, &out);
+        goal_jak2_metal_host_get_metrics(host, &out.final);
         goal_jak2_metal_host_destroy(host);
       }
       return out;
     };
     for (const bool fatal : {false, true}) {
-      const auto metrics = failed_batch(fatal);
-      check(metrics.presentation_deferrals == 1 && metrics.command_buffers_committed == 1 &&
-                metrics.sprite_texture_uploads == 1 && metrics.drawables_acquired == 0 &&
-                metrics.submissions == 0 && metrics.present_flush_drawables_acquired == 0 &&
-                metrics.present_flush_drawable_misses == 0 &&
-                metrics.present_only_command_buffers_committed == 0 &&
-                metrics.presentation_batch_cancellations == 0 &&
-                (fatal || metrics.failed_chains == 1),
-            fatal ? "a fail-closed host failure discards the pending catch-up present"
-                  : "a rejected later chain discards the pending catch-up present");
+      const auto run = failed_batch(fatal);
+      const auto& failed = run.after_failure;
+      check(failed.presentation_deferrals == 1 && failed.command_buffers_committed == 1 &&
+                failed.sprite_texture_uploads == 1 && failed.drawables_acquired == 0 &&
+                failed.submissions == 0 && failed.presentation_batch_cancellations == 0 &&
+                failed.failed_chains == (fatal ? 0u : 1u),
+            fatal ? "a fail-closed host failure is recorded after the deferred chain committed"
+                  : "a rejected later chain is recorded after the deferred chain committed");
+      const auto& final_metrics = run.final;
+      if (fatal) {
+        check(final_metrics.chains == 2 && final_metrics.failed_chains == 1 &&
+                  final_metrics.presentation_deferrals == 1 &&
+                  final_metrics.command_buffers_committed == 1 &&
+                  final_metrics.last_screen_filter_draws == 0 &&
+                  final_metrics.drawables_acquired == 0 && final_metrics.submissions == 0 &&
+                  final_metrics.present_flush_drawables_acquired == 0 &&
+                  final_metrics.present_flush_drawable_misses == 0 &&
+                  final_metrics.present_only_command_buffers_committed == 0 &&
+                  final_metrics.presentation_batch_cancellations == 0,
+              "after fail_closed a later deferred chain is rejected and cannot re-arm a present");
+      } else {
+        check(final_metrics.chains == 3 && final_metrics.completed_chains == 2 &&
+                  final_metrics.failed_chains == 1 &&
+                  final_metrics.presentation_deferrals == 2 &&
+                  final_metrics.command_buffers_committed == 2 &&
+                  final_metrics.last_screen_filter_draws == 1 &&
+                  final_metrics.drawables_acquired == 1 && final_metrics.submissions == 1 &&
+                  final_metrics.present_flush_drawables_acquired == 1 &&
+                  final_metrics.present_flush_drawable_misses == 0 &&
+                  final_metrics.present_only_command_buffers_committed == 1 &&
+                  final_metrics.presentation_batch_cancellations == 0,
+              "after a recoverable rejection a later successful deferred chain re-arms and "
+              "flushes exactly once");
+      }
     }
   }
   check(metal_texture_live_count() == initial_texture_count,
