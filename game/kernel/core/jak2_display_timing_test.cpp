@@ -153,6 +153,11 @@ int main() {
              tracks_wall_time(120, delivered40, 1, 2401) &&
              tracks_wall_time(60, delivered30, 1, 1801),
          "established 60/120 Hz deliveries still track wall time over a minute");
+  const double delivered90[] = {1.0 / 90.0};
+  expect(tracks_wall_time(60, delivered90, 1, 5401),
+         "60 Hz logical and sound time track a 90 Hz delivered cadence over a minute");
+  expect(tracks_wall_time(120, delivered90, 1, 5401),
+         "120 Hz logical and sound time track a 90 Hz delivered cadence over a minute");
   const auto ideal_run = replay(60, 86400.0, ideal60, 1, 3601);
   const auto ideal120_run = replay(120, 86400.0, ideal120, 1, 7201);
   expect(ideal_run.max_dispatcher_frames == 1 && ideal120_run.max_dispatcher_frames == 1,

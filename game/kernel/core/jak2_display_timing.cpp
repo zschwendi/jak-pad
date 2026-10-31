@@ -12,7 +12,8 @@ namespace {
 
 constexpr double kIntegralTolerance = 1e-9;
 
-// Host timestamps sit on a display vsync grid, which is a half-frame multiple in both domains.
+// Each callback's elapsed time is rounded to half a logical frame and the rounding error is
+// carried into the next callback, so cadences that are not frame multiples still sum correctly.
 constexpr double kQuantization = 0.5;
 
 double frame_ratio(goal_jak2_display_timing* timing, double target_presentation_time) {
