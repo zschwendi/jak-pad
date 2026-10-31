@@ -12,6 +12,9 @@ namespace {
 
 constexpr double kIntegralTolerance = 1e-9;
 
+// Host timestamps sit on a display vsync grid, which is a half-frame multiple in both domains.
+constexpr double kQuantization = 0.5;
+
 double frame_ratio(goal_jak2_display_timing* timing, double target_presentation_time) {
   if (!std::isfinite(target_presentation_time)) {
     goal_jak2_display_timing_reset_presentation(timing);
@@ -23,19 +26,27 @@ double frame_ratio(goal_jak2_display_timing* timing, double target_presentation_
     return 1.0;
   }
 
-  const double elapsed_frames =
+  const double delivered_frames =
       (target_presentation_time - timing->previous_target_presentation_time) *
       timing->target_frame_rate;
-  timing->previous_target_presentation_time = target_presentation_time;
-  if (!std::isfinite(elapsed_frames) || elapsed_frames <= 0.0) {
+  if (!std::isfinite(delivered_frames) || delivered_frames < 0.0) {
     goal_jak2_display_timing_reset_presentation(timing);
     return 1.0;
   }
+  timing->previous_target_presentation_time = target_presentation_time;
 
-  const double quantization = timing->target_frame_rate > 60 ? 0.5 : 1.0;
-  const double quantized = std::round(elapsed_frames / quantization) * quantization;
+  // Quantizing absorbs floating-point noise; the remainder keeps the rounding from adding or
+  // losing time across callbacks.
+  const double elapsed_frames = delivered_frames + timing->presentation_remainder;
+  const double quantized =
+      std::max(0.0, std::round(elapsed_frames / kQuantization) * kQuantization);
   const double maximum = timing->target_frame_rate == 120 ? 5.0 : 4.0;
-  return std::clamp(quantized, 1.0, maximum);
+  if (quantized > maximum) {
+    timing->presentation_remainder = 0.0;
+    return maximum;
+  }
+  timing->presentation_remainder = elapsed_frames - quantized;
+  return quantized;
 }
 
 }  // namespace
@@ -63,6 +74,7 @@ void goal_jak2_display_timing_reset_presentation(goal_jak2_display_timing* timin
   // A lifecycle gap or a non-monotonic host timestamp must not replay a fractional display
   // callback on the next delivery. Sound uses its own clock and intentionally keeps its debt.
   timing->dispatcher_debt = 0.0;
+  timing->presentation_remainder = 0.0;
 }
 
 void goal_jak2_display_timing_set_target_frame_rate(goal_jak2_display_timing* timing,
@@ -103,7 +115,7 @@ goal_jak2_display_timing_step goal_jak2_display_timing_advance(
   uint32_t sound_before_dispatch_mask = 0;
   const double sound_per_target_frame = 60.0 / timing->target_frame_rate;
   uint32_t next_dispatch = 0;
-  for (uint32_t sound_frame = 1; sound_frame <= sound_frames; sound_frame++) {
+  for (uint32_t sound_frame = 1; ratio > 0.0 && sound_frame <= sound_frames; sound_frame++) {
     const double sound_progress =
         (sound_frame - sound_debt_before) / (ratio * sound_per_target_frame);
     while (next_dispatch < dispatcher_frames) {

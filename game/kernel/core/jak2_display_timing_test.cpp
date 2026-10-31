@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -16,6 +17,47 @@ void expect(bool condition, const char* message) {
 
 goal_jak2_display_timing_step advance(goal_jak2_display_timing* timing, double timestamp) {
   return goal_jak2_display_timing_advance(timing, timestamp);
+}
+
+struct Elapsed {
+  double logical_seconds = 0.0;
+  double sound_seconds = 0.0;
+  unsigned max_dispatcher_frames = 0;
+};
+
+// Replays callbacks from `start`, one per interval, cycling through `intervals` (in seconds).
+// The first callback has no history and is defined as one logical frame of the domain for both
+// clocks, so the time that matches the replay is the wall span plus 1/rate seconds.
+Elapsed replay(int rate, double start, const double* intervals, int interval_count, int callbacks) {
+  goal_jak2_display_timing timing = {};
+  goal_jak2_display_timing_init(&timing, rate);
+  Elapsed out;
+  double timestamp = start;
+  for (int i = 0; i < callbacks; ++i) {
+    if (i > 0) {
+      timestamp += intervals[(i - 1) % interval_count];
+    }
+    const auto step = advance(&timing, timestamp);
+    out.logical_seconds += static_cast<double>(step.dispatcher_frames) / rate;
+    out.sound_seconds += step.sound_frames / 60.0;
+    out.max_dispatcher_frames = std::max(out.max_dispatcher_frames, step.dispatcher_frames);
+  }
+  out.logical_seconds -= 1.0 / rate;
+  out.sound_seconds -= 1.0 / rate;
+  return out;
+}
+
+bool tracks_wall_time(int rate, const double* intervals, int interval_count, int callbacks) {
+  double wall = 0.0;
+  for (int i = 1; i < callbacks; ++i) {
+    wall += intervals[(i - 1) % interval_count];
+  }
+  // A ProMotion host clock is large (seconds since boot), so exercise realistic magnitudes.
+  const auto r = replay(rate, 86400.0, intervals, interval_count, callbacks);
+  const double frame = 1.0 / rate;
+  // Less than one frame of each clock may still be pending as fractional debt.
+  return std::fabs(r.logical_seconds - wall) <= frame &&
+         std::fabs(r.sound_seconds - wall) <= 1.0 / 60.0 + 1e-9;
 }
 
 }  // namespace
@@ -92,6 +134,44 @@ int main() {
   expect(fractional_delivery.dispatcher_frames == 1 &&
              non_monotonic_delivery.dispatcher_frames == 1,
          "a non-monotonic timestamp drops fractional display debt instead of replaying a frame");
+
+  const double vsync120 = 1.0 / 120.0;
+  const double alternating[] = {vsync120, 2 * vsync120};
+  expect(tracks_wall_time(60, alternating, 2, 2001),
+         "60 Hz logical and sound time track callbacks alternating 8.333/16.667 ms");
+  const double steady25[] = {3 * vsync120};
+  expect(tracks_wall_time(60, steady25, 1, 1201),
+         "60 Hz logical and sound time track steady 25 ms callbacks");
+  const double ideal60[] = {1.0 / 60.0};
+  const double ideal120[] = {vsync120};
+  const double delivered80[] = {1.0 / 80.0};
+  const double delivered40[] = {1.0 / 40.0};
+  const double delivered30[] = {1.0 / 30.0};
+  expect(tracks_wall_time(60, ideal60, 1, 3601) && tracks_wall_time(120, ideal120, 1, 7201) &&
+             tracks_wall_time(120, ideal60, 1, 3601) &&
+             tracks_wall_time(120, delivered80, 1, 4801) &&
+             tracks_wall_time(120, delivered40, 1, 2401) &&
+             tracks_wall_time(60, delivered30, 1, 1801),
+         "established 60/120 Hz deliveries still track wall time over a minute");
+  const auto ideal_run = replay(60, 86400.0, ideal60, 1, 3601);
+  const auto ideal120_run = replay(120, 86400.0, ideal120, 1, 7201);
+  expect(ideal_run.max_dispatcher_frames == 1 && ideal120_run.max_dispatcher_frames == 1,
+         "on-cadence delivery at host-clock magnitudes never batches frames");
+
+  goal_jak2_display_timing_set_target_frame_rate(&timing, 60);
+  advance(&timing, 80.0);
+  const auto repeated = advance(&timing, 80.0);
+  const auto after_repeat = advance(&timing, 80.0 + 1.0 / 60.0);
+  expect(repeated.dispatcher_frames == 0 && repeated.sound_frames == 0 &&
+             after_repeat.dispatcher_frames == 1 && after_repeat.sound_frames == 1,
+         "a repeated timestamp grants no elapsed time and keeps the cadence history");
+
+  goal_jak2_display_timing_set_target_frame_rate(&timing, 60);
+  advance(&timing, 90.0);
+  const auto stalled = advance(&timing, 90.5);
+  const auto recovered = advance(&timing, 90.5 + 1.0 / 60.0);
+  expect(stalled.dispatcher_frames == 4 && recovered.dispatcher_frames == 1,
+         "the catch-up bound still drops a long stall's excess instead of replaying it later");
 
   expect(goal_jak2_display_timing_normalize_target_frame_rate(90) == 60 &&
              goal_jak2_display_timing_normalize_target_frame_rate(120) == 120,

@@ -24,6 +24,8 @@ typedef struct goal_jak2_display_timing {
   double sound_debt;
   int32_t target_frame_rate;
   int32_t has_previous_target_presentation_time;
+  /*! Frames delivered but not yet counted because of half-frame quantization. */
+  double presentation_remainder;
 } goal_jak2_display_timing;
 
 /*! The runtime has a 60 Hz baseline and an experimental 120 Hz logical timing domain. */
@@ -45,10 +47,14 @@ void goal_jak2_display_timing_set_target_frame_rate(goal_jak2_display_timing* ti
 
 /*!
  * Convert one host target-presentation timestamp into bounded logical dispatcher and IOP frames.
- * A dispatcher frame is never replayed after a non-monotonic timestamp. At a lower delivered
- * cadence, accumulated whole target frames are reported together. The caller publishes the
- * mask-selected IOP frames before their matching dispatcher frames and any remaining IOP frames
- * after the batch.
+ * Over a run of monotonic timestamps the logical and IOP frames track the elapsed time, including
+ * callbacks that arrive at non-integer multiples of the target period; such a callback may report
+ * zero dispatcher frames. A repeated timestamp reports no time. The first callback, and the next
+ * one after a reset, a non-finite timestamp or a non-monotonic timestamp, count as one frame. A
+ * dispatcher frame is never replayed after a non-monotonic timestamp. At a lower delivered
+ * cadence, accumulated whole target frames are reported together, up to the catch-up bound;
+ * time beyond the bound is dropped. The caller publishes the mask-selected IOP frames before
+ * their matching dispatcher frames and any remaining IOP frames after the batch.
  */
 goal_jak2_display_timing_step goal_jak2_display_timing_advance(
     goal_jak2_display_timing* timing,
