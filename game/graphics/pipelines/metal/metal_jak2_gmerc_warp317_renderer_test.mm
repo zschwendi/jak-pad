@@ -23,8 +23,10 @@ extern "C" const unsigned long g_goalpad_metallib_size;
 namespace {
 
 constexpr int kTargetSize = 64;
-// With warp_off 0.1875 and scissor_adjust 512/416 this maps exactly to v=0.125.
-constexpr s16 kWarpT = 2912;
+// The PS2 warp source keeps 416 visible rows in a 512-row texture, so t / 4096 * 512 / 416 is
+// the top-down screen fraction: 2912 lands on row 56 of 64 and 416 lands on row 8.
+constexpr s16 kWarpBottomT = 2912;
+constexpr s16 kWarpTopT = 416;
 constexpr u64 kSourceOverDestinationAlpha = 0x44;
 
 int failures = 0;
@@ -127,7 +129,7 @@ u64 tex0() {
          (6ull << 30) | (1ull << 34);
 }
 
-std::vector<u8> make_fragment(bool filtered, bool fog, s16 s_coord) {
+std::vector<u8> make_fragment(bool filtered, bool fog, s16 s_coord, s16 t_coord) {
   std::vector<u8> data(112, 0);
   float matrix[16] = {};
   matrix[0] = 1.f;
@@ -177,7 +179,7 @@ std::vector<u8> make_fragment(bool filtered, bool fog, s16 s_coord) {
     const auto offset = data.size();
     data.resize(offset + 4);
     std::memcpy(data.data() + offset, &s_coord, sizeof(s_coord));
-    std::memcpy(data.data() + offset + 2, &kWarpT, sizeof(kWarpT));
+    std::memcpy(data.data() + offset + 2, &t_coord, sizeof(t_coord));
   }
   append_u32(&data, vif_stcycl(4, 4));
   append_u32(&data, vif(VifCode::Kind::MSCAL, 0x24));
@@ -192,7 +194,7 @@ struct SyntheticChain {
   u32 next_bucket = 0;
 };
 
-SyntheticChain make_chain(bool filtered, bool fog, s16 s_coord) {
+SyntheticChain make_chain(bool filtered, bool fog, s16 s_coord, s16 t_coord) {
   LinearChain chain;
   chain.transfer(vif(VifCode::Kind::MARK), 0);
   chain.transfer(0, vif(VifCode::Kind::DIRECT, 2), make_zbuf_direct());
@@ -208,7 +210,7 @@ SyntheticChain make_chain(bool filtered, bool fog, s16 s_coord) {
                  std::vector<u8>(32, 0));
   chain.transfer(0, 0);
   chain.transfer(vif_stcycl(4, 4), vif_unpack_v4_32(12),
-                 make_fragment(filtered, fog, s_coord));
+                 make_fragment(filtered, fog, s_coord, t_coord));
   chain.transfer(vif(VifCode::Kind::FLUSHA), vif(VifCode::Kind::DIRECT, 10),
                  std::vector<u8>(160, 0));
   chain.transfer(0, 0);
@@ -247,13 +249,24 @@ std::vector<u32> source_pixels(int width, int height) {
   std::vector<u32> result(static_cast<std::size_t>(width) * height);
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
-      const bool bottom = y >= height / 2;
-      const bool middle = y >= height / 4;
+      const int band = y / (height / 4);
       const bool right = x >= width / 2;
-      result[y * width + x] =
-          bottom ? rgba(8, 8, 160, 64)
-                 : (middle ? rgba(160, 160, 8, 64)
-                           : (right ? rgba(8, 160, 8, 64) : rgba(160, 8, 8, 64)));
+      u32 color = 0;
+      switch (band) {
+        case 0:
+          color = right ? rgba(8, 160, 8, 64) : rgba(160, 8, 8, 64);
+          break;
+        case 1:
+          color = rgba(160, 160, 8, 64);
+          break;
+        case 2:
+          color = rgba(8, 8, 160, 64);
+          break;
+        default:
+          color = right ? rgba(8, 160, 160, 64) : rgba(160, 8, 160, 64);
+          break;
+      }
+      result[y * width + x] = color;
     }
   }
   return result;
@@ -323,7 +336,8 @@ RenderResult render(id<MTLDevice> device,
                     metal_renderer::Jak2WarpSnapshotPublisher* publisher,
                     bool filtered,
                     bool fog,
-                    s16 s_coord) {
+                    s16 s_coord,
+                    s16 t_coord) {
   RenderResult result;
   id<MTLTexture> color = make_color(device, kTargetSize, kTargetSize, MTLPixelFormatRGBA8Unorm);
   const auto source = source_pixels(kTargetSize, kTargetSize);
@@ -366,7 +380,7 @@ RenderResult render(id<MTLDevice> device,
   [context.enc setCullMode:MTLCullModeNone];
   [context.enc setViewport:context.game_viewport];
 
-  auto chain = make_chain(filtered, fog, s_coord);
+  auto chain = make_chain(filtered, fog, s_coord, t_coord);
   state.next_bucket = chain.next_bucket;
   DmaFollower dma(chain.bytes.data(), 0, chain.bytes.size());
   MetalGeneric2 generic;
@@ -501,9 +515,9 @@ int main() {
                   metal_renderer::Jak2MetalBucketBehavior::Warp,
           "bucket 316 uploads before the exact production bucket-317 warp route");
 
-    auto missing_chain = make_chain(false, false, 2048);
+    auto missing_chain = make_chain(false, false, 2048, kWarpBottomT);
     const auto missing = render(device, queue, &pso_cache, &sampler_cache, &texture_pool, nullptr,
-                                false, false, 2048);
+                                false, false, 2048, kWarpBottomT);
     check(missing.completed && !missing.published &&
               missing.final_offset == missing_chain.next_bucket &&
               missing.stats.missing_textures == 1 &&
@@ -513,9 +527,9 @@ int main() {
           "missing TBP1216 publication fails safe without a placeholder draw");
 
     metal_renderer::Jak2WarpSnapshotPublisher publisher(&texture_pool);
-    auto edge_chain = make_chain(false, false, -1024);
+    auto edge_chain = make_chain(false, false, -1024, kWarpBottomT);
     const auto edge = render(device, queue, &pso_cache, &sampler_cache, &texture_pool, &publisher,
-                             false, false, -1024);
+                             false, false, -1024, kWarpBottomT);
     const u64 stable_handle = publisher.texture_handle();
     const PcTextureId stable_id = publisher.texture_id();
     id<MTLTexture> snapshot = metal_texture_lookup(stable_handle);
@@ -527,29 +541,36 @@ int main() {
           "TBP1216 publishes a private shader-readable target matching game color");
     check(changed_pixel_count(edge) == 1280 && written_depth_count(edge) == 1280,
           "WARP keeps Jak II 0.5 height, 512/416 scissor, and depth-write coverage");
+    // Every warp quad covers the blue destination centre; a source-over sample lands halfway.
     const Pixel edge_center = pixel_at(edge.pixels, kTargetSize, kTargetSize / 2, kTargetSize / 2);
-    check(near(edge_center, {84, 8, 84, 129}, 3) && edge_center.r > 70 &&
-              edge_center.b > 70,
-          "same-command-buffer snapshot blends the clamped edge over the original target");
+    check(near(edge_center, {84, 8, 160, 129}, 3),
+          "a bottom-of-screen warp coordinate samples the bottom-left magenta snapshot texel");
 
-    auto nearest_chain = make_chain(false, false, 2048);
-    auto linear_chain = make_chain(true, false, 2048);
+    auto top_chain = make_chain(false, false, -1024, kWarpTopT);
+    const auto top = render(device, queue, &pso_cache, &sampler_cache, &texture_pool, &publisher,
+                            false, false, -1024, kWarpTopT);
+    const Pixel top_center = pixel_at(top.pixels, kTargetSize, kTargetSize / 2, kTargetSize / 2);
+    check(exact_draw(top, top_chain) && near(top_center, {84, 8, 84, 129}, 3),
+          "a top-of-screen warp coordinate samples the top-left red snapshot texel");
+
+    auto nearest_chain = make_chain(false, false, 2048, kWarpBottomT);
+    auto linear_chain = make_chain(true, false, 2048, kWarpBottomT);
     const auto nearest = render(device, queue, &pso_cache, &sampler_cache, &texture_pool,
-                                &publisher, false, false, 2048);
+                                &publisher, false, false, 2048, kWarpBottomT);
     const auto linear = render(device, queue, &pso_cache, &sampler_cache, &texture_pool, &publisher,
-                               true, false, 2048);
+                               true, false, 2048, kWarpBottomT);
     const Pixel nearest_center =
         pixel_at(nearest.pixels, kTargetSize, kTargetSize / 2, kTargetSize / 2);
     const Pixel linear_center =
         pixel_at(linear.pixels, kTargetSize, kTargetSize / 2, kTargetSize / 2);
     check(exact_draw(nearest, nearest_chain) && exact_draw(linear, linear_chain) &&
-              nearest_center.g > nearest_center.r + 40 &&
-              std::abs(static_cast<int>(linear_center.r) - static_cast<int>(linear_center.g)) < 15,
+              near(nearest_center, {8, 84, 160, 129}, 3) &&
+              near(linear_center, {46, 46, 160, 129}, 3),
           "WARP retains nearest versus linear draw filtering while clamp stays forced");
 
-    auto fog_chain = make_chain(false, true, 2048);
+    auto fog_chain = make_chain(false, true, 2048, kWarpBottomT);
     const auto fog = render(device, queue, &pso_cache, &sampler_cache, &texture_pool, &publisher,
-                            false, true, 2048);
+                            false, true, 2048, kWarpBottomT);
     const Pixel fog_center = pixel_at(fog.pixels, kTargetSize, kTargetSize / 2, kTargetSize / 2);
     check(exact_draw(fog, fog_chain) && near(fog_center, {24, 64, 180, 129}, 3) &&
               written_depth_count(fog) == 1280,

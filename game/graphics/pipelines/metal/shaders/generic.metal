@@ -94,7 +94,10 @@ vertex GenericVSOut generic_vs(uint vid [[vertex_id]],
   // itof12.xyz vf18, vf22        texture int to float
   out.tex_coord = float2(v.st) / 4096.0;
   if (p.warp_sample_mode == 1) {
-    out.tex_coord = float2(out.tex_coord.x, (1.0 - out.tex_coord.y - p.warp_off) * p.scissor_adjust);
+    // GL samples (1 - t - warp_off) * SCISSOR_ADJUST from its bottom-up framebuffer copy; the
+    // Metal snapshot is top-down, so the same texel sits at one minus that coordinate.
+    out.tex_coord = float2(out.tex_coord.x,
+                           1.0 - (1.0 - out.tex_coord.y - p.warp_off) * p.scissor_adjust);
   }
 
   // mul.xyz vf12, vf12, Q        perspective divide
