@@ -35,6 +35,7 @@ extern "C" {
 #include "game/kernel/core/gfx_host.h"
 #include "game/kernel/core/jak2_face_prompt_touch_reader.h"
 #include "game/kernel/core/jak2_player_context_reader.h"
+#include "game/kernel/core/jak2_presentation_batch.h"
 #include "game/kernel/core/jak2_display_timing.h"
 #include "game/kernel/core/jak2_progress_menu_reader.h"
 #include "game/kernel/core/kernel_core.h"
@@ -1204,34 +1205,43 @@ goal_jak2_runtime_status goal_jak2_runtime_tick_at(double target_presentation_ti
     // has no IOP vblank, so keep that established 60 Hz clock independent of display callbacks
     // while preserving the baseline sound-before-dispatch ordering inside a catch-up batch.
     uint32_t remaining_sound_frames = timing.sound_frames;
-    for (uint32_t frame = 0; frame < timing.dispatcher_frames; frame++) {
-      if (timing.sound_before_dispatch_mask & (1u << frame)) {
-        goal_jak2_sound_frame();
-        remaining_sound_frames--;
-      }
-      g_current_tick = g_metrics.ticks + 1;
-      const auto preview_input_status = prepare_pending_scene_preview_input();
-      if (preview_input_status != GOAL_JAK2_RUNTIME_OK) {
-        return preview_input_status;
-      }
-      g_metrics.last_dispatch_result =
-          call_goal_on_stack(Ptr<Function>(g_dispatcher), goal_kernel_stack_top(), s7.offset,
-                             g_ee_main_mem);
-      drain_goal_print_buffer();
-      g_metrics.ticks++;
-      if (MasterExit != RuntimeExitStatus::RUNNING) {
-        g_metrics.state = GOAL_JAK2_RUNTIME_STOPPED_BY_GAME;
-        update_metrics();
-        return GOAL_JAK2_RUNTIME_EXITED;
-      }
-      const bool had_pending_preview = g_scene_preview_pending;
-      const auto preview_status = run_pending_scene_preview();
-      if (preview_status != GOAL_JAK2_RUNTIME_OK) {
-        return preview_status;
-      }
-      if (had_pending_preview && !g_scene_preview_pending) {
-        update_metrics();
-      }
+    goal_jak2_runtime_status stopped_status = GOAL_JAK2_RUNTIME_OK;
+    const bool batch_completed =
+        jak2_presentation_batch::run(timing.dispatcher_frames, [&](uint32_t frame) {
+          if (timing.sound_before_dispatch_mask & (1u << frame)) {
+            goal_jak2_sound_frame();
+            remaining_sound_frames--;
+          }
+          g_current_tick = g_metrics.ticks + 1;
+          const auto preview_input_status = prepare_pending_scene_preview_input();
+          if (preview_input_status != GOAL_JAK2_RUNTIME_OK) {
+            stopped_status = preview_input_status;
+            return false;
+          }
+          g_metrics.last_dispatch_result =
+              call_goal_on_stack(Ptr<Function>(g_dispatcher), goal_kernel_stack_top(), s7.offset,
+                                 g_ee_main_mem);
+          drain_goal_print_buffer();
+          g_metrics.ticks++;
+          if (MasterExit != RuntimeExitStatus::RUNNING) {
+            g_metrics.state = GOAL_JAK2_RUNTIME_STOPPED_BY_GAME;
+            update_metrics();
+            stopped_status = GOAL_JAK2_RUNTIME_EXITED;
+            return false;
+          }
+          const bool had_pending_preview = g_scene_preview_pending;
+          const auto preview_status = run_pending_scene_preview();
+          if (preview_status != GOAL_JAK2_RUNTIME_OK) {
+            stopped_status = preview_status;
+            return false;
+          }
+          if (had_pending_preview && !g_scene_preview_pending) {
+            update_metrics();
+          }
+          return true;
+        });
+    if (!batch_completed) {
+      return stopped_status;
     }
     while (remaining_sound_frames) {
       goal_jak2_sound_frame();
