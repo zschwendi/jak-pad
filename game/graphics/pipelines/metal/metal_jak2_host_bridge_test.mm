@@ -3183,7 +3183,7 @@ int main() {
       goal_jak2_metal_host_metrics after_failure = {};
       goal_jak2_metal_host_metrics final = {};
     };
-    const auto failed_batch = [&](bool fatal) {
+    const auto failed_batch = [&](bool fatal, bool later_chain) {
       FailedBatch out;
       @autoreleasepool {
         CAMetalLayer* layer = [CAMetalLayer layer];
@@ -3205,10 +3205,12 @@ int main() {
           callbacks.send_chain(g_ee_main_mem, kChainOffset);
         }
         goal_jak2_metal_host_get_metrics(host, &out.after_failure);
-        // A later deferred chain: after a recoverable rejection it renders and re-arms the flush;
-        // after fail_closed it is rejected before rendering and cannot re-arm.
-        make_screen_filter_chain();
-        callbacks.send_chain(g_ee_main_mem, kChainOffset);
+        if (later_chain) {
+          // After a recoverable rejection it renders and re-arms the flush; after fail_closed it is
+          // rejected before rendering and cannot re-arm.
+          make_screen_filter_chain();
+          callbacks.send_chain(g_ee_main_mem, kChainOffset);
+        }
         callbacks.set_presentation_deferred(0);
         callbacks.finish_presentation_batch(1);
         goal_jak2_metal_host_get_metrics(host, &out.final);
@@ -3217,7 +3219,22 @@ int main() {
       return out;
     };
     for (const bool fatal : {false, true}) {
-      const auto run = failed_batch(fatal);
+      // Immediate finish(1) after the failure: nothing else can overwrite pending, so this is the
+      // case that fails if a known failure stops discarding the pending catch-up present.
+      const auto immediate = failed_batch(fatal, /*later_chain=*/false).final;
+      check(immediate.chains == (fatal ? 1u : 2u) &&
+                immediate.failed_chains == (fatal ? 0u : 1u) &&
+                immediate.presentation_deferrals == 1 &&
+                immediate.command_buffers_committed == 1 &&
+                immediate.sprite_texture_uploads == 1 && immediate.drawables_acquired == 0 &&
+                immediate.submissions == 0 && immediate.present_flush_drawables_acquired == 0 &&
+                immediate.present_flush_drawable_misses == 0 &&
+                immediate.present_only_command_buffers_committed == 0 &&
+                immediate.presentation_batch_cancellations == 0,
+            fatal ? "finish(1) right after a fail-closed host failure presents nothing"
+                  : "finish(1) right after a rejected chain presents nothing");
+
+      const auto run = failed_batch(fatal, /*later_chain=*/true);
       const auto& failed = run.after_failure;
       check(failed.presentation_deferrals == 1 && failed.command_buffers_committed == 1 &&
                 failed.sprite_texture_uploads == 1 && failed.drawables_acquired == 0 &&
