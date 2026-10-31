@@ -3160,6 +3160,49 @@ int main() {
               final_miss.metrics.command_buffers_committed == 3,
           "a final presenting-chain miss clears the pending present; finish makes no second "
           "drawable request");
+
+    // A synchronously known failure later in the batch discards the pending present, even though
+    // the runtime returns normally and calls finish(1): only successfully completed color is shown.
+    const auto failed_batch = [&](bool fatal) {
+      goal_jak2_metal_host_metrics out = {};
+      @autoreleasepool {
+        CAMetalLayer* layer = [CAMetalLayer layer];
+        layer.drawableSize = CGSizeMake(64, 64);
+        goal_jak2_metal_host* host = goal_jak2_metal_host_create_presenting(layer);
+        goal_gfx_host callbacks = {};
+        check(host && goal_jak2_metal_host_copy_gfx_host(host, &callbacks),
+              "created a layer-backed host for a failed catch-up batch");
+        callbacks.set_presentation_deferred(1);
+        write_texture_page();
+        make_sprite_texture_upload_chain();
+        callbacks.send_chain(g_ee_main_mem, kChainOffset);
+        if (fatal) {
+          // Fail-closed host failure between chains (no EE page supplied).
+          callbacks.texture_upload_now(nullptr, 0, 0);
+        } else {
+          // Pre-render planner rejection that does not mutate host textures.
+          make_sprite_texture_upload_chain(1, -2);
+          callbacks.send_chain(g_ee_main_mem, kChainOffset);
+        }
+        callbacks.set_presentation_deferred(0);
+        callbacks.finish_presentation_batch(1);
+        goal_jak2_metal_host_get_metrics(host, &out);
+        goal_jak2_metal_host_destroy(host);
+      }
+      return out;
+    };
+    for (const bool fatal : {false, true}) {
+      const auto metrics = failed_batch(fatal);
+      check(metrics.presentation_deferrals == 1 && metrics.command_buffers_committed == 1 &&
+                metrics.sprite_texture_uploads == 1 && metrics.drawables_acquired == 0 &&
+                metrics.submissions == 0 && metrics.present_flush_drawables_acquired == 0 &&
+                metrics.present_flush_drawable_misses == 0 &&
+                metrics.present_only_command_buffers_committed == 0 &&
+                metrics.presentation_batch_cancellations == 0 &&
+                (fatal || metrics.failed_chains == 1),
+            fatal ? "a fail-closed host failure discards the pending catch-up present"
+                  : "a rejected later chain discards the pending catch-up present");
+    }
   }
   check(metal_texture_live_count() == initial_texture_count,
         "layer-backed recovery released its mutated host texture state");

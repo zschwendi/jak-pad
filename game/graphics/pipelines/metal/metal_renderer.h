@@ -202,12 +202,13 @@ class MetalRenderer {
   // and when nothing is pending, it creates no command buffer and requests no drawable. Makes at most
   // one nextDrawable call. Returns true only when a present-only command buffer was committed.
   bool present_latest(CAMetalLayer* layer);
-  // Drops a pending deferred present without presenting or touching the GPU (cancelled batch,
-  // detach, destroy). Returns whether a present was pending.
-  bool cancel_pending_presentation() {
+  // Drops a pending deferred present without presenting or touching the GPU. A cancelled batch
+  // (finish(0), detach, destroy) counts a cancellation; a known host failure discards without one,
+  // since the failure itself is already counted. Returns whether a present was pending.
+  bool cancel_pending_presentation(bool batch_cancelled = true) {
     const bool had_pending = m_present_coalescer.has_pending();
     m_present_coalescer.reset();
-    if (had_pending) {
+    if (had_pending && batch_cancelled) {
       m_chain_stats.presentation_batch_cancellations++;
     }
     return had_pending;

@@ -263,6 +263,9 @@ bool counter_advanced_by(u64 before, u64 after, u64 expected) {
 void record_failure(goal_jak2_metal_host* host, const char* message) {
   host->metrics.failed_chains++;
   host->error = message;
+  // A pending catch-up present must be a successfully completed chain. Any synchronously known
+  // failure discards it, so finish_presentation_batch(1) cannot show color from a failed batch.
+  host->renderer.cancel_pending_presentation(/*batch_cancelled=*/false);
 }
 
 u64 serialized_fingerprint(const u8* bytes, std::size_t size) {
@@ -297,6 +300,7 @@ void fail_closed(goal_jak2_metal_host* host, const std::string& message) {
     host->fatal_chain_error = message;
   }
   host->error = message;
+  host->renderer.cancel_pending_presentation(/*batch_cancelled=*/false);
 }
 
 void fail_current_chain_closed(goal_jak2_metal_host* host, const std::string& message) {
