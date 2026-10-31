@@ -8,7 +8,8 @@
  * drawable request and present of chains before the last frame are deferred to the host, through
  * the optional gfx host hooks. A batch that completes asks the host to present the newest frame
  * once if it is still pending. A batch that stops early or throws only cancels the pending
- * presentation, so a failing tick never acquires a drawable or encodes GPU work.
+ * presentation: that cleanup never requests a drawable or GPU work, although chains already sent
+ * by the last frame may have presented inline before the failure.
  */
 
 #include <cstdint>
@@ -29,7 +30,7 @@ bool run(uint32_t frames, RunFrame&& run_frame) {
 
   struct CancelUnlessFinished {
     bool finished = false;
-    ~CancelUnlessFinished() {
+    ~CancelUnlessFinished() noexcept {
       if (!finished) {
         goal_gfx_host_finish_presentation_batch(0);
       }

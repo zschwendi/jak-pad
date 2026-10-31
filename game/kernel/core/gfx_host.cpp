@@ -15,6 +15,7 @@
 
 #include "game/kernel/core/gfx_host.h"
 
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <string>
@@ -265,6 +266,29 @@ goal_kernel_core_status goal_gfx_host_install(const goal_gfx_host* host) {
   return GOAL_KERNEL_CORE_OK;
 }
 
+namespace {
+
+/*!
+ * Report the exception being handled by the caller's catch block. The logger allocates and may
+ * itself throw, so a logger failure falls back to stderr instead of escaping a noexcept wrapper.
+ */
+void report_presentation_hook_failure(const char* hook, int argument) noexcept {
+  const char* reason = "a non-standard exception";
+  try {
+    throw;
+  } catch (const std::exception& e) {
+    reason = e.what();
+  } catch (...) {
+  }
+  try {
+    lg::error("[gfx-host] {}({}) threw: {}", hook, argument, reason);
+  } catch (...) {
+    std::fprintf(stderr, "[gfx-host] %s(%d) threw: %s (logger failed)\n", hook, argument, reason);
+  }
+}
+
+}  // namespace
+
 void goal_gfx_host_set_presentation_deferred(int deferred) noexcept {
   if (!g_host.set_presentation_deferred) {
     return;
@@ -272,7 +296,7 @@ void goal_gfx_host_set_presentation_deferred(int deferred) noexcept {
   try {
     g_host.set_presentation_deferred(deferred);
   } catch (...) {
-    lg::error("[gfx-host] set_presentation_deferred({}) threw", deferred);
+    report_presentation_hook_failure("set_presentation_deferred", deferred);
   }
 }
 
@@ -283,7 +307,7 @@ void goal_gfx_host_finish_presentation_batch(int allow_present) noexcept {
   try {
     g_host.finish_presentation_batch(allow_present);
   } catch (...) {
-    lg::error("[gfx-host] finish_presentation_batch({}) threw", allow_present);
+    report_presentation_hook_failure("finish_presentation_batch", allow_present);
   }
 }
 
