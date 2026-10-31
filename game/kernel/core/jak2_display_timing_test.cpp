@@ -135,6 +135,24 @@ int main() {
              non_monotonic_delivery.dispatcher_frames == 1,
          "a non-monotonic timestamp drops fractional display debt instead of replaying a frame");
 
+  // goal_jak2_runtime_tick() passes NAN; the display-tick proof's acquired == chains gates rely on
+  // it always selecting exactly one dispatcher frame, so no catch-up batch is ever coalesced.
+  bool untimed_ticks_are_single = true;
+  for (int rate : {60, 120}) {
+    goal_jak2_display_timing_set_target_frame_rate(&timing, rate);
+    advance(&timing, 200.0);
+    advance(&timing, 200.0 + 1.0 / 90.0);
+    advance(&timing, 200.0 + 2.0 / 90.0);
+    const auto stalled_batch = advance(&timing, 201.0);
+    untimed_ticks_are_single = untimed_ticks_are_single && stalled_batch.dispatcher_frames > 1;
+    for (int tick = 0; tick < 8; tick++) {
+      untimed_ticks_are_single =
+          untimed_ticks_are_single && advance(&timing, NAN).dispatcher_frames == 1;
+    }
+  }
+  expect(untimed_ticks_are_single,
+         "an untimed tick always selects exactly one dispatcher frame after debt and stalls");
+
   const double vsync120 = 1.0 / 120.0;
   const double alternating[] = {vsync120, 2 * vsync120};
   expect(tracks_wall_time(60, alternating, 2, 2001),
