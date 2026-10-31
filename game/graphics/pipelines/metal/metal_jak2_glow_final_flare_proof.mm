@@ -26,6 +26,9 @@ namespace {
 constexpr int kTargetSize = 64;
 constexpr u32 kFlareTbp = 0x2a0;
 constexpr u32 kPlaceholderFlareTbp = 0x2a1;
+constexpr u32 kSecondFlareTbp = 0x2a2;
+constexpr int kSecondFlareWidth = 16;
+constexpr int kSecondFlareHeight = 8;
 constexpr u16 kFlareTexturePage = 11;
 constexpr u32 kChainOffset = 0x100;
 constexpr u32 kUploadGroupOffset = 0x2000;
@@ -33,6 +36,7 @@ constexpr u32 kUploadTailOffset = 0x3000;
 constexpr u32 kTexturePageOffset = 0x6000;
 constexpr u32 kTextureObjectOffset = 0x6100;
 constexpr u32 kPlaceholderTextureObjectOffset = 0x6200;
+constexpr u32 kSecondTextureObjectOffset = 0x6300;
 constexpr u32 kSyntheticS7 = 0x7f00;
 constexpr std::size_t kFixtureMemorySize = 0x10000;
 
@@ -71,6 +75,11 @@ bool is_half_red(const std::vector<u8>& pixels, int x, int y) {
 u8 red_at(const std::vector<u8>& pixels, int x, int y) {
   const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
   return pixels[offset + 2];
+}
+
+u8 green_at(const std::vector<u8>& pixels, int x, int y) {
+  const std::size_t offset = static_cast<std::size_t>(y * kTargetSize + x) * 4;
+  return pixels[offset + 1];
 }
 
 void put_u32(std::array<u8, kFixtureMemorySize>* memory, u32 offset, u32 value) {
@@ -124,10 +133,12 @@ SpriteTextureUploadFixture make_sprite_texture_upload_fixture() {
 
   GoalTexturePage page = {};
   page.id = kFlareTexturePage;
-  page.length = 2;
+  page.length = 3;
   std::memcpy(fixture.live.data() + kTexturePageOffset, &page, sizeof(page));
   put_u32(&fixture.live, kTexturePageOffset + sizeof(page), kTextureObjectOffset);
   put_u32(&fixture.live, kTexturePageOffset + sizeof(page) + sizeof(u32),
+          kSecondTextureObjectOffset);
+  put_u32(&fixture.live, kTexturePageOffset + sizeof(page) + 2 * sizeof(u32),
           kPlaceholderTextureObjectOffset);
   GoalTexture texture = {};
   texture.w = 8;
@@ -137,6 +148,10 @@ SpriteTextureUploadFixture make_sprite_texture_upload_fixture() {
   std::memcpy(fixture.live.data() + kTextureObjectOffset, &texture, sizeof(texture));
   texture.dest[0] = kPlaceholderFlareTbp;
   std::memcpy(fixture.live.data() + kPlaceholderTextureObjectOffset, &texture, sizeof(texture));
+  texture.w = kSecondFlareWidth;
+  texture.h = kSecondFlareHeight;
+  texture.dest[0] = kSecondFlareTbp;
+  std::memcpy(fixture.live.data() + kSecondTextureObjectOffset, &texture, sizeof(texture));
   return fixture;
 }
 
@@ -295,6 +310,41 @@ int main() {
     check(flare_registered,
           "registered a synthetic transparent-falloff source texture by page and index");
 
+    // The adjacent page index differs from the first flare in size and channel, so a wrong
+    // texture identity, an aliased address, or an all-bright texture shows up in readback.
+    std::array<u32, kSecondFlareWidth * kSecondFlareHeight> green_flare = {};
+    for (int y = 0; y < kSecondFlareHeight; ++y) {
+      for (int x = 0; x < kSecondFlareWidth; ++x) {
+        const float dx = (x - (kSecondFlareWidth - 1) / 2.f) / ((kSecondFlareWidth - 1) / 2.f);
+        const float dy = (y - (kSecondFlareHeight - 1) / 2.f) / ((kSecondFlareHeight - 1) / 2.f);
+        const float radius = std::sqrt(dx * dx + dy * dy);
+        const u8 intensity =
+            static_cast<u8>(std::clamp((1.f - radius) * 384.f, 0.f, 255.f));
+        green_flare[y * kSecondFlareWidth + x] =
+            (static_cast<u32>(intensity) << 8) | (static_cast<u32>(intensity) << 24);
+      }
+    }
+    const u64 green_flare_handle = metal_upload_texture_rgba8(
+        device, queue, reinterpret_cast<const u8*>(green_flare.data()), kSecondFlareWidth,
+        kSecondFlareHeight);
+    const PcTextureId green_flare_id(kFlareTexturePage, 1);
+    bool green_flare_registered = false;
+    if (green_flare_handle) {
+      TextureInput input;
+      input.debug_page_name = "synthetic-sprite-page";
+      input.debug_name = "synthetic-glow-adjacent-green-flare";
+      input.id = green_flare_id;
+      input.gpu_texture = green_flare_handle;
+      input.src_data = reinterpret_cast<const u8*>(green_flare.data());
+      input.w = kSecondFlareWidth;
+      input.h = kSecondFlareHeight;
+      std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+      texture_pool.give_texture(input);
+      green_flare_registered = true;
+    }
+    check(green_flare_registered,
+          "registered a wider green-falloff source texture at the adjacent page index");
+
     const auto upload_fixture = make_sprite_texture_upload_fixture();
     const auto upload_plan = metal_renderer::plan_jak2_sprite_texture_upload(
         upload_fixture.packet.data(), upload_fixture.packet.size(), kChainOffset,
@@ -315,13 +365,32 @@ int main() {
           "bucket-312 upload publishes the transparent-falloff source at the glow TBP");
     check(texture_pool.lookup(kPlaceholderFlareTbp).value_or(0) == placeholder_handle,
           "bucket-312 upload publishes the pool placeholder while converted flare data is absent");
+    check(texture_pool.lookup(kSecondFlareTbp).value_or(0) == green_flare_handle &&
+              green_flare_handle != flare_handle,
+          "the same bucket-312 upload publishes the adjacent index at its own TBP");
+    {
+      std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+      const GpuTexture* first = texture_pool.lookup_gpu_texture(kFlareTbp);
+      const GpuTexture* second = texture_pool.lookup_gpu_texture(kSecondFlareTbp);
+      check(first && first->tex_id == flare_id && first->w == 8 && first->h == 8 && second &&
+                second->tex_id == green_flare_id && second->w == kSecondFlareWidth &&
+                second->h == kSecondFlareHeight,
+            "each glow TBP resolves to its own page index and dimensions");
+    }
     const auto release_textures = [&]() {
       if (flare_registered) {
         std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
         texture_pool.unload_texture(flare_id, flare_handle);
       }
+      if (green_flare_registered) {
+        std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+        texture_pool.unload_texture(green_flare_id, green_flare_handle);
+      }
       if (flare_handle) {
         metal_texture_release(flare_handle);
+      }
+      if (green_flare_handle) {
+        metal_texture_release(green_flare_handle);
       }
       metal_texture_release(placeholder_handle);
     };
@@ -796,6 +865,93 @@ int main() {
                slice:0];
     check(slice_zero == slice_zero_sentinel,
           "Glow depth snapshot and game-pass restarts preserve unselected slice 0");
+
+    stream.reset();
+    id<MTLCommandBuffer> adjacent_commands = [queue commandBuffer];
+    auto* adjacent_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    adjacent_pass.colorAttachments[0].texture = color;
+    adjacent_pass.colorAttachments[0].slice = 1;
+    adjacent_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    adjacent_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    adjacent_pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+    adjacent_pass.depthAttachment.texture = depth;
+    adjacent_pass.depthAttachment.slice = 1;
+    adjacent_pass.depthAttachment.loadAction = MTLLoadActionClear;
+    adjacent_pass.depthAttachment.storeAction = MTLStoreActionStore;
+    adjacent_pass.depthAttachment.clearDepth = 0.0;
+    adjacent_pass.stencilAttachment.texture = depth;
+    adjacent_pass.stencilAttachment.slice = 1;
+    adjacent_pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    adjacent_pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    adjacent_pass.stencilAttachment.clearStencil = 0;
+    context.enc = [adjacent_commands renderCommandEncoderWithDescriptor:adjacent_pass];
+    context.cmds = adjacent_commands;
+    [context.enc setViewport:context.game_viewport];
+    context.draw_calls = 0;
+    context.triangles = 0;
+
+    // Both records modulate red and green equally, so each quad's channel shows which texture
+    // the production TBP lookup bound.
+    std::array<SpriteGlowOutput, 2> adjacent_flares = {
+        make_flare(1824.f, 1952.f, 0.f, 128.f),
+        make_flare(2144.f, 2272.f, 384.f, 512.f),
+    };
+    adjacent_flares[1].adgif.tex0_data =
+        (adjacent_flares[1].adgif.tex0_data & ~0x3fffull) | static_cast<u64>(kSecondFlareTbp);
+    for (auto& adjacent_flare : adjacent_flares) {
+      adjacent_flare.flare_draw_color = math::Vector4f{64.f, 64.f, 0.f, 128.f};
+    }
+    renderer.draw(adjacent_flares.data(), adjacent_flares.size(), &state, context);
+    check(renderer.stats().sprites_submitted == 2 && renderer.stats().sprites_drawn == 2 &&
+              renderer.stats().draw_calls == 2 && renderer.stats().missing_textures == 0 &&
+              renderer.stats().invalid_records == 0,
+          "two adjacent-index flares draw from resolved textures in one batch");
+    [context.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> adjacent_blit = [adjacent_commands blitCommandEncoder];
+    [adjacent_blit synchronizeResource:color];
+    [adjacent_blit endEncoding];
+#endif
+    [adjacent_commands commit];
+    [adjacent_commands waitUntilCompleted];
+    check(adjacent_commands.status == MTLCommandBufferStatusCompleted,
+          "the adjacent-index glow command buffer completed");
+    if (adjacent_commands.status != MTLCommandBufferStatusCompleted && adjacent_commands.error) {
+      std::printf("Metal command-buffer error: %s\n",
+                  adjacent_commands.error.localizedDescription.UTF8String);
+    }
+    [color getBytes:pixels.data()
+        bytesPerRow:kTargetSize * 4
+      bytesPerImage:pixels.size()
+         fromRegion:MTLRegionMake2D(0, 0, kTargetSize, kTargetSize)
+        mipmapLevel:0
+              slice:1];
+
+    int left_green_pixels = 0;
+    int right_red_pixels = 0;
+    int right_green_falloff_pixels = 0;
+    for (int y = 0; y < kTargetSize; y++) {
+      for (int x = 0; x < kTargetSize; x++) {
+        if (x < kTargetSize / 2) {
+          left_green_pixels += green_at(pixels, x, y) > 0;
+        } else {
+          right_red_pixels += red_at(pixels, x, y) > 0;
+          right_green_falloff_pixels += green_at(pixels, x, y) > 0 && green_at(pixels, x, y) < 255;
+        }
+      }
+    }
+    check(is_bgra(pixels, 12, kTargetSize / 2, 0, 0, 255, 255),
+          "the first flare quad center samples the red index-0 texture");
+    check(is_bgra(pixels, 52, kTargetSize / 2, 0, 255, 0, 255),
+          "the adjacent flare quad center samples the green index-1 texture, not index 0");
+    check(red_at(pixels, 5, 25) < 16 && green_at(pixels, 45, 25) < 16,
+          "both quads keep their own texture's dark corner falloff instead of a solid square");
+    check(left_green_pixels == 0 && right_red_pixels == 0,
+          "neither quad receives any channel from the other page index");
+    check(right_green_falloff_pixels > 0,
+          "the wider adjacent texture shows partial green falloff inside its quad");
+    check(is_bgra(pixels, 2, 2, 0, 0, 0, 0) && is_bgra(pixels, 32, 2, 0, 0, 0, 0),
+          "the adjacent-index flares leave outside pixels unchanged");
 
     release_textures();
 
