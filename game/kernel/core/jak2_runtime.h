@@ -354,6 +354,23 @@ typedef struct goal_jak2_runtime_metrics {
   uint32_t scene_actor_reserved;
   goal_jak2_scene_actor_diagnostic
       scene_actors[GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX];
+
+  /*!
+   * Game speed. Each GOAL frame advances a clock by time_factor * dog_ratio * clock ratio.
+   * The GOAL values are meaningful only when game_speed_valid is 1: each clock passed its
+   * display index check and every value is finite.
+   */
+  int32_t game_speed_valid;
+  float time_factor;
+  float dog_ratio;
+  float target_clock_ratio;
+  float entity_clock_ratio;
+  float bg_clock_ratio;
+  float camera_clock_ratio;
+  /*! Native timing domain (60 or 120) and frames selected for the latest tick, not completed frames. */
+  int32_t native_target_frame_rate;
+  uint32_t last_dispatcher_frames;
+  uint32_t game_speed_reserved;
 } goal_jak2_runtime_metrics;
 
 /*!

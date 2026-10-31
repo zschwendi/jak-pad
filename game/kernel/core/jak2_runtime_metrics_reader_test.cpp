@@ -19,6 +19,8 @@ static_assert(offsetof(goal_jak2_runtime_metrics, scene_actor_reserved) + sizeof
               offsetof(goal_jak2_runtime_metrics, scene_actors));
 static_assert(offsetof(goal_jak2_runtime_metrics, scene_actors) +
                   sizeof(goal_jak2_runtime_metrics::scene_actors) ==
+              offsetof(goal_jak2_runtime_metrics, game_speed_valid));
+static_assert(offsetof(goal_jak2_runtime_metrics, game_speed_reserved) + sizeof(uint32_t) ==
               sizeof(goal_jak2_runtime_metrics));
 
 int g_failures = 0;
@@ -309,9 +311,62 @@ void reads_mission_progress_without_mutation() {
   expect(!read_progress().valid, "truncated start-time payload fails closed");
 }
 
+void reads_game_speed_only_from_indexed_clocks() {
+  std::array<uint8_t, 0x800> bytes = {};
+  constexpr uint32_t kFalse = 4;
+  constexpr uint32_t kDisplay = 0x100;
+  constexpr uint32_t kTarget = 0x200;
+  constexpr uint32_t kEntity = 0x280;
+  constexpr uint32_t kBg = 0x300;
+  constexpr uint32_t kCamera = 0x380;
+  const MemoryView memory{bytes.data(), bytes.size(), kFalse};
+
+  const auto place_clock = [&](std::size_t slot, uint32_t clock, int32_t index, float ratio) {
+    write(bytes, kDisplay + static_cast<uint32_t>(slot), clock);
+    write(bytes, clock + layout::kClockIndex, index);
+    write(bytes, clock + layout::kClockRatio, ratio);
+  };
+  write(bytes, kDisplay + layout::kDisplayTimeFactor, 2.5f);
+  write(bytes, kDisplay + layout::kDisplayDogRatio, 1.0f);
+  place_clock(layout::kDisplayTargetClock, kTarget, 6, 1.0f);
+  place_clock(layout::kDisplayEntityClock, kEntity, 7, 0.1f);
+  place_clock(layout::kDisplayBgClock, kBg, 9, 0.05f);
+  place_clock(layout::kDisplayCameraClock, kCamera, 10, 1.0f);
+
+  GameSpeed speed = read_game_speed(memory, kDisplay);
+  expect(speed.valid && speed.time_factor == 2.5f && speed.dog_ratio == 1.0f &&
+             speed.target_clock_ratio == 1.0f && speed.entity_clock_ratio == 0.1f &&
+             speed.bg_clock_ratio == 0.05f && speed.camera_clock_ratio == 1.0f,
+         "game speed reads time-factor, dog-ratio and four indexed clock ratios");
+  expect(read(memory, {kDisplay, kFalse, kFalse, kFalse}).game_speed.valid,
+         "the snapshot carries game speed without game-info or settings");
+
+  write(bytes, kEntity + layout::kClockIndex, int32_t{8});
+  speed = read_game_speed(memory, kDisplay);
+  expect(!speed.valid && speed.entity_clock_ratio == 0.f && speed.time_factor == 0.f,
+         "a clock in the wrong display slot invalidates the whole group");
+  write(bytes, kEntity + layout::kClockIndex, int32_t{7});
+
+  write(bytes, kBg + layout::kClockRatio, std::numeric_limits<float>::quiet_NaN());
+  expect(!read_game_speed(memory, kDisplay).valid, "a non-finite clock ratio fails closed");
+  write(bytes, kBg + layout::kClockRatio, 1.0f);
+  write(bytes, kDisplay + layout::kDisplayTimeFactor, std::numeric_limits<float>::infinity());
+  expect(!read_game_speed(memory, kDisplay).valid, "a non-finite time-factor fails closed");
+  write(bytes, kDisplay + layout::kDisplayTimeFactor, 5.0f);
+  expect(read_game_speed(memory, kDisplay).valid, "restored fields read valid again");
+
+  write(bytes, kDisplay + layout::kDisplayCameraClock, kFalse);
+  expect(!read_game_speed(memory, kDisplay).valid, "a #f clock slot is not a zero ratio");
+  write(bytes, kDisplay + layout::kDisplayCameraClock, static_cast<uint32_t>(bytes.size() - 2));
+  expect(!read_game_speed(memory, kDisplay).valid, "a truncated clock cannot be read");
+  expect(!read_game_speed(memory, kFalse).valid && !read_game_speed(memory, 0).valid,
+         "an absent *display* leaves game speed invalid");
+}
+
 }  // namespace
 
 int main() {
+  reads_game_speed_only_from_indexed_clocks();
   reads_asserted_jak2_scene_layout();
   reads_bounded_scene_actor_lifecycle();
   malformed_memory_fails_closed();

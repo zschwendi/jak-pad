@@ -31,6 +31,21 @@ constexpr std::size_t kClockFrameCounter = live_basic_offset(24);
 constexpr std::size_t kDisplayBaseClock = live_basic_offset(48);
 constexpr std::size_t kGameInfoBlackoutTime = live_basic_offset(392);
 
+// Game speed: each clock advances time-factor * dog-ratio * clock-ratio per GOAL frame. A clock's
+// index is its slot in display::clock, which display-h.gc overlays with the named clocks.
+constexpr std::size_t kDisplayTargetClock = live_basic_offset(64);
+constexpr std::size_t kDisplayEntityClock = live_basic_offset(68);
+constexpr std::size_t kDisplayBgClock = live_basic_offset(76);
+constexpr std::size_t kDisplayCameraClock = live_basic_offset(80);
+constexpr std::size_t kDisplayTimeFactor = live_basic_offset(92);
+constexpr std::size_t kDisplayDogRatio = live_basic_offset(96);
+constexpr std::size_t kClockIndex = live_basic_offset(4);
+constexpr std::size_t kClockRatio = live_basic_offset(12);
+constexpr int32_t kTargetClockIndex = 6;
+constexpr int32_t kEntityClockIndex = 7;
+constexpr int32_t kBgClockIndex = 9;
+constexpr int32_t kCameraClockIndex = 10;
+
 // setting-control::user-current is an inline structure. user-setting-data's six contiguous
 // background floats occupy offsets 76 through 99; movie and spooling are tracked pointer fields.
 constexpr std::size_t kSettingUserCurrent = live_basic_offset(16);
@@ -78,6 +93,10 @@ static_assert(kProcessState == 60);
 static_assert(kClockFrameCounter == 20);
 static_assert(kArrayData == 12);
 static_assert(kDisplayBaseClock == 44);
+static_assert(kDisplayBaseClock + (kTargetClockIndex - 2) * sizeof(uint32_t) == kDisplayTargetClock);
+static_assert(kDisplayBaseClock + (kCameraClockIndex - 2) * sizeof(uint32_t) == kDisplayCameraClock);
+static_assert(kDisplayBaseClock + 11 * sizeof(uint32_t) == kDisplayTimeFactor);
+static_assert(kClockRatio == 8);
 static_assert(kGameInfoBlackoutTime == 388);
 static_assert(kSettingUserCurrent + kUserBackgroundAlpha == 100);
 static_assert(kSettingUserCurrent + kUserBackgroundAlphaForce == 108);
@@ -239,11 +258,55 @@ struct SceneActorDiagnostics {
   std::array<goal_jak2_scene_actor_diagnostic, GOAL_JAK2_SCENE_ACTOR_DIAGNOSTIC_MAX> actors = {};
 };
 
+struct GameSpeed {
+  bool valid = false;
+  float time_factor = 0.f;
+  float dog_ratio = 0.f;
+  float target_clock_ratio = 0.f;
+  float entity_clock_ratio = 0.f;
+  float bg_clock_ratio = 0.f;
+  float camera_clock_ratio = 0.f;
+};
+
+inline bool read_display_clock_ratio(const MemoryView& memory,
+                                     uint32_t display,
+                                     std::size_t slot_offset,
+                                     int32_t expected_index,
+                                     float* ratio) {
+  uint32_t clock = 0;
+  int32_t index = -1;
+  return memory.read(display, slot_offset, &clock) &&
+         memory.read(clock, layout::kClockIndex, &index) && index == expected_index &&
+         memory.read(clock, layout::kClockRatio, ratio) && std::isfinite(*ratio);
+}
+
+inline GameSpeed read_game_speed(const MemoryView& memory, uint32_t display) {
+  GameSpeed out;
+  if (memory.read(display, layout::kDisplayTimeFactor, &out.time_factor) &&
+      std::isfinite(out.time_factor) &&
+      memory.read(display, layout::kDisplayDogRatio, &out.dog_ratio) &&
+      std::isfinite(out.dog_ratio) &&
+      read_display_clock_ratio(memory, display, layout::kDisplayTargetClock,
+                               layout::kTargetClockIndex, &out.target_clock_ratio) &&
+      read_display_clock_ratio(memory, display, layout::kDisplayEntityClock,
+                               layout::kEntityClockIndex, &out.entity_clock_ratio) &&
+      read_display_clock_ratio(memory, display, layout::kDisplayBgClock, layout::kBgClockIndex,
+                               &out.bg_clock_ratio) &&
+      read_display_clock_ratio(memory, display, layout::kDisplayCameraClock,
+                               layout::kCameraClockIndex, &out.camera_clock_ratio)) {
+    out.valid = true;
+    return out;
+  }
+  return {};
+}
+
 struct Snapshot {
   bool display_timing_valid = false;
   int64_t display_base_frame_counter = 0;
   int64_t blackout_time = 0;
   int64_t blackout_remaining = 0;
+
+  GameSpeed game_speed;
 
   bool settings_valid = false;
   float background_alpha = 0.f;
@@ -330,6 +393,7 @@ inline Snapshot read(const MemoryView& memory, const Inputs& inputs) {
     out.blackout_remaining = std::max<int64_t>(
         0, saturating_subtract(out.blackout_time, out.display_base_frame_counter));
   }
+  out.game_speed = read_game_speed(memory, inputs.display);
 
   const std::size_t user = layout::kSettingUserCurrent;
   if (memory.read(inputs.setting_control, user + layout::kUserMovie, &out.movie_process) &&

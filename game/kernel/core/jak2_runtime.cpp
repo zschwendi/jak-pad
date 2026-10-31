@@ -376,6 +376,15 @@ void update_scene_diagnostic_metrics() {
   g_metrics.blackout_time = scene.blackout_time;
   g_metrics.blackout_remaining = scene.blackout_remaining;
 
+  g_metrics.game_speed_valid = scene.game_speed.valid;
+  g_metrics.time_factor = scene.game_speed.time_factor;
+  g_metrics.dog_ratio = scene.game_speed.dog_ratio;
+  g_metrics.target_clock_ratio = scene.game_speed.target_clock_ratio;
+  g_metrics.entity_clock_ratio = scene.game_speed.entity_clock_ratio;
+  g_metrics.bg_clock_ratio = scene.game_speed.bg_clock_ratio;
+  g_metrics.camera_clock_ratio = scene.game_speed.camera_clock_ratio;
+  g_metrics.native_target_frame_rate = g_display_timing.target_frame_rate;
+
   g_metrics.settings_diagnostics_valid = scene.settings_valid;
   g_metrics.background_alpha = scene.background_alpha;
   g_metrics.background_alpha_force = scene.background_alpha_force;
@@ -1190,6 +1199,7 @@ goal_jak2_runtime_status goal_jak2_runtime_tick_at(double target_presentation_ti
     }
     const auto timing =
         goal_jak2_display_timing_advance(&g_display_timing, target_presentation_time);
+    g_metrics.last_dispatcher_frames = timing.dispatcher_frames;
     // Jak 2's overlord publishes sound/stream state from its vblank handler. The portable runtime
     // has no IOP vblank, so keep that established 60 Hz clock independent of display callbacks
     // while preserving the baseline sound-before-dispatch ordering inside a catch-up batch.
