@@ -389,8 +389,6 @@ if(APPLE)
     # Objective-C++)
     list(APPEND RUNTIME_SOURCE
         graphics/pipelines/metal/metal_jak2_bucket_table.cpp
-        graphics/pipelines/metal/metal_jak2_common_tfrag_texture_upload_capture.cpp
-        graphics/pipelines/metal/metal_jak2_pris2_bucket228_plan.cpp
         graphics/pipelines/metal/metal_kernel_bridge.cpp
         graphics/pipelines/metal/metal_texture_upload_handler.cpp)
 

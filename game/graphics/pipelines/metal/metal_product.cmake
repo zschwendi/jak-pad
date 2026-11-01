@@ -114,11 +114,6 @@ function(opengoal_add_metal_product target)
       ${OPENGOAL_METAL_RENDERER_SOURCES}
       "${metal_embed}"
       "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_bucket_table.cpp"
-      # metal_eye_renderer.mm orders PRIS eye producers with the PRIS2 plan, whose eye planner
-      # lives in the common-tfrag capture unit. Host and test targets may also compile these;
-      # nothing force-loads archives, so only one copy of each is ever linked.
-      "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_common_tfrag_texture_upload_capture.cpp"
-      "${OPENGOAL_METAL_PRODUCT_DIR}/metal_jak2_pris2_bucket228_plan.cpp"
       "${OPENGOAL_METAL_PRODUCT_DIR}/metal_host_seams.cpp"
       "${OPENGOAL_METAL_PRODUCT_DIR}/metal_kernel_bridge.cpp"
       "${OPENGOAL_METAL_PRODUCT_DIR}/metal_texture_upload_handler.cpp"
