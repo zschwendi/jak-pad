@@ -104,7 +104,17 @@ int main() {
   const float one_meter_depth = jak1_default_metal_depth(4096.f);
   const float one_meter_pixels_at_640 =
       ndc_disparity(product_left, product_right, one_meter_depth) * 640.f * 0.5f;
-  if (!close(one_meter_depth, 0.2497386f) || !close(one_meter_pixels_at_640, 3.1958177f)) {
+  // Analytical disparity from the same float inputs, evaluated in double: NDC disparity is
+  // slope * (depth - convergence) and 640-wide pixels are NDC * 640 / 2.
+  const double reference_pixels_at_640 =
+      double(kProductSlope) * (double(one_meter_depth) - double(kProductConvergenceDepth)) *
+      640.0 * 0.5;
+  // Each eye's float x lies in [0.125, 0.5) and takes two sum roundings of at most 2^-26 plus far
+  // smaller product roundings; right - left is exact (Sterbenz). 8 * 2^-26 NDC bounds the result.
+  const double pixel_rounding_bound = 8.0 * std::ldexp(1.0, -26) * 640.0 * 0.5;
+  if (!close(one_meter_depth, 0.2497386f) ||
+      std::abs(reference_pixels_at_640 - 3.1958176) > 1e-6 ||
+      std::abs(double(one_meter_pixels_at_640) - reference_pixels_at_640) > pixel_rounding_bound) {
     return 1;
   }
 
