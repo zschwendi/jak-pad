@@ -189,12 +189,15 @@ GifBuilder make_textured_offscreen_sprite(bool alpha_blend = false) {
           {GifTag::RegisterDescriptor::RGBAQ, GifTag::RegisterDescriptor::UV,
            GifTag::RegisterDescriptor::XYZF2},
           true, sprite_prim);
+  // XYOFFSET 512 plus the offscreen transform and the envmap's 128x128 viewport on its 64x64
+  // target map raw GS x and y to pixel = raw / 16 - 32, so this covers x 39.875..55.5 and
+  // y 30.5..43, inside the target.
   gif.rgbaq(128, 128, 128, 128);
   gif.uv(0, 0);
-  gif.xyzf2(1150, 2000);
+  gif.xyzf2(1150, 1200);
   gif.rgbaq(128, 128, 128, 128);
   gif.uv(4 * 16, 4 * 16);
-  gif.xyzf2(1400, 1800);
+  gif.xyzf2(1400, 1000);
   return gif;
 }
 
@@ -788,6 +791,8 @@ int main() {
       const auto direct_pixel = pixel(first_pass, 48, 40);
       check(!near(direct_pixel, {20, 40, 80, 128}, 5),
             "the source-positioned sprite lands only through Direct offscreen coordinates");
+      check(near(pixel(first_pass, 60, 40), {20, 40, 80, 128}, 1),
+            "a pixel right of the sprite and outside the haze keeps the sky clear");
       std::set<std::array<u8, 4>> result_colors;
       for (int y = 0; y < 64; y += 4) {
         for (int x = 0; x < 64; x += 4) {
