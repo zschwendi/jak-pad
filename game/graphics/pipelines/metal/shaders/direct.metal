@@ -55,6 +55,9 @@ struct DirectBasicVSOut {
   float4 pos [[position]];
   float4 fragment_color;
   float4 gs_scissor;
+  // Authored (pre-HUD-plane) NDC; perspective-correct, so it stays exact under a projective H.
+  float2 scissor_ndc;
+  uint hud_scissor [[flat]];
 };
 
 struct DirectTexturedVSOut {
@@ -63,18 +66,27 @@ struct DirectTexturedVSOut {
   float3 tex_coord;
   float fog;
   float4 gs_scissor;
+  float2 scissor_ndc;
+  uint hud_scissor [[flat]];
   uint4 tex_info [[flat]];  // x = unit, y = tcc, z = decal, w = fog_enable
   uint use_uv [[flat]];
 };
 
 // GS scissor test, top-down fragment coordinates. Same pass set as the GL
-// direct_basic.frag / direct_basic_textured.frag scissor blocks.
-static bool scissor_discard(float4 pos, float4 gs_scissor, constant DirectFsParams& params) {
+// direct_basic.frag / direct_basic_textured.frag scissor blocks. The GS scissor
+// lives in authored screen space, so HUD-plane fragments test their authored
+// NDC mapped to the same viewport pixel coordinates `pos` would have had.
+static bool scissor_discard(float4 pos, float2 scissor_ndc, uint hud_scissor,
+                            float4 gs_scissor, constant DirectFsParams& params) {
   if (params.scissor_enable != 1) {
     return false;
   }
   float x = pos.x;
   float y = pos.y;
+  if (hud_scissor != 0) {
+    x = (scissor_ndc.x + 1.0) * 0.5 * params.game_sizes.z;
+    y = (1.0 - scissor_ndc.y) * 0.5 * params.game_sizes.w;
+  }
   float w = params.game_sizes.z / params.game_sizes.x;
   float h = params.game_sizes.w / params.game_sizes.y;
   float scax0 = gs_scissor.x * w + 0.5;
@@ -102,12 +114,14 @@ vertex DirectBasicVSOut direct_basic_vs(uint vid [[vertex_id]],
   float4 rgba = float4(v.rgba) / 255.0;
   out.fragment_color = float4(rgba.xyz, rgba.w * 2.0);
   out.gs_scissor = v.scissor;
+  out.scissor_ndc = game_clip.xy;
+  out.hud_scissor = params.apply_hud_plane;
   return out;
 }
 
 fragment float4 direct_basic_fs(DirectBasicVSOut in [[stage_in]],
                                 constant DirectFsParams& params [[buffer(0)]]) {
-  if (scissor_discard(in.pos, in.gs_scissor, params)) {
+  if (scissor_discard(in.pos, in.scissor_ndc, in.hud_scissor, in.gs_scissor, params)) {
     discard_fragment();
   }
   return in.fragment_color;
@@ -138,6 +152,8 @@ vertex DirectTexturedVSOut direct_textured_vs(uint vid [[vertex_id]],
   out.fog = 255.0 - v.xyzf.w;
   out.use_uv = v.use_uv;
   out.gs_scissor = v.scissor;
+  out.scissor_ndc = game_clip.xy;
+  out.hud_scissor = params.apply_hud_plane;
   return out;
 }
 
@@ -145,7 +161,7 @@ fragment float4 direct_textured_fs(DirectTexturedVSOut in [[stage_in]],
                                    constant DirectFsParams& params [[buffer(0)]],
                                    texture2d<float> tex [[texture(0)]],
                                    sampler samp [[sampler(0)]]) {
-  if (scissor_discard(in.pos, in.gs_scissor, params)) {
+  if (scissor_discard(in.pos, in.scissor_ndc, in.hud_scissor, in.gs_scissor, params)) {
     discard_fragment();
   }
 

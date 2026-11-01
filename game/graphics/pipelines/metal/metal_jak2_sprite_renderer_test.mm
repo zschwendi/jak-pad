@@ -1322,40 +1322,67 @@ PixelExtent expected_hud_extent(const metal_renderer::ViewTransform& transform) 
       -(kStereoHudY + kStereoBasisY * kStereoHudScale) / 128.f * kJak1ScissorAdjust);
 }
 
+// Optional `scissor` is a SCISSOR_1 value set on the same renderer instance (the enable flag is
+// per instance); the shared scissor registers are restored afterwards. `textured` modulates by
+// the white Jak 1 stereo texture with pixel UVs, selecting the textured Direct shader.
 void draw_screen_control(MetalSharedRenderState* state, MetalFrameContext& ctx,
                          bool hud_opt_in, float x0, float y0, float x1, float y1,
-                         Pixel color) {
+                         Pixel color, const u64* scissor = nullptr, bool textured = false) {
   struct Qw { u64 lo; u64 hi; };
   using Reg = GifTag::RegisterDescriptor;
   const auto tag = [](u32 loops, u32 regs) {
     return loops | (1ull << 15) | (static_cast<u64>(regs) << 60);
   };
-  const Qw setup[] = {
-      {tag(2, 1), static_cast<u64>(Reg::AD)},
+  std::vector<Qw> setup = {
+      {0, static_cast<u64>(Reg::AD)},
       {448 | (1ull << 24) | (1ull << 32), static_cast<u64>(GsRegisterAddress::ZBUF_1)},
       {1 | (1 << 1) | (1 << 16) | (1 << 17), static_cast<u64>(GsRegisterAddress::TEST_1)},
   };
-  const Reg regs[] = {Reg::PRIM, Reg::RGBAQ, Reg::XYZF2, Reg::RGBAQ, Reg::XYZF2,
-                      Reg::RGBAQ, Reg::XYZF2, Reg::RGBAQ, Reg::XYZF2};
+  if (scissor) {
+    setup.push_back({*scissor, static_cast<u64>(GsRegisterAddress::SCISSOR_1)});
+  }
+  if (textured) {
+    setup.push_back({gs_tex0(kJak1StereoTextureTbp, 1, 0, 3, 3),
+                     static_cast<u64>(GsRegisterAddress::TEX0_1)});
+  }
+  setup[0].lo = tag(setup.size() - 1, 1);
+  std::vector<Reg> regs = {Reg::PRIM};
+  for (int i = 0; i < 4; ++i) {
+    regs.push_back(Reg::RGBAQ);
+    if (textured) regs.push_back(Reg::UV);
+    regs.push_back(Reg::XYZF2);
+  }
   u64 packed_regs = 0;
-  for (int i = 0; i < 9; ++i) packed_regs |= static_cast<u64>(regs[i]) << (i * 4);
-  std::vector<Qw> gif = {{tag(1, 9), packed_regs},
-                         {static_cast<u64>(GsPrim::Kind::TRI_STRIP) | 8, 0}};
+  for (std::size_t i = 0; i < regs.size(); ++i) {
+    packed_regs |= static_cast<u64>(regs[i]) << (i * 4);
+  }
+  // PRIM: IIP, plus TME and FST for the textured variant.
+  const u64 prim = static_cast<u64>(GsPrim::Kind::TRI_STRIP) | 8 | (textured ? 0x110 : 0);
+  std::vector<Qw> gif = {{tag(1, regs.size()), packed_regs}, {prim, 0}};
   const float corners[4][2] = {{x0, y0}, {x1, y0}, {x0, y1}, {x1, y1}};
   for (const auto& corner : corners) {
     gif.push_back({color.r | (static_cast<u64>(color.g) << 32),
                    color.b | (0x80ull << 32)});
+    if (textured) {
+      // Texel (4, 4) of the uniformly white 8x8 texture.
+      gif.push_back({(4ull * 16) | ((4ull * 16) << 32), 0});
+    }
     const u64 x = static_cast<u64>((2048.f + 256.f * corner[0]) * 16.f);
     const u64 y = static_cast<u64>((2048.f - 112.f * corner[1]) * 16.f);
     gif.push_back({x | (y << 32), 0});
   }
   MetalDirectRenderer direct("synthetic-screen-control", 1, 100,
                              metal_renderer::StereoSpace::Screen, hud_opt_in);
+  const auto saved_scissor = direct.capture_scissor();
   direct.reset_state();
-  direct.render_gif(reinterpret_cast<const u8*>(setup), sizeof(setup), state, ctx);
+  direct.render_gif(reinterpret_cast<const u8*>(setup.data()), setup.size() * 16, state, ctx);
   direct.render_gif(reinterpret_cast<const u8*>(gif.data()), gif.size() * 16, state, ctx);
   direct.flush_pending(state, ctx);
   ASSERT(direct.stats().draw_calls == 1);
+  ASSERT(direct.stats().missing_texture_draw_calls == 0);
+  if (scissor) {
+    direct.restore_scissor(saved_scissor);
+  }
 }
 
 void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
@@ -1591,6 +1618,272 @@ void test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not() {
   texture_pool.set_placeholder(0);
   ASSERT(metal_texture_live_count() == initial_live_textures);
   std::puts("jak2-metal-sprite-renderer-test: jak1 group-0 2D stereo/HUD screen PASS");
+}
+
+// Right-half SCISSOR_1 of the authored 512x448 Jak 1 screen. The GS scissor is authored-space
+// state, so under the HUD plane it must clip the transformed image of the authored right half,
+// not the physical right half of the target. Drawn by draw_screen_control on one renderer.
+constexpr u64 kRightHalfScissor = 256 | (511ull << 16) | (0ull << 32) | (447ull << 48);
+// Corners encode exactly in draw_screen_control's GS fixed point.
+constexpr float kScissorQuadX = 0.75f;
+constexpr float kScissorQuadY = 0.5f;
+
+enum class ScissorOracle { Clear, Covered, Ambiguous };
+
+// Independent oracle: invert the HUD plane's x/y/w homography at a physical pixel position to
+// recover the authored NDC, then apply the quad bounds and the GS scissor in authored viewport
+// pixels. `authored_space = false` models the old physical-coordinate scissor instead.
+bool scissored_quad_covers(const std::array<float, 16>& h, float px, float py,
+                           bool authored_space) {
+  const float m[3][3] = {{h[0], h[4], h[12]}, {h[1], h[5], h[13]}, {h[3], h[7], h[15]}};
+  const float ndc[3] = {px / kDistortTargetWidth * 2.f - 1.f,
+                        1.f - py / kDistortTargetHeight * 2.f, 1.f};
+  // Adjugate inverse; the projective scale cancels in the divide.
+  const float inv[3][3] = {
+      {m[1][1] * m[2][2] - m[1][2] * m[2][1], m[0][2] * m[2][1] - m[0][1] * m[2][2],
+       m[0][1] * m[1][2] - m[0][2] * m[1][1]},
+      {m[1][2] * m[2][0] - m[1][0] * m[2][2], m[0][0] * m[2][2] - m[0][2] * m[2][0],
+       m[0][2] * m[1][0] - m[0][0] * m[1][2]},
+      {m[1][0] * m[2][1] - m[1][1] * m[2][0], m[0][1] * m[2][0] - m[0][0] * m[2][1],
+       m[0][0] * m[1][1] - m[0][1] * m[1][0]}};
+  float a[3];
+  for (int r = 0; r < 3; r++) {
+    a[r] = inv[r][0] * ndc[0] + inv[r][1] * ndc[1] + inv[r][2] * ndc[2];
+  }
+  const float x = a[0] / a[2];
+  const float y = a[1] / a[2];
+  if (std::abs(x) > kScissorQuadX || std::abs(y) > kScissorQuadY) {
+    return false;
+  }
+  const float sx = authored_space ? (x + 1.f) * 0.5f * kDistortTargetWidth : px;
+  const float sy = authored_space ? (1.f - y) * 0.5f * kDistortTargetHeight : py;
+  const float w = kDistortTargetWidth / 512.f;
+  const float hs = kDistortTargetHeight / 448.f;
+  return sx >= 256.f * w + 0.5f && sx <= 511.f * w + 0.5f && sy >= 0.f * hs - 0.5f &&
+         sy <= 447.f * hs - 0.5f;
+}
+
+// A pixel is decided only if its center and all four corners agree; edges are left to the
+// rasterizer.
+ScissorOracle classify_scissor_pixel(const std::array<float, 16>& h, int x, int y,
+                                     bool authored_space) {
+  const bool center = scissored_quad_covers(h, x + 0.5f, y + 0.5f, authored_space);
+  for (float dx : {0.f, 1.f}) {
+    for (float dy : {0.f, 1.f}) {
+      if (scissored_quad_covers(h, x + dx, y + dy, authored_space) != center) {
+        return ScissorOracle::Ambiguous;
+      }
+    }
+  }
+  return center ? ScissorOracle::Covered : ScissorOracle::Clear;
+}
+
+void test_direct_hud_scissor_uses_authored_screen_space() {
+  id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+  ASSERT(device);
+  id<MTLCommandQueue> queue = [device newCommandQueue];
+  ASSERT(queue);
+  dispatch_data_t library_data = dispatch_data_create(
+      g_goalpad_metallib, g_goalpad_metallib_size, nullptr,
+      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  NSError* library_error = nil;
+  id<MTLLibrary> library = [device newLibraryWithData:library_data error:&library_error];
+  if (!library && library_error) {
+    std::printf("Metal library error: %s\n", library_error.localizedDescription.UTF8String);
+  }
+  ASSERT(library);
+  MetalPsoCache pso_cache;
+  MetalSamplerCache sampler_cache;
+  MetalStreamBuffer stream;
+  ASSERT(pso_cache.init(device, library));
+  sampler_cache.init(device);
+  stream.init(device);
+
+  // The textured variant samples a uniformly white texture, so only scissor and coverage decide
+  // which pixels turn blue.
+  const std::size_t initial_live_textures = metal_texture_live_count();
+  TexturePool texture_pool(GameVersion::Jak1);
+  ASSERT(metal_setup_placeholder(device, queue, texture_pool));
+  const u64 placeholder = texture_pool.get_placeholder_texture();
+  std::vector<u8> source(kJak1StereoTextureSize * kJak1StereoTextureSize * 4, 255);
+  const u64 source_handle = metal_upload_texture_rgba8(
+      device, queue, source.data(), kJak1StereoTextureSize, kJak1StereoTextureSize);
+  ASSERT(source_handle);
+  PcTextureId source_id;
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+    TextureInput input;
+    input.debug_page_name = "SYNTHETIC";
+    input.debug_name = "direct-hud-scissor";
+    input.id = PcTextureId::from_combo_id(
+        (static_cast<u32>(kJak1StereoTexturePage) << 16) | kJak1StereoTextureIndex);
+    source_id = input.id;
+    input.gpu_texture = source_handle;
+    input.src_data = source.data();
+    input.w = kJak1StereoTextureSize;
+    input.h = kJak1StereoTextureSize;
+    texture_pool.give_texture(input);
+  }
+  publish_synthetic_texture(texture_pool, kJak1StereoTexturePage, kJak1StereoTextureIndex,
+                            kJak1StereoTextureTbp);
+  ASSERT(texture_pool.lookup(kJak1StereoTextureTbp).value_or(0) == source_handle);
+
+  // Column-major. Affine eyes: x' = 0.4x -/+ 0.25, y' = 0.4y - 0.25 (the existing HUD fixture).
+  // Projective eyes add w' = 1 +/- 0.3x (w in [0.775, 1.225]), so the authored scissor edge is
+  // only recovered by perspective-correct interpolation of the authored NDC.
+  const auto plane = [](float tx, float kx) {
+    return std::array<float, 16>{0.4f, 0, 0, kx, 0, 0.4f, 0, 0, 0, 0, 0, 0, tx, -0.25f, 0.2f, 1};
+  };
+  struct Case {
+    const char* name;
+    bool hud_enabled;
+    bool hud_opt_in;
+    std::array<float, 16> h;
+  };
+  const Case cases[] = {
+      {"left", true, true, plane(-0.25f, 0.f)},
+      {"right", true, true, plane(0.25f, 0.f)},
+      {"left-projective", true, true, plane(-0.25f, 0.3f)},
+      {"right-projective", true, true, plane(0.25f, -0.3f)},
+      {"hud-disabled", false, true, plane(-0.25f, 0.f)},
+      {"untagged", true, false, plane(-0.25f, 0.f)},
+  };
+  constexpr Pixel clear = {16, 32, 48, 255};
+  constexpr Pixel blue = {0, 0, 255, 255};
+  // Every case runs through the basic and then the textured Direct shader.
+  constexpr std::size_t kCaseCount = std::size(cases);
+  for (std::size_t run = 0; run < 2 * kCaseCount; run++) {
+    const Case& test_case = cases[run % kCaseCount];
+    const bool textured = run >= kCaseCount;
+    stream.reset();
+    auto* color_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                     width:kDistortTargetWidth
+                                    height:kDistortTargetHeight
+                                 mipmapped:NO];
+    color_desc.usage = MTLTextureUsageRenderTarget;
+#if TARGET_OS_OSX
+    color_desc.storageMode = MTLStorageModeManaged;
+#else
+    color_desc.storageMode = MTLStorageModeShared;
+#endif
+    id<MTLTexture> color = [device newTextureWithDescriptor:color_desc];
+    ASSERT(color);
+    auto* depth_desc = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                     width:kDistortTargetWidth
+                                    height:kDistortTargetHeight
+                                 mipmapped:NO];
+    depth_desc.usage = MTLTextureUsageRenderTarget;
+    depth_desc.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> depth = [device newTextureWithDescriptor:depth_desc];
+    ASSERT(depth);
+
+    id<MTLCommandBuffer> commands = [queue commandBuffer];
+    auto* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = color;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.colorAttachments[0].clearColor =
+        MTLClearColorMake(clear.r / 255.f, clear.g / 255.f, clear.b / 255.f, 1.f);
+    pass.depthAttachment.texture = depth;
+    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.storeAction = MTLStoreActionStore;
+    pass.depthAttachment.clearDepth = 0;
+    pass.stencilAttachment.texture = depth;
+    pass.stencilAttachment.loadAction = MTLLoadActionClear;
+    pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    pass.stencilAttachment.clearStencil = 0;
+
+    MetalFrameContext ctx;
+    ctx.cmds = commands;
+    ctx.enc = [commands renderCommandEncoderWithDescriptor:pass];
+    ctx.pso_cache = &pso_cache;
+    ctx.sampler_cache = &sampler_cache;
+    ctx.stream = &stream;
+    ctx.color_format = MTLPixelFormatBGRA8Unorm;
+    ctx.depth_format = MTLPixelFormatDepth32Float_Stencil8;
+    ctx.game_color = color;
+    ctx.game_depth = depth;
+    ctx.game_viewport = {0.0, 0.0, kDistortTargetWidth, kDistortTargetHeight, 0.0, 1.0};
+    [ctx.enc setCullMode:MTLCullModeNone];
+    [ctx.enc setViewport:ctx.game_viewport];
+
+    MetalSharedRenderState state;
+    state.version = GameVersion::Jak1;
+    state.texture_pool = &texture_pool;
+    state.game_res_w = kDistortTargetWidth;
+    state.game_res_h = kDistortTargetHeight;
+    state.hud_plane.enabled = test_case.hud_enabled;
+    state.hud_plane.clip_from_screen_clip = test_case.h;
+    draw_screen_control(&state, ctx, test_case.hud_opt_in, -kScissorQuadX, -kScissorQuadY,
+                        kScissorQuadX, kScissorQuadY, blue, &kRightHalfScissor, textured);
+    [ctx.enc endEncoding];
+#if TARGET_OS_OSX
+    id<MTLBlitCommandEncoder> sync = [commands blitCommandEncoder];
+    [sync synchronizeResource:color];
+    [sync endEncoding];
+#endif
+    [commands commit];
+    [commands waitUntilCompleted];
+    ASSERT(commands.status == MTLCommandBufferStatusCompleted);
+
+    std::vector<u8> pixels(kDistortTargetWidth * kDistortTargetHeight * 4);
+    [color getBytes:pixels.data()
+        bytesPerRow:kDistortTargetWidth * 4
+         fromRegion:MTLRegionMake2D(0, 0, kDistortTargetWidth, kDistortTargetHeight)
+        mipmapLevel:0];
+
+    const bool applies_hud = test_case.hud_enabled && test_case.hud_opt_in;
+    const auto h = applies_hud ? test_case.h : metal_renderer::kIdentityMatrix4;
+    int covered = 0;
+    int cleared = 0;
+    int mismatches = 0;
+    int old_model_disagrees = 0;
+    for (int y = 0; y < kDistortTargetHeight; y++) {
+      for (int x = 0; x < kDistortTargetWidth; x++) {
+        const auto expected = classify_scissor_pixel(h, x, y, true);
+        if (expected == ScissorOracle::Ambiguous) {
+          continue;
+        }
+        const Pixel pixel = read_bgra_pixel(pixels, x, y);
+        const bool is_blue = pixel.b >= 250 && pixel.r <= 5 && pixel.g <= 5;
+        const bool is_clear = pixel_near(pixel, clear, 0);
+        ASSERT(is_blue || is_clear);
+        const bool expect_blue = expected == ScissorOracle::Covered;
+        (expect_blue ? covered : cleared)++;
+        if (is_blue != expect_blue) {
+          if (mismatches++ < 8) {
+            std::printf("direct HUD scissor %s%s: pixel (%d, %d) expected %s\n", test_case.name,
+                        textured ? " textured" : "", x, y, expect_blue ? "covered" : "clear");
+          }
+        }
+        const auto old_model = classify_scissor_pixel(h, x, y, false);
+        if (old_model != ScissorOracle::Ambiguous && old_model != expected) {
+          old_model_disagrees++;
+        }
+      }
+    }
+    ASSERT(mismatches == 0);
+    ASSERT(covered > 50);
+    ASSERT(cleared > 50);
+    // HUD cases must discriminate the physical-coordinate scissor; identity controls must not.
+    if (applies_hud) {
+      ASSERT(old_model_disagrees >= 50);
+    } else {
+      ASSERT(old_model_disagrees == 0);
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> pool_lock(texture_pool.mutex());
+    texture_pool.unload_texture(source_id, source_handle);
+  }
+  metal_texture_release(source_handle);
+  metal_texture_release(placeholder);
+  texture_pool.set_placeholder(0);
+  ASSERT(metal_texture_live_count() == initial_live_textures);
+  std::puts("jak2-metal-sprite-renderer-test: direct HUD authored-space scissor PASS");
 }
 
 // ---------------------------------------------------------------------------
@@ -2158,6 +2451,7 @@ int main() {
     test_mech_flame_identity_publication_and_alpha();
     test_multi_distorter_spatial_sampling_and_alpha();
     test_jak1_group0_2d_sprites_follow_eye_transform_and_hud_does_not();
+    test_direct_hud_scissor_uses_authored_screen_space();
     test_jak1_physical_stereo_footprint_and_billboard_against_ground();
   }
   std::puts("jak2-metal-sprite-renderer-test: PASS");
