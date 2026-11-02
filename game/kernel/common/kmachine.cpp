@@ -526,6 +526,11 @@ u64 pc_get_mips2c(u32 name) {
   return Mips2C::gLinkedFunctionTable.get(n);
 }
 
+u64 pc_get_portrait_font_scale() {
+  // GOAL scalar returns use integer registers, including IEEE float bits.
+  return 0x3f800000u;
+}
+
 u64 pc_host_manages_display() {
   return bool_to_symbol(false);
 }
@@ -1133,6 +1138,7 @@ void init_common_pc_port_functions(
 
   // -- DISPLAY RELATED --
   make_func_symbol_func("pc-host-manages-display?", (void*)pc_host_manages_display);
+  make_func_symbol_func("pc-get-portrait-font-scale", (void*)pc_get_portrait_font_scale);
   // Returns the name of the display with the given id or #f if not found / empty
   make_func_symbol_func("pc-get-display-id", (void*)pc_get_display_id);
   make_func_symbol_func("pc-set-display-id!", (void*)pc_set_display_id);

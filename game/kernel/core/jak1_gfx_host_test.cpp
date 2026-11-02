@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "game/kernel/common/Ptr.h"
@@ -104,6 +105,31 @@ int main() {
   expect(host_manages_display &&
              goal_aot_call(host_manages_display, 0, 0, 0) == goal_game_true_offset(),
          "portable kernel host reports that it manages display presentation");
+
+  const uint32_t portrait_font = lookup("pc-get-portrait-font-scale");
+  expect(portrait_font != 0, "portable portrait font query is registered");
+  auto font_scale = [&]() {
+    const uint32_t bits = static_cast<uint32_t>(goal_aot_call(portrait_font, 0, 0, 0));
+    float result = 0.f;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+  };
+  expect(font_scale() == 1.f, "portrait font query defaults to identity through GOAL ABI");
+  for (const auto& size : std::vector<std::pair<int, int>>{{640, 480}, {1920, 1080},
+                                                        {1200, 1000}, {1000, 1000}}) {
+    goal_kernel_core_set_portrait_font_viewport(true, size.first, size.second);
+    expect(font_scale() == 1.f, "landscape and square font sizing are unchanged");
+  }
+  goal_kernel_core_set_portrait_font_viewport(true, 750, 1000);
+  expect(font_scale() == 0.5625f, "3:4 portrait uses the available width for text");
+  goal_kernel_core_set_portrait_font_viewport(true, 1260, 2736);
+  expect(std::abs(font_scale() - 945.f / 2736.f) < 0.000001f,
+         "tall portrait scale crosses the actual GOAL scalar return ABI");
+  goal_kernel_core_set_portrait_font_viewport(false, 1260, 2736);
+  expect(font_scale() == 1.f, "disabled Fit or unsupported platform resets font sizing");
+  goal_kernel_core_set_portrait_font_viewport(true, 0, 2736);
+  expect(font_scale() == 1.f, "empty viewport cannot produce an invalid font scale");
+  goal_kernel_core_set_portrait_font_viewport(false, 0, 0);
 
   const uint32_t flush_before = lookup("flush-cache");
   goal_gfx_host host = {};

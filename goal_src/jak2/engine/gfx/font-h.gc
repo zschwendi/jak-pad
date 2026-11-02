@@ -106,6 +106,10 @@
                        )
   )
 
+;; og:preserve-this conventional iOS portrait text sizing.
+(#when PC_PORT
+  (define-extern pc-get-portrait-font-scale (function float)))
+
 ;; font settings that can be passed to draw-string
 (deftype font-context (basic)
   ((origin     vector     :inline :offset-assert  16)

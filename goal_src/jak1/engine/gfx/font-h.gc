@@ -841,6 +841,10 @@
              psm))
   (none))
 
+(#when PC_PORT
+  (define-extern pc-get-portrait-font-scale (function float)))
+(define-extern font-portrait-scale (function font-context float))
+
 (define-extern draw-string (function string dma-buffer font-context float))
 
 (define-extern draw-string-xy (function string dma-buffer int int font-color font-flags float))

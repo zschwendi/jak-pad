@@ -153,7 +153,11 @@
   (#when PC_PORT
     ;; debug font scaling.
     (unless (logtest? (-> arg2 flags) (font-flags large pc-hack))
-      (*! (-> arg2 scale) (get-debug-font-scale-factor))))
+      (*! (-> arg2 scale) (get-debug-font-scale-factor)))
+    ;; portrait text scale, screen-space (default matrix) only. restored below with orig-scale.
+    (when (= (-> arg2 mat) *font-default-matrix*)
+      (let ((q (pc-get-portrait-font-scale)))
+        (if (!= q 1.0) (*! (-> arg2 scale) q)))))
 
   (let ((v1-1 (the int (* 128.0 (-> arg2 alpha)))))
     (-> arg2 origin quad)
@@ -186,7 +190,11 @@
   (let ((orig-scale (-> ctx scale))
         (result (begin (#when PC_PORT ;; debug font scaling.
                                       (unless (logtest? (-> ctx flags) (font-flags large pc-hack))
-                                        (*! (-> ctx scale) (get-debug-font-scale-factor))))
+                                        (*! (-> ctx scale) (get-debug-font-scale-factor)))
+                                      ;; portrait text scale, same guard as draw-string.
+                                      (when (= (-> ctx mat) *font-default-matrix*)
+                                        (let ((q (pc-get-portrait-font-scale)))
+                                          (if (!= q 1.0) (*! (-> ctx scale) q)))))
                        (get-string-length-asm text ctx))))
     (set! (-> ctx scale) orig-scale)
     result)

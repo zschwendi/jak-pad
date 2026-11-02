@@ -66,6 +66,7 @@ std::atomic<bool> g_portable_display_enabled{false};
 std::atomic<int32_t> g_portable_display_width{640};
 std::atomic<int32_t> g_portable_display_height{480};
 std::atomic<int32_t> g_portable_display_refresh_rate{60};
+std::atomic<float> g_portrait_font_scale{1.f};
 
 [[noreturn]] void missing(const char* subsystem, const char* symbol) {
   lg::error("[kernel-core] {} is not part of this build; {} cannot be used.", subsystem, symbol);
@@ -289,6 +290,13 @@ u32 portable_pc_get_display_mode() {
   return goal_game_intern("windowed");
 }
 
+u64 portable_pc_get_portrait_font_scale() {
+  const float scale = g_portrait_font_scale.load(std::memory_order_relaxed);
+  uint32_t bits = 0;
+  std::memcpy(&bits, &scale, sizeof(bits));
+  return bits;
+}
+
 u64 portable_pc_host_manages_display() {
   return goal_bool(true);
 }
@@ -404,11 +412,24 @@ void goal_kernel_core_install_implemented_machine_functions() {
 }
 
 void goal_kernel_core_install_portable_display_functions() {
+  goal_game_make_function_symbol("pc-get-portrait-font-scale",
+                                 (void*)portable_pc_get_portrait_font_scale);
   goal_game_make_function_symbol("pc-host-manages-display?",
                                  (void*)portable_pc_host_manages_display);
   goal_game_make_function_symbol("pc-get-active-display-size",
                                  (void*)portable_pc_get_active_display_size);
   goal_game_make_function_symbol("pc-get-window-size", (void*)portable_pc_get_window_size);
+}
+
+void goal_kernel_core_set_portrait_font_viewport(bool enabled, int32_t width, int32_t height) {
+  const float scale = enabled && width > 0 && height > 0 && width < height
+                          ? static_cast<float>(std::min(1.0, 0.75 * double(width) / double(height)))
+                          : 1.f;
+  g_portrait_font_scale.store(scale, std::memory_order_relaxed);
+}
+
+float goal_kernel_core_get_portrait_font_scale() {
+  return g_portrait_font_scale.load(std::memory_order_relaxed);
 }
 
 void goal_kernel_core_set_portable_display_enabled(bool enabled) {

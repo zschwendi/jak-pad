@@ -176,6 +176,7 @@ const char* const kJak2MachineFunctionNames[] = {
     "__pc-force-reload-all-levels",
     "__pc-force-reload-level",
     "__pc-force-reload-common-level",
+    "pc-get-portrait-font-scale",
     "pc-get-display-id",
     "pc-set-display-id!",
     "pc-get-display-name",

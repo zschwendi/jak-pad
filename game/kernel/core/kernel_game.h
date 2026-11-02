@@ -147,6 +147,10 @@ bool goal_kernel_core_get_portable_display_enabled();
 void goal_kernel_core_set_portable_display_size(int32_t width, int32_t height);
 void goal_kernel_core_get_portable_display_size(int32_t* width, int32_t* height);
 
+/*! Width-based font sizing, explicitly enabled only by a conventional iOS host. */
+void goal_kernel_core_set_portrait_font_viewport(bool enabled, int32_t width, int32_t height);
+float goal_kernel_core_get_portrait_font_scale();
+
 /*! Update the host-owned display cadence consumed by Jak II's existing PC settings methods. */
 void goal_kernel_core_set_portable_display_refresh_rate(int32_t frame_rate);
 int32_t goal_kernel_core_get_portable_display_refresh_rate();

@@ -588,12 +588,52 @@
        (new 'static 'vector :x 0.7539 :y 0.7512 :z 1.0 :w 24.0)
        (new 'static 'vector :x 0.8476 :y 0.7512 :z 1.0 :w 5.0)))
 
+;; og:preserve-this size glyphs for the width without changing authored anchors or tab stops.
+(defun font-portrait-scale ((ctxt font-context))
+  (#if PC_PORT
+    (if (= (-> ctxt mat) *font-default-matrix*) (pc-get-portrait-font-scale) 1.0)
+    1.0))
+
+(defmacro with-portrait-font-glyphs (scale &rest body)
+  `(let ((saved-font-size-0 (-> *font-work* size1-small quad))
+         (saved-font-size-1 (-> *font-work* size2-small quad))
+         (saved-font-size-2 (-> *font-work* size3-small quad))
+         (saved-font-size-3 (-> *font-work* size1-large quad))
+         (saved-font-size-4 (-> *font-work* size2-large quad))
+         (saved-font-size-5 (-> *font-work* size3-large quad)))
+     (*! (-> *font-work* size1-small x) ,scale)
+     (*! (-> *font-work* size1-small y) ,scale)
+     (*! (-> *font-work* size1-small w) ,scale)
+     (*! (-> *font-work* size2-small x) ,scale)
+     (*! (-> *font-work* size2-small y) ,scale)
+     (*! (-> *font-work* size2-small w) ,scale)
+     (*! (-> *font-work* size3-small x) ,scale)
+     (*! (-> *font-work* size3-small y) ,scale)
+     (*! (-> *font-work* size3-small w) ,scale)
+     (*! (-> *font-work* size1-large x) ,scale)
+     (*! (-> *font-work* size1-large y) ,scale)
+     (*! (-> *font-work* size1-large w) ,scale)
+     (*! (-> *font-work* size2-large x) ,scale)
+     (*! (-> *font-work* size2-large y) ,scale)
+     (*! (-> *font-work* size2-large w) ,scale)
+     (*! (-> *font-work* size3-large x) ,scale)
+     (*! (-> *font-work* size3-large y) ,scale)
+     (*! (-> *font-work* size3-large w) ,scale)
+     (let ((portrait-font-result (begin ,@body)))
+       (set! (-> *font-work* size1-small quad) saved-font-size-0)
+       (set! (-> *font-work* size2-small quad) saved-font-size-1)
+       (set! (-> *font-work* size3-small quad) saved-font-size-2)
+       (set! (-> *font-work* size1-large quad) saved-font-size-3)
+       (set! (-> *font-work* size2-large quad) saved-font-size-4)
+       (set! (-> *font-work* size3-large quad) saved-font-size-5)
+       portrait-font-result)))
+
 ;; we have both GOAL and mips2c versions of this function
 
 (define draw-string (the (function string dma-buffer font-context float) (__pc-get-mips2c "draw-string")))
 
 ;; for now, use the GOAL one. the mips2c one is super slow with the game compiled in debug mode.
-(defun draw-string ((str-in string) (context dma-buffer) (arg2 font-context))
+(defun draw-string-unscaled ((str-in string) (context dma-buffer) (arg2 font-context))
   "Draw a string. Writes dma to the given buffer."
   (local-vars
     (r0 uint128)
@@ -1468,12 +1508,18 @@
     (.mov v0-0 vf23)
     v0-0))
 
+(defun draw-string ((str string) (buf dma-buffer) (ctxt font-context))
+  (let ((q (font-portrait-scale ctxt)))
+    (if (= q 1.0)
+      (draw-string-unscaled str buf ctxt)
+      (with-portrait-font-glyphs q (draw-string-unscaled str buf ctxt)))))
+
 (defun draw-string-adv ((str string) (buf dma-buffer) (ctxt font-context))
   "Draw a string and advance the position of the context."
   (+! (-> ctxt origin x) (draw-string str buf ctxt))
   (none))
 
-(defun get-string-length ((arg0 string) (arg1 font-context))
+(defun get-string-length-unscaled ((arg0 string) (arg1 font-context))
   (local-vars (v0-0 float))
   (rlet ((vf0 :class vf)
          (vf1 :class vf)
@@ -1572,6 +1618,12 @@
     (.sub.vf vf23 vf23 vf24)
     (.mov v0-0 vf23)
     v0-0))
+
+(defun get-string-length ((str string) (ctxt font-context))
+  (let ((q (font-portrait-scale ctxt)))
+    (if (= q 1.0)
+      (get-string-length-unscaled str ctxt)
+      (with-portrait-font-glyphs q (get-string-length-unscaled str ctxt)))))
 
 (defun draw-string-xy ((str string) (buf dma-buffer) (x int) (y int) (color font-color) (flags font-flags))
   "Draw a string at the given xy location."

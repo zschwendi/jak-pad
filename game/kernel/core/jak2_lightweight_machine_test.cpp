@@ -214,6 +214,7 @@ int main() {
   auto display_size = kmalloc(kglobalheap, sizeof(s64) * 2, KMALLOC_MEMSET, "display-size-test");
   expect(display_size.offset != 0, "allocated synthetic display-size outputs");
   if (settings_queries && display_size.offset) {
+    goal_kernel_core_set_portable_display_enabled(true);
     const auto width = display_size.offset;
     const auto height = display_size.offset + sizeof(s64);
     goal_aot_call(pc_get_display_size, width, height, 0);
@@ -240,6 +241,22 @@ int main() {
                    goal_game_false_offset(),
            "PC settings reject only empty fallback resolutions");
   }
+
+  uint32_t portrait_font = 0;
+  expect(lookup_function("pc-get-portrait-font-scale", &portrait_font),
+         "Jak II installs the portable portrait font query");
+  if (portrait_font) {
+    goal_kernel_core_set_portrait_font_viewport(true, 750, 1000);
+    const uint32_t bits = static_cast<uint32_t>(goal_aot_call(portrait_font, 0, 0, 0));
+    float scale = 0.f;
+    std::memcpy(&scale, &bits, sizeof(scale));
+    expect(scale == 0.5625f, "Jak II receives portrait font scale through its GOAL ABI");
+    goal_kernel_core_set_portrait_font_viewport(false, 750, 1000);
+    expect(goal_aot_call(portrait_font, 0, 0, 0) == 0x3f800000u,
+           "Jak II font query returns float-one bits when the host disables it");
+  }
+
+  goal_kernel_core_set_portable_display_enabled(false);
 
   auto mouse_mem =
       kmalloc(kglobalheap, sizeof(jak2::MouseInfo), KMALLOC_MEMSET, "inactive-mouse-test");
