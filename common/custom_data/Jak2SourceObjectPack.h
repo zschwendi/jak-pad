@@ -10,7 +10,7 @@ namespace jak2_source_object_pack {
 
 inline constexpr const char* kManifestName = jak1_source_object_pack::kManifestName;
 inline constexpr std::uint32_t kExpectedObjectCount = 840;
-inline constexpr std::uint64_t kRecordedAggregateXXH64 = 0xf2cdf82e9b913501ULL;
+inline constexpr std::uint64_t kRecordedAggregateXXH64 = 0xc70c183115784045ULL;
 
 using Phase = jak1_source_object_pack::Phase;
 using Progress = jak1_source_object_pack::Progress;

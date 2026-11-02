@@ -73,10 +73,14 @@
            (set! (-> math-cam y-ratio) (* (1/ ASPECT_16X9) (-> math-cam x-ratio)))
            (*! (-> math-cam x-ratio) (/ (-> *pc-settings* aspect-ratio) ASPECT_16X9)))))
       (else
-       ;; not using game vis, allow *extended* aspect ratios
-       ;; there is no vertical cropping, and you can see more of the sides
-       (set! (-> math-cam y-ratio) (* (1/ ASPECT_4X3) (-> math-cam x-ratio))) ;; same cropping as 4x3
-       (*! (-> math-cam x-ratio) (/ (-> *pc-settings* aspect-ratio) ASPECT_4X3)) ;; extend fov! shows more on the sides.
+       ;; Preserve the 4:3 view and extend the longer axis.
+       (if (< (-> *pc-settings* aspect-ratio) ASPECT_4X3)
+         ;; narrower than 4x3 (portrait): keep the original horizontal slope and extend the
+         ;; view vertically instead, so a narrow screen never shows less of the sides.
+         (set! (-> math-cam y-ratio) (* (1/ (-> *pc-settings* aspect-ratio)) (-> math-cam x-ratio)))
+         (begin
+           (set! (-> math-cam y-ratio) (* (1/ ASPECT_4X3) (-> math-cam x-ratio))) ;; same cropping as 4x3
+           (*! (-> math-cam x-ratio) (/ (-> *pc-settings* aspect-ratio) ASPECT_4X3)))) ;; extend fov! shows more on the sides.
        )))
   ;; compute some culling constants. Not sure what these mean yet
   (let ((x-rat (-> math-cam x-ratio))

@@ -14,7 +14,7 @@ namespace jak1_source_object_pack {
 
 inline constexpr const char* kManifestName = "object_pack_manifest.tsv";
 inline constexpr std::uint32_t kExpectedObjectCount = 518;
-inline constexpr std::uint64_t kRecordedAggregateXXH64 = 0x806abc2b2667435aULL;
+inline constexpr std::uint64_t kRecordedAggregateXXH64 = 0x561e066fb203d182ULL;
 
 enum class Phase {
   reading_manifest,
